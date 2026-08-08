@@ -76,7 +76,7 @@ source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
 # outlives the session.
 harness_matches() {
     local cached current
-    cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p' <<< "$1" | head -1)
+    cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' <<< "$1")
     current=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
     [[ -n $cached && -n $current ]] || return 0
     [[ $cached == "$current" ]]

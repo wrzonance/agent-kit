@@ -28,7 +28,9 @@ contract=''
 # way to notice. Dropping it costs the worker its inherited context; serving it
 # would have the worker credit its commits to a CLI it is not running in.
 if [[ -n $contract ]]; then
-    cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p' <<< "$contract" | head -1)
+    # `| head -1` closes the pipe early, and under pipefail sed's SIGPIPE became
+    # the hook's exit status (141) -- a hook that must never exit non-zero.
+    cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' <<< "$contract")
     current=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
     if [[ -n $cached && -n $current && $cached != "$current" ]]; then
         contract=''

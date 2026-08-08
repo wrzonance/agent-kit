@@ -143,4 +143,53 @@ git -C "$repo" init -q 2> /dev/null || true
 out=$(PATH="$tmp/stub:$PATH" "$pf_sh" --worktree "$repo" --no-write 2> /dev/null || true)
 assert_contains "$out" 'config= present=no keys=0 supplied=none' 'preflight reports an absent config'
 
+# --- a monorepo declares more than five commands ---------------------------
+# A fixed five (VERIFY/TEST/LINT/TYPECHECK/BUILD) fits one component. A real
+# polyglot repo produced fourteen useful per-component commands and had to throw
+# eleven away to fit, so the contract recorded less than the repo knew.
+repo=$(make_repo config-good.env)
+mkdir -p "$repo/server/.venv/bin" "$repo/dashboard/node_modules/.bin"
+touch "$repo/server/.venv/bin/pytest" "$repo/dashboard/node_modules/.bin/tsc"
+chmod +x "$repo/server/.venv/bin/pytest" "$repo/dashboard/node_modules/.bin/tsc"
+cat > "$repo/.agent/config.env" <<'CFG'
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_CMD_BACKEND_TEST=server/.venv/bin/pytest -q server/tests
+AGENT_CMD_DASHBOARD_TYPECHECK=dashboard/node_modules/.bin/tsc --noEmit
+AGENT_CMD_TEST=server/.venv/bin/pytest -q
+CFG
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_CMD_BACKEND_TEST=' 'a per-component command name is accepted'
+assert_contains "$out" 'AGENT_CMD_DASHBOARD_TYPECHECK=' 'and so is another'
+assert_contains "$out" 'AGENT_CMD_TEST=' 'alongside the conventional names'
+assert_not_contains "$out" 'invalid value' 'with no warnings'
+
+# The NAME still has to survive being lowercased into an argument and a filename.
+printf 'AGENT_CMD_bad name=x\nAGENT_CMD_=x\nAGENT_CMD_9LEADING=x\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_CMD_9LEADING=x' 'a name starting with a digit is refused'
+assert_contains "$out" 'unknown key' 'and the refusal is reported, not silent'
+
+# An open-ended key must not become a hole for a credential.
+printf 'AGENT_CMD_GH_TOKEN=x\nAGENT_CMD_MY_SECRET=x\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'refusing credential-shaped key' 'a credential-shaped command key is refused loudly'
+assert_not_contains "$out" 'AGENT_CMD_GH_TOKEN=x' 'and never resolved'
+assert_not_contains "$out" 'AGENT_CMD_MY_SECRET=x' 'whatever it is named'
+
+# --- real label vocabularies contain colons --------------------------------
+# phase:v1, area:api, priority:p0 are ordinary. Rejecting them threw away the
+# one thing this key exists to record.
+printf 'AGENT_LABEL_AREAS=ai-engine,phase:v1,phase:v1.1\nAGENT_LABEL_TYPES=bug,type:security\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'phase:v1.1' 'a colon in a label is accepted'
+assert_contains "$out" 'type:security' 'on every label key'
+assert_not_contains "$out" 'invalid value' 'without a warning'
+
+# Still no shell metacharacters: these are interpolated into forge queries.
+# shellcheck disable=SC2016  # the unexpanded substitution IS the fixture
+printf 'AGENT_LABEL_AREAS=ok,$(id)\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'invalid value' 'a substitution in a label is still refused'
+
 finish

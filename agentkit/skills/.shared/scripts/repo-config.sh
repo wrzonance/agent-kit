@@ -34,8 +34,17 @@ readonly ACCEPTED_KEYS=(
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
     AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER
-    AGENT_CMD_VERIFY AGENT_CMD_TEST AGENT_CMD_LINT AGENT_CMD_TYPECHECK AGENT_CMD_BUILD
 )
+
+# AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
+# TYPECHECK, BUILD) fits a single-component repository and fails a monorepo: a
+# real one produced fourteen useful per-component commands -- backend lint,
+# dashboard typecheck, bridge tests -- and had to discard eleven of them to fit
+# the schema, so the contract recorded less than the repository actually knew.
+#
+# The NAME is what `agent-run.sh --cmd <name>` takes, so it is constrained to a
+# shape that survives being lowercased into a filename and an argument.
+readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
 
 # Credential-shaped keys are refused loudly rather than ignored quietly, so a
 # misguided commit is visible instead of silently honored.
@@ -78,6 +87,13 @@ config_file="$repo_root/.agent/config.env"
 
 is_accepted() {
     local candidate=$1 key
+    # Credential-shaped names are refused BEFORE the open-ended command pattern
+    # can accept them. Opening AGENT_CMD_<NAME> to arbitrary names made
+    # AGENT_CMD_GH_TOKEN a legal key -- exactly the hole the secret check exists
+    # to close, reopened by the change that made monorepos work. Order matters
+    # here, and only a test that asked for the hole by name caught it.
+    [[ ! $candidate =~ $SECRET_PATTERN ]] || return 1
+    [[ ! $candidate =~ $CMD_KEY_PATTERN ]] || return 0
     for key in "${ACCEPTED_KEYS[@]}"; do
         [[ $key == "$candidate" ]] && return 0
     done
@@ -105,8 +121,12 @@ safe_ref() {
 }
 
 # Comma-separated human labels; spaces allowed ("In progress"), controls not.
+# Colons are ordinary in real label vocabularies -- `phase:v1`, `area:api`,
+# `priority:p0` -- and excluding them rejected a repository's actual labels,
+# which is the one thing this key exists to record. Still no shell
+# metacharacters: these values are interpolated into forge queries.
 safe_list() {
-    [[ $1 =~ ^[A-Za-z0-9\ ._/-]+(,[A-Za-z0-9\ ._/-]+)*$ ]]
+    [[ $1 =~ ^[A-Za-z0-9\ ._:/-]+(,[A-Za-z0-9\ ._:/-]+)*$ ]]
 }
 
 providers_valid() {
@@ -182,10 +202,10 @@ validate() {
             ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
-        AGENT_CMD_VERIFY | AGENT_CMD_TEST | AGENT_CMD_LINT | AGENT_CMD_TYPECHECK | AGENT_CMD_BUILD)
+        *)
+            [[ $key =~ $CMD_KEY_PATTERN ]] || return 1
             safe_argv "$value"
             ;;
-        *) return 1 ;;
     esac
 }
 
