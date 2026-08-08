@@ -11,7 +11,7 @@
 # the tree, and only a live session caught it.
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
-readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 \
+readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
     -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
   [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"'
 

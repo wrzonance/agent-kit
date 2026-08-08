@@ -24,7 +24,7 @@ triage, and commit guards have no facts to act on and stay inert.
 
 To onboard it, from the repository root:
 
-  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 \
+  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
     -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
   [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
   "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # inspect
@@ -33,7 +33,7 @@ To onboard it, from the repository root:
 It writes two files the repository is expected to commit:
   .agent/config.env   repo slug, trunk branch, board number, Status vocabulary
   .agent/board.json   board node ids, so a status move costs one call not seven
-and one it should not: add .agent/cache/ to .gitignore.
+and the .gitignore rules that keep everything else under .agent/ out of history.
 
 Then declare this repository verify commands in .agent/config.env as
 AGENT_CMD_<NAME>=<command>. Skills invoke them by name, so none of them assume

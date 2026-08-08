@@ -25,8 +25,19 @@ trap 'rm -rf -- "$stage" "$tmp"' EXIT
 # --- structure -------------------------------------------------------------
 assert_eq 'yes' "$([[ -f $stage/.claude-plugin/marketplace.json ]] && echo yes || echo no)" \
     'writes the marketplace manifest both harnesses read'
-assert_eq 'yes' "$([[ -f $stage/agentkit/.codex-plugin/plugin.json ]] && echo yes || echo no)" \
-    'writes the codex plugin manifest'
+# One manifest per harness. A plugin carrying only one of them simply does not
+# install on the other CLI -- and the same person runs both, from more than one
+# account, so a single-harness manifest is a silent half-install.
+for manifest in .codex-plugin .claude-plugin; do
+    assert_eq 'yes' "$([[ -f $stage/agentkit/$manifest/plugin.json ]] && echo yes || echo no)" \
+        "writes the $manifest plugin manifest"
+done
+# Both harnesses look for the hook manifest at hooks/hooks.json.
+assert_eq 'yes' "$([[ -f $stage/agentkit/hooks/hooks.json ]] && echo yes || echo no)" \
+    'puts hooks.json where both harnesses look for it'
+assert_eq './hooks/hooks.json' \
+    "$(jq -r '.hooks' "$stage/agentkit/.codex-plugin/plugin.json")" \
+    'and the declared hooks path points at it'
 assert_eq 'yes' "$([[ -d $stage/agentkit/skills/parallel-issues ]] && echo yes || echo no)" \
     'carries the skills'
 assert_eq 'yes' "$([[ -x $stage/agentkit/skills/.shared/scripts/agent-run.sh ]] && echo yes || echo no)" \

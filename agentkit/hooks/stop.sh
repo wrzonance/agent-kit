@@ -68,7 +68,7 @@ stamp="$root/.agent/cache/stamp-$verify_name"
 # without showing how cost a live agent three failed commands: it guessed the
 # plugin root, missed the /skills segment, and had to find(1) its way out.
 # shellcheck disable=SC2016  # literal text the AGENT reads and retypes.
-readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 \
+readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
     -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
   [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"'
 

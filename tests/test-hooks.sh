@@ -542,10 +542,14 @@ built=$(mktemp -d "$tmp/plugin.XXXXXX")
 "$here/build-plugin.sh" "$built" > /dev/null
 plugin_root="$built/agentkit"
 
-# A hook file nothing points at is a hook file nothing reads.
-assert_eq './hooks.json' \
+# A hook file nothing points at is a hook file nothing reads. It lives inside
+# hooks/ because that is where BOTH harnesses look: one declares the path, the
+# other auto-discovers it there.
+assert_eq './hooks/hooks.json' \
     "$(jq -r '.hooks // empty' < "$plugin_root/.codex-plugin/plugin.json")" \
     'the built manifest registers the hook file'
+assert_eq 'yes' "$([[ -f $plugin_root/hooks/hooks.json ]] && echo yes || echo no)" \
+    'and it is where the other harness auto-discovers it'
 
 # The contract is deliberately stale, so SessionStart has to reach its helper --
 # proving hooks and skills resolve as siblings in the BUILT layout, not just in

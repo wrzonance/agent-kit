@@ -25,21 +25,37 @@ else reads them instead of guessing.
 
 ```bash
 git clone <this repo> ~/github/agent-kit
+```
 
+**Codex CLI:**
+
+```bash
 codex plugin marketplace add ~/github/agent-kit
 codex plugin add agentkit@agent-kit
+codex plugin list                        # agentkit@agent-kit  installed, enabled
+```
+
+**Claude Code:**
+
+```
+/plugin marketplace add ~/github/agent-kit
+/plugin install agentkit@agent-kit
 ```
 
 That's the whole install. No build step — the repository *is* the marketplace.
 
-Claude Code reads the same `.claude-plugin/marketplace.json`, so the identical
-directory installs there too.
+The same directory serves both: one manifest per harness (`.claude-plugin/` and
+`.codex-plugin/`), `hooks/hooks.json` where each looks for it, and a resolver
+that searches both plugin caches. Install it on both and they share one copy of
+the skills.
 
-Verify:
+Two differences worth knowing, neither of which needs configuring:
 
-```bash
-codex plugin list      # agentkit@agent-kit  installed, enabled
-```
+- `SubagentStart` is a Codex event. On Claude Code, spawned workers don't
+  receive the injected contract; everything else behaves the same.
+- Nothing hardcodes which CLI you're in. The environment contract reports
+  `harness=` and `peer-cli=`, so commit attribution credits whichever agent did
+  the work, and an adversarial review always goes to the *other* CLI.
 
 ---
 

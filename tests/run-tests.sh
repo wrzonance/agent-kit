@@ -113,6 +113,60 @@ else
     printf '  ok\n'
 fi
 
+step 'harness-neutrality'
+# The tree runs under more than one agent CLI, from more than one account. Three
+# ways that breaks, each of which has actually happened:
+#
+#   1. A resolver that searches one harness's plugin cache. Every helper
+#      invocation then resolves to nothing on the other CLI.
+#   2. A manifest for one harness only. The plugin does not install at all.
+#   3. Prose that names one CLI as THE harness -- "the shell Codex runs",
+#      "one Codex issue lead" -- which reads as an instruction, not a note.
+#
+# Cross-harness references are the deliberate exception and mark themselves with
+# `harness-allow:`, the same per-line, visible-in-review escape the
+# ecosystem gate uses. Naming BOTH CLIs in one line is inherently even-handed and
+# passes without a marker.
+harness_rc=0
+
+while IFS= read -r resolver_file; do
+    if grep -q 'CODEX_HOME' "$resolver_file" && ! grep -q 'CLAUDE_CONFIG_DIR' "$resolver_file"; then
+        printf '  FAIL  %s searches one harness cache only\n' "$resolver_file" >&2
+        harness_rc=1
+    fi
+done < <(grep -rl 'plugins/cache' "$plugin" --include='*.sh' --include='*.md')
+
+for manifest in .claude-plugin/plugin.json .codex-plugin/plugin.json; do
+    if [[ ! -r $plugin/$manifest ]]; then
+        printf '  FAIL  missing %s; the plugin will not install on that harness\n' "$manifest" >&2
+        harness_rc=1
+    fi
+done
+
+# Both harnesses look for the hook manifest at hooks/hooks.json.
+if [[ ! -r $plugin/hooks/hooks.json ]]; then
+    printf '  FAIL  hooks/hooks.json is where both harnesses look for it\n' >&2
+    harness_rc=1
+fi
+
+# Naming a CLI is not the failure -- the concrete review recipes MUST name one,
+# and instruction files, config paths, model ids and script flags all carry the
+# names harmlessly. The failure is prose that tells the agent WHAT IT IS, so this
+# matches assumption-shaped phrasing rather than every mention. A curated pattern
+# risks missing a novel phrasing; matching every mention produced forty lines of
+# noise and would have been switched off within a week.
+if grep -rniE '\b(codex|claude)\b[[:space:]]+(runs|uses|exposes|commonly|issue lead|session|harness|runtime|agent\b)|the shell (codex|claude)|(codex|claude) (credit|equivalent)|one \*\*(codex|claude)' \
+    "$skills" --include='*.md' --include='*.sh' |
+    grep -viE 'harness-allow:' |
+    grep -viE '\bcodex\b.*\bclaude\b|\bclaude\b.*\bcodex\b'; then
+    printf '  FAIL  prose that names one agent CLI as THE harness. Write it from the\n' >&2
+    printf '        contract (harness= / peer-cli=), or mark a deliberate\n' >&2
+    printf '        cross-harness reference with harness-allow:\n' >&2
+    harness_rc=1
+fi
+
+[[ $harness_rc -eq 0 ]] && printf '  ok\n' || rc=1
+
 step 'org-neutrality'
 if grep -rniE 'jacobs|tango|bravo|wrzonance|thewrz|adam@|192\.168\.' \
     "$plugin" \

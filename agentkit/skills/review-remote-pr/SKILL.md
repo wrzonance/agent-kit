@@ -5,7 +5,7 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 # Review Remote PR
 
-Draft-first automated loop. **Phase A (draft):** watch CI, fix failures, resolve conflicts; then apply the Step 1b materiality gate. Run **Claude (Opus 5, high) as the adversarial cross-reviewer** once for a behaviorally material diff (or use the blind separate gpt-5.6-terra Codex fallback); document a skip only for a mechanically verifiable trivial diff. **Phase B (handoff):** report draft-phase complete and wait for the **user** to mark the PR ready — and to **manually trigger** any CodeRabbit review they want: automatic reviews and incremental reviews are disabled. **Phase C (review):** once the user-triggered review lands, assess CodeRabbit and `github-code-quality[bot]` findings, batching fixes into one push per cycle. Human-authored reviews and comments remain confirmation-gated.
+Draft-first automated loop. **Phase A (draft):** watch CI, fix failures, resolve conflicts; then apply the Step 1b materiality gate. Run **the peer CLI named by the contract's `peer-cli=` line as the adversarial cross-reviewer** once for a behaviorally material diff, on its strongest reasoning model (or use the blind separate same-harness fallback); document a skip only for a mechanically verifiable trivial diff. **Phase B (handoff):** report draft-phase complete and wait for the **user** to mark the PR ready — and to **manually trigger** any CodeRabbit review they want: automatic reviews and incremental reviews are disabled. **Phase C (review):** once the user-triggered review lands, assess CodeRabbit and `github-code-quality[bot]` findings, batching fixes into one push per cycle. Human-authored reviews and comments remain confirmation-gated.
 
 ## Optional shell helpers
 
@@ -82,7 +82,7 @@ substitution as a `note:` line in its failure output.
 **Run `.shared/scripts/agent-preflight.sh` exactly ONCE, in Step 0a, and treat its printed block as
 the environment contract for the whole run.** It prints exactly 12 lines, one `key=value` per line,
 in the fixed order `repo` / `branch` / `worktree` / `base` / `config` / `git` / `gh` / `sandbox` /
-`tls` / `caches` / `runners` / `claude`; diagnostics go to stderr. Read the block, carry it forward, and do **not**
+`tls` / `caches` / `runners` / `harness` / `peer-cli`; diagnostics go to stderr. Read the block, carry it forward, and do **not**
 re-probe those facts later — re-running `gh auth status`, re-detecting the base branch, or
 re-testing writability is wasted turns. **Paste the block verbatim into any dispatched worker
 prompt** so the worker inherits the same contract instead of rediscovering it.
@@ -101,8 +101,8 @@ Three lines change what this skill does:
 - `gh= … project-scope=yes|no` — `no` means the token cannot move a Project item. The fix is
   `gh auth refresh -s project`. Surface that instead of discovering it through a failed board call
   during Backlog grooming.
-- `claude= absent` — skip the Step 1b Claude probe entirely and go straight to the blind Codex
-  fallback. `claude= present … probe=not-run` only proves the binary resolves on `PATH`; the
+- `peer-cli= <name> absent` — skip the Step 1b peer probe entirely and go straight to the blind same-harness
+  fallback. `peer-cli= <name> present … probe=not-run` only proves the binary resolves on `PATH`; the
   helper's own preflight decides whether it can actually execute here.
 
 A repository opts into its own command runner through exactly two mechanisms, checked in this
@@ -187,7 +187,7 @@ The PR-loop agent is the orchestrator: it inspects GitHub state, evaluates findi
 - Never omit `model` or `reasoning_effort`; otherwise a worker can inherit the orchestrator (for example `gpt-5.6-sol medium` which would be not good and burn tokens).
 - Select `gpt-5.6-luna` when advertised; otherwise select `gpt-5.6-terra` automatically at high reasoning. Stop before local edits only when neither model is advertised. Do not use the contextual parent as a hidden fallback.
 - The Luna-to-Terra fallback requires no user authorization or pause. A model other than `gpt-5.6-luna` or `gpt-5.6-terra` still requires explicit user approval. Report the actual model/effort in the exit report.
-- The Step 1b Claude Opus 5 high/`gpt-5.6-terra xhigh` adversarial reviewer is read-only and **never satisfies this implementation-worker gate**.
+- The Step 1b adversarial reviewer (peer CLI, strongest reasoning model) is read-only and **never satisfies this implementation-worker gate**.
 
 Make the call; prose saying that a worker should exist is not a dispatch:
 
@@ -252,9 +252,9 @@ The worker returns the six-stage status, commit SHA(s), changed paths, RED/GREEN
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 resolver="$agentkit/.shared/scripts/repo-config.sh"
@@ -346,9 +346,9 @@ else
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
   resolver="$agentkit/.shared/scripts/repo-config.sh"
@@ -387,9 +387,9 @@ block is the environment contract for the entire run (see *Sandbox and environme
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/.shared/scripts/agent-preflight.sh" \
@@ -404,8 +404,8 @@ grep -qxF '.agent/' "$git_common_dir/info/exclude" 2>/dev/null ||
 
 Carry the 10-line block forward for the whole run and **paste it verbatim into every dispatched
 worker prompt**. Do not re-probe those facts later. Act on its decision lines immediately:
-`project-scope=no` means Backlog grooming needs `gh auth refresh -s project`; `claude= absent` means
-Step 1b skips the probe and goes straight to the blind Codex fallback; `git= … writable=no` means to
+`project-scope=no` means Backlog grooming needs `gh auth refresh -s project`; `peer-cli= <name> absent` means
+Step 1b skips the probe and goes straight to the blind same-harness fallback; `git= … writable=no` means to
 expect `worktree-commit.sh` exit `2` on the first commit (an elevation problem with a documented
 retry, not a code problem).
 
@@ -465,16 +465,22 @@ surfaces as exit `2` with nothing staged instead of a half-applied index:
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 resolved=src/example.ts   # repeat for each resolved path
 
+# The trailer names the agent that AUTHORED the commit, read from the
+# contract rather than hardcoded: the same repository worked from the other
+# CLI must credit that CLI. Deliberately NOT exported -- a child process
+# derives its own trailer from its own harness, never inherits this one.
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-contract.txt)
+[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 "$agentkit/.shared/scripts/worktree-commit.sh" \
   --message 'fix(example): resolve merge conflicts with the base branch' \
-  --trailer 'Co-Authored-By: Codex <noreply@openai.com>' \
+  --trailer "Co-Authored-By: $AGENT_TRAILER" \
   -- "$resolved"
 
 # Repository verification — always wrapped, never hand-exported.
@@ -512,9 +518,9 @@ instead of dumping JSON into your context:
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
@@ -633,21 +639,39 @@ reference refresh whose upstream identity and intended equivalence were independ
 Record the exact oracle that replaces model review. A line-count threshold is never an oracle.
 
 For a material diff, run one high-effort pass and never re-run it after pushing its fixes. Preferred
-reviewer: **Claude on Opus 5 (`claude-opus-5`) at `high`** unless the user requested another
-Claude model.
+reviewer: the **peer CLI named by the contract's `peer-cli=` line**, on its strongest reasoning
+model, unless the user requested a specific one. A review from the CLI you are already running
+is not independent -- harness-allow: the pairing is the whole point of a cross-harness review.
+
+### Attribution across the review boundary
+
+The reviewer **cannot author anything**: it runs with tools disabled and returns a
+verdict object. Every commit in this workflow is made by the CLI you are already
+running, so the `harness=` trailer from the contract is the correct credit even
+when the finding originated in the peer CLI. Interpreting someone else's review
+and acting on it is your work, not theirs.
+
+Two rules keep that true rather than accidental:
+
+- `AGENT_TRAILER` is **never exported**. A child process that inherited it would
+  stamp this session's identity onto work it did itself.
+- Any agent that authors a commit derives its own trailer from its own
+  `harness=` probe. That covers the in-harness case too: an issue lead spawned by
+  `parallel-issues` runs in the same CLI, so it reaches the same answer on its
+  own rather than by inheritance.
 
 ### External-service authorization
 
-The Claude review sends the PR diff to an external model-provider service. Invoking this skill on a repo the user owns is standing authorization for this cross-model review; for a repo the user does not own, confirm before piping its diff to an external model.
+The cross-harness review sends the PR diff to an external model-provider service. Invoking this skill on a repo the user owns is standing authorization for this cross-model review; for a repo the user does not own, confirm before piping its diff to an external model.
 
 ### Availability → pick the reviewer
 
-**Read the Step 0a environment contract; do not re-probe.** Its `claude=` line already decides this:
+**Read the Step 0a environment contract; do not re-probe.** Its `peer-cli=` line already decides this:
 
-- `claude= absent` → **skip the probe entirely** and run the blind Codex fallback below. Do not
-  spend an agent lifecycle discovering that Claude cannot start. This is not a blocked gate — the
+- `peer-cli= <name> absent` → **skip the probe entirely** and run the blind same-harness fallback below. Do not
+  spend an agent lifecycle discovering that the peer CLI cannot start. This is not a blocked gate — the
   fallback reviewer still runs the gate.
-- `claude= present … probe=not-run` → the binary resolves on `PATH`, which is **not** proof it can
+- `peer-cli= <name> present … probe=not-run` → the binary resolves on `PATH`, which is **not** proof it can
   execute in this sandbox. Continue to the probe; the helper's own preflight settles it.
 
 ### Environment-blocked (exit 3) vs a real failure (exit 1)
@@ -658,10 +682,10 @@ answer is no". **Branch on the exit code, never on message text:**
 | rc | Meaning | What you do |
 |---|---|---|
 | `0` | The review completed and every invariant held | stdout is exactly one JSON result object — consume the verdict |
-| `3` | **Environment-blocked**: Claude cannot run here at all, so no verdict is obtainable | stdout is a blocked JSON object carrying `blockedReason`, `detail`, and `"fallback":"blind-codex-agent"`. Take the blind Codex fallback **immediately**. Do not retry, do not re-dispatch the agent, and **never report the gate as BLOCKED for this reason** |
+| `3` | **Environment-blocked**: Claude cannot run here at all, so no verdict is obtainable | stdout is a blocked JSON object carrying `blockedReason`, `detail`, and `"fallback":"blind-codex-agent"`. Take the blind same-harness fallback **immediately**. Do not retry, do not re-dispatch the agent, and **never report the gate as BLOCKED for this reason** |
 | `1` | A genuine failure — usage error, or the harness ran and an invariant/verdict check said no | stdout is **empty**; the reason is on stderr. Do not parse stdout as JSON on this path. *This* is a blocked gate: report it blocked, never `no_findings` |
 
-`blockedReason` is a closed vocabulary: `claude-missing`, `exec-denied`, `network-unreachable`,
+`blockedReason` is a closed vocabulary: `peer-cli-missing`, `exec-denied`, `network-unreachable`,
 `unauthenticated`, `budget-exhausted`, `cli-contract-missing`. Anything else is a helper bug.
 `budget-exhausted` is the single exit-3 class where raising `--max-budget-usd` and re-running is a
 legitimate response; for every other reason, retrying only burns turns.
@@ -700,9 +724,9 @@ structured output, verified isolation, the initialized model in non-empty `model
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
@@ -719,7 +743,7 @@ probe_rc=0
 
 case "$probe_rc" in
   0) printf '%s\n' 'probe ok — proceed to the review pass' ;;
-  3) printf 'environment-blocked (%s) — take the blind Codex fallback now; do not retry\n' \
+  3) printf 'environment-blocked (%s) — take the blind same-harness fallback now; do not retry\n' \
        "$(jq -r '.blockedReason' <"$probe_out")" >&2 ;;
   *) printf '%s\n' 'probe failed on its own terms — report the adversarial gate as BLOCKED' >&2 ;;
 esac
@@ -732,9 +756,9 @@ Only on `probe_rc` `0`, run the review pass:
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
@@ -790,11 +814,12 @@ model may be disclosed alongside the requested primary model.
 Do not invoke `claude ultrareview`: it is a different nested orchestration surface. This workflow
 needs one blind diff-only reviewer with deterministic output and monitoring.
 
-**Fallback — blind Codex review.** Take this path when the Step 0a contract said `claude= absent`,
+**Fallback — blind Codex review.** Take this path when the Step 0a contract said `peer-cli= <name> absent`,
 when the helper exited `3` (any `blockedReason`), or when external-service authorization is absent.
 There are two ways to run it; prefer the first.
 
-**Preferred — a separate in-harness Codex agent.** Start a **separate Codex agent** on
+**Preferred — a separate in-harness agent.** Start a **separate agent in the CLI you are
+already running** on
 `gpt-5.6-terra` at `xhigh` with no inherited turn history or project context (`fork_context=false`).
 Its entire prompt contains only the review rubric below and the explicit PR diff — never the issue
 number/body, repository name, branch/worktree path, design docs, ADRs, goals, PR description, or
@@ -816,9 +841,9 @@ tmp_dir=${TMPDIR:-/tmp}
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
@@ -826,13 +851,13 @@ verdict_path="$tmp_dir/codex_pr_${PR}.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
     --diff "$tmp_dir/claude_pr_${PR}.diff" \
     --transcript "$tmp_dir/codex_pr_${PR}.jsonl" >"$verdict_path" || {
-    printf '%s\n' 'Blind Codex review did not complete; report the gate as blocked.' >&2
+    printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
 }
 jq '{verdict: .verdict.verdict, findings: .verdict.findings, tokenUsage}' <"$verdict_path"
 ```
 
-Two asymmetries against the Claude path, both reported in the result object rather than hidden:
+Two asymmetries against the peer-CLI path (harness-allow: comparing the two is the subject), both reported in the result object rather than hidden:
 `codex exec` exposes **no spend ceiling**, so there is no `--max-budget-usd` equivalent and diff
 size is the only cost lever (`budgetCeiling: "unsupported-by-codex-exec"`); and its event stream
 carries no model field, so the initialized model cannot be verified the way Claude Code's
@@ -848,7 +873,7 @@ Adversarially review the following diff BLIND. You have no issue, spec, ADR, goa
 Capture the separate agent's findings in the same PR-namespaced verdict file the Claude path writes
 (`$TMPDIR/claude_pr_${PR}.result.json`, defaulting to `/tmp`), using the same nesting
 (`.verdict.verdict`, `.verdict.findings[]` with `priority`), so the Step 5 routing below is
-identical. If the harness cannot create a separate no-history Codex agent, *then* report the
+identical. If the harness cannot create a separate no-history agent, *then* report the
 adversarial review as blocked; do not substitute the parent agent's contextual self-review.
 
 (Both paths land findings in the same verdict path so the Step 5 routing below is identical.)
@@ -921,9 +946,9 @@ Then verify independently, before the single cycle push. Route every verificatio
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
@@ -967,9 +992,9 @@ After pushing, wait in **bounded rounds** — never one unbounded wait (a shell 
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
@@ -1039,9 +1064,9 @@ it; substitute varying values with `printf` arguments, never by unquoting the he
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 comment_id=1234567890                       # from /tmp/pr_${PR}_comments.json
@@ -1078,9 +1103,9 @@ A `gh pr comment` floats in the conversation, disconnected from the code — Cod
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 nitpick_path=src/example.ts                 # from the nitpick body
@@ -1141,9 +1166,9 @@ hand-rolled GraphQL re-query here:
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
@@ -1205,7 +1230,7 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | Waiting for a review after the ready flip | The flip triggers nothing (automation is off). Report draft-phase complete; the user triggers a review if and when they want one. |
 | Waiting for a review after a push | Pushes trigger nothing either. Report fixes pushed; the user decides whether to re-trigger. |
 | Running the adversarial review early or repeatedly | Apply the materiality gate ONCE as the LAST draft step (CI green first). For a material diff, fix confirmed findings and do not re-review the fixes. |
-| Codex fallback given context | A reviewer that reads the issue/ADRs/design doc rubber-stamps intent. Create a separate no-history Codex agent; give it only the diff and review rubric, and instruct it not to use tools or read files. |
+| Same-harness fallback given context | A reviewer that reads the issue/ADRs/design doc rubber-stamps intent. Create a separate no-history agent in the running CLI; give it only the diff and review rubric, and instruct it not to use tools or read files. |
 | Contextual PR-loop agent writes fixes itself | Dispatch the separate Luna implementation worker; the loop agent orchestrates, reviews, verifies, pushes, and handles GitHub state |
 | Implementation worker inherits the parent model | Use `fork_context: false`, `model: "gpt-5.6-luna"`, and `reasoning_effort: "high"` on every code-writing spawn |
 | Skipping the six-step fix design because the patch looks small | Every code-bearing batch reports Structs, Interfaces, Todos, performs Spike + Revert, states Invariants, then implements through TDD |
@@ -1221,8 +1246,8 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | Fixed wall-clock timeout for Claude | Remove it. Stream NDJSON and poll condition state every two minutes; duration scales with the diff. A harness safety cap is a failure boundary, never a reason to shrink the diff. |
 | Claude is silent between polls | Report PID, elapsed time, seconds since last event, and transcript growth. Silence is a warning; do not kill a live process solely because a large review exceeds an estimate. |
 | Claude exits 0 with no verdict | Exit code is necessary, not sufficient. Require verified `system/init` plus final `result/success.structured_output`; otherwise the gate is blocked. |
-| Adversarial helper exits 3 reported as BLOCKED | Exit `3` is **environment-blocked**, not a blocked gate: Claude cannot run here, so stdout carries `{"status":"blocked","blockedReason":…,"fallback":"blind-codex-agent"}`. Take the blind Codex fallback immediately, do not retry, and never report the gate blocked for this reason. Only exit `1` (stdout empty, reason on stderr) is a genuinely blocked gate. |
-| Probing Claude when the preflight already said `claude= absent` | Skip the probe entirely and go straight to the fallback. The Step 0a contract already answered it; probing burns an agent lifecycle to rediscover `ENOTIMP`. |
+| Adversarial helper exits 3 reported as BLOCKED | Exit `3` is **environment-blocked**, not a blocked gate: Claude cannot run here, so stdout carries `{"status":"blocked","blockedReason":…,"fallback":"blind-codex-agent"}`. Take the blind same-harness fallback immediately, do not retry, and never report the gate blocked for this reason. Only exit `1` (stdout empty, reason on stderr) is a genuinely blocked gate. |
+| Probing Claude when the preflight already said `peer-cli= <name> absent` | Skip the probe entirely and go straight to the fallback. The Step 0a contract already answered it; probing burns an agent lifecycle to rediscover `ENOTIMP`. |
 | Using `--disallowedTools '*'` with `--json-schema` | It removes the internal `StructuredOutput` tool. Use `--tools ''` and verify the init manifest is exactly `StructuredOutput`. |
 | Skipping review because the diff is short | Size is not risk. Skip only with a deterministic mechanical oracle; runtime, contract, security, persistence, workflow, or accessibility changes are material. |
 | Auto-applying adversarial findings | Evaluate first — verify each `[P1]/[P2]` against the actual code, downgrade overstated severities, drop false positives. Confirmed findings go through Step 5; document outcomes in a PR comment (no thread to resolve). |
@@ -1377,9 +1402,9 @@ matching option:
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 board_helper="$agentkit/parallel-issues/scripts/move-github-project-item.sh"

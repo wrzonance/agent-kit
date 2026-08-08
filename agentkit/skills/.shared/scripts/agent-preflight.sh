@@ -8,7 +8,7 @@
 #   under $HOME is read-only; a package script was invoked from a directory with no package.json;
 #   an import failed because the python source root was not on PYTHONPATH; `git add` died
 #   on "<git-dir>/index.lock: Read-only file system"; a reviewer CLI probe failed because
-#   that CLI is not installed here. This probes all of it once and prints a declarative
+#   the peer review CLI is not installed here. This probes all of it once and prints a declarative
 #   block that becomes the agent's working memory. The verbosity is deliberate: one
 #   upfront declaration replaces N rediscoveries-by-failure.
 #
@@ -19,7 +19,7 @@
 #   the origin URL, and the only writes are under <worktree>/.agent/.
 #
 # OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
-#   repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= claude=
+#   repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 #   The same block is written to <worktree>/.agent/env-contract.txt unless suppressed.
 #
 set -euo pipefail
@@ -57,7 +57,7 @@ Options:
   --no-write         Print the block only; write no file.
   -h, --help         Print this help and exit 0.
 
-Prints one key per line: repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= claude=
+Prints one key per line: repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
 Exit: 0 always, including when tools or facts are missing (they are reported as missing);
       2 only for invalid usage.
@@ -515,14 +515,39 @@ probe_runners() {
     emit "runners= $(resolve_repo_runner) python=$python${pyver:+($pyver)} py-runner=$pyrunner $(py_roots) $(node_roots)"
 }
 
-probe_claude() {
-    local path
-    if path="$(command -v claude 2>/dev/null)"; then
-        emit "claude= present path=$path probe=not-run"
-    elif [[ -x "$HOME/.local/bin/claude" ]]; then
-        emit "claude= present path=$HOME/.local/bin/claude probe=not-run"
+# Which CLI is running this. The tree is harness-agnostic, but two things are
+# not: who a commit should credit, and which CLI is the OTHER one for a
+# cross-harness adversarial review. Both are facts about the session, so they are
+# reported rather than guessed -- a hardcoded trailer credits the wrong agent the
+# moment the same repository is worked from the other CLI.
+HARNESS_OTHER=claude
+probe_harness() {
+    local harness=unknown trailer='Agent <noreply@example.invalid>' other=none
+    if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then
+        harness=claude
+        trailer='Claude <noreply@anthropic.com>'
+        other=codex
+    elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]] ||
+        [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then
+        harness=codex
+        trailer='Codex <noreply@openai.com>'
+        other=claude
+    fi
+    HARNESS_OTHER=$other
+    emit "harness= name=$harness trailer=\"$trailer\" other=$other"
+}
+
+# The peer CLI, for a cross-harness adversarial review. Named from the harness
+# probe rather than assumed: on a Claude session the peer is Codex, and a message
+# that says otherwise sends the reviewer to the CLI it is already running in.
+probe_peer_cli() {
+    local path other=${1:-claude}
+    if path="$(command -v "$other" 2>/dev/null)"; then
+        emit "peer-cli= $other present path=$path probe=not-run"
+    elif [[ -x "$HOME/.local/bin/$other" ]]; then
+        emit "peer-cli= $other present path=$HOME/.local/bin/$other probe=not-run"
     else
-        emit 'claude= absent note="adversarial reviewer = blind Codex fallback; skip probe"'
+        emit "peer-cli= $other absent note=\"no cross-harness reviewer; use the same-harness blind fallback\""
     fi
 }
 
@@ -552,7 +577,8 @@ main() {
     probe_tls
     probe_caches
     probe_runners
-    probe_claude
+    probe_harness
+    probe_peer_cli "$HARNESS_OTHER"
     printf '%s\n' "${OUT_LINES[@]}"
     if (( ARG_NO_WRITE )); then
         note "--no-write: no environment block file written"

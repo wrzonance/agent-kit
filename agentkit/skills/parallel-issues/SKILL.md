@@ -29,8 +29,8 @@ digraph process {
     "Environment preflight\n(agent-preflight.sh)" -> "Detect repo\n+ fetch issues";
     "Detect repo\n+ fetch issues" -> "Project awareness\n(gh project)";
     "Project awareness\n(gh project)" -> "Prior-art check\n(ADRs + closed PRs)";
-    "Prior-art check\n(ADRs + closed PRs)" -> "Conflict analysis\n(Codex reasoning)";
-    "Conflict analysis\n(Codex reasoning)" -> "User approves\nissue set";
+    "Prior-art check\n(ADRs + closed PRs)" -> "Conflict analysis\n(agent reasoning)";
+    "Conflict analysis\n(agent reasoning)" -> "User approves\nissue set";
     "User approves\nissue set" -> "Sequential brainstorm\n(one issue at a time)";
     "User approves\nissue set" -> "Create worktrees\n(sequential)" [label="--no-brainstorm"];
     "Sequential brainstorm\n(one issue at a time)" -> "Create worktrees\n(sequential)";
@@ -61,9 +61,9 @@ fi
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
@@ -90,7 +90,7 @@ printf '%s\n' "$environment_contract"
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
 | `runners= repo-runner=` | When set, `agent-run.sh` delegates to it automatically. Never invoke the repo runner directly. |
-| `claude= absent` | Skip the Claude adversarial-reviewer probe entirely; the draft-phase loop takes the blind `gpt-5.6-terra` (`xhigh`) fallback defined by `review-remote-pr` Step 1b. Presence is a `command -v` check only (`probe=not-run`) — it is not proof the binary can execute here. |
+| `peer-cli= <name> absent` | Skip the Claude adversarial-reviewer probe entirely; the draft-phase loop takes the blind `gpt-5.6-terra` (`xhigh`) fallback defined by `review-remote-pr` Step 1b. Presence is a `command -v` check only (`probe=not-run`) — it is not proof the binary can execute here. |
 
 **This block is dispatch input, not a note to yourself.** Every agent this skill spawns runs with `fork_context: false` and inherits none of your context, so the contract must be pasted **verbatim** into every worker prompt (Phase 2 and Phase 3). Step 5 re-runs the probe inside each new worktree so the pasted copy's `worktree=` and `branch=` name that worker's own checkout.
 
@@ -112,9 +112,9 @@ fi
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 resolver="$agentkit/.shared/scripts/repo-config.sh"
@@ -164,9 +164,9 @@ set -euo pipefail
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 
@@ -272,9 +272,9 @@ opt-in per issue rather than automatic:
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/.shared/scripts/triage-issues.sh" --issues 57 --fuzzy 57
@@ -317,7 +317,7 @@ If user already passed `--no-brainstorm` explicitly, skip the confirmation too.
 **Default path (brainstorm enabled):**
 
 Never parallelize brainstorming — user must steer each one. For each approved issue, one at a time:
-1. Run a focused Codex brainstorming pass with the issue body + Step 2 prior-art findings (ADRs, prior PRs) as context
+1. Run a focused brainstorming pass with the issue body + Step 2 prior-art findings (ADRs, prior PRs) as context
 2. User asks questions, catches assumptions, adjusts scope
 3. Approved design saved to the repo's established design/spec directory, following whatever naming convention already exists there (e.g. `docs/specs/YYYY-MM-DD-issue-NNN-design.md`)
 
@@ -349,9 +349,9 @@ worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 shared_scripts="$agentkit/.shared/scripts"
@@ -396,7 +396,7 @@ Two things that block runs later happen in that subshell, so do not drop them:
 
 ## Phase 2: Per-Issue Ultracode Leads (background, parallel)
 
-Each approved issue gets one **Codex issue lead** in its isolated worktree. This is the Codex runtime equivalent of the Claude harness's design-first issue Workflow: the same design-first gates are mandatory, but Codex uses collaboration agents rather than a Workflow DSL. Invoking this skill is explicit permission to use multi-agent dispatch for these workstreams.
+Each approved issue gets one **issue lead** in its isolated worktree, dispatched through whatever subagent mechanism the running CLI provides. The design-first gates are mandatory either way; only the dispatch call differs. Invoking this skill is explicit permission to use multi-agent dispatch for these workstreams.
 
 The issue lead is the **only writer** in its worktree, and it is also the only agent in that
 workstream: a spawned worker **cannot itself spawn** (verified — a nested attempt returns `no
@@ -432,7 +432,7 @@ The spawn request itself is the model-selection evidence. The completion table m
 
 ### Dispatch (one round, then refill slots)
 
-Use `collaboration.spawn_agent` for as many issue leads as available concurrency slots permit. Codex commonly exposes four total slots including the root, so start up to three issue leads, queue issues 4–5, and spawn each queued lead immediately when a slot frees. Do not serialize independent work merely because all five cannot start at once.
+Use your harness's subagent dispatch for as many issue leads as available concurrency slots permit (`collaboration.spawn_agent` on one CLI, the Task/Agent tool on the other -- harness-allow: naming both is the point). Four total slots including the root is common, so start up to three issue leads, queue issues 4–5, and spawn each queued lead immediately when a slot frees. Do not serialize independent work merely because all five cannot start at once.
 
 Every issue-lead call uses this shape (fill in a unique task name and the complete prompt below):
 
@@ -474,9 +474,9 @@ fi
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
@@ -523,9 +523,9 @@ worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 shared="$agentkit/.shared/scripts"
@@ -546,10 +546,16 @@ Pass `--` whenever the command's first token starts with `-`; always passing it 
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 
 # Stage + commit — never `git add -A` (.agent/ is untracked working state).
+# The trailer names the agent that AUTHORED the commit, read from the
+# contract rather than hardcoded: the same repository worked from the other
+# CLI must credit that CLI. Deliberately NOT exported -- a child process
+# derives its own trailer from its own harness, never inherits this one.
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-contract.txt)
+[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 "$shared/worktree-commit.sh" \
   --message 'feat(example): add widget' \
   --body 'Why this change exists, in one short paragraph.' \
-  --trailer 'Co-Authored-By: Codex <noreply@openai.com>' \
+  --trailer "Co-Authored-By: $AGENT_TRAILER" \
   -- src/example.ts tests/example.test.ts
 
 worktree-commit.sh stages only the FILE operands you name, refuses to commit on
@@ -581,7 +587,7 @@ Before implementation, report the six-step checklist and its status. Do not coll
 The lead must report transitions such as `Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Revert ✅ · 5 Invariants ✅ · 6 Implementation (TDD) in progress`. `N/A` is valid only when the accepted scope contains no code changes. After step 6, continue with Review and Finish as separate gates:
 
 7. **REVIEW** — inspect the full base...HEAD diff through correctness, repo-rule/security, and tests lenses. Try to refute every suspected finding before acting. Fix confirmed findings with regression tests; max two rounds.
-8. **FINISH** — run the full repo verification through agent-run.sh from fresh output, confirm a clean worktree, push, and open a DRAFT PR with Why, What, Design decisions, tickable Testing, Codex credit, and Closes #NNN.
+8. **FINISH** — run the full repo verification through agent-run.sh from fresh output, confirm a clean worktree, push, and open a DRAFT PR with Why, What, Design decisions, tickable Testing, agent credit from the contract's `harness=` trailer, and Closes #NNN.
 
 ## Spec
 <PASTE approved design-doc contents or full issue body — never only a path>
@@ -632,9 +638,9 @@ fi
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 worktree="$repository_root/.worktrees/feat/issue-$issue_number"
@@ -667,9 +673,9 @@ fi
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
@@ -705,8 +711,8 @@ PR: NNN
 issue lead was dispatched with. Never dispatch with this placeholder line still in the prompt.>
 
 It is authoritative for repo, branch, base, git writability, gh auth + scopes, CA bundle, cache
-directories, source roots, the repo command runner, and whether a Claude reviewer exists
-(claude= absent means: skip the probe and take the blind gpt-5.6-terra xhigh fallback). Never export
+directories, source roots, the repo command runner, and whether a cross-harness reviewer exists
+(peer-cli= absent means: skip the probe and take the blind gpt-5.6-terra xhigh fallback). Never export
 cache or CA variables yourself.
 
 ## Commands you MUST use
@@ -715,9 +721,9 @@ worktree=FULL_PATH
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, which is the shell Codex runs
-# commands through.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
+# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
+# commands through the login shell, which is zsh on many machines.
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 shared="$agentkit/.shared/scripts"
@@ -732,9 +738,15 @@ pr_scripts="$agentkit/review-remote-pr/scripts"
 
 # Stage + commit fixes — explicit files only; exit 2 means nothing was staged and the named
 # git metadata directory needs write permission, so re-run the identical command after fixing.
+# The trailer names the agent that AUTHORED the commit, read from the
+# contract rather than hardcoded: the same repository worked from the other
+# CLI must credit that CLI. Deliberately NOT exported -- a child process
+# derives its own trailer from its own harness, never inherits this one.
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-contract.txt)
+[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 "$shared/worktree-commit.sh" \
   --message 'fix(example): address review finding' \
-  --trailer 'Co-Authored-By: Codex <noreply@openai.com>' \
+  --trailer "Co-Authored-By: $AGENT_TRAILER" \
   -- src/example.ts
 
 # One digest per state check — CI, threads, nitpicks, alerts — never a poll cluster.

@@ -39,46 +39,77 @@ assert_contains "$resolver" 'plugins/cache' 'the shipped resolver looks in the p
 assert_contains "$resolver" 'agentkit' 'and names the plugin directory'
 assert_eq '3' "$(printf '%s\n' "$resolver" | grep -c .)" 'the resolver is three lines'
 
-# Run the extracted resolver against a synthetic CODEX_HOME and print what it chose.
+# Run the extracted resolver against synthetic harness homes and print what it
+# chose. BOTH are set every time: the resolver must not depend on one harness's
+# variable being present, and a session on either CLI sets only its own.
 resolve_with() {
-    local home=$1
-    CODEX_HOME="$home" bash -c "
+    local codex_home=$1 claude_home=$2
+    CODEX_HOME="$codex_home" CLAUDE_CONFIG_DIR="$claude_home" bash -c "
         set -uo pipefail
         $(cat "$tmp/resolver.sh")
         printf '%s' \"\$agentkit\"
     " 2>/dev/null
 }
 
-# --- standalone layout -----------------------------------------------------
-h="$tmp/standalone"
-mkdir -p "$h/skills/.shared/scripts"
-assert_eq "$h/skills" "$(resolve_with "$h")" 'standalone install resolves to the CODEX_HOME skills dir'
+plugin_layout() { printf '%s/plugins/cache/agent-kit/agentkit/%s/skills' "$1" "${2:-0.1.0}"; }
 
-# --- plugin layout ---------------------------------------------------------
-h="$tmp/plugin"
-mkdir -p "$h/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts"
-assert_eq "$h/plugins/cache/agent-kit/agentkit/0.1.0/skills" "$(resolve_with "$h")" \
-    'plugin install resolves into the plugin cache'
+# --- Codex only ------------------------------------------------------------
+cx="$tmp/cx"; cl="$tmp/cl-empty"
+mkdir -p "$(plugin_layout "$cx")/.shared/scripts" "$cl"
+assert_eq "$(plugin_layout "$cx")" "$(resolve_with "$cx" "$cl")" \
+    'a Codex plugin install resolves'
 
-# --- both present: the managed plugin copy wins ----------------------------
-h="$tmp/both"
-mkdir -p "$h/skills/.shared/scripts"
-mkdir -p "$h/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts"
-assert_eq "$h/plugins/cache/agent-kit/agentkit/0.1.0/skills" "$(resolve_with "$h")" \
-    'with both installed the plugin copy wins'
+# --- Claude Code only ------------------------------------------------------
+# Claude Code uses the SAME cache layout under its own config dir, so only the
+# search root differs. Before this, every helper invocation in every SKILL.md
+# looked under CODEX_HOME alone and resolved to nothing on a Claude-only machine.
+cx="$tmp/cx-empty"; cl="$tmp/cl"
+mkdir -p "$(plugin_layout "$cl")/.shared/scripts" "$cx"
+assert_eq "$(plugin_layout "$cl")" "$(resolve_with "$cx" "$cl")" \
+    'a Claude Code plugin install resolves'
+
+# --- both harnesses installed ----------------------------------------------
+# The realistic case for someone running both. Either answer is correct -- same
+# plugin, same content -- so what is asserted is that it picks ONE that exists,
+# deterministically, rather than concatenating or failing.
+cx="$tmp/both-cx"; cl="$tmp/both-cl"
+mkdir -p "$(plugin_layout "$cx")/.shared/scripts" "$(plugin_layout "$cl")/.shared/scripts"
+picked=$(resolve_with "$cx" "$cl")
+assert_eq 'yes' "$([[ -d $picked/.shared/scripts ]] && echo yes || echo no)" \
+    'with both harnesses installed it picks a tree that exists'
+assert_eq "$picked" "$(resolve_with "$cx" "$cl")" 'and picks the same one every time'
 
 # --- several versions: the newest wins -------------------------------------
-h="$tmp/versions"
+cx="$tmp/versions"; cl="$tmp/versions-cl"
+mkdir -p "$cl"
 for v in 0.1.0 0.2.0; do
-    mkdir -p "$h/plugins/cache/agent-kit/agentkit/$v/skills/.shared/scripts"
+    mkdir -p "$(plugin_layout "$cx" "$v")/.shared/scripts"
 done
-assert_eq "$h/plugins/cache/agent-kit/agentkit/0.2.0/skills" "$(resolve_with "$h")" \
+assert_eq "$(plugin_layout "$cx" 0.2.0)" "$(resolve_with "$cx" "$cl")" \
     'the highest version wins when several are installed'
 
+# --- standalone layout (pre-plugin, still supported) -----------------------
+cx="$tmp/standalone"; cl="$tmp/standalone-cl"
+mkdir -p "$cx/skills/.shared/scripts" "$cl"
+assert_eq "$cx/skills" "$(resolve_with "$cx" "$cl")" 'a standalone install still resolves'
+
 # --- neither present: the documented default, not an error -----------------
-h="$tmp/empty"
-mkdir -p "$h"
-assert_eq "$h/skills" "$(resolve_with "$h")" 'with nothing installed it names the standard path'
+cx="$tmp/empty"; cl="$tmp/empty-cl"
+mkdir -p "$cx" "$cl"
+assert_eq "$cx/skills" "$(resolve_with "$cx" "$cl")" 'with nothing installed it names the standard path'
+
+# --- a missing harness home is not an error --------------------------------
+# Someone who has never run the other CLI has no directory for it at all. find
+# reports that on stderr and carries on; if that leaked, every invocation would
+# print a spurious error into the agent's transcript.
+cx="$tmp/one-only"
+mkdir -p "$(plugin_layout "$cx")/.shared/scripts"
+err=$(CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$tmp/does-not-exist" bash -c "
+    set -uo pipefail
+    $(cat "$tmp/resolver.sh")
+    printf '%s' \"\$agentkit\"
+" 2>&1 >/dev/null)
+assert_eq '' "$err" 'an absent harness home produces no error output'
 
 # --- zsh safety ------------------------------------------------------------
 # Codex runs shell commands through $SHELL -lc, which is zsh on the target
@@ -86,16 +117,16 @@ assert_eq "$h/skills" "$(resolve_with "$h")" 'with nothing installed it names th
 # a shell glob would abort the whole block on any machine with no plugin
 # installed. This is why the resolver uses find, which matches its own pattern.
 if command -v zsh > /dev/null 2>&1; then
-    h="$tmp/zsh-empty"
-    mkdir -p "$h"
-    out=$(CODEX_HOME="$h" zsh -c "
+    cx="$tmp/zsh-empty"; cl="$tmp/zsh-empty-cl"
+    mkdir -p "$cx" "$cl"
+    out=$(CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$cl" zsh -c "
         $(cat "$tmp/resolver.sh")
         printf '%s' \"\$agentkit\"
     " 2>&1)
     rc=$?
     assert_eq '0' "$rc" 'the resolver runs cleanly under zsh with nothing installed'
     assert_not_contains "$out" 'no matches found' 'and never trips zsh nomatch'
-    assert_eq "$h/skills" "$out" 'and resolves identically under zsh'
+    assert_eq "$cx/skills" "$out" 'and resolves identically under zsh'
 else
     printf '  skip zsh checks: zsh not installed\n'
 fi

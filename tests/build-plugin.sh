@@ -9,10 +9,10 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
 skills="$root/agentkit/skills"
 dest=${1:-$root/plugin}
-version=0.1.0
+version=$(jq -r .version < "$root/agentkit/.codex-plugin/plugin.json")
 
 rm -rf -- "$dest"
-mkdir -p "$dest/.claude-plugin" "$dest/agentkit/.codex-plugin"
+mkdir -p "$dest/.claude-plugin" "$dest/agentkit/skills"
 
 # Skills, minus the vendor tree and minus anything test-shaped. -a preserves the
 # executable bit, which codex needs.
@@ -27,44 +27,33 @@ rm -rf -- "$dest/agentkit/skills/.system"
 find "$dest/agentkit/skills" \( -name 'test-*' -o -name fixtures -o -name stub \) \
     -exec rm -rf -- {} + 2> /dev/null || true
 
-cat > "$dest/.claude-plugin/marketplace.json" <<EOF
-{
-  "name": "agent-kit",
-  "interface": { "displayName": "Agent Kit" },
-  "plugins": [
-    {
-      "name": "agentkit",
-      "source": { "source": "local", "path": "./agentkit" },
-      "policy": { "installation": "AVAILABLE" }
-    }
-  ]
-}
-EOF
+cp -a "$root/.claude-plugin/marketplace.json" "$dest/.claude-plugin/marketplace.json"
 
-# "hooks" is not optional: without it the manifest registers no hook file, the
-# harness never reads hooks.json, and the whole feature ships inert while every
-# file that implements it is present and well-formed.
-cat > "$dest/agentkit/.codex-plugin/plugin.json" <<EOF
-{
-  "name": "agentkit",
-  "version": "$version",
-  "description": "Board-aware parallel issue and PR review skills with a declared repository contract.",
-  "license": "MIT",
-  "skills": "./skills/",
-  "hooks": "./hooks.json"
-}
-EOF
+# Both manifests are COPIED, never regenerated. This script used to write its own
+# plugin.json, so the built artifact could disagree with the repository about the
+# hooks path or the version, and the tests would still pass -- they were checking
+# this script's opinion rather than what ships.
+#
+# One per harness is not optional: a plugin missing a manifest does not install
+# on that CLI at all, and the same tree is used from both.
+for manifest in .codex-plugin .claude-plugin; do
+    [[ -f $root/agentkit/$manifest/plugin.json ]] ||
+        { printf 'missing agentkit/%s/plugin.json\n' "$manifest" >&2; exit 1; }
+    mkdir -p "$dest/agentkit/$manifest"
+    cp -a "$root/agentkit/$manifest/plugin.json" "$dest/agentkit/$manifest/plugin.json"
+    jq -e . < "$dest/agentkit/$manifest/plugin.json" > /dev/null
+done
 
 # Hooks are plugin artifacts rather than skills, so they are authored under
 # plugin-src/ and assembled here. -a keeps the executable bit codex needs.
 # Only the two hook artifacts are copied: plugin-src/skills is a symlink onto the
 # skill tree that exists so the hooks resolve their helpers the same way in the
 # source tree as in the built plugin, and packaging it would ship a dangling one.
+# hooks.json now lives INSIDE hooks/, which is where both harnesses look for
+# it, so one copy carries the dispatchers and the manifest together.
 cp -a "$root/agentkit/hooks" "$dest/agentkit/hooks"
-cp -a "$root/agentkit/hooks.json" "$dest/agentkit/hooks.json"
 
 jq -e . < "$dest/.claude-plugin/marketplace.json" > /dev/null
-jq -e . < "$dest/agentkit/.codex-plugin/plugin.json" > /dev/null
 
 # Follow the manifest's own declaration to the file rather than checking the file
 # we just copied: an orphaned hooks.json is well-formed too, so validating it
