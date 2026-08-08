@@ -32,9 +32,15 @@ Trust the hooks when prompted. Start Codex **in any git repository**.
 Run these in order. The exact wording of prompt 2 matters — it must give the
 agent no way to answer except from its own context.
 
-**1. Produce a tool call.**
+**1. Produce a tool call.** It must be an order, not a request. Asked to
+"run `ls` in this directory", an agent answered *"Shall I list its contents?"*
+and waited — no command ran, so no context was ever sent, and step 2 then
+measured nothing.
 
-> run `ls` in this directory
+> Run this exact shell command now, without asking for confirmation: `echo probe-one`
+
+Before moving on, confirm a command actually ran: the agent must have shown you
+`probe-one` as command output. If it asked you anything, repeat the prompt.
 
 **2. The measurement.** Ask this as the *very next* prompt:
 
@@ -52,8 +58,9 @@ have actually read it, not to have half-seen it.
 
 **3. For P3 — make a worker run a shell command.**
 
-> Spawn a worker subagent. Have it run the shell command `echo probe-worker`
-> and report the output. It must use the shell, not a file-read tool.
+> Spawn a worker subagent now, without asking for confirmation. The worker must
+> run the shell command `echo probe-worker` and report its output. It must use
+> the shell, not a file-read tool.
 
 The shell part is not optional. `PreToolUse` fires on shell commands; a worker
 that only reads files never triggers it, and the run comes back inconclusive.

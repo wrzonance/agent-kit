@@ -36,6 +36,20 @@ q '.hook_event_name // "?"' | sort | uniq -c | sort -rn
 printf '\n== fields present, by event\n'
 q '(.hook_event_name // "?") + "  " + ([keys[]] | join(","))' | sort -u
 
+printf '\n== P1/P2: was the code word ever sent?\n'
+# A silent agent and a broken channel produce the SAME answer in the session --
+# "no code word" -- so the log has to separate them. The first live run said
+# exactly that, having never run a command at all.
+posts=$(q 'select(.hook_event_name == "PostToolUse") | "x"' | grep -c . || true)
+if ((posts == 0)); then
+    printf '   NOT SENT  no PostToolUse fired, so no code word was ever delivered.\n'
+    printf '             An agent answering "no code word" is CORRECT and proves\n'
+    printf '             nothing. Re-run step 1 and confirm a command actually ran.\n'
+else
+    printf '   SENT      %s PostToolUse event(s) carried the code word. The\n' "$posts"
+    printf '             agent answer in step 2 is now meaningful either way.\n'
+fi
+
 printf '\n== P3: is a worker distinguishable?\n'
 # agent_type is the field the binary lists among hook inputs. If PreToolUse
 # carries it inside a worker, Layer 2 can be suppressed there precisely rather
