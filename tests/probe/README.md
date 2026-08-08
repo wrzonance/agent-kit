@@ -58,9 +58,15 @@ have actually read it, not to have half-seen it.
 
 **3. For P3 — make a worker run a shell command.**
 
-> Spawn a worker subagent now, without asking for confirmation. The worker must
-> run the shell command `echo probe-worker` and report its output. It must use
-> the shell, not a file-read tool.
+> First list the tools available to you and check for a subagent or worker
+> dispatch capability. If one exists, use it: the worker must run the shell
+> command `echo probe-worker` and report its output, using the shell rather than
+> a file-read tool.
+
+The "check your tools first" clause is doing real work. Asked directly, agents
+have twice answered *"I can't spawn worker subagents in this environment"* and
+then found the capability immediately when prompted to look — so a flat refusal
+here is not evidence that workers are unavailable.
 
 The shell part is not optional. `PreToolUse` fires on shell commands; a worker
 that only reads files never triggers it, and the run comes back inconclusive.
