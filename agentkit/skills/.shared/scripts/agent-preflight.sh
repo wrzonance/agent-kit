@@ -575,6 +575,47 @@ probe_runners() {
 # reported rather than guessed -- a hardcoded trailer credits the wrong agent the
 # moment the same repository is worked from the other CLI.
 HARNESS_OTHER=claude
+# A repository that pins a runtime version fails EVERY command when the active
+# one does not match, and says so in the vocabulary of whichever tool noticed
+# first: "[ERR_PNPM_UNSUPPORTED_ENGINE]" names the package manager, not the
+# version manager, and not the shell that never activated it. Observed: a
+# rehearsal where install and lint both died until the pinned version was put on
+# PATH, on a machine that had it installed all along.
+probe_runtime_pin() {
+    local pin="" src="" active=""
+    if [[ -r $WORKTREE/.nvmrc ]]; then
+        pin=$(tr -d ' \t\nv' < "$WORKTREE/.nvmrc" 2> /dev/null | head -c 32)
+        src=.nvmrc
+    elif [[ -r $WORKTREE/.node-version ]]; then
+        pin=$(tr -d ' \t\nv' < "$WORKTREE/.node-version" 2> /dev/null | head -c 32)
+        src=.node-version
+    elif [[ -r $WORKTREE/package.json ]]; then
+        pin=$(jq -r '.engines.node // empty' "$WORKTREE/package.json" 2> /dev/null || true)
+        [[ -z $pin ]] || src=package.json
+    fi
+    [[ -n $pin ]] || return 0
+
+    active=$(bounded 5 node --version 2>/dev/null | tr -d 'v' || true)
+    if [[ -z $active ]]; then
+        emit "runtime-pin= node required=$pin source=$src active=none match=no note=\"node is not on PATH\""
+        return 0
+    fi
+
+    # Only the major is compared. A range like ">=24 <25" is not worth an
+    # expression evaluator here: reporting the two numbers lets the reader judge,
+    # and guessing wrong would be worse than saying nothing.
+    local want_major="${pin//[^0-9.]/}"
+    want_major=${want_major%%.*}
+    local have_major=${active%%.*}
+    local match=unknown
+    [[ -z $want_major ]] || { match=no; [[ $want_major != "$have_major" ]] || match=yes; }
+
+    local note=""
+    [[ $match != no ]] ||
+        note=" note=\"every command in this repository will fail an engine check until the pinned version is on PATH; activate it in the shell that launches the agent, since a version manager does not follow into a child process\""
+    emit "runtime-pin= node required=$pin source=$src active=$active match=$match$note"
+}
+
 probe_harness() {
     local line
     line=$("$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh" 2>/dev/null || true)
@@ -623,6 +664,7 @@ main() {
     probe_tls
     probe_caches
     probe_runners
+    probe_runtime_pin
     probe_harness
     probe_peer_cli "$HARNESS_OTHER"
     printf '%s\n' "${OUT_LINES[@]}"
