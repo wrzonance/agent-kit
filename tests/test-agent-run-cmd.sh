@@ -148,4 +148,35 @@ done
 assert_eq 'no' "$([[ -e $tmp/outside/EXECUTED ]] && echo yes || echo no)" \
     'and the out-of-repo executable never ran'
 
+# --- a named command may declare the directory it runs in ------------------
+# Values are argv run from the repository root, which suits one component and
+# breaks a monorepo. Asked to declare a dashboard test command, an agent
+# produced the only root-runnable form -- and it globbed into node_modules and
+# began running a DEPENDENCY's test suite. The command was right; the working
+# directory was not expressible.
+repo=$(make_repo)
+mkdir -p "$repo/dashboard"
+printf 'AGENT_CMD_DASH=pwd\nAGENT_RUNDIR_DASH=dashboard\nAGENT_CMD_ROOT=pwd\n' \
+    > "$repo/.agent/config.env"
+
+(cd "$repo" && "$run_sh" --cmd dash > /dev/null 2>&1)
+assert_eq "$repo/dashboard" "$(cat "$repo"/.agent/logs/*-dash.log)" \
+    'a declared rundir is where the command runs'
+
+(cd "$repo" && "$run_sh" --cmd root > /dev/null 2>&1)
+assert_contains "$(cat "$repo"/.agent/logs/*-root.log)" "$repo" \
+    'and without one it still runs at the repository root'
+
+# A rundir naming nothing is a declaration error, reported before the command
+# runs somewhere unintended rather than after.
+printf 'AGENT_CMD_GONE=pwd\nAGENT_RUNDIR_GONE=nope\n' > "$repo/.agent/config.env"
+out=$( (cd "$repo" && "$run_sh" --cmd gone 2>&1) || true)
+assert_contains "$out" 'missing directory' 'a rundir that does not exist is refused'
+
+# It cannot point outside the repository: the file is committed, and anyone who
+# can open a pull request can edit it.
+printf 'AGENT_CMD_ESC=pwd\nAGENT_RUNDIR_ESC=../../etc\n' > "$repo/.agent/config.env"
+out=$( (cd "$repo" && "$run_sh" --cmd esc 2>&1) || true)
+assert_not_contains "$out" '/etc' 'a rundir cannot escape the repository'
+
 finish

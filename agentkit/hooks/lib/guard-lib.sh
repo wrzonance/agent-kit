@@ -134,7 +134,8 @@ guard_should_deny() {
 guard_curriculum() {
     local skills=$1 entry rel desc out=''
     local -a entries=(
-        ".shared/scripts/triage-issues.sh|board status and cross-referenced PRs for many issues, one call"
+        ".shared/scripts/board-list.sh|what is on the Project board, grouped by column, one call"
+        ".shared/scripts/triage-issues.sh|open issues with board status and linked PRs, one call"
         "parallel-issues/scripts/move-github-project-item.sh|set an issue's board Status, one call"
         ".shared/scripts/agent-run.sh|run a command this repo declared, by name: --cmd <name>"
         ".shared/scripts/worktree-commit.sh|stage and commit without sweeping working state"

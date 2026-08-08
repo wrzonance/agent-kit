@@ -91,9 +91,18 @@ Three shapes come up:
 AGENT_CMD_VERIFY=tools/verify
 ```
 
-**One ecosystem, several commands.** Declare each by name. Values are argv and
-run from the repository root, so a command needing a different directory needs a
-wrapper, not a `cd`.
+**One ecosystem, several commands.** Declare each by name. Values are argv, so
+no shell syntax — no pipes, no `&&`, no `cd`. A command that must run inside a
+component says so with a companion key rather than by wrapping itself:
+
+```ini
+AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest run
+AGENT_RUNDIR_DASHBOARD_TEST=dashboard
+```
+
+Reach for that whenever the root-runnable form looks strained. Forcing a
+component command to run from the root is how one of these ended up globbing
+into `node_modules` and running a dependency's test suite.
 
 ```ini
 AGENT_CMD_TEST=<the repo's test command>
@@ -169,6 +178,7 @@ as a result: which guards became active, and what `Stop` will now enforce.
 | `AGENT_PROJECT_OWNER` / `AGENT_PROJECT_NUMBER` | the Project board |
 | `AGENT_STATUS_VOCAB` | the board's Status column names, in order |
 | `AGENT_CMD_<NAME>` | a command invoked as `agent-run.sh --cmd <name>` |
+| `AGENT_RUNDIR_<NAME>` | the directory that command runs in, relative to the repo root |
 | `AGENT_REPO_RUNNER` | a single dispatcher; skills call `runner <name>` instead |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees are created |
 | `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |

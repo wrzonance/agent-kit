@@ -41,6 +41,7 @@ Environment:
   AGENT_REPO_RUNNER   Path to a repository command runner to delegate to.
 
 Repository declarations (<git-toplevel>/.agent/config.env):
+  AGENT_RUNDIR_<NAME> Directory to run that command in, relative to the repo root.
   AGENT_CMD_<NAME>    What `--cmd <name>` runs here. Values are argv: split on
                       whitespace and exec'd directly, never through a shell. A
                       path-shaped first word must resolve inside the repository.
@@ -411,13 +412,26 @@ resolve_named_command() {
     # The name is also the natural log label, and it survives resolution.
     [[ -n $label ]] || label=$name
 
-    key="AGENT_CMD_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')"
+    local upper rundir
+    upper=$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')
+    key="AGENT_CMD_$upper"
     declared=$(repo_config_get "$key" || true)
     if [[ -n $declared ]]; then
         # Word-split deliberately: the value is argv, and repo-config.sh has
         # already refused every character a shell would interpret.
         read -r -a cmd <<< "$declared"
         cmd_declared=yes
+
+        # A monorepo command usually has to run IN its component. Without this
+        # the only root-runnable form of a dashboard test invocation globbed
+        # into node_modules and started running a dependency's test suite.
+        rundir=$(repo_config_get "AGENT_RUNDIR_$upper" || true)
+        if [[ -n $rundir ]]; then
+            [[ -n $git_top ]] || die "AGENT_RUNDIR_$upper is set but this is not a git repository"
+            [[ -d $git_top/$rundir ]] ||
+                die "AGENT_RUNDIR_$upper points at a missing directory: $rundir"
+            work_dir="$git_top/$rundir"
+        fi
         return 0
     fi
 

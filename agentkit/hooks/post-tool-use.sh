@@ -43,19 +43,24 @@ guard_resolve_roots "$cwd" "$command_line"
 ((${#roots[@]})) || emit_empty
 state_root=$(guard_state_root)
 
-# Board discovery. Both helpers are named: offered only a status-mover, an agent
-# that was trying to READ the board hand-rolled its own GraphQL query instead.
+# Board discovery. Every helper is named, and named ACCURATELY. Offered only a
+# status-mover, an agent hand-rolled GraphQL; offered a digest that reports open
+# issues, it correctly ignored the advice when the question was "what is on the
+# board" -- the board also holds Done and non-issue items -- and spent three
+# calls on the raw API instead. Advice that does not fit the question is worse
+# than none: it teaches that the advice is not worth reading.
 if guard_has_evidence .agent/board.json &&
     grep -qE '(^|[[:space:];&|])gh[[:space:]]+project[[:space:]]+(list|item-list|field-list)' \
         <<< "$command_line" &&
     guard_should_advise "$state_root" "$session" board-read; then
     # shellcheck disable=SC2016  # literal text, see teach()
     teach "This repository declares its board in .agent/board.json, so its ids do not
-need discovering. Next time:
+need discovering. Pick by the question you are answering:
 $RESOLVE_HINT
-  \"\$agentkit/.shared/scripts/triage-issues.sh\"          # to READ the board
-  \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"  # to move an item
-Each resolves the ids from that file in a single call, in place of about seven."
+  \"\$agentkit/.shared/scripts/board-list.sh\"     # what is ON the board, by column
+  \"\$agentkit/.shared/scripts/triage-issues.sh\"  # open issues + their board status and PRs
+  \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"  # set one item Status
+Each is a single call returning a compact digest, rather than raw JSON to parse."
 fi
 
 # Per-issue triage. Reading ONE issue body is legitimate and stays that way --

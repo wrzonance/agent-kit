@@ -46,6 +46,17 @@ readonly ACCEPTED_KEYS=(
 # shape that survives being lowercased into a filename and an argument.
 readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
 
+# The directory a named command runs in. Values are argv executed from the
+# repository root, which suits a single-component repo and breaks a monorepo:
+# asked to declare a dashboard test command, an agent produced a root-run
+# invocation that globbed into node_modules and started running a DEPENDENCY's
+# test suite. The command was correct; the working directory was not
+# expressible.
+#
+# A separate key rather than a prefix inside the value, so the command stays
+# plain argv with no syntax of its own to learn or mis-quote.
+readonly RUNDIR_KEY_PATTERN='^AGENT_RUNDIR_[A-Z][A-Z0-9_]*$'
+
 # Credential-shaped keys are refused loudly rather than ignored quietly, so a
 # misguided commit is visible instead of silently honored.
 readonly SECRET_PATTERN='(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PROXY|CA_BUNDLE|CERT|APIKEY|API_KEY|PRIVATE_KEY)$|^(GH|GITHUB)_'
@@ -94,6 +105,7 @@ is_accepted() {
     # here, and only a test that asked for the hole by name caught it.
     [[ ! $candidate =~ $SECRET_PATTERN ]] || return 1
     [[ ! $candidate =~ $CMD_KEY_PATTERN ]] || return 0
+    [[ ! $candidate =~ $RUNDIR_KEY_PATTERN ]] || return 0
     for key in "${ACCEPTED_KEYS[@]}"; do
         [[ $key == "$candidate" ]] && return 0
     done
@@ -208,6 +220,10 @@ validate() {
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         *)
+            if [[ $key =~ $RUNDIR_KEY_PATTERN ]]; then
+                safe_relpath "$value"
+                return
+            fi
             [[ $key =~ $CMD_KEY_PATTERN ]] || return 1
             safe_argv "$value"
             ;;
