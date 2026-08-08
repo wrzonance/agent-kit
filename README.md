@@ -15,7 +15,7 @@ Works with **Codex CLI** and **Claude Code** from the same directory.
 | **`parallel-issues`** skill | Triage a GitHub Projects board, split independent issues across worktrees, drive each to a draft PR |
 | **`review-remote-pr`** skill | Take a PR from draft to green: CI, review threads, an adversarial review, and the board move |
 | **`.shared/scripts`** | The procedural half — preflight, command runner, board mover, one-call triage, commit guard |
-| **Four hooks** | Inject the environment contract, and stop the agent spending calls it doesn't need to |
+| **Five hooks** | Inject the environment contract, and teach the cheaper command without blocking the work |
 
 The idea throughout: **a repository declares its own facts once**, and everything
 else reads them instead of guessing.
@@ -71,8 +71,8 @@ To do it by hand instead, run this once inside the repository:
 ```bash
 cd /path/to/your/repo
 
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" \
+    -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
 
 "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # look first
 "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
@@ -95,9 +95,9 @@ open a pull request can influence them.
 
 Then open `.agent/config.env` and uncomment the verify commands it found:
 
-```bash
+```ini
 AGENT_CMD_VERIFY=tools/verify
-AGENT_CMD_TEST=npm run test
+AGENT_CMD_TEST=<whatever this repo runs for tests>
 ```
 
 Skills refer to these **by name** (`agent-run.sh --cmd test`), so no skill ever
@@ -146,26 +146,31 @@ later. It fires **once per session**, says so, and the retry is allowed.
 tests/run-tests.sh
 ```
 
-Ten gates and eight suites — shellcheck on shipped and test scripts, `bash -n`,
+Eleven gates and eight suites — shellcheck on shipped and test scripts, `bash -n`,
 a bash 5.2 compatibility check, every fenced code block in the skill markdown,
-plus ~280 assertions. It is the only gate; if it is green, the tree is good.
+ecosystem- harness- and org-neutrality, plus ~350 assertions. It is the only
+gate; if it is green, the tree is good.
 
 ---
 
 ## Repository layout
 
 ```
-.claude-plugin/marketplace.json   read by Codex AND Claude Code
+.claude-plugin/marketplace.json   the marketplace, read by both harnesses
 agentkit/
+  .claude-plugin/plugin.json      one manifest per harness; both are required
   .codex-plugin/plugin.json
-  hooks.json                      declares the four events
-  hooks/                          the dispatchers
+  hooks/
+    hooks.json                    where both harnesses look for it
+    lib/guard-lib.sh              logic the hooks must agree on
+    *.sh                          the dispatchers
   skills/
+    onboard-repo/
     parallel-issues/
     review-remote-pr/
     .shared/scripts/              the procedural helpers
 tests/                            the harness; never shipped in the plugin
-docs/                             design specs and implementation plans
+docs/                             design specs
 ```
 
 ---
@@ -174,7 +179,7 @@ docs/                             design specs and implementation plans
 
 - `bash` 5.2+, `jq`, `git`, and the `gh` CLI with the `project` scope
   (`gh auth refresh -s project`)
-- Codex CLI 0.147+ for hooks; the skills work without them
+- Codex CLI 0.147+ or Claude Code for hooks; the skills work without them
 
 Targets Debian 13 (trixie). Shell commands run through the agent's login shell,
 which may be zsh, so every helper is a `bash` script rather than an inline
