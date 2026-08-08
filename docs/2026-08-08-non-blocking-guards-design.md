@@ -1,7 +1,7 @@
 # Non-blocking guards: teach deterministically, never stop the work
 
 **Date:** 2026-08-08
-**Status:** Draft — awaiting one runtime probe (§3) and approval
+**Status:** Approved — probe answered 2026-08-08 (§3), ready for implementation planning
 **Scope:** `agentkit/hooks/` (all four dispatchers), `.shared/scripts` messaging
 **Predecessors:** the plugin/hooks design (2026-08-07), the `.agent/` config design (2026-08-07)
 
@@ -50,7 +50,46 @@ autonomous work.**
 - Covering every `gh` shape. Guards fire only where a **deterministic helper is
   strictly better**. A denial that offers no alternative is worse than allowing.
 
-## 3. The probe that decides the architecture (Task 0)
+## 3. The probe that decided the architecture — ANSWERED
+
+**Measured 2026-08-08 with the rig in `tests/probe/`. Result: the guards do not
+need to block at all.**
+
+`PostToolUse` accepts `additionalContext`, and **it reaches the model**. Given a
+code word through that channel and then asked for it while forbidden from using
+any tool, the agent returned `QX7-MARMOSET-VELLUM-3391` exactly. The channel is
+the same one `SessionStart` uses, and it carries into the model's context, not
+merely onto the operator's screen.
+
+This makes **teach-after-the-fact** the primary mechanism (§4, Layer 1):
+
+- the command runs and returns real data — zero wasted calls
+- `PreToolUse` stays silent for every teachable rule, so it is *structurally
+  incapable* of halting work, which is the property autonomy needs
+- no per-session state, so the deny-loop hazard that dominated §7 largely
+  disappears
+
+`systemMessage`, the field originally proposed, was **not needed and not used**.
+The runtime distinguishes it from `additionalContext`; only the latter was shown
+to reach the model.
+
+`PreToolUse` payload fields, recorded rather than assumed:
+
+```
+cwd  hook_event_name  model  permission_mode  session_id
+tool_input  tool_name  tool_use_id  transcript_path  turn_id
+```
+
+Two findings worth carrying forward. **A null run reads exactly like a negative
+one**: the first attempt returned "no code word" because the agent had asked
+whether to proceed and run nothing at all, so no context was ever sent. The
+reader now reports whether the code word was delivered before any conclusion is
+drawn from the answer. And **subagent availability varies by session** — the
+session that answered this probe enumerated its tools and had no dispatch
+capability, while earlier sessions in the same repository spawned workers
+freely.
+
+### The original probe design (retained for the record)
 
 The `PreToolUse` output schema carries `systemMessage` as a top-level string,
 independent of `hookSpecificOutput.permissionDecision`. If a hook can emit
@@ -107,14 +146,25 @@ Constraints:
 - **Budget: ~12 lines.** It competes with the environment contract for the
   agent's attention. If it grows past that, it is a skill, not a contract.
 
-### Layer 1 — advisory (conditional on §3)
+### Layer 1 — teach after the fact (confirmed available, §3)
 
-`PreToolUse` allows the call and attaches the better command as a
-`systemMessage`. Applies to every read-shaped rule: board discovery, per-issue
-triage. Cost: zero calls. Cannot stop work, by construction.
+`PreToolUse` stays **silent** for every teachable rule. The command runs, returns
+its data, and `PostToolUse` then puts the better command into the model's context
+through `additionalContext`:
 
-Same once-per-rule-per-session budget as Layer 2 — an advisory repeated on every
-call is noise, and noise is how the environment contract stops being read.
+> You just ran `gh issue view 442`. For board state and cross-referenced pull
+> requests, `triage-issues.sh` returns all of it in one call.
+
+Applies to board discovery and per-issue triage. **Cost: zero wasted calls** —
+the agent pays for the call it wanted, gets the real answer, and knows better
+before the second one. It cannot halt a session or strand a worker, because
+nothing is ever refused.
+
+Budgeted once per rule class per session: an advisory repeated on every call is
+noise, and noise is how the environment contract stops being read. That budget
+is the only state Layer 1 needs, and a lost flag costs a duplicate sentence
+rather than a blocked command — so the §6 fail-open rule is not load-bearing
+here the way it is for Layer 2.
 
 ### Layer 2 — deny-once, with an explicit override
 
@@ -133,10 +183,16 @@ After the brief, the rule class is open for the remainder of the session.
 
 | Rule | Trigger | Better answer | Layer |
 |---|---|---|---|
-| Board discovery | `gh project list\|item-list\|field-list` | `triage-issues.sh` (read), `move-github-project-item.sh` (move) | 1, else 2 |
-| Per-issue triage | `gh api …/timeline`, `gh issue view` | `triage-issues.sh` | 1, else 2 |
-| Bare helper path | `<helper>.sh` in command position | the resolver | 2 — the command **cannot succeed**; advising alone would waste the call anyway |
-| Blanket staging | `git add -A\|--all\|.` | correct ignore rules (§4.1) | 1 if available, else nothing |
+| Board discovery | `gh project list\|item-list\|field-list` | `triage-issues.sh` (read), `move-github-project-item.sh` (move) | **1** |
+| Per-issue triage | `gh api …/timeline`, `gh issue view` | `triage-issues.sh` | **1** |
+| Bare helper path | `<helper>.sh` in command position | the resolver | **2** — the only remaining denial |
+| Blanket staging | `git add -A\|--all\|.` | correct ignore rules (§4.1) | **1** |
+
+Layer 2 survives for exactly one rule. A bare helper invocation cannot succeed —
+nothing in the tree is on `PATH` — so letting it run buys a guaranteed
+"command not found" and teaches the same lesson one call later. Denying is
+cheaper *and* the failure is self-evident, so the risk of the agent giving up is
+low. Everything else teaches after the fact.
 
 `gh issue view` moves to advisory or deny-once either way, which resolves the
 §1 contradiction: reading an issue body becomes possible again.
@@ -280,8 +336,14 @@ absolute path, and it silently changes a tool the human also uses.
 
 ## 10. Open questions
 
-- **P1/P2 (§3)** — does `systemMessage` run the call, and does it reach the model?
-- **P3 (§5)** — does `PreToolUse` carry `agent_id` inside a subagent?
+- **P1/P2 — ANSWERED (§3).** `PostToolUse` `additionalContext` reaches the model.
+  Teach-after-the-fact is the primary mechanism; `systemMessage` was not needed.
+- **P3 — deferred, and now nearly moot.** The probe session had no dispatch
+  capability at all, so no worker ran and nothing was measured. It matters far
+  less than when it was written: with Layer 1 refusing nothing, the only denial
+  a worker can meet is the bare-helper rule, and that command was going to fail
+  regardless. Re-measure opportunistically in a session that does expose
+  workers; do not block implementation on it.
 
 **Resolved 2026-08-08** — the staging guard will not deny. Investigating it
 showed the protection was never really the hook's to give: bootstrap only

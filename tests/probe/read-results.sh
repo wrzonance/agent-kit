@@ -67,9 +67,18 @@ total=$(q 'select(.hook_event_name == "PreToolUse") | "x"' | grep -c . || true)
 printf -- '-- PreToolUse payloads carrying agent_type: %s of %s\n' "$with" "$total"
 
 printf '\n== verdict\n'
-if ((total == 0)); then
-    printf '   INCONCLUSIVE  no PreToolUse recorded -- the worker must run a SHELL\n'
-    printf '                 command, not just read a file, or the hook never fires.\n'
+# SubagentStart is the discriminator. Without it, "PreToolUse carried no
+# agent_type" says nothing about workers -- it just describes main-session
+# calls. Reporting that as P3 NO would be a fabricated finding, which this
+# reader produced once before the check was added.
+subs=$(q 'select(.hook_event_name == "SubagentStart") | "x"' | grep -c . || true)
+if ((subs == 0)); then
+    printf '   INCONCLUSIVE  no SubagentStart recorded, so no worker ever ran.\n'
+    printf '                 Every PreToolUse here is a main-session call and says\n'
+    printf '                 nothing either way about workers.\n'
+elif ((total == 0)); then
+    printf '   INCONCLUSIVE  a worker started but ran no SHELL command, so\n'
+    printf '                 PreToolUse never fired inside it.\n'
 elif ((with > 0)); then
     printf '   P3 YES  PreToolUse carries agent_type; a worker can be identified.\n'
 else
