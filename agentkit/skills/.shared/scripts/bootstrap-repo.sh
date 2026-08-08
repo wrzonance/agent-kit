@@ -84,13 +84,12 @@ done
 #
 # The authoritative question is whether a call actually succeeds, so ask that.
 if ! gh api user --jq .login > /dev/null 2>&1; then
-    gh_detail=$(gh auth status 2>&1 | tr '\n' ' ' | cut -c1-200 || true)
-    die_blocked "gh cannot reach the forge FROM THIS PROCESS: ${gh_detail}
+    gh_state=$("$(dirname -- "${BASH_SOURCE[0]}")/gh-auth-state.sh" 2>/dev/null || printf 'state=unknown')
+    die_blocked "gh cannot reach the forge FROM THIS PROCESS -- $gh_state
+
 A token in the OS keyring is reachable from a login shell and may not be from
 wherever these commands run, so \"it works in my terminal\" and this failure can
-both be true. To hand the token over directly, from a shell where it works:
-  GH_TOKEN=\$(gh auth token)
-Nothing was written."
+both be true. Nothing was written."
 fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")

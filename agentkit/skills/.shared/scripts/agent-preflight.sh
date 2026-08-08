@@ -31,6 +31,7 @@ ARG_NO_WRITE=0
 WORKTREE=""
 IN_REPO=0
 OUT_LINES=()
+GH_AUTH_STATE=""
 
 # Known system CA bundle / cert dir locations (Debian, RHEL, SUSE, Alpine/BSD).
 SYSTEM_BUNDLES=(
@@ -362,9 +363,13 @@ probe_gh() {
         fi
         why=" token-source=$src env-token=$envtok config-dir=${GH_CONFIG_DIR:-$HOME/.config/gh}"
         why+=" detail=\"$(printf '%s' "$status_out" | tr '\n' ';' | tr -d '"' | cut -c1-160)\""
+        # The named cause and its fix, on their own line, so neither the agent
+        # nor the operator has to infer which failure this is.
+        GH_AUTH_STATE=$("$(dirname -- "${BASH_SOURCE[0]}")/gh-auth-state.sh" 2>/dev/null || true)
     fi
 
     emit "gh= authed=$authed scopes=$scopes api=$api${account:+ account=$account} project-scope=$project$why"
+    [[ -z ${GH_AUTH_STATE:-} ]] || emit "gh-auth= $GH_AUTH_STATE"
 }
 
 # The agent sandbox is the single biggest source of "mystery" command failures:
