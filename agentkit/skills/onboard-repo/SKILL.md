@@ -85,6 +85,14 @@ CI workflow steps, a pre-commit hook, a `Makefile`, `package.json` scripts, a
 
 Three shapes come up:
 
+**Declare `SETUP` if a fresh checkout needs one.** A worktree starts with none
+of the repository's installed dependencies, so without it the first verification
+in every parallel worktree fails for a reason unrelated to the change:
+
+```ini
+AGENT_CMD_SETUP=<the locked, offline-capable install command>
+```
+
 **`VERIFY` is the per-turn gate — make it fast.** `Stop` runs it at the end of
 every turn, so its cost is paid on a one-line comment as surely as on a
 refactor. A repository that declared only a full suite charged five minutes for
@@ -190,6 +198,7 @@ as a result: which guards became active, and what `Stop` will now enforce.
 | `AGENT_STATUS_VOCAB` | the board's Status column names, in order |
 | `AGENT_CMD_<NAME>` | a command invoked as `agent-run.sh --cmd <name>` |
 | `AGENT_RUNDIR_<NAME>` | the directory that command runs in, relative to the repo root |
+| `AGENT_CMD_SETUP` | how a FRESH worktree installs dependencies; parallel work runs it before the first verify |
 | `AGENT_REPO_RUNNER` | a single dispatcher; skills call `runner <name>` instead |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees are created |
 | `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |

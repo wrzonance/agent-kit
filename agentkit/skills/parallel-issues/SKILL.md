@@ -378,11 +378,17 @@ git worktree add "$worktree" -b "$branch" "origin/$base" || {
         exit 1
     }
     "$shared_scripts/agent-preflight.sh" --worktree "$worktree" 2>/dev/null
-    dependency_bootstrap=() # Set to the documented locked bootstrap command, if any.
-    if ((${#dependency_bootstrap[@]})); then
-        "$shared_scripts/agent-run.sh" --dir "$worktree" --label bootstrap \
-            -- "${dependency_bootstrap[@]}" || {
-            printf 'Dependency bootstrap failed for %s.\n' "$branch" >&2
+    # A fresh worktree has NONE of the repository's installed dependencies, so
+    # the first verification fails for a reason that has nothing to do with the
+    # change -- and the Stop gate then holds the worker there, unable to finish,
+    # with nobody watching. Observed: a lint gate that passes at the repository
+    # root dies in a new worktree before linting anything.
+    #
+    # The repository declares what to run; this does not guess. No declaration
+    # means nothing to do, which is the right answer for a repo that needs none.
+    if [[ -n $("$shared_scripts/repo-config.sh" --get AGENT_CMD_SETUP 2>/dev/null) ]]; then
+        "$shared_scripts/agent-run.sh" --dir "$worktree" --cmd setup || {
+            printf 'Setup failed in %s; every verify there will fail for that reason.\n' "$worktree" >&2
             exit 1
         }
     fi
@@ -763,9 +769,10 @@ string is how SHAs silently vanish from replies).
 - If the PR is CONFLICTING vs main: integrate with `git merge origin/main`
   and a plain push. NEVER rebase already-pushed history — force-push is
   permission-gated, a teammate message cannot clear it, and the orchestrator
-  will refuse to launder it. Already rebased by mistake? `git branch tmp/keep
-  && git reset --hard origin/feat/issue-NNN && git merge origin/main`,
-  cherry-pick your new fix commits from tmp/keep, plain push, delete tmp/keep.
+  will refuse to launder it. Already rebased by mistake? STOP and report the
+  branch as needing a human. The recovery discards commits, so the guard
+  refuses it every time and the refusal does not lift on a retry -- that is
+  deliberate. Do not go looking for a spelling that gets past it.
 
 ## Your Workflow (DRAFT PHASE ONLY — the PR stays a draft)
 1. Invoke the review-remote-pr skill with PR number NNN

@@ -736,7 +736,7 @@ while IFS=$'\t' read -r event command; do
             'and SessionStart finds its helper beside it in the built plugin'
     fi
 done < <(jq -r '.hooks | to_entries[] | .key as $e | .value[].hooks[] | [$e, .command] | @tsv' \
-    < "$plugin_root/hooks.json")
+    < "$plugin_root/hooks/hooks.json")
 
 # --- regressions from the first full interactive run -----------------------
 # Each of these cost a real agent real turns. None were catchable by a unit test
