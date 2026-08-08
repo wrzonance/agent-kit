@@ -39,6 +39,19 @@ Then declare this repository verify commands in .agent/config.env as
 AGENT_CMD_<NAME>=<command>. Skills invoke them by name, so none of them assume
 a toolchain. Consult the agentkit README for the full contract.'
 
+# Shown when the session did not start inside a repository at all. Work can
+# still be directed at one from here, and the guards do follow a command that
+# names its target -- but the environment contract above describes THIS
+# directory, and the end-of-turn verification check has no tree to watch. Say so
+# rather than let a session run on facts about the wrong directory.
+readonly NO_REPO_HINT='This session did not start inside a git repository, so the contract above
+describes the launch directory and not any repository you may be asked to work
+on. Repository-scoped guards follow a command that names its target, in the
+form "cd <repo> && ..." or "git -C <repo> ...", but the end-of-turn
+verification check has no working tree to watch and stays inert.
+
+If the work targets a repository, prefer starting the session inside it.'
+
 # The built plugin lays hooks and skills out as siblings under the plugin root,
 # so the helper is always ../skills/ from here. Located by parameter expansion
 # rather than readlink/dirname: a hook must still work on a PATH that resolves
@@ -81,11 +94,18 @@ if [[ -n $contract ]]; then
 $contract"
 fi
 
-if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
+notice=''
+if [[ $in_repo -eq 0 ]]; then
+    notice=$NO_REPO_HINT
+elif [[ ! -r $root/.agent/config.env ]]; then
+    notice=$ONBOARD_HINT
+fi
+
+if [[ -n $notice ]]; then
     if [[ -n $context ]]; then
         context+=$'\n\n'
     fi
-    context+=$ONBOARD_HINT
+    context+=$notice
 fi
 
 [[ -n $context ]] || emit_empty

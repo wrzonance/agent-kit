@@ -47,8 +47,45 @@ command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null ||
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 [[ -n $command_line ]] || allow
 
-root=''
-[[ -n $cwd && -d $cwd ]] && root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || true)
+# Every repository this command might act on -- not just the one the session
+# started in. An agent launched in $HOME and told "commit my work in <repo>"
+# reaches it with `cd <repo> && ...` or `git -C <repo> ...`, and anchoring
+# evidence to the session cwd alone made the board and triage guards inert for
+# exactly that session, with no sign they had switched off.
+roots=()
+add_root() {
+    local resolved existing
+    resolved=$(git -C "$1" rev-parse --show-toplevel 2> /dev/null) || return 0
+    for existing in ${roots[@]+"${roots[@]}"}; do
+        [[ $existing != "$resolved" ]] || return 0
+    done
+    roots+=("$resolved")
+}
+
+if [[ -n $cwd && -d $cwd ]]; then
+    add_root "$cwd"
+fi
+
+# Paths the command itself names. Read as text and never evaluated: this runs on
+# an untrusted command line, so a substitution here would execute it.
+while IFS= read -r candidate; do
+    [[ -n $candidate ]] || continue
+    candidate=${candidate/#\~/$HOME}
+    if [[ -d $candidate ]]; then
+        add_root "$candidate"
+    fi
+done < <(grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+[^[:space:];&|]+|-C[[:space:]]+[^[:space:];&|]+' \
+    <<< "$command_line" 2> /dev/null | sed -E 's/.*(cd|-C)[[:space:]]+//' || true)
+
+# True when ANY candidate repository carries the file. A guard keyed to a
+# repository's own declaration should fire on the repository being touched.
+has_evidence() {
+    local r
+    for r in ${roots[@]+"${roots[@]}"}; do
+        [[ ! -r "$r/$1" ]] || return 0
+    done
+    return 1
+}
 
 # 1. A bare helper invocation. Nothing here is on PATH, so this is a guaranteed
 #    "command not found" the agent then recovers from by guessing a location.
@@ -74,29 +111,47 @@ $RESOLVE_HINT
 fi
 
 # 2. Blanket staging sweeps up .agent/, which is untracked working state.
+#
+#    Global git options are stripped before matching, because they sit BETWEEN
+#    `git` and `add` and so defeated a `git[[:space:]]+add` pattern outright:
+#    `git -C . add -A` and `git --no-pager add -A` both walked straight through.
+#    Stripping a bounded list of known globals is deliberate -- a pattern loose
+#    enough to skip arbitrary text would also match `git log --grep "add -A"`.
+staging_line=$(sed -E '
+    s/[[:space:]]+-(C|c)[[:space:]]+[^[:space:]]+//g
+    s/[[:space:]]+--(git-dir|work-tree|namespace|exec-path)=[^[:space:]]+//g
+    s/[[:space:]]+--(no-pager|paginate|bare|no-replace-objects|literal-pathspecs)([[:space:]]|$)/ /g
+    s/[[:space:]]+-P([[:space:]]|$)/ /g
+' <<< "$command_line" 2> /dev/null || printf '%s' "$command_line")
+
 if grep -qE '(^|[[:space:];&|])git[[:space:]]+add[[:space:]]+(-A|--all|\.)([[:space:]]|$)' \
-    <<< "$command_line"; then
+    <<< "$staging_line"; then
     # shellcheck disable=SC2016  # literal text, see deny()
     deny "git add -A stages .agent/ working state. Stage explicit paths, or use
 $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/worktree-commit.sh\""
 fi
 
-[[ -n $root ]] || allow
+((${#roots[@]})) || allow
 
 # 3. Board discovery when the board is already cached: seven calls become one.
-if [[ -r $root/.agent/board.json ]] &&
+#
+#    Both helpers are named. Naming only the mover answered a question nobody
+#    asked: a live agent denied here was trying to READ the board, found only a
+#    move-status tool on offer, and hand-rolled its own GraphQL query instead.
+if has_evidence .agent/board.json &&
     grep -qE '(^|[[:space:];&|])gh[[:space:]]+project[[:space:]]+(list|item-list|field-list)' \
         <<< "$command_line"; then
     # shellcheck disable=SC2016  # literal text, see deny()
     deny "This repository declares its board in .agent/board.json. Use
 $RESOLVE_HINT
-  \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"
-which resolves the ids from that file in a single call."
+  \"\$agentkit/.shared/scripts/triage-issues.sh\"          # to READ the board
+  \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"  # to move an item
+Both resolve the ids from that file in a single call."
 fi
 
 # 4. Per-issue triage calls that one GraphQL query already covers.
-if [[ -r $root/.agent/config.env ]] &&
+if has_evidence .agent/config.env &&
     grep -qE '(^|[[:space:];&|])gh[[:space:]]+(api[[:space:]]+[^[:space:]]*/timeline|issue[[:space:]]+view)' \
         <<< "$command_line"; then
     # shellcheck disable=SC2016  # literal text, see deny()

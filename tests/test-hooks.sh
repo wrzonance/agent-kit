@@ -86,10 +86,15 @@ assert_contains "$out" 'bootstrap-repo.sh' 'no contract still yields the notice'
 assert_not_contains "$out" 'Environment contract' 'and claims no contract it does not have'
 
 # A plain directory is not a repository; bootstrapping cannot succeed there.
+# It gets the OTHER notice instead -- silently degrading is the thing to avoid,
+# since the contract then describes a directory the work may never touch.
 plain="$tmp/not-a-repo"
 mkdir -p "$plain"
-out=$(session_input "$plain" | "$hooks/session-start.sh" 2>/dev/null)
-assert_not_contains "$out" 'bootstrap-repo.sh' 'a non-repository is never nagged'
+out=$(session_input "$plain" | PATH="$stub_path" "$hooks/session-start.sh" 2>/dev/null)
+assert_not_contains "$out" 'bootstrap-repo.sh' 'a non-repository is never told to bootstrap'
+ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
+assert_contains "$ctx" 'did not start inside a git repository' 'it is told where it is'
+assert_contains "$ctx" 'stays inert' 'and which guard is not watching'
 
 # --- fails open when nothing on the PATH resolves -------------------------
 # "No usable environment" means no jq, no git, no coreutils -- not "no bash".
@@ -175,6 +180,20 @@ out=$(pre_input "$repo" 'git add -A' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'denies git add -A'
 assert_contains "$out" 'worktree-commit.sh' 'and names the correct helper'
 
+# Global git options sit BETWEEN `git` and `add`, so a `git[[:space:]]+add`
+# pattern misses every one of them. All four of these walked through untouched.
+for sweep in 'git -C . add -A' 'git -C /some/repo add --all' \
+    'git --no-pager add -A' 'git -c core.pager=cat add .' \
+    'git --git-dir=/r/.git add -A'; do
+    out=$(pre_input "$repo" "$sweep" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "denies through a global option: $sweep"
+done
+
+# Stripping globals must not become "skip arbitrary text": a search whose QUERY
+# happens to contain the pattern is not a staging sweep.
+out=$(pre_input "$repo" 'git log --grep "add -A"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a search mentioning the pattern is not a sweep'
+
 out=$(pre_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'denies board discovery when board.json exists'
 assert_contains "$out" 'move-github-project-item.sh' 'and names the one-call helper'
@@ -220,6 +239,31 @@ out=$(pre_input "$repo" 'ls -la' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_not_contains "$out" 'permissionDecision' 'the allow path emits no permissionDecision at all'
 assert_not_contains "$out" 'allow' 'and never the literal the runtime rejects'
 assert_eq '{}' "$(jq -c . <<< "$out")" 'the allow path is an empty object'
+
+# --- guards follow the repository the COMMAND names ------------------------
+# Launching outside the target repo is an ordinary mistake ("I meant to start in
+# the project"). Anchoring evidence to the session cwd alone made the board and
+# triage guards inert for that whole session while the text-only rules kept
+# firing -- partial protection that looks identical to full protection.
+outside="$tmp/outside"
+mkdir -p "$outside"
+for cmd in "cd $repo && gh project item-list 7 --owner x" \
+    "gh issue view 442; cd $repo" \
+    "git -C $repo add -A"; do
+    out=$(pre_input "$outside" "$cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "follows the named repository: $cmd"
+done
+
+# Naming no repository from outside one still allows: no evidence, no denial.
+out=$(pre_input "$outside" 'gh project item-list 7 --owner x' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'outside a repo, naming none, still allows'
+
+# A read of the board must be offered a way to READ it. Denied here with only a
+# status-mover on offer, a live agent hand-rolled its own GraphQL query.
+out=$(pre_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$out" 'triage-issues.sh' 'the board deny offers a way to read the board'
+assert_contains "$out" 'move-github-project-item.sh' 'as well as a way to move an item'
 
 # --- no evidence, no denial ------------------------------------------------
 bare=$(make_repo)
