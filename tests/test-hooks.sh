@@ -139,11 +139,29 @@ out=$(pre_input "$repo" 'gh api repos/o/r/issues/5/timeline --paginate' \
 assert_eq 'deny' "$(decision "$out")" 'denies the per-issue timeline call'
 assert_contains "$out" 'triage-issues.sh' 'and names the single-query helper'
 
-# shellcheck disable=SC2016  # the literal IS the fixture: this asserts that a
-# correctly-resolved helper invocation is allowed, so it must stay unexpanded.
+# Command position is what makes a helper mention wrong. An interpreter prefix
+# still counts -- `bash agent-run.sh` is the same guaranteed failure.
+for bad in 'agent-run.sh --cmd test' '  agent-run.sh' 'cd /tmp; agent-run.sh' \
+    'git status && agent-run.sh --cmd verify' 'bash agent-run.sh' \
+    'triage-issues.sh --state open'; do
+    out=$(pre_input "$repo" "$bad" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "denies in command position: $bad"
+done
+
+# ARGUMENT position is how an agent FINDS the helper. Denying it left a live
+# session unable to look for the script the deny message told it to look for --
+# it spent two calls, then abandoned the shell for the search tool. Every shape
+# below appeared in, or directly caused, that transcript.
+# shellcheck disable=SC2016  # the literals ARE the fixtures: these assert which
+# text is allowed, so they must stay unexpanded.
 for ok in 'ls -la' 'git status' 'gh pr view 5' 'echo hi' \
     '"$codex_home/skills/.shared/scripts/agent-run.sh" --cmd test' \
-    'git add src/main.c'; do
+    'git add src/main.c' \
+    'find "$HOME/.codex/plugins/cache" -name agent-run.sh' \
+    'command -v agent-run.sh' \
+    'grep -rn agent-run.sh docs/' \
+    'ls -l /some/path/skills/.shared/scripts/agent-run.sh' \
+    'test -x "$agentkit/.shared/scripts/triage-issues.sh" && echo yes'; do
     out=$(pre_input "$repo" "$ok" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "allows: $ok"
 done

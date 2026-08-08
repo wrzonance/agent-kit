@@ -52,7 +52,20 @@ root=''
 
 # 1. A bare helper invocation. Nothing here is on PATH, so this is a guaranteed
 #    "command not found" the agent then recovers from by guessing a location.
-if grep -qE "(^|[[:space:];&|])($HELPERS)\.sh([[:space:]]|$)" <<< "$command_line"; then
+#
+#    Matched in COMMAND POSITION only -- start of line or after a separator,
+#    allowing an interpreter prefix, because `bash agent-run.sh` fails the same
+#    way. Any whitespace used to qualify, which denied every ARGUMENT-position
+#    mention too: `find ... -name agent-run.sh`, `command -v agent-run.sh`,
+#    `grep -rn agent-run.sh` -- the very commands that LOCATE the helper, and the
+#    shape this rule's own message invites. A live session burned two calls on it
+#    and then abandoned the shell entirely.
+#
+#    This deliberately under-blocks (`x=$(agent-run.sh)` slips through). A false
+#    deny costs a call and teaches the wrong lesson; a missed deny costs one
+#    "command not found" that the agent corrects unaided.
+if grep -qE "(^|[;&|])[[:space:]]*((sudo|bash|sh|env)[[:space:]]+)*($HELPERS)\.sh([[:space:]]|$)" \
+    <<< "$command_line"; then
     # shellcheck disable=SC2016  # literal text, see deny()
     deny "Helper scripts are not on PATH, and the tree MOVES when installed as a
 plugin. Resolve it first:
