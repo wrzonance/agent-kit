@@ -77,17 +77,20 @@ fi
 for tool in gh jq dirname readlink sha256sum date mktemp; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
 done
-# "gh is not authenticated" on a machine where the operator just ran gh
-# successfully reads as broken tooling, and the next move is a guess. A token in
-# the OS keyring is reachable from a login shell and may not be from wherever an
-# agent's commands actually run -- so "it works in my terminal" and this failure
-# are both true at once. Say which one this is.
-if ! gh auth status > /dev/null 2>&1; then
-    gh_detail=$(gh auth status 2>&1 | tr '\n' ' ' | cut -c1-200)
-    die_blocked "gh is not authenticated IN THIS PROCESS: ${gh_detail}
-  gh auth status              # what this process sees, which is what matters
-  GH_TOKEN=\$(gh auth token)   # run in a shell where it works, to pass the token in
-The session contract's gh= line records token-source= and env-token= for this."
+# `gh auth status` exits NON-ZERO when any configured entry fails, even while a
+# working account sits in the same output -- a stale token in the environment
+# alongside a good one in the keyring reports both at once. Gating on it refused
+# to onboard a machine that was perfectly able to reach the forge.
+#
+# The authoritative question is whether a call actually succeeds, so ask that.
+if ! gh api user --jq .login > /dev/null 2>&1; then
+    gh_detail=$(gh auth status 2>&1 | tr '\n' ' ' | cut -c1-200 || true)
+    die_blocked "gh cannot reach the forge FROM THIS PROCESS: ${gh_detail}
+A token in the OS keyring is reachable from a login shell and may not be from
+wherever these commands run, so \"it works in my terminal\" and this failure can
+both be true. To hand the token over directly, from a shell where it works:
+  GH_TOKEN=\$(gh auth token)
+Nothing was written."
 fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")

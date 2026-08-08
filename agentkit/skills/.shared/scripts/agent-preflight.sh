@@ -322,7 +322,11 @@ probe_gh() {
         emit 'gh= authed=no scopes=none api=unreachable note="gh CLI not installed"'
         return 0
     fi
-    if status_out="$(bounded 20 gh auth status 2>&1)"; then authed="yes"; fi
+    # Captured for scopes and diagnostics, NOT as the verdict: gh auth status
+    # exits non-zero when any configured entry fails, even while a working
+    # account appears in the same output. Whether a call succeeds is the only
+    # question that predicts whether the next command works.
+    status_out="$(bounded 20 gh auth status 2>&1 || true)"
     scopes="$(printf '%s\n' "$status_out" | grep -i -m1 'token scopes' || true)"
     scopes="${scopes#*:}"
     scopes="${scopes//\'/}"
@@ -333,7 +337,8 @@ probe_gh() {
         project="no"
         if [[ ",$scopes," == *",project,"* || ",$scopes," == *",read:project,"* ]]; then project="yes"; fi
     fi
-    if [[ "$authed" == "yes" ]] && account="$(bounded 20 gh api user --jq .login 2>/dev/null)"; then
+    if account="$(bounded 20 gh api user --jq .login 2>/dev/null)"; then
+        authed="yes"
         api="reachable"
     fi
     account="${account%%$'\n'*}" # one key per line is the block's invariant
