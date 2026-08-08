@@ -46,6 +46,51 @@ assert_hook_output "$out" session-start 'SessionStart emits schema-valid JSON'
 assert_contains "$out" 'example-org/example-repo' 'and carries the contract'
 assert_contains "$out" 'SessionStart' 'tagged with its event name'
 
+# --- an un-onboarded repository is told how to onboard --------------------
+# The failure mode this covers is SILENCE: with no .agent/config.env every
+# evidence-gated guard correctly no-ops, which is indistinguishable from the
+# tooling being broken. A live session ran ten turns past it.
+repo=$(make_repo)
+printf 'repo=example-org/example-repo\n' > "$repo/.agent/env-contract.txt"
+out=$(session_input "$repo" | "$hooks/session-start.sh" 2>/dev/null)
+assert_hook_output "$out" session-start 'the onboarding notice is schema-valid'
+ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
+assert_contains "$ctx" 'not onboarded' 'an un-onboarded repo is told so'
+assert_contains "$ctx" 'bootstrap-repo.sh' 'and which script to run'
+assert_contains "$ctx" '.agent/config.env' 'and which files must exist'
+assert_contains "$ctx" '.agent/board.json' 'including the board cache'
+assert_contains "$ctx" 'README' 'and where to read more'
+assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
+assert_contains "$ctx" 'plugins/cache' 'and it teaches the resolver, not a fixed path'
+
+# Onboarded repositories must never see it again.
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
+out=$(session_input "$repo" | "$hooks/session-start.sh" 2>/dev/null)
+assert_not_contains "$out" 'not onboarded' 'an onboarded repo is not nagged'
+
+# No contract AND no config is still worth speaking up for -- it is precisely
+# the un-onboarded case, and emitting nothing is how it stays invisible. Built
+# with a PATH that has git but no gh, so the probe genuinely fails rather than
+# being stubbed into failing.
+nogh="$tmp/nogh"
+mkdir -p "$nogh"
+# bash and env included deliberately: `#!/usr/bin/env bash` resolves the
+# interpreter ON this PATH, so omitting them makes the hook exit 127 before it
+# runs and the assertion passes for the wrong reason.
+for b in bash env git jq cat find sort tail sed grep mktemp touch; do
+    if p=$(command -v "$b" 2> /dev/null); then ln -sf "$p" "$nogh/$b"; fi
+done
+bare_repo=$(make_repo)
+out=$(session_input "$bare_repo" | env PATH="$nogh" "$hooks/session-start.sh" 2>/dev/null)
+assert_contains "$out" 'bootstrap-repo.sh' 'no contract still yields the notice'
+assert_not_contains "$out" 'Environment contract' 'and claims no contract it does not have'
+
+# A plain directory is not a repository; bootstrapping cannot succeed there.
+plain="$tmp/not-a-repo"
+mkdir -p "$plain"
+out=$(session_input "$plain" | "$hooks/session-start.sh" 2>/dev/null)
+assert_not_contains "$out" 'bootstrap-repo.sh' 'a non-repository is never nagged'
+
 # --- fails open when nothing on the PATH resolves -------------------------
 # "No usable environment" means no jq, no git, no coreutils -- not "no bash".
 # `#!/usr/bin/env bash` resolves bash ON the PATH, so emptying the PATH makes env

@@ -11,6 +11,34 @@ trap 'emit_empty' ERR
 
 readonly CONTRACT_MAX_AGE_MINUTES=30
 
+# Shown when a repository has no .agent/config.env. Without it every
+# evidence-gated guard stays inert and the skills fall back to probing, which
+# looks identical to the tooling being broken -- the failure mode is silence, so
+# the fix has to announce itself.
+#
+# Single-quoted deliberately: every $ below is literal text for the agent to read
+# and retype. Expanding it here would bake this machine's paths into the advice.
+# shellcheck disable=SC2016
+readonly ONBOARD_HINT='This repository is not onboarded -- .agent/config.env is absent, so the board,
+triage, and commit guards have no facts to act on and stay inert.
+
+To onboard it, from the repository root:
+
+  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 \
+    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
+  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+  "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # inspect
+  "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
+
+It writes two files the repository is expected to commit:
+  .agent/config.env   repo slug, trunk branch, board number, Status vocabulary
+  .agent/board.json   board node ids, so a status move costs one call not seven
+and one it should not: add .agent/cache/ to .gitignore.
+
+Then declare this repository verify commands in .agent/config.env as
+AGENT_CMD_<NAME>=<command>. Skills invoke them by name, so none of them assume
+a toolchain. Consult the agentkit README for the full contract.'
+
 # The built plugin lays hooks and skills out as siblings under the plugin root,
 # so the helper is always ../skills/ from here. Located by parameter expansion
 # rather than readlink/dirname: a hook must still work on a PATH that resolves
@@ -23,7 +51,11 @@ cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 source_kind=$(jq -r '.source // "startup"' <<< "$input" 2> /dev/null || true)
 [[ -n $cwd && -d $cwd ]] || emit_empty
 
-root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || printf '%s' "$cwd")
+# Whether this IS a repository is tracked separately from where its root is: the
+# onboarding notice must not fire in a plain directory, where bootstrapping is
+# not a thing that can succeed.
+in_repo=1
+root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null) || { in_repo=0; root=$cwd; }
 contract_file="$root/.agent/env-contract.txt"
 contract=''
 
@@ -40,9 +72,24 @@ if [[ -z $contract ]]; then
         contract=$("$preflight" --worktree "$root" 2> /dev/null || true)
     fi
 fi
-[[ -n $contract ]] || emit_empty
+# An un-onboarded repository still gets a session context, even when the probe
+# produced no contract -- that combination is exactly the un-onboarded case, and
+# staying silent there is how the gap goes unnoticed for a whole session.
+context=''
+if [[ -n $contract ]]; then
+    context="Environment contract (established; do not re-probe):
+$contract"
+fi
 
-jq -nc --arg ctx "Environment contract (established; do not re-probe):
-$contract" \
+if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
+    if [[ -n $context ]]; then
+        context+=$'\n\n'
+    fi
+    context+=$ONBOARD_HINT
+fi
+
+[[ -n $context ]] || emit_empty
+
+jq -nc --arg ctx "$context" \
     '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'
 exit 0

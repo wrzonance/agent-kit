@@ -87,7 +87,7 @@ point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 
 | Hook | Behaviour |
 |---|---|
-| `SessionStart` | Probes the environment once and hands the agent a twelve-line contract, so it starts knowing the repo, branch, base, sandbox state, CA bundle, and cache roots |
+| `SessionStart` | Probes the environment once and hands the agent a twelve-line contract, so it starts knowing the repo, branch, base, sandbox state, CA bundle, and cache roots. In a repository with no `.agent/config.env`, it also prints how to onboard it — otherwise the guards below stay inert and silent, which looks exactly like breakage |
 | `SubagentStart` | Injects that same contract into every spawned worker |
 | `PreToolUse` | Blocks four wasteful command shapes and tells the agent the command that works instead |
 | `Stop` | Won't let a turn finish when a declared verify command hasn't covered the current changes |
