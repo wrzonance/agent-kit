@@ -1,0 +1,11 @@
+{
+  "name": "agent-kit",
+  "interface": { "displayName": "Agent Kit" },
+  "plugins": [
+    {
+      "name": "agentkit",
+      "source": { "source": "local", "path": "./agentkit" },
+      "policy": { "installation": "AVAILABLE" }
+    }
+  ]
+}

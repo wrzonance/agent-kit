@@ -1,0 +1,13 @@
+{
+  "name": "agentkit",
+  "version": "0.1.0",
+  "description": "Board-aware parallel issue and PR review skills, with lifecycle hooks and a per-repository contract.",
+  "license": "MIT",
+  "keywords": ["skills", "hooks", "github-projects", "code-review"],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "interface": {
+    "displayName": "Agent Kit",
+    "shortDescription": "Parallel issue work and PR review, with guards that cost fewer calls"
+  }
+}

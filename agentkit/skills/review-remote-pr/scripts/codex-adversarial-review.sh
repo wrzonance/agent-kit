@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+#
+# codex-adversarial-review.sh — one-shot, tool-isolated adversarial diff review
+# driven through the Codex CLI's non-interactive `codex exec` interface.
+#
+# The Codex-side twin of claude-adversarial-review.sh. Same contract, same exit
+# codes, same stdout/stderr split, so the calling skill can treat either harness
+# identically and only the binary changes.
+#
+# The run is isolated: read-only sandbox, no user config (so no user MCP servers,
+# no custom settings), no rules/AGENTS.md discovery (this is what makes the review
+# genuinely blind), no session persistence, and a throwaway working directory that
+# is not a git repository. The verdict is schema-constrained and every invariant is
+# asserted before a result is printed.
+#
+# Modes:
+#   probe   — reviews a fixed minimal diff carrying a deliberate P1 defect and
+#             fails unless the model reports it. Use it to smoke-test the harness.
+#   review  — reviews the diff at --diff.
+#
+# Output:
+#   stdout  — the final result object (JSON), and nothing else.
+#   stderr  — progress records while running, then any human-readable failure.
+#
+# Exit status:
+#   0  completed and every invariant held
+#   1  usage error, or a real invariant/verdict failure
+#   3  ENVIRONMENT-BLOCKED: Codex cannot run here (binary missing, exec denied,
+#      no network, unauthenticated, or the CLI no longer offers the isolation
+#      contract). stdout carries a blocked JSON object. Callers take the other
+#      harness's reviewer immediately and never report this as a failed review.
+#
+# COST NOTE: unlike Claude Code, `codex exec` exposes no spend-ceiling flag. There
+# is no --max-budget-usd equivalent to enforce. Cost is bounded here by the diff
+# size guard (--max-diff-bytes), the model, and the reasoning effort — so keep the
+# review diff tight; see --max-diff-bytes below.
+#
+# Requires: bash >= 4.2, codex CLI, jq, GNU coreutils.
+
+set -euo pipefail
+
+readonly PROGNAME=${0##*/}
+readonly WARN_DIFF_BYTES=262144   # 256 KiB — advise splitting beyond this
+readonly REQUIRED_FLAGS=(
+    --model
+    --config
+    --sandbox
+    --ephemeral
+    --ignore-user-config
+    --ignore-rules
+    --skip-git-repo-check
+    --output-schema
+    --output-last-message
+    --json
+)
+
+MODE=""
+CODEX_BIN=${CODEX_EXECUTABLE:-codex}
+CODEX_RESOLVED=""
+MODEL=""
+EFFORT="xhigh"
+DIFF_PATH=""
+TRANSCRIPT_PATH=""
+POLL_SECONDS=120
+MAX_DIFF_BYTES=1048576            # 1 MiB — a runaway-diff backstop, not a protocol limit
+WORK_DIR=""
+POLLER_PID=""
+CODEX_PID=""
+
+usage() {
+    cat <<EOF
+Usage: $PROGNAME --mode <probe|review> --model <model> --transcript <path> [options]
+
+Required:
+  --mode <probe|review>      probe: review a fixed diff with a known P1 defect.
+                             review: review the diff at --diff.
+  --model <model>            Model for the review (e.g. gpt-5.6-terra).
+  --transcript <path>        Where to write the raw JSONL event stream.
+                             Truncated on start; parent dirs are created.
+
+Conditionally required:
+  --diff <path>              Unified diff to review. Required in review mode.
+
+Options:
+  --codex <path>             codex executable (default: \$CODEX_EXECUTABLE, else
+                             the first "codex" on PATH).
+  --effort <level>           Reasoning effort, passed as model_reasoning_effort
+                             (default: $EFFORT).
+  --poll-seconds <1-3600>    Progress-report interval on stderr (default: $POLL_SECONDS).
+  --max-diff-bytes <n>       Reject a review diff larger than this (default: $MAX_DIFF_BYTES).
+                             \`codex exec\` has NO spend ceiling, so diff size is the
+                             primary cost lever. A warning is printed above $WARN_DIFF_BYTES
+                             bytes; split the review into coherent slices instead of
+                             sending one enormous diff.
+  -h, --help                 Show this help.
+
+Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$PROGNAME" "$1" >&2
+    exit 1
+}
+
+# Environment-blocked: Codex cannot run here at all, so no verdict is obtainable.
+# The caller must switch to the other harness rather than treat this as a finding.
+die_blocked() {
+    local reason=$1 detail=$2
+    printf '%s: BLOCKED (%s): %s\n' "$PROGNAME" "$reason" "$detail" >&2
+    printf '%s: take the cross-harness adversarial reviewer instead; do not retry.\n' "$PROGNAME" >&2
+    jq -cn \
+        --arg blockedReason "$reason" \
+        --arg detail "$detail" \
+        --arg transcript "$TRANSCRIPT_PATH" \
+        '{status: "blocked", blockedReason: $blockedReason, detail: $detail,
+          transcript: $transcript, fallback: "cross-harness-reviewer"}'
+    exit 3
+}
+
+cleanup() {
+    if [[ -n $POLLER_PID ]]; then
+        kill "$POLLER_PID" 2>/dev/null || true
+        wait "$POLLER_PID" 2>/dev/null || true
+        POLLER_PID=""
+    fi
+    if [[ -n $CODEX_PID ]]; then
+        kill "$CODEX_PID" 2>/dev/null || true
+        wait "$CODEX_PID" 2>/dev/null || true
+        CODEX_PID=""
+    fi
+    [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
+    return 0
+}
+
+require_value() {
+    [[ -n ${2:-} ]] || die "option $1 requires a value"
+}
+
+parse_args() {
+    while (($#)); do
+        case $1 in
+        --mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
+        --mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
+        --codex) require_value "$1" "${2:-}" && CODEX_BIN=$2 && shift 2 ;;
+        --codex=*) CODEX_BIN=${1#*=} && shift ;;
+        --model) require_value "$1" "${2:-}" && MODEL=$2 && shift 2 ;;
+        --model=*) MODEL=${1#*=} && shift ;;
+        --effort) require_value "$1" "${2:-}" && EFFORT=${2,,} && shift 2 ;;
+        --effort=*) EFFORT=${1#*=} && EFFORT=${EFFORT,,} && shift ;;
+        --diff) require_value "$1" "${2:-}" && DIFF_PATH=$2 && shift 2 ;;
+        --diff=*) DIFF_PATH=${1#*=} && shift ;;
+        --transcript) require_value "$1" "${2:-}" && TRANSCRIPT_PATH=$2 && shift 2 ;;
+        --transcript=*) TRANSCRIPT_PATH=${1#*=} && shift ;;
+        --poll-seconds) require_value "$1" "${2:-}" && POLL_SECONDS=$2 && shift 2 ;;
+        --poll-seconds=*) POLL_SECONDS=${1#*=} && shift ;;
+        --max-diff-bytes) require_value "$1" "${2:-}" && MAX_DIFF_BYTES=$2 && shift 2 ;;
+        --max-diff-bytes=*) MAX_DIFF_BYTES=${1#*=} && shift ;;
+        -h | --help) usage && exit 0 ;;
+        *) usage >&2 && die "unknown argument: $1" ;;
+        esac
+    done
+}
+
+validate_args() {
+    [[ $MODE == probe || $MODE == review ]] || die "--mode must be probe or review"
+    [[ -n $MODEL ]] || die "--model is required"
+    [[ -n $TRANSCRIPT_PATH ]] || die "--transcript is required"
+    case $EFFORT in
+    low | medium | high | xhigh | max) ;;
+    *) die "--effort must be one of: low medium high xhigh max" ;;
+    esac
+    [[ $POLL_SECONDS =~ ^[0-9]+$ ]] || die "--poll-seconds must be an integer"
+    ((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
+    [[ $MAX_DIFF_BYTES =~ ^[0-9]+$ ]] || die "--max-diff-bytes must be an integer"
+    ((MAX_DIFF_BYTES >= 1024)) || die "--max-diff-bytes must be at least 1024"
+    [[ $MODE == review && -z $DIFF_PATH ]] && die "--diff is required in review mode"
+    return 0
+}
+
+# Resolve the CLI and prove the isolation flags this harness depends on still
+# exist, so a silent CLI change fails loudly (exit 3) instead of quietly running
+# an unisolated, repo-aware review. Help is captured to a FILE, never a pipe: some
+# CLIs exit before flushing buffered pipe writes and report a truncated flag list.
+preflight() {
+    CODEX_RESOLVED=$(command -v -- "$CODEX_BIN" 2>/dev/null) ||
+        die_blocked codex-missing "codex executable not found: $CODEX_BIN"
+    [[ -x $CODEX_RESOLVED ]] ||
+        die_blocked codex-missing "codex executable is not executable: $CODEX_RESOLVED"
+    command -v jq >/dev/null || die "jq is required but was not found on PATH"
+
+    local help_file=$WORK_DIR/codex-help.txt
+    "$CODEX_RESOLVED" exec --help >"$help_file" 2>&1 ||
+        die_blocked exec-denied "codex exec --help could not run; the CLI cannot start here."
+
+    local flag
+    for flag in "${REQUIRED_FLAGS[@]}"; do
+        grep -qF -e "$flag" -- "$help_file" ||
+            die_blocked cli-contract-missing \
+                "installed Codex CLI does not support required isolation flag: $flag"
+    done
+}
+
+verdict_schema() {
+    jq -c . <<'JSON'
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "type": "string", "enum": ["findings", "no_findings"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "priority": { "type": "string", "enum": ["P1", "P2"] },
+          "location": { "type": "string" },
+          "failureScenario": { "type": "string" },
+          "smallestFix": { "type": "string" }
+        },
+        "required": ["priority", "location", "failureScenario", "smallestFix"]
+      }
+    }
+  },
+  "required": ["verdict", "findings"]
+}
+JSON
+}
+
+write_review_input() {
+    local target=$1
+    cat >"$target" <<'EOF'
+You are a one-shot static diff reviewer. No repository, tools, or external context
+exists. Never emit tool-call syntax, never attempt to read files, and never run
+commands. Analyze only the diff supplied below and finish with the required
+structured verdict.
+EOF
+    if [[ $MODE == probe ]]; then
+        cat >>"$target" <<'EOF'
+
+Adversarially review this minimal code and return the required structured verdict:
+
+```diff
++function mayDeleteAccount(requestingUser, targetUser) {
++  return true;
++}
+```
+EOF
+        return 0
+    fi
+
+    [[ -f $DIFF_PATH ]] || die "Review diff not found: $DIFF_PATH"
+    local resolved bytes
+    resolved=$(readlink -f -- "$DIFF_PATH") || die "Cannot resolve review diff: $DIFF_PATH"
+    bytes=$(wc -c <"$resolved")
+    ((bytes > 0)) || die "Review diff is empty: $resolved"
+    grep -q '[^[:space:]]' -- "$resolved" || die "Review diff is empty: $resolved"
+    ((bytes <= MAX_DIFF_BYTES)) ||
+        die "Review diff is ${bytes} bytes, over --max-diff-bytes ($MAX_DIFF_BYTES). Split the review by coherent diff slices."
+    ((bytes <= WARN_DIFF_BYTES)) ||
+        printf '%s: warning: diff is %s bytes; codex exec has no spend ceiling, consider splitting.\n' \
+            "$PROGNAME" "$bytes" >&2
+
+    cat >>"$target" <<'EOF'
+
+Adversarially review the supplied pull-request diff. Report only concrete P1 or P2 correctness,
+security, reliability, accessibility, or API-contract regressions introduced by the diff. For
+every finding, cite file:line, describe a reproducible failure scenario, and give the smallest safe
+fix. Ignore style, naming, and speculative future concerns. If no qualifying defects exist, return
+no_findings with an empty findings array.
+
+DIFF STARTS BELOW
+EOF
+    cat -- "$resolved" >>"$target"
+}
+
+transcript_event_count() {
+    local count
+    count=$(grep -c '[^[:space:]]' -- "$TRANSCRIPT_PATH" 2>/dev/null) || count=0
+    printf '%s' "${count:-0}"
+}
+
+emit_progress() {
+    local started=$1 now mtime bytes
+    now=$(date +%s)
+    mtime=$(stat -c %Y -- "$TRANSCRIPT_PATH" 2>/dev/null) || mtime=$started
+    bytes=$(stat -c %s -- "$TRANSCRIPT_PATH" 2>/dev/null) || bytes=0
+    jq -cn \
+        --argjson runnerPid "$$" \
+        --argjson elapsedSeconds "$((now - started))" \
+        --argjson secondsSinceLastEvent "$((now - mtime))" \
+        --argjson eventCount "$(transcript_event_count)" \
+        --argjson transcriptBytes "$bytes" \
+        '{status: "running", harness: "codex", runnerPid: $runnerPid,
+          elapsedSeconds: $elapsedSeconds, secondsSinceLastEvent: $secondsSinceLastEvent,
+          eventCount: $eventCount, transcriptBytes: $transcriptBytes}' >&2
+}
+
+poll_progress() {
+    local started=$1
+    while :; do
+        sleep "$POLL_SECONDS"
+        emit_progress "$started"
+    done
+}
+
+classify_blocked_reason() {
+    local text=$1
+    case $text in
+    *ENOTIMP* | *"Operation not permitted"* | *"Permission denied"* | *EPERM* | *EACCES*)
+        printf 'exec-denied' ;;
+    *"not logged in"* | *"Not logged in"* | *401* | *[Uu]nauthorized* | *"authentication"*)
+        printf 'unauthenticated' ;;
+    *"Connection refused"* | *getaddrinfo* | *"dns error"* | *"failed to lookup"* | *"network"*)
+        printf 'network-unreachable' ;;
+    *) printf '' ;;
+    esac
+}
+
+# Runs Codex with user config, rules files, session persistence and repo context
+# all disabled, in a throwaway non-repo directory, with the verdict schema enforced.
+run_codex() {
+    local input_file=$1 stderr_file=$2 isolation_dir=$3 schema_file=$4 final_file=$5
+    local -a args=(
+        exec
+        --model "$MODEL"
+        --config "model_reasoning_effort=\"$EFFORT\""
+        --sandbox read-only
+        --ephemeral
+        --ignore-user-config
+        --ignore-rules
+        --skip-git-repo-check
+        --cd "$isolation_dir"
+        --output-schema "$schema_file"
+        --output-last-message "$final_file"
+        --json
+        -
+    )
+
+    local status=0
+    "$CODEX_RESOLVED" "${args[@]}" \
+        <"$input_file" >"$TRANSCRIPT_PATH" 2>"$stderr_file" &
+    CODEX_PID=$!
+    wait "$CODEX_PID" || status=$?
+    CODEX_PID=""
+    return "$status"
+}
+
+verify_verdict() {
+    local verdict=$1 kind findings_count p1_count
+    kind=$(jq -r '.verdict // ""' <<<"$verdict")
+    [[ $kind == findings || $kind == no_findings ]] || die "Codex returned an invalid verdict value."
+    findings_count=$(jq -r '(.findings // []) | length' <<<"$verdict")
+    [[ $kind == no_findings && $findings_count -ne 0 ]] &&
+        die "Codex returned findings with a no_findings verdict."
+    [[ $kind == findings && $findings_count -eq 0 ]] &&
+        die "Codex returned a findings verdict with an empty findings array."
+
+    if [[ $MODE == probe ]]; then
+        p1_count=$(jq -r '[(.findings // [])[] | select(.priority == "P1")] | length' <<<"$verdict")
+        [[ $kind == findings && $p1_count -gt 0 ]] ||
+            die "Codex probe did not return the deliberate P1 finding."
+    fi
+    return 0
+}
+
+# Best-effort model identity from the JSONL event stream. Measured against
+# codex-cli 0.147.0 the stream carries thread.started / turn.started /
+# item.completed / turn.completed and NO model field, so this normally yields
+# nothing. Claude Code's system/init does report the initialized model, so model
+# identity is verifiable there and merely advisory here -- the result object says
+# so explicitly rather than leaving a silent null.
+observed_model() {
+    jq -r -s '[.[] | (.model? // .msg?.model? // .payload?.model? // empty)] | last // ""' \
+        <"$TRANSCRIPT_PATH" 2>/dev/null || printf ''
+}
+
+# turn.completed carries the only cost signal codex exec exposes. There is no
+# spend ceiling to enforce, so report actual usage and let the caller decide.
+token_usage() {
+    jq -c -s '[.[] | select(.type == "turn.completed") | .usage] | last // null' \
+        <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
+}
+
+main() {
+    parse_args "$@"
+    validate_args
+
+    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-adversarial-XXXXXXXXXX")
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM
+    local isolation_dir=$WORK_DIR/cwd
+    local input_file=$WORK_DIR/input.txt
+    local stderr_file=$WORK_DIR/stderr.log
+    local schema_file=$WORK_DIR/schema.json
+    local final_file=$WORK_DIR/final.json
+    mkdir -p -- "$isolation_dir"
+
+    preflight
+
+    local transcript_dir
+    transcript_dir=$(dirname -- "$TRANSCRIPT_PATH")
+    mkdir -p -- "$transcript_dir" || die "Cannot create transcript directory: $transcript_dir"
+    : >"$TRANSCRIPT_PATH" || die "Cannot write transcript: $TRANSCRIPT_PATH"
+
+    write_review_input "$input_file"
+    verdict_schema >"$schema_file"
+
+    local started exit_code=0
+    started=$(date +%s)
+    poll_progress "$started" &
+    POLLER_PID=$!
+
+    run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
+        exit_code=$?
+
+    kill "$POLLER_PID" 2>/dev/null || true
+    wait "$POLLER_PID" 2>/dev/null || true
+    POLLER_PID=""
+
+    local stderr_text reason
+    stderr_text=$(cat -- "$stderr_file" 2>/dev/null || true)
+    if ((exit_code != 0)); then
+        reason=$(classify_blocked_reason "$stderr_text")
+        [[ -n $reason ]] && die_blocked "$reason" "codex exec exited $exit_code: $stderr_text"
+        die "Codex exited $exit_code: ${stderr_text:-no diagnostic emitted} (transcript: $TRANSCRIPT_PATH)"
+    fi
+
+    [[ -s $final_file ]] ||
+        die "Codex produced no final message; the gate is blocked, not no_findings. Transcript: $TRANSCRIPT_PATH"
+
+    local verdict
+    verdict=$(jq -c . <"$final_file" 2>/dev/null) ||
+        die "Codex final message is not valid JSON; see $TRANSCRIPT_PATH"
+    verify_verdict "$verdict"
+
+    jq -n \
+        --argjson exitCode "$exit_code" \
+        --arg harness codex \
+        --arg requestedModel "$MODEL" \
+        --arg observedModel "$(observed_model)" \
+        --arg effort "$EFFORT" \
+        --argjson eventCount "$(transcript_event_count)" \
+        --arg transcript "$TRANSCRIPT_PATH" \
+        --argjson tokenUsage "$(token_usage)" \
+        --argjson verdict "$verdict" \
+        '{status: "completed", harness: $harness, exitCode: $exitCode,
+          requestedModel: $requestedModel,
+          observedModel: (if $observedModel == "" then null else $observedModel end),
+          modelVerification: (if $observedModel == "" then "unsupported-by-codex-exec" else "observed" end),
+          effort: $effort, eventCount: $eventCount, transcript: $transcript,
+          budgetCeiling: "unsupported-by-codex-exec", tokenUsage: $tokenUsage,
+          verdict: $verdict}'
+}
+
+main "$@"

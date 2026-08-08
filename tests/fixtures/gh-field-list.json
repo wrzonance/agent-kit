@@ -1,0 +1,11 @@
+{"fields":[
+  {"id":"PVTF_lADOAexampleA","name":"Title","type":"ProjectV2Field"},
+  {"id":"PVTSSF_lADOAexampleB","name":"Status","type":"ProjectV2SingleSelectField",
+   "options":[
+     {"id":"opt-backlog","name":"Backlog"},
+     {"id":"opt-ready","name":"Ready"},
+     {"id":"opt-inprog","name":"In progress"},
+     {"id":"opt-inrev","name":"In review"},
+     {"id":"opt-done","name":"Done"}
+   ]}
+]}

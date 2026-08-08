@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# Resolve repository-declared agent facts from <git-toplevel>/.agent/config.env.
+#
+# This is the ONLY reader of that file. It is parsed line-wise against a key
+# whitelist and is NEVER sourced: a committed file in a shared repository is
+# reachable by anyone who can open a pull request, so treating it as shell would
+# make it an injection vector into every agent's environment.
+#
+# Anything missing, malformed, or unrecognized is dropped with a warning and the
+# caller falls through to live discovery. This script never blocks a run.
+#
+# Usage:
+#   repo-config.sh --export          # `export K='V'` lines, safe to eval
+#   repo-config.sh --get KEY         # one value; exit 1 if absent
+#   repo-config.sh --list            # K=V lines for accepted keys
+# Options:
+#   --repo-root DIR                  # skip git-toplevel detection
+#
+# Exit: 0 success (including no config found), 2 bad usage.
+set -euo pipefail
+
+readonly PROGRAM=${0##*/}
+
+warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
+
+die_usage() {
+    printf '%s: %s\n' "$PROGRAM" "$*" >&2
+    printf 'usage: %s [--repo-root DIR] (--export | --get KEY | --list)\n' "$PROGRAM" >&2
+    exit 2
+}
+
+readonly ACCEPTED_KEYS=(
+    AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_OWNER AGENT_PROJECT_NUMBER
+    AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
+    AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
+    AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER
+    AGENT_CMD_VERIFY AGENT_CMD_TEST AGENT_CMD_LINT AGENT_CMD_TYPECHECK AGENT_CMD_BUILD
+)
+
+# Credential-shaped keys are refused loudly rather than ignored quietly, so a
+# misguided commit is visible instead of silently honored.
+readonly SECRET_PATTERN='(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PROXY|CA_BUNDLE|CERT|APIKEY|API_KEY|PRIVATE_KEY)$|^(GH|GITHUB)_'
+
+mode=''
+want_key=''
+repo_root=''
+
+while (($#)); do
+    case $1 in
+        --export) mode='export' ;;
+        --list) mode='list' ;;
+        --get)
+            mode='get'
+            shift
+            (($#)) || die_usage '--get requires a KEY'
+            want_key=$1
+            ;;
+        --repo-root)
+            shift
+            (($#)) || die_usage '--repo-root requires a directory'
+            repo_root=$1
+            ;;
+        -h | --help) die_usage 'help requested' ;;
+        *) die_usage "unknown argument: $1" ;;
+    esac
+    shift
+done
+
+[[ -n $mode ]] || die_usage 'one of --export, --get, --list is required'
+
+if [[ -z $repo_root ]]; then
+    repo_root=$(git rev-parse --show-toplevel 2> /dev/null || true)
+fi
+[[ -n $repo_root ]] || exit 0
+
+config_file="$repo_root/.agent/config.env"
+[[ -f $config_file ]] || exit 0
+
+is_accepted() {
+    local candidate=$1 key
+    for key in "${ACCEPTED_KEYS[@]}"; do
+        [[ $key == "$candidate" ]] && return 0
+    done
+    return 1
+}
+
+# A relative path that cannot escape the repository.
+safe_relpath() {
+    local value=$1
+    [[ $value != /* ]] || return 1
+    [[ $value != *..* ]] || return 1
+    [[ $value =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+    return 0
+}
+
+# Git ref characters only; rejects option-injection and reserved forms.
+safe_ref() {
+    local value=$1
+    [[ $value =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+    [[ $value != -* ]] || return 1
+    [[ $value != *..* ]] || return 1
+    [[ $value != */ ]] || return 1
+    [[ $value != *.lock ]] || return 1
+    return 0
+}
+
+# Comma-separated human labels; spaces allowed ("In progress"), controls not.
+safe_list() {
+    [[ $1 =~ ^[A-Za-z0-9\ ._/-]+(,[A-Za-z0-9\ ._/-]+)*$ ]]
+}
+
+providers_valid() {
+    local item
+    local -a items=()
+    IFS=, read -ra items <<< "$1"
+    ((${#items[@]})) || return 1
+    for item in "${items[@]}"; do
+        case $item in
+            coderabbit | github-code-quality | none) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+# Resolve a repository-relative path against the repository root and prove the
+# result stays inside it. Resolution is physical, not lexical: readlink -f
+# follows symlinks, so a committed symlink pointing outside is caught as surely
+# as a `..` traversal. Prints the resolved path.
+resolve_contained() {
+    local value=$1 resolved
+    [[ $value != /* ]] || return 1
+    [[ $value != *..* ]] || return 1
+    resolved=$(cd -- "$repo_root" 2> /dev/null && readlink -f -- "$value" 2> /dev/null) || return 1
+    [[ -n $resolved && $resolved == "$repo_root"/* ]] || return 1
+    printf '%s' "$resolved"
+}
+
+# The key naming a runner. agent-run.sh already executes
+# <git-toplevel>/.agent/runner, so this is not new exposure -- but the bare
+# convention had no containment check, and this adds one.
+runner_contained() {
+    local resolved
+    safe_relpath "$1" || return 1
+    resolved=$(resolve_contained "$1") || return 1
+    [[ -f $resolved && -x $resolved ]] || return 1
+    return 0
+}
+
+# A command line that will be split on whitespace and exec'd as argv. No shell
+# is involved, so anything a shell would interpret is refused outright rather
+# than silently treated as a literal argument.
+#
+# argv[0] is an executable this repository points at -- the same capability
+# AGENT_REPO_RUNNER grants -- so it gets the same containment. A bare name is a
+# PATH lookup and stays one; a name carrying a slash is a path, and a path must
+# resolve inside the repository. Without this, `tools/../../outside/payload`
+# reaches exec through a key with no check at all.
+safe_argv() {
+    local value=$1 argv0
+    [[ -n $value ]] || return 1
+    [[ $value != *[\;\|\&\`\<\>\(\)\{\}\$\!\\\'\"]* ]] || return 1
+    [[ $value != *$'\n'* && $value != *$'\t'* ]] || return 1
+    [[ $value != *..* ]] || return 1
+    [[ $value =~ ^[A-Za-z0-9_][A-Za-z0-9_./=:-]*( +[A-Za-z0-9_./=:@,-]+)*$ ]] || return 1
+    argv0=${value%% *}
+    [[ $argv0 != */* ]] || resolve_contained "$argv0" > /dev/null || return 1
+    return 0
+}
+
+validate() {
+    local key=$1 value=$2
+    case $key in
+        AGENT_REPO_SLUG) [[ $value =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ;;
+        AGENT_PROJECT_OWNER) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
+        AGENT_PROJECT_NUMBER) [[ $value =~ ^[0-9]{1,6}$ ]] ;;
+        AGENT_BASE_BRANCH) safe_ref "$value" ;;
+        AGENT_ADR_DIR | AGENT_WORKTREE_ROOT) safe_relpath "$value" ;;
+        AGENT_BRANCH_PREFIXES) [[ $value =~ ^[a-z]+(,[a-z]+)*$ ]] ;;
+        AGENT_STATUS_VOCAB | AGENT_LABEL_TYPES | AGENT_LABEL_AREAS | AGENT_LABEL_PRIORITIES)
+            safe_list "$value"
+            ;;
+        AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
+        AGENT_REPO_RUNNER) runner_contained "$value" ;;
+        AGENT_CMD_VERIFY | AGENT_CMD_TEST | AGENT_CMD_LINT | AGENT_CMD_TYPECHECK | AGENT_CMD_BUILD)
+            safe_argv "$value"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+trim() {
+    local value=$1
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    printf '%s' "$value"
+}
+
+unquote() {
+    local value=$1
+    if ((${#value} >= 2)); then
+        if [[ ${value:0:1} == '"' && ${value: -1} == '"' ]]; then
+            value=${value:1:${#value}-2}
+        elif [[ ${value:0:1} == "'" && ${value: -1} == "'" ]]; then
+            value=${value:1:${#value}-2}
+        fi
+    fi
+    printf '%s' "$value"
+}
+
+# Single-quote for eval. Chosen over printf %q because %q renders a space as
+# "\ ", which is correct but unreadable in a block an agent has to scan.
+shell_quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+declare -a out_keys=() out_values=()
+lineno=0
+
+while IFS= read -r line || [[ -n $line ]]; do
+    lineno=$((lineno + 1))
+    line=${line%$'\r'}
+    [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+
+    if [[ $line != *=* ]]; then
+        warn "line $lineno has no equals sign, ignoring"
+        continue
+    fi
+
+    key=$(trim "${line%%=*}")
+    value=$(unquote "$(trim "${line#*=}")")
+
+    if ! is_accepted "$key"; then
+        if [[ $key =~ $SECRET_PATTERN ]]; then
+            warn "refusing credential-shaped key on line $lineno: $key"
+        else
+            warn "unknown key on line $lineno, ignoring: $key"
+        fi
+        continue
+    fi
+
+    if ! validate "$key" "$value"; then
+        warn "invalid value for $key on line $lineno, ignoring"
+        continue
+    fi
+
+    out_keys+=("$key")
+    out_values+=("$value")
+done < "$config_file"
+
+case $mode in
+    export)
+        for i in "${!out_keys[@]}"; do
+            printf 'export %s=%s\n' "${out_keys[$i]}" "$(shell_quote "${out_values[$i]}")"
+        done
+        ;;
+    list)
+        for i in "${!out_keys[@]}"; do
+            printf '%s=%s\n' "${out_keys[$i]}" "${out_values[$i]}"
+        done
+        ;;
+    get)
+        for i in "${!out_keys[@]}"; do
+            if [[ ${out_keys[$i]} == "$want_key" ]]; then
+                printf '%s\n' "${out_values[$i]}"
+                exit 0
+            fi
+        done
+        exit 1
+        ;;
+esac
+
+exit 0

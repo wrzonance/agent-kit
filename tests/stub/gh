@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Test stub for the gh CLI. Records invocations, replays a canned response.
+#   GH_STUB_LOG       file to append one line per invocation (optional)
+#   GH_STUB_RESPONSE  file whose contents go to stdout (optional)
+#   GH_STUB_RC        exit code to return (default 0)
+set -uo pipefail
+
+if [[ -n ${GH_STUB_LOG:-} ]]; then
+    # Collapse newlines: a multi-line argument (a GraphQL document) is still
+    # ONE invocation, and must not read as many.
+    printf '%s\n' "${*//$'\n'/ }" >> "$GH_STUB_LOG"
+fi
+if [[ -n ${GH_STUB_RESPONSE:-} && -f ${GH_STUB_RESPONSE} ]]; then
+    cat -- "$GH_STUB_RESPONSE"
+fi
+exit "${GH_STUB_RC:-0}"

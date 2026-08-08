@@ -1,0 +1,11 @@
+{"items":[
+  {"id":"PVTI_example57","content":{"type":"Issue","number":57,
+   "repository":"example-org/example-repo",
+   "url":"https://github.com/example-org/example-repo/issues/57"}},
+  {"id":"PVTI_example99","content":{"type":"Issue","number":99,
+   "repository":"example-org/example-repo",
+   "url":"https://github.com/example-org/example-repo/issues/99"}},
+  {"id":"PVTI_otherrepo57","content":{"type":"Issue","number":57,
+   "repository":"example-org/other-repo",
+   "url":"https://github.com/example-org/other-repo/issues/57"}}
+]}

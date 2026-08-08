@@ -1,0 +1,178 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 588,
+            "title": "Issue 588 title",
+            "labels": {
+              "nodes": []
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 603,
+            "title": "Issue 603 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "dependency-drift"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 602,
+            "title": "Issue 602 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "dependency-drift"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 583,
+            "title": "Issue 583 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "bug"
+                },
+                {
+                  "name": "security"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 581,
+            "title": "Issue 581 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "security"
+                },
+                {
+                  "name": "dependencies"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": [
+                {
+                  "source": {
+                    "number": 582,
+                    "state": "OPEN",
+                    "merged": false,
+                    "mergedAt": null,
+                    "updatedAt": "2026-08-01T19:12:46Z",
+                    "title": "fix(deps): remediate 39 Dependabot alerts across server, dashboard, bridges"
+                  }
+                },
+                {
+                  "source": {}
+                }
+              ]
+            }
+          },
+          {
+            "number": 578,
+            "title": "Issue 578 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "enhancement"
+                },
+                {
+                  "name": "security"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": [
+                {
+                  "id": "PVTI_realshape001",
+                  "project": {
+                    "id": "PVT_realshape",
+                    "number": 3,
+                    "title": "example-repo"
+                  },
+                  "fieldValueByName": {
+                    "name": "Ready",
+                    "optionId": "opt-realready"
+                  }
+                }
+              ]
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 576,
+            "title": "Issue 576 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "dependency-drift"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 573,
+            "title": "Issue 573 title",
+            "labels": {
+              "nodes": [
+                {
+                  "name": "dependency-drift"
+                }
+              ]
+            },
+            "projectItems": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# Suite: bootstrap-repo.sh generation, idempotency, and partial-write refusal.
+set -uo pipefail
+
+TEST_NAME='bootstrap-repo'
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+
+skills="$root/agentkit/skills"
+bs_sh="$skills/.shared/scripts/bootstrap-repo.sh"
+rc_sh="$skills/.shared/scripts/repo-config.sh"
+
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
+# A routing stub: picks a fixture based on the gh subcommand it was given.
+mkdir -p "$tmp/stub"
+cat > "$tmp/stub/gh" << EOF
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "\$*" >> "$tmp/gh.log"
+case "\$*" in
+  *"api graphql"*)        cat "$here/fixtures/gh-linked-projects.json" ;;
+  *"project field-list"*) cat "$here/fixtures/gh-field-list.json" ;;
+  *"project list"*)       cat "$here/fixtures/gh-project-list.json" ;;
+  *"repo view"*)          printf '{"nameWithOwner":"example-org/example-repo","defaultBranchRef":{"name":"main"}}\n' ;;
+  *"auth status"*)        printf 'Logged in\n' ;;
+  *) printf '{}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/stub/gh"
+
+make_repo() {
+    local dir
+    dir=$(mktemp -d "$tmp/repo.XXXXXX")
+    git -C "$dir" init -q
+    git -C "$dir" remote add origin https://github.com/example-org/example-repo.git
+    printf '%s' "$dir"
+}
+
+run_bs() { PATH="$tmp/stub:$PATH" "$bs_sh" "$@"; }
+
+# --- dry run writes nothing -----------------------------------------------
+repo=$(make_repo)
+out=$(run_bs --repo-root "$repo" --project 7 --dry-run 2>&1)
+assert_contains "$out" 'AGENT_REPO_SLUG=example-org/example-repo' 'dry run previews config.env'
+assert_contains "$out" 'PVTSSF_lADOAexampleB' 'dry run previews the Status field id'
+assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
+    'dry run creates no config.env'
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'dry run creates no board.json'
+
+# --- real run --------------------------------------------------------------
+repo=$(make_repo)
+assert_rc 0 'bootstrap succeeds' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 7
+assert_eq 'yes' "$([[ -f $repo/.agent/config.env ]] && echo yes || echo no)" 'writes config.env'
+assert_eq 'yes' "$([[ -f $repo/.agent/board.json ]] && echo yes || echo no)" 'writes board.json'
+
+board=$(cat "$repo/.agent/board.json")
+assert_eq '1' "$(jq -r '.schemaVersion' <<< "$board")" 'board.json declares schemaVersion 1'
+assert_eq 'PVT_kwDOAexample1' "$(jq -r '.project.id' <<< "$board")" 'records the project node id'
+assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' <<< "$board")" 'records the Status field id'
+assert_eq 'opt-ready' "$(jq -r '.statusField.options.Ready' <<< "$board")" 'maps Ready to its option id'
+assert_eq 'opt-inprog' "$(jq -r '.statusField.options["In progress"]' <<< "$board")" \
+    'maps a spaced option name'
+assert_contains "$(jq -r '.fingerprint' <<< "$board")" 'sha256:' 'records a fingerprint'
+
+# The generated config must survive its own resolver with zero warnings.
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" 'generated config.env produces no resolver warnings'
+listed=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$listed" 'AGENT_PROJECT_NUMBER=7' 'generated config carries the project number'
+assert_contains "$listed" 'AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done' \
+    'status vocabulary comes from the discovered option order'
+
+# --- a repo linked to exactly one board needs no --project -----------------
+# An org can own dozens of boards while a repo is linked to one. Asking the
+# repository, not the owner, is what keeps bootstrap zero-prompt on most repos.
+repo=$(make_repo)
+: > "$tmp/gh.log"
+assert_rc 0 'a repo linked to one board bootstraps without --project' -- env \
+    PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo"
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_PROJECT_NUMBER=7' \
+    'and picks the linked board'
+assert_not_contains "$(cat "$tmp/gh.log")" 'project list' \
+    'without falling back to the owner-wide board list'
+
+# --- not linked to any board falls back to the owner list ------------------
+repo=$(make_repo)
+mkdir -p "$tmp/stub3"
+cat > "$tmp/stub3/gh" << EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tmp/gh3.log"
+case "\$*" in
+  *"api graphql"*)        printf '{"data":{"repository":{"projectsV2":{"nodes":[]}}}}\n' ;;
+  *"project field-list"*) cat "$here/fixtures/gh-field-list.json" ;;
+  *"project list"*)       cat "$here/fixtures/gh-project-list.json" ;;
+  *"repo view"*)          printf '{"nameWithOwner":"example-org/example-repo","defaultBranchRef":{"name":"main"}}\n' ;;
+  *) printf '{}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/stub3/gh"
+: > "$tmp/gh3.log"
+assert_rc 0 'an unlinked repo still bootstraps via the owner board list' -- env \
+    PATH="$tmp/stub3:$PATH" "$bs_sh" --repo-root "$repo" --project 7
+assert_contains "$(cat "$tmp/gh3.log")" 'project list' 'by falling back to gh project list'
+
+# --- refuses to clobber ----------------------------------------------------
+assert_rc 1 'refuses to overwrite without --force' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 7
+assert_rc 0 '--force overwrites' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 7 --force
+
+# --- idempotency -----------------------------------------------------------
+before=$(jq -S 'del(.generatedAt)' < "$repo/.agent/board.json")
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+after=$(jq -S 'del(.generatedAt)' < "$repo/.agent/board.json")
+assert_eq "$before" "$after" 'a second run produces identical content'
+
+# --- no secrets ever leak --------------------------------------------------
+config=$(cat "$repo/.agent/config.env")
+for bad in GH_TOKEN TOKEN PROXY CA_BUNDLE PASSWORD; do
+    assert_not_contains "$config" "$bad" "generated config.env has no $bad"
+done
+
+# --- environment-blocked ---------------------------------------------------
+repo=$(make_repo)
+mkdir -p "$tmp/emptybin"
+assert_rc 3 'no gh on PATH exits 3' -- env PATH="$tmp/emptybin" /bin/bash "$bs_sh" --repo-root "$repo" --project 7
+
+# --- partial discovery writes nothing --------------------------------------
+repo=$(make_repo)
+mkdir -p "$tmp/stub2"
+cat > "$tmp/stub2/gh" << EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"project list"*) cat "$here/fixtures/gh-project-list.json" ;;
+  *"repo view"*)    printf '{"nameWithOwner":"example-org/example-repo","defaultBranchRef":{"name":"main"}}\n' ;;
+  *"auth status"*)  printf 'Logged in\n' ;;
+  *) printf '{"fields":[]}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/stub2/gh"
+assert_rc 1 'a board with no Status field fails' -- env PATH="$tmp/stub2:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 7
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'failed discovery writes no partial board.json'
+assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
+    'failed discovery writes no partial config.env'
+
+# --- ambiguous board is refused, never guessed -----------------------------
+repo=$(make_repo)
+assert_rc 1 'an unknown project number is refused' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 999
+
+# --- usage -----------------------------------------------------------------
+assert_rc 2 'unknown flag is a usage error' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --bogus
+
+# --- command suggestions ---------------------------------------------------
+# The verify surface cannot be inferred: a repo may have a bespoke dispatcher
+# AND twenty npm scripts. Surface both, decide neither.
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/verify"
+chmod +x "$repo/tools/verify"
+printf '{"scripts":{"test":"jest","lint":"eslint .","build":"tsc"}}\n' > "$repo/package.json"
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+config=$(cat "$repo/.agent/config.env")
+assert_contains "$config" '# AGENT_CMD_' 'suggests commands as commented lines'
+assert_contains "$config" 'tools/verify' 'surfaces a bespoke dispatcher'
+assert_contains "$config" 'npm run test' 'surfaces package.json scripts'
+assert_not_contains "$config" $'\nAGENT_CMD_' 'never uncomments a suggestion'
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" 'suggestions produce no resolver warnings'
+
+# --- a Makefile repo -------------------------------------------------------
+repo=$(make_repo)
+printf 'test:\n\techo hi\nlint:\n\techo hi\n' > "$repo/Makefile"
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+assert_contains "$(cat "$repo/.agent/config.env")" 'make test' 'surfaces Makefile targets'
+
+# --- a repo with no detectable verify surface ------------------------------
+repo=$(make_repo)
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" 'a repo with nothing detectable still generates a clean config'
+
+finish

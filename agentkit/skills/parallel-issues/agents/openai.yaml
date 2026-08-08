@@ -1,0 +1,4 @@
+interface:
+  display_name: "Parallel Issues"
+  short_description: "Run GitHub issues in parallel worktrees"
+  default_prompt: "Use $parallel-issues to implement several independent GitHub issues in parallel worktrees."
