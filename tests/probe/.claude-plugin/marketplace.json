@@ -1,0 +1,11 @@
+{
+  "name": "agent-kit-probe",
+  "interface": { "displayName": "Agent Kit Probe" },
+  "plugins": [
+    {
+      "name": "agentkit-probe",
+      "source": { "source": "local", "path": "./agentkit-probe" },
+      "policy": { "installation": "AVAILABLE" }
+    }
+  ]
+}

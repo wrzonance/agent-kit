@@ -1,0 +1,11 @@
+{
+  "name": "agentkit-probe",
+  "version": "0.0.1",
+  "description": "Throwaway rig that measures what a hook can tell the model, and whether a worker is distinguishable. Not for general use.",
+  "license": "MIT",
+  "hooks": "./hooks.json",
+  "interface": {
+    "displayName": "Agent Kit Probe",
+    "shortDescription": "Runtime probe: does PostToolUse additionalContext reach the model?"
+  }
+}
