@@ -139,6 +139,7 @@ guard_curriculum() {
         ".shared/scripts/agent-run.sh|run a command this repo declared, by name: --cmd <name>"
         ".shared/scripts/worktree-commit.sh|stage and commit without sweeping working state"
         "review-remote-pr/scripts/gh-pr-state.sh|CI and review state for a pull request"
+        ".shared/scripts/bootstrap-repo.sh|re-declare this repo facts; see the onboard-repo skill"
     )
 
     [[ -d $skills ]] || return 1

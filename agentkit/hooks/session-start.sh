@@ -24,8 +24,14 @@ not onboarded, and offer to onboard it now. Do not silently continue -- the
 board, triage, and commit guards have no facts to act on and stay inert, which
 is indistinguishable from the tooling being broken.
 
-If the user agrees, run this from the repository root (it is safe to inspect
-first with --dry-run, and it writes only .agent/ and .gitignore):
+If the user agrees, use the onboard-repo skill: it runs the bootstrap script and
+then fills in what the script deliberately leaves blank -- this repository verify
+commands, its label vocabulary -- which is judgement work a script cannot do.
+Onboarding is a one-time cost that every later session reads instead of
+rediscovering.
+
+The script alone, if the user would rather do it by hand (safe to inspect first
+with --dry-run; it writes only .agent/ and .gitignore):
 
   agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
     -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
@@ -161,7 +167,7 @@ fi
 human=''
 if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
     human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
-board, triage and commit guards are inert. Ask the agent to onboard it, or run:
+board, triage and commit guards are inert. Ask the agent to onboard it (it has an\nonboard-repo skill that also fills in the verify commands), or run:
   \"\$(find \"\${CODEX_HOME:-\$HOME/.codex}/plugins/cache\" \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/plugins/cache\" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)/.shared/scripts/bootstrap-repo.sh\""
 elif [[ $in_repo -eq 0 ]]; then
     human='agentkit: this session did not start inside a git repository, so repository-scoped

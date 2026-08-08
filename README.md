@@ -11,6 +11,7 @@ Works with **Codex CLI** and **Claude Code** from the same directory.
 
 | Piece | What it does |
 |---|---|
+| **`onboard-repo`** skill | Walk a repository through onboarding, including the judgement calls a script can't make: which commands to declare, which labels mean what |
 | **`parallel-issues`** skill | Triage a GitHub Projects board, split independent issues across worktrees, drive each to a draft PR |
 | **`review-remote-pr`** skill | Take a PR from draft to green: CI, review threads, an adversarial review, and the board move |
 | **`.shared/scripts`** | The procedural half — preflight, command runner, board mover, one-call triage, commit guard |
@@ -61,7 +62,11 @@ Two differences worth knowing, neither of which needs configuring:
 
 ## Set up a repository
 
-Run this once inside any repository you want the skills to work on:
+Ask the agent to onboard it — the `onboard-repo` skill runs the script *and*
+fills in what the script deliberately leaves blank. A session in an un-onboarded
+repository says so, unprompted, in the terminal.
+
+To do it by hand instead, run this once inside the repository:
 
 ```bash
 cd /path/to/your/repo
