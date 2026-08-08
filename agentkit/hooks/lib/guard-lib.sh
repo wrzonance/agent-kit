@@ -185,18 +185,43 @@ guard_strip_git_globals() {
 # Kept deliberately short. A long list of "risky" commands trains an agent to
 # treat denials as noise, which is how the one that mattered gets worked around.
 guard_destructive_reason() {
-    local cmd=$1 stripped
+    local cmd=$1 stripped flattened
+
+    # A flag hidden inside a substitution reads as ordinary text to every pattern
+    # below: `git push $(echo --force)` matched nothing. Flattening the
+    # substitution markers and re-testing catches the literal case.
+    #
+    # Deliberately NOT a ban on substitution in these commands. `git push origin
+    # $(git branch --show-current)` is an ordinary thing to write, and flattening
+    # leaves it as `git push origin git branch --show-current`, which matches
+    # nothing -- so the legitimate use survives and the hidden flag does not.
+    #
+    # A determined evasion still gets through (a variable, a split string). This
+    # guards against an agent taking a shortcut, not against an adversary.
+    flattened=${cmd//\$(/ }
+    flattened=${flattened//[\`)]/ }
+    if [[ $flattened != "$cmd" ]]; then
+        local hidden
+        if hidden=$(guard_destructive_reason "$flattened"); then
+            printf '%s (the command hides that flag inside a substitution; write it literally if you mean it)' "$hidden"
+            return 0
+        fi
+    fi
+
     stripped=$(guard_strip_git_globals "$cmd")
 
     if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]+(--force|--force-with-lease|-f)([[:space:]]|$)' <<< "$stripped"; then
         printf 'force-pushing rewrites history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+reset[[:space:]]+--hard' <<< "$stripped"; then
+    # Intervening tokens are tolerated, as in the push rule: after a substitution
+    # is flattened the flag is no longer adjacent to the verb. Bounded by shell
+    # separators, so a later unrelated command cannot be dragged into the match.
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+reset([[:space:]][^;&|]*)?[[:space:]]--hard' <<< "$stripped"; then
         printf 'reset --hard discards uncommitted work irrecoverably. Use git stash, or commit first.'
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*f' <<< "$stripped"; then
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+clean([[:space:]][^;&|]*)?[[:space:]]-[a-zA-Z]*f' <<< "$stripped"; then
         printf 'git clean -f deletes untracked files, including .agent/ working state. Remove named paths instead.'
         return 0
     fi

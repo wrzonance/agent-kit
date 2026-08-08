@@ -306,6 +306,30 @@ for danger in 'git push --force origin main' 'git push -f' \
     assert_contains "$out" 'does not lift on a retry' "and says so: $danger"
 done
 
+# A flag hidden inside a substitution read as ordinary text to every pattern:
+# `git push $(echo --force)` matched nothing. The model refused it on its own
+# judgement, which is not a guard.
+# shellcheck disable=SC2016  # the UNEXPANDED substitution is the fixture: these
+# assert what the guard sees, so expanding them would test nothing.
+for hidden in 'git push $(echo --force)' 'git push `echo --force`' \
+    'git reset $(printf -- --hard) HEAD~1'; do
+    out=$(pre_input "$repo" "$hidden" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "sees through the substitution: $hidden"
+    assert_contains "$out" 'inside a substitution' 'and says why it could not be read as written'
+done
+
+# Substitution is NOT itself suspicious. Flattening leaves a legitimate dynamic
+# value as harmless words, so the ordinary uses survive -- banning them outright
+# is how a guard starts getting routed around.
+# shellcheck disable=SC2016  # same: the literal text is what is under test.
+for dynamic in 'git push origin $(git branch --show-current)' \
+    'git commit -m "$(date)"' 'git log --oneline -n $(echo 5)' \
+    'git reset --soft HEAD~1' 'git clean -n -- notes.f' \
+    'git clean $(echo -n)'; do
+    out=$(pre_input "$repo" "$dynamic" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "leaves ordinary substitution alone: $dynamic"
+done
+
 # It must NOT catch the ordinary forms of the same verbs. A guard that cries
 # wolf on `git push` is one an agent learns to route around.
 for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
