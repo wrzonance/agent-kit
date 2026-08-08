@@ -308,5 +308,44 @@ mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
 printf 'wrote %s/.agent/config.env\n' "$repo_root"
 printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
     "$repo_root" "$project_num" "$option_count"
-printf 'add to .gitignore:  .agent/cache/\n'
+
+# Ignore rules are WRITTEN, not suggested.
+#
+# This printed "add to .gitignore: .agent/cache/" and left it at that, so a
+# bootstrapped repository could reach steady state with no rule at all -- which
+# is what happened in the first repository this was used on. And the suggested
+# pattern was too narrow: it left env-contract.txt stageable, and that file
+# carries the local home path, the CA bundle location, and the authenticated
+# account name.
+#
+# An allowlist states the intent directly: everything under .agent/ is working
+# state except the two declared files. With it in place, a blanket `git add`
+# is simply correct, enforced by git for every tool and every human rather than
+# by a guard that has to recognise a command shape.
+readonly IGNORE_MARKER='# agentkit: .agent/ is working state; these two files are the declaration'
+ignore_file="$repo_root/.gitignore"
+
+if grep -qF "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
+    printf 'ignore rules already present in .gitignore\n'
+elif {
+    [[ ! -s $ignore_file ]] || printf '\n'
+    printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
+} >> "$ignore_file" 2> /dev/null; then
+    printf 'added ignore rules to .gitignore\n'
+else
+    printf 'WARNING: could not write %s -- add these by hand:\n' "$ignore_file" >&2
+    printf '  .agent/*\n  !.agent/config.env\n  !.agent/board.json\n' >&2
+fi
+
+# Files already in the index are not affected by an ignore rule. Report them
+# rather than removing them: untracking is a history decision, not this
+# script's call to make.
+tracked=$(git -C "$repo_root" ls-files -- .agent 2> /dev/null |
+    grep -vE '^\.agent/(config\.env|board\.json)$' || true)
+if [[ -n $tracked ]]; then
+    printf 'NOTE: already tracked despite the new rules -- untrack when convenient:\n' >&2
+    printf '%s\n' "$tracked" | sed 's/^/  /' >&2
+    printf '  git rm --cached <path>\n' >&2
+fi
+
 exit 0

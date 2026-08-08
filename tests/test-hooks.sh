@@ -10,6 +10,7 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 hooks="$root/agentkit/hooks"
+skills_root="$root/agentkit/skills"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -96,6 +97,55 @@ ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
 assert_contains "$ctx" 'did not start inside a git repository' 'it is told where it is'
 assert_contains "$ctx" 'stays inert' 'and which guard is not watching'
 
+# --- Layer 0: the tooling contract, at zero cost --------------------------
+# The cheapest defence against re-learning: it arrives before the first mistake
+# and costs no tool call at all.
+onboarded=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$onboarded/.agent/config.env"
+printf 'repo=example-org/example-repo\n' > "$onboarded/.agent/env-contract.txt"
+out=$(session_input "$onboarded" | "$hooks/session-start.sh" 2>/dev/null)
+ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
+assert_contains "$ctx" 'triage-issues.sh' 'an onboarded repo is told what helpers exist'
+assert_contains "$ctx" 'move-github-project-item.sh' 'including the board mover'
+assert_contains "$ctx" 'plugins/cache' 'and how to resolve them'
+assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
+assert_not_contains "$ctx" 'not onboarded' 'and is not also told to bootstrap'
+
+# Every helper named must EXIST. A curriculum naming a missing script teaches a
+# broken path -- the same failure the deny messages had after packaging moved
+# the tree. Extracted from the emitted text, not restated here, so this cannot
+# drift from what agents are actually told.
+# shellcheck disable=SC2016  # $agentkit is the literal text being matched in the
+# emitted curriculum, not a variable to expand here.
+while read -r rel; do
+    [[ -n $rel ]] || continue
+    assert_eq 'yes' "$([[ -e $skills_root/$rel ]] && echo yes || echo no)" \
+        "the curriculum names a helper that exists: $rel"
+done < <(grep -oE '\$agentkit/[^[:space:]]+\.sh' <<< "$ctx" | sed 's|^\$agentkit/||' | sort -u)
+
+# A worker gets it too, and this is the only channel that can reach it.
+sub_in=$(jq -nc --arg cwd "$onboarded" \
+    '{cwd:$cwd,hook_event_name:"SubagentStart",model:"m",session_id:"s1",
+      agent_id:"a1",agent_type:"worker",transcript_path:null}')
+out=$(printf '%s' "$sub_in" | "$hooks/subagent-start.sh" 2>/dev/null)
+ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
+assert_contains "$ctx" 'triage-issues.sh' 'a spawned worker inherits the tooling contract'
+assert_contains "$ctx" 'example-org/example-repo' 'alongside the environment contract'
+
+# --- compaction re-arms the lessons ---------------------------------------
+# Compaction is precisely when an injected lesson was summarised away, so the
+# once-per-session claims must not outlive it.
+claim_dir="$onboarded/.agent/cache/brief/s1"
+mkdir -p "$claim_dir/board-read"
+session_input "$onboarded" compact | PATH="$stub_path" "$hooks/session-start.sh" >/dev/null 2>&1
+assert_eq 'no' "$([[ -d $claim_dir/board-read ]] && echo yes || echo no)" \
+    'compaction clears this session claims so the lessons are taught again'
+
+mkdir -p "$claim_dir/board-read"
+session_input "$onboarded" | "$hooks/session-start.sh" >/dev/null 2>&1
+assert_eq 'yes' "$([[ -d $claim_dir/board-read ]] && echo yes || echo no)" \
+    'an ordinary start leaves them alone'
+
 # --- fails open when nothing on the PATH resolves -------------------------
 # "No usable environment" means no jq, no git, no coreutils -- not "no bash".
 # `#!/usr/bin/env bash` resolves bash ON the PATH, so emptying the PATH makes env
@@ -153,11 +203,27 @@ for h in session-start subagent-start; do
     assert_eq '0' "$rc" "$h survives malformed input"
 done
 
-# --- PreToolUse: deny with a reason, never exit 2 -------------------------
+# --- PreToolUse: one denial, once, and never a halt -----------------------
+# Every other rule moved to PostToolUse, where the command runs first and the
+# lesson lands afterwards. What survives here is the bare helper path, which
+# cannot succeed at all -- so nothing is being withheld by refusing it.
+# Counter kept on disk, not in a variable. These are called from inside command
+# substitution, so a shell variable would increment in a subshell and every
+# "fresh" session id would come back identical -- which silently collapsed all of
+# the once-per-session assertions into one session.
+sid_file="$tmp/sid-counter"
+printf '0' > "$sid_file"
+fresh_sid() {
+    local n
+    n=$(($(cat "$sid_file" 2> /dev/null || echo 0) + 1))
+    printf '%s' "$n" > "$sid_file"
+    printf 's%03d' "$n"
+}
+
 pre_input() {
-    jq -nc --arg cwd "$1" --arg cmd "$2" \
+    jq -nc --arg cwd "$1" --arg cmd "$2" --arg sid "${3:-$(fresh_sid)}" \
         '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
-          session_id:"s",tool_name:"Bash",tool_use_id:"t",transcript_path:null,
+          session_id:$sid,tool_name:"Bash",tool_use_id:"t",transcript_path:null,
           tool_input:{command:$cmd}}'
 }
 decision() { jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$1"; }
@@ -175,36 +241,40 @@ assert_eq 'deny' "$(decision "$out")" 'denies a bare helper invocation'
 assert_contains "$out" 'agentkit' 'and names the resolver, not a pre-plugin path'
 assert_contains "$out" 'plugins/cache' 'including the plugin location'
 assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
+# The override sentence is load-bearing, not decorative. Denied once WITHOUT it,
+# a live agent answered "It was not run" and stopped rather than adapting.
+assert_contains "$out" 'run it again' 'and states that the retry is permitted'
 
-out=$(pre_input "$repo" 'git add -A' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'denies git add -A'
-assert_contains "$out" 'worktree-commit.sh' 'and names the correct helper'
+# --- the promise the message makes must be kept ---------------------------
+same=$(fresh_sid)
+out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$same" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'first call in a session is denied'
+out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$same" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'and the retry it invited is allowed'
+out=$(pre_input "$repo" 'triage-issues.sh --state open' "$same" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'the whole rule opens, not just that one command'
+out=$(pre_input "$repo" 'agent-run.sh --cmd test' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a new session is taught again'
 
-# Global git options sit BETWEEN `git` and `add`, so a `git[[:space:]]+add`
-# pattern misses every one of them. All four of these walked through untouched.
-for sweep in 'git -C . add -A' 'git -C /some/repo add --all' \
-    'git --no-pager add -A' 'git -c core.pager=cat add .' \
-    'git --git-dir=/r/.git add -A'; do
-    out=$(pre_input "$repo" "$sweep" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'deny' "$(decision "$out")" "denies through a global option: $sweep"
-done
-
-# Stripping globals must not become "skip arbitrary text": a search whose QUERY
-# happens to contain the pattern is not a staging sweep.
-out=$(pre_input "$repo" 'git log --grep "add -A"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'a search mentioning the pattern is not a sweep'
-
-out=$(pre_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'denies board discovery when board.json exists'
-assert_contains "$out" 'move-github-project-item.sh' 'and names the one-call helper'
-
-out=$(pre_input "$repo" 'gh api repos/o/r/issues/5/timeline --paginate' \
-    | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'denies the per-issue timeline call'
-assert_contains "$out" 'triage-issues.sh' 'and names the single-query helper'
+# --- cannot record, do not deny -------------------------------------------
+# THE inviolable rule. A denial issued on state that could not be persisted
+# denies the retry identically, and the one after that: an unrecoverable loop,
+# with no human in the loop for a worker.
+locked=$(make_repo)
+chmod -w "$locked/.agent/cache" 2>/dev/null || true
+if [[ -w $locked/.agent/cache ]]; then
+    printf '  skip unwritable-state check: cache still writable (running as root?)\n'
+else
+    for attempt in 1 2 3; do
+        out=$(pre_input "$locked" 'agent-run.sh --cmd test' "sLOCK" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+        assert_eq 'allow' "$(decision "$out")" "unrecordable state never denies (attempt $attempt)"
+    done
+fi
+chmod +w "$locked/.agent/cache" 2>/dev/null || true
 
 # Command position is what makes a helper mention wrong. An interpreter prefix
-# still counts -- `bash agent-run.sh` is the same guaranteed failure.
+# still counts -- `bash agent-run.sh` is the same guaranteed failure. Each gets a
+# fresh session, since the rule now opens after one denial.
 for bad in 'agent-run.sh --cmd test' '  agent-run.sh' 'cd /tmp; agent-run.sh' \
     'git status && agent-run.sh --cmd verify' 'bash agent-run.sh' \
     'triage-issues.sh --state open'; do
@@ -230,6 +300,15 @@ for ok in 'ls -la' 'git status' 'gh pr view 5' 'echo hi' \
     assert_eq 'allow' "$(decision "$out")" "allows: $ok"
 done
 
+# --- the rules that moved must NOT block any more -------------------------
+# This is the autonomy guarantee. Each of these was a permanent denial; a worker
+# meeting one had no way past it. They now run and are taught afterwards.
+for freed in 'git add -A' 'git -C . add -A' 'gh project item-list 7 --owner x' \
+    'gh api repos/o/r/issues/5/timeline --paginate' 'gh issue view 442'; do
+    out=$(pre_input "$repo" "$freed" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "no longer blocked: $freed"
+done
+
 # --- the allow path must express NO decision -------------------------------
 # codex 0.147 rejects permissionDecision:"allow" at runtime even though the
 # schema embedded in its own binary lists it as legal. Emitting it produced
@@ -240,38 +319,85 @@ assert_not_contains "$out" 'permissionDecision' 'the allow path emits no permiss
 assert_not_contains "$out" 'allow' 'and never the literal the runtime rejects'
 assert_eq '{}' "$(jq -c . <<< "$out")" 'the allow path is an empty object'
 
-# --- guards follow the repository the COMMAND names ------------------------
-# Launching outside the target repo is an ordinary mistake ("I meant to start in
-# the project"). Anchoring evidence to the session cwd alone made the board and
-# triage guards inert for that whole session while the text-only rules kept
-# firing -- partial protection that looks identical to full protection.
+# --- PostToolUse: teach after the fact ------------------------------------
+# Rests on a MEASURED fact: additionalContext here reaches the model. A live
+# agent, given a code word through this channel and then barred from using any
+# tool, repeated it exactly.
+post_input() {
+    jq -nc --arg cwd "$1" --arg cmd "$2" --arg sid "${3:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PostToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:"Bash",tool_use_id:"t",transcript_path:null,
+          tool_input:{command:$cmd},tool_response:{stdout:"",exit_code:0}}'
+}
+ctx_of() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
+
+out=$(post_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_hook_output "$out" post-tool-use 'PostToolUse emits schema-valid JSON'
+ctx=$(ctx_of "$out")
+assert_contains "$ctx" 'triage-issues.sh' 'board advice offers a way to READ the board'
+assert_contains "$ctx" 'move-github-project-item.sh' 'and a way to move an item'
+assert_contains "$ctx" 'plugins/cache' 'and teaches the resolver'
+
+# It must be structurally unable to block. Not "unlikely to" -- unable.
+for shape in 'gh project item-list 7 --owner x' 'gh issue view 442' 'git add -A' 'ls -la'; do
+    out=$(post_input "$repo" "$shape" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_not_contains "$out" 'permissionDecision' "never decides a permission: $shape"
+    assert_not_contains "$out" '"decision"' "and never blocks: $shape"
+done
+
+# Once per rule, per session. An advisory on every call is noise, and noise is
+# how the environment contract stops being read.
+s=$(fresh_sid)
+out=$(post_input "$repo" 'gh issue view 442' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'the first per-issue call is taught'
+out=$(post_input "$repo" 'gh issue view 443' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'the second is not repeated'
+# Keyed by RULE, not by command: hashing the command would make 442, 443, 444
+# three separate lessons and teach twelve times where one was intended.
+out=$(post_input "$repo" 'git add -A' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'worktree-commit.sh' 'a different rule still speaks in that session'
+out=$(post_input "$repo" 'gh issue view 444' | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'and a new session is taught again'
+
+# Reading ONE issue body stays legitimate; the digest deliberately omits bodies.
+out=$(post_input "$repo" 'gh issue view 442' | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'does not carry bodies' 'the advice does not forbid reading a body'
+
+# Unrecordable state SPEAKS -- the inverse of the denial rule. A repeated
+# sentence is noise; silence would lose the lesson, and nothing here can block.
+locked2=$(make_repo)
+printf 'AGENT_REPO_SLUG=e/e\n' > "$locked2/.agent/config.env"
+chmod -w "$locked2/.agent/cache" 2>/dev/null || true
+if [[ ! -w $locked2/.agent/cache ]]; then
+    for attempt in 1 2; do
+        out=$(post_input "$locked2" 'gh issue view 1' "sLOCK2" | "$hooks/post-tool-use.sh" 2>/dev/null)
+        assert_contains "$(ctx_of "$out")" 'triage-issues.sh' "unrecordable state still teaches (attempt $attempt)"
+    done
+fi
+chmod +w "$locked2/.agent/cache" 2>/dev/null || true
+
+# --- advice follows the repository the COMMAND names ----------------------
+# Launching outside the target repo is an ordinary mistake. Anchoring evidence to
+# the session cwd alone made these rules inert for that whole session.
 outside="$tmp/outside"
 mkdir -p "$outside"
 for cmd in "cd $repo && gh project item-list 7 --owner x" \
-    "gh issue view 442; cd $repo" \
-    "git -C $repo add -A"; do
-    out=$(pre_input "$outside" "$cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'deny' "$(decision "$out")" "follows the named repository: $cmd"
+    "gh issue view 442; cd $repo"; do
+    out=$(post_input "$outside" "$cmd" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' "follows the named repository: $cmd"
 done
 
-# Naming no repository from outside one still allows: no evidence, no denial.
-out=$(pre_input "$outside" 'gh project item-list 7 --owner x' \
-    | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'outside a repo, naming none, still allows'
-
-# A read of the board must be offered a way to READ it. Denied here with only a
-# status-mover on offer, a live agent hand-rolled its own GraphQL query.
-out=$(pre_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_contains "$out" 'triage-issues.sh' 'the board deny offers a way to read the board'
-assert_contains "$out" 'move-github-project-item.sh' 'as well as a way to move an item'
-
-# --- no evidence, no denial ------------------------------------------------
+# --- no evidence, nothing to say ------------------------------------------
 bare=$(make_repo)
 rm -rf "$bare/.agent"
 for cmd in 'gh project item-list 7 --owner x' 'gh api repos/o/r/issues/5/timeline'; do
-    out=$(pre_input "$bare" "$cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'allow' "$(decision "$out")" "allows without .agent/ evidence: $cmd"
+    out=$(post_input "$bare" "$cmd" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "silent without .agent/ evidence: $cmd"
 done
+
+rc=0
+printf 'not json' | "$hooks/post-tool-use.sh" > /dev/null 2>&1 || rc=$?
+assert_eq '0' "$rc" 'PostToolUse survives malformed input'
 
 # --- a guard that cannot decide allows ------------------------------------
 rc=0

@@ -16,7 +16,10 @@ step() { printf '\n== %s\n' "$1"; }
 step 'shellcheck (shipped scripts)'
 mapfile -t scripts < <(find "$plugin" -name '*.sh' | sort)
 printf '  %d scripts\n' "${#scripts[@]}"
-shellcheck -S style "${scripts[@]}" || rc=1
+# -x follows `# shellcheck source=` so the hooks' shared library is analysed as
+# part of each caller; -P SCRIPTDIR resolves those paths against each script's
+# own directory rather than the one this gate is invoked from.
+shellcheck -x -P SCRIPTDIR -S style "${scripts[@]}" || rc=1
 
 step 'bash -n (shipped scripts)'
 for f in "${scripts[@]}"; do

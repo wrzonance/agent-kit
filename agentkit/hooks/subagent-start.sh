@@ -10,17 +10,37 @@ set -uo pipefail
 emit_empty() { printf '{}\n'; exit 0; }
 trap 'emit_empty' ERR
 
+self_dir=${BASH_SOURCE[0]%/*}
+[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+# shellcheck source=lib/guard-lib.sh
+source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
+
 input=$(cat 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 [[ -n $cwd && -d $cwd ]] || emit_empty
 
 root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || printf '%s' "$cwd")
 contract_file="$root/.agent/env-contract.txt"
-[[ -r $contract_file ]] || emit_empty
-contract=$(cat -- "$contract_file" 2> /dev/null || true)
-[[ -n $contract ]] || emit_empty
+contract=''
+[[ ! -r $contract_file ]] || contract=$(cat -- "$contract_file" 2> /dev/null || true)
 
-jq -nc --arg ctx "Environment contract inherited from the orchestrator (do not re-probe):
-$contract" \
+context=''
+[[ -z $contract ]] || context="Environment contract inherited from the orchestrator (do not re-probe):
+$contract"
+
+# A worker gets the tooling contract too, and this is the ONLY way it can. It
+# never sees the parent's session context, and it is the agent least able to
+# recover from a wrong guess -- nobody is watching it to rephrase.
+if [[ -r $root/.agent/config.env ]]; then
+    curriculum=$(guard_curriculum "$self_dir/../skills" 2> /dev/null || true)
+    if [[ -n $curriculum ]]; then
+        [[ -z $context ]] || context+=$'\n\n'
+        context+=$curriculum
+    fi
+fi
+
+[[ -n $context ]] || emit_empty
+
+jq -nc --arg ctx "$context" \
     '{hookSpecificOutput:{hookEventName:"SubagentStart",additionalContext:$ctx}}'
 exit 0

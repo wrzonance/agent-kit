@@ -192,4 +192,51 @@ run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'a repo with nothing detectable still generates a clean config'
 
+# --- ignore rules are WRITTEN, and they work -------------------------------
+# This printed advice and wrote nothing, so a bootstrapped repository could reach
+# steady state with no rule at all -- which is what happened in the first repo it
+# was used on. And the advice was too narrow: .agent/cache/ left env-contract.txt
+# stageable, and that file carries the local home path, the CA bundle location,
+# and the authenticated account name.
+repo=$(make_repo)
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+ignore=$(cat "$repo/.gitignore" 2> /dev/null || true)
+assert_contains "$ignore" '.agent/*' 'bootstrap writes the ignore rules'
+assert_contains "$ignore" '!.agent/config.env' 'and exempts the declared config'
+assert_contains "$ignore" '!.agent/board.json' 'and the declared board cache'
+
+# The claim is about git's behaviour, not about a pattern's text, so it is
+# asserted by actually staging.
+mkdir -p "$repo/.agent/cache" "$repo/.agent/logs"
+printf 'account=someone home=/home/someone\n' > "$repo/.agent/env-contract.txt"
+printf 'x\n' > "$repo/.agent/cache/stamp-verify"
+printf 'x\n' > "$repo/.agent/logs/run.log"
+git -C "$repo" add -A > /dev/null 2>&1
+staged=$(git -C "$repo" diff --cached --name-only -- .agent | sort | tr '\n' ' ')
+assert_eq '.agent/board.json .agent/config.env ' "$staged" \
+    'a blanket add stages the two declared files and nothing else'
+assert_not_contains "$staged" 'env-contract' 'the probe output never reaches the index'
+
+# Re-running must not duplicate the block: bootstrap --force is the documented
+# migration for repositories that predate this.
+before=$(grep -c 'agent/\*' "$repo/.gitignore")
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+assert_eq "$before" "$(grep -c 'agent/\*' "$repo/.gitignore")" 're-running does not duplicate the rules'
+
+# An existing .gitignore must survive intact.
+repo=$(make_repo)
+printf 'node_modules/\n*.log\n' > "$repo/.gitignore"
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+assert_contains "$(cat "$repo/.gitignore")" 'node_modules/' 'existing ignore entries are preserved'
+
+# Already-tracked working state is REPORTED, not silently removed: untracking is
+# a history decision and not this script's to make.
+repo=$(make_repo)
+mkdir -p "$repo/.agent"
+printf 'account=someone\n' > "$repo/.agent/env-contract.txt"
+git -C "$repo" add -f .agent/env-contract.txt > /dev/null 2>&1
+warn=$(run_bs --repo-root "$repo" --project 7 --force 2>&1 > /dev/null || true)
+assert_contains "$warn" 'env-contract.txt' 'already-tracked working state is reported'
+assert_contains "$warn" 'git rm --cached' 'with the command that fixes it'
+
 finish

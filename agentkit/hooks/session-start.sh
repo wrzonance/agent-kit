@@ -58,10 +58,13 @@ If the work targets a repository, prefer starting the session inside it.'
 # nothing. The guard covers an invocation by bare name, where %/* strips nothing.
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+# shellcheck source=lib/guard-lib.sh
+source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
 
 input=$(cat 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 source_kind=$(jq -r '.source // "startup"' <<< "$input" 2> /dev/null || true)
+session_id=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 [[ -n $cwd && -d $cwd ]] || emit_empty
 
 # Whether this IS a repository is tracked separately from where its root is: the
@@ -94,11 +97,30 @@ if [[ -n $contract ]]; then
 $contract"
 fi
 
+# Compaction is exactly when an injected lesson was summarised away, so the
+# once-per-session advisories are re-armed here. Session-scoped, so it clears
+# only this session's claims.
+if [[ $source_kind == compact && -n $session_id ]]; then
+    rm -rf -- "$root/.agent/cache/brief/${session_id//[^A-Za-z0-9._-]/_}" 2> /dev/null || true
+fi
+
+# Old claims from sessions long gone. Cosmetic, but this sits next to committed
+# files and should not accumulate.
+if [[ -d $root/.agent/cache/brief ]]; then
+    find "$root/.agent/cache/brief" -maxdepth 1 -mindepth 1 -type d -mtime +7 \
+        -exec rm -rf -- {} + 2> /dev/null || true
+fi
+
 notice=''
 if [[ $in_repo -eq 0 ]]; then
     notice=$NO_REPO_HINT
 elif [[ ! -r $root/.agent/config.env ]]; then
     notice=$ONBOARD_HINT
+else
+    # An onboarded repository gets the tooling contract. An un-onboarded one
+    # gets the notice above instead: naming board helpers to a repository with
+    # no board declaration would teach a command that cannot work there.
+    notice=$(guard_curriculum "$self_dir/../skills" 2> /dev/null || true)
 fi
 
 if [[ -n $notice ]]; then

@@ -55,8 +55,6 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" -maxdepth 4 -type d 
 
 "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # look first
 "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
-
-printf '.agent/cache/\n' >> .gitignore
 ```
 
 This writes two committed files:
@@ -65,6 +63,10 @@ This writes two committed files:
   names, ADR directory, and commented suggestions for your verify commands.
 - **`.agent/board.json`** — the board's node IDs, so a status move costs one API
   call instead of seven.
+
+…and the `.gitignore` rules that keep everything *else* under `.agent/` out of
+your history — the environment contract carries local paths and your account
+name. Re-run with `--force` on a repository bootstrapped before this existed.
 
 Both are readable text. Nothing secret goes in either — tokens, proxies, and CA
 paths are refused outright, because these files are committed and anyone who can
@@ -87,20 +89,33 @@ point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 
 | Hook | Behaviour |
 |---|---|
-| `SessionStart` | Probes the environment once and hands the agent a twelve-line contract, so it starts knowing the repo, branch, base, sandbox state, CA bundle, and cache roots. In a repository with no `.agent/config.env`, it also prints how to onboard it — otherwise the guards below stay inert and silent, which looks exactly like breakage |
-| `SubagentStart` | Injects that same contract into every spawned worker |
-| `PreToolUse` | Blocks four wasteful command shapes and tells the agent the command that works instead |
+| `SessionStart` | Probes the environment once and hands the agent a contract — repo, branch, base, sandbox state, CA bundle, cache roots — plus the list of helpers that exist here. With no `.agent/config.env` it prints how to onboard instead |
+| `SubagentStart` | Injects both into every spawned worker. This is the only channel that reaches one |
+| `PreToolUse` | One denial, for the one command that cannot succeed |
+| `PostToolUse` | Teaches the cheaper command *after* the call returned real data |
 | `Stop` | Won't let a turn finish when a declared verify command hasn't covered the current changes |
 
-Two rules they all follow:
+Three rules they all follow:
+
+**Nothing that has an alternative gets blocked.** A guard that refuses a command
+can end a line of work — a live agent, denied once, answered "It was not run"
+and stopped. So the guards let the command run and correct it afterwards, using
+a channel measured to reach the model. The agent pays for the wasteful call once
+and knows better before the second.
+
+That matters most where nobody is watching. A blocked main session has a human
+who can rephrase; a blocked worker is a dead branch, silently.
 
 **They never exit non-zero.** A hook that exits `2` halts the agent instead of
-informing it. Every hook exits `0` and says what it wants in JSON, so the agent
-reads the reason and adapts.
+informing it. Every hook exits `0` and says what it wants in JSON.
 
-**Guards need evidence.** A repository with no `.agent/` directory gets no
-denials at all. Declaring a verify command is what opts you into the `Stop`
-check — declare none and it never fires.
+**Guards need evidence.** A repository with no `.agent/` directory gets nothing
+at all. Declaring a verify command is what opts you into the `Stop` check —
+declare none and it never fires.
+
+The one surviving denial is a bare helper name. Nothing here is on `PATH`, so
+that command cannot succeed; letting it run would teach the same lesson one call
+later. It fires **once per session**, says so, and the retry is allowed.
 
 ---
 
