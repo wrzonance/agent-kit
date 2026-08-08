@@ -300,10 +300,23 @@ probe_git() {
     gitdir="$(git -C "$WORKTREE" rev-parse --git-dir 2>/dev/null || printf '%s' "$common")"
     common="$(abs_in_worktree "$common")"
     gitdir="$(abs_in_worktree "$gitdir")"
+    # The git directory being writable says nothing about the WORKTREE ROOT, and
+    # that is what most commands need: a test runner writes .coverage there, a
+    # build writes artefacts there. Starting a session in a SUBDIRECTORY makes
+    # only that subtree writable under a workspace-scoped sandbox, so the root
+    # is read-only and the failure arrives as an unrelated OSError from whatever
+    # tool touched it first.
+    local root_state
+    root_state=$(dir_writable_word "$WORKTREE")
+
     if dir_writable "$common"; then
         line="git= common-dir=$common writable=yes"
     else
         line="git= common-dir=$common writable=no note=\"first write needs elevation\""
+    fi
+    line+=" worktree-writable=$root_state"
+    if [[ $root_state != yes ]]; then
+        line+=" note3=\"the repository ROOT is not writable from here; anything that writes at the root (coverage files, build output, lockfiles) fails. Start the session at the repository root rather than in a subdirectory\""
     fi
     if [[ "$gitdir" != "$common" ]]; then
         if dir_writable "$gitdir"; then

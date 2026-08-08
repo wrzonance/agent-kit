@@ -512,6 +512,25 @@ refresh_cmd_str
 select_caches
 detect_ca
 export_ca_vars
+# A read-only repository ROOT is the failure that arrives disguised. Most build
+# and test tools write there -- a coverage file, a cache, build output -- so the
+# first symptom is an OSError from a tool that had nothing to do with the cause.
+# Observed: a session started in a SUBDIRECTORY, which a workspace-scoped sandbox
+# makes the only writable subtree, and pytest died on .coverage at the root.
+warn_if_root_readonly() {
+    local probe
+    [[ -n $git_top && -d $git_top ]] || return 0
+    probe=$(mktemp "$git_top/.agent-run-probe-XXXXXX" 2> /dev/null) || {
+        printf 'agent-run: WARNING: the repository root (%s) is not writable from this process.\n' "$git_top" >&2
+        printf '  Anything writing there -- coverage files, caches, build output -- will fail with an\n' >&2
+        printf '  error naming the file rather than the cause. A session started in a subdirectory is\n' >&2
+        printf '  the usual reason: start it at the repository root instead.\n' >&2
+        return 0
+    }
+    rm -f -- "$probe" 2> /dev/null || true
+}
+warn_if_root_readonly
+
 set_pythonpath
 maybe_enable_system_certs
 maybe_use_package_dir
