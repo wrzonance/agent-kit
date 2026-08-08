@@ -281,7 +281,29 @@ done
         printf '%s\n' "$suggestions"
         printf '# AGENT_CMD_VERIFY=\n# AGENT_CMD_TEST=\n# AGENT_CMD_LINT=\n'
     fi
+    # --force regenerates DISCOVERED facts; it must not throw away DECLARED ones.
+    #
+    # Everything above is rediscoverable from the forge. The verify commands and
+    # label classifications are not -- they are judgement work someone did once,
+    # and on a real repository they represented a run of the full test suite to
+    # confirm each command actually worked. Regenerating over them silently
+    # destroyed all of it; the agent that hit this happened to notice and put it
+    # back by hand, which is not a mechanism.
+    #
+    # So every declared key this generator does not own is carried across
+    # verbatim, and reported.
+    if [[ -f $repo_root/.agent/config.env ]]; then
+        carried=$(grep -E '^[[:space:]]*AGENT_[A-Z0-9_]+=' "$repo_root/.agent/config.env" 2> /dev/null |
+            grep -vE '^[[:space:]]*(AGENT_REPO_SLUG|AGENT_BASE_BRANCH|AGENT_PROJECT_OWNER|AGENT_PROJECT_NUMBER|AGENT_STATUS_VOCAB|AGENT_ADR_DIR|AGENT_WORKTREE_ROOT)=' || true)
+        if [[ -n $carried ]]; then
+            printf '\n# Carried forward from the previous config: declarations this generator\n'
+            printf '# does not produce and therefore must not discard.\n'
+            printf '%s\n' "$carried"
+        fi
+    fi
 } > "$staging/.agent/config.env"
+
+carried_count=$(grep -cE '^[[:space:]]*AGENT_' <<< "${carried:-}" 2> /dev/null || printf '0')
 
 # --- validate what we are about to write ------------------------------------
 if [[ -x $resolver ]]; then
@@ -321,6 +343,8 @@ mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
 printf 'wrote %s/.agent/config.env\n' "$repo_root"
 printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
     "$repo_root" "$project_num" "$option_count"
+((carried_count == 0)) ||
+    printf 'carried forward %s existing declaration(s); nothing was discarded\n' "$carried_count"
 
 # Ignore rules are WRITTEN, not suggested.
 #

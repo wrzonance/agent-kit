@@ -239,4 +239,34 @@ warn=$(run_bs --repo-root "$repo" --project 7 --force 2>&1 > /dev/null || true)
 assert_contains "$warn" 'env-contract.txt' 'already-tracked working state is reported'
 assert_contains "$warn" 'git rm --cached' 'with the command that fixes it'
 
+# --- --force must not discard declared work --------------------------------
+# Everything the generator writes is rediscoverable from the forge. The verify
+# commands and label classifications are not: they are judgement work, and on a
+# real repository confirming them meant running the full test suite. Regenerating
+# over them destroyed all of it, and the agent that hit it happened to notice.
+repo=$(make_repo config-good.env)
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+cat >> "$repo/.agent/config.env" <<'CFG'
+AGENT_CMD_TEST=true
+AGENT_LABEL_TYPES=bug,enhancement
+AGENT_PROTECTED_PATHS=migrations/
+CFG
+out=$(run_bs --repo-root "$repo" --project 7 --force 2>&1)
+after=$(cat "$repo/.agent/config.env")
+assert_contains "$after" 'AGENT_CMD_TEST=true' 'a declared command survives --force'
+assert_contains "$after" 'AGENT_LABEL_TYPES=bug,enhancement' 'and a label classification'
+assert_contains "$after" 'AGENT_PROTECTED_PATHS=migrations/' 'and declared protected paths'
+assert_contains "$out" 'carried forward' 'and the run says what it preserved'
+
+# Discovered facts are still refreshed rather than duplicated -- carrying
+# everything forward blindly would pin a stale slug or board number for ever.
+assert_eq '1' "$(grep -c '^AGENT_REPO_SLUG=' "$repo/.agent/config.env")" \
+    'a regenerated key appears exactly once'
+assert_eq '1' "$(grep -c '^AGENT_CMD_TEST=' "$repo/.agent/config.env")" \
+    'and a carried key is not duplicated either'
+
+# Still parses after the merge.
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" 'the merged config parses cleanly'
+
 finish
