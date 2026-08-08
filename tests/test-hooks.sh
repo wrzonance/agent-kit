@@ -64,10 +64,23 @@ assert_contains "$ctx" 'README' 'and where to read more'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_contains "$ctx" 'plugins/cache' 'and it teaches the resolver, not a fixed path'
 
+# The notice must reach the PERSON, not only the model. Handed it and asked to
+# run ls, a live agent ran ls and said nothing about it -- a reasonable reading
+# of context that is not addressed to the user. systemMessage is the channel the
+# TUI shows, so the notice goes to both.
+assert_contains "$out" 'systemMessage' 'the onboarding notice also reaches the operator'
+human=$(jq -r '.systemMessage // ""' <<< "$out")
+assert_contains "$human" 'not onboarded' 'and says what is wrong'
+assert_contains "$human" 'bootstrap-repo.sh' 'and how to fix it'
+# The agent-facing copy must be an instruction, not a description, or the model
+# has no reason to raise it at all.
+assert_contains "$ctx" 'ACTION REQUIRED' 'and the agent is told to raise it'
+
 # Onboarded repositories must never see it again.
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 out=$(session_input "$repo" | "$hooks/session-start.sh" 2>/dev/null)
 assert_not_contains "$out" 'not onboarded' 'an onboarded repo is not nagged'
+assert_not_contains "$out" 'systemMessage' 'and the operator is not nagged either'
 
 # No contract AND no config is still worth speaking up for -- it is precisely
 # the un-onboarded case, and emitting nothing is how it stays invisible. Built

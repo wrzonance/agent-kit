@@ -19,10 +19,13 @@ readonly CONTRACT_MAX_AGE_MINUTES=30
 # Single-quoted deliberately: every $ below is literal text for the agent to read
 # and retype. Expanding it here would bake this machine's paths into the advice.
 # shellcheck disable=SC2016
-readonly ONBOARD_HINT='This repository is not onboarded -- .agent/config.env is absent, so the board,
-triage, and commit guards have no facts to act on and stay inert.
+readonly ONBOARD_HINT='ACTION REQUIRED, before you do anything else: tell the user this repository is
+not onboarded, and offer to onboard it now. Do not silently continue -- the
+board, triage, and commit guards have no facts to act on and stay inert, which
+is indistinguishable from the tooling being broken.
 
-To onboard it, from the repository root:
+If the user agrees, run this from the repository root (it is safe to inspect
+first with --dry-run, and it writes only .agent/ and .gitignore):
 
   agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
     -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
@@ -151,8 +154,23 @@ if [[ -n $notice ]]; then
     context+=$notice
 fi
 
-[[ -n $context ]] || emit_empty
+# additionalContext reaches only the MODEL. Asked to run ls, a model that was
+# handed the onboarding notice ran ls and said nothing -- correctly, from its
+# point of view. systemMessage is the channel aimed at the person, so the notice
+# goes to both and neither depends on the other relaying it.
+human=''
+if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
+    human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
+board, triage and commit guards are inert. Ask the agent to onboard it, or run:
+  \"\$(find \"\${CODEX_HOME:-\$HOME/.codex}/plugins/cache\" \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/plugins/cache\" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)/.shared/scripts/bootstrap-repo.sh\""
+elif [[ $in_repo -eq 0 ]]; then
+    human='agentkit: this session did not start inside a git repository, so repository-scoped
+guards and the end-of-turn verification check are inert.'
+fi
 
-jq -nc --arg ctx "$context" \
-    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'
+[[ -n $context$human ]] || emit_empty
+
+jq -nc --arg ctx "$context" --arg msg "$human" \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+     + (if $msg == "" then {} else {systemMessage:$msg} end)'
 exit 0
