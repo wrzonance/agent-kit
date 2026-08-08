@@ -522,19 +522,11 @@ probe_runners() {
 # moment the same repository is worked from the other CLI.
 HARNESS_OTHER=claude
 probe_harness() {
-    local harness=unknown trailer='Agent <noreply@example.invalid>' other=none
-    if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then
-        harness=claude
-        trailer='Claude <noreply@anthropic.com>'
-        other=codex
-    elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]] ||
-        [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then
-        harness=codex
-        trailer='Codex <noreply@openai.com>'
-        other=claude
-    fi
-    HARNESS_OTHER=$other
-    emit "harness= name=$harness trailer=\"$trailer\" other=$other"
+    local line
+    line=$("$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh" 2>/dev/null || true)
+    [[ -n $line ]] || line='name=unknown trailer="Agent <noreply@example.invalid>" other=none'
+    HARNESS_OTHER=${line##*other=}
+    emit "harness= $line"
 }
 
 # The peer CLI, for a cross-harness adversarial review. Named from the harness

@@ -24,6 +24,17 @@ contract_file="$root/.agent/env-contract.txt"
 contract=''
 [[ ! -r $contract_file ]] || contract=$(cat -- "$contract_file" 2> /dev/null || true)
 
+# A contract written by the OTHER CLI names the wrong agent, and a worker has no
+# way to notice. Dropping it costs the worker its inherited context; serving it
+# would have the worker credit its commits to a CLI it is not running in.
+if [[ -n $contract ]]; then
+    cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p' <<< "$contract" | head -1)
+    current=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
+    if [[ -n $cached && -n $current && $cached != "$current" ]]; then
+        contract=''
+    fi
+fi
+
 context=''
 [[ -z $contract ]] || context="Environment contract inherited from the orchestrator (do not re-probe):
 $contract"

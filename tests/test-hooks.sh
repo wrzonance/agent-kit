@@ -97,6 +97,40 @@ ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
 assert_contains "$ctx" 'did not start inside a git repository' 'it is told where it is'
 assert_contains "$ctx" 'stays inert' 'and which guard is not watching'
 
+# --- a contract from the OTHER CLI is stale, however fresh ----------------
+# Observed live: a contract written by one CLI at 13:26 was reused two minutes
+# later by the other, which then reported itself as its peer. Every commit in
+# that session would have credited the wrong agent. The harness= line is SESSION
+# identity; the file is shared by every CLI that opens the repository.
+foreign=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$foreign/.agent/config.env"
+printf 'repo=example-org/example-repo\nharness= name=someone-else trailer="X <x@example.invalid>" other=nobody\n' \
+    > "$foreign/.agent/env-contract.txt"
+out=$(session_input "$foreign" | PATH="$stub_path" "$hooks/session-start.sh" 2>/dev/null)
+ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
+assert_not_contains "$ctx" 'someone-else' 'a contract from another CLI is not served'
+assert_contains "$ctx" 'harness=' 'and is replaced by a fresh probe'
+
+# The same file, written by THIS harness, is still reused -- the check must not
+# throw away every cache and re-probe gh on every single session.
+mine=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$mine/.agent/config.env"
+me=$("$skills_root/.shared/scripts/harness-id.sh" --name)
+printf 'repo=cached/value\nharness= name=%s trailer="T <t@example.invalid>" other=z\n' "$me" \
+    > "$mine/.agent/env-contract.txt"
+out=$(session_input "$mine" | PATH="$stub_path" "$hooks/session-start.sh" 2>/dev/null)
+assert_contains "$out" 'cached/value' 'a contract from this harness is still reused'
+
+# A worker must not inherit the other CLI's identity either; it has no way to
+# notice, and nobody is watching it.
+printf 'repo=example-org/example-repo\nharness= name=someone-else trailer="X <x@example.invalid>" other=nobody\n' \
+    > "$foreign/.agent/env-contract.txt"
+out=$(printf '%s' "$(jq -nc --arg cwd "$foreign" \
+    '{cwd:$cwd,hook_event_name:"SubagentStart",model:"m",session_id:"s1",
+      agent_id:"a1",agent_type:"worker",transcript_path:null}')" \
+    | "$hooks/subagent-start.sh" 2>/dev/null)
+assert_not_contains "$out" 'someone-else' 'a worker is not handed the other CLI identity'
+
 # --- Layer 0: the tooling contract, at zero cost --------------------------
 # The cheapest defence against re-learning: it arrives before the first mistake
 # and costs no tool call at all.

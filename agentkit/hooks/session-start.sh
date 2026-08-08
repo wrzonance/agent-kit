@@ -61,6 +61,18 @@ self_dir=${BASH_SOURCE[0]%/*}
 # shellcheck source=lib/guard-lib.sh
 source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
 
+
+# True when a cached contract was written by the CLI now running. Unknown either
+# way means "do not judge": re-probing costs a second, a wrong attribution
+# outlives the session.
+harness_matches() {
+    local cached current
+    cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p' <<< "$1" | head -1)
+    current=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
+    [[ -n $cached && -n $current ]] || return 0
+    [[ $cached == "$current" ]]
+}
+
 input=$(cat 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 source_kind=$(jq -r '.source // "startup"' <<< "$input" 2> /dev/null || true)
@@ -80,6 +92,15 @@ contract=''
 if [[ $source_kind != compact && -r $contract_file ]] &&
     [[ -n $(find "$contract_file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]]; then
     contract=$(cat -- "$contract_file" 2> /dev/null || true)
+fi
+
+# Age is not the only way a contract goes stale. Its harness= line is SESSION
+# identity, and the file is shared between every CLI that opens this repository,
+# so a contract written by one and served to the other credits every commit to
+# the wrong agent. Seen live: a contract written at 13:26 by one CLI was reused
+# two minutes later by the other, which then reported itself as its peer.
+if [[ -n $contract ]] && ! harness_matches "$contract"; then
+    contract=''
 fi
 
 if [[ -z $contract ]]; then
