@@ -75,6 +75,19 @@ $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name
 then finish."
 
+# This gate runs at the END OF EVERY TURN, so whichever command it picks is
+# paid for on a one-line comment as surely as on a refactor. A repository that
+# declares only a full suite therefore charges minutes for trivial edits --
+# observed, on a single added YAML comment.
+if [[ $verify_name != verify ]]; then
+    reason+="
+
+This repository declares no AGENT_CMD_VERIFY, so the gate falls back to
+'$verify_name'. Since it runs at the end of every turn, declaring a FAST
+AGENT_CMD_VERIFY (lint and typecheck, seconds) keeps the per-turn cost
+proportionate while '$verify_name' stays available for the full run."
+fi
+
 # 3. No stamp at all.
 [[ -r $stamp ]] || block "$reason"
 

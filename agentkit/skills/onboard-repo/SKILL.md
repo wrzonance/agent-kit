@@ -85,6 +85,17 @@ CI workflow steps, a pre-commit hook, a `Makefile`, `package.json` scripts, a
 
 Three shapes come up:
 
+**`VERIFY` is the per-turn gate — make it fast.** `Stop` runs it at the end of
+every turn, so its cost is paid on a one-line comment as surely as on a
+refactor. A repository that declared only a full suite charged five minutes for
+adding one line to a YAML file. Declare the seconds-long gate as `VERIFY` and
+keep the slow one as `TEST`:
+
+```ini
+AGENT_CMD_VERIFY=<lint and typecheck, seconds>
+AGENT_CMD_TEST=<the full suite, minutes>
+```
+
 **One entry point.** Declare it and move on.
 
 ```ini
@@ -184,8 +195,9 @@ as a result: which guards became active, and what `Stop` will now enforce.
 | `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | labels to reuse rather than invent |
 
-`AGENT_CMD_VERIFY` (or `AGENT_CMD_TEST`) is what opts the repository into the
-`Stop` check. Declare neither and end-of-turn verification never fires — which is
+`AGENT_CMD_VERIFY` (or, failing that, `AGENT_CMD_TEST`) is what opts the
+repository into the `Stop` check, and it runs at the end of every turn — so
+which of the two you declare decides what every trivial edit costs. Declare neither and end-of-turn verification never fires — which is
 a legitimate choice, but make it a stated one rather than an accident.
 
 **Nothing secret belongs in `config.env`.** Tokens, proxies and CA paths are
