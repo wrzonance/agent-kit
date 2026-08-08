@@ -8,7 +8,8 @@
 set -uo pipefail
 
 allow() { printf '{}\n'; exit 0; }
-trap 'allow' ERR
+GUARD_HOOK_NAME=stop
+trap 'guard_log_error $? 2>/dev/null || true; allow' ERR
 
 input=$(cat 2> /dev/null || true)
 
@@ -27,7 +28,12 @@ cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || true)
 [[ -n $root ]] || allow
 
-resolver="${BASH_SOURCE[0]%/*}/../skills/.shared/scripts/repo-config.sh"
+self_dir=${BASH_SOURCE[0]%/*}
+[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+# shellcheck source=lib/guard-lib.sh
+source "$self_dir/lib/guard-lib.sh" 2> /dev/null || allow
+
+resolver="$self_dir/../skills/.shared/scripts/repo-config.sh"
 [[ -x $resolver ]] || allow
 
 # 1. Opt-in check.
@@ -64,14 +70,6 @@ block() {
 # passing command -- a repository declaring AGENT_CMD_LINT=true would disarm this
 # check in one line while its real gate still failed.
 stamp="$root/.agent/cache/stamp-$verify_name"
-# The resolver is spelled out, not alluded to. Saying "resolve $agentkit first"
-# without showing how cost a live agent three failed commands: it guessed the
-# plugin root, missed the /skills segment, and had to find(1) its way out.
-# shellcheck disable=SC2016  # literal text the AGENT reads and retypes.
-readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
-  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"'
-
 reason="Changes are not covered by a verification run. Run:
 $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name

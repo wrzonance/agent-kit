@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# PreToolUse -> one denial, for the one command that cannot succeed.
+# PreToolUse -> two denials, and nothing else.
+#
+#   1. Commands that destroy work. Refused every time, because for these the
+#      second attempt is exactly the one that must also be refused.
+#   2. A bare helper name, which cannot succeed at all -- nothing here is on
+#      PATH. Refused once per session, and the message says the retry is allowed.
 #
 # Everything else is taught by PostToolUse AFTER the command has run and returned
 # real data (see post-tool-use.sh). A measured runtime fact makes that possible:
@@ -24,7 +29,8 @@ set -uo pipefail
 # The schema fixtures verify output SHAPE; they are not a statement of what the
 # runtime accepts. Only an interactive session proved this.
 allow() { printf '{}\n'; exit 0; }
-trap 'allow' ERR
+GUARD_HOOK_NAME=pre-tool-use
+trap 'guard_log_error $? 2>/dev/null || true; allow' ERR
 
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
@@ -46,6 +52,14 @@ command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null ||
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 [[ -n $command_line ]] || allow
+
+# Work-destroying commands. Denied every time, deliberately: unlike every other
+# rule here, the second attempt is exactly the one that must also be refused.
+if reason=$(guard_destructive_reason "$command_line"); then
+    deny "Refused -- $reason
+This denial does not lift on a retry. If it is genuinely what the task needs,
+the user should run it themselves."
+fi
 
 # A bare helper invocation. Nothing in the tree is on PATH, so this is a
 # guaranteed "command not found" that the agent then recovers from by guessing a

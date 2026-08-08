@@ -170,3 +170,62 @@ guard_strip_git_globals() {
         s/[[:space:]]+-P([[:space:]]|$)/ /g
     ' <<< "$1" 2> /dev/null || printf '%s' "$1"
 }
+
+# Commands that destroy work. This is the ONE place a hard, repeatable denial is
+# right, and it is the opposite of every other guard here.
+#
+# The rest of the guard set never blocks, because a command with a cheaper
+# alternative should run and be corrected afterwards. There is no
+# teach-after-the-fact for a force-push that already landed, and a
+# once-per-session override would refuse the first attempt and permit the
+# second -- precisely backwards. So these deny every time, and say what to do
+# instead.
+#
+# Kept deliberately short. A long list of "risky" commands trains an agent to
+# treat denials as noise, which is how the one that mattered gets worked around.
+guard_destructive_reason() {
+    local cmd=$1 stripped
+    stripped=$(guard_strip_git_globals "$cmd")
+
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]+(--force|--force-with-lease|-f)([[:space:]]|$)' <<< "$stripped"; then
+        printf 'force-pushing rewrites history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+reset[[:space:]]+--hard' <<< "$stripped"; then
+        printf 'reset --hard discards uncommitted work irrecoverably. Use git stash, or commit first.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*f' <<< "$stripped"; then
+        printf 'git clean -f deletes untracked files, including .agent/ working state. Remove named paths instead.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+branch[[:space:]]+-D[[:space:]]+(main|master|trunk)([[:space:]]|$)' <<< "$stripped"; then
+        printf 'deleting the trunk branch is not recoverable from this clone. If this is really intended, the user should do it.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge' <<< "$cmd"; then
+        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
+        return 0
+    fi
+    if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then
+        printf '--no-verify skips the checks the repository installed on purpose. Fix what they are reporting.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])[a-zA-Z]*[[:space:]]+(/|~|\$HOME)([[:space:]]|/?$)' <<< "$cmd"; then
+        printf 'a recursive force-remove of the home directory or filesystem root is never what was meant.'
+        return 0
+    fi
+    return 1
+}
+
+# A hook that fails open is invisible. Every silent failure this tree has had --
+# a SIGPIPE exit of 141, a pipefail death before the error could print -- looked
+# from outside exactly like a hook that had nothing to say. One line per
+# incident, next to the logs the runner already writes.
+guard_log_error() {
+    local status=${1:-?} dir="${GUARD_LOG_ROOT:-$PWD}/.agent/logs"
+    mkdir -p "$dir" 2> /dev/null || return 0
+    printf '{"hook":"%s","status":"%s","line":"%s"}\n' \
+        "${GUARD_HOOK_NAME:-unknown}" "$status" "${BASH_LINENO[0]:-unknown}" \
+        >> "$dir/hook-errors.jsonl" 2> /dev/null || true
+}

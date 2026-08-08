@@ -292,6 +292,37 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
 
+# --- work-destroying commands are refused, every time ---------------------
+# The one place a hard, repeatable denial is right. Every other rule here lets
+# the command run because a cheaper alternative can be taught afterwards; there
+# is no teach-after-the-fact for a force-push that already landed.
+for danger in 'git push --force origin main' 'git push -f' \
+    'git push --force-with-lease origin feat/x' \
+    'git reset --hard HEAD~3' 'git clean -fdx' \
+    'git branch -D main' 'gh pr merge 42 --squash' \
+    'git commit --no-verify -m x' 'rm -rf ~'; do
+    out=$(pre_input "$repo" "$danger" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "refuses: $danger"
+    assert_contains "$out" 'does not lift on a retry' "and says so: $danger"
+done
+
+# It must NOT catch the ordinary forms of the same verbs. A guard that cries
+# wolf on `git push` is one an agent learns to route around.
+for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
+    'git clean -n' 'git branch -D feat/old' 'gh pr view 42' \
+    'git commit -m x' 'rm -rf ./build' 'rm -rf node_modules'; do
+    out=$(pre_input "$repo" "$safe" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "allows the ordinary form: $safe"
+done
+
+# A destructive command is refused on the SECOND attempt too -- the opposite of
+# the once-per-session rule that governs every other denial here.
+same_sid=$(fresh_sid)
+for attempt in 1 2 3; do
+    out=$(pre_input "$repo" 'git push --force' "$same_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "still refused on attempt $attempt"
+done
+
 # --- the promise the message makes must be kept ---------------------------
 same=$(fresh_sid)
 out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$same" | "$hooks/pre-tool-use.sh" 2>/dev/null)

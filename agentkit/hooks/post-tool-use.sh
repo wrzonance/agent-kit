@@ -16,7 +16,8 @@
 set -uo pipefail
 
 emit_empty() { printf '{}\n'; exit 0; }
-trap 'emit_empty' ERR
+GUARD_HOOK_NAME=post-tool-use
+trap 'guard_log_error $? 2>/dev/null || true; emit_empty' ERR
 
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
