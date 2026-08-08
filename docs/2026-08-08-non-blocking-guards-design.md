@@ -136,10 +136,48 @@ After the brief, the rule class is open for the remainder of the session.
 | Board discovery | `gh project list\|item-list\|field-list` | `triage-issues.sh` (read), `move-github-project-item.sh` (move) | 1, else 2 |
 | Per-issue triage | `gh api …/timeline`, `gh issue view` | `triage-issues.sh` | 1, else 2 |
 | Bare helper path | `<helper>.sh` in command position | the resolver | 2 — the command **cannot succeed**; advising alone would waste the call anyway |
-| Blanket staging | `git add -A\|--all\|.` | `worktree-commit.sh` | 2 |
+| Blanket staging | `git add -A\|--all\|.` | correct ignore rules (§4.1) | 1 if available, else nothing |
 
 `gh issue view` moves to advisory or deny-once either way, which resolves the
 §1 contradiction: reading an issue body becomes possible again.
+
+### 4.1 Staging: enforced by git, not by a hook
+
+The staging guard is **removed as a denial**, and the thing it was protecting is
+handed to the mechanism that can actually enforce it.
+
+`bootstrap-repo.sh` currently *prints* `add to .gitignore: .agent/cache/` and
+writes nothing. Two problems follow:
+
+- **Advice that is not applied is not protection.** A bootstrapped repository can
+  reach steady state with no ignore rule at all, which is the case in the
+  repository this was first exercised against.
+- **`.agent/cache/` is the wrong pattern.** It leaves `env-contract.txt` and
+  `logs/` tracked-eligible. The contract is probe output: it carries the local
+  home path, the CA bundle location, and the authenticated account name. That is
+  machine-specific detail with no business in a shared history.
+
+Bootstrap instead **writes** an allowlist, which states the intent directly —
+everything under `.agent/` is working state except the two declared files:
+
+```gitignore
+.agent/*
+!.agent/config.env
+!.agent/board.json
+```
+
+With that in place `git add -A` is simply correct, and no hook is needed to make
+it so. Git enforces it deterministically, offline, for every tool and every
+human — not just for agents whose commands happen to match a pattern.
+
+A Layer 1 advisory naming `worktree-commit.sh` may still be attached if §3
+allows, purely as a nudge toward the helper. It is not protection and does not
+gate anything.
+
+**Migration:** repositories bootstrapped before this change have no ignore rule.
+`bootstrap-repo.sh --force` rewrites it; the change is additive and safe to
+re-run. Already-committed contract or log files must be removed from the index
+separately — bootstrap reports them rather than deleting them.
 
 ## 5. Subagent policy
 
@@ -216,6 +254,11 @@ Extends `tests/test-hooks.sh`; the ten gates are unchanged.
 - **Curriculum integrity:** every helper named in Layer 0 exists and is
   executable — extracted from the shipped text, not restated in the test.
 - **Budget:** a scripted ten-call session yields **≤3** denials.
+- **Ignore rules (§4.1):** bootstrap *writes* them; a repository with the rules
+  in place stages nothing from `.agent/` under `git add -A` except the two
+  declared files — asserted against a real `git add -A` in a scratch repository,
+  since the claim is about git's behavior and not about a pattern's text.
+  Re-running bootstrap is idempotent and does not duplicate the block.
 
 ## 9. Rejected alternatives
 
@@ -239,6 +282,9 @@ absolute path, and it silently changes a tool the human also uses.
 
 - **P1/P2 (§3)** — does `systemMessage` run the call, and does it reach the model?
 - **P3 (§5)** — does `PreToolUse` carry `agent_id` inside a subagent?
-- Should the staging guard stay deny-once, given `.agent/cache/` is gitignored
-  and `config.env`/`board.json` are *meant* to be committed? Its correctness
-  value may be lower than assumed, in which case advisory suffices.
+
+**Resolved 2026-08-08** — the staging guard will not deny. Investigating it
+showed the protection was never really the hook's to give: bootstrap only
+*printed* ignore advice, and the pattern it printed did not cover the probe
+output it needed to. Writing correct ignore rules (§4.1) removes the hazard at
+its source and removes a possible halt with it.
