@@ -167,7 +167,8 @@ fi
 human=''
 if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
     human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
-board, triage and commit guards are inert. Ask the agent to onboard it (it has an\nonboard-repo skill that also fills in the verify commands), or run:
+board, triage and commit guards are inert. Ask the agent to onboard it -- it has an onboard-repo skill that also fills in
+the verify commands -- or run:
   \"\$(find \"\${CODEX_HOME:-\$HOME/.codex}/plugins/cache\" \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/plugins/cache\" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)/.shared/scripts/bootstrap-repo.sh\""
 elif [[ $in_repo -eq 0 ]]; then
     human='agentkit: this session did not start inside a git repository, so repository-scoped

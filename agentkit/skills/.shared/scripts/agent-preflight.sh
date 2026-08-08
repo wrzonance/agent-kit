@@ -337,7 +337,29 @@ probe_gh() {
         api="reachable"
     fi
     account="${account%%$'\n'*}" # one key per line is the block's invariant
-    emit "gh= authed=$authed scopes=$scopes api=$api${account:+ account=$account} project-scope=$project"
+
+    # When gh says no, say WHY. "gh is not authenticated" on a machine where the
+    # user just ran `gh auth status` successfully reads as the tooling being
+    # broken, and the next move is a guess. The distinction that matters is
+    # whether a token exists at all or whether THIS process cannot use the one
+    # that does -- a token in the system keyring is reachable from a login shell
+    # and may not be from wherever an agent's commands actually run.
+    local why=""
+    if [[ $authed == no ]]; then
+        local src="none" envtok="no"
+        [[ -z ${GH_TOKEN:-}${GITHUB_TOKEN:-} ]] || envtok="yes"
+        if grep -q 'oauth_token' "${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml" 2>/dev/null; then
+            src="config-file"
+        elif [[ -s ${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml ]]; then
+            # An account is configured but its token is not in the file, so it
+            # lives in the OS keyring -- the case that fails per-process.
+            src="keyring"
+        fi
+        why=" token-source=$src env-token=$envtok config-dir=${GH_CONFIG_DIR:-$HOME/.config/gh}"
+        why+=" detail=\"$(printf '%s' "$status_out" | tr '\n' ';' | tr -d '"' | cut -c1-160)\""
+    fi
+
+    emit "gh= authed=$authed scopes=$scopes api=$api${account:+ account=$account} project-scope=$project$why"
 }
 
 # The agent sandbox is the single biggest source of "mystery" command failures:
