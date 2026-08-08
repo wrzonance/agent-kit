@@ -33,7 +33,7 @@ readonly ACCEPTED_KEYS=(
     AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_OWNER AGENT_PROJECT_NUMBER
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
     AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
-    AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER
+    AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
 )
 
 # AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
@@ -199,6 +199,11 @@ validate() {
         AGENT_BRANCH_PREFIXES) [[ $value =~ ^[a-z]+(,[a-z]+)*$ ]] ;;
         AGENT_STATUS_VOCAB | AGENT_LABEL_TYPES | AGENT_LABEL_AREAS | AGENT_LABEL_PRIORITIES)
             safe_list "$value"
+            ;;
+        # Additive only: a repository may extend the protected set, never shrink
+        # it, so a committed file cannot switch off its own guard.
+        AGENT_PROTECTED_PATHS)
+            safe_list "$value" && [[ $value != *..* && $value != /* && $value != *,/* ]]
             ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;

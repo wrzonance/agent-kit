@@ -73,6 +73,9 @@ Anything still commented is a blank the script would not guess. In practice:
 - **`AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES`** — the repo's real labels,
   listed but not classified.
 - **`AGENT_ADR_DIR`** — only when the repo keeps decision records.
+- **`AGENT_PROTECTED_PATHS`** — repo-specific files that gate other checks
+  (migrations, a decisions log). CI definitions, git hooks and harness config are
+  already covered; this is for what only this repository knows.
 
 ## Step 4 — work out the commands
 
@@ -168,6 +171,7 @@ as a result: which guards became active, and what `Stop` will now enforce.
 | `AGENT_CMD_<NAME>` | a command invoked as `agent-run.sh --cmd <name>` |
 | `AGENT_REPO_RUNNER` | a single dispatcher; skills call `runner <name>` instead |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees are created |
+| `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | labels to reuse rather than invent |
 
 `AGENT_CMD_VERIFY` (or `AGENT_CMD_TEST`) is what opts the repository into the

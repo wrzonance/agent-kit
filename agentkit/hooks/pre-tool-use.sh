@@ -51,6 +51,25 @@ input=$(cat 2> /dev/null || true)
 command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
+
+# Files that decide whether other checks run. This hook used to see shell
+# commands only, so an agent could edit a CI workflow -- or the hook config
+# itself -- entirely unobserved.
+guard_resolve_roots "$cwd" "$command_line"
+protect_root=$(guard_state_root)
+while IFS= read -r target; do
+    [[ -n $target ]] || continue
+    matched=$(guard_protected_match "$target" "$protect_root") || continue
+    if guard_should_deny "$protect_root" "$session" "protected-path"; then
+        deny "Refused once -- $target is under $matched, which decides whether other
+checks run. Editing one is ordinary work sometimes and quietly loosening a gate
+other times, and the diff alone does not say which.
+
+If this edit is part of the task, make the same call again and it will be
+allowed. If you are changing it to make a failing check pass, fix the check."
+    fi
+done < <(guard_target_paths "$input")
+
 [[ -n $command_line ]] || allow
 
 # Work-destroying commands. Denied every time, deliberately: unlike every other

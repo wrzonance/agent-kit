@@ -112,7 +112,7 @@ point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 |---|---|
 | `SessionStart` | Probes the environment once and hands the agent a contract — repo, branch, base, sandbox state, CA bundle, cache roots — plus the list of helpers that exist here. With no `.agent/config.env` it prints how to onboard instead |
 | `SubagentStart` | Injects both into every spawned worker. This is the only channel that reaches one |
-| `PreToolUse` | One denial, for the one command that cannot succeed |
+| `PreToolUse` | Refuses work-destroying commands outright; refuses *once* for a bare helper name or an edit to a file that gates other checks |
 | `PostToolUse` | Teaches the cheaper command *after* the call returned real data |
 | `Stop` | Won't let a turn finish when a declared verify command hasn't covered the current changes |
 
@@ -134,9 +134,21 @@ informing it. Every hook exits `0` and says what it wants in JSON.
 at all. Declaring a verify command is what opts you into the `Stop` check —
 declare none and it never fires.
 
-The one surviving denial is a bare helper name. Nothing here is on `PATH`, so
-that command cannot succeed; letting it run would teach the same lesson one call
-later. It fires **once per session**, says so, and the retry is allowed.
+Denials come in exactly two kinds:
+
+**Refused every time** — force-push, `reset --hard`, `clean -f`, deleting trunk,
+`gh pr merge`, `--no-verify`, `rm -rf ~|/`. There is no teach-after-the-fact for
+a force-push that already landed, and an override that permitted the second
+attempt would have it exactly backwards. The list is deliberately short: a long
+list of "risky" commands trains an agent to treat denials as noise.
+
+**Refused once, then allowed** — a bare helper name (it cannot succeed; nothing
+is on `PATH`), and an edit to a file that decides whether other checks run:
+CI definitions, git hooks, harness config. That second one is ordinary work
+sometimes and quietly loosening a gate other times, and the diff alone doesn't
+say which — so one refusal makes the retry a deliberate choice. Add repo-specific
+entries with `AGENT_PROTECTED_PATHS` (additive; a committed file cannot switch
+off its own guard).
 
 ---
 

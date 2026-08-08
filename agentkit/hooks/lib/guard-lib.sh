@@ -229,3 +229,84 @@ guard_log_error() {
         "${GUARD_HOOK_NAME:-unknown}" "$status" "${BASH_LINENO[0]:-unknown}" \
         >> "$dir/hook-errors.jsonl" 2> /dev/null || true
 }
+
+# Files that decide whether other checks run: CI definitions, git hooks, harness
+# configuration. Editing one is legitimate work sometimes and quietly disabling
+# a gate to go green other times, and the two are indistinguishable from the
+# diff alone.
+#
+# So this is deny-ONCE, like the helper-path rule and unlike the destructive one:
+# refusing outright would block real work, and allowing silently is how a
+# loosened gate ships. One refusal makes the second attempt a deliberate choice.
+#
+# The defaults name only the gate-and-guard class, which is the same in every
+# repository. Anything repo-specific -- migrations, generated files, a vendored
+# tree -- belongs in AGENT_PROTECTED_PATHS, because guessing at it here would be
+# wrong somewhere else.
+readonly -a GUARD_PROTECTED_DEFAULTS=(
+    '.github/workflows/'
+    '.gitlab-ci.yml'
+    '.circleci/'
+    'azure-pipelines.yml'
+    'Jenkinsfile'
+    '.githooks/'
+    '.git/hooks/'
+    '.pre-commit-config.yaml'
+    '.codex/'
+    '.claude/'
+)
+
+# Prints the matched pattern when a path is protected. Repository-declared
+# entries are additive: a repo can extend the list, never shrink it, so a
+# committed file cannot switch its own guard off.
+guard_protected_match() {
+    local candidate=$1 root=$2 pattern
+    local -a patterns=("${GUARD_PROTECTED_DEFAULTS[@]}")
+
+    candidate=${candidate//\\//}
+    candidate=${candidate#./}
+    # An absolute path inside the repository is compared repo-relative, so the
+    # same rule covers both forms an agent might use.
+    [[ -z $root || $candidate != "$root"/* ]] || candidate=${candidate#"$root"/}
+
+    if [[ -n $root && -r $root/.agent/config.env ]]; then
+        local declared
+        declared=$(sed -n 's/^[[:space:]]*AGENT_PROTECTED_PATHS[[:space:]]*=[[:space:]]*//p' \
+            "$root/.agent/config.env" 2> /dev/null | tail -1)
+        if [[ -n $declared ]]; then
+            local IFS=,
+            read -r -a extra <<< "$declared"
+            patterns+=("${extra[@]}")
+        fi
+    fi
+
+    for pattern in "${patterns[@]}"; do
+        [[ -n $pattern ]] || continue
+        pattern=${pattern#./}
+        if [[ $pattern == */ ]]; then
+            [[ $candidate == "$pattern"* || $candidate == *"/$pattern"* ]] || continue
+        else
+            [[ $candidate == "$pattern" || $candidate == *"/$pattern" ]] || continue
+        fi
+        printf '%s' "$pattern"
+        return 0
+    done
+    return 1
+}
+
+# Every path a tool call is about to write. Covers the file-edit tools of both
+# harnesses plus the patch format one of them uses, where the paths are inside
+# the payload text rather than in a field of their own.
+guard_target_paths() {
+    local payload=$1
+    jq -r '
+        [ .tool_input.file_path?, .tool_input.path?, .tool_input.notebook_path?,
+          (.tool_input.edits? // [] | .[]? | .file_path?) ]
+        | map(select(type == "string")) | .[]
+    ' <<< "$payload" 2> /dev/null || true
+
+    # `*** Add File: path` / `Update File:` / `Delete File:` / `Move to:`
+    jq -r '[.tool_input | .. | strings] | .[]' <<< "$payload" 2> /dev/null |
+        grep -oE '^\*\*\*[[:space:]]+(Add|Update|Delete)[[:space:]]+File:[[:space:]]+.+$|^\*\*\*[[:space:]]+Move to:[[:space:]]+.+$' 2> /dev/null |
+        sed -E 's/^\*\*\*[[:space:]]+(Add|Update|Delete)[[:space:]]+File:[[:space:]]+//; s/^\*\*\*[[:space:]]+Move to:[[:space:]]+//' || true
+}

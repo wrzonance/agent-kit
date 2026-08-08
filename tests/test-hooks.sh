@@ -323,6 +323,61 @@ for attempt in 1 2 3; do
     assert_eq 'deny' "$(decision "$out")" "still refused on attempt $attempt"
 done
 
+# --- files that decide whether other checks run ---------------------------
+# This hook saw shell commands only, so an agent could edit a CI workflow -- or
+# the hook configuration itself -- entirely unobserved. Deny-once, not outright:
+# editing one is ordinary work sometimes and quietly loosening a gate other
+# times, and the diff alone does not distinguish them.
+edit_input() {
+    jq -nc --arg cwd "$1" --arg path "$2" --arg sid "${3:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:"Edit",tool_use_id:"t",transcript_path:null,
+          tool_input:{file_path:$path}}'
+}
+
+for guarded in '.github/workflows/ci.yml' '.githooks/pre-commit' \
+    '.pre-commit-config.yaml' 'Jenkinsfile' '.circleci/config.yml' \
+    '.claude/settings.json' '.codex/config.toml'; do
+    out=$(edit_input "$repo" "$guarded" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "guards the gate file: $guarded"
+done
+assert_contains "$out" 'fix the check' 'and names the failure mode it exists for'
+
+# Ordinary source must be untouched, or the guard is just friction.
+for ordinary in 'src/main.ts' 'README.md' 'server/app/models.py' \
+    'docs/.github-notes.md' 'workflows/ci.yml'; do
+    out=$(edit_input "$repo" "$ordinary" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "leaves ordinary files alone: $ordinary"
+done
+
+# Same path, absolute rather than relative: one rule, both forms.
+out=$(edit_input "$repo" "$repo/.github/workflows/ci.yml" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'an absolute path is compared repo-relative'
+
+# Once per session, then the deliberate second attempt proceeds.
+psid=$(fresh_sid)
+out=$(edit_input "$repo" '.github/workflows/ci.yml' "$psid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'the first protected edit is refused'
+out=$(edit_input "$repo" '.github/workflows/release.yml' "$psid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'and the deliberate retry proceeds'
+
+# A repository may EXTEND the set. It must not be able to shrink it: the file is
+# committed, and anyone who can open a pull request can edit it.
+ext=$(make_repo)
+printf 'AGENT_REPO_SLUG=e/e\nAGENT_PROTECTED_PATHS=migrations/,docs/decisions.md\n' \
+    > "$ext/.agent/config.env"
+out=$(edit_input "$ext" 'migrations/001_init.sql' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a repository-declared path is protected too'
+out=$(edit_input "$ext" '.github/workflows/ci.yml' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'and declaring paths does not replace the defaults'
+
+# The patch format carries its paths inside the payload text, not in a field.
+patch=$(jq -nc --arg cwd "$repo" --arg sid "$(fresh_sid)" \
+    '{cwd:$cwd,hook_event_name:"PreToolUse",session_id:$sid,tool_name:"apply_patch",
+      tool_input:{input:"*** Begin Patch\n*** Update File: .github/workflows/ci.yml\n@@\n-x\n+y\n*** End Patch"}}')
+out=$(printf '%s' "$patch" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a path inside a patch payload is seen'
+
 # --- the promise the message makes must be kept ---------------------------
 same=$(fresh_sid)
 out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$same" | "$hooks/pre-tool-use.sh" 2>/dev/null)
