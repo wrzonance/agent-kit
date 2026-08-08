@@ -303,7 +303,14 @@ done
     fi
 } > "$staging/.agent/config.env"
 
-carried_count=$(grep -cE '^[[:space:]]*AGENT_' <<< "${carried:-}" 2> /dev/null || printf '0')
+# grep -c prints its count AND exits non-zero when that count is zero, so a
+# `|| printf 0` fallback appended a SECOND zero -- "0\n0" -- and the arithmetic
+# test below then failed with a syntax error on every bootstrap of a fresh
+# repository. Guard on the input instead of the exit status.
+carried_count=0
+if [[ -n ${carried:-} ]]; then
+    carried_count=$(grep -cE '^[[:space:]]*AGENT_' <<< "$carried" || true)
+fi
 
 # --- validate what we are about to write ------------------------------------
 if [[ -x $resolver ]]; then

@@ -180,6 +180,15 @@ select_caches() {
     export_cache_var XDG_CACHE_HOME "$root"
     export_cache_var UV_CACHE_DIR "$root/uv"
     export_cache_var NPM_CONFIG_CACHE "$root/npm"
+    # ecosystem-allow: redirecting a package manager's cache is environment
+    # code, not a claim about which one this repository uses -- the same
+    # exemption the detection helpers carry. This one keeps a SQLite-backed
+    # content store OUTSIDE the npm cache, so redirecting NPM_CONFIG_CACHE alone
+    # left it writing where a sandbox denied it, surfacing as "[ERR_SQLITE_ERROR]
+    # unable to open database file" -- which names neither the store nor the
+    # sandbox. An agent lost several calls to it, then passed --store-dir by hand
+    # on every command for the rest of the session.
+    export_cache_var npm_config_store_dir "$root/pnpm-store"  # ecosystem-allow:
     export_cache_var PIP_CACHE_DIR "$root/pip"
 }
 
