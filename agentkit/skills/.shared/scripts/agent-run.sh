@@ -560,6 +560,14 @@ if [[ $cmd_declared == no ]] && resolve_runner; then
 fi
 
 log_file=$(choose_log)
+
+# Announced BEFORE the run, not only after it. Output is captured, so a long
+# command looks identical to a hung one until it exits -- and an agent watching
+# a five-minute suite went hunting with ps and `ls -t .agent/logs` to find
+# something to tail. Naming the file up front costs one line and saves that.
+printf 'running: %s\n  log: %s (grows while this runs; tail it instead of waiting blind)\n' \
+    "$cmd_str" "$log_file" >&2
+
 rc=0
 (cd -- "$work_dir" && exec "${cmd[@]}") >"$log_file" 2>&1 || rc=$?
 if ((rc == 0)); then
