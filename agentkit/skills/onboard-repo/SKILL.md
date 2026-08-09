@@ -103,8 +103,14 @@ Start from the detector rather than hand-guessing:
 ```
 
 Treat every line as a CANDIDATE, not an answer — it is looking at marker files,
-not running anything. Uncomment into `.agent/config.env` only what you have
-actually run and watched pass (Step 6). On a monorepo it emits one block per
+not running anything. Nothing here is proven until Step 6 runs it.
+
+**Do not test a candidate by running it yourself first.** Declare it, then run
+it once through `agent-run.sh` in Step 6; if it fails there, remove or fix the
+declaration. Onboarding a Rust repository this way took a 25-second Clippy pass
+and a full test suite twice — once bare to "check", then again to validate —
+which is the entire suite's runtime spent proving something the second run
+proved anyway. On a monorepo it emits one block per
 component, each with its own `AGENT_CMD_<COMPONENT>_<TASK>` and, unless the
 component is the repo root, a companion `AGENT_RUNDIR_<COMPONENT>_<TASK>` —
 that is the pairing that keeps a component command from running out of the
@@ -205,6 +211,15 @@ Then prove it parses, and prove every command you declared actually runs:
 
 `--list` prints warnings for values the resolver rejects. A declared command that
 does not pass here is not finished work — fix it or remove it before continuing.
+
+**This is the only place a candidate gets run.** A declaration you have to
+withdraw costs one edit; running everything twice costs the whole suite's
+runtime, every time this skill is used. Declaring first and removing on failure
+is cheaper in both directions.
+
+A command that is genuinely too slow for onboarding to wait on — a release build
+with LTO, a suite measured in tens of minutes — should not be declared at all
+just because it would eventually pass. Leave it to CI, and say so in Step 9.
 
 ## Step 7 — commit
 

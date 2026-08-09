@@ -192,4 +192,24 @@ printf 'AGENT_LABEL_AREAS=ok,$(id)\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
 assert_contains "$out" 'invalid value' 'a substitution in a label is still refused'
 
+
+# --- an empty value is a statement, not a typo ------------------------------
+# "This repository has no priority labels" is a real thing to want to record.
+# Reporting it only as "invalid" leaves the writer guessing at what a valid
+# empty list looks like -- there isn't one -- and an onboarding session spent an
+# edit discovering that.
+repo=$(mktemp -d "$tmp/repo.XXXXXX")
+mkdir -p "$repo/.agent"
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_LABEL_PRIORITIES=\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'empty value for AGENT_LABEL_PRIORITIES' 'an empty value is named as empty, not merely invalid'
+assert_contains "$out" 'comment the line out instead' 'and the way to record "none" is given'
+assert_not_contains "$out" 'AGENT_LABEL_PRIORITIES=' 'while the key itself is still dropped'
+
+# A genuinely malformed value keeps the original wording.
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_BASE_BRANCH=bad branch\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'invalid value for AGENT_BASE_BRANCH' 'a malformed value is still called invalid'
+assert_not_contains "$out" 'comment the line out' 'and is not offered the empty-value advice'
+
 finish

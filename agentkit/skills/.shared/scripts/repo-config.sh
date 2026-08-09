@@ -281,7 +281,16 @@ while IFS= read -r line || [[ -n $line ]]; do
     fi
 
     if ! validate "$key" "$value"; then
-        warn "invalid value for $key on line $lineno, ignoring"
+        # An empty value is the one rejection that looks like a deliberate
+        # statement rather than a mistake -- "this repository has no priority
+        # labels" is a real thing to want to record. Saying only "invalid"
+        # leaves the writer guessing at what a valid empty list looks like;
+        # there isn't one, and a comment is how you say it.
+        if [[ -z $value ]]; then
+            warn "empty value for $key on line $lineno, ignoring -- to record that this repository has none, comment the line out instead"
+        else
+            warn "invalid value for $key on line $lineno, ignoring"
+        fi
         continue
     fi
 
