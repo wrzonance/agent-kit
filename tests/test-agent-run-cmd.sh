@@ -197,4 +197,21 @@ out=$( (cd "$repo" && "$run_sh" --cmd verify --if-declared 2>&1) ); rc=$?
 assert_eq '0' "$rc" 'and a declared command still runs under the flag'
 assert_contains "$out" 'PASS' 'producing its real verdict'
 
+
+# --- the underscore/dash boundary -------------------------------------------
+# AGENT_CMD_CHECK_NODE_PIN is invoked as --cmd check-node-pin. Reading the
+# declaration and typing it back is the obvious move and it fails; a session
+# spent three calls guessing the conversion, so the error states it.
+out=$("$run_sh" --cmd check_node_pin 2>&1)
+assert_contains "$out" 'must be lowercase letters, digits and dashes' 'the rule is still stated'
+assert_contains "$out" '--cmd check-node-pin' 'and the corrected form is given, not left to guesswork'
+
+out=$("$run_sh" --cmd CHECK_NODE_PIN 2>&1)
+assert_contains "$out" '--cmd check-node-pin' 'an upper-case declaration name is converted too'
+
+# A name no conversion can rescue must not be given a bogus suggestion.
+out=$("$run_sh" --cmd 'pnpm lint' 2>&1)
+assert_contains "$out" 'must be lowercase letters, digits and dashes' 'an unfixable name is still rejected'
+assert_not_contains "$out" 'is invoked with dashes' 'without inventing a correction for it'
+
 finish

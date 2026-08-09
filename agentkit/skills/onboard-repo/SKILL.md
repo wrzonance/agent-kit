@@ -64,7 +64,20 @@ decision for the user to make.
 ```bash
 "$shared/repo-config.sh" --list
 grep -n '^# AGENT_' .agent/config.env
+"$shared/detect-toolchains.sh" --format gaps
 ```
+
+**Run the third command even when the file already looks complete** — especially
+then. The first two read `.agent/config.env`, which records what a PREVIOUS
+onboarding knew; only the detector looks at the repository. A populated file is
+a reason to check, not a reason to skip: a session re-onboarding a repository
+whose config predated the multi-language detector saw a full command list,
+concluded the work was done, and never noticed the C# component beside the
+node one.
+
+If `--format gaps` reports nothing new, say so explicitly in Step 9. "Nothing
+was missing" and "I did not look" read identically in a report, and only one of
+them is worth anything.
 
 Anything still commented is a blank the script would not guess. In practice:
 

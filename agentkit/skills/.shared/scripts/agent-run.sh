@@ -418,9 +418,20 @@ resolve_runner() {
 #
 # Order: AGENT_CMD_<NAME> -> the declared runner as `runner <name>` -> usage error.
 resolve_named_command() {
-    local name=$1 key declared
-    [[ $name =~ ^[a-z][a-z0-9-]*$ ]] ||
+    local name=$1 key declared suggestion
+    # The declaration is AGENT_CMD_CHECK_NODE_PIN and the name is check-node-pin:
+    # underscores upstairs, dashes down here. Reading the file and typing back
+    # what it says is the obvious move and it fails, so say what to type instead
+    # of only what is wrong -- a session spent three calls guessing this.
+    if [[ ! $name =~ ^[a-z][a-z0-9-]*$ ]]; then
+        suggestion=$(printf '%s' "$name" | tr '[:upper:]_' '[:lower:]-')
+        if [[ $suggestion =~ ^[a-z][a-z0-9-]*$ ]]; then
+            die "--cmd NAME must be lowercase letters, digits and dashes, got: $name
+A declaration named AGENT_CMD_<NAME> is invoked with dashes and lower case:
+  --cmd $suggestion"
+        fi
         die "--cmd NAME must be lowercase letters, digits and dashes, got: $name"
+    fi
 
     # The name is also the natural log label, and it survives resolution.
     [[ -n $label ]] || label=$name

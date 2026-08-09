@@ -15,7 +15,7 @@
 # prints something trains the reader to stop looking at it.
 #
 # Usage:
-#   detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|drift]
+#   detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|gaps|drift]
 set -uo pipefail
 
 PROGRAM=${0##*/}
@@ -28,10 +28,11 @@ a moved component can be found again and onboarding never hardcodes one
 ecosystem.
 
 Usage:
-  detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|drift]
+  detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|gaps|drift]
 
 --format components   one line per detected component (default: suggestions)
 --format suggestions  commented AGENT_CMD_*/AGENT_RUNDIR_* declarations
+--format gaps         detected commands this repo has NOT declared (re-onboarding)
 --format drift        compares .agent/config.env declarations against disk
 
 Exit 0 always; exit 3 only when --repo-root DIR is not a directory.
@@ -564,6 +565,67 @@ print_suggestions() {
     suggestion_footer
 }
 
+# ---- gaps --------------------------------------------------------------------
+
+# What has this repository NOT declared?
+#
+# Onboarding a fresh repository and re-onboarding a live one are different
+# questions, and only the first is answered by a list of suggestions. Asked to
+# re-onboard a repository whose config.env was already populated, a session
+# reasonably concluded the command set was known, skipped the detector, and
+# never saw the C# component sitting beside the node one -- because the
+# repository's own file, written before that component was detectable, was
+# treated as the record of what exists.
+#
+# A cached artifact read as a fresh observation. The file is the memory, and a
+# memory cannot report what it never knew.
+#
+# Built by filtering the SAME generator print_suggestions uses. A second
+# implementation would drift from it, and the first symptom of that drift would
+# be this report going quiet.
+print_gaps() {
+    local line header key pending_header='' shown=0 total=0 declared=0
+    local -a undeclared=()
+
+    while IFS= read -r line; do
+        case $line in
+            '# component: '*) header=$line ;;
+            '# repository entry point'*) header='# repository entry point' ;;
+            '# AGENT_CMD_'*)
+                key=${line#\# }
+                key=${key%%=*}
+                total=$((total + 1))
+                if grep -qE "^[[:space:]]*$key=" "$repo_root/.agent/config.env" 2> /dev/null; then
+                    declared=$((declared + 1))
+                    pending_header=''
+                    continue
+                fi
+                if [[ $header != "$pending_header" ]]; then
+                    undeclared+=("$header")
+                    pending_header=$header
+                fi
+                undeclared+=("$line")
+                shown=$((shown + 1))
+                ;;
+            '# AGENT_RUNDIR_'*)
+                # Only meaningful beside the command it pairs with.
+                [[ -n $pending_header ]] && undeclared+=("$line")
+                ;;
+        esac
+    done < <(print_suggestions)
+
+    printf 'gaps= detected=%d declared=%d undeclared=%d\n\n' "$total" "$declared" "$shown"
+    if ((shown == 0)); then
+        printf 'Every command this detector can see is already declared.\n'
+        printf 'That is not the same as complete -- it only means nothing NEW was found.\n'
+        return 0
+    fi
+    printf 'DETECTED but not declared -- nothing in .agent/config.env runs these:\n\n'
+    printf '%s\n' "${undeclared[@]}"
+    printf '\n'
+    suggestion_footer
+}
+
 # ---- drift -------------------------------------------------------------------
 
 # Locate a plausible replacement for a missing declared path, by basename:
@@ -664,9 +726,9 @@ while (($#)); do
 done
 
 case $ARG_FORMAT in
-    components | suggestions | drift) ;;
+    components | suggestions | gaps | drift) ;;
     *)
-        printf '%s: unknown --format %s (want components|suggestions|drift)\n' "$PROGRAM" "$ARG_FORMAT" >&2
+        printf '%s: unknown --format %s (want components|suggestions|gaps|drift)\n' "$PROGRAM" "$ARG_FORMAT" >&2
         exit 2
         ;;
 esac
@@ -693,6 +755,10 @@ case $ARG_FORMAT in
     suggestions)
         collect_all
         print_suggestions
+        ;;
+    gaps)
+        collect_all
+        print_gaps
         ;;
     drift)
         print_drift

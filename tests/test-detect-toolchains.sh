@@ -233,4 +233,50 @@ git -C "$repo" add -A > /dev/null 2>&1
 out=$("$dt_sh" --repo-root "$repo" --format components)
 assert_eq '1' "$(grep -c 'lang=shell' <<< "$out" || true)" 'shell is reported once for the repository'
 
+
+# --- gaps: what a POPULATED config.env does not cover -----------------------
+# The failure this exists for: re-onboarding a repository whose config.env was
+# written before a component was detectable. The file looks complete, so the
+# detector gets skipped, so the component stays invisible -- a cached artifact
+# read as a fresh observation.
+repo=$(new_repo)
+mkdir -p "$repo/.agent" "$repo/addin"
+printf '{"scripts":{"test":"vitest","build":"tsc"}}' > "$repo/package.json"
+printf '' > "$repo/pnpm-lock.yaml"
+printf '<Project />' > "$repo/addin/App.csproj"
+printf 'AGENT_CMD_TEST=pnpm test\nAGENT_CMD_BUILD=pnpm build\n' > "$repo/.agent/config.env"
+
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" 'AGENT_CMD_ADDIN_BUILD' 'a component absent from a populated config is reported'
+assert_contains "$out" 'component: addin (dotnet' 'and is attributed to its component and language'
+assert_contains "$out" 'AGENT_RUNDIR_ADDIN_BUILD=addin' 'with the rundir that keeps it out of the wrong directory'
+assert_not_contains "$out" 'AGENT_CMD_TEST=' 'while an already-declared command is not re-proposed'
+assert_not_contains "$out" 'AGENT_CMD_BUILD=pnpm' 'nor a second already-declared one'
+
+# A commented declaration is not a declaration -- treating it as one is how the
+# suggestion block itself would suppress the report.
+printf 'AGENT_CMD_TEST=pnpm test\n# AGENT_CMD_ADDIN_BUILD=dotnet build\n' > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" 'AGENT_CMD_ADDIN_BUILD' 'a COMMENTED declaration still counts as undeclared'
+
+# Nothing missing must be stated, not shown as empty output: an empty report and
+# a report that never ran look identical to a reader.
+repo=$(new_repo)
+mkdir -p "$repo/.agent"
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+printf '' > "$repo/pnpm-lock.yaml"
+printf 'AGENT_CMD_TEST=pnpm test\n' > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" 'undeclared=0' 'a fully declared repo reports zero'
+assert_contains "$out" 'already declared' 'and says so in words'
+
+# With no contract at all, every detected command is a gap.
+repo=$(new_repo)
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" 'AGENT_CMD_TEST' 'no config.env means everything is undeclared'
+
+assert_rc 2 'an unknown --format is still a usage error' -- \
+    "$dt_sh" --repo-root "$repo" --format nonsense
+
 finish
