@@ -330,6 +330,27 @@ for dynamic in 'git push origin $(git branch --show-current)' \
     assert_eq 'allow' "$(decision "$out")" "leaves ordinary substitution alone: $dynamic"
 done
 
+# Plumbing. Covered until now ONLY by the sandbox holding .git read-only --
+# which is exactly the protection a writable-root recommendation removes, so the
+# guard had to cover it before the recommendation could be made. None of these
+# contain the words the porcelain patterns look for.
+for plumbing in 'git update-ref refs/heads/main abc123' \
+    'git reflog expire --expire=now --all' 'git gc --prune=now' \
+    'git filter-branch --tree-filter x HEAD' \
+    'git symbolic-ref HEAD refs/heads/other' \
+    'git config core.hooksPath /tmp/evil' \
+    'git config filter.lfs.clean /tmp/evil'; do
+    out=$(pre_input "$repo" "$plumbing" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "refuses plumbing: $plumbing"
+done
+
+# The read-only and no-op forms of the same verbs stay usable.
+for readonly_form in 'git gc' 'git reflog' 'git symbolic-ref --short HEAD' \
+    'git config user.name' 'git config --get remote.origin.url'; do
+    out=$(pre_input "$repo" "$readonly_form" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "leaves the harmless form: $readonly_form"
+done
+
 # It must NOT catch the ordinary forms of the same verbs. A guard that cries
 # wolf on `git push` is one an agent learns to route around.
 for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
@@ -366,6 +387,27 @@ for guarded in '.github/workflows/ci.yml' '.githooks/pre-commit' \
     assert_eq 'deny' "$(decision "$out")" "guards the gate file: $guarded"
 done
 assert_contains "$out" 'fix the check' 'and names the failure mode it exists for'
+
+# A shell write reaches the same files the edit-tool guard protects, and it
+# arrives as a Bash call the edit guard cannot see. This was a documented hole:
+# `sed -i` on a workflow went straight past.
+sw=0
+for write in 'echo x >> .git/config' 'sed -i s/a/b/ .github/workflows/ci.yml' \
+    'cp /tmp/x .git/hooks/pre-commit' 'tee .git/config < x' \
+    'printf x > .githooks/pre-push'; do
+    sw=$((sw + 1))
+    out=$(pre_input "$repo" "$write" "shellw$sw" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "sees the shell write: $write"
+done
+
+# Reading one of those files is not writing it, and an ordinary write elsewhere
+# is not this rule's business. Both would make the guard noise.
+for fine in 'echo x >> README.md' 'sed -i s/a/b/ src/main.py' \
+    'grep -r hooksPath .git/config' 'cat .git/config' 'cp a.txt b.txt'; do
+    sw=$((sw + 1))
+    out=$(pre_input "$repo" "$fine" "shellw$sw" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "leaves alone: $fine"
+done
 
 # Ordinary source must be untouched, or the guard is just friction.
 for ordinary in 'src/main.ts' 'README.md' 'server/app/models.py' \

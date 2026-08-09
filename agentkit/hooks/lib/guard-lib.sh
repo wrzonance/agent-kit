@@ -229,6 +229,38 @@ guard_destructive_reason() {
         printf 'deleting the trunk branch is not recoverable from this clone. If this is really intended, the user should do it.'
         return 0
     fi
+    # Plumbing. These were covered only by the sandbox holding .git read-only,
+    # and that protection is exactly what a writable-root recommendation removes
+    # -- so the guard has to cover them before the recommendation is made.
+    # Porcelain patterns never saw any of these: they rewrite refs and destroy
+    # the recovery path without the word "force" or "hard" appearing anywhere.
+    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]update-ref([[:space:]]|$)' <<< "$stripped"; then
+        printf 'update-ref moves a branch or tag without any of the checks a commit or push goes through. Use the porcelain command for what you actually mean.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]symbolic-ref[[:space:]]+HEAD[[:space:]]+[^-]' <<< "$stripped"; then
+        printf 'rewriting HEAD detaches the branch from the work in it. Use git switch.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]reflog[[:space:]]+expire' <<< "$stripped"; then
+        printf 'expiring the reflog destroys the only recovery path for everything else on this list. There is no undo behind it.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]gc([[:space:]][^;&|]*)?[[:space:]]--prune' <<< "$stripped"; then
+        printf 'gc --prune makes unreachable objects unrecoverable. Leave collection to git own schedule.'
+        return 0
+    fi
+    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]filter-(branch|repo)' <<< "$stripped"; then
+        printf 'filter-branch and filter-repo rewrite every commit they touch. That is a decision for the user, on a repository they have backed up.'
+        return 0
+    fi
+    # An execution key in git config runs a command during ORDINARY git
+    # operations, persists after the session, and runs as the user rather than
+    # the agent. It is the quietest code-execution vector in a repository.
+    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]config([[:space:]][^;&|]*)?[[:space:]](core\.hooksPath|core\.fsmonitor|filter\.[^[:space:]]+\.(clean|smudge|process)|core\.sshCommand|diff\.[^[:space:]]+\.textconv)' <<< "$cmd"; then
+        printf 'that git config key executes a command during ordinary git operations, and it outlives this session. Setting it is a decision for the user.'
+        return 0
+    fi
     if grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge' <<< "$cmd"; then
         printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
         return 0
@@ -277,6 +309,7 @@ readonly -a GUARD_PROTECTED_DEFAULTS=(
     'Jenkinsfile'
     '.githooks/'
     '.git/hooks/'
+    '.git/config'
     '.pre-commit-config.yaml'
     '.codex/'
     '.claude/'
@@ -318,6 +351,34 @@ guard_protected_match() {
         return 0
     done
     return 1
+}
+
+# Paths a SHELL command is about to write. The edit-tool guard never sees these:
+# a redirect or `sed -i` is a Bash call, not a file edit, which is the gap that
+# let a workflow be rewritten past it.
+#
+# Narrow on purpose -- only write-shaped operators, and only matched against the
+# protected list afterwards. A general "commands that touch files" rule would
+# fire on every grep and be switched off within a week.
+guard_shell_write_targets() {
+    local cmd=$1
+
+    # Two stages, because the alternative is parsing operands per command and
+    # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
+    # has no command word at all. Getting one of those wrong is how a rule ends
+    # up silently matching nothing.
+    #
+    # Stage one: does this command write at all? A path mentioned by grep or cat
+    # is not a target, and matching those would fire this rule constantly.
+    grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
+        <<< "$cmd" 2> /dev/null || return 0
+
+    # Stage two: offer every token and let the protected list decide. A token
+    # that is not protected costs nothing; a target missed by clever parsing
+    # costs the whole guard.
+    tr -s '[:space:]' '\n' <<< "$cmd" 2> /dev/null |
+        sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+        grep -vE '^-|^$' || true
 }
 
 # Every path a tool call is about to write. Covers the file-edit tools of both

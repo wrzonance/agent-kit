@@ -57,6 +57,10 @@ session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 # itself -- entirely unobserved.
 guard_resolve_roots "$cwd" "$command_line"
 protect_root=$(guard_state_root)
+# Both channels: the paths an edit tool declares, and the paths a shell command
+# is about to write. The second exists because a redirect or `sed -i` arrives as
+# a Bash call, so the edit-tool guard cannot see it -- the gap that let a CI
+# workflow be rewritten straight past this rule.
 while IFS= read -r target; do
     [[ -n $target ]] || continue
     matched=$(guard_protected_match "$target" "$protect_root") || continue
@@ -68,7 +72,10 @@ other times, and the diff alone does not say which.
 If this edit is part of the task, make the same call again and it will be
 allowed. If you are changing it to make a failing check pass, fix the check."
     fi
-done < <(guard_target_paths "$input")
+done < <(
+    guard_target_paths "$input"
+    [[ -z $command_line ]] || guard_shell_write_targets "$command_line"
+)
 
 [[ -n $command_line ]] || allow
 
