@@ -179,4 +179,22 @@ printf 'AGENT_CMD_ESC=pwd\nAGENT_RUNDIR_ESC=../../etc\n' > "$repo/.agent/config.
 out=$( (cd "$repo" && "$run_sh" --cmd esc 2>&1) || true)
 assert_not_contains "$out" '/etc' 'a rundir cannot escape the repository'
 
+# --- an OPTIONAL command must not be a hard failure ------------------------
+# A review workflow hardcoded --cmd lint and errored on a repository whose gate
+# is declared as verify. The contract never promised that name, so the skill was
+# wrong to assume it -- but the failure landed on the repository.
+repo=$(make_repo)
+printf 'AGENT_CMD_VERIFY=true\n' > "$repo/.agent/config.env"
+
+out=$( (cd "$repo" && "$run_sh" --cmd lint --if-declared 2>&1) ); rc=$?
+assert_eq '0' "$rc" 'an undeclared optional command exits 0'
+assert_contains "$out" 'skipping' 'and says it skipped rather than passing silently'
+
+out=$( (cd "$repo" && "$run_sh" --cmd lint 2>&1) || true)
+assert_contains "$out" 'no command named' 'while a REQUIRED one still fails loudly'
+
+out=$( (cd "$repo" && "$run_sh" --cmd verify --if-declared 2>&1) ); rc=$?
+assert_eq '0' "$rc" 'and a declared command still runs under the flag'
+assert_contains "$out" 'PASS' 'producing its real verdict'
+
 finish

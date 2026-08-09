@@ -30,6 +30,8 @@ Usage: agent-run.sh [--dir PATH] [--label NAME] (--cmd NAME | [--] <command> ...
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
   --label NAME   Label used in the log file name (default: the command's basename).
+  --if-declared  With --cmd, exit 0 quietly when the repository declares no such
+                 command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
                  of spelling one out. Mutually exclusive with a literal command.
   --             End of options; everything after it is the command.
@@ -72,9 +74,11 @@ cmd=()
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
+if_declared=0
 
 while (($#)); do
     case $1 in
+        --if-declared) if_declared=1; shift ;;
         --dir|--label|--cmd)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
@@ -451,6 +455,14 @@ resolve_named_command() {
         return 0
     fi
 
+    # A skill that names an OPTIONAL command must not fail when a repository
+    # does not declare it. Observed: a review workflow hardcoded --cmd lint and
+    # errored on a repository whose gate is declared as verify -- the contract
+    # never promised that name, so the skill was wrong to assume it.
+    if ((if_declared)); then
+        printf 'agent-run: no command named %s declared here; skipping\n' "$name" >&2
+        exit 0
+    fi
     die "no command named '$name': declare $key in .agent/config.env, or add .agent/runner"
 }
 

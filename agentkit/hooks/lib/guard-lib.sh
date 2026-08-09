@@ -312,8 +312,12 @@ readonly -a GUARD_PROTECTED_DEFAULTS=(
     '.git/hooks/'
     '.git/config'
     '.pre-commit-config.yaml'
-    '.codex/'
-    '.claude/'
+    # The harness CONFIG decides what runs; the installed plugin tree does not.
+    # A blanket '.codex/' refused an agent READING the very skill it had been
+    # asked to follow -- the guard fired on the plugin's own instructions.
+    '.codex/config.toml'
+    '.claude/settings.json'
+    '.claude/settings.local.json'
 )
 
 # Prints the matched pattern when a path is protected. Repository-declared

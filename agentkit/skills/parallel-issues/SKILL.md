@@ -540,8 +540,8 @@ shared="$agentkit/.shared/scripts"
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
 # its .agent/runner resolves it. The wrapper is not optional.
 "$shared/agent-run.sh" --dir "$worktree" --cmd test
-"$shared/agent-run.sh" --dir "$worktree" --cmd lint
-"$shared/agent-run.sh" --dir "$worktree" --cmd build
+"$shared/agent-run.sh" --dir "$worktree" --cmd lint --if-declared
+"$shared/agent-run.sh" --dir "$worktree" --cmd build --if-declared
 
 agent-run.sh sets the run's caches and CA bundle, prepends the detected source roots to
 PYTHONPATH, delegates to the repo runner when one is declared, and suppresses output: success
@@ -739,8 +739,8 @@ pr_scripts="$agentkit/review-remote-pr/scripts"
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
 # Read the log path it prints on failure.
 "$shared/agent-run.sh" --dir "$worktree" --cmd test
-"$shared/agent-run.sh" --dir "$worktree" --cmd lint
-"$shared/agent-run.sh" --dir "$worktree" --cmd build
+"$shared/agent-run.sh" --dir "$worktree" --cmd lint --if-declared
+"$shared/agent-run.sh" --dir "$worktree" --cmd build --if-declared
 
 # Stage + commit fixes — explicit files only; exit 2 means nothing was staged and the named
 # git metadata directory needs write permission, so re-run the identical command after fixing.

@@ -486,7 +486,7 @@ AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-cont
 # Repository verification — always wrapped, never hand-exported.
 # Named, not hardcoded: the repository declares what "lint" and "test" mean in
 # .agent/config.env, or its .agent/runner resolves them.
-"$agentkit/.shared/scripts/agent-run.sh" --cmd lint
+"$agentkit/.shared/scripts/agent-run.sh" --cmd lint --if-declared
 "$agentkit/.shared/scripts/agent-run.sh" --cmd test
 ```
 
@@ -954,7 +954,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 
 # Ask by name; the repository owns the definition.
-"$agent_run" --cmd lint
+"$agent_run" --cmd lint --if-declared
 "$agent_run" --cmd test
 ```
 
@@ -1258,7 +1258,7 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | CodeRabbit review body vs inline comments | Review bodies, inline comment bodies, and PR conversation comment bodies can include actionable nitpick sections. Read full bodies from the Step 1 temp files; do not rely only on review threads. |
 | CI pending forever | Check `gh run list --pr $PR` — may be a different run. Use the run ID from the `gh pr checks` URL column. |
 | Requesting `--json commits` on every poll | Don't. The commit list is the largest field on a PR and nothing in this workflow consumes it — it is pure payload bloat repeated every round. `gh-pr-state.sh` never requests it; if you hand-roll a `gh pr view`, ask only for the fields you will read. |
-| Coverage threshold failure | Run the repo's coverage command through `agent-run.sh` locally first: `agent-run.sh --cmd coverage` when the repo's `.agent/runner` resolves that name, otherwise pass it literally as `agent-run.sh --label coverage -- <the repo's coverage command>`. Check the per-file breakdown. Add targeted tests. |
+| Coverage threshold failure | Run the repo's coverage command through `agent-run.sh` locally first: `agent-run.sh --cmd coverage --if-declared` when the repo's `.agent/runner` resolves that name, otherwise pass it literally as `agent-run.sh --label coverage -- <the repo's coverage command>`. Check the per-file breakdown. Add targeted tests. |
 | `$HOME` package-manager cache is read-only | The sandbox may mount `$HOME` read-only, so `npm`/`pip`/`uv` fail on their cache before they fail on your code. Do not `sudo` or `--no-cache` around it: run the command through `agent-run.sh`, which relocates `XDG_CACHE_HOME`/`UV_CACHE_DIR`/`NPM_CONFIG_CACHE`/`PIP_CACHE_DIR` to a writable root and says so in a `note:` line. |
 | A package-scoped tool run from the wrong cwd | Tools that resolve their config from the nearest ancestor manifest silently run the wrong target, or none, when invoked from a monorepo root. Pass the package directory explicitly: `agent-run.sh --dir web --cmd test`. |
 | `.git/worktrees/<name>/index.lock` permission denied | The per-worktree metadata dir is outside the writable bind mount. `worktree-commit.sh` detects this *before* staging and exits `2` naming the path, with nothing staged — obtain write permission for that path and re-run the identical command. Never work around it by committing from the main checkout. |

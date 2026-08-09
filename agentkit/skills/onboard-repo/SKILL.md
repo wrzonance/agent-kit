@@ -228,6 +228,11 @@ as a result: which guards became active, and what `Stop` will now enforce.
 | `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | labels to reuse rather than invent |
 
+**`VERIFY` and `TEST` are the only names anything relies on.** Skills reach for
+others (`lint`, `build`, `coverage`) with `--if-declared`, so a repository that
+declares none of them is not broken — it simply skips those steps. Declare the
+names that mean something here, not a checklist.
+
 `AGENT_CMD_VERIFY` (or, failing that, `AGENT_CMD_TEST`) is what opts the
 repository into the `Stop` check, and it runs at the end of every turn — so
 which of the two you declare decides what every trivial edit costs. Declare neither and end-of-turn verification never fires — which is

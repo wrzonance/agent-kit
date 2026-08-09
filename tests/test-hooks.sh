@@ -409,6 +409,14 @@ for fine in 'echo x >> README.md' 'sed -i s/a/b/ src/main.py' \
     assert_eq 'allow' "$(decision "$out")" "leaves alone: $fine"
 done
 
+# The harness CONFIG is protected; the installed plugin tree is not. A blanket
+# '.codex/' refused an agent READING the very skill it had been told to follow.
+out=$(edit_input "$repo" "$HOME/.codex/config.toml" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'harness config is protected'
+out=$(pre_input "$repo" "sed -n 1,50p $HOME/.codex/plugins/cache/agent-kit/agentkit/0.1.0/skills/x/SKILL.md > /tmp/x" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'reading an installed skill is not editing config'
+
 # Ordinary source must be untouched, or the guard is just friction.
 for ordinary in 'src/main.ts' 'README.md' 'server/app/models.py' \
     'docs/.github-notes.md' 'workflows/ci.yml'; do
