@@ -106,6 +106,53 @@ point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 
 ---
 
+## Harness configuration
+
+Three settings decide whether the agent can do its job. Each one here was found
+by a real session losing time to its absence — and each failure arrived wearing
+someone else's costume, which is why they are worth knowing in advance.
+
+Run this in any repository and it tells you which, if any, you need:
+
+```bash
+"$agentkit/.shared/scripts/harness-advice.sh"
+```
+
+Silence means nothing needs changing. `onboard-repo` runs it for you.
+
+| Setting | Without it | Looks like |
+|---|---|---|
+| `sandbox_workspace_write.network_access = true` | No forge calls | **"the token in X is invalid"** — `gh` validates by calling the API, so a blocked network is reported as bad credentials. Costs a re-authentication that cannot help |
+| `sandbox_workspace_write.writable_roots = ["<repo>/.git"]` | Every commit, worktree and `.git/info/exclude` needs an approval | A fresh permissions fault, three times a day, each looking unrelated |
+| the repository's pinned runtime, active in the launching shell | Every command fails an engine check | `[ERR_PNPM_UNSUPPORTED_ENGINE]` — names the package manager, not the version manager, and not the shell that never activated it. **A version manager switches a shell, not a child process** |
+
+### The risk in `writable_roots`
+
+This is the one that trades something away, so it deserves the detail.
+
+A read-only `.git` is the only thing standing between an agent and the git
+*plumbing* — `update-ref`, `reflog expire`, `gc --prune`, `filter-branch` — and
+`.git/config` keys like `core.hooksPath` that execute commands during ordinary
+git operations, persist after the session, and run as **you** rather than as the
+agent.
+
+agentkit refuses all of those at command level, every time, with no override, so
+the protection is not simply removed. But it moves from the filesystem to
+pattern matching, and a pattern can be evaded in ways a read-only mount cannot.
+
+**Scope it to one repository's `.git`.** A parent directory like `~/github` hands
+every repository under it to any session, and nothing here is repo-aware enough
+to stop that. Prefer it per-invocation over a global config entry:
+
+```bash
+codex -c 'sandbox_workspace_write.writable_roots=["/path/to/repo/.git"]'
+```
+
+On a machine holding work you do not own, don't set it at all. Approvals are
+cheap next to that downside.
+
+---
+
 ## What the hooks do
 
 | Hook | Behaviour |

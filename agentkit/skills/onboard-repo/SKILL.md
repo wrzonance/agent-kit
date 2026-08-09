@@ -141,6 +141,13 @@ you are recommending and why; a dispatcher is a change to their repository, so i
 is their call. Note that once `tools/verify` exists, bootstrap detects it on its
 own next time.
 
+**Compare what you declared against what CI enforces.** A live run had `VERIFY`
+pass locally and CI fail, because CI checked a source-size limit the declared
+command did not. `Stop` was guarding less than it appeared to, and nothing said
+so until the push. Read the CI definition, list its gates, and say plainly which
+ones no declared command covers — that sentence is the deliverable, even when
+you cannot close the gap.
+
 **Never declare a command you have not run.** A command that fails on first use
 teaches the agent to distrust the whole contract, and `Stop` blocks turns on it.
 
@@ -181,7 +188,23 @@ Commit with the trailer from the contract's `harness=` line. `.agent/config.env`
 and `.agent/board.json` are meant to be committed; everything else under
 `.agent/` is working state the new ignore rules exclude.
 
-## Step 8 — report
+## Step 8 — check the harness itself
+
+```bash
+"$shared/harness-advice.sh"
+```
+
+Silent means nothing needs changing. Anything it prints is a setting **the
+operator must decide on** — never apply one yourself, and never edit their
+harness config. Relay the block verbatim, including the risk note: the
+writable-roots setting trades a filesystem protection for a pattern-based one,
+and that is theirs to weigh.
+
+This is what turns "gh says my token is invalid" and "why does every commit need
+approval" into a one-line decision, instead of the twelve-command investigation
+each of them has cost in practice.
+
+## Step 9 — report
 
 Tell the user what is now declared, what you left blank and why, and what changed
 as a result: which guards became active, and what `Stop` will now enforce.
