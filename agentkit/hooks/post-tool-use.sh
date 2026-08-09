@@ -57,10 +57,14 @@ if guard_has_evidence .agent/board.json &&
     teach "This repository declares its board in .agent/board.json, so its ids do not
 need discovering. Pick by the question you are answering:
 $RESOLVE_HINT
-  \"\$agentkit/.shared/scripts/board-list.sh\"     # what is ON the board, by column
-  \"\$agentkit/.shared/scripts/triage-issues.sh\"  # open issues + their board status and PRs
+  \"\$agentkit/.shared/scripts/board-list.sh\"              # what is ON the board, by column
+  \"\$agentkit/.shared/scripts/board-list.sh\" --issue N    # where is ONE issue right now
+  \"\$agentkit/.shared/scripts/triage-issues.sh\"           # open issues + board status + PRs
   \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"  # set one item Status
-Each is a single call returning a compact digest, rather than raw JSON to parse."
+Each is a single call returning a compact digest, rather than raw JSON to parse.
+To confirm a move, use --issue N once. Re-querying the whole board with a
+hand-written jq filter gives a differently-shaped answer each time, and answers
+that look like they disagree invite asking again -- which is a loop, not a check."
 fi
 
 # Per-issue triage. Reading ONE issue body is legitimate and stays that way --
