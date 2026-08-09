@@ -160,6 +160,26 @@ if [[ -n $notice ]]; then
     context+=$notice
 fi
 
+# A moved component silently breaks every declared command pointing into it --
+# the failure then surfaces as a tool error naming a missing binary, not as
+# "the directory moved". Only checked once a repository has something
+# declared to drift; an un-onboarded repo gets ONBOARD_HINT instead, above.
+if [[ $in_repo -eq 1 && -r $root/.agent/config.env ]]; then
+    drift=$("$self_dir/../skills/.shared/scripts/detect-toolchains.sh" \
+        --repo-root "$root" --format drift 2> /dev/null || true)
+    if [[ -n $drift ]]; then
+        drift_notice="A path declared in .agent/config.env no longer exists on disk -- a
+component likely moved. Tell the user, and where a candidate is listed below,
+offer to update the declaration to it:
+
+$drift"
+        if [[ -n $context ]]; then
+            context+=$'\n\n'
+        fi
+        context+=$drift_notice
+    fi
+fi
+
 # additionalContext reaches only the MODEL. Asked to run ls, a model that was
 # handed the onboarding notice ran ls and said nothing -- correctly, from its
 # point of view. systemMessage is the channel aimed at the person, so the notice

@@ -220,33 +220,20 @@ labels=$(gh label list --repo "$slug" --limit 100 --json name -q '[.[].name] | j
 # repository owner knows which of several surfaces is canonical, so emit them
 # commented and let a human choose.
 #
-# This function names ecosystems on purpose -- recognising the one a repository
-# already uses is what spares every skill from hardcoding one. The
-# `ecosystem-allow:` markers exempt those lines from the neutrality gate.
-detect_command_suggestions() {
-    local dir=$1 script target
-    for script in tools/verify tools/dev/verify bin/verify scripts/verify; do
-        [[ -x $dir/$script ]] && printf '#   %s\n' "$script"
-    done
-    if [[ -f $dir/package.json ]]; then
-        for target in verify test lint typecheck build; do
-            if jq -e --arg t "$target" '.scripts[$t] // empty' < "$dir/package.json" \
-                > /dev/null 2>&1; then
-                printf '#   npm run %s\n' "$target"  # ecosystem-allow: detection
-            fi
-        done
-    fi
-    if [[ -f $dir/Makefile ]]; then
-        for target in verify test lint check build; do
-            grep -qE "^$target:" "$dir/Makefile" 2> /dev/null && printf '#   make %s\n' "$target"
-        done
-    fi
-    [[ -f $dir/justfile || -f $dir/Justfile ]] && printf '#   just test\n'  # ecosystem-allow: detection
-    [[ -f $dir/Taskfile.yml ]] && printf '#   task test\n'  # ecosystem-allow: detection
-    [[ -f $dir/Cargo.toml ]] && printf '#   cargo test\n'      # ecosystem-allow: detection
-    [[ -f $dir/pyproject.toml ]] && printf '#   uv run pytest\n'  # ecosystem-allow: detection
-    return 0
-}
+# This used to hardcode one package manager and one ecosystem -- on a
+# repository locked with a different node package manager it still suggested
+# npm, and never looked for a lint script at all.
+# detect-toolchains.sh finds every component by its own marker files instead,
+# so a monorepo with several ecosystems gets a suggestion for each. Resolved
+# as a sibling of THIS script, not $self_dir (the resolver's dir, which the
+# staging validation below also depends on and must not be repurposed).
+# Absent or failing detector: emit nothing and carry on -- bootstrap must
+# never fail over a suggestion.
+detector="$(dirname -- "${BASH_SOURCE[0]}")/detect-toolchains.sh"
+suggestions=''
+if [[ -x $detector ]]; then
+    suggestions=$("$detector" --repo-root "$repo_root" --format suggestions 2> /dev/null) || suggestions=''
+fi
 
 adr_dir=''
 for candidate in docs/adr docs/adrs docs/decisions docs/architecture/decisions adr doc/adr; do
@@ -273,7 +260,6 @@ done
         printf '#   %s\n' "$labels"
         printf '# AGENT_LABEL_TYPES=\n# AGENT_LABEL_AREAS=\n# AGENT_LABEL_PRIORITIES=\n'
     fi
-    suggestions=$(detect_command_suggestions "$repo_root")
     if [[ -n $suggestions ]]; then
         printf '\n# Candidate verify commands found in this repository. Uncomment the ones\n'
         printf '# agents should run, as AGENT_CMD_<NAME>=<command>. Commands are argv:\n'

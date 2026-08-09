@@ -83,6 +83,20 @@ This is the part worth thinking about. Look at what the repository actually runs
 CI workflow steps, a pre-commit hook, a `Makefile`, `package.json` scripts, a
 `tools/` directory, `CONTRIBUTING.md`.
 
+Start from the detector rather than hand-guessing:
+
+```bash
+"$shared/detect-toolchains.sh" --format suggestions
+```
+
+Treat every line as a CANDIDATE, not an answer — it is looking at marker files,
+not running anything. Uncomment into `.agent/config.env` only what you have
+actually run and watched pass (Step 6). On a monorepo it emits one block per
+component, each with its own `AGENT_CMD_<COMPONENT>_<TASK>` and, unless the
+component is the repo root, a companion `AGENT_RUNDIR_<COMPONENT>_<TASK>` —
+that is the pairing that keeps a component command from running out of the
+wrong directory.
+
 Three shapes come up:
 
 **Declare `SETUP` if a fresh checkout needs one.** A worktree starts with none

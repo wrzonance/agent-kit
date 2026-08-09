@@ -174,8 +174,11 @@ printf '{"scripts":{"test":"jest","lint":"eslint .","build":"tsc"}}\n' > "$repo/
 run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 config=$(cat "$repo/.agent/config.env")
 assert_contains "$config" '# AGENT_CMD_' 'suggests commands as commented lines'
-assert_contains "$config" 'tools/verify' 'surfaces a bespoke dispatcher'
-assert_contains "$config" 'npm run test' 'surfaces package.json scripts'
+assert_contains "$config" 'AGENT_CMD_VERIFY=tools/verify' 'surfaces a bespoke dispatcher as a declaration'
+# The old detection hardcoded `npm run <script>` whatever the lockfile said, and
+# `npm lint` is not even a command. Suggestions are now ready-to-uncomment
+# declarations carrying the runner the repository actually locked.
+assert_contains "$config" 'AGENT_CMD_TEST=' 'surfaces package.json scripts as declarations'
 assert_not_contains "$config" $'\nAGENT_CMD_' 'never uncomments a suggestion'
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'suggestions produce no resolver warnings'
@@ -184,7 +187,7 @@ assert_eq '' "$warnings" 'suggestions produce no resolver warnings'
 repo=$(make_repo)
 printf 'test:\n\techo hi\nlint:\n\techo hi\n' > "$repo/Makefile"
 run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
-assert_contains "$(cat "$repo/.agent/config.env")" 'make test' 'surfaces Makefile targets'
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_CMD_TEST=make test' 'surfaces Makefile targets'
 
 # --- a repo with no detectable verify surface ------------------------------
 repo=$(make_repo)
