@@ -312,7 +312,13 @@ probe_git() {
     if dir_writable "$common"; then
         line="git= common-dir=$common writable=yes"
     else
-        line="git= common-dir=$common writable=no note=\"first write needs elevation\""
+        # Measured, not guessed: a workspace-scoped sandbox mounts <repo>/.git
+        # READ-ONLY on purpose, so every commit, every worktree add, and even
+        # .git/info/exclude costs an approval round-trip. Naming the setting
+        # turns a recurring interruption into a one-line decision -- and the
+        # blunt protection it removes is covered at finer grain by the guard
+        # that refuses force-push, reset --hard and their neighbours.
+        line="git= common-dir=$common writable=no note=\"every git write needs approval; a workspace sandbox holds .git read-only. To lift it: sandbox_workspace_write.writable_roots must include this .git path\""
     fi
     line+=" worktree-writable=$root_state"
     if [[ $root_state != yes ]]; then
