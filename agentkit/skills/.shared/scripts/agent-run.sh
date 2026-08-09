@@ -418,20 +418,21 @@ resolve_runner() {
 #
 # Order: AGENT_CMD_<NAME> -> the declared runner as `runner <name>` -> usage error.
 resolve_named_command() {
-    local name=$1 key declared suggestion
-    # The declaration is AGENT_CMD_CHECK_NODE_PIN and the name is check-node-pin:
-    # underscores upstairs, dashes down here. Reading the file and typing back
-    # what it says is the obvious move and it fails, so say what to type instead
-    # of only what is wrong -- a session spent three calls guessing this.
-    if [[ ! $name =~ ^[a-z][a-z0-9-]*$ ]]; then
-        suggestion=$(printf '%s' "$name" | tr '[:upper:]_' '[:lower:]-')
-        if [[ $suggestion =~ ^[a-z][a-z0-9-]*$ ]]; then
-            die "--cmd NAME must be lowercase letters, digits and dashes, got: $name
-A declaration named AGENT_CMD_<NAME> is invoked with dashes and lower case:
-  --cmd $suggestion"
-        fi
-        die "--cmd NAME must be lowercase letters, digits and dashes, got: $name"
-    fi
+    local name=$1 key declared
+    # The declaration reads AGENT_CMD_CHECK_NODE_PIN; the invocation is
+    # --cmd check-node-pin. Reading the contract and typing its key back is the
+    # obvious move, and it used to fail.
+    #
+    # Naming the correct spelling in the error was not enough: the next session
+    # made the same three mistakes and recovered from each, which is three
+    # wasted calls per session on every repository with multi-word command
+    # names. Both spellings fold to the same key with no ambiguity, so the
+    # strictness bought nothing that was worth a round trip. Accept either and
+    # canonicalise -- everything downstream, including the log label, sees the
+    # dashed form.
+    name=$(printf '%s' "$name" | tr '[:upper:]_' '[:lower:]-')
+    [[ $name =~ ^[a-z][a-z0-9-]*$ ]] ||
+        die "--cmd NAME must be letters, digits, dashes or underscores, got: $1"
 
     # The name is also the natural log label, and it survives resolution.
     [[ -n $label ]] || label=$name

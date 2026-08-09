@@ -89,7 +89,7 @@ assert_contains "$err" 'AGENT_CMD_TEST' 'and the error names the exact key to ad
 # --- name validation -------------------------------------------------------
 repo=$(make_repo)
 printf 'AGENT_CMD_TEST=echo ok\n' > "$repo/.agent/config.env"
-for badname in 'TEST' 'te st' '../x' 'te;st' ''; do
+for badname in 'te st' '../x' 'te;st' ''; do
     rc=0
     (cd "$repo" && "$run_sh" --cmd "$badname" > /dev/null 2>&1) || rc=$?
     assert_eq '1' "$rc" "rejects the command name: '$badname'"
@@ -199,19 +199,38 @@ assert_contains "$out" 'PASS' 'producing its real verdict'
 
 
 # --- the underscore/dash boundary -------------------------------------------
-# AGENT_CMD_CHECK_NODE_PIN is invoked as --cmd check-node-pin. Reading the
-# declaration and typing it back is the obvious move and it fails; a session
-# spent three calls guessing the conversion, so the error states it.
-out=$("$run_sh" --cmd check_node_pin 2>&1)
-assert_contains "$out" 'must be lowercase letters, digits and dashes' 'the rule is still stated'
-assert_contains "$out" '--cmd check-node-pin' 'and the corrected form is given, not left to guesswork'
+# AGENT_CMD_CHECK_NODE_PIN is the declaration; --cmd check-node-pin is the
+# invocation. Reading the contract and typing its key back is the obvious move.
+#
+# Naming the right spelling in an error was not enough: the next session made
+# the same three mistakes and recovered from each, which is three wasted calls
+# per session on every repository with multi-word command names. Both spellings
+# fold to the same key with no ambiguity, so both are accepted.
+repo=$(make_repo)
+printf 'AGENT_CMD_CHECK_NODE_PIN=echo pinned\n' > "$repo/.agent/config.env"
 
-out=$("$run_sh" --cmd CHECK_NODE_PIN 2>&1)
-assert_contains "$out" '--cmd check-node-pin' 'an upper-case declaration name is converted too'
+out=$(cd "$repo" && "$run_sh" --cmd check-node-pin 2>&1)
+assert_contains "$out" 'pinned' 'the canonical dashed name resolves'
 
-# A name no conversion can rescue must not be given a bogus suggestion.
-out=$("$run_sh" --cmd 'pnpm lint' 2>&1)
-assert_contains "$out" 'must be lowercase letters, digits and dashes' 'an unfixable name is still rejected'
-assert_not_contains "$out" 'is invoked with dashes' 'without inventing a correction for it'
+out=$(cd "$repo" && "$run_sh" --cmd check_node_pin 2>&1)
+assert_contains "$out" 'pinned' 'and the underscored declaration key resolves to the same command'
+
+out=$(cd "$repo" && "$run_sh" --cmd CHECK_NODE_PIN 2>&1)
+assert_contains "$out" 'pinned' 'as does the key exactly as config.env spells it'
+
+# Canonicalisation must reach the log label too, or the same command produces
+# two differently-named logs depending on how it was spelled.
+out=$(cd "$repo" && "$run_sh" --cmd check_node_pin 2>&1)
+assert_contains "$out" '-check-node-pin.' 'the log label is canonicalised, not echoed back'
+assert_not_contains "$out" 'check_node_pin' 'so one command cannot produce two log names'
+
+# Relaxing the spelling must not relax what a NAME is: anything a shell would
+# interpret is still refused, and that is what the restriction was ever for.
+out=$(cd "$repo" && "$run_sh" --cmd 'pnpm lint' 2>&1)
+assert_contains "$out" 'must be letters, digits, dashes or underscores' 'a name with a space is still refused'
+out=$(cd "$repo" && "$run_sh" --cmd 'te;st' 2>&1)
+assert_contains "$out" 'must be letters, digits, dashes or underscores' 'and so is one carrying a shell metacharacter'
+out=$(cd "$repo" && "$run_sh" --cmd '../x' 2>&1)
+assert_contains "$out" 'must be letters, digits, dashes or underscores' 'and so is a path traversal'
 
 finish

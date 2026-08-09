@@ -272,4 +272,30 @@ assert_eq '1' "$(grep -c '^AGENT_CMD_TEST=' "$repo/.agent/config.env")" \
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'the merged config parses cleanly'
 
+
+# --- the allowlist must WORK, not merely be present -------------------------
+# A repository carried the intended allowlist in .gitignore and a broader
+# `.agent/` in .git/info/exclude. Git does not descend into an excluded
+# DIRECTORY, so the "!" negations were never reached: the rule was textually
+# present and had no effect. This script reported "ignore rules already
+# present" and onboarding failed one tool later, at git add, with a message
+# naming only the directory.
+repo=$(make_repo)
+printf '.agent/\n' >> "$repo/.git/info/exclude"
+out=$(run_bs --repo-root "$repo" --project 7 2>&1)
+assert_contains "$out" 'allowlist has no effect' 'a defeated allowlist is reported, not assumed to work'
+assert_contains "$out" '.git/info/exclude' 'and the file carrying the defeating rule is named'
+assert_contains "$out" '.agent/ -> .agent/*' 'and the narrowing that fixes it is given'
+
+# The same repository once the broader rule is narrowed: silence.
+repo=$(make_repo)
+printf '.agent/*\n' >> "$repo/.git/info/exclude"
+out=$(run_bs --repo-root "$repo" --project 7 2>&1)
+assert_not_contains "$out" 'allowlist has no effect' 'a working allowlist produces no warning'
+
+# And with no competing rule at all.
+repo=$(make_repo)
+out=$(run_bs --repo-root "$repo" --project 7 2>&1)
+assert_not_contains "$out" 'allowlist has no effect' 'nor does the ordinary case'
+
 finish

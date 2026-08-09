@@ -189,11 +189,47 @@ refuse_trunk() {
     esac
 }
 
+# A path can be ignored by a rule in a file nobody thought to look at. The case
+# that cost real time: .gitignore carried the intended allowlist
+# (`.agent/*` plus `!.agent/config.env`) while .git/info/exclude carried a
+# broader `.agent/`. Git does not descend into an excluded DIRECTORY, so the
+# negation is never reached -- the allowlist is textually present and has no
+# effect. git's own message names the directory, not the rule or the file, so
+# each session re-derived it from scratch.
+#
+# --no-index is required: without it check-ignore stays silent about a tracked
+# file, which is exactly the file being reported on here.
+#
+# Deciding needs the PLAIN form, which lists only genuinely excluded paths. The
+# -v form reports the last matching pattern even when it is a negation, and
+# exits 0 regardless -- so a working allowlist would report itself as the
+# problem. Decide plainly; use -v only to name the rule.
+explain_ignored() {
+    local ignored matches
+    ignored=$(git check-ignore --no-index -- "${FILES[@]}" 2> /dev/null) || return 0
+    [[ -n $ignored ]] || return 0
+    # Explain ONLY the paths that are actually excluded. Passing the whole FILES
+    # list would also print the negation lines matched by the files that staged
+    # fine, which reads as though the allowlist were the fault.
+    matches=$(xargs -d '\n' -r git check-ignore --no-index -v -- <<< "$ignored" 2> /dev/null) || return 0
+    [[ -n $matches ]] || return 0
+    printf '%s: these paths are excluded by an ignore rule:\n' "$PROGNAME" >&2
+    printf '%s\n' "$matches" | sed 's/^/  /' >&2
+    if grep -qE '^[^:]*:[0-9]+:[^[:space:]]*/[[:space:]]' <<< "$matches"; then
+        printf '%s: a rule ending in "/" excludes the DIRECTORY, and git does not descend\n' "$PROGNAME" >&2
+        printf '%s: into one -- so a "!" negation for a file inside it is never reached.\n' "$PROGNAME" >&2
+        printf '%s: narrow that rule (e.g. .agent/ -> .agent/*) in the file named above.\n' "$PROGNAME" >&2
+    fi
+}
+
 stage_files() {
     local rc=0
     (( ${#FILES[@]} > 0 )) || return 0
     git add -- "${FILES[@]}" || rc=$?
-    (( rc == 0 )) || die 1 "git add failed (rc=$rc) for: ${FILES[*]}"
+    if (( rc != 0 )); then
+        explain_ignored
+        die 1 "git add failed (rc=$rc) for: ${FILES[*]}"
+    fi
 }
 
 check_staged() {

@@ -367,6 +367,33 @@ else
     printf '  .agent/*\n  !.agent/config.env\n  !.agent/board.json\n' >&2
 fi
 
+# Having written the rule is not the same as the rule working, and only the
+# second is worth reporting. A repository carried the allowlist in .gitignore
+# and a broader `.agent/` in .git/info/exclude; git does not descend into an
+# excluded DIRECTORY, so the negation was never reached. This script said
+# "ignore rules already present" -- true of the text, false of the effect --
+# and onboarding then failed at `git add`, in a different tool, one step later.
+#
+# --no-index is required: check-ignore stays silent about a tracked path
+# otherwise, and these two files are normally tracked.
+#
+# The oracle is check-ignore WITHOUT -v: it lists only paths that are actually
+# excluded. With -v it reports the last matching pattern even when that pattern
+# is a negation, and exits 0 either way -- so a WORKING allowlist matches
+# `!.agent/config.env` and looks identical to a broken one. Decide plainly,
+# then re-ask with -v purely to name the rule.
+if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    if defeated=$(git -C "$repo_root" check-ignore --no-index -- \
+        .agent/config.env .agent/board.json 2> /dev/null) && [[ -n $defeated ]]; then
+        printf 'WARNING: the allowlist has no effect -- these files are still excluded:\n' >&2
+        git -C "$repo_root" check-ignore --no-index -v -- \
+            .agent/config.env .agent/board.json 2> /dev/null | sed 's/^/  /' >&2
+        printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
+        printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
+        printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
+    fi
+fi
+
 # Files already in the index are not affected by an ignore rule. Report them
 # rather than removing them: untracking is a history decision, not this
 # script's call to make.
