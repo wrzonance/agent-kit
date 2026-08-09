@@ -160,7 +160,9 @@ printf 'AGENT_CMD_DASH=pwd\nAGENT_RUNDIR_DASH=dashboard\nAGENT_CMD_ROOT=pwd\n' \
     > "$repo/.agent/config.env"
 
 (cd "$repo" && "$run_sh" --cmd dash > /dev/null 2>&1)
-assert_eq "$repo/dashboard" "$(cat "$repo"/.agent/logs/*-dash.log)" \
+# The log is bracketed by "=== agent-run" markers; the command's own output is
+# what is being asserted here.
+assert_eq "$repo/dashboard" "$(grep -v '^=== ' "$repo"/.agent/logs/*-dash.log)" \
     'a declared rundir is where the command runs'
 
 (cd "$repo" && "$run_sh" --cmd root > /dev/null 2>&1)
@@ -232,5 +234,29 @@ out=$(cd "$repo" && "$run_sh" --cmd 'te;st' 2>&1)
 assert_contains "$out" 'must be letters, digits, dashes or underscores' 'and so is one carrying a shell metacharacter'
 out=$(cd "$repo" && "$run_sh" --cmd '../x' 2>&1)
 assert_contains "$out" 'must be letters, digits, dashes or underscores' 'and so is a path traversal'
+
+
+# --- the log says whether it finished ---------------------------------------
+# The log used to hold the command's output and nothing else, so a log that
+# stopped mid-stream was indistinguishable from one still being written, and
+# from one whose process had died. A session that launched several commands at
+# once read two logs ending after their package manager's preamble, could not
+# tell a hang from a failure, and went to `ps` to find out.
+repo=$(make_repo)
+printf 'AGENT_CMD_OK=echo hello\nAGENT_CMD_BAD=false\n' > "$repo/.agent/config.env"
+
+out=$(cd "$repo" && "$run_sh" --cmd ok 2>&1)
+log=$(cat "$repo"/.agent/logs/*-ok.log)
+assert_contains "$log" '=== agent-run echo hello' 'the log names the command it is running'
+assert_contains "$log" '=== started' 'and when it started'
+assert_contains "$log" '=== agent-run exited rc=0' 'and terminates with the verdict'
+assert_contains "$out" 'has NOT finished' 'and the caller is told what an unterminated log means'
+
+# The suppressed-line count must report the command output, not the markers.
+assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bookkeeping'
+
+(cd "$repo" && "$run_sh" --cmd bad > /dev/null 2>&1) || true
+log=$(cat "$repo"/.agent/logs/*-bad.log)
+assert_contains "$log" '=== agent-run exited rc=1' 'a failing command records its exit code too'
 
 finish

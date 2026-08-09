@@ -58,16 +58,52 @@ network_access = true|Outbound network for agent commands. Without it every forg
         ;;
 esac
 
+# The writable roots this harness is ALREADY configured with. Read so the advice
+# can tell "you have not set this" apart from "you set it and it did not work" --
+# repeating the first at someone who has already done it is how advice stops
+# being read.
+harness_writable_roots() {
+    local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+    [[ -r $cfg ]] || return 0
+    sed -n 's/^[[:space:]]*writable_roots[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' \
+        "$cfg" 2> /dev/null |
+        tr ',' '\n' |
+        sed -E 's/^[[:space:]]*"?//; s/"?[[:space:]]*$//' |
+        grep -v '^[[:space:]]*$' || true
+}
+
 # --- can git write? ---------------------------------------------------------
 # A workspace sandbox holds <repo>/.git read-only ON PURPOSE, so every commit,
 # every worktree, and even .git/info/exclude costs an approval round-trip.
 git_dir=$(git -C "$repo_root" rev-parse --git-common-dir 2> /dev/null || true)
 if [[ -n $git_dir ]]; then
     case $git_dir in /*) ;; *) git_dir="$repo_root/$git_dir" ;; esac
-    probe=$(mktemp "$git_dir/.agentkit-probe-XXXXXX" 2> /dev/null) || {
-        findings+=("git|Every git write needs an approval: a workspace sandbox holds this .git read-only.|[sandbox_workspace_write]
+    if ! probe=$(mktemp "$git_dir/.agentkit-probe-XXXXXX" 2> /dev/null); then
+        # Was a broader root already granted? An operator who lists a parent
+        # directory has taken the whole risk -- every repository beneath it --
+        # and, observed on a real machine, still has a read-only .git. Telling
+        # them to "add writable_roots" then reads as advice that does not work,
+        # when the actual correction is to name the .git path itself.
+        ancestor='' exact=''
+        while IFS= read -r root; do
+            [[ -n $root ]] || continue
+            if [[ $root == "$git_dir" ]]; then
+                exact=$root
+                break
+            fi
+            case "$git_dir/" in "$root"/*) [[ -n $ancestor ]] || ancestor=$root ;; esac
+        done < <(harness_writable_roots)
+
+        if [[ -n $exact ]]; then
+            findings+=("git|This .git is listed in writable_roots and is STILL read-only, so the setting is not in effect.|Restart the agent after editing the config|A running session keeps the sandbox it started with. If a restart does not help, the path must match what git reports: $git_dir")
+        elif [[ -n $ancestor ]]; then
+            findings+=("git|Every git write needs an approval, and \"$ancestor\" is already in writable_roots -- a parent directory did not cover this .git.|[sandbox_workspace_write]
+writable_roots = [\"$git_dir\"]|Name the .git path itself. The parent entry is granting every repository beneath it for no benefit here, so replace it rather than adding to it.")
+        else
+            findings+=("git|Every git write needs an approval: a workspace sandbox holds this .git read-only.|[sandbox_workspace_write]
 writable_roots = [\"$git_dir\"]|Scope it to THIS repository, not a parent directory. It removes a blunt protection, so the narrow form matters -- see the risk note below.")
-    }
+        fi
+    fi
     [[ -z ${probe:-} ]] || rm -f -- "$probe" 2> /dev/null || true
 fi
 
@@ -97,7 +133,16 @@ fi
 printf 'HARNESS CONFIGURATION -- %d setting(s) this machine needs\n' "${#findings[@]}"
 printf 'Tell the user; these are their decisions, not yours to apply.\n\n'
 for finding in "${findings[@]}"; do
-    IFS='|' read -r _ symptom fix why <<< "$finding"
+    # Split on "|" WITHOUT `read`: a fix is two lines (a TOML section and the
+    # key under it), and `read` stops at the first newline. It was therefore
+    # printing the section header alone and an empty "why" -- so the advice
+    # named a config block and never the setting to put in it, which is the one
+    # thing the reader needed.
+    rest=${finding#*|}
+    symptom=${rest%%|*}
+    rest=${rest#*|}
+    fix=${rest%%|*}
+    why=${rest#*|}
     printf '* %s\n' "$symptom"
     printf '%s\n' "$fix" | sed 's/^/      /'
     printf '  why: %s\n\n' "$why"

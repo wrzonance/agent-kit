@@ -72,14 +72,18 @@ if [[ ! -x $preflight ]]; then
     exit 1
 fi
 exclude_path="$(git rev-parse --git-path info/exclude)"
-if ! grep -Fxq '.agent/' "$exclude_path" 2>/dev/null; then
-    printf '%s\n' '.agent/' >> "$exclude_path"
+# `.agent/*`, never `.agent/`. Excluding the DIRECTORY stops git descending into
+# it, which silently defeats the allowlist bootstrap-repo.sh writes into
+# .gitignore -- the `!.agent/config.env` negation is then never reached, and
+# committing the contract fails with a message naming only ".agent".
+if ! grep -Fxq '.agent/*' "$exclude_path" 2>/dev/null; then
+    printf '%s\n' '.agent/*' >> "$exclude_path"
 fi
 environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
 printf '%s\n' "$environment_contract"
 ```
 
-`agent-preflight.sh` **reports, it never blocks**: it exits 0 even when `gh` is absent, unauthenticated, or the forge is unreachable — the condition comes back as a value inside the block. Exit 2 means you passed bad arguments, nothing else. Diagnostics go to stderr, so the `2>/dev/null` above captures exactly the twelve lines; the same bytes are also written to `<worktree>/.agent/env-contract.txt`, which is why `.agent/` goes into `.git/info/exclude` (local-only, no repo change) before the probe runs. Re-running it is safe and idempotent.
+`agent-preflight.sh` **reports, it never blocks**: it exits 0 even when `gh` is absent, unauthenticated, or the forge is unreachable — the condition comes back as a value inside the block. Exit 2 means you passed bad arguments, nothing else. Diagnostics go to stderr, so the `2>/dev/null` above captures exactly the twelve lines; the same bytes are also written to `<worktree>/.agent/env-contract.txt`, which is why `.agent/*` goes into `.git/info/exclude` (local-only, no repo change) before the probe runs. The `/*` is load-bearing: `.agent/` would exclude the directory itself, and git does not descend into an excluded directory, so the `!.agent/config.env` allowlist in `.gitignore` would never be reached. Re-running it is safe and idempotent.
 
 **Read these lines now — they change what you do next:**
 
@@ -397,7 +401,7 @@ git worktree add "$worktree" -b "$branch" "origin/$base" || {
 
 Two things that block runs later happen in that subshell, so do not drop them:
 
-- The **per-worktree preflight** prints this worktree's twelve-line contract (with `worktree=` and `branch=` pointing here) and creates `<worktree>/.agent/logs/`. That printed block — not Step 0's — is what gets pasted into this issue's worker prompt. `.agent/` is already excluded repo-wide from Step 0, because `info/exclude` lives in the shared git directory.
+- The **per-worktree preflight** prints this worktree's twelve-line contract (with `worktree=` and `branch=` pointing here) and creates `<worktree>/.agent/logs/`. That printed block — not Step 0's — is what gets pasted into this issue's worker prompt. `.agent/*` is already excluded repo-wide from Step 0, because `info/exclude` lives in the shared git directory.
 - The bootstrap runs **through `agent-run.sh`**, which is what puts the run's cache directories and CA bundle in front of the package manager. A bare bootstrap here is the first place a run silently repopulates a cold cache in the wrong place.
 
 ## Phase 2: Per-Issue Ultracode Leads (background, parallel)

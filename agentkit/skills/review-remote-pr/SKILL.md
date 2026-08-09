@@ -398,8 +398,10 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # Keep the untracked .agent/ directory out of any accidental `git add -A`.
 git_common_dir=$(git rev-parse --git-common-dir)
 mkdir -p "$git_common_dir/info"
-grep -qxF '.agent/' "$git_common_dir/info/exclude" 2>/dev/null ||
-  printf '%s\n' '.agent/' >>"$git_common_dir/info/exclude"
+# `.agent/*`, never `.agent/`: excluding the directory stops git descending
+# into it and defeats the .gitignore allowlist that keeps config.env committable.
+grep -qxF '.agent/*' "$git_common_dir/info/exclude" 2>/dev/null ||
+  printf '%s\n' '.agent/*' >>"$git_common_dir/info/exclude"
 ```
 
 Carry the 10-line block forward for the whole run and **paste it verbatim into every dispatched

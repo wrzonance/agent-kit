@@ -600,12 +600,48 @@ log_file=$(choose_log)
 # something to tail. Naming the file up front costs one line and saves that.
 printf 'running: %s\n  log: %s (grows while this runs; tail it instead of waiting blind)\n' \
     "$cmd_str" "$log_file" >&2
+printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 
+# The log is bracketed, and the closing marker is the point.
+#
+# It used to hold the command's output and nothing else, so a log that stopped
+# mid-stream was indistinguishable from one still being written -- and from one
+# whose process had died. A session that launched several commands at once read
+# two logs ending after their package manager's preamble, could not tell a hang
+# from a failure, and went to `ps` to find out. The absence of a terminator is
+# now the answer: no "exited" line means it did not finish.
+#
+# LOG_HEADER_LINES keeps the "N lines suppressed" count honest -- it reports the
+# command's own output, not this bookkeeping.
+readonly LOG_HEADER_LINES=2
+{
+    printf '=== agent-run %s\n' "$cmd_str"
+    printf '=== started %s  pid=%s  cwd=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir"
+} > "$log_file"
+
+# A killed run cannot write its own terminator on SIGKILL, which is correct:
+# that log SHOULD stay unterminated. TERM and INT are catchable, and a run the
+# operator interrupted is worth distinguishing from one that vanished.
+# shellcheck disable=SC2329  # invoked from the trap strings below
+log_interrupted() {
+    printf '=== agent-run interrupted by %s -- the command did not finish\n' "$1" >> "$log_file"
+    exit 130
+}
+trap 'log_interrupted SIGINT' INT
+trap 'log_interrupted SIGTERM' TERM
+
+started_at=$SECONDS
 rc=0
-(cd -- "$work_dir" && exec "${cmd[@]}") >"$log_file" 2>&1 || rc=$?
+(cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+trap - INT TERM
+elapsed=$((SECONDS - started_at))
+lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
+((lines >= 0)) || lines=0
+printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
+
 if ((rc == 0)); then
     write_command_stamp
-    lines=$(wc -l <"$log_file" | tr -d '[:space:]')
     printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
 else
     report_failure "$rc" "$log_file"
