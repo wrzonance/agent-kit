@@ -14,7 +14,7 @@ Works with **Codex CLI** and **Claude Code** from the same directory.
 | **`onboard-repo`** skill | Walk a repository through onboarding, including the judgement calls a script can't make: which commands to declare, which labels mean what |
 | **`parallel-issues`** skill | Triage a GitHub Projects board, split independent issues across worktrees, drive each to a draft PR |
 | **`review-remote-pr`** skill | Take a PR from draft to green: CI, review threads, an adversarial review, and the board move |
-| **`.shared/scripts`** | The procedural half — preflight, command runner, board reader and mover, one-call triage, commit guard |
+| **`.shared/scripts`** | The procedural half — preflight, command runner, board reader and mover, one-call triage, commit guard, CI-gap report |
 | **Five hooks** | Inject the environment contract, and teach the cheaper command without blocking the work |
 
 The idea throughout: **a repository declares its own facts once**, and everything

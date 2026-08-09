@@ -141,7 +141,8 @@ you are recommending and why; a dispatcher is a change to their repository, so i
 is their call. Note that once `tools/verify` exists, bootstrap detects it on its
 own next time.
 
-**Compare what you declared against what CI enforces.** A live run had `VERIFY`
+**Compare what you declared against what CI enforces** — `"$shared/ci-gap.sh"`
+lists the pull-request gates no declared command covers. A live run had `VERIFY`
 pass locally and CI fail, because CI checked a source-size limit the declared
 command did not. `Stop` was guarding less than it appeared to, and nothing said
 so until the push. Read the CI definition, list its gates, and say plainly which

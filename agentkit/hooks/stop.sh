@@ -70,7 +70,14 @@ block() {
 # passing command -- a repository declaring AGENT_CMD_LINT=true would disarm this
 # check in one line while its real gate still failed.
 stamp="$root/.agent/cache/stamp-$verify_name"
-reason="Changes are not covered by a verification run. Run:
+# "Changes are not covered by a verification run" claimed a completeness this
+# gate does not have. It knows one thing: whether the command THIS REPOSITORY
+# declared has run over these changes. A live run had that command pass while CI
+# failed a gate no declared command covered -- and the wording is what made that
+# a surprise rather than a known limit.
+reason="The command this repository declared as $verify_name has not run over these
+changes. That is the only thing this gate checks -- it is not a claim that the
+changes are correct, or that CI will agree. Run:
 $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name
 then finish."
