@@ -57,6 +57,17 @@ Two differences worth knowing, neither of which needs configuring:
   `harness=` and `peer-cli=`, so commit attribution credits whichever agent did
   the work, and an adversarial review always goes to the *other* CLI.
 
+### Cross-provider review privacy
+
+The `review-remote-pr` skill can send a PR diff — including filenames and code — to the
+external provider behind the peer CLI for adversarial review. Repository ownership is not
+consent to disclose private, customer, or NDA-protected code. Before the first cross-provider
+send in a session, the agent must name the source payload, destination provider/CLI, and purpose,
+then ask for an explicit yes/no confirmation. A decline or missing confirmation sends nothing and
+leaves the review gate blocked. An affirmative answer is recorded for that session and provider
+so retries do not repeatedly prompt; a changed destination or payload requires confirmation
+again.
+
 ---
 
 ## Set up a repository
