@@ -86,6 +86,22 @@ assert_contains "$log" 'field-list' 're-resolves the Status field'
 assert_contains "$log" 'item-list' 're-scans the board'
 assert_contains "$out" 'moved #57' 'reports the move'
 
+# An identical second move must not rewrite board.json just because generatedAt
+# is fresh. Commit the first move so the second invocation can prove it leaves
+# the repository clean as well as preserving the file byte-for-byte.
+repo=$(seed_repo)
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+git -C "$repo" add .agent
+git -C "$repo" -c user.name='test' -c user.email='test@example.invalid' \
+    commit -qm 'seed refreshed board metadata'
+before=$(sha256sum "$repo/.agent/board.json")
+sleep 1
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+after=$(sha256sum "$repo/.agent/board.json")
+assert_eq "$before" "$after" 'an identical second move preserves board.json bytes'
+assert_eq '' "$(git -C "$repo" status --short)" \
+    'an identical second move leaves the repository clean'
+
 # The known-board path validates against live metadata; after its successful
 # move, it must persist that data rather than retaining stale mutation hints.
 repo=$(seed_repo)

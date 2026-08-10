@@ -174,6 +174,7 @@ cache_item_id() {
 refresh_board_metadata() {
     local board_owner=$1 project_number=$2 project_id=$3 project_title=$4 fields_json=$5
     local status_field field_id options fingerprint_input fingerprint generated_at staged
+    local staged_substantive existing_substantive
 
     [[ -n $board_file ]] || return 0
     status_field=$(jq -c 'first(.fields[]? | select((.name | ascii_downcase) == "status")) // empty' \
@@ -200,6 +201,17 @@ refresh_board_metadata() {
           generatedAt: $generated_at, fingerprint: $fingerprint}' > "$staged"; then
         rm -f -- "$staged"
         return 1
+    fi
+    staged_substantive=$(jq -S -c 'del(.generatedAt)' <"$staged") || {
+        rm -f -- "$staged"
+        return 1
+    }
+    if [[ -r $board_file ]] &&
+        existing_substantive=$(jq -S -c 'del(.generatedAt)' <"$board_file" 2>/dev/null); then
+        if [[ $staged_substantive == "$existing_substantive" ]]; then
+            rm -f -- "$staged"
+            return 0
+        fi
     fi
     mv -- "$staged" "$board_file"
 }
