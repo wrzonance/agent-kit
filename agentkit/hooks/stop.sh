@@ -13,14 +13,10 @@ trap 'guard_log_error $? 2>/dev/null || true; allow' ERR
 
 input=$(cat 2> /dev/null || true)
 
-# The harness sets stop_hook_active on the Stop that follows a block, so this is
-# the loop guard. The only thing that clears the block below is a PASSING
-# verification run, which a repository whose declared command genuinely fails can
-# never produce -- without this the agent could not end its turn at all. That is
-# the same harm as exiting 2, reached through decision:block. Block once (the
-# nudge is the whole point), then always let the turn end.
+# A retry with no successful stamp remains the loop guard for a genuinely
+# failing command. Once a stamp exists, active retries go through the same
+# attestation below and cannot bypass later changes.
 stop_active=$(jq -r '.stop_hook_active // false' <<< "$input" 2> /dev/null || true)
-[[ $stop_active != true ]] || allow
 
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 [[ -n $cwd && -d $cwd ]] || allow
@@ -55,10 +51,24 @@ done
 # change at all would read as changed; and agent-preflight.sh rewrites
 # .agent/env-contract.txt on session start, which bumps the directory's own mtime
 # past the stamp and would block a tree verification had just covered.
-changed=$(git -C "$root" status --porcelain 2> /dev/null |
-    awk '{ $1 = ""; sub(/^ +/, ""); print }' |
-    grep -v '^\.agent/' || true)
-[[ -n $changed ]] || allow
+changed_paths=()
+while IFS= read -r -d '' record; do
+    status=${record:0:2}
+    rel=${record:3}
+    if [[ $rel != .agent && $rel != .agent/* ]]; then
+        changed_paths+=("$rel")
+    fi
+
+    # With -z, rename/copy output is <status + new path><old path>. Consume the
+    # second NUL record explicitly so it cannot be mistaken for a new status.
+    if [[ $status == *R* || $status == *C* ]]; then
+        IFS= read -r -d '' rel || break
+        if [[ $rel != .agent && $rel != .agent/* ]]; then
+            changed_paths+=("$rel")
+        fi
+    fi
+done < <(git -C "$root" status --porcelain=v1 -z --untracked-files=all 2> /dev/null)
+((${#changed_paths[@]})) || allow
 
 block() {
     jq -nc --arg r "$1" '{decision:"block",reason:$r}'
@@ -82,6 +92,23 @@ $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name
 then finish."
 
+path_newer_than_stamp() {
+    local rel=$1 candidate parent
+    candidate=$root/$rel
+    if [[ -e $candidate || -L $candidate ]]; then
+        [[ $candidate -nt $stamp ]]
+        return
+    fi
+
+    parent=${rel%/*}
+    [[ $parent == "$rel" ]] && parent=.
+    while [[ $parent != . && ! -d $root/$parent ]]; do
+        [[ $parent == */* ]] && parent=${parent%/*} || parent=.
+    done
+    candidate=$root/$parent
+    [[ $candidate -nt $stamp ]]
+}
+
 # This gate runs at the END OF EVERY TURN, so whichever command it picks is
 # paid for on a one-line comment as surely as on a refactor. A repository that
 # declares only a full suite therefore charges minutes for trivial edits --
@@ -96,14 +123,21 @@ proportionate while '$verify_name' stays available for the full run."
 fi
 
 # 3. No stamp at all.
-[[ -r $stamp ]] || block "$reason"
+if [[ ! -r $stamp ]]; then
+    [[ $stop_active == true ]] && allow
+    block "$reason"
+fi
 
-# 4. Any change newer than the stamp.
-while IFS= read -r rel; do
-    [[ -n $rel && -e $root/$rel ]] || continue
-    if [[ $root/$rel -nt $stamp ]]; then
-        block "$reason"
-    fi
-done <<< "$changed"
+# A failed verification must not trap the harness in an unbounded active-retry
+# loop. The first Stop already issued the verification nudge; the retry is the
+# escape hatch when that command could not produce a fresh successful stamp.
+[[ $stop_active == true ]] && allow
+
+# 4. Any change newer than the stamp. A deleted path has no mtime of its own;
+# walk to the nearest surviving directory, whose mtime records the entry
+# removal.
+for rel in "${changed_paths[@]}"; do
+    path_newer_than_stamp "$rel" && block "$reason"
+done
 
 allow
