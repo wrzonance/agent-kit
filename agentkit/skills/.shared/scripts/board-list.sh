@@ -120,8 +120,10 @@ if [[ -x $resolver ]]; then
         --repo-root "$repo_root" --get AGENT_REPO_SLUG 2>/dev/null || true)
 fi
 if [[ -z $repository ]]; then
-    repository=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner \
-        2>/dev/null || true)
+    if ! repository=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner \
+        2>/dev/null); then
+        repository=''
+    fi
 fi
 [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
     repository=''
