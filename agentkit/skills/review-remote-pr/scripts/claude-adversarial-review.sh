@@ -32,6 +32,7 @@
 # Requires: bash >= 4.2, claude >= 2.1, jq, GNU coreutils.
 
 set -euo pipefail
+umask 077
 
 readonly PROGNAME=${0##*/}
 readonly MAX_DIFF_BYTES=10485760 # Claude Code piped-stdin limit (10 MiB)
@@ -79,7 +80,8 @@ Required:
                              starting with "claude-" is asserted against the
                              model the session actually initialized with.
   --transcript <path>        Where to write the raw stream-json transcript.
-                             Truncated on start; parent dirs are created.
+                             Must be a fresh path in an existing 0700 directory;
+                             created exclusively with mode 0600.
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
@@ -194,6 +196,33 @@ cleanup() {
 	fi
 	[[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
 	return 0
+}
+
+# Review transcripts contain the complete private diff and must never be placed
+# in a shared temporary directory. The caller creates one 0700 run directory and
+# passes a fresh path inside it. Refuse anything weaker before invoking Claude.
+prepare_transcript() {
+	local parent mode
+	parent=$(dirname -- "$TRANSCRIPT_PATH")
+	[[ -d $parent && ! -L $parent ]] ||
+		die "Transcript parent must be an existing private directory: $parent"
+	mode=$(stat -c %a -- "$parent") || die "Cannot inspect transcript parent: $parent"
+	[[ $mode == 700 ]] || die "Transcript parent must have mode 0700: $parent"
+	[[ -O $parent ]] || die "Transcript parent is not owned by this user: $parent"
+	[[ ! -L $TRANSCRIPT_PATH ]] ||
+		die "Refusing to write through a transcript symlink: $TRANSCRIPT_PATH"
+	if [[ -e $TRANSCRIPT_PATH ]]; then
+		[[ -f $TRANSCRIPT_PATH && -O $TRANSCRIPT_PATH ]] ||
+			die "Refusing to overwrite transcript not owned by this user: $TRANSCRIPT_PATH"
+		rm -f -- "$TRANSCRIPT_PATH" ||
+			die "Cannot remove previous transcript: $TRANSCRIPT_PATH"
+	fi
+	# Bash noclobber maps this create to an exclusive open, so a pre-existing
+	# symlink cannot redirect the write. The private parent removes the remaining
+	# same-directory race from untrusted local users.
+	(set -o noclobber; : >"$TRANSCRIPT_PATH") ||
+		die "Cannot create transcript exclusively: $TRANSCRIPT_PATH"
+	chmod 600 -- "$TRANSCRIPT_PATH" || die "Cannot secure transcript: $TRANSCRIPT_PATH"
 }
 
 require_value() {
@@ -452,7 +481,7 @@ run_claude() {
 	# Blocking in `wait` lets the INT/TERM trap fire immediately and clean up.
 	local status=0
 	(cd "$isolation_dir" && exec "$CLAUDE_RESOLVED" "${args[@]}") \
-		<"$input_file" >"$TRANSCRIPT_PATH" 2>"$stderr_file" &
+		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
 	wait "$CLAUDE_PID" || status=$?
 	CLAUDE_PID=""
@@ -534,6 +563,7 @@ main() {
 	validate_args
 
 	WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-adversarial-XXXXXXXXXX")
+	chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
 	trap cleanup EXIT
 	trap 'exit 130' INT TERM
 	local isolation_dir=$WORK_DIR/cwd
@@ -541,12 +571,8 @@ main() {
 	local stderr_file=$WORK_DIR/stderr.log
 	mkdir -p -- "$isolation_dir"
 
+	prepare_transcript
 	preflight
-
-	local transcript_dir
-	transcript_dir=$(dirname -- "$TRANSCRIPT_PATH")
-	mkdir -p -- "$transcript_dir" || die "Cannot create transcript directory: $transcript_dir"
-	: >"$TRANSCRIPT_PATH" || die "Cannot write transcript: $TRANSCRIPT_PATH"
 
 	write_review_input "$input_file"
 	local schema prompt started exit_code=0

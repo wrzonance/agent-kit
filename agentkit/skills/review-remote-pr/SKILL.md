@@ -135,8 +135,9 @@ GitHub's public Code Quality REST API currently exposes finding retrieval, not a
 gh api "repos/$REPO/code-quality/findings?state=open&per_page=100" \
   -H "X-GitHub-Api-Version: 2026-03-10"
 # The PR finding comments and their IDs come from the Step 1 artifact — no re-query.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 jq -r '.[] | "\(.id)\t\(.path)\t\(.line)\t\(.commit_id)"' \
-  <"/tmp/pr_${PR}_code_quality_comments.json"
+  <"$RUN_DIR/state/pr_${PR}_code_quality_comments.json"
 ```
 
 **Reply-body integrity gate:** after every automated reply, the created comment must be re-fetched by
@@ -525,6 +526,33 @@ Wait for GitHub to recalculate mergeability (`MERGEABLE` → `MERGEABLE`) before
 
 ---
 
+### 0c — Create the private review-artifact directory
+
+Review payloads contain private source and review text. Create one run directory with a random name
+and carry the printed absolute path forward as `RUN_DIR` in every later command block. Keep it for
+the audit trail; remove it only after all triage and verification are complete.
+
+```bash
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/review-remote-pr.XXXXXXXXXX") || exit 1
+chmod 700 -- "$RUN_DIR" || { printf 'cannot secure %s\n' "$RUN_DIR" >&2; exit 1; }
+printf 'Review artifacts: %s\n' "$RUN_DIR"
+```
+
+Every artifact path below is derived from this directory. Do not substitute `/tmp`, a PR-number-only
+path, or a directory with permissions other than `0700`. `gh-pr-state.sh --full` enforces the same
+boundary and writes artifact files with a private umask.
+
+Shell state does not persist between tool calls. At the start of **every later command block** that
+uses this directory, re-set `RUN_DIR` to the absolute path printed above; the guard in each block
+then fails before any path is used if you forgot:
+
+```bash
+RUN_DIR=/absolute/path/printed-by-step-0c
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+```
+
+---
+
 ## Step 1: Check
 
 One helper call replaces the whole fetch-then-summarize cluster. `gh-pr-state.sh --full` fetches
@@ -545,8 +573,9 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --full --tmpdir /tmp
+  --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
 Pass `--repo` explicitly from inside a worktree: it saves a round trip and removes any
@@ -558,7 +587,7 @@ ci=3/6 failing pending=2 failing=1
 threads: coderabbit=2 unresolved  code-quality=1 open  human=3
 nitpicks: 1 unhandled
 alerts: code-scanning open=0
-saved: /tmp/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
+saved: $RUN_DIR/state/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
 ```
 
 CI state is data, not an error: unlike `gh pr checks` (which exits `8` on pending/failing and can
@@ -567,19 +596,19 @@ means a usage or API failure, and the message names the failing endpoint.
 
 ### The artifacts
 
-`--full` writes exactly these five PR-namespaced files, which Step 1a, Step 5, and the Step 6 sweep
-re-read:
+`--full` writes exactly these five PR-namespaced files beneath the private `RUN_DIR/state` directory,
+which Step 1a, Step 5, and the Step 6 sweep re-read:
 
-- `/tmp/pr_${PR}_reviews.json` — every review submission, including body-embedded nitpicks
-- `/tmp/pr_${PR}_comments.json` — every inline review comment, with the IDs Step 5 replies to
-- `/tmp/pr_${PR}_issue_comments.json` — top-level PR conversation comments
-- `/tmp/pr_${PR}_threads.json` — the raw GraphQL `reviewThreads` response; thread node IDs look
+- `$RUN_DIR/state/pr_${PR}_reviews.json` — every review submission, including body-embedded nitpicks
+- `$RUN_DIR/state/pr_${PR}_comments.json` — every inline review comment, with the IDs Step 5 replies to
+- `$RUN_DIR/state/pr_${PR}_issue_comments.json` — top-level PR conversation comments
+- `$RUN_DIR/state/pr_${PR}_threads.json` — the raw GraphQL `reviewThreads` response; thread node IDs look
   like `PRRT_kwDO...` and this file persists for the Step 5 resolution calls
-- `/tmp/pr_${PR}_code_quality_comments.json` — the `github-code-quality[bot]` subset of the inline
+- `$RUN_DIR/state/pr_${PR}_code_quality_comments.json` — the `github-code-quality[bot]` subset of the inline
   comments, derived locally from the already-fetched data at no extra API cost
 
-Keep any temp file you add PR-namespaced too: `parallel-issues` Phase 3 runs several of these loops
-concurrently and they share `/tmp`. **Read the full bodies from these artifacts before triaging** —
+Keep any temp file you add beneath `RUN_DIR`; the random `0700` directory prevents concurrent loops
+from colliding. **Read the full bodies from these artifacts before triaging** —
 review bodies, inline comment bodies, and PR conversation comment bodies can each carry actionable
 content that has no review thread attached, which a thread-only view misses.
 
@@ -755,12 +784,31 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
-tmp_dir=${TMPDIR:-/tmp}
 reviewer_model='claude-opus-5'
 reviewer_effort='high'
-probe_out="$tmp_dir/claude_probe_pr_${PR}.json"
-probe_transcript="$tmp_dir/claude_adversarial_probe.ndjson"
+
+base_branch=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
+git fetch origin "$base_branch" || {
+    printf 'Could not fetch origin/%s\n' "$base_branch" >&2
+    exit 1
+}
+
+diff_path="$RUN_DIR/adversarial.diff"
+# A blind reviewer has no repository, so it needs surrounding context -- but the
+# width is the single largest cost lever in this whole gate, and it is charged to
+# whichever account you have least headroom on. Measured on a 3-file/9-hunk change:
+# -U3 1.0x, -U10 1.9x, -U25 3.7x, -U80 10.4x, where -U80 emitted 77% of the full
+# text of every touched file. -U25 keeps real context at ~a third of -U80's cost.
+# Raise it only for a diff whose hunks genuinely need more surrounding code.
+git --no-pager diff --find-renames --unified=25 "origin/$base_branch...HEAD" >"$diff_path" || {
+    printf '%s\n' 'Could not build the adversarial-review diff.' >&2
+    exit 1
+}
+
+probe_out="$RUN_DIR/claude_probe.json"
+probe_transcript="$RUN_DIR/claude_probe.ndjson"
 
 probe_rc=0
 "$helper" --mode probe --model "$reviewer_model" --effort "$reviewer_effort" \
@@ -791,30 +839,13 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
-tmp_dir=${TMPDIR:-/tmp}
 reviewer_model='claude-opus-5'
 reviewer_effort='high'
 
-base_branch=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
-git fetch origin "$base_branch" || {
-    printf 'Could not fetch origin/%s\n' "$base_branch" >&2
-    exit 1
-}
-
-diff_path="$tmp_dir/claude_pr_${PR}.diff"
-transcript="$tmp_dir/claude_pr_${PR}.ndjson"
-verdict_path="$tmp_dir/claude_pr_${PR}.result.json"
-# A blind reviewer has no repository, so it needs surrounding context -- but the
-# width is the single largest cost lever in this whole gate, and it is charged to
-# whichever account you have least headroom on. Measured on a 3-file/9-hunk change:
-# -U3 1.0x, -U10 1.9x, -U25 3.7x, -U80 10.4x, where -U80 emitted 77% of the full
-# text of every touched file. -U25 keeps real context at ~a third of -U80's cost.
-# Raise it only for a diff whose hunks genuinely need more surrounding code.
-git --no-pager diff --find-renames --unified=25 "origin/$base_branch...HEAD" >"$diff_path" || {
-    printf '%s\n' 'Could not build the adversarial-review diff.' >&2
-    exit 1
-}
+transcript="$RUN_DIR/claude.ndjson"
+verdict_path="$RUN_DIR/adversarial.result.json"
 
 # stdout = one JSON object (verdict, or the blocked object on rc 3).
 # stderr = one progress object per --poll-seconds.  --transcript = raw NDJSON for auditing.
@@ -866,7 +897,6 @@ servers or settings), `--ignore-rules` (no `AGENTS.md` discovery), and a throwaw
 directory, with the verdict constrained by `--output-schema`.
 
 ```bash
-tmp_dir=${TMPDIR:-/tmp}
 # Locate the skill tree. Packaging MOVES it: standalone it sits at
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
@@ -880,11 +910,13 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
-verdict_path="$tmp_dir/codex_pr_${PR}.result.json"
+diff_path="$RUN_DIR/adversarial.diff"
+verdict_path="$RUN_DIR/adversarial.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
-    --diff "$tmp_dir/claude_pr_${PR}.diff" \
-    --transcript "$tmp_dir/codex_pr_${PR}.jsonl" >"$verdict_path" || {
+    --diff "$diff_path" \
+    --transcript "$RUN_DIR/codex.jsonl" >"$verdict_path" || {
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
 }
@@ -904,8 +936,8 @@ Adversarially review the following diff BLIND. You have no issue, spec, ADR, goa
 <explicit diff only>
 ```
 
-Capture the separate agent's findings in the same PR-namespaced verdict file the Claude path writes
-(`$TMPDIR/claude_pr_${PR}.result.json`, defaulting to `/tmp`), using the same nesting
+Capture the separate agent's findings in the private run directory at the neutral shared result
+path (`$RUN_DIR/adversarial.result.json`), using the same nesting
 (`.verdict.verdict`, `.verdict.findings[]` with `priority`), so the Step 5 routing below is
 identical. If the harness cannot create a separate no-history agent, *then* report the
 adversarial review as blocked; do not substitute the parent agent's contextual self-review.
@@ -917,6 +949,8 @@ adversarial review as blocked; do not substitute the parent agent's contextual s
 A green "CodeRabbit" status check is NOT proof a review happened. Detect the real signal in the comment **body** (rate-limit warnings and bare "✅ finished" acks both leave the check green):
 
 ```bash
+# Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 # Reads the Step 1 artifact; no extra API call. Comments arrive oldest-first, so
 # the LAST signal wins — a stale walkthrough from an earlier cycle must not mask
 # a rate-limit on the CURRENT trigger.
@@ -927,7 +961,7 @@ jq -r '
       elif ($b | test("review limit reached|rate limit"; "i"))                 then "rate-limited"
       else . end)
   | "CodeRabbit state: " + .
-' <"/tmp/pr_${PR}_issue_comments.json"
+' <"$RUN_DIR/state/pr_${PR}_issue_comments.json"
 ```
 
 - `reviewed` → a user-triggered review posted real findings; work its items (Phase C Step 5).
@@ -941,7 +975,8 @@ verdict payload is **nested**: `.verdict.verdict` is the `findings`/`no_findings
 `.verdict.findings` is the array. The raw NDJSON transcript stays beside it for auditing.
 
 ```bash
-verdict_path="${TMPDIR:-/tmp}/claude_pr_${PR}.result.json"
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+verdict_path="$RUN_DIR/adversarial.result.json"
 
 # Success path (rc 0) only. rc 3 -> read .blockedReason and take the blind Codex
 # fallback; rc 1 -> stdout is empty and the reason is on stderr. See the table above.
@@ -1063,7 +1098,7 @@ Do NOT wait for a CodeRabbit review after a push — pushes trigger nothing. A f
 4. Post and integrity-check approved human replies, body-nitpick documentation, Code Quality replies, and adversarial-review outcome comments
 5. Then reply to and resolve CodeRabbit's own eligible threads; never resolve human-touched threads
 
-For each unresolved **CodeRabbit** thread, each CodeRabbit body nitpick surfaced from `/tmp/pr_${PR}_reviews.json`, `/tmp/pr_${PR}_comments.json`, or `/tmp/pr_${PR}_issue_comments.json`, AND each confirmed adversarial-review finding from `$TMPDIR/claude_pr_${PR}.result.json` (Step 1b):
+For each unresolved **CodeRabbit** thread, each CodeRabbit body nitpick surfaced from `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, or `$RUN_DIR/state/pr_${PR}_issue_comments.json`, AND each confirmed adversarial-review finding from `$RUN_DIR/adversarial.result.json` (Step 1b):
 
 ```
 VALID   → fix the code, commit; reply explaining what was fixed + commit SHA
@@ -1115,10 +1150,11 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
-comment_id=1234567890                       # from /tmp/pr_${PR}_comments.json
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+comment_id=1234567890                       # from $RUN_DIR/state/pr_${PR}_comments.json
 short_sha=$(git rev-parse --short HEAD)
 agent_identity='Codex gpt-5.6-luna'         # the agent that actually wrote the fix
-reply_body="${TMPDIR:-/tmp}/pr_${PR}_reply_${comment_id}.md"
+reply_body="$RUN_DIR/reply_${comment_id}.md"
 
 cat >"$reply_body" <<'EOF'
 This was written agentically; verify its assertions:
@@ -1158,11 +1194,12 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 nitpick_path=src/example.ts                 # from the nitpick body
 nitpick_line=42                             # must be inside the PR diff
 short_sha=$(git rev-parse --short HEAD)
 agent_identity='Codex gpt-5.6-luna'
-doc_body="${TMPDIR:-/tmp}/pr_${PR}_nitpick_${nitpick_line}.md"
+doc_body="$RUN_DIR/nitpick_${nitpick_line}.md"
 
 cat >"$doc_body" <<'EOF'
 This was written agentically; verify its assertions:
@@ -1225,18 +1262,21 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --full --tmpdir /tmp
+  --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
 The digest answers "is CI green" and "how many unresolved coderabbit / code-quality / human threads
 remain". One classification the digest does not carry is which unresolved threads are this
 workflow's own **marked agent-doc** threads, eligible for resolution at exit. Derive that from the
-refreshed `/tmp/pr_${PR}_threads.json`:
+refreshed `$RUN_DIR/state/pr_${PR}_threads.json`:
 
 ```bash
+# Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 # Path passed as argv, not via the environment — nothing is exported across calls.
-python3 - "/tmp/pr_${PR}_threads.json" << 'EOF'
+python3 - "$RUN_DIR/state/pr_${PR}_threads.json" << 'EOF'
 import json, re, sys
 d = json.load(open(sys.argv[1]))
 rt = d['data']['repository']['pullRequest']['reviewThreads']
@@ -1269,7 +1309,7 @@ EOF
 
 Marked agent-documentation threads may be resolved at exit only when every non-bot comment has an agent marker. An unmarked human reply converts the whole thread to confirmation-gated and leaves it open. Never substitute `author == gh api user` for a marker. Do not apply this rule to an original `github-code-quality[bot]` finding: it must auto-clear or be dismissed with a reason.
 
-Also re-open `/tmp/pr_${PR}_reviews.json`, `/tmp/pr_${PR}_comments.json`, `/tmp/pr_${PR}_issue_comments.json`, and `/tmp/pr_${PR}_code_quality_comments.json`. Confirm every automated-review body nitpick has a matching anchored thread (or fallback comment) recording its fix/decline, and every Code Quality comment is either gone/auto-cleared after the pushed fix or explicitly dismissed with a reason. Confirm every confirmed adversarial-review `[P1]/[P2]` finding has a matching fix/decline PR comment.
+Also re-open `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, `$RUN_DIR/state/pr_${PR}_issue_comments.json`, and `$RUN_DIR/state/pr_${PR}_code_quality_comments.json`. Confirm every automated-review body nitpick has a matching anchored thread (or fallback comment) recording its fix/decline, and every Code Quality comment is either gone/auto-cleared after the pushed fix or explicitly dismissed with a reason. Confirm every confirmed adversarial-review `[P1]/[P2]` finding has a matching fix/decline PR comment.
 
 If any CI failed OR any automated-review thread/finding remains unhandled OR any body nitpick remains unaddressed OR any confirmed adversarial-review finding remains unaddressed → go back to Step 1 (max 3 full cycles — see The Loop's iteration cap; remember another CodeRabbit pass needs the user's trigger). If human-authored content lacks an explicit user decision, surface the gate and wait; do not post, resolve, or claim readiness.
 
@@ -1340,7 +1380,7 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | Posted reply body doesn't match intended text | Post through `gh-comment.sh`: it sends the file's exact bytes, re-fetches the stored comment, and `cmp`s them, printing a unified diff on mismatch. Resolve or dismiss only when it printed a stdout line AND exited `0`. |
 | Loop never converges (new nitpicks every trigger) | Iteration cap: 3 full cycles, then summarize remaining items + your stance and escalate to the user. |
 | Truncated reviews/threads on chatty PRs | REST defaults to 30/page (oldest-first — you lose the NEWEST). `gh-pr-state.sh` paginates every list endpoint; for threads it requests `first: 100` and appends `truncated=yes` to the digest's `threads:` line when there is more. Treat `truncated=yes` as "page with an `after:` cursor", never as a clean zero. |
-| Parallel loops clobber temp files | All temp files are PR-namespaced (`/tmp/pr_${PR}_*.json`) — parallel-issues Phase 3 runs several of these loops at once; keep any new temp files namespaced too. |
+| Parallel loops clobber temp files | All review artifacts live beneath the random `RUN_DIR` (`0700`) — parallel-issues Phase 3 runs several loops concurrently; never write review payloads to shared `/tmp`. |
 | `python3 -c "..."` fails with `unmatched "` | zsh breaks on double-quoted multi-line python. Use heredoc instead: `cmd \| python3 << 'EOF'\n...\nEOF`. Never use `python3 -c "..."` for multi-line scripts. |
 | Conflict resolution with python3 | Prefer `git checkout --ours/--theirs <file>` for whole-file picks; `sed` only for mechanical marker stripping (see Step 0b). Python inline scripts fail on files that contain quotes. |
 | `gh pr checks` cancels parallel calls | `gh pr checks` exits 8 when checks are pending/failing, and a parallel runner treats exit 8 as an error and cancels siblings. Prefer `gh-pr-state.sh` (CI state is data; it stays at exit 0); if you must call `gh pr checks` directly, append `\|\| true`. |
