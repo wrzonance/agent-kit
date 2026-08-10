@@ -16,7 +16,24 @@ if ! command -v codex > /dev/null 2>&1; then
     exit 0
 fi
 
-stage=$(mktemp -d "$HOME/.agentkit-test.XXXXXX")
+# $HOME is not always writable, and that is not a failure of this tree.
+#
+# This suite is the declared VERIFY command for agent-kit itself, so Stop runs
+# it at the end of every turn. Under a workspace-scoped sandbox $HOME is
+# read-only, and a live onboarding session watched the whole suite fail here and
+# then re-ran it with elevation -- a permission escalation per turn, to satisfy
+# an integration test that was never the point of the turn.
+#
+# Probed by trying, not by checking permission bits: a read-only mount reports
+# the same bits as a writable one, and a read-only mount is the case at issue.
+if ! stage=$(mktemp -d "$HOME/.agentkit-test.XXXXXX" 2> /dev/null); then
+    # shellcheck disable=SC2016  # HOME is named for the reader, not expanded
+    printf '%s: $HOME is not writable here, skipping integration test\n' "$TEST_NAME"
+    printf '%s: codex requires a local marketplace under the home directory, so\n' "$TEST_NAME"
+    printf '%s: this suite cannot run in a workspace-scoped sandbox. Nothing was\n' "$TEST_NAME"
+    printf '%s: verified about installation.\n' "$TEST_NAME"
+    exit 0
+fi
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$stage" "$tmp"' EXIT
 
