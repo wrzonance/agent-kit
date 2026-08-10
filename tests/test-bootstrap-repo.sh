@@ -331,4 +331,49 @@ assert_contains "$written" "$(basename -- "$repo_b")" \
 assert_not_contains "$written" "$(basename -- "$repo_a")" \
     'and never the invoking repository'
 
+# --- an unlinked board is never adopted silently ----------------------------
+# The single-candidate shortcut used to skip the only guard here. A personal
+# repository whose owner had exactly one board took that board -- an unrelated
+# homelab project holding someone else's in-flight issue -- and would have
+# written its ids into a committed board.json, after which the next lifecycle
+# move would have mutated it. The session that hit this noticed only because the
+# columns happened to be wrong.
+mkdir -p "$tmp/stub-unlinked"
+cat > "$tmp/stub-unlinked/gh" << EOF
+#!/usr/bin/env bash
+set -uo pipefail
+case "\$*" in
+  *"api graphql"*)        printf '{"data":{"repository":{"projectsV2":{"nodes":[]}}}}\n' ;;
+  *"project field-list"*) cat "$here/fixtures/gh-field-list.json" ;;
+  *"project list"*)       printf '{"projects":[{"closed":false,"id":"PVT_other","number":2,"title":"Someone elses board"}],"totalCount":1}\n' ;;
+  *"repo view"*)          printf '{"nameWithOwner":"example-org/example-repo","defaultBranchRef":{"name":"main"}}\n' ;;
+  *) printf '{}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/stub-unlinked/gh"
+
+repo=$(make_repo)
+err=$(PATH="$tmp/stub-unlinked:$PATH" "$bs_sh" --repo-root "$repo" 2>&1 >/dev/null || true)
+assert_contains "$err" 'refusing to adopt an unlinked board' \
+    'a lone unlinked board is refused, not adopted'
+assert_contains "$err" 'Someone elses board' 'and the candidate is named so the choice can be made'
+assert_contains "$err" '--project N' 'and the way to accept it is spelled out'
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'and nothing is written'
+
+# Naming it explicitly is consent, and then it proceeds.
+repo=$(make_repo)
+assert_rc 0 'an explicitly named unlinked board is accepted' -- env PATH="$tmp/stub-unlinked:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 2
+
+# --- a board owned by someone else ------------------------------------------
+# GitHub refuses to link an organization board to a personal repository at all,
+# so for that pairing there is no link to find and the owner must be typed.
+repo=$(make_repo)
+out=$(PATH="$tmp/stub-unlinked:$PATH" "$bs_sh" --repo-root "$repo" --project 2 \
+    --owner other-org --dry-run 2>&1)
+assert_contains "$out" '"owner": "other-org"' \
+    'board.json records the BOARD owner, not the repository owner'
+
 finish
