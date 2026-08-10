@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Suite: repository-supplied environment contracts cannot redirect skill helpers.
+# shellcheck disable=SC2016  # grep pattern intentionally contains literal shell syntax
 set -uo pipefail
 
 TEST_NAME='contract-provenance'
