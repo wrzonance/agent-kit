@@ -264,23 +264,19 @@ The worker returns the six-stage status, commit SHA(s), changed paths, RED/GREEN
 ```bash
 # Re-derive these at the top of EVERY shell call: env does NOT persist between
 # tool calls, so nothing exported in an earlier call is still set here.
+# The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
 # Locate the skill tree. Packaging MOVES it: standalone it sits at
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 [ -x "$resolver" ] && eval "$("$resolver" --export)"
 # Config first, forge second. Each block still re-derives its own values -- env
@@ -372,17 +368,12 @@ else
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
   resolver="$agentkit/.shared/scripts/repo-config.sh"
   [ -x "$resolver" ] && eval "$("$resolver" --export)"
   PR_WORKTREE="${PR_WORKTREE:-$REPO_ROOT/${AGENT_WORKTREE_ROOT:-.worktrees}/pr-$PR}"
@@ -421,17 +412,12 @@ block is the environment contract for the entire run (see *Sandbox and environme
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 "$agentkit/.shared/scripts/agent-preflight.sh" \
   --repo "$REPO" --worktree "$PR_WORKTREE"
 
@@ -509,17 +495,12 @@ surfaces as exit `2` with nothing staged instead of a half-applied index:
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 resolved=src/example.ts   # repeat for each resolved path
 
 # The trailer names the agent that AUTHORED the commit, read from the
@@ -597,17 +578,12 @@ instead of dumping JSON into your context:
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
@@ -866,17 +842,12 @@ structured output, verified isolation, the initialized model in non-empty `model
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 reviewer_model='claude-opus-5'
@@ -925,17 +896,12 @@ Only on `probe_rc` `0`, run the review pass:
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 reviewer_model='claude-opus-5'
@@ -1000,17 +966,12 @@ directory, with the verdict constrained by `--output-schema`.
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 diff_path="$RUN_DIR/adversarial.diff"
@@ -1118,17 +1079,12 @@ Then verify independently, before the single cycle push. Route every verificatio
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 
 # Ask by name; the repository owns the definition.
@@ -1172,17 +1128,12 @@ After pushing, wait in **bounded rounds** — never one unbounded wait (a shell 
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
 ```
@@ -1252,17 +1203,12 @@ it; substitute varying values with `printf` arguments, never by unquoting the he
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 comment_id=1234567890                       # from $RUN_DIR/state/pr_${PR}_comments.json
 short_sha=$(git rev-parse --short HEAD)
@@ -1300,17 +1246,12 @@ A `gh pr comment` floats in the conversation, disconnected from the code — Cod
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 nitpick_path=src/example.ts                 # from the nitpick body
 nitpick_line=42                             # must be inside the PR diff
@@ -1372,17 +1313,12 @@ hand-rolled GraphQL re-query here:
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
@@ -1619,17 +1555,12 @@ matching option:
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 board_helper="$agentkit/parallel-issues/scripts/move-github-project-item.sh"
 
 for issue_number in 62 71; do   # only the numbers the user approved

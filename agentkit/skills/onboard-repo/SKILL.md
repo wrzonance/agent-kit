@@ -27,20 +27,24 @@ nothing to enforce and `--cmd` resolves nothing.
 ## Step 0 — resolve the tree
 
 ```bash
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+if [[ -z $agentkit ]]; then
+    agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
+        -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
+    [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 # shellcheck disable=SC2034  # used by every later block; env does not
 # persist between tool calls, so each block re-derives it.
 shared="$agentkit/.shared/scripts"
+
+contract_path=''
+if [[ -r .agent/env-contract.txt ]]; then
+    contract_path=$(grep -m1 '^skills= path=' .agent/env-contract.txt)
+fi
+if [[ -z $contract_path ]]; then
+    "$shared/agent-preflight.sh" --worktree "$(git rev-parse --show-toplevel)" 2>/dev/null
+fi
 ```
 
 ## Step 1 — look before writing
