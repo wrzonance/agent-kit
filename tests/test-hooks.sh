@@ -461,6 +461,62 @@ for guarded in '.github/workflows/ci.yml' '.githooks/pre-commit' \
 done
 assert_contains "$out" 'fix the check' 'and names the failure mode it exists for'
 
+# --- a commit landing on trunk ---------------------------------------------
+# Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
+# the agent did exactly that, and the onboarding commit landed on main of a
+# repository where everything else arrives by pull request. Nothing objected --
+# the trunk refusal lived in worktree-commit.sh, and the skill had told the
+# agent to use plain git.
+#
+# Deny-once, not always: committing to main is right in plenty of repositories,
+# and a hard refusal would be wrong in all of them.
+trunk_repo=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=main\n' \
+    > "$trunk_repo/.agent/config.env"
+git -C "$trunk_repo" checkout -q -b main 2> /dev/null
+# A real commit, so main and the feature branch are real refs. On an unborn
+# HEAD `checkout -b` only rewrites the symref and `checkout main` fails
+# outright, which silently leaves the fixture on whichever branch it made last.
+git -C "$trunk_repo" -c user.email=t@example.invalid -c user.name=t \
+    commit -q --allow-empty -m base 2> /dev/null
+
+tsid=$(fresh_sid)
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a commit on the declared trunk is refused'
+assert_contains "$out" 'would land on main' 'and names the branch it would land on'
+assert_contains "$out" 'checkout -b' 'and says what to do instead'
+
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'and the retry is allowed -- this is deny-once'
+
+# Off trunk, it has nothing to say.
+git -C "$trunk_repo" checkout -q -b chore/onboard 2> /dev/null
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a commit on a feature branch is not refused'
+
+git -C "$trunk_repo" checkout -q main 2> /dev/null
+for benign in 'git commit --dry-run' 'grep -rn "git commit" docs/' \
+    'echo "run git commit next"' 'git log --format=%s'; do
+    out=$(pre_input "$trunk_repo" "$benign" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "not a commit: $benign"
+done
+
+# `git -C dir commit` is the same commit with the repository named up front --
+# and the branch that matters is the one in DIR, not the one where the agent
+# happens to be standing.
+out=$(pre_input "$tmp" "git -C $trunk_repo commit -m x" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'git -C DIR commit is judged against DIR'
+
+# Evidence rule: a repository that never declared a trunk gets no opinion. With
+# no AGENT_BASE_BRANCH and no origin/HEAD there is nothing to compare against,
+# and guessing at "main" would refuse work in every repo that calls it anything
+# else.
+undeclared=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$undeclared/.agent/config.env"
+git -C "$undeclared" checkout -q -b main 2> /dev/null
+out=$(pre_input "$undeclared" 'git commit -m x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'an undeclared trunk is not guessed at'
+
 # A shell write reaches the same files the edit-tool guard protects, and it
 # arrives as a Bash call the edit guard cannot see. This was a documented hole:
 # `sed -i` on a workflow went straight past.

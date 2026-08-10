@@ -87,6 +87,22 @@ This denial does not lift on a retry. If it is genuinely what the task needs,
 the user should run it themselves."
 fi
 
+# A commit landing on the trunk branch. Deny-once: committing to trunk is
+# ordinary in some repositories and a mistake in every repository that reviews
+# by pull request, and the command alone does not say which -- so one refusal
+# turns the default into a choice.
+if branch=$(guard_trunk_commit_reason "$command_line" "$protect_root"); then
+    if guard_should_deny "$protect_root" "$session" trunk-commit; then
+        deny "Refused once -- this commit would land on $branch, the trunk branch this
+repository declares. Work that is reviewed before it merges needs a branch:
+
+  git checkout -b <type>/<short-name>
+
+If committing to $branch is genuinely right here, make the same call again and
+it will be allowed."
+    fi
+fi
+
 # A bare helper invocation. Nothing in the tree is on PATH, so this is a
 # guaranteed "command not found" that the agent then recovers from by guessing a
 # location. Letting it run would teach the same lesson one call later, so the

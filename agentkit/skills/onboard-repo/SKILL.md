@@ -48,6 +48,30 @@ session trusts it.
 
 If the repo is already onboarded and you are here to fix it, add `--force`.
 
+### If there is no board, or the columns are wrong
+
+`bootstrap-repo.sh` reads a board; it never creates one. When it reports no
+board — or lists several and refuses to guess — ask the user which they want,
+and only then:
+
+```bash
+"$shared/board-setup.sh" --dry-run          # creates a board, canonical columns, links it
+"$shared/board-setup.sh"                    # or --project N to re-column an existing one
+```
+
+**Do not do this by hand.** The mutation that sets Status columns
+(`updateProjectV2Field` with `singleSelectOptions`) replaces the entire option
+set and matches nothing by name: every item in every column — including the
+columns whose names did not change — comes back unassigned. A session that
+found that mutation by introspecting the GraphQL schema fired it and got away
+with it only because the board was empty. The helper snapshots first and
+restores by name; that is the only reason it is safe on a board with work on it.
+
+Creating a board does **not** link it to the repository, which is why a repo
+can be freshly onboarded and still report "no board". The helper links it.
+
+Then re-run Step 1 with `--project N`.
+
 ## Step 2 — write the files
 
 ```bash
@@ -223,7 +247,15 @@ just because it would eventually pass. Leave it to CI, and say so in Step 9.
 
 ## Step 7 — commit
 
+Onboarding changes `.gitignore` and adds two files everyone in the repository
+inherits, so it goes through whatever review the repository already uses. Check
+where you are standing first — a session that skipped this landed its
+onboarding commit on `main` of a repo where every other change arrives by pull
+request:
+
 ```bash
+git branch --show-current
+git checkout -b chore/agentkit-onboarding     # unless the repo commits to trunk
 git add .agent/config.env .agent/board.json .gitignore
 ```
 

@@ -346,6 +346,48 @@ guard_destructive_reason() {
     return 1
 }
 
+# Committing straight onto the trunk branch.
+#
+# Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
+# the agent did exactly that, and the onboarding commit landed on `main` of a
+# repository whose every other change arrives by pull request. Nothing objected,
+# because the trunk refusal lives in worktree-commit.sh and the skill had told
+# the agent to use plain git.
+#
+# Deny-ONCE, not always. Plenty of people commit to main on purpose -- a solo
+# repository, a docs typo, the first commit of an empty tree -- and a hard
+# refusal would be wrong in all of those. One refusal is enough to turn an
+# unnoticed default into a decision.
+#
+# Evidence rule: a repository that has not declared a trunk gets no opinion.
+# AGENT_BASE_BRANCH is what onboarding writes; origin/HEAD is the fallback, and
+# when neither answers, this stays silent rather than guessing at "main".
+guard_trunk_commit_reason() {
+    local cmd=$1 root=$2 current trunk
+    [[ -n $root ]] || return 1
+
+    # Command position, so `git commit` in a message body or a grep pattern is
+    # not a commit. `git -C dir commit` and `git commit -m x` both qualify;
+    # --dry-run does not, since it writes nothing.
+    grep -qE '(^|[;&|])[[:space:]]*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)' \
+        <<< "$cmd" || return 1
+    grep -qE '[[:space:]]--dry-run([[:space:]]|=|$)' <<< "$cmd" && return 1
+
+    current=$(git -C "$root" symbolic-ref --quiet --short HEAD 2> /dev/null) || return 1
+    [[ -n $current ]] || return 1
+
+    trunk=$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH[[:space:]]*=[[:space:]]*//p' \
+        "$root/.agent/config.env" 2> /dev/null | tail -1)
+    trunk=${trunk%%[[:space:]]*}
+    if [[ -z $trunk ]]; then
+        trunk=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2> /dev/null) || true
+        trunk=${trunk#origin/}
+    fi
+    [[ -n $trunk && $current == "$trunk" ]] || return 1
+
+    printf '%s' "$current"
+}
+
 # A hook that fails open is invisible. Every silent failure this tree has had --
 # a SIGPIPE exit of 141, a pipefail death before the error could print -- looked
 # from outside exactly like a hook that had nothing to say. One line per
