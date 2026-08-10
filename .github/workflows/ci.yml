@@ -1,0 +1,57 @@
+name: CI
+
+# The suite is the only thing standing between this tree and the classes of
+# defect an external review already found in it. Running it locally is a habit;
+# running it here is a fact.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: gates and suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      - name: Report the interpreter
+        # The tree targets bash 5.2 and one gate checks for constructs that need
+        # it. A runner that quietly moved to another major version should say so
+        # here rather than through a parse error halfway down the suite.
+        #
+        # shellcheck is preinstalled on the GitHub ubuntu images; installing it
+        # when it is absent turns a future image change from "two gates fail
+        # with command not found" into a slower run that still tells the truth.
+        run: |
+          set -euo pipefail
+          command -v shellcheck > /dev/null || {
+            echo 'shellcheck absent from the image; installing'
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          }
+          bash --version | head -1
+          jq --version
+          shellcheck --version | sed -n '2p'
+          git --version
+
+      - name: Identify git
+        # Several suites create throwaway repositories and commit in them. A
+        # runner has no global identity, and `git commit` fails without one --
+        # as a suite failure that says nothing about the actual cause.
+        run: |
+          git config --global user.email ci@example.invalid
+          git config --global user.name  'agent-kit CI'
+          git config --global init.defaultBranch main
+
+      - name: Run the suite
+        run: tests/run-tests.sh
