@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Suite: move-github-project-item.sh optimistic fast path and self-healing.
+# Suite: move-github-project-item.sh live rebinding and self-healing.
 #
 # Exit codes follow this script's own long-standing contract (0 move-or-no-op,
 # 1 bad arguments or API error), not the tree-wide "2 = usage" convention. It
@@ -24,7 +24,14 @@ set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
   *"item-edit"*)          [[ -n \${FAIL_EDIT:-} ]] && exit 1; exit 0 ;;
-  *"project field-list"*) cat "$here/fixtures/gh-field-list.json" ;;
+  *"project view"*)       printf '{"id":"PVT_kwDOAexample1","number":7}\n' ;;
+  *"project field-list"*)
+      if [[ -n \${CUSTOM_STATUS:-} ]]; then
+          printf '{"fields":[{"id":"PVTSSF_custom","name":"Status","options":[{"id":"opt-ice","name":"Icebox"},{"id":"opt-ship","name":"Shipped"}]}]}\n'
+      else
+          cat "$here/fixtures/gh-field-list.json"
+      fi
+      ;;
   *"project item-list"*)  cat "$here/fixtures/gh-item-list.json" ;;
   *"project list"*)       cat "$here/fixtures/gh-project-list.json" ;;
   *) printf '{}\n' ;;
@@ -66,18 +73,78 @@ run_mv() {
         "$mv_sh" --repo-root "$repo" --repository example-org/example-repo "$@"
 }
 
-# --- fast path: exactly one gh call ---------------------------------------
+# --- committed IDs are rebound against live board data ---------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
-assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'a warm cache costs exactly one gh call'
+assert_eq '4' "$(wc -l < "$tmp/gh.log")" 'a warm cache still validates all live IDs'
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'item-edit' 'the one call is item-edit'
-assert_contains "$log" 'PVTI_example57' 'uses the cached item id'
-assert_contains "$log" 'opt-inprog' 'uses the cached option id'
-assert_not_contains "$log" 'field-list' 'does not re-resolve the Status field'
-assert_not_contains "$log" 'item-list' 'does not re-scan the board'
+assert_contains "$log" 'item-edit' 'the final call is item-edit'
+assert_contains "$log" 'PVTI_example57' 'uses the live requested-repo item id'
+assert_contains "$log" 'opt-inprog' 'uses the live option id'
+assert_contains "$log" 'field-list' 're-resolves the Status field'
+assert_contains "$log" 'item-list' 're-scans the board'
 assert_contains "$out" 'moved #57' 'reports the move'
+
+# An identical second move must not rewrite board.json just because generatedAt
+# is fresh. Commit the first move so the second invocation can prove it leaves
+# the repository clean as well as preserving the file byte-for-byte.
+repo=$(seed_repo)
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+git -C "$repo" add .agent
+git -C "$repo" -c user.name='test' -c user.email='test@example.invalid' \
+    commit -qm 'seed refreshed board metadata'
+before=$(sha256sum "$repo/.agent/board.json")
+sleep 1
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+after=$(sha256sum "$repo/.agent/board.json")
+assert_eq "$before" "$after" 'an identical second move preserves board.json bytes'
+assert_eq '' "$(git -C "$repo" status --short)" \
+    'an identical second move leaves the repository clean'
+
+# The known-board path validates against live metadata; after its successful
+# move, it must persist that data rather than retaining stale mutation hints.
+repo=$(seed_repo)
+jq '.statusField.id = "PVTSSF_stale" | .statusField.options.Ready = "opt-stale"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
+    'a known-board move refreshes the live Status field id'
+assert_eq 'opt-ready' "$(jq -r '.statusField.options.Ready' < "$repo/.agent/board.json")" \
+    'and refreshes the live Status option id'
+
+# A forged cache item must never be sent to item-edit. The live board contains
+# both repositories at #57; only the requested repository's item is valid.
+repo=$(seed_repo)
+jq '.items["57"] = "PVTI_otherrepo57"' < "$repo/.agent/cache/board-items.json" \
+    > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--id PVTI_example57' 'rebinds a forged cache entry to the live requested-repo item'
+assert_not_contains "$log" 'PVTI_otherrepo57' 'never edits the forged unrelated item'
+
+# Forged project, field, and option IDs are likewise hints only. A mismatched
+# project forces the normal live project-list path, which still edits only the
+# real project and its live Status field.
+repo=$(seed_repo)
+jq '.project.id = "PVT_attacker" | .statusField.id = "PVTSSF_attacker" |
+    .statusField.options.Ready = "opt-attacker"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--project-id PVT_kwDOAexample1' 'rebinds a forged project ID to the live project'
+assert_contains "$log" '--field-id PVTSSF_lADOAexampleB' 'rebinds a forged Status field ID'
+assert_contains "$log" '--single-select-option-id opt-ready' 'rebinds a forged option ID'
+assert_not_contains "$log" 'PVT_attacker' 'never mutates the forged project'
+assert_eq 'PVT_kwDOAexample1' "$(jq -r '.project.id' < "$repo/.agent/board.json")" \
+    'a discovery move refreshes the live project id'
+assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
+    'and refreshes the live Status metadata'
 
 # --- cache miss on the issue falls back -----------------------------------
 repo=$(seed_repo)
@@ -101,13 +168,13 @@ repo=$(seed_repo)
 rm -f "$repo/.agent/cache/board-items.json"
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
-assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone costs two gh calls, not seven'
+assert_eq '4' "$(wc -l < "$tmp/gh.log")" 'a fresh clone validates the declared board in four calls'
 log=$(cat "$tmp/gh.log")
 assert_not_contains "$log" 'project list' 'does not enumerate every board the owner has'
 assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
-assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
+assert_contains "$out" 'board.json, 4 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
-    'and warms the cache so the next move costs one'
+    'and refreshes the cache with the live item id'
 
 # --- invalid status never reaches gh (fail closed) ------------------------
 repo=$(seed_repo)
@@ -171,7 +238,7 @@ jq '.statusField.options = {"Icebox":"opt-ice","Shipped":"opt-ship"}' \
     < "$repo/.agent/board.json" > "$repo/.agent/b.tmp"
 mv "$repo/.agent/b.tmp" "$repo/.agent/board.json"
 : > "$tmp/gh.log"
-out=$(run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
+out=$(CUSTOM_STATUS=1 run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
 assert_contains "$(cat "$tmp/gh.log")" 'opt-ice' 'a board-declared column outside the canonical five works'
 
 finish
