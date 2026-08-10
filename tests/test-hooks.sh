@@ -716,6 +716,26 @@ assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'and a new session is taug
 out=$(post_input "$repo" 'gh issue view 442' | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'does not carry bodies' 'the advice does not forbid reading a body'
 
+# --- a hardcoded plugin path ------------------------------------------------
+# Observed live: the resolver came back empty, the call produced no output at
+# all, and the session recovered by pasting the absolute path it had seen --
+# version directory included -- then used it for every later call. It worked,
+# and it keeps working until the version bumps.
+pinned='/home/x/.codex/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh'
+psid2=$(fresh_sid)
+out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'version directory' 'a version-pinned plugin path is corrected'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'and only once per session'
+
+# The resolver itself contains plugins/cache and must not trip its own rule --
+# an advisory that fires on the correct form teaches that the advice is noise.
+# shellcheck disable=SC2016  # a command line for the hook to read, not to run
+correct='agentkit=$(find "$HOME/.codex/plugins/cache" -maxdepth 4 -type d -path "*/agentkit/*/skills")'
+out=$(post_input "$repo" "$correct" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'the resolver form is not corrected'
+
 # Unrecordable state SPEAKS -- the inverse of the denial rule. A repeated
 # sentence is noise; silence would lose the lesson, and nothing here can block.
 locked2=$(make_repo)

@@ -30,6 +30,10 @@ nothing to enforce and `--cmd` resolves nothing.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 # shellcheck disable=SC2034  # used by every later block; env does not
 # persist between tool calls, so each block re-derives it.
 shared="$agentkit/.shared/scripts"

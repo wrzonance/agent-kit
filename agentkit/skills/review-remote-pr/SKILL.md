@@ -257,6 +257,10 @@ The worker returns the six-stage status, commit SHA(s), changed paths, RED/GREEN
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 [ -x "$resolver" ] && eval "$("$resolver" --export)"
 # Config first, forge second. Each block still re-derives its own values -- env
@@ -351,6 +355,10 @@ else
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
   resolver="$agentkit/.shared/scripts/repo-config.sh"
   [ -x "$resolver" ] && eval "$("$resolver" --export)"
   PR_WORKTREE="${PR_WORKTREE:-$REPO_ROOT/${AGENT_WORKTREE_ROOT:-.worktrees}/pr-$PR}"
@@ -392,6 +400,10 @@ block is the environment contract for the entire run (see *Sandbox and environme
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/.shared/scripts/agent-preflight.sh" \
   --repo "$REPO" --worktree "$PR_WORKTREE"
 
@@ -472,6 +484,10 @@ surfaces as exit `2` with nothing staged instead of a half-applied index:
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 resolved=src/example.ts   # repeat for each resolved path
 
 # The trailer names the agent that AUTHORED the commit, read from the
@@ -525,6 +541,10 @@ instead of dumping JSON into your context:
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir /tmp
 ```
@@ -731,6 +751,10 @@ structured output, verified isolation, the initialized model in non-empty `model
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 tmp_dir=${TMPDIR:-/tmp}
 reviewer_model='claude-opus-5'
@@ -763,6 +787,10 @@ Only on `probe_rc` `0`, run the review pass:
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 tmp_dir=${TMPDIR:-/tmp}
 reviewer_model='claude-opus-5'
@@ -848,6 +876,10 @@ tmp_dir=${TMPDIR:-/tmp}
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 verdict_path="$tmp_dir/codex_pr_${PR}.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
@@ -953,6 +985,10 @@ Then verify independently, before the single cycle push. Route every verificatio
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 
 # Ask by name; the repository owns the definition.
@@ -999,6 +1035,10 @@ After pushing, wait in **bounded rounds** — never one unbounded wait (a shell 
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
 ```
@@ -1071,6 +1111,10 @@ it; substitute varying values with `printf` arguments, never by unquoting the he
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 comment_id=1234567890                       # from /tmp/pr_${PR}_comments.json
 short_sha=$(git rev-parse --short HEAD)
 agent_identity='Codex gpt-5.6-luna'         # the agent that actually wrote the fix
@@ -1110,6 +1154,10 @@ A `gh pr comment` floats in the conversation, disconnected from the code — Cod
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 nitpick_path=src/example.ts                 # from the nitpick body
 nitpick_line=42                             # must be inside the PR diff
 short_sha=$(git rev-parse --short HEAD)
@@ -1173,6 +1221,10 @@ hand-rolled GraphQL re-query here:
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir /tmp
 ```
@@ -1409,6 +1461,10 @@ matching option:
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 board_helper="$agentkit/parallel-issues/scripts/move-github-project-item.sh"
 
 for issue_number in 62 71; do   # only the numbers the user approved

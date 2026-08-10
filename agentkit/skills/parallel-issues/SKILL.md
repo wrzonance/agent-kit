@@ -66,6 +66,10 @@ fi
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
     printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
@@ -121,6 +125,10 @@ fi
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 if [[ -x $resolver ]]; then
     eval "$("$resolver" --export)"
@@ -173,6 +181,10 @@ set -euo pipefail
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 
 # Auto mode: the open backlog, most recently updated first.
 "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
@@ -281,6 +293,10 @@ opt-in per issue rather than automatic:
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/.shared/scripts/triage-issues.sh" --issues 57 --fuzzy 57
 ```
 
@@ -358,6 +374,10 @@ worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 shared_scripts="$agentkit/.shared/scripts"
 exclude_path="$(git rev-parse --git-path info/exclude)"
 if ! grep -Fxq '.worktrees/' "$exclude_path" 2>/dev/null; then
@@ -489,6 +509,10 @@ fi
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In progress' --repository "$repository"
 ```
@@ -538,6 +562,10 @@ worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 shared="$agentkit/.shared/scripts"
 
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
@@ -653,6 +681,10 @@ fi
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 if [[ -d $worktree ]]; then
     git -C "$worktree" status --short
@@ -688,6 +720,10 @@ fi
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In review' --repository "$repository"
 ```
@@ -736,6 +772,10 @@ worktree=FULL_PATH
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
     -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+# A resolver that comes back empty must SAY so. Unguarded, the next line dies
+# on a path that does not exist, which under set -e is a silent exit -- and a
+# live session answered that silence by pasting an absolute plugin path.
+[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 shared="$agentkit/.shared/scripts"
 pr_scripts="$agentkit/review-remote-pr/scripts"
 

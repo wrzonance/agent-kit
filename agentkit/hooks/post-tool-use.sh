@@ -83,6 +83,26 @@ together. Reading a single issue body directly is still the right call -- the
 digest does not carry bodies."
 fi
 
+# A hardcoded plugin path. Observed live: the resolver line came back empty, the
+# call produced nothing, and the session recovered by pasting the absolute path
+# it had seen -- including the VERSION directory -- and then used that for every
+# later call in the session.
+#
+# It worked. It works right up until the version bumps, and then it fails as a
+# path that no longer exists rather than as anything that names the cause. The
+# tree moving is the whole reason the resolver exists, so this is the one place
+# a working command still earns a correction.
+if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' <<< "$command_line" &&
+    guard_should_advise "$state_root" "$session" pinned-plugin-path; then
+    # shellcheck disable=SC2016  # literal text, see teach()
+    teach "That path has a version directory in it, so it stops resolving at the next
+plugin update -- and it fails as a missing file, which does not say why.
+$RESOLVE_HINT
+The find picks the highest version present, which is what you want even when
+only one is installed. If it came back empty, the plugin is not installed where
+this is looking; say so rather than substituting a literal path."
+fi
+
 # Blanket staging. Correct ignore rules are what actually protect .agent/; this
 # is a nudge toward the helper, and it gates nothing.
 if grep -qE '(^|[[:space:];&|])git[[:space:]]+add[[:space:]]+(-A|--all|\.)([[:space:]]|$)' \
