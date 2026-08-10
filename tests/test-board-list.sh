@@ -28,6 +28,7 @@ repo="$tmp/repo"
 mkdir -p "$repo/.agent"
 printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
     > "$repo/.agent/board.json"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 
 # A stub board of TOTAL items that honours --limit the way the real API does:
 # it reports the true totalCount and returns at most --limit items. Getting
@@ -49,7 +50,8 @@ jq -n --argjson total $total --argjson limit "\$limit" '
     items: [ range(\$total)
              | { status: (if . == 0 then "Ready" else "Done" end),
                  title: "item \(.)",
-                 content: { number: (100 + .), type: "Issue", title: "item \(.)" } } ]
+                 content: { number: (100 + .), type: "Issue", title: "item \(.)",
+                            repository: "example-org/example-repo" } } ]
            [0:\$limit] }'
 EOF
     chmod +x "$dir/gh"
@@ -106,6 +108,22 @@ assert_contains "$out" 'truncation, not absence' 'a miss in a partial read is qu
 # A leading # is what a human types and what an issue reference looks like.
 out=$(run_board "$bin" --issue '#100')
 assert_contains "$out" '#100  Ready' 'a leading # is accepted'
+
+# Same-number issues from different repositories must not be confused. The
+# lookup is bound to the repository declared by the target checkout.
+dupe_bin="$tmp/dupe-bin"
+mkdir -p "$dupe_bin"
+cat > "$dupe_bin/gh" << 'EOF'
+#!/usr/bin/env bash
+jq -n '{totalCount: 2, items: [
+  {status: "Done", title: "wrong repo", content: {number: 42, type: "Issue", repository: "example-org/other-repo"}},
+  {status: "Ready", title: "requested repo", content: {number: 42, type: "Issue", repository: "example-org/example-repo"}}
+]}'
+EOF
+chmod +x "$dupe_bin/gh"
+out=$(run_board "$dupe_bin" --issue 42)
+assert_contains "$out" '#42  Ready  requested repo' 'same-number issues are matched by repository'
+assert_not_contains "$out" 'wrong repo' 'a same-number issue from another repository is ignored'
 
 assert_rc 2 'a non-numeric issue is a usage error' -- \
     env PATH="$bin:$PATH" "$script" --repo-root "$repo" --issue main

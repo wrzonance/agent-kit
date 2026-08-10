@@ -25,8 +25,9 @@ Options:
                             several issues numbered #N, one per repository.
   --repo-root DIR           Repository root holding .agent/ (default: git toplevel
                             of the cwd). A warm .agent/board.json plus
-                            .agent/cache/board-items.json turns the four-call
-                            discovery sequence below into a single item-edit.
+                            .agent/cache/board-items.json is refreshed after a
+                            successful move, but live IDs are always validated
+                            before mutation.
   --all-boards              Walk EVERY project the issue is on: keep going after
                             a successful move, and keep going past a board that
                             has no Status field or no matching Status option.
@@ -179,21 +180,28 @@ select_item_id() {
             | select(
                 .content.number == $issue_number
                 and (
-                    ((.content.repository // "") | endswith($repository))
-                    or ((.content.url // "") | contains("/" + $repository + "/"))
+                    ((.content.repository // "") | type == "string" and
+                        ((ascii_downcase | rtrimstr("/")) == ($repository | ascii_downcase)
+                         or (ascii_downcase | rtrimstr("/")) ==
+                            ("https://github.com/" + ($repository | ascii_downcase))))
+                    or ((.content.url // "") | type == "string" and
+                        (ascii_downcase
+                         | sub("^https?://[^/]+/"; "")
+                         | startswith(($repository | ascii_downcase) + "/")))
                 )
             )
             | .id
         ) // empty' <<< "$1"
 }
 
-# board.json names the project, but the item id is not cached yet -- the state of
-# a fresh clone. Go straight to that one board instead of walking every board the
-# owner has: the discovery path below is O(boards in the org), and an org with a
-# dozen boards pays a dozen item-list calls to move one card.
+# board.json names the project, but its IDs are repository-controlled hints, not
+# authority. Rebind every ID against the live project before editing. This is
+# still cheaper than walking every board the owner has on a fresh clone, while
+# preventing a forged board or item cache from selecting an unrelated card.
 # Returns 0 moved, 1 cannot use this path, 2 the API rejected the edit.
 try_known_board() {
     local project_number project_id project_title field_id option_id items_json item_id
+    local project_owner project_json live_project_id fields_json
 
     board_readable || return 1
     project_number=$(jq -r '.project.number // empty' <"$board_file" 2>/dev/null) || return 1
@@ -203,11 +211,33 @@ try_known_board() {
     option_id=$(board_option_id "$status") || return 1
     [[ -n $project_number && -n $project_id && -n $field_id && -n $option_id ]] || return 1
 
-    items_json=$(gh project item-list "$project_number" --owner "$owner" \
+    project_owner=$(jq -r '.owner // empty' <"$board_file" 2>/dev/null) || return 1
+    [[ -n $project_owner ]] || project_owner=$owner
+
+    project_json=$(gh project view "$project_number" --owner "$project_owner" \
+        --format json 2>/dev/null) || return 1
+    live_project_id=$(jq -r '.id // empty' <<< "$project_json" 2>/dev/null) || return 1
+    [[ -n $live_project_id && $live_project_id == "$project_id" ]] || return 1
+
+    items_json=$(gh project item-list "$project_number" --owner "$project_owner" \
         --limit "$ITEM_LIMIT" --format json 2>/dev/null) || return 1
     [[ -n $items_json ]] || return 1
     item_id=$(select_item_id "$items_json")
     [[ -n $item_id ]] || return 1
+
+    # Field and option IDs are also rebound live. board.json is useful for
+    # validating a status before network access, but must not supply mutation
+    # IDs after a branch has changed the board.
+    fields_json=$(gh project field-list "$project_number" --owner "$project_owner" \
+        --limit "$FIELD_LIMIT" --format json 2>/dev/null) || return 1
+    field_id=$(jq -r \
+        'first(.fields[]? | select((.name | ascii_downcase) == "status") | .id) // empty' \
+        <<< "$fields_json")
+    option_id=$(jq -r --arg status "$status" \
+        'first(.fields[]? | select((.name | ascii_downcase) == "status") | .options[]?
+         | select((.name | ascii_downcase) == ($status | ascii_downcase)) | .id) // empty' \
+        <<< "$fields_json")
+    [[ -n $field_id && -n $option_id ]] || return 1
 
     gh project item-edit \
         --id "$item_id" \
@@ -216,67 +246,20 @@ try_known_board() {
         --single-select-option-id "$option_id" >/dev/null 2>&1 || return 2
 
     cache_item_id "$project_id" "$issue_number" "$item_id"
-    printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 2 calls)\n' \
+    printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 4 calls)\n' \
         "$issue_number" "$status" "$project_number" "$project_title"
     return 0
 }
 
-# One call instead of four. Returns 1 on any cache doubt so the caller falls
-# through; returns 2 when the cache was usable but the API rejected the edit,
-# which is the board-changed signal.
-try_fast_path() {
-    local project_id field_id option_id item_id cached_project
-
-    board_readable || return 1
-    [[ -n $items_file && -r $items_file ]] || return 1
-    jq -e --argjson v "$BOARD_SCHEMA_VERSION" '.schemaVersion == $v' \
-        <"$items_file" >/dev/null 2>&1 || return 1
-
-    project_id=$(jq -r '.project.id // empty' <"$board_file" 2>/dev/null) || return 1
-    field_id=$(jq -r '.statusField.id // empty' <"$board_file" 2>/dev/null) || return 1
-    option_id=$(board_option_id "$status") || return 1
-
-    # An item cache is only valid for the board it was built from.
-    cached_project=$(jq -r '.project // empty' <"$items_file" 2>/dev/null) || return 1
-    [[ -n $project_id && $cached_project == "$project_id" ]] || return 1
-
-    item_id=$(jq -r --arg n "$issue_number" '.items[$n] // empty' <"$items_file" 2>/dev/null) || return 1
-    [[ -n $field_id && -n $option_id && -n $item_id ]] || return 1
-
-    if gh project item-edit \
-        --id "$item_id" \
-        --project-id "$project_id" \
-        --field-id "$field_id" \
-        --single-select-option-id "$option_id" >/dev/null 2>&1; then
-        printf 'moved #%s -> "%s" on project #%s "%s" (cached, 1 call)\n' \
-            "$issue_number" "$status" \
-            "$(jq -r '.project.number // "?"' <"$board_file")" \
-            "$(jq -r '.project.title // "?"' <"$board_file")"
-        return 0
-    fi
-    return 2
-}
-
-fast_rc=0
-try_fast_path || fast_rc=$?
-if ((fast_rc == 0)); then
+known_rc=0
+try_known_board || known_rc=$?
+if ((known_rc == 0)); then
     exit 0
 fi
-if ((fast_rc == 1)); then
-    # Cache miss, but the repository may still have declared which board to use.
-    known_rc=0
-    try_known_board || known_rc=$?
-    if ((known_rc == 0)); then
-        exit 0
-    fi
-    if ((known_rc == 2)); then
-        fast_rc=2
-    fi
-fi
-if ((fast_rc == 2)); then
+if ((known_rc == 2)); then
     # Exactly one retry, via the full discovery path below. A second rejection
     # is a real error and must surface rather than be papered over by a loop.
-    printf 'board changed - the cached ids were rejected; rediscovering once\n' >&2
+    printf 'board changed - the declared ids were rejected; rediscovering once\n' >&2
     printf 'board changed - commit the regenerated .agent/board.json\n' >&2
 fi
 
@@ -333,7 +316,8 @@ process_project() {
         die "Could not move issue #$issue_number to '$status'."
     fi
 
-    # Warm the cache so the next move on this issue costs one call instead of four.
+    # Refresh the cache for diagnostics and future discovery, but never use it
+    # as authority for a later mutation.
     cache_item_id "$project_id" "$issue_number" "$item_id"
 
     printf 'moved #%s -> "%s" on project #%s "%s"\n' \
