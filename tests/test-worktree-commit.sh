@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Suite: worktree-commit.sh serializes its stage/check/commit transaction.
+set -uo pipefail
+
+TEST_NAME='worktree-commit'
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+
+script="$root/agentkit/skills/.shared/scripts/worktree-commit.sh"
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
+repo=$(mktemp -d "$tmp/repo.XXXXXX")
+git -C "$repo" init -q
+git -C "$repo" config user.name test
+git -C "$repo" config user.email test@example.invalid
+mkdir -p "$repo/.agent"
+printf 'AGENT_BASE_BRANCH=main\n' > "$repo/.agent/config.env"
+printf 'base\n' > "$repo/base.txt"
+git -C "$repo" add -- .agent/config.env base.txt
+git -C "$repo" commit -qm init
+
+worktree_a="$tmp/worktree-a"
+worktree_b="$tmp/worktree-b"
+git -C "$repo" worktree add -q -b issue-9-a "$worktree_a"
+git -C "$repo" worktree add -q -b issue-9-b "$worktree_b"
+printf 'a\n' > "$worktree_a/a.txt"
+printf 'b\n' > "$worktree_b/b.txt"
+
+# Hold the first real git commit after worktree-commit.sh has acquired its
+# transaction lock. Without that lock, the second invocation reaches git
+# commit while the first is still paused and can commit the wrong staged scope.
+real_git=$(command -v git)
+fake_bin="$tmp/bin"
+gate="$tmp/gate"
+mkdir -p "$fake_bin" "$gate"
+git_wrapper="$fake_bin/git"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'if [[ ${1-} == commit ]]; then' \
+    '    if mkdir "$GATE_DIR/first" 2>/dev/null; then' \
+    '        : > "$GATE_DIR/first-entered"' \
+    '        while [[ ! -e "$GATE_DIR/release" ]]; do sleep 0.01; done' \
+    '    else' \
+    '        : > "$GATE_DIR/second-entered"' \
+    '    fi' \
+    'fi' \
+    'exec "$REAL_GIT" "$@"' > "$git_wrapper"
+chmod +x "$git_wrapper"
+
+wait_for_file() {
+    local file=$1
+    local i
+    for i in {1..200}; do
+        [[ -e $file ]] && return 0
+        sleep 0.01
+    done
+    return 1
+}
+
+run_a() {
+    (cd "$worktree_a" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" GATE_DIR="$gate" \
+        "$script" --message 'feat: commit a' -- a.txt)
+}
+
+run_b() {
+    (cd "$worktree_b" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" GATE_DIR="$gate" \
+        "$script" --message 'feat: commit b' -- b.txt)
+}
+
+run_a > "$tmp/a.out" 2> "$tmp/a.err" &
+pid_a=$!
+if wait_for_file "$gate/first-entered"; then
+    _pass 'the first invocation reaches commit while holding its transaction'
+else
+    _fail 'the first invocation reaches commit while holding its transaction' \
+        'the controlled commit did not start'
+fi
+
+run_b > "$tmp/b.out" 2> "$tmp/b.err" &
+pid_b=$!
+if [[ -e "$gate/second-entered" ]]; then
+    _fail 'the second worktree cannot enter commit during the first transaction' \
+        'the competing invocation entered git commit before release'
+else
+    _pass 'the second worktree cannot enter commit during the first transaction'
+fi
+
+: > "$gate/release"
+rc_a=0
+rc_b=0
+wait "$pid_a" || rc_a=$?
+wait "$pid_b" || rc_b=$?
+assert_eq '0' "$rc_a" 'the first transaction succeeds'
+assert_eq '0' "$rc_b" 'the second transaction succeeds after the first releases'
+
+assert_contains "$(cat "$tmp/a.out")" 'feat: commit a' \
+    'the first output keeps its own message'
+assert_contains "$(cat "$tmp/b.out")" 'feat: commit b' \
+    'the second output keeps its own message'
+assert_eq 'feat: commit a' "$(git -C "$worktree_a" log -1 --format=%s)" \
+    'the first branch receives its own commit'
+assert_eq 'feat: commit b' "$(git -C "$worktree_b" log -1 --format=%s)" \
+    'the second branch receives its own commit'
+assert_eq 'a.txt' "$(git -C "$worktree_a" diff-tree --no-commit-id --name-only -r HEAD)" \
+    'the first commit contains only its requested file'
+assert_eq 'b.txt' "$(git -C "$worktree_b" diff-tree --no-commit-id --name-only -r HEAD)" \
+    'the second commit contains only its requested file'
+
+common_dir=$(git -C "$worktree_a" rev-parse --git-common-dir)
+assert_eq 'yes' "$([[ -e "$common_dir/worktree-commit.lock" ]] && echo yes || echo no)" \
+    'the transaction lock lives in the shared Git common directory'
+
+finish
