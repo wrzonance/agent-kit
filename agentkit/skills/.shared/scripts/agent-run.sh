@@ -672,8 +672,8 @@ trust_command() {
     [[ $recorded == "$current" ]] && return 0
     printf 'agent-run: refusing unapproved repository command: %s\n' "$cmd_name" >&2
     printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
-    printf '  Review it, then explicitly approve once with:\n' >&2
-    printf '  %s --approve --cmd %s\n' "$0" "$cmd_name" >&2
+    printf '  Approval cannot be cleared by an agent. A human must review the declaration\n' >&2
+    printf '  and clear its approval outside this agent session.\n' >&2
     return 1
 }
 
