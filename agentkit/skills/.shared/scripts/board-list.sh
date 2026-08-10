@@ -46,7 +46,8 @@ Options:
   --json           Emit the normalised records instead of the table.
 
 Reads the project number and owner from .agent/board.json, so it never
-rediscovers the board. Exit 0 on success, 1 on a failed call, 2 on usage,
+rediscovers the board. Issue lookups are additionally bound to the repository
+declared by the target checkout. Exit 0 on success, 1 on a failed call, 2 on usage,
 3 when the environment cannot support the query.
 EOF
 }
@@ -122,7 +123,17 @@ all_records=$(jq -c '
       | { status: (.status // "(no status)"),
           number: (.content.number // null),
           type:   (.content.type // "Item"),
-          title:  (.title // .content.title // "(untitled)") }
+          title:  (.title // .content.title // "(untitled)"),
+          repository: (
+            (.content.repository // "") as $repo
+            | if ($repo | type) == "string" and $repo != "" then
+                ($repo | sub("^https?://[^/]+/"; "") | rtrimstr("/"))
+              elif ((.content.url // "") | type) == "string" and ((.content.url // "") != "") then
+                ((.content.url | capture("github\\.com/(?<slug>[^/#?]+/[^/#?]+)").slug)
+                 // null)
+              else null end
+            | if . == null then null else ascii_downcase end
+          ) }
     ]
 ' <<< "$raw" 2> /dev/null) || die 'could not parse the board response'
 
@@ -143,10 +154,28 @@ truncated=0
 # they disagree, and the natural response to answers that disagree is to ask
 # again. One call, one stable line, ends that.
 if [[ -n $ARG_ISSUE ]]; then
+    repository=''
+    script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    resolver="$script_dir/repo-config.sh"
+    if [[ -x $resolver ]]; then
+        repository=$("$resolver" \
+            --repo-root "$repo_root" --get AGENT_REPO_SLUG 2>/dev/null || true)
+    fi
+    if [[ -z $repository ]]; then
+        if ! repository=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner \
+            2>/dev/null); then
+            repository=''
+        fi
+    fi
+    [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+        repository=''
+    repository_lc=${repository,,}
+    [[ -n $repository_lc ]] ||
+        die_blocked 'cannot resolve the repository for an issue lookup'
     ((truncated == 0)) || printf 'warning: read %s of %s items; a miss below may be truncation, not absence\n' \
         "$fetched" "$declared_total" >&2
-    hit=$(jq -r --argjson n "$ARG_ISSUE" '
-        map(select(.number == $n)) | .[0]
+    hit=$(jq -r --argjson n "$ARG_ISSUE" --arg repo "$repository_lc" '
+        map(select(.number == $n and .repository == $repo)) | .[0]
         | if . == null then "" else "#\(.number)  \(.status)  \(.title)" end
     ' <<< "$all_records" 2> /dev/null)
     if [[ -n $hit ]]; then

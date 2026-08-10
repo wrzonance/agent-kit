@@ -242,6 +242,8 @@ and prints what it found. Requirements:
 
 ### `move-github-project-item.sh` — optimistic fast path
 
+The optimistic fast path was superseded by PR #20.
+
 Add a fast path in front of existing behavior; do not remove the existing behavior.
 
 1. Read `board.json` and `cache/board-items.json`. If the project ID, Status option
