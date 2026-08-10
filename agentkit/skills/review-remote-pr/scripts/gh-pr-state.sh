@@ -346,8 +346,9 @@ save_artifacts() {
     local name target
     for name in reviews comments issue_comments threads code_quality_comments; do
         target=$OUT_DIR/pr_${PR}_${name}.json
-        [[ ! -e $target && ! -L $target ]] ||
-            die "refusing to overwrite existing artifact: $target"
+        [[ ! -L $target ]] || die "refusing to overwrite artifact symlink: $target"
+        [[ ! -e $target || -O $target ]] ||
+            die "refusing to overwrite artifact not owned by this user: $target"
         local staged
         staged=$(mktemp "$OUT_DIR/.review-artifact.XXXXXXXXXX") ||
             die "could not create artifact exclusively in $OUT_DIR"
@@ -355,14 +356,10 @@ save_artifacts() {
             rm -f -- "$staged"
             die "could not stage $target"
         fi
-        if ! mv -n -- "$staged" "$target"; then
+        if ! mv -f -- "$staged" "$target"; then
             rm -f -- "$staged"
             die "could not publish artifact atomically: $target"
         fi
-        [[ ! -e $staged ]] || {
-            rm -f -- "$staged"
-            die "artifact appeared during atomic publication: $target"
-        }
     done
     return 0
 }

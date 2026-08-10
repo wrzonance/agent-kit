@@ -209,8 +209,14 @@ prepare_transcript() {
 	mode=$(stat -c %a -- "$parent") || die "Cannot inspect transcript parent: $parent"
 	[[ $mode == 700 ]] || die "Transcript parent must have mode 0700: $parent"
 	[[ -O $parent ]] || die "Transcript parent is not owned by this user: $parent"
-	[[ ! -e $TRANSCRIPT_PATH && ! -L $TRANSCRIPT_PATH ]] ||
-		die "Refusing to overwrite an existing transcript path: $TRANSCRIPT_PATH"
+	[[ ! -L $TRANSCRIPT_PATH ]] ||
+		die "Refusing to write through a transcript symlink: $TRANSCRIPT_PATH"
+	if [[ -e $TRANSCRIPT_PATH ]]; then
+		[[ -f $TRANSCRIPT_PATH && -O $TRANSCRIPT_PATH ]] ||
+			die "Refusing to overwrite transcript not owned by this user: $TRANSCRIPT_PATH"
+		rm -f -- "$TRANSCRIPT_PATH" ||
+			die "Cannot remove previous transcript: $TRANSCRIPT_PATH"
+	fi
 	# Bash noclobber maps this create to an exclusive open, so a pre-existing
 	# symlink cannot redirect the write. The private parent removes the remaining
 	# same-directory race from untrusted local users.

@@ -135,6 +135,7 @@ GitHub's public Code Quality REST API currently exposes finding retrieval, not a
 gh api "repos/$REPO/code-quality/findings?state=open&per_page=100" \
   -H "X-GitHub-Api-Version: 2026-03-10"
 # The PR finding comments and their IDs come from the Step 1 artifact — no re-query.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 jq -r '.[] | "\(.id)\t\(.path)\t\(.line)\t\(.commit_id)"' \
   <"$RUN_DIR/state/pr_${PR}_code_quality_comments.json"
 ```
@@ -541,6 +542,15 @@ Every artifact path below is derived from this directory. Do not substitute `/tm
 path, or a directory with permissions other than `0700`. `gh-pr-state.sh --full` enforces the same
 boundary and writes artifact files with a private umask.
 
+Shell state does not persist between tool calls. At the start of **every later command block** that
+uses this directory, re-set `RUN_DIR` to the absolute path printed above; the guard in each block
+then fails before any path is used if you forgot:
+
+```bash
+RUN_DIR=/absolute/path/printed-by-step-0c
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+```
+
 ---
 
 ## Step 1: Check
@@ -563,6 +573,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
@@ -773,6 +784,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 reviewer_model='claude-opus-5'
 reviewer_effort='high'
@@ -808,6 +820,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 reviewer_model='claude-opus-5'
 reviewer_effort='high'
@@ -895,6 +908,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 verdict_path="$RUN_DIR/codex.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
@@ -932,6 +946,8 @@ adversarial review as blocked; do not substitute the parent agent's contextual s
 A green "CodeRabbit" status check is NOT proof a review happened. Detect the real signal in the comment **body** (rate-limit warnings and bare "✅ finished" acks both leave the check green):
 
 ```bash
+# Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 # Reads the Step 1 artifact; no extra API call. Comments arrive oldest-first, so
 # the LAST signal wins — a stale walkthrough from an earlier cycle must not mask
 # a rate-limit on the CURRENT trigger.
@@ -956,6 +972,7 @@ verdict payload is **nested**: `.verdict.verdict` is the `findings`/`no_findings
 `.verdict.findings` is the array. The raw NDJSON transcript stays beside it for auditing.
 
 ```bash
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 verdict_path="$RUN_DIR/claude.result.json"
 
 # Success path (rc 0) only. rc 3 -> read .blockedReason and take the blind Codex
@@ -1130,6 +1147,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 comment_id=1234567890                       # from $RUN_DIR/state/pr_${PR}_comments.json
 short_sha=$(git rev-parse --short HEAD)
 agent_identity='Codex gpt-5.6-luna'         # the agent that actually wrote the fix
@@ -1173,6 +1191,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 nitpick_path=src/example.ts                 # from the nitpick body
 nitpick_line=42                             # must be inside the PR diff
 short_sha=$(git rev-parse --short HEAD)
@@ -1240,6 +1259,7 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
@@ -1250,6 +1270,8 @@ workflow's own **marked agent-doc** threads, eligible for resolution at exit. De
 refreshed `$RUN_DIR/state/pr_${PR}_threads.json`:
 
 ```bash
+# Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 # Path passed as argv, not via the environment — nothing is exported across calls.
 python3 - "$RUN_DIR/state/pr_${PR}_threads.json" << 'EOF'
 import json, re, sys

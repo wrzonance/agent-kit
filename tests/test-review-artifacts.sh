@@ -14,6 +14,7 @@ claude="$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review
 codex="$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh"
 state="$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh"
 skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+state_text=$(<"$state")
 
 run_rejected() {
     local helper=$1 transcript=$2 stderr_file=$3
@@ -58,7 +59,18 @@ for helper in "$claude" "$codex"; do
     assert_eq 3 "$rc" "$name reaches CLI preflight only after securing a private transcript"
     assert_eq 600 "$(stat -c %a -- "$transcript")" "$name creates transcript with mode 0600"
     assert_eq 0 "$(wc -c <"$transcript")" "$name starts with an empty transcript"
+
+    rc=$(run_rejected "$helper" "$transcript" "$err")
+    assert_eq 3 "$rc" "$name safely refreshes an owned regular transcript"
+
 done
+
+assert_contains "$state_text" "[[ ! -L \$target ]]" \
+    'gh-pr-state refuses artifact symlinks before refresh'
+assert_contains "$state_text" "[[ ! -e \$target || -O \$target ]]" \
+    'gh-pr-state refreshes only artifacts owned by this user'
+assert_contains "$state_text" "mv -f -- \"\$staged\" \"\$target\"" \
+    'gh-pr-state atomically replaces refreshed artifacts'
 
 state_err="$tmp/gh-pr-state.err"
 state_rc=0
@@ -76,5 +88,7 @@ assert_not_contains "$skill_text" "claude_pr_\${PR}" \
     'the skill no longer uses PR-number-only Claude artifact paths'
 assert_not_contains "$skill_text" "/tmp/pr_\${PR}_" \
     'the skill no longer uses shared PR-number-only state paths'
+assert_contains "$skill_text" 're-set RUN_DIR to the Step 0c output; shell state does not persist' \
+    'the skill guards per-shell review-artifact directory reuse'
 
 finish
