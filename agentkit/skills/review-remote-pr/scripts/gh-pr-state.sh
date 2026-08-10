@@ -347,8 +347,8 @@ save_artifacts() {
     for name in reviews comments issue_comments threads code_quality_comments; do
         target=$OUT_DIR/pr_${PR}_${name}.json
         [[ ! -L $target ]] || die "refusing to overwrite artifact symlink: $target"
-        [[ ! -e $target || -O $target ]] ||
-            die "refusing to overwrite artifact not owned by this user: $target"
+        [[ ! -e $target || ( -f $target && -O $target) ]] ||
+            die "refusing to overwrite artifact unless it is an owned regular file: $target"
         local staged
         staged=$(mktemp "$OUT_DIR/.review-artifact.XXXXXXXXXX") ||
             die "could not create artifact exclusively in $OUT_DIR"

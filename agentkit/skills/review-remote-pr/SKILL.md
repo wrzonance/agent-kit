@@ -788,6 +788,25 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 reviewer_model='claude-opus-5'
 reviewer_effort='high'
+
+base_branch=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
+git fetch origin "$base_branch" || {
+    printf 'Could not fetch origin/%s\n' "$base_branch" >&2
+    exit 1
+}
+
+diff_path="$RUN_DIR/adversarial.diff"
+# A blind reviewer has no repository, so it needs surrounding context -- but the
+# width is the single largest cost lever in this whole gate, and it is charged to
+# whichever account you have least headroom on. Measured on a 3-file/9-hunk change:
+# -U3 1.0x, -U10 1.9x, -U25 3.7x, -U80 10.4x, where -U80 emitted 77% of the full
+# text of every touched file. -U25 keeps real context at ~a third of -U80's cost.
+# Raise it only for a diff whose hunks genuinely need more surrounding code.
+git --no-pager diff --find-renames --unified=25 "origin/$base_branch...HEAD" >"$diff_path" || {
+    printf '%s\n' 'Could not build the adversarial-review diff.' >&2
+    exit 1
+}
+
 probe_out="$RUN_DIR/claude_probe.json"
 probe_transcript="$RUN_DIR/claude_probe.ndjson"
 
@@ -825,25 +844,8 @@ helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 reviewer_model='claude-opus-5'
 reviewer_effort='high'
 
-base_branch=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
-git fetch origin "$base_branch" || {
-    printf 'Could not fetch origin/%s\n' "$base_branch" >&2
-    exit 1
-}
-
-diff_path="$RUN_DIR/claude.diff"
 transcript="$RUN_DIR/claude.ndjson"
-verdict_path="$RUN_DIR/claude.result.json"
-# A blind reviewer has no repository, so it needs surrounding context -- but the
-# width is the single largest cost lever in this whole gate, and it is charged to
-# whichever account you have least headroom on. Measured on a 3-file/9-hunk change:
-# -U3 1.0x, -U10 1.9x, -U25 3.7x, -U80 10.4x, where -U80 emitted 77% of the full
-# text of every touched file. -U25 keeps real context at ~a third of -U80's cost.
-# Raise it only for a diff whose hunks genuinely need more surrounding code.
-git --no-pager diff --find-renames --unified=25 "origin/$base_branch...HEAD" >"$diff_path" || {
-    printf '%s\n' 'Could not build the adversarial-review diff.' >&2
-    exit 1
-}
+verdict_path="$RUN_DIR/adversarial.result.json"
 
 # stdout = one JSON object (verdict, or the blocked object on rc 3).
 # stderr = one progress object per --poll-seconds.  --transcript = raw NDJSON for auditing.
@@ -910,9 +912,10 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
-verdict_path="$RUN_DIR/codex.result.json"
+diff_path="$RUN_DIR/adversarial.diff"
+verdict_path="$RUN_DIR/adversarial.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
-    --diff "$RUN_DIR/claude.diff" \
+    --diff "$diff_path" \
     --transcript "$RUN_DIR/codex.jsonl" >"$verdict_path" || {
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
@@ -933,8 +936,8 @@ Adversarially review the following diff BLIND. You have no issue, spec, ADR, goa
 <explicit diff only>
 ```
 
-Capture the separate agent's findings in the private run directory alongside the Claude result
-(`$RUN_DIR/claude.result.json`), using the same nesting
+Capture the separate agent's findings in the private run directory at the neutral shared result
+path (`$RUN_DIR/adversarial.result.json`), using the same nesting
 (`.verdict.verdict`, `.verdict.findings[]` with `priority`), so the Step 5 routing below is
 identical. If the harness cannot create a separate no-history agent, *then* report the
 adversarial review as blocked; do not substitute the parent agent's contextual self-review.
@@ -973,7 +976,7 @@ verdict payload is **nested**: `.verdict.verdict` is the `findings`/`no_findings
 
 ```bash
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-verdict_path="$RUN_DIR/claude.result.json"
+verdict_path="$RUN_DIR/adversarial.result.json"
 
 # Success path (rc 0) only. rc 3 -> read .blockedReason and take the blind Codex
 # fallback; rc 1 -> stdout is empty and the reason is on stderr. See the table above.
@@ -1095,7 +1098,7 @@ Do NOT wait for a CodeRabbit review after a push — pushes trigger nothing. A f
 4. Post and integrity-check approved human replies, body-nitpick documentation, Code Quality replies, and adversarial-review outcome comments
 5. Then reply to and resolve CodeRabbit's own eligible threads; never resolve human-touched threads
 
-For each unresolved **CodeRabbit** thread, each CodeRabbit body nitpick surfaced from `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, or `$RUN_DIR/state/pr_${PR}_issue_comments.json`, AND each confirmed adversarial-review finding from `$RUN_DIR/claude.result.json` (Step 1b):
+For each unresolved **CodeRabbit** thread, each CodeRabbit body nitpick surfaced from `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, or `$RUN_DIR/state/pr_${PR}_issue_comments.json`, AND each confirmed adversarial-review finding from `$RUN_DIR/adversarial.result.json` (Step 1b):
 
 ```
 VALID   → fix the code, commit; reply explaining what was fixed + commit SHA
