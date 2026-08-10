@@ -114,4 +114,20 @@ common_dir=$(git -C "$worktree_a" rev-parse --git-common-dir)
 assert_eq 'yes' "$([[ -e "$common_dir/worktree-commit.lock" ]] && echo yes || echo no)" \
     'the transaction lock lives in the shared Git common directory'
 
+# A lock command failure must be visible and must happen before staging. This
+# keeps a broken host dependency from silently producing an unprotected commit.
+fail_bin="$tmp/fail-bin"
+mkdir -p "$fail_bin"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 42' > "$fail_bin/flock"
+chmod +x "$fail_bin/flock"
+printf 'failure\n' > "$worktree_a/failure.txt"
+rc=0
+out=$(cd "$worktree_a" && PATH="$fail_bin:/usr/bin:/bin" \
+    "$script" --message 'feat: must not commit' -- failure.txt 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a failed lock acquisition exits with an error'
+assert_contains "$out" 'cannot acquire transaction lock' \
+    'a failed lock acquisition names the transaction lock'
+assert_eq '' "$(git -C "$worktree_a" diff --cached --name-only)" \
+    'a failed lock acquisition stages nothing'
+
 finish

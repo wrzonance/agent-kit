@@ -234,7 +234,7 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-Eleven gates, then every suite in `tests/` — shellcheck on shipped and test
+Twelve gates and 19 suites — shellcheck on shipped and test
 scripts, `bash -n`, a bash 5.2 compatibility check, every fenced code block in
 the skill markdown, ecosystem- harness- and org-neutrality, then the unit
 suites. The run prints its own totals, so read them from the run rather than
