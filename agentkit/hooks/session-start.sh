@@ -88,7 +88,8 @@ harness_matches() {
 
 checkout_identity() {
     local branch head
-    branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) || return 1
+    branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) ||
+        branch=$(git -C "$root" symbolic-ref --short HEAD 2> /dev/null) || return 1
     [[ $branch == HEAD ]] && branch=detached
     head=$(git -C "$root" rev-parse HEAD 2> /dev/null) || return 1
     printf '%s\n%s' "$branch" "$head"
@@ -99,7 +100,9 @@ cache_matches_checkout() {
     [[ $in_repo -eq 1 ]] || return 0
     cached_branch=$(sed -n 's/^branch=\([^[:space:]]*\).*/\1/p' <<< "$1")
     cached_head=$(sed -n 's/^head=\([^[:space:]]*\).*/\1/p' <<< "$1")
-    current_branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) || return 0
+    [[ -z $cached_branch ]] && return 0
+    current_branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) ||
+        current_branch=$(git -C "$root" symbolic-ref --short HEAD 2> /dev/null) || return 0
     if ! current_head=$(git -C "$root" rev-parse HEAD 2> /dev/null); then
         # An unnamed unborn HEAD has no branch or commit identity to compare;
         # preserve the pre-existing cache behavior for that state. A named

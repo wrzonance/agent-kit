@@ -40,6 +40,16 @@ printf 'repo=cached/value\nbranch=main\nbase=main source=test\nhead=%s\nharness=
 out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /dev/null)
 assert_contains "$out" 'cached/value' 'a current branch and HEAD reuse the cached contract'
 
+unborn_repo=$(make_repo)
+git -C "$unborn_repo" checkout -q --orphan wip
+printf 'repo=stale-unborn/value\nbranch=main\nhead=%s\nharness= name=%s trailer="T <t@example.invalid>" other=z\n' \
+    "$head" "$me" > "$unborn_repo/.agent/env-contract.txt"
+out=$(session_input "$unborn_repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /dev/null)
+assert_not_contains "$out" 'stale-unborn/value' \
+    'a named unborn branch invalidates a cache from another branch'
+assert_contains "$out" 'branch=HEAD' \
+    'the refreshed context identifies the unborn checkout'
+
 git -C "$repo" -c user.email=t@example.invalid -c user.name=t \
     commit --allow-empty -qm second
 new_head=$(git -C "$repo" rev-parse HEAD)
