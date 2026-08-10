@@ -31,7 +31,7 @@ session_input() {
           session_id:"s1",source:"startup",transcript_path:null}'
 }
 
-me=$($skills_root/.shared/scripts/harness-id.sh --name 2> /dev/null)
+me=$("$skills_root"/.shared/scripts/harness-id.sh --name 2> /dev/null)
 repo=$(make_repo)
 head=$(git -C "$repo" rev-parse HEAD)
 printf 'repo=cached/value\nbranch=main\nbase=main source=test\nhead=%s\nharness= name=%s trailer="T <t@example.invalid>" other=z\n' \
