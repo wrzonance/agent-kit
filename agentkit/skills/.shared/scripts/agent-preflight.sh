@@ -19,7 +19,7 @@
 #   the origin URL, and the only writes are under <worktree>/.agent/.
 #
 # OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
-#   repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 #   The same block is written to <worktree>/.agent/env-contract.txt unless suppressed.
 #
 set -euo pipefail
@@ -66,7 +66,7 @@ Options:
                      outside the agent sandbox and can only report its own.
   -h, --help         Print this help and exit 0.
 
-Prints one key per line: repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints one key per line: skills= repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
 Exit: 0 always, including when tools or facts are missing (they are reported as missing);
       2 only for invalid usage.
@@ -75,6 +75,13 @@ EOF
 
 note() { printf 'agent-preflight: %s\n' "$*" >&2; }
 emit() { OUT_LINES+=("$1"); }
+
+probe_skills_path() {
+    local self_dir skills
+    self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    skills="$(cd -- "$self_dir/../.." && pwd -P)"
+    emit "skills= path=$skills"
+}
 
 die() {
     printf 'agent-preflight: error: %s\n' "$*" >&2
@@ -721,6 +728,7 @@ write_block() {
 
 main() {
     parse_args "$@"
+    probe_skills_path
     resolve_worktree
     probe_identity
     probe_config
