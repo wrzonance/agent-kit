@@ -19,30 +19,42 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
     assert_contains "$text" 'git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt' \
         "$name rejects tracked contracts, anchored to the repository root"
 
-    # A sed/grep read that takes the bare relative path as its file operand
-    # bypasses both the provenance guards and the repository-root anchoring.
-    bypass=$(awk '/\$\((sed|grep)[^)]*\.agent\/env-contract\.txt/ { printf "line %d\n", FNR }' "$skill")
+    # A sed/grep line inside any fenced block that takes the bare relative
+    # path as an operand bypasses both the provenance guards and the
+    # repository-root anchoring -- with or without command substitution.
+    bypass=$(awk '
+        /^[[:space:]]*```/ { inblock = !inblock; next }
+        inblock && /(^|[^[:alnum:]_])(sed|grep)[^#]*\.agent\/env-contract\.txt/ { printf "line %d\n", FNR }
+    ' "$skill")
     assert_eq '' "$bypass" "$name never reads the contract by its unanchored literal path"
 
-    # Every direct read of the validated $contract path -- the skills-path
-    # resolver, the onboarding contract probe, and AGENT_TRAILER assignments --
-    # must sit in a fenced block that also carries the symlink, ownership, and
-    # tracked-file guards, so no read is reachable without provenance validation.
+    # Every sed/grep line that touches the validated $contract path -- the
+    # skills-path resolver, the onboarding contract probe, and AGENT_TRAILER
+    # assignments, quoted or not, in command substitution or not -- must sit
+    # in a fenced block that also carries the symlink, ownership, and
+    # tracked-file guards, so no read is reachable without provenance
+    # validation.
     unguarded=$(awk '
         function flush() {
-            if (block ~ /\$\((sed|grep)[^)]*"\$contract"/ &&
-                (block !~ /! -L \$contract/ || block !~ /-O \$contract/ ||
+            if (has_read && (block !~ /! -L \$contract/ || block !~ /-O \$contract/ ||
                  block !~ /git -C "\$contract_root" ls-files --error-unmatch -- \.agent\/env-contract\.txt/))
                 printf "unguarded contract read in block ending line %d\n", FNR
-            block = ""
+            block = ""; has_read = 0
         }
         /^[[:space:]]*```/ { if (inblock) flush(); inblock = !inblock; next }
-        inblock { block = block $0 "\n" }
+        inblock {
+            block = block $0 "\n"
+            if ($0 ~ /(^|[^[:alnum:]_])(sed|grep)[^#]*\$\{?contract([^[:alnum:]_]|$)/) has_read = 1
+        }
         END { if (inblock) flush() }
     ' "$skill")
     assert_eq '' "$unguarded" "$name guards every direct contract read"
 
-    reads=$(grep -c '"\$contract"' "$skill" || true)
+    reads=$(awk '
+        /^[[:space:]]*```/ { inblock = !inblock; next }
+        inblock && /(^|[^[:alnum:]_])(sed|grep)[^#]*\$\{?contract([^[:alnum:]_]|$)/ { n++ }
+        END { print n + 0 }
+    ' "$skill")
     if (( reads > 0 )); then
         assert_eq yes yes "$name reads the contract only through the validated path ($reads sites)"
     else
