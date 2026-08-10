@@ -250,6 +250,7 @@ Then prove it parses, and prove every command you declared actually runs:
 ```bash
 "$shared/repo-config.sh" --list
 # ...then once per name you declared:
+"$shared/agent-run.sh" --approve --cmd verify
 "$shared/agent-run.sh" --cmd verify
 ```
 

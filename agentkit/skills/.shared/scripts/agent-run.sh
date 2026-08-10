@@ -560,6 +560,56 @@ hash_repo_input() {
     fi
 }
 
+hash_declared_path_input() {
+    local input=$1
+    if [[ -z $input ]]; then
+        printf 'missing-path-input\n'
+    elif [[ $input == /* ]]; then
+        hash_repo_input "$input"
+    else
+        hash_repo_input "$git_top/$input"
+        [[ $work_dir == "$git_top" ]] || hash_repo_input "$work_dir/$input"
+    fi
+}
+
+hash_module_input() {
+    local module=$1 module_path
+    if [[ ! $module =~ ^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$ ]]; then
+        printf 'invalid-module=%s\n' "$module"
+        return
+    fi
+    module_path=${module//./\/}
+    hash_declared_path_input "$module_path.py"
+    hash_declared_path_input "$module_path"
+}
+
+hash_command_inputs() {
+    local index input
+    for ((index = 0; index < ${#cmd[@]}; index++)); do
+        input=${cmd[index]}
+        case $input in
+            --require=*) hash_declared_path_input "${input#--require=}" ;;
+            --require|-r)
+                if ((index + 1 < ${#cmd[@]})); then
+                    ((index += 1))
+                    hash_declared_path_input "${cmd[index]}"
+                else
+                    printf 'missing-option-value=%s\n' "$input"
+                fi
+                ;;
+            -m)
+                if ((index + 1 < ${#cmd[@]})); then
+                    ((index += 1))
+                    hash_module_input "${cmd[index]}"
+                else
+                    printf 'missing-option-value=%s\n' "$input"
+                fi
+                ;;
+            *) [[ $input == */* ]] && hash_declared_path_input "$input" ;;
+        esac
+    done
+}
+
 hash_nearby_manifests() {
     local base=$1 file name
     local -a manifest_names=(package.json package-lock.json)
@@ -586,15 +636,7 @@ compute_trust_fingerprint() {
             printf 'declaration=%s\n' "$git_top/.agent/config.env"
             sha256sum -- "$git_top/.agent/config.env" | awk '{print $1}'
         fi
-        for input in "${cmd[@]}"; do
-            [[ $input == */* ]] || continue
-            if [[ $input == /* ]]; then
-                hash_repo_input "$input"
-            else
-                hash_repo_input "$git_top/$input"
-                [[ $work_dir == "$git_top" ]] || hash_repo_input "$work_dir/$input"
-            fi
-        done
+        hash_command_inputs
         [[ -n ${runner_path:-} ]] && hash_repo_input "$runner_path"
         hash_nearby_manifests "$work_dir"
     } | sha256sum | awk '{print $1}'

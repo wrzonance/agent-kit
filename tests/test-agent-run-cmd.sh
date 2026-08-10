@@ -36,7 +36,7 @@ make_repo() {
 # --- repository command trust boundary ------------------------------------
 repo=$(make_repo)
 mkdir -p "$repo/tools"
-printf '#!/bin/sh\nprintf payload-ran\n' > "$repo/tools/payload"
+printf '#!/bin/sh\ntouch "%s/payload-ran"\n' "$tmp" > "$repo/tools/payload"
 chmod +x "$repo/tools/payload"
 printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
 trust_root="$tmp/trust"
@@ -49,8 +49,12 @@ assert_not_contains "$out" 'payload-ran' \
     'the denied command never executes'
 (cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test) \
     > /dev/null 2>&1
+assert_eq 'no' "$([[ -e $tmp/payload-ran ]] && echo yes || echo no)" \
+    'approval does not execute the repository command'
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1)
 assert_contains "$out" 'PASS:' 'an explicitly approved command runs'
+assert_eq 'yes' "$([[ -e $tmp/payload-ran ]] && echo yes || echo no)" \
+    'the approved command executes only during the normal run'
 printf '#!/bin/sh\ntouch "%s/changed-payload-ran"\n' "$tmp" > "$repo/tools/payload"
 if ! out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1); then
     : # The test asserts the expected refusal below.
@@ -220,6 +224,45 @@ assert_contains "$out" 'missing directory' 'a rundir that does not exist is refu
 printf 'AGENT_CMD_ESC=pwd\nAGENT_RUNDIR_ESC=../../etc\n' > "$repo/.agent/config.env"
 out=$( (cd "$repo" && "$run_sh" --cmd esc 2>&1) || true)
 assert_not_contains "$out" '/etc' 'a rundir cannot escape the repository'
+
+# --- option and module payloads invalidate approval when they change --------
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+# shellcheck disable=SC2016  # "$1" and ${1#*=} belong to the generated runner.
+printf '#!/bin/sh\ncase "$1" in --require=*) . "${1#*=}" ;; esac\n' \
+    > "$repo/tools/require-runner"
+printf '#!/bin/sh\ntouch "%s/option-original-ran"\n' "$tmp" \
+    > "$repo/tools/hook.sh"
+chmod +x "$repo/tools/require-runner" "$repo/tools/hook.sh"
+printf 'AGENT_CMD_OPTION=tools/require-runner --require=tools/hook.sh\n' \
+    > "$repo/.agent/config.env"
+(cd "$repo" && "$real_run_sh" --approve --cmd option) > /dev/null 2>&1
+printf '#!/bin/sh\ntouch "%s/option-changed-ran"\n' "$tmp" \
+    > "$repo/tools/hook.sh"
+out=$( (cd "$repo" && "$real_run_sh" --cmd option 2>&1) || true)
+assert_contains "$out" 'refusing unapproved repository command' \
+    'a changed --require payload requires fresh approval'
+assert_eq 'no' "$([[ -e $tmp/option-changed-ran ]] && echo yes || echo no)" \
+    'a changed --require payload is not executed under old approval'
+
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+# shellcheck disable=SC2016  # "$2" and $module belong to the generated runner.
+printf '#!/bin/sh\nmodule=$(printf "%%s" "$2" | tr . /)\n. "$module.py"\n' \
+    > "$repo/tools/module-runner"
+printf '#!/bin/sh\ntouch "%s/module-original-ran"\n' "$tmp" \
+    > "$repo/tools/verify.py"
+chmod +x "$repo/tools/module-runner" "$repo/tools/verify.py"
+printf 'AGENT_CMD_MODULE=tools/module-runner -m tools.verify\n' \
+    > "$repo/.agent/config.env"
+(cd "$repo" && "$real_run_sh" --approve --cmd module) > /dev/null 2>&1
+printf '#!/bin/sh\ntouch "%s/module-changed-ran"\n' "$tmp" \
+    > "$repo/tools/verify.py"
+out=$( (cd "$repo" && "$real_run_sh" --cmd module 2>&1) || true)
+assert_contains "$out" 'refusing unapproved repository command' \
+    'a changed module payload requires fresh approval'
+assert_eq 'no' "$([[ -e $tmp/module-changed-ran ]] && echo yes || echo no)" \
+    'a changed module payload is not executed under old approval'
 
 # --- an OPTIONAL command must not be a hard failure ------------------------
 # A review workflow hardcoded --cmd lint and errored on a repository whose gate
