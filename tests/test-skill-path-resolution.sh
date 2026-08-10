@@ -23,21 +23,22 @@ skills="$root/agentkit/skills"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-# Pull the resolver out of the shipped markdown: the `agentkit=$(find ...)`
-# continuation plus the fallback line that follows it.
+# Pull the single contract-absent fallback resolver out of the shipped
+# markdown: the `agentkit=$(find ...)` continuation and standalone fallback
+# inside the contract-absent branch.
 extract_resolver() {
     awk '
-        /^agentkit=\$\(find /      { capture = 1 }
+        /^[[:space:]]*agentkit=\$\(find / { capture = 1 }
         capture                    { print }
-        /^\[ -n "\$agentkit" \]/   { if (capture) exit }
-    ' "$skills/review-remote-pr/SKILL.md"
+        /^    \[ -n "\$agentkit" \]/ { if (capture) exit }
+    ' "$skills/onboard-repo/SKILL.md"
 }
 
 resolver=$(extract_resolver)
 printf '%s\n' "$resolver" > "$tmp/resolver.sh"
 assert_contains "$resolver" 'plugins/cache' 'the shipped resolver looks in the plugin location'
 assert_contains "$resolver" 'agentkit' 'and names the plugin directory'
-assert_eq '3' "$(printf '%s\n' "$resolver" | grep -c .)" 'the resolver is three lines'
+assert_eq '3' "$(printf '%s\n' "$resolver" | grep -c .)" 'the fallback resolver is three lines'
 
 # Run the extracted resolver against synthetic harness homes and print what it
 # chose. BOTH are set every time: the resolver must not depend on one harness's

@@ -80,7 +80,7 @@ digraph process {
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `agent-preflight.sh` once, in the repository you are about to work in, before any other command in this skill. Its twelve-line stdout block is **the environment contract for the whole run**: repo slug, branch, base, whether the repository declared its own facts in `.agent/config.env`, git writability, `gh` auth + scopes, sandbox state, CA bundle, cache directories, repo command runner, and adversarial-reviewer availability. Establish these facts once, here — never re-probe them later, and never let a dispatched agent discover them by failing.
+Run `agent-preflight.sh` once, in the repository you are about to work in, before any other command in this skill. Its stdout block is **the environment contract for the whole run**: resolved skills path, repo slug, branch, base, whether the repository declared its own facts in `.agent/config.env`, git writability, `gh` auth + scopes, sandbox state, CA bundle, cache directories, repo command runner, and adversarial-reviewer availability. Establish these facts once, here — never re-probe them later, and never let a dispatched agent discover them by failing.
 
 ```bash
 set -euo pipefail
@@ -89,23 +89,23 @@ if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $re
     printf '%s\n' 'Run this skill from a Git repository.' >&2
     exit 1
 fi
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
     printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
@@ -123,7 +123,7 @@ environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
 printf '%s\n' "$environment_contract"
 ```
 
-`agent-preflight.sh` **reports, it never blocks**: it exits 0 even when `gh` is absent, unauthenticated, or the forge is unreachable — the condition comes back as a value inside the block. Exit 2 means you passed bad arguments, nothing else. Diagnostics go to stderr, so the `2>/dev/null` above captures exactly the twelve lines; the same bytes are also written to `<worktree>/.agent/env-contract.txt`, which is why `.agent/*` goes into `.git/info/exclude` (local-only, no repo change) before the probe runs. The `/*` is load-bearing: `.agent/` would exclude the directory itself, and git does not descend into an excluded directory, so the `!.agent/config.env` allowlist in `.gitignore` would never be reached. Re-running it is safe and idempotent.
+`agent-preflight.sh` **reports, it never blocks**: it exits 0 even when `gh` is absent, unauthenticated, or the forge is unreachable — the condition comes back as a value inside the block. Exit 2 means you passed bad arguments, nothing else. Diagnostics go to stderr, so the `2>/dev/null` above captures the contract; the same bytes are also written to `<worktree>/.agent/env-contract.txt`, which is why `.agent/*` goes into `.git/info/exclude` (local-only, no repo change) before the probe runs. The `/*` is load-bearing: `.agent/` would exclude the directory itself, and git does not descend into an excluded directory, so the `!.agent/config.env` allowlist in `.gitignore` would never be reached. Re-running it is safe and idempotent.
 
 **Read these lines now — they change what you do next:**
 
@@ -152,23 +152,22 @@ fi
 # here; anything it omits falls through to the live discovery below. Report a
 # missing resolver rather than swallowing it: silently skipping the config means
 # silently paying for every discovery call it would have saved.
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 if [[ -x $resolver ]]; then
     eval "$("$resolver" --export)"
@@ -212,23 +211,22 @@ make later board moves single-call.
 ```bash
 set -euo pipefail
 
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 
 # Auto mode: the open backlog, most recently updated first.
 "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
@@ -328,23 +326,22 @@ cannot see them. That search is the lowest-yield call in the set, so it is
 opt-in per issue rather than automatic:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 "$agentkit/.shared/scripts/triage-issues.sh" --issues 57 --fuzzy 57
 ```
 
@@ -357,20 +354,22 @@ cannot argue its way into a dispatch.
 ```bash
 set -euo pipefail
 
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 
 # Ready first. Add --include-backlog to groom unblocked Backlog work in as well.
 "$agentkit/.shared/scripts/pick-issues.sh" --include-backlog
@@ -482,23 +481,22 @@ fi
 issue_number=123 # Replace with the approved issue number.
 branch="feat/issue-$issue_number"
 worktree="$repository_root/.worktrees/feat/issue-$issue_number"
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 shared_scripts="$agentkit/.shared/scripts"
 exclude_path="$(git rev-parse --git-path info/exclude)"
 if ! grep -Fxq '.worktrees/' "$exclude_path" 2>/dev/null; then
@@ -542,7 +540,7 @@ git worktree add "$worktree" -b "$branch" "origin/$base" || {
 
 Two things that block runs later happen in that subshell, so do not drop them:
 
-- The **per-worktree preflight** prints this worktree's twelve-line contract (with `worktree=` and `branch=` pointing here) and creates `<worktree>/.agent/logs/`. That printed block — not Step 0's — is what gets pasted into this issue's worker prompt. `.agent/*` is already excluded repo-wide from Step 0, because `info/exclude` lives in the shared git directory.
+- The **per-worktree preflight** prints this worktree's contract (with `skills=`, `worktree=`, and `branch=` pointing here) and creates `<worktree>/.agent/logs/`. That printed block — not Step 0's — is what gets pasted into this issue's worker prompt. `.agent/*` is already excluded repo-wide from Step 0, because `info/exclude` lives in the shared git directory.
 - The bootstrap runs **through `agent-run.sh`**, which is what puts the run's cache directories and CA bundle in front of the package manager. A bare bootstrap here is the first place a run silently repopulates a cold cache in the wrong place.
 
 ## Phase 2: Per-Issue Ultracode Leads (background, parallel)
@@ -583,7 +581,35 @@ The spawn request itself is the model-selection evidence. The completion table m
 
 ### Dispatch (one round, then refill slots)
 
-Use your harness's subagent dispatch for as many issue leads as available concurrency slots permit (`collaboration.spawn_agent` on one CLI, the Task/Agent tool on the other -- harness-allow: naming both is the point). Four total slots including the root is common, so start up to three issue leads, queue issues 4–5, and spawn each queued lead immediately when a slot frees. Do not serialize independent work merely because all five cannot start at once.
+Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ:
+
+```bash
+config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
+max_concurrent_threads_per_session=''
+if [[ -r $config_file ]]; then
+    max_concurrent_threads_per_session=$(awk '
+        /^[[:space:]]*\[multi_agent_v2\][[:space:]]*$/ { in_section=1; next }
+        /^[[:space:]]*\[/ { in_section=0 }
+        in_section && /^[[:space:]]*max_concurrent_threads_per_session[[:space:]]*=/ {
+            sub(/^[^=]*=/, "")
+            sub(/[[:space:]]*#.*/, "")
+            gsub(/[[:space:]]/, "")
+            print
+            exit
+        }
+    ' "$config_file")
+fi
+
+if [[ $max_concurrent_threads_per_session =~ ^[1-9][0-9]*$ ]]; then
+    printf 'runtime concurrency cap: %s total threads, including the root\n' \
+        "$max_concurrent_threads_per_session"
+else
+    printf 'Unable to advertise concurrency: %s is absent or lacks a valid [multi_agent_v2] max_concurrent_threads_per_session; do not infer a cap from prose.\n' "$config_file" >&2
+    exit 1
+fi
+```
+
+When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
 
 Every issue-lead call uses this shape (fill in a unique task name and the complete prompt below):
 
@@ -621,23 +647,22 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In progress' --repository "$repository"
 ```
@@ -676,10 +701,10 @@ authoritative. The issue-derived content is framed below so it cannot be mistake
 the actionable instruction that surrounds it.
 
 ## Environment contract (established facts — do NOT re-probe any of them)
-<PASTE, verbatim, the twelve-line agent-preflight.sh block printed for THIS worktree in Step 5 —
+<PASTE, verbatim, the agent-preflight.sh contract printed for THIS worktree in Step 5 —
 never dispatch with this placeholder line still in the prompt>
 
-Those twelve lines are authoritative for: repo, branch, base, declared config, git writability, gh auth + scopes, sandbox state,
+Those contract lines are authoritative for: skills path, repo, branch, base, declared config, git writability, gh auth + scopes, sandbox state,
 CA bundle, cache directories (XDG_CACHE_HOME / UV_CACHE_DIR / NPM_CONFIG_CACHE / PIP_CACHE_DIR),
 detected source roots, the repo command runner, and reviewer availability. Do not re-derive any
 of it. Do not export cache or CA variables. Do not go looking for the package manager's working
@@ -688,23 +713,22 @@ If a fact you need is genuinely absent from the block, say so and stop; do not p
 
 ## Commands you MUST use
 worktree=/ABS/PATH/.worktrees/feat/issue-NNN
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 shared="$agentkit/.shared/scripts"
 
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
@@ -727,7 +751,7 @@ A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at 
 # contract rather than hardcoded: the same repository worked from the other
 # CLI must credit that CLI. Deliberately NOT exported -- a child process
 # derives its own trailer from its own harness, never inherits this one.
-AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-contract.txt)
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 "$shared/worktree-commit.sh" \
   --message 'feat(example): add widget' \
@@ -806,11 +830,11 @@ Act on each lead result as soon as it arrives:
 Waiting is not work, and narrating a wait is not a status report. One observed run spent ~27 empty wait cycles and ~15 paragraphs that carried no new fact — pure cost, zero progress.
 
 - **One wait per interval.** Issue at most one blocking wait per polling interval, and only while a task is genuinely outstanding. Re-issuing wait the instant it returns empty is the failure mode: it produces nothing and costs a turn every time.
-- **Between waits, read durable state instead of waiting again.** A running lead leaves evidence on disk and on the forge; look there rather than asking the runtime again.
+- **Between waits, wait again; read durable state only when a wait reports an actual completion.** A running lead leaves evidence on disk and on the forge; inspect it after completion rather than asking the runtime again.
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
-Durable state to inspect between waits:
+Durable state to inspect after a wait reports an actual completion:
 
 ```bash
 set -euo pipefail
@@ -825,23 +849,22 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 if [[ -d $worktree ]]; then
     git -C "$worktree" status --short
@@ -868,23 +891,22 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In review' --repository "$repository"
 ```
@@ -919,7 +941,7 @@ a background agent stops mid-run on a question nobody is there to answer; add it
 the user having asked and you have manufactured their consent.>
 
 ## Environment contract (established facts — do NOT re-probe any of them)
-<PASTE, verbatim, the twelve-line agent-preflight.sh block for THIS worktree — the same block the
+<PASTE, verbatim, the agent-preflight.sh contract for THIS worktree — the same block the
 issue lead was dispatched with. Never dispatch with this placeholder line still in the prompt.>
 
 It is authoritative for repo, branch, base, git writability, gh auth + scopes, CA bundle, cache
@@ -929,23 +951,22 @@ cache or CA variables yourself.
 
 ## Commands you MUST use
 worktree=FULL_PATH
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
-agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-[ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-# A resolver that comes back empty must SAY so. Unguarded, the next line dies
-# on a path that does not exist, which under set -e is a silent exit -- and a
-# live session answered that silence by pasting an absolute plugin path.
-# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
-# stores a literal string instead of a path, and the run then fails as
-# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
-# live session spent two retries rediscovering that.
-[ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 shared="$agentkit/.shared/scripts"
 pr_scripts="$agentkit/review-remote-pr/scripts"
 
@@ -962,7 +983,7 @@ pr_scripts="$agentkit/review-remote-pr/scripts"
 # contract rather than hardcoded: the same repository worked from the other
 # CLI must credit that CLI. Deliberately NOT exported -- a child process
 # derives its own trailer from its own harness, never inherits this one.
-AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-contract.txt)
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 "$shared/worktree-commit.sh" \
   --message 'fix(example): address review finding' \
@@ -989,7 +1010,7 @@ string is how SHAs silently vanish from replies).
   deliberate. Do not go looking for a spelling that gets past it.
 
 ## Your Workflow (DRAFT PHASE ONLY — the PR stays a draft)
-1. Invoke the review-remote-pr skill with PR number NNN
+1. Apply the self-contained draft-phase workflow in this skill to PR number NNN; do not load `review-remote-pr/SKILL.md` just to dispatch this worker.
 2. Run its Phase A (draft) to completion:
    - All CI checks green (fix, commit, push — pushes trigger no reviews)
    - Merge conflicts vs base resolved (merge, never rebase pushed history)
@@ -1114,7 +1135,7 @@ Cleanup runs only when user explicitly asks after merge.
 
 | Mistake | Fix |
 |---------|-----|
-| Skipping Step 0, or re-probing the environment later | Run `agent-preflight.sh` once at the top of the run and treat its twelve lines as settled fact — repo, base, gh scopes, caches, CA bundle, runner, reviewer availability. Re-deriving them mid-run is wasted turns and invites two different answers |
+| Skipping Step 0, or re-probing the environment later | Run `agent-preflight.sh` once at the top of the run and treat its contract as settled fact — skills path, repo, base, gh scopes, caches, CA bundle, runner, reviewer availability. Re-deriving it mid-run is wasted turns and invites two different answers |
 | Skipping the board adjudication | Status is a free digest column — same-board issues encode invisible ordering |
 | Grabbing Backlog or in-flight issues in auto mode | Pick from **Ready** first; surface Backlog; `active` issues are already excluded by triage |
 | Not updating the board as work moves | Run `move-github-project-item.sh` with `--status 'In progress'` at dispatch and `--status 'In review'` when the PR opens |
@@ -1134,7 +1155,7 @@ Cleanup runs only when user explicitly asks after merge.
 | Blocking the run because `spawn_agent` is unavailable | With `multi_agent = false` there is no worker to configure and no model to select — do the work yourself, serially, under the same six-step gate, and label every report and table row `worker=self (spawn unavailable)` |
 | Relative worktree path in prompts | Agents may not share the root cwd — always pass the absolute worktree path |
 | Passing a design-doc *path* as `spec` | Pass contents — workflow agents must not hunt for files outside the worktree |
-| Dispatching a worker without the environment contract | Workers fork with `fork_context: false` and inherit nothing. Paste the worktree's twelve-line preflight block **verbatim** into every prompt — omit it and the worker rediscovers the cache directories, PYTHONPATH, the package manager's working directory, and the git `index.lock` elevation one failure at a time |
+| Dispatching a worker without the environment contract | Workers fork with `fork_context: false` and inherit nothing. Paste the worktree's preflight contract **verbatim** into every prompt — omit it and the worker rediscovers the skills path, cache directories, PYTHONPATH, the package manager's working directory, and the git `index.lock` elevation one failure at a time |
 | Bare-running pytest / npm / uv / cargo in a worktree | Route every test, lint, type-check, build, and install through `agent-run.sh` — it owns the caches, CA bundle, PYTHONPATH, repo-runner delegation, and the log file you read on failure |
 | Hand-rolling `git add` + `git commit` in a worker | Use `worktree-commit.sh` with explicit FILE operands (it also refuses trunk and catches conflict markers). Exit 2 means nothing was staged and the named git metadata directory needs write permission — fix that and re-run the identical command |
 | Parallelizing mutating stages | Spike/Implement/Fix are sequential by design — two writers in one worktree corrupt each other |
@@ -1145,8 +1166,8 @@ Cleanup runs only when user explicitly asks after merge.
 | Re-implementing a partially-shipped issue from scratch | Rescope to the remainder; link the prior PR in the brainstorm/agent prompt |
 | Cleaning worktrees at end of skill | NEVER auto-clean — Phase 3 + human review still need them |
 | Blocking Phase 3 until every issue lead completes | Act per-completion: board move + draft loop the moment each PR URL lands |
-| Re-issuing wait while a task is still running | One wait per interval. Between waits read durable state — `gh-pr-state.sh` for a PR, `git status` / `git log` in the worktree — instead of waiting again |
-| Narrating a wait | "Still running", "still waiting", "checking again" carry no fact. Speak only for a state change or a decision; otherwise stay silent and wait |
+| Re-issuing wait while a task is still running | One wait per interval. If the wait reports no actual completion, wait again; read durable state only after an actual completion |
+| Narrating a wait | "Still running", "still waiting", "checking again" carry no fact. Speak only for a state change or a decision; otherwise wait again silently |
 | Waiting for CodeRabbit before dispatching Phase 3 | Nothing to wait for — no review is automatic. Dispatch draft-phase agents the moment each PR URL lands (Step 3a) |
 | Marking a PR ready / triggering a review | NEVER `gh pr ready`, never `@coderabbitai review`/`full review` — automatic + incremental reviews are disabled; ONLY the USER triggers reviews, manually |
 | Waiting for a review after the ready flip or a push | Neither triggers anything (automation off). Report state; the user triggers reviews when they choose |
@@ -1164,7 +1185,7 @@ Cleanup runs only when user explicitly asks after merge.
 
 ## Limits
 
-- Max 5 issues. Respect the runtime's collaboration-slot cap (often root + 3 children): queue overflow issues and refill slots rather than exceeding the cap.
+- Max 10 issues. Issue concurrency is runtime-advertised. Include the root in the configured cap, queue overflow issues, and refill slots as they free; if the cap is unavailable, do not dispatch until the runtime owner supplies it.
 - Invoking this skill is explicit multi-agent opt-in for the issue leads. Only this root orchestrator
   can spawn; issue leads cannot spawn helpers of their own.
 - Requires GitHub remote (`gh` CLI) with Projects v2 scope: reading needs `read:project`; moving items via the Bash Project helper needs write `project` (`gh auth refresh -s project` if missing — Step 0's `project-scope=` line tells you before a move fails)

@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
 # Every helper script invoked from a SKILL.md bash block must be reached through
 # a resolved path, never bare.
+# shellcheck disable=SC2016  # resolver text is intentionally literal
 #
 # Nothing in this tree is on PATH, so a bare `agent-run.sh` is a guaranteed
 # "command not found" that the agent then has to recover from by guessing a
 # location -- exactly the failed-tool-call waste the skills exist to avoid. The
-# established convention is:
-#
-#     codex_home=${CODEX_HOME:-$HOME/.codex}
-#     "$codex_home/skills/.shared/scripts/agent-run.sh" ...
+# established convention is to read the absolute `skills= path=` line from the
+# preflight contract, then invoke helpers below that directory.
 #
 # A reference passes when it is part of a path (preceded by /), sits in a
 # comment, or appears inside a printf/echo message.
 #
-# The same blocks must also FAIL LOUDLY when resolution comes back empty. Under
-# `set -euo pipefail` an unresolved path exits silently, and a live session
-# answered that silence by pasting an absolute plugin path -- version directory
-# included -- and using it for the rest of the session. So every resolver copy
-# has to be followed by a check that names the problem.
+# The contract is produced by agent-preflight.sh. A contract-absent fallback is
+# deliberately kept in one onboarding block; all other blocks must fail loudly
+# and tell the agent to run preflight rather than reintroduce a resolver copy.
 set -euo pipefail
 
 skills_dir=${1:?usage: lint-skill-invocations.sh SKILLS_DIR}
@@ -28,8 +25,17 @@ readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-con
 
 checked=0
 bare=0
-resolvers=0
 unguarded=0
+contract_reads=0
+missing_contract_reads=0
+fallbacks=0
+
+fallback_matches=$(grep -R -n --include='SKILL.md' '^[[:space:]]*agentkit=\$(find ' "$skills_dir" || true)
+fallbacks=$(printf '%s\n' "$fallback_matches" | grep -c . || true)
+if [[ $fallbacks -ne 1 ]]; then
+    printf 'EXPECTED exactly one contract-absent fallback resolver, found %s\n' "$fallbacks" >&2
+    unguarded=$((unguarded + 1))
+fi
 
 while IFS= read -r skill_file; do
     name=$(basename "$(dirname "$skill_file")")
@@ -41,19 +47,15 @@ while IFS= read -r skill_file; do
     ' "$skill_file"
     [[ -f $block ]] || continue
 
-    # shellcheck disable=SC2016  # the $ is a literal being searched for, not expanded
-    # Every fallback assignment must be followed by a check that the tree is
-    # actually there. 25 copies of this snippet exist across the skills; a gate
-    # is the only thing that keeps the 26th from omitting it.
     while IFS= read -r -u 3 lineno; do
-        resolvers=$((resolvers + 1))
-        if ! sed -n "$((lineno + 1)),$((lineno + 12))p" "$block" |
+        contract_reads=$((contract_reads + 1))
+        if ! sed -n "$((lineno + 1)),$((lineno + 10))p" "$block" |
             grep -q '\[ -d "\$agentkit/\.shared/scripts" \]'; then
-            unguarded=$((unguarded + 1))
-            printf 'UNGUARDED RESOLVER in %s (block line %s): resolution failure would be silent\n' \
+            missing_contract_reads=$((missing_contract_reads + 1))
+            printf 'UNGUARDED CONTRACT in %s (block line %s): invalid path would be silent\n' \
                 "$skill_file" "$lineno" >&2
         fi
-    done 3< <(grep -n '^\[ -n "\$agentkit" \] || agentkit=' "$block" | cut -d: -f1)
+    done 3< <(grep -n 'agentkit=\$(sed -n "s/\^skills= path=' "$block" | cut -d: -f1)
 
     while IFS= read -r line; do
         grep -qE "($HELPERS)\.sh" <<< "$line" || continue
@@ -66,6 +68,6 @@ while IFS= read -r skill_file; do
     done < "$block"
 done < <(find "$skills_dir" -maxdepth 2 -name SKILL.md -not -path '*/.system/*' | sort)
 
-printf 'skill invocations: %d references, %d bare; %d resolvers, %d unguarded\n' \
-    "$checked" "$bare" "$resolvers" "$unguarded"
-[[ $bare -eq 0 && $unguarded -eq 0 ]]
+printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback\n' \
+    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks"
+[[ $bare -eq 0 && $unguarded -eq 0 && $missing_contract_reads -eq 0 && $fallbacks -eq 1 ]]
