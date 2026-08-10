@@ -192,4 +192,17 @@ repo=$(new_repo)
 out=$(cd "$tmp" && PATH="$tmp/stub:$PATH" "$script" --repo-root "$repo" --project 9 --dry-run 2>&1)
 assert_contains "$out" 'example-org/example-repo' 'the slug comes from --repo-root, not the cwd'
 
+# --- a board owned by someone other than the repository ---------------------
+# A personal repository tracked on an organization's board. Defaulting the board
+# owner to the repo owner is right for the common case and wrong for this one,
+# which is exactly the case that made the flag necessary.
+set_board '[{"id":"todo","name":"Todo"}]'
+repo=$(new_repo)
+out=$(run --repo-root "$repo" --owner other-org)
+assert_contains "$out" 'created project 42' 'a board can be created under another owner'
+assert_contains "$(cat "$tmp/gh.log")" 'project create --owner other-org' \
+    'and the create names that owner, not the repository owner'
+assert_contains "$(cat "$tmp/gh.log")" 'project link 42 --owner other-org --repo example-org/example-repo' \
+    'while the link still names the repository it tracks'
+
 finish

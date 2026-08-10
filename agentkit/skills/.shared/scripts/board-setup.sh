@@ -30,6 +30,10 @@ ARG_REPO_ROOT=""
 ARG_TITLE=""
 ARG_PROJECT=""
 ARG_VOCAB="Backlog,Ready,In progress,In review,Done"
+# Boards are not always owned by whoever owns the repository: a personal repo
+# can be tracked on an organization's board. Defaults to the repo's owner,
+# which is the common case and the one worth not having to type.
+ARG_OWNER=
 ARG_DRY_RUN=0
 ARG_NO_LINK=0
 
@@ -38,11 +42,14 @@ usage() {
 board-setup.sh -- create or adopt a Project board with the canonical columns.
 
 Usage:
-  board-setup.sh [--repo-root DIR] [--title TITLE] [--project N]
-                 [--vocab "A,B,C"] [--no-link] [--dry-run]
+  board-setup.sh [--repo-root DIR] [--owner OWNER] [--title TITLE]
+                 [--project N] [--vocab "A,B,C"] [--no-link] [--dry-run]
 
 Options:
   --repo-root DIR  Repository to set the board up for (default: cwd).
+  --owner OWNER    Owner of the BOARD (default: the repository's owner). Use
+                   this when an organization's board tracks a repo owned by
+                   someone else.
   --title TITLE    Title for a board this creates (default: the repo name).
   --project N      Adopt this existing board instead of creating one.
   --vocab "A,B,C"  Status column names, in order. Defaults to
@@ -83,6 +90,11 @@ while (($#)); do
             ARG_REPO_ROOT=$2
             shift 2
             ;;
+        --owner)
+            [[ ${2:-} ]] || die_usage '--owner requires a value'
+            ARG_OWNER=$2
+            shift 2
+            ;;
         --title)
             [[ ${2:-} ]] || die_usage '--title requires a value'
             ARG_TITLE=$2
@@ -119,9 +131,10 @@ repo_root=$(cd -- "$repo_root" && pwd) || die "cannot enter $repo_root"
 # the process working directory -- the same defect bootstrap-repo.sh had.
 slug=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner 2> /dev/null) ||
     die_env "could not resolve the repository from gh in $repo_root"
-owner=${slug%%/*}
+repo_owner=${slug%%/*}
 name=${slug#*/}
-[[ -n $owner && -n $name ]] || die "could not split a repository slug out of: $slug"
+[[ -n $repo_owner && -n $name ]] || die "could not split a repository slug out of: $slug"
+owner=${ARG_OWNER:-$repo_owner}
 
 # --- the vocabulary ---------------------------------------------------------
 # Split on commas only. A column named "In progress" has a space in it, so
@@ -196,12 +209,21 @@ else
 
     options_arg=$(jq -cn --argjson names "$wanted_json" \
         '[$names[] | {name: ., color: "GRAY", description: ""}]')
-    # shellcheck disable=SC2016  # GraphQL variables, bound by gh's -F/-f flags.
-    updated=$(gh api graphql -f "fieldId=$field_id" -f "options=$options_arg" \
-        -f query='mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
-          updateProjectV2Field(input: {fieldId: $fieldId, singleSelectOptions: $options}) {
-            projectV2Field { ... on ProjectV2SingleSelectField { id options { id name } } } } }' \
-        2> /dev/null) || die "could not set the Status columns on project $project_number"
+    # Sent as a request body rather than through -f/-F. gh's -f sends every
+    # value as a STRING, so a list of option objects arrives as one quoted blob
+    # and the mutation is rejected -- observed the first time this ran for real.
+    # shellcheck disable=SC2016  # GraphQL variable names, not shell expansions.
+    mutation='mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
+      updateProjectV2Field(input: {fieldId: $fieldId, singleSelectOptions: $options}) {
+        projectV2Field { ... on ProjectV2SingleSelectField { id options { id name } } } } }'
+    updated=$(jq -n --arg q "$mutation" --arg fid "$field_id" --argjson opts "$options_arg" \
+        '{query: $q, variables: {fieldId: $fid, options: $opts}}' |
+        gh api graphql --input - 2> /dev/null) ||
+        die "could not set the Status columns on project $project_number"
+    # A GraphQL error is a 200 with an errors array, so a non-zero exit is not
+    # the only way this fails.
+    [[ $(jq -r 'has("errors")' <<< "$updated" 2> /dev/null) != true ]] ||
+        die "the Status mutation was rejected: $(jq -rc '.errors[0].message // "unknown"' <<< "$updated")"
 
     new_options=$(jq -c '.data.updateProjectV2Field.projectV2Field.options // []' <<< "$updated")
     [[ $(jq 'length' <<< "$new_options") -gt 0 ]] ||

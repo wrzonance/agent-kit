@@ -623,7 +623,9 @@ readonly LOG_HEADER_LINES=2
 # A killed run cannot write its own terminator on SIGKILL, which is correct:
 # that log SHOULD stay unterminated. TERM and INT are catchable, and a run the
 # operator interrupted is worth distinguishing from one that vanished.
-# shellcheck disable=SC2329  # invoked from the trap strings below
+# shellcheck disable=SC2329,SC2317  # invoked from the trap strings below;
+# version 0.11 calls this SC2329, older releases call it SC2317, and a line
+# starting with the tool name would itself be read as a directive
 log_interrupted() {
     printf '=== agent-run interrupted by %s -- the command did not finish\n' "$1" >> "$log_file"
     exit 130
