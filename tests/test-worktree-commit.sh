@@ -37,6 +37,7 @@ fake_bin="$tmp/bin"
 gate="$tmp/gate"
 mkdir -p "$fake_bin" "$gate"
 git_wrapper="$fake_bin/git"
+# shellcheck disable=SC2016  # The dollar expressions belong to the generated wrapper.
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
@@ -53,8 +54,7 @@ chmod +x "$git_wrapper"
 
 wait_for_file() {
     local file=$1
-    local i
-    for i in {1..200}; do
+    for _ in {1..200}; do
         [[ -e $file ]] && return 0
         sleep 0.01
     done
