@@ -248,7 +248,21 @@ thread_counts() {
     jq -r --arg cr "$CR_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
         def is_cr: (.author.login // "") | test($cr; "i");
         def is_cq: (.author.login // "") | test($cq; "i");
-        def is_agent: (.body // "") | contains($mark);
+        # Anchored to the start of a LINE, not merely present somewhere. This
+        # marker decides whether a thread counts as human-touched, and therefore
+        # whether it reaches the operator for confirmation -- so a comment
+        # mentioning the marker anywhere became invisible. A reviewer quoting an
+        # agent reply inside their own actionable comment silently dropped their
+        # own feedback out of the queue.
+        #
+        # The agent emits the marker on its own line, under the attribution
+        # banner. Markdown quoting prefixes "> ", and indentation prefixes
+        # spaces, so neither survives the anchor. A human who begins a line with
+        # a raw HTML comment is opting out deliberately; one who quotes it is
+        # not, and that is the case that happens by accident. Uncertainty
+        # resolves toward "human": the cost is one extra item to confirm, versus
+        # one lost silently.
+        def is_agent: (.body // "") | test("(^|\r?\n)" + $mark);
         def human_touched: [.comments.nodes[] | select(((is_cr) or (is_cq) or (is_agent)) | not)] | length > 0;
         def has_cr: [.comments.nodes[] | select(is_cr)] | length > 0;
         def has_cq: [.comments.nodes[] | select(is_cq)] | length > 0;
@@ -261,7 +275,7 @@ thread_counts() {
             ($open | map(select(human_touched)) | length),
             (if (($rt.pageInfo.hasNextPage // false)
                  or ([$all[] | .comments.pageInfo.hasNextPage // false] | any)) then 1 else 0 end),
-            ($all | map(select(((.comments.nodes[0].body) // "") | contains($doc))) | length) ]
+            ($all | map(select(((.comments.nodes[0].body) // "") | test("(^|\r?\n)" + $doc))) | length) ]
         | @tsv' <"$WORK_DIR/threads.json"
 }
 
