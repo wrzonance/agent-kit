@@ -40,7 +40,9 @@ printf '#!/bin/sh\nprintf payload-ran\n' > "$repo/tools/payload"
 chmod +x "$repo/tools/payload"
 printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
 trust_root="$tmp/trust"
-out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1 || true)
+if ! out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1); then
+    : # The test asserts the expected refusal below.
+fi
 assert_contains "$out" 'refusing unapproved repository command' \
     'a repository command is denied before its first approval'
 assert_not_contains "$out" 'payload-ran' \
@@ -50,7 +52,9 @@ assert_not_contains "$out" 'payload-ran' \
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1)
 assert_contains "$out" 'PASS:' 'an explicitly approved command runs'
 printf '#!/bin/sh\ntouch "%s/changed-payload-ran"\n' "$tmp" > "$repo/tools/payload"
-out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1 || true)
+if ! out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1); then
+    : # The test asserts the expected refusal below.
+fi
 assert_contains "$out" 'refusing unapproved repository command' \
     'changing the repository executable requires fresh approval'
 assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
