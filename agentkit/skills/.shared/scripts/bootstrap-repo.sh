@@ -11,7 +11,8 @@
 # worse than having no cache at all.
 #
 # Usage:
-#   bootstrap-repo.sh [--repo-root DIR] [--project N] [--dry-run] [--force]
+#   bootstrap-repo.sh [--repo-root DIR] [--project N] [--owner LOGIN]
+#                     [--dry-run] [--force]
 #
 # Exit: 0 success, 1 discovery failed or would clobber, 2 bad usage,
 #       3 gh unavailable or unauthenticated (environment-blocked).
@@ -37,6 +38,10 @@ die_usage() {
 
 repo_root=''
 project_number=''
+# The owner of the BOARD, which is not always the owner of the repository: a
+# personal repo can be tracked on an organization's board, and GitHub refuses to
+# link those two together, so nothing can discover the pairing for you.
+board_owner=''
 dry_run=0
 force=0
 
@@ -51,6 +56,11 @@ while (($#)); do
             shift
             (($#)) || die_usage '--project requires a number'
             project_number=$1
+            ;;
+        --owner)
+            shift
+            (($#)) || die_usage '--owner requires a login'
+            board_owner=$1
             ;;
         --dry-run) dry_run=1 ;;
         --force) force=1 ;;
@@ -129,16 +139,24 @@ readonly LINKED_QUERY='query($owner: String!, $name: String!) {
   }
 }'
 
+projects_linked=1
 projects_source='linked to this repository'
-projects_json=$(gh api graphql -F "owner=$owner" -F "name=$name" -f "query=$LINKED_QUERY" 2> /dev/null |
-    jq -c '{projects: (.data.repository.projectsV2.nodes // [])}' 2> /dev/null ||
-    printf '{"projects":[]}')
+projects_json='{"projects":[]}'
+if [[ -z $board_owner ]]; then
+    projects_json=$(gh api graphql -F "owner=$owner" -F "name=$name" -f "query=$LINKED_QUERY" 2> /dev/null |
+        jq -c '{projects: (.data.repository.projectsV2.nodes // [])}' 2> /dev/null ||
+        printf '{"projects":[]}')
+fi
 
 if [[ $(jq '.projects | length' <<< "$projects_json" 2> /dev/null || printf 0) -eq 0 ]]; then
-    # Not linked to anything, or the query failed: fall back to the owner's boards.
-    projects_source="owned by $owner"
-    projects_json=$(gh project list --owner "$owner" --format json 2> /dev/null) ||
-        die "could not list projects for $owner"
+    # Not linked to anything, or the query failed: fall back to the owner's
+    # boards. This is a REAL loss of evidence and is treated as one below --
+    # "this owner has a board" is not "this board is this repository's".
+    projects_linked=0
+    list_owner=${board_owner:-$owner}
+    projects_source="owned by $list_owner"
+    projects_json=$(gh project list --owner "$list_owner" --format json 2> /dev/null) ||
+        die "could not list projects for $list_owner"
 fi
 
 if [[ -n $project_number ]]; then
@@ -147,6 +165,26 @@ if [[ -n $project_number ]]; then
     [[ -n $project ]] || die "owner $owner has no project number $project_number"
 else
     open_count=$(jq '[.projects[]? | select(.closed != true)] | length' <<< "$projects_json")
+    # An UNLINKED board is never adopted silently, however few there are.
+    #
+    # The single-candidate shortcut used to skip this: a personal repository
+    # whose owner had exactly one board took that board, and the board was an
+    # unrelated homelab project holding someone else's in-flight issue. Its ids
+    # would have gone into a committed board.json, and the next lifecycle move
+    # would have mutated it. The session that hit this only noticed because the
+    # columns happened to be wrong.
+    #
+    # "This owner has one board" is not evidence that the board belongs to this
+    # repository. Only the link is, and cross-owner GitHub refuses to create one
+    # at all -- so for those the answer has to be typed.
+    if ((projects_linked == 0)); then
+        warn "no board is LINKED to $slug; found $open_count open project(s) $projects_source:"
+        jq -r '.projects[]? | select(.closed != true) | "  \(.number)  \(.title)"' \
+            <<< "$projects_json" >&2
+        warn 'a board this repository is not linked to has to be named explicitly:'
+        warn "  $PROGRAM --project N${board_owner:+ --owner $board_owner}"
+        die 'refusing to adopt an unlinked board'
+    fi
     if [[ $open_count != 1 ]]; then
         warn "found $open_count open projects $projects_source; pass --project N to choose one:"
         jq -r '.projects[]? | select(.closed != true) | "  \(.number)  \(.title)"' \
@@ -162,7 +200,7 @@ project_title=$(jq -r '.title // empty' <<< "$project")
 [[ -n $project_id && -n $project_num ]] || die 'the selected project is missing an id or number'
 
 # --- discover the Status field ---------------------------------------------
-fields_json=$(gh project field-list "$project_num" --owner "$owner" --format json 2> /dev/null) ||
+fields_json=$(gh project field-list "$project_num" --owner "${board_owner:-$owner}" --format json 2> /dev/null) ||
     die "could not list fields for project $project_num"
 
 status_field=$(jq -c 'first(.fields[]? | select(.name == "Status" and (.options | type) == "array"))
@@ -187,9 +225,11 @@ staging=$(mktemp -d)
 trap 'rm -rf -- "$staging"' EXIT
 mkdir -p "$staging/.agent"
 
+# The BOARD's owner. board-list.sh and the mover pass this to gh as --owner, so
+# a repo tracked on another account's board needs that account here, not its own.
 jq -n \
     --argjson v "$BOARD_SCHEMA_VERSION" \
-    --arg owner "$owner" \
+    --arg owner "${board_owner:-$owner}" \
     --argjson num "$project_num" \
     --arg pid "$project_id" \
     --arg ptitle "$project_title" \
