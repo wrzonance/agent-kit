@@ -99,8 +99,12 @@ resolver="$self_dir/repo-config.sh"
 # Slug and default branch in ONE call. Deliberately NOT `git remote show origin`:
 # that contacts the remote over the network, and a bootstrap should not depend on
 # git transport when it already has an authenticated forge client.
-repo_json=$(gh repo view --json nameWithOwner,defaultBranchRef 2> /dev/null) ||
-    die 'could not resolve the repository from gh'
+# Resolved from --repo-root, not from the process cwd. gh infers the repository
+# from wherever it is invoked, so running this from repository A with
+# `--repo-root /path/to/B` wrote A's slug, base branch and Project metadata into
+# B -- a committed file, silently naming the wrong repository.
+repo_json=$(cd -- "$repo_root" && gh repo view --json nameWithOwner,defaultBranchRef 2> /dev/null) ||
+    die "could not resolve the repository from gh in $repo_root"
 slug=$(jq -r '.nameWithOwner // empty' <<< "$repo_json" 2> /dev/null || true)
 [[ $slug =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "gh returned an unusable slug: ${slug:-none}"
 owner=${slug%%/*}

@@ -645,15 +645,46 @@ probe_peer_cli() {
 }
 
 # Never fail the run over the artifact: the block already went to stdout.
+#
+# The write is symlink-safe and atomic, neither of which plain redirection is.
+# A repository that tracks .agent/env-contract.txt as a symlink to ../.git/config
+# turns this into a truncate of the git config -- the redirection follows the
+# link and does not care where it lands. Found by external review.
+#
+# Refusing an existing symlink or non-regular file, then renaming a fresh
+# temporary over it, closes both that and the half-written file a reader can
+# otherwise observe.
 write_block() {
-    local target="$1" dir
+    local target="$1" dir tmp
     dir="$(dirname -- "$target")"
     if ! mkdir -p -- "$dir" 2>/dev/null; then
         note "could not create $dir -- environment block printed to stdout only"
         return 0
     fi
-    if ! printf '%s\n' "${OUT_LINES[@]}" 2>/dev/null >"$target"; then
+    if [[ -L "$target" ]]; then
+        note "refusing to write $target: it is a symlink, and this file is read back into agent context -- environment block printed to stdout only"
+        return 0
+    fi
+    if [[ -e "$target" && ! -f "$target" ]]; then
+        note "refusing to write $target: not a regular file -- environment block printed to stdout only"
+        return 0
+    fi
+    if ! tmp="$(mktemp -- "$dir/.env-contract.XXXXXX" 2>/dev/null)"; then
+        note "could not create a temporary file in $dir -- environment block printed to stdout only"
+        return 0
+    fi
+    if ! printf '%s\n' "${OUT_LINES[@]}" 2>/dev/null >"$tmp"; then
+        rm -f -- "$tmp" 2>/dev/null || true
         note "could not write $target -- environment block printed to stdout only"
+        return 0
+    fi
+    # 0600: it carries local paths, the CA bundle location and the account name,
+    # and mktemp's default is already private -- this survives a lax umask on the
+    # rename target.
+    chmod 600 -- "$tmp" 2>/dev/null || true
+    if ! mv -f -- "$tmp" "$target" 2>/dev/null; then
+        rm -f -- "$tmp" 2>/dev/null || true
+        note "could not replace $target -- environment block printed to stdout only"
         return 0
     fi
     note "wrote $target"

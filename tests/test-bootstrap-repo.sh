@@ -298,4 +298,37 @@ repo=$(make_repo)
 out=$(run_bs --repo-root "$repo" --project 7 2>&1)
 assert_not_contains "$out" 'allowlist has no effect' 'nor does the ordinary case'
 
+
+# --- --repo-root controls discovery, not just the write target --------------
+# gh infers the repository from wherever it is invoked. Running from repository
+# A with `--repo-root /path/to/B` therefore wrote A's slug, base branch and
+# Project metadata into B -- into a committed file, silently naming the wrong
+# repository. Caught by external review.
+mkdir -p "$tmp/stubcwd"
+cat > "$tmp/stubcwd/gh" << EOF
+#!/usr/bin/env bash
+set -uo pipefail
+# The routing stub, except that \`repo view\` answers for the directory it is
+# invoked in -- which is what the real gh does, and the whole point here.
+here=\$(basename -- "\$PWD")
+case "\$*" in
+  *"repo view"*)          printf '{"nameWithOwner":"example-org/%s","defaultBranchRef":{"name":"main"}}\n' "\$here" ;;
+  *"api graphql"*)        cat "$here/fixtures/gh-linked-projects.json" ;;
+  *"project field-list"*) cat "$here/fixtures/gh-field-list.json" ;;
+  *"project list"*)       cat "$here/fixtures/gh-project-list.json" ;;
+  *) printf '{}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/stubcwd/gh"
+
+repo_a=$(mktemp -d "$tmp/aaa.XXXXXX"); git -C "$repo_a" init -q
+repo_b=$(mktemp -d "$tmp/bbb.XXXXXX"); git -C "$repo_b" init -q
+(cd "$repo_a" && PATH="$tmp/stubcwd:$PATH" "$bs_sh" --repo-root "$repo_b" --project 7 > /dev/null 2>&1)
+written=$(grep '^AGENT_REPO_SLUG=' "$repo_b/.agent/config.env" 2> /dev/null || printf 'none')
+assert_contains "$written" "$(basename -- "$repo_b")" \
+    'the slug written into B describes B, not the directory the command ran from'
+assert_not_contains "$written" "$(basename -- "$repo_a")" \
+    'and never the invoking repository'
+
 finish
