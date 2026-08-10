@@ -120,7 +120,12 @@ fi
 if [[ -z $contract ]]; then
     preflight="$self_dir/../skills/.shared/scripts/agent-preflight.sh"
     if [[ -x $preflight ]]; then
-        contract=$("$preflight" --worktree "$root" 2> /dev/null || true)
+        # --measured-from hook, because that is the truth: this process runs
+        # outside the agent's sandbox, so its writability probes and its
+        # CODEX_* sandbox variables describe the hook and not the shell that
+        # will run the commands. Without the flag the block asserts
+        # writable=yes and active=no to an agent that is about to be denied.
+        contract=$("$preflight" --worktree "$root" --measured-from hook 2> /dev/null || true)
     fi
 fi
 # An un-onboarded repository still gets a session context, even when the probe
@@ -128,7 +133,9 @@ fi
 # staying silent there is how the gap goes unnoticed for a whole session.
 context=''
 if [[ -n $contract ]]; then
-    context="Environment contract (established; do not re-probe):
+    context="Environment contract (established; do not re-probe, EXCEPT any line
+marked measured-by=hook -- those were probed outside your sandbox, so a denial
+you hit yourself overrides them):
 $contract"
 fi
 

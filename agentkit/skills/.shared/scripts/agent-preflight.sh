@@ -28,6 +28,10 @@ ARG_WORKTREE=""
 ARG_REPO=""
 ARG_WRITE=""
 ARG_NO_WRITE=0
+# Which process this run speaks for. A hook runs OUTSIDE the agent's sandbox,
+# so everything measured here about writability and sandboxing describes the
+# hook, not the shell that will run the commands -- see probe_sandbox().
+ARG_MEASURED_FROM=agent
 WORKTREE=""
 IN_REPO=0
 OUT_LINES=()
@@ -49,13 +53,17 @@ usage() {
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
 
 Usage:
-  agent-preflight.sh [--worktree PATH] [--repo OWNER/REPO] [--write FILE | --no-write] [-h|--help]
+  agent-preflight.sh [--worktree PATH] [--repo OWNER/REPO] [--write FILE | --no-write]
+                     [--measured-from agent|hook] [-h|--help]
 
 Options:
   --worktree PATH    Worktree to describe (default: git toplevel of the cwd, else the cwd).
   --repo OWNER/REPO  Use this slug instead of parsing one from the origin remote.
   --write FILE       Write the block here (default: <worktree>/.agent/env-contract.txt).
   --no-write         Print the block only; write no file.
+  --measured-from W  Whose environment this describes: "agent" (default, the
+                     shell that will run commands) or "hook", which runs
+                     outside the agent sandbox and can only report its own.
   -h, --help         Print this help and exit 0.
 
 Prints one key per line: repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
@@ -109,6 +117,13 @@ parse_args() {
         case "$1" in
             -h|--help)  usage; exit 0 ;;
             --worktree) need_value "$@"; ARG_WORKTREE="$2"; shift 2 ;;
+            --measured-from)
+                need_value "$@"
+                case "$2" in
+                    agent|hook) ARG_MEASURED_FROM="$2" ;;
+                    *) die "--measured-from takes agent or hook, got: $2" ;;
+                esac
+                shift 2 ;;
             --repo)     need_value "$@"; ARG_REPO="$2"; shift 2 ;;
             --write)    need_value "$@"; ARG_WRITE="$2"; ARG_NO_WRITE=0; shift 2 ;;
             --no-write) ARG_NO_WRITE=1; ARG_WRITE=""; shift ;;
@@ -311,6 +326,12 @@ probe_git() {
 
     if dir_writable "$common"; then
         line="git= common-dir=$common writable=yes"
+        # A hook runs outside the agent's sandbox, so this probe just measured
+        # the hook's own privileges. A live session was handed writable=yes and
+        # then had its write to .git/info/exclude denied -- it noticed and
+        # worked around it, which is not something to rely on twice.
+        [[ $ARG_MEASURED_FROM != hook ]] ||
+            line+=" measured-by=hook note=\"probed outside your sandbox, so this is the hook's access and not yours; a denial when you write is authoritative and worth re-probing\""
     else
         # Measured, not guessed: a workspace-scoped sandbox mounts <repo>/.git
         # READ-ONLY on purpose, so every commit, every worktree add, and even
@@ -416,6 +437,14 @@ probe_sandbox() {
     local note=""
     if [[ $sandboxed == yes ]]; then
         note=' note="escalate git writes and forge calls; only the workspace is writable"'
+    fi
+    if [[ $ARG_MEASURED_FROM == hook ]]; then
+        # active/profile/network are read from CODEX_* variables that are set in
+        # the AGENT's shell. A hook does not have them, so from here every
+        # session looks unsandboxed regardless of what it actually is. Say so
+        # rather than emitting a confident "active=no".
+        [[ $sandboxed == yes ]] || sandboxed=unknown
+        note=' measured-by=hook note="probed outside your sandbox; treat this as the floor, not the ceiling, and believe a denial over this line"'
     fi
     emit "sandbox= active=$sandboxed profile=$profile network=$network home-writable=$(dir_writable_word "${HOME:-}")$note"
 }

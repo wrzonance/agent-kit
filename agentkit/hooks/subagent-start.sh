@@ -46,7 +46,9 @@ if [[ -n $contract ]]; then
 fi
 
 context=''
-[[ -z $contract ]] || context="Environment contract inherited from the orchestrator (do not re-probe):
+[[ -z $contract ]] || context="Environment contract inherited from the orchestrator (do not
+re-probe, EXCEPT any line marked measured-by=hook -- those were probed outside
+your sandbox, so a denial you hit yourself overrides them):
 $contract"
 
 # A worker gets the tooling contract too, and this is the ONLY way it can. It

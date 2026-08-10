@@ -71,6 +71,23 @@ assert_contains "$ctx" 'README' 'and where to read more'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_contains "$ctx" 'plugins/cache' 'and it teaches the resolver, not a fixed path'
 
+# --- what "do not re-probe" may not cover ----------------------------------
+# The contract is announced as established fact, and for most of it that is
+# right: the repo slug and the CA bundle do not change because a sandbox is in
+# the way. The sandbox lines are different -- a hook probes them from outside
+# the agent's sandbox, so it can hand over writable=yes to a session whose very
+# next write is denied. That happened. Blanket "do not re-probe" is the
+# instruction that makes it stick.
+onb=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$onb/.agent/config.env"
+printf 'repo=example-org/example-repo\nsandbox= active=no measured-by=hook\n%s\n' \
+    "$HARNESS_LINE" > "$onb/.agent/env-contract.txt"
+onb_ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' \
+    <<< "$(session_input "$onb" | "$hooks/session-start.sh" 2>/dev/null)")
+assert_contains "$onb_ctx" 'do not re-probe' 'the contract is still established fact'
+assert_contains "$onb_ctx" 'measured-by=hook' 'except where it says who measured it'
+assert_contains "$onb_ctx" 'overrides them' 'and a denial you hit yourself wins'
+
 # The notice must reach the PERSON, not only the model. Handed it and asked to
 # run ls, a live agent ran ls and said nothing about it -- a reasonable reading
 # of context that is not addressed to the user. systemMessage is the channel the
