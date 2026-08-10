@@ -24,6 +24,7 @@
 # Requires: bash >= 4.2, gh (authenticated), jq >= 1.6, GNU coreutils.
 
 set -euo pipefail
+umask 077
 
 readonly PROGNAME=${0##*/}
 readonly CR_RE='coderabbit'
@@ -64,7 +65,8 @@ Options:
                          DIR/pr_N_{reviews,comments,issue_comments,threads,
                          code_quality_comments}.json
   --wait-ci              Poll until checks settle, then print the digest.
-  --tmpdir DIR           Where --full writes artifacts (default: $OUT_DIR).
+  --tmpdir DIR           Private 0700 directory where --full writes artifacts.
+                         A new directory is created when absent; shared /tmp is rejected.
   --rounds N             --wait-ci rounds, 1-60 (default: $ROUNDS).
   --interval SECONDS     --wait-ci seconds between rounds, 1-3600 (default: $INTERVAL).
   -h, --help             Show this help.
@@ -93,6 +95,18 @@ note() {
 cleanup() {
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
     return 0
+}
+
+ensure_private_output_dir() {
+    if [[ ! -e $OUT_DIR && ! -L $OUT_DIR ]]; then
+        mkdir -m 700 -- "$OUT_DIR" || die "could not create private --tmpdir: $OUT_DIR"
+    fi
+    [[ -d $OUT_DIR && ! -L $OUT_DIR ]] ||
+        die "--tmpdir must be an existing directory, not a symlink: $OUT_DIR"
+    local mode
+    mode=$(stat -c %a -- "$OUT_DIR") || die "could not inspect --tmpdir: $OUT_DIR"
+    [[ $mode == 700 ]] || die "--tmpdir must have mode 0700: $OUT_DIR"
+    [[ -O $OUT_DIR ]] || die "--tmpdir is not owned by this user: $OUT_DIR"
 }
 
 require_value() {
@@ -329,23 +343,26 @@ wait_for_ci() {
 # --- report ------------------------------------------------------------------
 
 save_artifacts() {
-    mkdir -p -- "$OUT_DIR" || die "could not create --tmpdir: $OUT_DIR"
-    [[ -w $OUT_DIR ]] || die "--tmpdir is not writable: $OUT_DIR"
     local name target
     for name in reviews comments issue_comments threads code_quality_comments; do
         target=$OUT_DIR/pr_${PR}_${name}.json
-        # These names are deliberately predictable -- later steps and parallel loop
-        # agents read them by path. In a shared /tmp that also makes them a symlink
-        # target, so never write through an existing link, and never overwrite a
-        # file this user does not own. Payloads carry private review content.
-        if [[ -L $target ]]; then
-            rm -f -- "$target" || die "could not replace symlink at $target"
-        elif [[ -e $target && ! -O $target ]]; then
-            die "refusing to overwrite $target (not owned by this user)"
+        [[ ! -e $target && ! -L $target ]] ||
+            die "refusing to overwrite existing artifact: $target"
+        local staged
+        staged=$(mktemp "$OUT_DIR/.review-artifact.XXXXXXXXXX") ||
+            die "could not create artifact exclusively in $OUT_DIR"
+        if ! cp -- "$WORK_DIR/$name.json" "$staged"; then
+            rm -f -- "$staged"
+            die "could not stage $target"
         fi
-        rm -f -- "$target"
-        (umask 077 && cp -- "$WORK_DIR/$name.json" "$target") ||
-            die "could not write $target"
+        if ! mv -n -- "$staged" "$target"; then
+            rm -f -- "$staged"
+            die "could not publish artifact atomically: $target"
+        fi
+        [[ ! -e $staged ]] || {
+            rm -f -- "$staged"
+            die "artifact appeared during atomic publication: $target"
+        }
     done
     return 0
 }
@@ -408,7 +425,9 @@ main() {
     parse_args "$@"
     validate_args
     resolve_repo
+    ((WANT_FULL)) && ensure_private_output_dir
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-pr-state.XXXXXX") || die "could not create a work directory"
+    chmod 700 -- "$WORK_DIR" || die "could not secure work directory: $WORK_DIR"
     trap cleanup EXIT
     if ((WANT_WAIT)); then
         wait_for_ci

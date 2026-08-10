@@ -38,6 +38,7 @@
 # Requires: bash >= 4.2, codex CLI, jq, GNU coreutils.
 
 set -euo pipefail
+umask 077
 
 readonly PROGNAME=${0##*/}
 readonly WARN_DIFF_BYTES=262144   # 256 KiB — advise splitting beyond this
@@ -76,7 +77,8 @@ Required:
                              review: review the diff at --diff.
   --model <model>            Model for the review (e.g. gpt-5.6-terra).
   --transcript <path>        Where to write the raw JSONL event stream.
-                             Truncated on start; parent dirs are created.
+                             Must be a fresh path in an existing 0700 directory;
+                             created exclusively with mode 0600.
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
@@ -131,6 +133,27 @@ cleanup() {
     fi
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
     return 0
+}
+
+# Review transcripts contain the complete private diff and must never be placed
+# in a shared temporary directory. The caller creates one 0700 run directory and
+# passes a fresh path inside it. Refuse anything weaker before invoking Codex.
+prepare_transcript() {
+    local parent mode
+    parent=$(dirname -- "$TRANSCRIPT_PATH")
+    [[ -d $parent && ! -L $parent ]] ||
+        die "Transcript parent must be an existing private directory: $parent"
+    mode=$(stat -c %a -- "$parent") || die "Cannot inspect transcript parent: $parent"
+    [[ $mode == 700 ]] || die "Transcript parent must have mode 0700: $parent"
+    [[ -O $parent ]] || die "Transcript parent is not owned by this user: $parent"
+    [[ ! -e $TRANSCRIPT_PATH && ! -L $TRANSCRIPT_PATH ]] ||
+        die "Refusing to overwrite an existing transcript path: $TRANSCRIPT_PATH"
+    # Bash noclobber maps this create to an exclusive open, so a pre-existing
+    # symlink cannot redirect the write. The private parent removes the remaining
+    # same-directory race from untrusted local users.
+    (set -o noclobber; : >"$TRANSCRIPT_PATH") ||
+        die "Cannot create transcript exclusively: $TRANSCRIPT_PATH"
+    chmod 600 -- "$TRANSCRIPT_PATH" || die "Cannot secure transcript: $TRANSCRIPT_PATH"
 }
 
 require_value() {
@@ -340,7 +363,7 @@ run_codex() {
 
     local status=0
     "$CODEX_RESOLVED" "${args[@]}" \
-        <"$input_file" >"$TRANSCRIPT_PATH" 2>"$stderr_file" &
+        <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
     wait "$CODEX_PID" || status=$?
     CODEX_PID=""
@@ -388,6 +411,7 @@ main() {
     validate_args
 
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-adversarial-XXXXXXXXXX")
+    chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
     trap cleanup EXIT
     trap 'exit 130' INT TERM
     local isolation_dir=$WORK_DIR/cwd
@@ -397,12 +421,8 @@ main() {
     local final_file=$WORK_DIR/final.json
     mkdir -p -- "$isolation_dir"
 
+    prepare_transcript
     preflight
-
-    local transcript_dir
-    transcript_dir=$(dirname -- "$TRANSCRIPT_PATH")
-    mkdir -p -- "$transcript_dir" || die "Cannot create transcript directory: $transcript_dir"
-    : >"$TRANSCRIPT_PATH" || die "Cannot write transcript: $TRANSCRIPT_PATH"
 
     write_review_input "$input_file"
     verdict_schema >"$schema_file"
