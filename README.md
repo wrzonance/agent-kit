@@ -24,9 +24,8 @@ else reads them instead of guessing.
 
 ## Install
 
-```bash
-git clone <this repo> ~/github/agent-kit
-```
+Clone this repository anywhere; the path below is only an example. Both harnesses
+install it from a local directory — there is no registry to fetch from.
 
 **Codex CLI:**
 
@@ -72,7 +71,7 @@ To do it by hand instead, run this once inside the repository:
 cd /path/to/your/repo
 
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" \
-    -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 
 "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # look first
 "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
@@ -136,9 +135,18 @@ A read-only `.git` is the only thing standing between an agent and the git
 git operations, persist after the session, and run as **you** rather than as the
 agent.
 
-agentkit refuses all of those at command level, every time, with no override, so
-the protection is not simply removed. But it moves from the filesystem to
-pattern matching, and a pattern can be evaded in ways a read-only mount cannot.
+agentkit refuses those at command level, every time, with no override. Treat
+that as a speed bump, not a replacement. The protection moves from the
+filesystem to pattern matching, and **the patterns have been evaded in review**:
+an external audit found that `git push origin +main`, `git clean --force -d`,
+`git branch --delete --force main` and `rm --recursive --force /` all passed
+while their short-option spellings were refused. Those four are fixed and
+regression-tested, but they were found by reading git's man pages, not by
+anything clever — assume more exist.
+
+A read-only mount cannot be evaded by spelling. A pattern can. If you do not
+need git plumbing to work unattended, leave `.git` read-only and approve the
+occasional write.
 
 **Scope it to one repository's `.git`.** A parent directory like `~/github` hands
 every repository under it to any session, and nothing here is repo-aware enough
@@ -205,10 +213,18 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-Eleven gates and eight suites — shellcheck on shipped and test scripts, `bash -n`,
+Twelve gates and eleven suites — shellcheck on shipped and test scripts, `bash -n`,
 a bash 5.2 compatibility check, every fenced code block in the skill markdown,
-ecosystem- harness- and org-neutrality, plus ~350 assertions. It is the only
-gate; if it is green, the tree is good.
+ecosystem- harness- and org-neutrality, then the unit suites. The suite prints
+its own totals; a gate checks that the counts here still match, because they
+drifted once and a README that overstates its coverage is worse than one that
+omits it.
+
+**Green does not mean "the tree is good"** — it used to say that, and an external
+review then found twenty-two defects through it, several of them in scripts with
+no behavioural suite at all (`worktree-commit.sh`, `gh-pr-state.sh`, the
+adversarial-review helpers, `ci-gap.sh`). Green means the gates that exist
+passed. See `docs/` for the standing review findings.
 
 ---
 

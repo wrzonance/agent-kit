@@ -12,7 +12,7 @@
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
 readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
+    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
   [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
@@ -52,6 +52,28 @@ guard_resolve_roots() {
         fi
     done < <(grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+[^[:space:];&|]+|-C[[:space:]]+[^[:space:];&|]+' \
         <<< "$command_line" 2> /dev/null | sed -E 's/.*(cd|-C)[[:space:]]+//' || true)
+}
+
+# Is this cached contract OURS, or did the repository supply it?
+#
+# The contract is read straight into model context and announced as established
+# fact that the agent must not re-probe. So whatever can write this file can put
+# text in an agent's head. A hostile repository does not need an exploit for
+# that -- it only has to TRACK .agent/env-contract.txt, and cloning and opening
+# the repository is enough. An external review found this reachable and rated it
+# the single critical defect in the tree.
+#
+# Three ways it is not ours, each of which alone is disqualifying:
+#   tracked  -- it arrived with the checkout; our preflight never commits it
+#   symlink  -- it can name .git/config, a key file, anything readable
+#   foreign  -- another user owns it, so another user chooses its contents
+#
+# Rejecting costs one preflight run. Accepting costs the session.
+guard_contract_is_ours() {
+    local file=$1 root=${2:-}
+    [[ -n $file && ! -L $file && -f $file && -O $file ]] || return 1
+    [[ -n $root ]] || return 0
+    ! git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1
 }
 
 # True when ANY candidate repository carries the file. A guard keyed to a
@@ -185,8 +207,40 @@ guard_strip_git_globals() {
 #
 # Kept deliberately short. A long list of "risky" commands trains an agent to
 # treat denials as noise, which is how the one that mattered gets worked around.
+# `git clean --force -d` and `git clean -fd` do identical damage, and only the
+# second was refused. So did `git push origin +main`, `git branch --delete
+# --force main`, and `rm --recursive --force /`. None of that is obfuscation --
+# it is git's own documented spelling, and an external review found all four by
+# reading the man pages.
+#
+# That matters more than an ordinary miss, because the README told operators to
+# hand over a writable .git on the strength of these patterns refusing this
+# class "every time, with no override". Normalising the long forms first is what
+# lets each rule state its intent once instead of enumerating spellings.
+guard_normalize_flags() {
+    # Longest first: --force-with-lease contains --force.
+    sed -E 's/--force-with-lease(=[^[:space:]]*)?/-f/g
+            s/--force/-f/g
+            s/--recursive/-r/g
+            s/--delete/-d/g' <<< "$1" 2> /dev/null || printf '%s' "$1"
+}
+
+# Are all of these short flags present, however they are arranged -- clustered
+# (-rf), separate (-r -f), or long (--recursive --force, once normalised)?
+# Enumerating arrangements in a regex is where the original rules went wrong.
+guard_has_short_flags() {
+    local cmd=$1 want letters
+    shift
+    letters=$(tr -s '[:space:]' '\n' <<< "$cmd" 2> /dev/null |
+        grep -E '^-[a-zA-Z]+$' | tr -d '\n-' || true)
+    for want in "$@"; do
+        [[ $letters == *"$want"* ]] || return 1
+    done
+    return 0
+}
+
 guard_destructive_reason() {
-    local cmd=$1 stripped flattened
+    local cmd=$1 stripped flattened normalized
 
     # A flag hidden inside a substitution reads as ordinary text to every pattern
     # below: `git push $(echo --force)` matched nothing. Flattening the
@@ -210,9 +264,16 @@ guard_destructive_reason() {
     fi
 
     stripped=$(guard_strip_git_globals "$cmd")
+    normalized=$(guard_normalize_flags "$stripped")
 
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]+(--force|--force-with-lease|-f)([[:space:]]|$)' <<< "$stripped"; then
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]+(--force|--force-with-lease|-f)([[:space:]]|$)' <<< "$normalized"; then
         printf 'force-pushing rewrites history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
+        return 0
+    fi
+    # A leading + on a refspec IS --force, for that ref only, and carries no flag
+    # for a flag-shaped pattern to find.
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]\+[^[:space:];&|]' <<< "$stripped"; then
+        printf 'a + on the refspec force-pushes that ref, rewriting history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
         return 0
     fi
     # Intervening tokens are tolerated, as in the push rule: after a substitution
@@ -222,11 +283,15 @@ guard_destructive_reason() {
         printf 'reset --hard discards uncommitted work irrecoverably. Use git stash, or commit first.'
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+clean([[:space:]][^;&|]*)?[[:space:]]-[a-zA-Z]*f' <<< "$stripped"; then
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+clean([[:space:]]|$)' <<< "$normalized" &&
+        guard_has_short_flags "$normalized" f; then
         printf 'git clean -f deletes untracked files, including .agent/ working state. Remove named paths instead.'
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+branch[[:space:]]+-D[[:space:]]+(main|master|trunk)([[:space:]]|$)' <<< "$stripped"; then
+    # -D, or -d with -f, or the long spellings of either -- all the same deletion.
+    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+branch([[:space:]][^;&|]*)?[[:space:]](main|master|trunk)([[:space:]]|$)' <<< "$normalized" &&
+        { grep -qE '(^|[[:space:]])-[a-zA-Z]*D' <<< "$normalized" ||
+            guard_has_short_flags "$normalized" d f; }; then
         printf 'deleting the trunk branch is not recoverable from this clone. If this is really intended, the user should do it.'
         return 0
     fi
@@ -270,7 +335,11 @@ guard_destructive_reason() {
         printf '--no-verify skips the checks the repository installed on purpose. Fix what they are reporting.'
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])[a-zA-Z]*[[:space:]]+(/|~|\$HOME)([[:space:]]|/?$)' <<< "$cmd"; then
+    # Flags in any arrangement, then the target. -R is the same as -r here, so
+    # the membership test is done against a lowercased flag set.
+    if grep -qE '(^|[;&|[:space:]])rm([[:space:]]|$)' <<< "$normalized" &&
+        guard_has_short_flags "${normalized//R/r}" r f &&
+        grep -qE '[[:space:]](/|~|\$HOME)([[:space:]]|/?$)' <<< "$normalized"; then
         printf 'a recursive force-remove of the home directory or filesystem root is never what was meant.'
         return 0
     fi

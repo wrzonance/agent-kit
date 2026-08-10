@@ -28,7 +28,7 @@ nothing to enforce and `--cmd` resolves nothing.
 
 ```bash
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 # shellcheck disable=SC2034  # used by every later block; env does not
 # persist between tool calls, so each block re-derives it.

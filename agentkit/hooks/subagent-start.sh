@@ -22,7 +22,13 @@ cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || printf '%s' "$cwd")
 contract_file="$root/.agent/env-contract.txt"
 contract=''
-[[ ! -r $contract_file ]] || contract=$(cat -- "$contract_file" 2> /dev/null || true)
+# Same provenance gate as SessionStart, and a worker needs it more: it inherits
+# this as authoritative context with no session history to weigh it against, and
+# it is the agent least able to notice that its instructions arrived from the
+# repository it is working on.
+if [[ -r $contract_file ]] && guard_contract_is_ours "$contract_file" "$root"; then
+    contract=$(cat -- "$contract_file" 2> /dev/null || true)
+fi
 
 # A contract written by the OTHER CLI names the wrong agent, and a worker has no
 # way to notice. Dropping it costs the worker its inherited context; serving it
@@ -32,7 +38,9 @@ if [[ -n $contract ]]; then
     # the hook's exit status (141) -- a hook that must never exit non-zero.
     cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' <<< "$contract")
     current=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
-    if [[ -n $cached && -n $current && $cached != "$current" ]]; then
+    # Fail closed: our preflight always writes a harness= line, so a contract
+    # without one did not come from it.
+    if [[ -z $cached || -z $current || $cached != "$current" ]]; then
         contract=''
     fi
 fi

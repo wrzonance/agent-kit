@@ -158,10 +158,12 @@ Risk, on the writable_roots setting specifically:
   plumbing -- update-ref, reflog expire, gc --prune, filter-branch -- and
   .git/config keys that execute commands during ordinary git operations.
 
-  agentkit refuses all of those at command level, every time, with no
-  override, so the protection is not simply removed. But it is now enforced
-  by pattern matching rather than by the filesystem, and a pattern can be
-  evaded in ways a read-only mount cannot.
+  agentkit refuses those at command level, with no override. Treat it as a
+  speed bump. The protection moves from the filesystem to pattern matching,
+  and the patterns HAVE been evaded: an external audit found four ordinary
+  long-option spellings that passed while their short forms were refused.
+  Those are fixed; assume more exist. Spelling defeats a pattern and cannot
+  defeat a read-only mount.
 
   Scope it to one repository's .git. A parent directory hands every repo
   under it to any session, and nothing here is repo-aware enough to stop that.

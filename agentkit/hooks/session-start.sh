@@ -34,7 +34,7 @@ The script alone, if the user would rather do it by hand (safe to inspect first
 with --dry-run; it writes only .agent/ and .gitignore):
 
   agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort | tail -1)
+    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
   [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
   "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # inspect
   "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
@@ -78,7 +78,11 @@ harness_matches() {
     local cached current
     cached=$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' <<< "$1")
     current=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
-    [[ -n $cached && -n $current ]] || return 0
+    # Fail CLOSED. This returned "match" when the cached contract carried no
+    # harness= line at all, so a file that never came from our preflight -- which
+    # always writes one -- passed the only check standing between a repository
+    # and the model's context. Regenerating costs one preflight run.
+    [[ -n $cached && -n $current ]] || return 1
     [[ $cached == "$current" ]]
 }
 
@@ -99,6 +103,7 @@ contract=''
 # Reuse a recent contract: the preflight probes gh, and this fires every session.
 # Compaction is the exception -- it is precisely when this context was lost.
 if [[ $source_kind != compact && -r $contract_file ]] &&
+    guard_contract_is_ours "$contract_file" "$root" &&
     [[ -n $(find "$contract_file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]]; then
     contract=$(cat -- "$contract_file" 2> /dev/null || true)
 fi
@@ -189,7 +194,7 @@ if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
     human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
 board, triage and commit guards are inert. Ask the agent to onboard it -- it has an onboard-repo skill that also fills in
 the verify commands -- or run:
-  \"\$(find \"\${CODEX_HOME:-\$HOME/.codex}/plugins/cache\" \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/plugins/cache\" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)/.shared/scripts/bootstrap-repo.sh\""
+  \"\$(find \"\${CODEX_HOME:-\$HOME/.codex}/plugins/cache\" \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/plugins/cache\" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)/.shared/scripts/bootstrap-repo.sh\""
 elif [[ $in_repo -eq 0 ]]; then
     human='agentkit: this session did not start inside a git repository, so repository-scoped
 guards and the end-of-turn verification check are inert.'

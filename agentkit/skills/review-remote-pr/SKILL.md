@@ -255,7 +255,7 @@ The worker returns the six-stage status, commit SHA(s), changed paths, RED/GREEN
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 [ -x "$resolver" ] && eval "$("$resolver" --export)"
@@ -349,7 +349,7 @@ else
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
   resolver="$agentkit/.shared/scripts/repo-config.sh"
   [ -x "$resolver" ] && eval "$("$resolver" --export)"
@@ -390,7 +390,7 @@ block is the environment contract for the entire run (see *Sandbox and environme
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/.shared/scripts/agent-preflight.sh" \
   --repo "$REPO" --worktree "$PR_WORKTREE"
@@ -470,7 +470,7 @@ surfaces as exit `2` with nothing staged instead of a half-applied index:
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 resolved=src/example.ts   # repeat for each resolved path
 
@@ -523,7 +523,7 @@ instead of dumping JSON into your context:
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir /tmp
@@ -729,7 +729,7 @@ structured output, verified isolation, the initialized model in non-empty `model
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 tmp_dir=${TMPDIR:-/tmp}
@@ -761,7 +761,7 @@ Only on `probe_rc` `0`, run the review pass:
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 helper="$agentkit/review-remote-pr/scripts/claude-adversarial-review.sh"
 tmp_dir=${TMPDIR:-/tmp}
@@ -846,7 +846,7 @@ tmp_dir=${TMPDIR:-/tmp}
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 verdict_path="$tmp_dir/codex_pr_${PR}.result.json"
@@ -951,7 +951,7 @@ Then verify independently, before the single cycle push. Route every verificatio
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 
@@ -997,7 +997,7 @@ After pushing, wait in **bounded rounds** — never one unbounded wait (a shell 
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
@@ -1069,7 +1069,7 @@ it; substitute varying values with `printf` arguments, never by unquoting the he
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 comment_id=1234567890                       # from /tmp/pr_${PR}_comments.json
 short_sha=$(git rev-parse --short HEAD)
@@ -1108,7 +1108,7 @@ A `gh pr comment` floats in the conversation, disconnected from the code — Cod
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 nitpick_path=src/example.ts                 # from the nitpick body
 nitpick_line=42                             # must be inside the PR diff
@@ -1171,7 +1171,7 @@ hand-rolled GraphQL re-query here:
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir /tmp
@@ -1407,7 +1407,7 @@ matching option:
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
 agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-    -path '*/agentkit/*/skills' 2>/dev/null | sort | tail -1)
+    -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
 [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 board_helper="$agentkit/parallel-issues/scripts/move-github-project-item.sh"
 

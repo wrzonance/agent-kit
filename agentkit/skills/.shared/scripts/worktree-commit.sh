@@ -179,9 +179,27 @@ require_writable_git_dirs() {
 }
 
 refuse_trunk() {
-    local branch
+    local branch declared root
     # symbolic-ref works on an unborn branch too, and stays quiet when detached.
     branch="$(git symbolic-ref --quiet --short HEAD || true)"
+    [[ -n "$branch" ]] || return 0
+
+    # main|master|trunk is a DEFAULT, not the answer. The repository states its
+    # own trunk in AGENT_BASE_BRANCH, and a repository whose trunk is `develop`
+    # was protected by neither list -- so the one branch that most needed this
+    # guard was the one branch it ignored.
+    #
+    # `q` after the first match rather than `| head -1`: closing a pipe early
+    # makes sed exit on SIGPIPE, and under `set -o pipefail` that becomes this
+    # script's exit status.
+    root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+    declared="$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH=[[:space:]]*//p
+                        /^[[:space:]]*AGENT_BASE_BRANCH=/q' \
+        "$root/.agent/config.env" 2>/dev/null | tr -d '\r')"
+    if [[ -n "$declared" && "$branch" == "$declared" ]]; then
+        die 1 "refusing to commit to '$branch', this repository's declared base branch -- create a feature branch first"
+    fi
+
     case "$branch" in
         main|master|trunk)
             die 1 "refusing to commit to trunk branch '$branch' -- create a feature branch first"
