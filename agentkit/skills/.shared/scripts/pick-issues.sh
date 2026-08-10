@@ -102,8 +102,10 @@ if [[ -x "$script_dir/repo-config.sh" ]]; then
         --get AGENT_REPO_SLUG 2> /dev/null || true)
 fi
 if [[ -z $repository ]]; then
-    repository=$(cd -- "$repo_root" &&
-        gh repo view --json nameWithOwner -q .nameWithOwner 2> /dev/null || true)
+    repository=$(
+        cd -- "$repo_root" || exit 0
+        gh repo view --json nameWithOwner -q .nameWithOwner 2> /dev/null || true
+    )
 fi
 [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
     die_blocked 'cannot resolve the repository for a selection'
