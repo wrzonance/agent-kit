@@ -64,6 +64,49 @@ assert_contains "$out" 'refusing unapproved repository command' \
 assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
     'a changed executable is not run under an old approval'
 
+# Approval persistence must fail loudly rather than claiming success when the
+# temporary record cannot be written or atomically replaced.
+repo=$(make_repo)
+printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
+trust_id=$(printf '%s' "$repo\ntest" | sha256sum | awk '{print $1}')
+write_fail_runner="$tmp/write-fail-runner.sh"
+# shellcheck disable=SC2016  # These expressions belong to the generated runner.
+printf '%s\n' \
+    '#!/bin/sh' \
+    'id=$1' \
+    'trust=$2' \
+    'run=$3' \
+    'mkdir -p "$trust/$id.trust.$$"' \
+    'exec "$run" --approve --cmd test' > "$write_fail_runner"
+chmod +x "$write_fail_runner"
+rc=0
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$write_fail_runner" "$trust_id" "$trust_root" "$real_run_sh" 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a failed temporary trust-file write exits nonzero'
+assert_contains "$out" 'cannot write temporary trust file' \
+    'a failed temporary trust-file write explains the persistence failure'
+assert_not_contains "$out" 'approved test' \
+    'a failed temporary trust-file write never reports approval'
+
+mv_fail_bin="$tmp/mv-fail-bin"
+mkdir -p "$mv_fail_bin"
+printf '%s\n' '#!/bin/sh' 'exit 42' > "$mv_fail_bin/mv"
+chmod +x "$mv_fail_bin/mv"
+rc=0
+out=$(cd "$repo" && PATH="$mv_fail_bin:$PATH" \
+    AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a failed atomic trust-file replacement exits nonzero'
+assert_contains "$out" 'cannot atomically replace trust file' \
+    'a failed atomic trust-file replacement explains the persistence failure'
+assert_not_contains "$out" 'approved test' \
+    'a failed atomic trust-file replacement never reports approval'
+
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test) \
+    > /dev/null 2>&1
+trust_file="$trust_root/$trust_id.trust"
+assert_eq '600' "$(stat -c '%a' "$trust_file")" \
+    'successful trust persistence keeps the approval record owner-only'
+
 # --- declared command wins -------------------------------------------------
 repo=$(make_repo)
 printf 'AGENT_CMD_TEST=echo declared-test-ran\n' > "$repo/.agent/config.env"

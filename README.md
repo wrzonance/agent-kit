@@ -107,9 +107,10 @@ The declaration is not execution consent. `agent-run.sh --cmd NAME` records no
 trust on its first invocation: review the command and run
 `agent-run.sh --approve --cmd NAME` once. Approval is kept in an owner-only
 state directory outside the checkout. The record fingerprints `config.env`,
-repository-backed argv paths, and nearby build manifests, so changing a
-declaration or its direct payload requires fresh approval while ordinary source
-edits remain runnable. Literal commands passed after `--` are caller-supplied
+repository-backed argv paths, and nearby build manifests, so a changed
+declaration or repository-backed input cannot inherit an old approval while
+ordinary source edits remain runnable. This execution-trust check does not
+establish human review. Literal commands passed after `--` are caller-supplied
 and are not covered by this repository-command approval.
 
 ---

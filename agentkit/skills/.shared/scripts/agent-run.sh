@@ -653,9 +653,17 @@ trust_command() {
 
     if ((approve_cmd)); then
         temp=$trust_file.$$
-        printf '%s\n' "$current" > "$temp"
-        chmod 600 -- "$temp"
-        mv -f -- "$temp" "$trust_file"
+        if ! printf '%s\n' "$current" > "$temp" 2>/dev/null; then
+            die "cannot write temporary trust file: $temp"
+        fi
+        if ! chmod 600 -- "$temp" 2>/dev/null; then
+            rm -f -- "$temp" 2>/dev/null || true
+            die "cannot set private permissions on temporary trust file: $temp"
+        fi
+        if ! mv -f -- "$temp" "$trust_file" 2>/dev/null; then
+            rm -f -- "$temp" 2>/dev/null || true
+            die "cannot atomically replace trust file: $trust_file"
+        fi
         printf 'agent-run: approved %s for this repository state\n' "$cmd_name" >&2
         exit 0
     fi
