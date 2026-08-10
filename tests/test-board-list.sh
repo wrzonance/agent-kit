@@ -142,6 +142,31 @@ assert_contains "$out" '#101  item 1' 'asking for Done lists Done'
 out=$(run_board "$bin" --all)
 assert_contains "$out" '#101  item 1' '--all lists it too'
 
+# A plain listing already has every fact it needs in board.json and its one
+# project-item query. It must not spend a second request discovering the repo.
+rm "$repo/.agent/config.env"
+listing_bin="$tmp/listing-bin"
+mkdir -p "$listing_bin"
+cat > "$listing_bin/gh" <<EOF
+#!/usr/bin/env bash
+if [[ \${1:-} == repo ]]; then
+    touch "$tmp/repo-view-called"
+    exit 1
+fi
+jq -n '{totalCount: 1, items: [
+  {status: "Ready", title: "listed item", content: {number: 300, type: "Issue"}}
+]}'
+EOF
+chmod +x "$listing_bin/gh"
+out=$(run_board "$listing_bin")
+assert_contains "$out" 'items=1 of=1' 'a plain listing needs no repository lookup'
+if [[ -e $tmp/repo-view-called ]]; then
+    listing_repo_view=called
+else
+    listing_repo_view=not-called
+fi
+assert_eq not-called "$listing_repo_view" 'a plain listing makes only its project-item call'
+
 # --- the environment cannot support the query -------------------------------
 bare="$tmp/norepo"
 mkdir -p "$bare"

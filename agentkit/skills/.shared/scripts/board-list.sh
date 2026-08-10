@@ -112,23 +112,6 @@ owner=$(jq -r '.owner // empty' "$board" 2> /dev/null || true)
 [[ -n $number && -n $owner ]] ||
     die_blocked '.agent/board.json declares no project number or owner'
 
-repository=''
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-resolver="$script_dir/repo-config.sh"
-if [[ -x $resolver ]]; then
-    repository=$("$resolver" \
-        --repo-root "$repo_root" --get AGENT_REPO_SLUG 2>/dev/null || true)
-fi
-if [[ -z $repository ]]; then
-    if ! repository=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner \
-        2>/dev/null); then
-        repository=''
-    fi
-fi
-[[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-    repository=''
-repository_lc=${repository,,}
-
 raw=$(gh project item-list "$number" --owner "$owner" --format json --limit "$ARG_LIMIT" 2>&1) ||
     die "gh project item-list failed: $(head -1 <<< "$raw")"
 
@@ -171,6 +154,22 @@ truncated=0
 # they disagree, and the natural response to answers that disagree is to ask
 # again. One call, one stable line, ends that.
 if [[ -n $ARG_ISSUE ]]; then
+    repository=''
+    script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    resolver="$script_dir/repo-config.sh"
+    if [[ -x $resolver ]]; then
+        repository=$("$resolver" \
+            --repo-root "$repo_root" --get AGENT_REPO_SLUG 2>/dev/null || true)
+    fi
+    if [[ -z $repository ]]; then
+        if ! repository=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner \
+            2>/dev/null); then
+            repository=''
+        fi
+    fi
+    [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+        repository=''
+    repository_lc=${repository,,}
     [[ -n $repository_lc ]] ||
         die_blocked 'cannot resolve the repository for an issue lookup'
     ((truncated == 0)) || printf 'warning: read %s of %s items; a miss below may be truncation, not absence\n' \
