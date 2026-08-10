@@ -115,14 +115,16 @@ hardcodes an ecosystem. If your repo drives everything through one dispatcher,
 point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 
 The declaration is not execution consent. `agent-run.sh --cmd NAME` records no
-trust on its first invocation: review the command and run
-`agent-run.sh --approve --cmd NAME` once. Approval is kept in an owner-only
-state directory outside the checkout. The record fingerprints `config.env`,
-repository-backed argv paths, and nearby build manifests, so a changed
-declaration or repository-backed input cannot inherit an old approval while
-ordinary source edits remain runnable. This execution-trust check does not
-establish human review. Literal commands passed after `--` are caller-supplied
-and are not covered by this repository-command approval.
+trust on its first invocation. Approval is deliberately human-only: the
+PreToolUse hook denies an agent attempt to invoke `--approve`, so a human must
+review the command and clear its approval outside the agent session. Approval
+is kept in an owner-only state directory outside the checkout. The record
+fingerprints `config.env`, repository-backed argv paths, and nearby build
+manifests, so a changed declaration or repository-backed input cannot inherit
+an old approval while ordinary source edits remain runnable. This
+execution-trust check does not establish human review. Literal commands passed
+after `--` are caller-supplied and are not covered by this repository-command
+approval.
 
 ---
 
@@ -188,7 +190,7 @@ cheap next to that downside.
 |---|---|
 | `SessionStart` | Probes the environment once and hands the agent a contract — repo, branch, base, sandbox state, CA bundle, cache roots — plus the list of helpers that exist here. With no `.agent/config.env` it prints how to onboard instead |
 | `SubagentStart` | Injects both into every spawned worker. This is the only channel that reaches one |
-| `PreToolUse` | Refuses work-destroying commands outright; refuses *once* for a bare helper name or an edit to a file that gates other checks |
+| `PreToolUse` | Refuses work-destroying commands and repository approval requests outright; refuses *once* for a bare helper name or an edit to a file that gates other checks |
 | `PostToolUse` | Teaches the cheaper command *after* the call returned real data |
 | `Stop` | Won't let a turn finish when a declared verify command hasn't covered the current changes |
 

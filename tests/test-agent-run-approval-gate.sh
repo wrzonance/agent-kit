@@ -10,6 +10,7 @@ source "$here/lib/assert.sh"
 
 hooks="$root/agentkit/hooks"
 run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
+readme="$root/README.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 export AGENT_TRUST_ROOT="$tmp/trust"
@@ -73,5 +74,11 @@ assert_contains "$out" 'refusing unapproved repository command' \
 assert_contains "$out" 'human' 'the wrapper says a human must clear approval'
 assert_not_contains "$out" '--approve --cmd verify' \
     'the wrapper refusal does not print the bypass command'
+
+readme_text=$(cat -- "$readme")
+assert_contains "$readme_text" 'Approval is deliberately human-only' \
+    'README documents human-only approval'
+assert_contains "$readme_text" 'PreToolUse hook denies an agent attempt' \
+    'README documents the enforcement boundary'
 
 finish
