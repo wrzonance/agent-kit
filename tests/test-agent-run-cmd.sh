@@ -80,6 +80,7 @@ assert_contains "$out" 'declared-wins' 'a declared command outranks the runner'
 # --- nothing declared -> usage error naming the key -----------------------
 repo=$(make_repo)
 : > "$repo/.agent/config.env"
+# shellcheck disable=SC2015  # the || true is the point: capture output, never fail
 err=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
 rc=0
 (cd "$repo" && "$run_sh" --cmd test > /dev/null 2>&1) || rc=$?

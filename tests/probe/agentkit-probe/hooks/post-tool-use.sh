@@ -16,7 +16,8 @@ readonly PROBE_TOKEN='QX7-MARMOSET-VELLUM-3391'
 
 # Reached only through the ERR trap below, which the linter cannot trace.
 # Removing it would drop the fail-open path.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2329,SC2317  # two codes for one false positive across
+# tool versions; the CI runner and this machine disagree on which
 emit_empty() { printf '{}\n'; exit 0; }
 trap 'emit_empty' ERR
 
