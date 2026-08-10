@@ -84,13 +84,15 @@ touch -d '20 seconds ago' "$repo/.agent/cache/stamp-verify"
 out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
 assert_eq block "$(verdict "$out")" 'a rename is not skipped'
 
-# stop_hook_active is a retry marker, not an attestation. A retry without a
-# successful verify remains blocked.
+# A first Stop without a successful verify blocks, while the harness retry
+# remains the loop guard for a genuinely failing command with no stamp.
 repo=$(make_repo)
 printf 'AGENT_CMD_VERIFY=true\n' > "$repo/.agent/config.env"
 printf changed > "$repo/changed.txt"
+out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
+assert_eq block "$(verdict "$out")" 'an unverified first Stop blocks'
 out=$(stop_input "$repo" true | "$hooks/stop.sh" 2>/dev/null)
-assert_eq block "$(verdict "$out")" 'an active retry without a stamp remains blocked'
+assert_eq allow "$(verdict "$out")" 'an active retry without a stamp terminates the loop'
 
 # A retry rechecks changes made after the successful verification stamp.
 repo=$(make_repo)
