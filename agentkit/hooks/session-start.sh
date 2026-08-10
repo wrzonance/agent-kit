@@ -11,15 +11,17 @@ trap 'emit_empty' ERR
 
 readonly CONTRACT_MAX_AGE_MINUTES=30
 
+self_dir=${BASH_SOURCE[0]%/*}
+[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+
 # Shown when a repository has no .agent/config.env. Without it every
 # evidence-gated guard stays inert and the skills fall back to probing, which
 # looks identical to the tooling being broken -- the failure mode is silence, so
 # the fix has to announce itself.
 #
-# Single-quoted deliberately: every $ below is literal text for the agent to read
-# and retype. Expanding it here would bake this machine's paths into the advice.
-# shellcheck disable=SC2016
-readonly ONBOARD_HINT='ACTION REQUIRED, before you do anything else: tell the user this repository is
+# The hook and skills are siblings in both the source and packaged layouts, so
+# this path is stable without asking the agent to rediscover the plugin cache.
+readonly ONBOARD_HINT="ACTION REQUIRED, before you do anything else: tell the user this repository is
 not onboarded, and offer to onboard it now. Do not silently continue -- the
 board, triage, and commit guards have no facts to act on and stay inert, which
 is indistinguishable from the tooling being broken.
@@ -33,11 +35,8 @@ rediscovering.
 The script alone, if the user would rather do it by hand (safe to inspect first
 with --dry-run; it writes only .agent/ and .gitignore):
 
-  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
-  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-  "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # inspect
-  "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
+  \"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\" --dry-run   # inspect
+  \"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\"             # then write
 
 It writes two files the repository is expected to commit:
   .agent/config.env   repo slug, trunk branch, board number, Status vocabulary
@@ -46,7 +45,7 @@ and the .gitignore rules that keep everything else under .agent/ out of history.
 
 Then declare this repository verify commands in .agent/config.env as
 AGENT_CMD_<NAME>=<command>. Skills invoke them by name, so none of them assume
-a toolchain. Consult the agentkit README for the full contract.'
+a toolchain. Consult the agentkit README for the full contract."
 
 # Shown when the session did not start inside a repository at all. Work can
 # still be directed at one from here, and the guards do follow a command that
@@ -65,8 +64,6 @@ If the work targets a repository, prefer starting the session inside it.'
 # so the helper is always ../skills/ from here. Located by parameter expansion
 # rather than readlink/dirname: a hook must still work on a PATH that resolves
 # nothing. The guard covers an invocation by bare name, where %/* strips nothing.
-self_dir=${BASH_SOURCE[0]%/*}
-[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
 # shellcheck source=lib/guard-lib.sh
 source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
 
@@ -261,7 +258,7 @@ if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
     human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
 board, triage and commit guards are inert. Ask the agent to onboard it -- it has an onboard-repo skill that also fills in
 the verify commands -- or run:
-  \"\$(find \"\${CODEX_HOME:-\$HOME/.codex}/plugins/cache\" \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/plugins/cache\" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)/.shared/scripts/bootstrap-repo.sh\""
+  \"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\""
 elif [[ $in_repo -eq 0 ]]; then
     human='agentkit: this session did not start inside a git repository, so repository-scoped
 guards and the end-of-turn verification check are inert.'
