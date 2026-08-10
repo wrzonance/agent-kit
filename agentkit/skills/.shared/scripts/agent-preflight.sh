@@ -19,7 +19,10 @@
 #   the origin URL, and the only writes are under <worktree>/.agent/.
 #
 # OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
-#   skills= repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= path= repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   The first record is `skills= path=/abs/skills-tree` -- the literal "skills=" key
+#   followed by a separate "path=" field; consumers parse the exact "skills= path="
+#   prefix, so the run-together form "skills=/abs/path" is incompatible.
 #   The same block is written to <worktree>/.agent/env-contract.txt unless suppressed.
 #
 set -euo pipefail
@@ -66,7 +69,7 @@ Options:
                      outside the agent sandbox and can only report its own.
   -h, --help         Print this help and exit 0.
 
-Prints one key per line: skills= repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
 Exit: 0 always, including when tools or facts are missing (they are reported as missing);
       2 only for invalid usage.
@@ -76,6 +79,8 @@ EOF
 note() { printf 'agent-preflight: %s\n' "$*" >&2; }
 emit() { OUT_LINES+=("$1"); }
 
+# Emits the record `skills= path=/abs/skills-tree`: "skills=" and "path=" are two
+# space-separated fields, never the run-together "skills=/abs/path" form.
 probe_skills_path() {
     local self_dir skills
     self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

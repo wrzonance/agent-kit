@@ -95,8 +95,9 @@ substitution as a `note:` line in its failure output.
 ### The environment contract
 
 **Run `.shared/scripts/agent-preflight.sh` exactly ONCE, in Step 0a, and treat its printed block as
-the environment contract for the whole run.** It prints exactly 12 lines, one `key=value` per line,
-in the fixed order `repo` / `branch` / `worktree` / `base` / `config` / `git` / `gh` / `sandbox` /
+the environment contract for the whole run.** It prints a `skills= path=ABSOLUTE_PATH` record
+first, then one `key=value` line per probe, in the fixed order `repo` / `branch` / `worktree` /
+`base` / `config` / `git` / `gh` / `sandbox` /
 `tls` / `caches` / `runners` / `harness` / `peer-cli`; diagnostics go to stderr. Read the block, carry it forward, and do **not**
 re-probe those facts later — re-running `gh auth status`, re-detecting the base branch, or
 re-testing writability is wasted turns. **Paste the block verbatim into any dispatched worker
@@ -265,16 +266,16 @@ The worker returns the six-stage status, commit SHA(s), changed paths, RED/GREEN
 # Re-derive these at the top of EVERY shell call: env does NOT persist between
 # tool calls, so nothing exported in an earlier call is still set here.
 # The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -366,16 +367,16 @@ else
   grep -Fxq "$worktree_root/" "$exclude_path" 2>/dev/null ||
     printf '%s\n' "$worktree_root/" >> "$exclude_path"
   # A repository may name its own worktree root; .worktrees/ is the default.
-  # Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -414,16 +415,16 @@ git status --short
 block is the environment contract for the entire run (see *Sandbox and environment*):
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -501,16 +502,16 @@ commit helper probes both git metadata directories before staging, so an unwrita
 surfaces as exit `2` with nothing staged instead of a half-applied index:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -523,7 +524,7 @@ resolved=src/example.ts   # repeat for each resolved path
 # contract rather than hardcoded: the same repository worked from the other
 # CLI must credit that CLI. Deliberately NOT exported -- a child process
 # derives its own trailer from its own harness, never inherits this one.
-AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' .agent/env-contract.txt)
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 "$agentkit/.shared/scripts/worktree-commit.sh" \
   --message 'fix(example): resolve merge conflicts with the base branch' \
@@ -588,16 +589,16 @@ every surface once, writes the durable artifacts the later steps read, and print
 instead of dumping JSON into your context:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -856,16 +857,16 @@ structured output, verified isolation, the initialized model in non-empty `model
 `--max-budget-usd 0.25` is ample.
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -914,16 +915,16 @@ esac
 Only on `probe_rc` `0`, run the review pass:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -988,16 +989,16 @@ servers or settings), `--ignore-rules` (no `AGENTS.md` discovery), and a throwaw
 directory, with the verdict constrained by `--output-schema`.
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -1105,16 +1106,16 @@ Diagnose the causal failure and define the accepted fix batch. Then run the **Im
 Then verify independently, before the single cycle push. Route every verification through `agent-run.sh` — it prepares caches, CA bundles and `PYTHONPATH` for that one command, so nothing has to be exported and nothing leaks between calls:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -1158,16 +1159,16 @@ Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough
 After pushing, wait in **bounded rounds** — never one unbounded wait (a shell call caps around ~10 min, and a stuck or approval-gated workflow would hang you forever). One call does the polling and the evaluation together:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -1237,16 +1238,16 @@ it; substitute varying values with `printf` arguments, never by unquoting the he
 
 **Reply to inline comments:**
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -1284,16 +1285,16 @@ edit a top-level conversation comment in place (that endpoint cannot edit an inl
 A `gh pr comment` floats in the conversation, disconnected from the code — CodeRabbit can't tie it to the change. Instead, open a **new review thread** anchored on the file the nitpick names, at the exact lines you changed (for declines: the lines the nitpick cites), referencing the commit and mentioning `@coderabbitai`:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -1355,16 +1356,16 @@ Quality comments all come back in one digest, so there is no separate `gh pr che
 hand-rolled GraphQL re-query here:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
@@ -1601,16 +1602,16 @@ per board, and no-ops cleanly (still exiting `0`) when there is no board, no `St
 matching option:
 
 ```bash
-# Locate the skill tree. Packaging MOVES it: standalone it sits at
-# $CODEX_HOME/skills, but installed as a plugin it sits under
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-# `find` matches the pattern itself rather than letting the shell glob: an
-# unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
-# commands through the login shell, which is zsh on many machines.
+# Resolve the skill tree from the environment contract at the repository
+# root; trust it only when it is an untracked regular file owned by this
+# user -- a tracked, symlinked, or foreign-owned contract could redirect
+# helper execution.
 agentkit=''
-if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
-    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2

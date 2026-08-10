@@ -28,7 +28,7 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 
 snippet=$(awk '
-    /^config_file="\$HOME\/\.codex\/config.toml"$/ { capture=1 }
+    index($0, "config_file=\"${CODEX_HOME:-$HOME/.codex}/config.toml\"") == 1 { capture=1 }
     capture && /^```$/ { exit }
     capture { print }
 ' "$skill")
@@ -37,14 +37,27 @@ configured_home="$tmp/configured"
 mkdir -p "$configured_home/.codex"
 printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 10' \
     > "$configured_home/.codex/config.toml"
-out=$(HOME="$configured_home" bash -c "$snippet" 2>/dev/null)
+out=$(env -u CODEX_HOME HOME="$configured_home" bash -c "$snippet" 2>/dev/null)
+status=$?
 assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
     'dispatch advertises the configured runtime cap'
+assert_eq '0' "$status" 'an advertised cap exits zero'
+
+codex_home="$tmp/codex-home"
+mkdir -p "$codex_home"
+printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 7' \
+    > "$codex_home/config.toml"
+out=$(CODEX_HOME="$codex_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
+    'a CODEX_HOME override is honored over $HOME/.codex'
 
 missing_home="$tmp/missing"
 mkdir -p "$missing_home"
-err=$(HOME="$missing_home" bash -c "$snippet" 2>&1 >/dev/null)
+err=$(env -u CODEX_HOME HOME="$missing_home" bash -c "$snippet" 2>&1 >/dev/null)
+status=$?
 assert_contains "$err" 'Unable to advertise concurrency' \
     'missing runtime config explains why the cap is unavailable'
+assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
+    'missing runtime config exits nonzero so dispatch stops'
 
 finish
