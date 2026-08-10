@@ -684,7 +684,31 @@ Two rules keep that true rather than accidental:
 
 ### External-service authorization
 
-The cross-harness review sends the PR diff to an external model-provider service. Invoking this skill on a repo the user owns is standing authorization for this cross-model review; for a repo the user does not own, confirm before piping its diff to an external model.
+A cross-harness review sends the PR diff to an external model-provider service. This is a
+cross-provider transfer of the diff's filenames and code. Repository ownership, maintainer
+status, local filesystem access, or invoking this skill is not consent to disclose that content.
+
+### Cross-provider consent — first send per session
+
+Before the first cross-provider send in a session, disclose the transfer and obtain an explicit
+confirmation. The disclosure must name:
+
+- the source payload: the PR diff, including its filenames and code;
+- the destination provider and CLI from the `peer-cli=` contract (for example, Anthropic via
+  Claude or OpenAI via Codex); and
+- the purpose: one adversarial review of that diff.
+
+Ask a direct yes/no question such as: `This review will send the PR diff to <provider> via
+<peer CLI> for adversarial analysis. Do you consent to that transfer for this session? (yes/no)`.
+Proceed only after an unambiguous affirmative answer to that question. An earlier request to run
+the skill, repository ownership, or an ambiguous response does not satisfy this gate.
+
+After confirmation, record `cross_provider_consent=<provider>;scope=PR-diff;status=granted` in
+the active session task state. Reuse that record for later sends in the same session to the same
+provider and scope, so polling or retries do not create repeated prompts. If the destination
+provider or payload scope changes, obtain confirmation again. If confirmation is missing,
+declined, or cannot be recorded, **do not send the diff**; report the gate as blocked and wait for
+user direction rather than silently substituting another external reviewer.
 
 ### Availability → pick the reviewer
 
