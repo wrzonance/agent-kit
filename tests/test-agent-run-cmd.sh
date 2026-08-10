@@ -8,10 +8,22 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
-run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
+real_run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
 rc_sh="$root/agentkit/skills/.shared/scripts/repo-config.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+export AGENT_TRUST_ROOT="$tmp/trust"
+
+# Existing behavioral cases exercise commands after an explicit approval so the
+# suite can stay focused on resolution, logging, and stamps. The trust-specific
+# cases below call real_run_sh directly and prove that an unapproved or changed
+# declaration never executes.
+run_sh="$tmp/approved-agent-run.sh"
+# shellcheck disable=SC2016  # the dollar expressions are literal script text.
+printf '#!/bin/sh\n"%s" --approve "$@" >/dev/null 2>&1\nrc=$?\n[ "$rc" -eq 0 ] || exec "%s" "$@"\nexec "%s" "$@"\n' \
+    "$real_run_sh" "$real_run_sh" \
+    "$real_run_sh" > "$run_sh"
+chmod +x "$run_sh"
 
 make_repo() {
     local dir
@@ -20,6 +32,29 @@ make_repo() {
     mkdir -p "$dir/.agent"
     printf '%s' "$dir"
 }
+
+# --- repository command trust boundary ------------------------------------
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+printf '#!/bin/sh\nprintf payload-ran\n' > "$repo/tools/payload"
+chmod +x "$repo/tools/payload"
+printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
+trust_root="$tmp/trust"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1 || true)
+assert_contains "$out" 'refusing unapproved repository command' \
+    'a repository command is denied before its first approval'
+assert_not_contains "$out" 'payload-ran' \
+    'the denied command never executes'
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test) \
+    > /dev/null 2>&1
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1)
+assert_contains "$out" 'PASS:' 'an explicitly approved command runs'
+printf '#!/bin/sh\ntouch "%s/changed-payload-ran"\n' "$tmp" > "$repo/tools/payload"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1 || true)
+assert_contains "$out" 'refusing unapproved repository command' \
+    'changing the repository executable requires fresh approval'
+assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
+    'a changed executable is not run under an old approval'
 
 # --- declared command wins -------------------------------------------------
 repo=$(make_repo)

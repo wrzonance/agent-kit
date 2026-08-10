@@ -13,6 +13,7 @@ hooks="$root/agentkit/hooks"
 skills_root="$root/agentkit/skills"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+export AGENT_TRUST_ROOT="$tmp/trust"
 
 # The hooks resolve their helpers as <plugin-root>/skills/.shared/scripts/, the
 # layout build-plugin.sh produces. plugin-src/skills is a symlink onto the skill
@@ -868,11 +869,15 @@ repo=$(make_repo)
 printf 'AGENT_CMD_VERIFY=false\nAGENT_CMD_LINT=true\n' > "$repo/.agent/config.env"
 printf 'x\n' > "$repo/changed.txt"
 (cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1 || true
+(cd "$repo" && "$run_sh" --approve --cmd verify) > /dev/null 2>&1
+(cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1 || true
+(cd "$repo" && "$run_sh" --approve --cmd lint) > /dev/null 2>&1
 (cd "$repo" && "$run_sh" --cmd lint) > /dev/null 2>&1
 out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
 assert_eq 'block' "$(verdict "$out")" 'a passing lint does not satisfy a failing verify'
 
 printf 'AGENT_CMD_VERIFY=true\nAGENT_CMD_LINT=true\n' > "$repo/.agent/config.env"
+(cd "$repo" && "$run_sh" --approve --cmd verify) > /dev/null 2>&1
 (cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1
 out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
 assert_eq 'allow' "$(verdict "$out")" 'and the verify that passes does'

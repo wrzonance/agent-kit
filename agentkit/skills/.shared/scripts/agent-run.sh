@@ -25,11 +25,13 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
   --label NAME   Label used in the log file name (default: the command's basename).
+  --approve      Record explicit approval for the current repository declaration and
+                 executable inputs, but do not run the command.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -48,6 +50,12 @@ Repository declarations (<git-toplevel>/.agent/config.env):
                       whitespace and exec'd directly, never through a shell. A
                       path-shaped first word must resolve inside the repository.
   AGENT_REPO_RUNNER   Runner to delegate to, as a repository-relative path.
+
+Trust boundary:
+  Commands selected with --cmd are repository-controlled. The first run, and any
+  run after the declaration or repository-backed command input changes, requires
+  `agent-run.sh --approve --cmd NAME`. Approval is stored outside the checkout in
+  an owner-only state directory and is never committed to the repository.
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
@@ -71,6 +79,7 @@ dir_opt=
 label=
 cmd_name=
 cmd=()
+approve_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -79,6 +88,10 @@ if_declared=0
 while (($#)); do
     case $1 in
         --if-declared) if_declared=1; shift ;;
+        --approve)
+            approve_cmd=1
+            shift
+            ;;
         --dir|--label|--cmd)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
@@ -111,6 +124,9 @@ if [[ -n $cmd_name ]]; then
     ((${#cmd[@]} == 0)) || die '--cmd NAME and a literal command are mutually exclusive.'
 else
     ((${#cmd[@]})) || die 'No command given.'
+fi
+if ((approve_cmd)) && [[ -z $cmd_name ]]; then
+    die '--approve requires --cmd NAME.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -478,6 +494,139 @@ resolve_named_command() {
     die "no command named '$name': declare $key in .agent/config.env, or add .agent/runner"
 }
 
+# ----------------------------------------------------------- command trust ---
+# A declaration is data, not consent.  A contributor can change config.env or a
+# repository-backed script without changing the command name, so the command
+# must be approved outside the checkout before it is executed.  The fingerprint
+# deliberately covers the declaration file and every existing repository path
+# in argv.  For ecosystem dispatchers whose behavior comes from a manifest, the
+# nearby manifest/build files are covered too.  Ordinary source edits remain
+# usable; changing the command's declaration or direct execution inputs does not
+# silently grant new code execution.
+trust_root=''
+trust_file=''
+trust_fingerprint=''
+
+sha256_text() {
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+}
+
+trust_state_root() {
+    local candidate
+    if [[ -n ${AGENT_TRUST_ROOT:-} ]]; then
+        candidate=$AGENT_TRUST_ROOT
+    elif [[ -n ${XDG_STATE_HOME:-} ]]; then
+        candidate=$XDG_STATE_HOME/agent-kit/command-trust
+    elif [[ -n ${HOME:-} ]]; then
+        candidate=$HOME/.local/state/agent-kit/command-trust
+    else
+        candidate=${TMPDIR:-/tmp}/agent-state-$(id -u)/command-trust
+    fi
+    assert_private_dir "$candidate"
+    printf '%s' "$candidate"
+}
+
+hash_repo_input() {
+    local path=$1 resolved rel
+    resolved=$(readlink -f -- "$path" 2>/dev/null || true)
+    [[ -n $resolved ]] || {
+        printf 'unresolved=%s\n' "$path"
+        return 0
+    }
+    [[ -e $resolved || -L $resolved ]] || {
+        printf 'missing=%s\n' "$path"
+        return 0
+    }
+    [[ $resolved == "$git_top"/* ]] || {
+        printf 'outside=%s\n' "$path"
+        return 0
+    }
+    rel=${resolved#"$git_top/"}
+    if [[ -d $resolved ]]; then
+        find "$resolved" -type f -o -type l | sort | while IFS= read -r path; do
+            [[ -e $path || -L $path ]] || continue
+            printf 'path=%s\n' "${path#"$git_top/"}"
+            if [[ -L $path ]]; then
+                readlink -- "$path"
+            else
+                sha256sum -- "$path" | awk '{print $1}'
+            fi
+        done
+    elif [[ -L $resolved ]]; then
+        printf 'path=%s\nlink=%s\n' "$rel" "$(readlink -- "$resolved")"
+    else
+        printf 'path=%s\n' "$rel"
+        sha256sum -- "$resolved" | awk '{print $1}'
+    fi
+}
+
+hash_nearby_manifests() {
+    local base=$1 file name
+    local -a manifest_names=(package.json package-lock.json)
+    manifest_names+=(pnpm-lock.yaml yarn.lock) # ecosystem-allow: manifest filenames, never commands
+    manifest_names+=(Makefile justfile Taskfile.yml pyproject.toml setup.cfg tox.ini)
+    manifest_names+=(Cargo.toml go.mod pom.xml build.gradle composer.json Gemfile)
+    while [[ $base == "$git_top" || $base == "$git_top"/* ]]; do
+        for name in "${manifest_names[@]}"; do
+            file=$base/$name
+            [[ -f $file ]] || continue
+            printf 'manifest=%s\n' "${file#"$git_top/"}"
+            sha256sum -- "$file" | awk '{print $1}'
+        done
+        base=$(dirname -- "$base")
+    done
+}
+
+compute_trust_fingerprint() {
+    local input
+    {
+        printf 'schema=1\ncommand=%s\n' "$cmd_name"
+        printf 'argv=%s\n' "$cmd_str"
+        if [[ -f $git_top/.agent/config.env ]]; then
+            printf 'declaration=%s\n' "$git_top/.agent/config.env"
+            sha256sum -- "$git_top/.agent/config.env" | awk '{print $1}'
+        fi
+        for input in "${cmd[@]}"; do
+            [[ $input == */* ]] || continue
+            if [[ $input == /* ]]; then
+                hash_repo_input "$input"
+            else
+                hash_repo_input "$git_top/$input"
+                [[ $work_dir == "$git_top" ]] || hash_repo_input "$work_dir/$input"
+            fi
+        done
+        [[ -n ${runner_path:-} ]] && hash_repo_input "$runner_path"
+        hash_nearby_manifests "$work_dir"
+    } | sha256sum | awk '{print $1}'
+}
+
+trust_command() {
+    local trust_id current recorded temp
+    [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 0
+    trust_root=$(trust_state_root)
+    trust_id=$(sha256_text "$git_top\n$cmd_name")
+    trust_file=$trust_root/$trust_id.trust
+    trust_fingerprint=$(compute_trust_fingerprint)
+    current=$trust_fingerprint
+
+    if ((approve_cmd)); then
+        temp=$trust_file.$$
+        printf '%s\n' "$current" > "$temp"
+        chmod 600 -- "$temp"
+        mv -f -- "$temp" "$trust_file"
+        printf 'agent-run: approved %s for this repository state\n' "$cmd_name" >&2
+        exit 0
+    fi
+
+    recorded=$(cat -- "$trust_file" 2>/dev/null || true)
+    [[ $recorded == "$current" ]] && return 0
+    printf 'agent-run: refusing unapproved repository command: %s\n' "$cmd_name" >&2
+    printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
+    printf '  Review it, then explicitly approve once with:\n' >&2
+    printf '  %s --approve --cmd %s\n' "$0" "$cmd_name" >&2
+    return 1
+}
+
 # --------------------------------------------------------------------- logs ---
 choose_log() {
     local log_dir stamp log
@@ -555,6 +704,10 @@ if [[ -n $cmd_name ]]; then
 fi
 finalise_label
 refresh_cmd_str
+
+if [[ -n $cmd_name ]]; then
+    trust_command || die "command '$cmd_name' is not approved"
+fi
 
 select_caches
 detect_ca

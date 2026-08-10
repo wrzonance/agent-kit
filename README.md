@@ -103,6 +103,15 @@ Skills refer to these **by name** (`agent-run.sh --cmd test`), so no skill ever
 hardcodes an ecosystem. If your repo drives everything through one dispatcher,
 point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 
+The declaration is not execution consent. `agent-run.sh --cmd NAME` records no
+trust on its first invocation: review the command and run
+`agent-run.sh --approve --cmd NAME` once. Approval is kept in an owner-only
+state directory outside the checkout. The record fingerprints `config.env`,
+repository-backed argv paths, and nearby build manifests, so changing a
+declaration or its direct payload requires fresh approval while ordinary source
+edits remain runnable. Literal commands passed after `--` are caller-supplied
+and are not covered by this repository-command approval.
+
 ---
 
 ## Harness configuration
