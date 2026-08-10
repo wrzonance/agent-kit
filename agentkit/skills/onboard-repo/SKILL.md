@@ -33,6 +33,10 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 # A resolver that comes back empty must SAY so. Unguarded, the next line dies
 # on a path that does not exist, which under set -e is a silent exit -- and a
 # live session answered that silence by pasting an absolute plugin path.
+# Paste the two lines above verbatim, dollar signs unescaped. Escaping them
+# stores a literal string instead of a path, and the run then fails as
+# `no such file or directory: ${CODEX_HOME:-...}`, which names no cause -- a
+# live session spent two retries rediscovering that.
 [ -d "$agentkit/.shared/scripts" ] || { echo "agentkit: no plugin skills at \"$agentkit\"; is agentkit installed?" >&2; exit 1; }
 # shellcheck disable=SC2034  # used by every later block; env does not
 # persist between tool calls, so each block re-derives it.

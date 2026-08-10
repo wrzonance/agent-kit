@@ -177,25 +177,16 @@ else
     printf '  ok\n'
 fi
 
-# The README stated eight suites and ~350 assertions while the tree carried
-# eleven and six hundred. Nobody noticed, because nothing checked -- and an
-# external review reasonably read the overstatement as a coverage claim. A count
-# in prose is a fact about the tree, so the tree gets to enforce it.
-step 'README matches the suite inventory'
-readme_suites=$(sed -n 's/.*and \([a-z]*\) suites.*/\1/p' "$root/README.md" | head -1)
-actual_suites=$(find "$here" -maxdepth 1 -name 'test-*.sh' | wc -l | tr -d ' ')
-declare -A NUMBER_WORD=(
-    [8]=eight [9]=nine [10]=ten [11]=eleven [12]=twelve [13]=thirteen
-    [14]=fourteen [15]=fifteen [16]=sixteen
-)
-expected_word=${NUMBER_WORD[$actual_suites]:-$actual_suites}
-if [[ $readme_suites == "$expected_word" ]]; then
-    printf '  ok\n'
-else
-    printf '  FAIL  README says "%s suites", tree has %s (%s)\n' \
-        "$readme_suites" "$actual_suites" "$expected_word" >&2
-    rc=1
-fi
+# There was a gate here that pinned a spelled-out suite count in the README to
+# the number of files in this directory. It was added because the README once
+# claimed eight suites over a tree of eleven, and an external review read the
+# understatement as a coverage claim.
+#
+# It is gone because the cost landed on the wrong thing. Every branch that adds
+# a suite has to edit one shared line of prose, so a run of parallel PRs pays a
+# failed CI round and a merge conflict each -- for a number nobody reads, when
+# the run prints its real totals a few lines later. The README no longer states
+# a count, which is the honest version of the same claim.
 
 step 'unit suites'
 shopt -s nullglob

@@ -47,7 +47,7 @@ while IFS= read -r skill_file; do
     # is the only thing that keeps the 26th from omitting it.
     while IFS= read -r -u 3 lineno; do
         resolvers=$((resolvers + 1))
-        if ! sed -n "$((lineno + 1)),$((lineno + 5))p" "$block" |
+        if ! sed -n "$((lineno + 1)),$((lineno + 12))p" "$block" |
             grep -q '\[ -d "\$agentkit/\.shared/scripts" \]'; then
             unguarded=$((unguarded + 1))
             printf 'UNGUARDED RESOLVER in %s (block line %s): resolution failure would be silent\n' \
