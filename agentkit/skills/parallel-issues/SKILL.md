@@ -96,7 +96,11 @@ fi
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -154,7 +158,11 @@ fi
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -209,7 +217,11 @@ set -euo pipefail
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -320,7 +332,11 @@ opt-in per issue rather than automatic:
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -341,7 +357,11 @@ set -euo pipefail
 # Locate the skill tree. Packaging MOVES it: standalone it sits at
 # $CODEX_HOME/skills, but installed as a plugin it sits under
 # $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -464,7 +484,11 @@ worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -625,7 +649,11 @@ fi
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -687,7 +715,11 @@ worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -798,7 +830,7 @@ Waiting is not work, and narrating a wait is not a status report. One observed r
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
-Durable state to inspect between waits:
+Durable state to inspect after a wait reports an actual completion:
 
 ```bash
 set -euo pipefail
@@ -819,7 +851,11 @@ fi
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -857,7 +893,11 @@ fi
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1
@@ -913,7 +953,11 @@ worktree=FULL_PATH
 # `find` matches the pattern itself rather than letting the shell glob: an
 # unmatched glob is a fatal error in zsh, and agent CLIs dispatch shell
 # commands through the login shell, which is zsh on many machines.
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
     exit 1

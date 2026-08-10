@@ -27,7 +27,11 @@ nothing to enforce and `--cmd` resolves nothing.
 ## Step 0 — resolve the tree
 
 ```bash
-agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+agentkit=''
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" .agent/env-contract.txt 2>/dev/null | head -n 1)
+fi
 if [[ -z $agentkit ]]; then
     agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
         -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
@@ -39,7 +43,8 @@ fi
 shared="$agentkit/.shared/scripts"
 
 contract_path=''
-if [[ -r .agent/env-contract.txt ]]; then
+if [[ -r .agent/env-contract.txt && -f .agent/env-contract.txt && ! -L .agent/env-contract.txt && -O .agent/env-contract.txt ]] &&
+    ! git ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
     contract_path=$(grep -m1 '^skills= path=' .agent/env-contract.txt)
 fi
 if [[ -z $contract_path ]]; then
