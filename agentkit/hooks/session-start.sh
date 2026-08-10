@@ -95,16 +95,20 @@ checkout_identity() {
 }
 
 cache_matches_checkout() {
-    local cached_branch cached_head current_branch current_head identity
+    local cached_branch cached_head current_branch current_head
     [[ $in_repo -eq 1 ]] || return 0
     cached_branch=$(sed -n 's/^branch=\([^[:space:]]*\).*/\1/p' <<< "$1")
     cached_head=$(sed -n 's/^head=\([^[:space:]]*\).*/\1/p' <<< "$1")
-    # An unborn repository has no commit identity to compare. Preserve the
-    # pre-existing cache behavior there; once HEAD exists, both fields are
-    # required and compared exactly.
-    identity=$(checkout_identity) || return 0
-    current_branch=${identity%%$'\n'*}
-    current_head=${identity#*$'\n'}
+    current_branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) || return 0
+    if ! current_head=$(git -C "$root" rev-parse HEAD 2> /dev/null); then
+        # An unnamed unborn HEAD has no branch or commit identity to compare;
+        # preserve the pre-existing cache behavior for that state. A named
+        # unborn branch can still invalidate a cache from another branch.
+        [[ $current_branch == HEAD ]] && return 0
+        [[ $cached_branch == "$current_branch" ]]
+        return
+    fi
+    [[ $current_branch == HEAD ]] && current_branch=detached
     [[ $cached_branch == "$current_branch" && $cached_head == "$current_head" ]]
 }
 
@@ -159,8 +163,9 @@ if [[ $source_kind != compact && -r $contract_file ]] &&
     fi
 fi
 
-# Age is not the only way a contract goes stale. Its harness= line is SESSION
-# identity, and the file is shared between every CLI that opens this repository,
+# Age is not the only way a contract goes stale. Its branch= and head= lines are
+# checkout identity, while harness= is session identity, and the file is shared
+# between every CLI that opens this repository,
 # so a contract written by one and served to the other credits every commit to
 # the wrong agent. Seen live: a contract written at 13:26 by one CLI was reused
 # two minutes later by the other, which then reported itself as its peer.

@@ -54,10 +54,27 @@ out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /de
 assert_not_contains "$out" 'cached/value' 'a branch change invalidates the cached contract'
 assert_contains "$out" 'branch=feat/same-head' 'the refreshed context reports the new branch'
 
-printf 'repo=legacy/value\nbranch=feat/same-head\nharness= name=%s trailer="T <t@example.invalid>" other=z\n' \
+git -C "$repo" checkout -q --detach "$new_head"
+out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /dev/null)
+assert_not_contains "$out" 'cached/value' 'detached HEAD invalidates a branch cache'
+assert_contains "$out" 'branch=detached' 'the refreshed context reports detached HEAD'
+detached_head=$(git -C "$repo" rev-parse HEAD)
+printf 'repo=detached/value\nbranch=detached\nhead=%s\nharness= name=%s trailer="T <t@example.invalid>" other=z\n' \
+    "$detached_head" "$me" > "$repo/.agent/env-contract.txt"
+out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /dev/null)
+assert_contains "$out" 'detached/value' 'a matching detached HEAD reuses the cached contract'
+
+git -C "$repo" -c user.email=t@example.invalid -c user.name=t \
+    commit --allow-empty -qm detached-second
+new_detached_head=$(git -C "$repo" rev-parse HEAD)
+out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /dev/null)
+assert_not_contains "$out" 'detached/value' 'a new detached HEAD invalidates the cache'
+assert_contains "$out" "head=$new_detached_head" 'the detached refresh records the new HEAD'
+
+printf 'repo=legacy/value\nbranch=detached\nharness= name=%s trailer="T <t@example.invalid>" other=z\n' \
     "$me" > "$repo/.agent/env-contract.txt"
 out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /dev/null)
 assert_not_contains "$out" 'legacy/value' 'a legacy cache without HEAD is not trusted'
-assert_contains "$out" "head=$new_head" 'a legacy cache is refreshed with checkout identity'
+assert_contains "$out" "head=$new_detached_head" 'a legacy cache is refreshed with checkout identity'
 
 finish
