@@ -86,6 +86,61 @@ harness_matches() {
     [[ $cached == "$current" ]]
 }
 
+checkout_identity() {
+    local branch head
+    branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) ||
+        branch=$(git -C "$root" symbolic-ref --short HEAD 2> /dev/null) || return 1
+    [[ $branch == HEAD ]] && branch=detached
+    head=$(git -C "$root" rev-parse HEAD 2> /dev/null) || return 1
+    printf '%s\n%s' "$branch" "$head"
+}
+
+cache_matches_checkout() {
+    local cached_branch cached_head current_branch current_head
+    [[ $in_repo -eq 1 ]] || return 0
+    cached_branch=$(sed -n 's/^branch=\([^[:space:]]*\).*/\1/p' <<< "$1")
+    cached_head=$(sed -n 's/^head=\([^[:space:]]*\).*/\1/p' <<< "$1")
+    [[ -z $cached_branch ]] && return 0
+    current_branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2> /dev/null) ||
+        current_branch=$(git -C "$root" symbolic-ref --short HEAD 2> /dev/null) || return 0
+    if ! current_head=$(git -C "$root" rev-parse HEAD 2> /dev/null); then
+        # An unnamed unborn HEAD has no branch or commit identity to compare;
+        # preserve the pre-existing cache behavior for that state. A named
+        # unborn branch can still invalidate a cache from another branch.
+        [[ $current_branch == HEAD ]] && return 0
+        [[ $cached_branch == "$current_branch" ]]
+        return
+    fi
+    [[ $current_branch == HEAD ]] && current_branch=detached
+    [[ $cached_branch == "$current_branch" && $cached_head == "$current_head" ]]
+}
+
+write_cached_contract() {
+    local content=$1 dir tmp
+    [[ $in_repo -eq 1 ]] || return 0
+    guard_contract_is_ours "$contract_file" "$root" || return 0
+    dir=${contract_file%/*}
+    [[ -d $dir && ! -L $dir ]] || return 0
+    tmp=$(mktemp -- "$dir/.env-contract.XXXXXX" 2> /dev/null) || return 0
+    if ! printf '%s\n' "$content" > "$tmp"; then
+        rm -f -- "$tmp" 2> /dev/null || true
+        return 0
+    fi
+    chmod 600 -- "$tmp" 2> /dev/null || true
+    if ! mv -f -- "$tmp" "$contract_file" 2> /dev/null; then
+        rm -f -- "$tmp" 2> /dev/null || true
+    fi
+}
+
+record_checkout_identity() {
+    local identity head
+    [[ $in_repo -eq 1 ]] || return 0
+    identity=$(checkout_identity) || return 0
+    head=${identity#*$'\n'}
+    contract+=$'\nhead='$head' source=git rev-parse HEAD'
+    write_cached_contract "$contract"
+}
+
 input=$(cat 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 source_kind=$(jq -r '.source // "startup"' <<< "$input" 2> /dev/null || true)
@@ -105,11 +160,15 @@ contract=''
 if [[ $source_kind != compact && -r $contract_file ]] &&
     guard_contract_is_ours "$contract_file" "$root" &&
     [[ -n $(find "$contract_file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]]; then
-    contract=$(cat -- "$contract_file" 2> /dev/null || true)
+    candidate=$(cat -- "$contract_file" 2> /dev/null || true)
+    if harness_matches "$candidate" && cache_matches_checkout "$candidate"; then
+        contract=$candidate
+    fi
 fi
 
-# Age is not the only way a contract goes stale. Its harness= line is SESSION
-# identity, and the file is shared between every CLI that opens this repository,
+# Age is not the only way a contract goes stale. Its branch= and head= lines are
+# checkout identity, while harness= is session identity, and the file is shared
+# between every CLI that opens this repository,
 # so a contract written by one and served to the other credits every commit to
 # the wrong agent. Seen live: a contract written at 13:26 by one CLI was reused
 # two minutes later by the other, which then reported itself as its peer.
@@ -126,6 +185,7 @@ if [[ -z $contract ]]; then
         # will run the commands. Without the flag the block asserts
         # writable=yes and active=no to an agent that is about to be denied.
         contract=$("$preflight" --worktree "$root" --measured-from hook 2> /dev/null || true)
+        [[ -n $contract ]] && record_checkout_identity
     fi
 fi
 # An un-onboarded repository still gets a session context, even when the probe
