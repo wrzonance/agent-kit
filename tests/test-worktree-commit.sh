@@ -41,6 +41,10 @@ git_wrapper="$fake_bin/git"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
+    'if [[ ${CALLER_ID-} == b && ! -e "$GATE_DIR/b-seen" ]]; then' \
+    '    : > "$GATE_DIR/b-seen"' \
+    '    while [[ ! -e "$GATE_DIR/b-proceed" ]]; do sleep 0.01; done' \
+    'fi' \
     'if [[ ${1-} == commit ]]; then' \
     '    if mkdir "$GATE_DIR/first" 2>/dev/null; then' \
     '        : > "$GATE_DIR/first-entered"' \
@@ -62,12 +66,12 @@ wait_for_file() {
 }
 
 run_a() {
-    (cd "$worktree_a" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" GATE_DIR="$gate" \
+    (cd "$worktree_a" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" CALLER_ID=a GATE_DIR="$gate" \
         "$script" --message 'feat: commit a' -- a.txt)
 }
 
 run_b() {
-    (cd "$worktree_b" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" GATE_DIR="$gate" \
+    (cd "$worktree_b" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" CALLER_ID=b GATE_DIR="$gate" \
         "$script" --message 'feat: commit b' -- b.txt)
 }
 
@@ -82,7 +86,12 @@ fi
 
 run_b > "$tmp/b.out" 2> "$tmp/b.err" &
 pid_b=$!
-if [[ -e "$gate/second-entered" ]]; then
+if ! wait_for_file "$gate/b-seen"; then
+    _fail 'the second worktree starts while the first transaction is held' \
+        'the competing invocation did not reach the controlled git wrapper'
+fi
+: > "$gate/b-proceed"
+if wait_for_file "$gate/second-entered"; then
     _fail 'the second worktree cannot enter commit during the first transaction' \
         'the competing invocation entered git commit before release'
 else
