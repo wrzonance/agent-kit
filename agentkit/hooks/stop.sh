@@ -92,6 +92,21 @@ $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name
 then finish."
 
+path_newer_than_stamp() {
+    local rel=$1 candidate parent
+    candidate=$root/$rel
+    if [[ -e $candidate || -L $candidate ]]; then
+        [[ $candidate -nt $stamp ]]
+        return
+    fi
+
+    parent=${rel%/*}
+    [[ $parent == "$rel" ]] && parent=.
+    candidate=$root/$parent
+    [[ -d $candidate ]] || candidate=$root
+    [[ $candidate -nt $stamp ]]
+}
+
 # This gate runs at the END OF EVERY TURN, so whichever command it picks is
 # paid for on a one-line comment as surely as on a refactor. A repository that
 # declares only a full suite therefore charges minutes for trivial edits --
@@ -114,19 +129,7 @@ fi
 # 4. Any change newer than the stamp. A deleted path has no mtime of its own;
 # use the containing directory, whose mtime records the entry removal.
 for rel in "${changed_paths[@]}"; do
-    candidate=$root/$rel
-    if [[ -e $candidate || -L $candidate ]]; then
-        [[ $candidate -nt $stamp ]] && block "$reason"
-        continue
-    fi
-
-    parent=${rel%/*}
-    [[ $parent == "$rel" ]] && parent=.
-    candidate=$root/$parent
-    [[ -d $candidate ]] || candidate=$root
-    if [[ $candidate -nt $stamp ]]; then
-        block "$reason"
-    fi
+    path_newer_than_stamp "$rel" && block "$reason"
 done
 
 allow
