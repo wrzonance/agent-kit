@@ -103,6 +103,28 @@ only one is installed. If it came back empty, the plugin is not installed where
 this is looking; say so rather than substituting a literal path."
 fi
 
+# An escaped resolver. `\$` inside double quotes is a literal dollar, so the
+# assignment stores the text `${CODEX_HOME:-$HOME/.codex}/skills` rather than a
+# path -- and the run fails later as `no such file or directory:
+# ${CODEX_HOME:-...}`, which names the symptom and not the cause. A live session
+# burned two retries on exactly this before it worked out what had happened.
+# The command has usually already failed by the time this fires; the point is to
+# make the next attempt the corrected one instead of another guess.
+# shellcheck disable=SC2016  # the pattern searches for a literal dollar
+if grep -qE '\\\$(\{)?(CODEX_HOME|CLAUDE_CONFIG_DIR|HOME|agentkit)' <<< "$command_line" &&
+    grep -q 'agentkit' <<< "$command_line" &&
+    guard_should_advise "$state_root" "$session" escaped-resolver; then
+    # shellcheck disable=SC2016  # literal text, see teach()
+    teach "The dollar signs in that resolver are escaped, so nothing expanded: the
+variable now holds the literal text \"\${CODEX_HOME:-\$HOME/.codex}/skills\"
+instead of a directory. Every path built from it points at a file that cannot
+exist, and the error you get back names the missing file rather than the
+escaping.
+Paste the resolver block from the skill verbatim -- backslash-free -- and let
+the shell expand it. Nothing in these blocks needs escaping; they are already
+quoted for the shell that runs them."
+fi
+
 # Blanket staging. Correct ignore rules are what actually protect .agent/; this
 # is a nudge toward the helper, and it gates nothing.
 if grep -qE '(^|[[:space:];&|])git[[:space:]]+add[[:space:]]+(-A|--all|\.)([[:space:]]|$)' \

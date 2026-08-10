@@ -14,7 +14,7 @@ Works with **Codex CLI** and **Claude Code** from the same directory.
 | **`onboard-repo`** skill | Walk a repository through onboarding, including the judgement calls a script can't make: which commands to declare, which labels mean what |
 | **`parallel-issues`** skill | Triage a GitHub Projects board, split independent issues across worktrees, drive each to a draft PR |
 | **`review-remote-pr`** skill | Take a PR from draft to green: CI, review threads, an adversarial review, and the board move |
-| **`.shared/scripts`** | The procedural half — preflight, command runner, board reader, mover and setup, one-call triage, commit guard, CI-gap report, toolchain detector |
+| **`.shared/scripts`** | The procedural half — preflight, command runner, board reader, mover and setup, one-call triage, startable-issue selection, commit guard, CI-gap report, toolchain detector |
 | **Five hooks** | Inject the environment contract, and teach the cheaper command without blocking the work |
 
 The idea throughout: **a repository declares its own facts once**, and everything
@@ -234,7 +234,7 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-Twelve gates and fifteen suites — shellcheck on shipped and test scripts, `bash -n`,
+Twelve gates and eighteen suites — shellcheck on shipped and test scripts, `bash -n`,
 a bash 5.2 compatibility check, every fenced code block in the skill markdown,
 ecosystem- harness- and org-neutrality, then the unit suites. The suite prints
 its own totals; a gate checks that the counts here still match, because they

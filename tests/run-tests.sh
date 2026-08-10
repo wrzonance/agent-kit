@@ -186,7 +186,8 @@ readme_suites=$(sed -n 's/.*and \([a-z]*\) suites.*/\1/p' "$root/README.md" | he
 actual_suites=$(find "$here" -maxdepth 1 -name 'test-*.sh' | wc -l | tr -d ' ')
 declare -A NUMBER_WORD=(
     [8]=eight [9]=nine [10]=ten [11]=eleven [12]=twelve [13]=thirteen
-    [14]=fourteen [15]=fifteen [16]=sixteen
+    [14]=fourteen [15]=fifteen [16]=sixteen [17]=seventeen [18]=eighteen
+    [19]=nineteen [20]=twenty
 )
 expected_word=${NUMBER_WORD[$actual_suites]:-$actual_suites}
 if [[ $readme_suites == "$expected_word" ]]; then
