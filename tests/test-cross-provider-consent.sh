@@ -26,8 +26,10 @@ assert_contains "$skill_text" 'destination provider' \
 assert_contains "$skill_text" 'first cross-provider send in a session' \
     'the gate applies before the first send in a session'
 # shellcheck disable=SC2016  # the backticks are literal documentation text
-assert_contains "$skill_text" 'record `cross_provider_consent=<provider>;scope=PR-diff;status=granted`' \
-    'approval is recorded to avoid nuisance re-prompts'
+assert_contains "$skill_text" 'cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted' \
+    'approval record binds consent to the exact payload'
+assert_contains "$skill_text" 'provider, PR, or diff changes' \
+    'a changed PR or diff requires renewed consent'
 assert_contains "$skill_text" 'Do not send the diff' \
     'missing or declined consent fails closed'
 assert_contains "$readme_text" 'Cross-provider review privacy' \

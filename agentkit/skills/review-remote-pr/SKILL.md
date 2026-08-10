@@ -703,10 +703,12 @@ Ask a direct yes/no question such as: `This review will send the PR diff to <pro
 Proceed only after an unambiguous affirmative answer to that question. An earlier request to run
 the skill, repository ownership, or an ambiguous response does not satisfy this gate.
 
-After confirmation, record `cross_provider_consent=<provider>;scope=PR-diff;status=granted` in
-the active session task state. Reuse that record for later sends in the same session to the same
-provider and scope, so polling or retries do not create repeated prompts. If the destination
-provider or payload scope changes, obtain confirmation again. If confirmation is missing,
+Before sending, derive a payload identity from the PR number and SHA-256 hash of the exact diff
+bytes to be sent. After confirmation, record
+`cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted` in the
+active session task state. Reuse that record only for a retry of the exact same payload to the
+same provider and scope, so polling or retries do not create repeated prompts. If the destination
+provider, PR, or diff changes, obtain confirmation again. If confirmation is missing,
 declined, or cannot be recorded, **do not send the diff**; report the gate as blocked and wait for
 user direction rather than silently substituting another external reviewer.
 
