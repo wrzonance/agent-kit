@@ -101,8 +101,10 @@ if [[ -x "$script_dir/repo-config.sh" ]]; then
     repository=$("$script_dir/repo-config.sh" --repo-root "$repo_root" \
         --get AGENT_REPO_SLUG 2> /dev/null || true)
 fi
-[[ -n $repository ]] ||
-    repository=$(cd -- "$repo_root" && gh repo view --json nameWithOwner -q .nameWithOwner 2> /dev/null || true)
+if [[ -z $repository ]]; then
+    repository=$(cd -- "$repo_root" &&
+        gh repo view --json nameWithOwner -q .nameWithOwner 2> /dev/null || true)
+fi
 [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
     die_blocked 'cannot resolve the repository for a selection'
 
@@ -163,9 +165,10 @@ deps=$(gh api graphql -f query="$query" -f owner="$owner" -f name="$name" 2> /de
 # A rejected GraphQL query is an HTTP 200 with an errors array, so a zero exit
 # is not proof the answer is usable. Selecting on a partial answer would call a
 # blocked issue eligible, which is the one mistake this script exists to avoid.
-[[ $(jq -r 'has("errors")' <<< "$deps" 2> /dev/null) != true ]] &&
-    [[ $(jq -r '.data.repository | type' <<< "$deps" 2> /dev/null) == object ]] ||
+if [[ $(jq -r 'has("errors")' <<< "$deps" 2> /dev/null) == true ]] ||
+    [[ $(jq -r '.data.repository | type' <<< "$deps" 2> /dev/null) != object ]]; then
     die "the dependency query was rejected: $(jq -rc '.errors[0].message // "no data"' <<< "$deps" 2> /dev/null)"
+fi
 
 selection=$(jq -c --argjson deps "$(jq -c '.data.repository' <<< "$deps")" '
     map(

@@ -234,12 +234,11 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-Twelve gates and eighteen suites — shellcheck on shipped and test scripts, `bash -n`,
-a bash 5.2 compatibility check, every fenced code block in the skill markdown,
-ecosystem- harness- and org-neutrality, then the unit suites. The suite prints
-its own totals; a gate checks that the counts here still match, because they
-drifted once and a README that overstates its coverage is worse than one that
-omits it.
+Eleven gates, then every suite in `tests/` — shellcheck on shipped and test
+scripts, `bash -n`, a bash 5.2 compatibility check, every fenced code block in
+the skill markdown, ecosystem- harness- and org-neutrality, then the unit
+suites. The run prints its own totals, so read them from the run rather than
+from here; this file deliberately does not carry a suite count.
 
 **Green does not mean "the tree is good"** — it used to say that, and an external
 review then found twenty-two defects through it, several of them in scripts with
