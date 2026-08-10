@@ -86,6 +86,18 @@ assert_contains "$log" 'field-list' 're-resolves the Status field'
 assert_contains "$log" 'item-list' 're-scans the board'
 assert_contains "$out" 'moved #57' 'reports the move'
 
+# The known-board path validates against live metadata; after its successful
+# move, it must persist that data rather than retaining stale mutation hints.
+repo=$(seed_repo)
+jq '.statusField.id = "PVTSSF_stale" | .statusField.options.Ready = "opt-stale"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
+    'a known-board move refreshes the live Status field id'
+assert_eq 'opt-ready' "$(jq -r '.statusField.options.Ready' < "$repo/.agent/board.json")" \
+    'and refreshes the live Status option id'
+
 # A forged cache item must never be sent to item-edit. The live board contains
 # both repositories at #57; only the requested repository's item is valid.
 repo=$(seed_repo)
@@ -113,6 +125,10 @@ assert_contains "$log" '--project-id PVT_kwDOAexample1' 'rebinds a forged projec
 assert_contains "$log" '--field-id PVTSSF_lADOAexampleB' 'rebinds a forged Status field ID'
 assert_contains "$log" '--single-select-option-id opt-ready' 'rebinds a forged option ID'
 assert_not_contains "$log" 'PVT_attacker' 'never mutates the forged project'
+assert_eq 'PVT_kwDOAexample1' "$(jq -r '.project.id' < "$repo/.agent/board.json")" \
+    'a discovery move refreshes the live project id'
+assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
+    'and refreshes the live Status metadata'
 
 # --- cache miss on the issue falls back -----------------------------------
 repo=$(seed_repo)

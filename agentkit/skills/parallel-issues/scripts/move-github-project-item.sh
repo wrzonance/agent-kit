@@ -169,6 +169,41 @@ cache_item_id() {
     fi
 }
 
+# Rebuild the declared board metadata from the live project and Status field.
+# The temporary file lives beside board.json, so mv makes the refresh atomic.
+refresh_board_metadata() {
+    local board_owner=$1 project_number=$2 project_id=$3 project_title=$4 fields_json=$5
+    local status_field field_id options fingerprint_input fingerprint generated_at staged
+
+    [[ -n $board_file ]] || return 0
+    status_field=$(jq -c 'first(.fields[]? | select((.name | ascii_downcase) == "status")) // empty' \
+        <<< "$fields_json") || return 1
+    field_id=$(jq -r '.id // empty' <<< "$status_field") || return 1
+    options=$(jq -c '[.options[]? | {key: .name, value: .id}] | from_entries' \
+        <<< "$status_field") || return 1
+    [[ -n $field_id && $options != '{}' ]] || return 1
+
+    fingerprint_input=$(jq -S -c -n --arg project "$project_id" --arg field "$field_id" \
+        --argjson options "$options" \
+        '{p: $project, f: $field, o: ($options | to_entries | sort_by(.key) | map(.value))}') || return 1
+    fingerprint="sha256:$(printf '%s' "$fingerprint_input" | sha256sum | cut -d' ' -f1)"
+    generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    staged=$(mktemp "$(dirname -- "$board_file")/.board.XXXXXX") || return 1
+
+    if ! jq -n --argjson version "$BOARD_SCHEMA_VERSION" --arg owner "$board_owner" \
+        --argjson number "$project_number" --arg project "$project_id" --arg title "$project_title" \
+        --arg field "$field_id" --argjson options "$options" --arg fingerprint "$fingerprint" \
+        --arg generated_at "$generated_at" \
+        '{schemaVersion: $version, owner: $owner,
+          project: {number: $number, id: $project, title: $title},
+          statusField: {id: $field, name: "Status", options: $options},
+          generatedAt: $generated_at, fingerprint: $fingerprint}' > "$staged"; then
+        rm -f -- "$staged"
+        return 1
+    fi
+    mv -- "$staged" "$board_file"
+}
+
 # Match on issue number AND repository. Project v2 boards are routinely shared
 # across every repo in an org, so number alone can select another repo's #N and
 # mutate an unrelated card. .content.repository is a URL on some gh versions and
@@ -201,7 +236,7 @@ select_item_id() {
 # Returns 0 moved, 1 cannot use this path, 2 the API rejected the edit.
 try_known_board() {
     local project_number project_id project_title field_id option_id items_json item_id
-    local project_owner project_json live_project_id fields_json
+    local project_owner project_json live_project_id live_project_title fields_json
 
     board_readable || return 1
     project_number=$(jq -r '.project.number // empty' <"$board_file" 2>/dev/null) || return 1
@@ -218,6 +253,8 @@ try_known_board() {
         --format json 2>/dev/null) || return 1
     live_project_id=$(jq -r '.id // empty' <<< "$project_json" 2>/dev/null) || return 1
     [[ -n $live_project_id && $live_project_id == "$project_id" ]] || return 1
+    live_project_title=$(jq -r '.title // empty' <<< "$project_json" 2>/dev/null) || return 1
+    [[ -n $live_project_title ]] || live_project_title=$project_title
 
     items_json=$(gh project item-list "$project_number" --owner "$project_owner" \
         --limit "$ITEM_LIMIT" --format json 2>/dev/null) || return 1
@@ -246,6 +283,10 @@ try_known_board() {
         --single-select-option-id "$option_id" >/dev/null 2>&1 || return 2
 
     cache_item_id "$project_id" "$issue_number" "$item_id"
+    if ! refresh_board_metadata "$project_owner" "$project_number" "$live_project_id" \
+        "$live_project_title" "$fields_json"; then
+        printf 'Warning: moved issue but could not refresh .agent/board.json\n' >&2
+    fi
     printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 4 calls)\n' \
         "$issue_number" "$status" "$project_number" "$project_title"
     return 0
@@ -319,6 +360,10 @@ process_project() {
     # Refresh the cache for diagnostics and future discovery, but never use it
     # as authority for a later mutation.
     cache_item_id "$project_id" "$issue_number" "$item_id"
+    if ! refresh_board_metadata "$owner" "$project_number" "$project_id" "$project_title" \
+        "$fields_json"; then
+        printf 'Warning: moved issue but could not refresh .agent/board.json\n' >&2
+    fi
 
     printf 'moved #%s -> "%s" on project #%s "%s"\n' \
         "$issue_number" "$status" "$project_number" "$project_title"
