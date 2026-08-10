@@ -38,6 +38,7 @@ FILES=()
 MESSAGE_ARGS=()
 META_COMMON_DIR=""
 META_WORKTREE_DIR=""
+LOCK_FD=""
 
 usage() {
     cat <<EOF
@@ -178,6 +179,22 @@ require_writable_git_dirs() {
     fi
 }
 
+# The index lock only covers one git command. This descriptor covers the whole
+# stage/check/commit transaction and lives in the common directory so linked
+# worktrees contend on the same lock.
+acquire_transaction_lock() {
+    local lock_file="$META_COMMON_DIR/worktree-commit.lock"
+
+    command -v flock > /dev/null 2>&1 || die 1 \
+        "transaction lock requires 'flock' on PATH"
+    if ! exec {LOCK_FD}>"$lock_file"; then
+        die 1 "cannot open transaction lock: $lock_file"
+    fi
+    if ! flock -x "$LOCK_FD"; then
+        die 1 "cannot acquire transaction lock: $lock_file"
+    fi
+}
+
 refuse_trunk() {
     local branch declared root
     # symbolic-ref works on an unborn branch too, and stays quiet when detached.
@@ -294,6 +311,7 @@ main() {
     resolve_git_dirs
     require_writable_git_dirs
     refuse_trunk
+    acquire_transaction_lock
     stage_files
     check_staged
     build_message_args
