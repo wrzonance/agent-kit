@@ -28,6 +28,7 @@ repo="$tmp/repo"
 mkdir -p "$repo/.agent"
 printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
     > "$repo/.agent/board.json"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 
 # A stub board of TOTAL items that honours --limit the way the real API does:
 # it reports the true totalCount and returns at most --limit items. Getting
@@ -49,7 +50,8 @@ jq -n --argjson total $total --argjson limit "\$limit" '
     items: [ range(\$total)
              | { status: (if . == 0 then "Ready" else "Done" end),
                  title: "item \(.)",
-                 content: { number: (100 + .), type: "Issue", title: "item \(.)" } } ]
+                 content: { number: (100 + .), type: "Issue", title: "item \(.)",
+                            repository: "example-org/example-repo" } } ]
            [0:\$limit] }'
 EOF
     chmod +x "$dir/gh"
@@ -107,6 +109,22 @@ assert_contains "$out" 'truncation, not absence' 'a miss in a partial read is qu
 out=$(run_board "$bin" --issue '#100')
 assert_contains "$out" '#100  Ready' 'a leading # is accepted'
 
+# Same-number issues from different repositories must not be confused. The
+# lookup is bound to the repository declared by the target checkout.
+dupe_bin="$tmp/dupe-bin"
+mkdir -p "$dupe_bin"
+cat > "$dupe_bin/gh" << 'EOF'
+#!/usr/bin/env bash
+jq -n '{totalCount: 2, items: [
+  {status: "Done", title: "wrong repo", content: {number: 42, type: "Issue", repository: "example-org/other-repo"}},
+  {status: "Ready", title: "requested repo", content: {number: 42, type: "Issue", repository: "example-org/example-repo"}}
+]}'
+EOF
+chmod +x "$dupe_bin/gh"
+out=$(run_board "$dupe_bin" --issue 42)
+assert_contains "$out" '#42  Ready  requested repo' 'same-number issues are matched by repository'
+assert_not_contains "$out" 'wrong repo' 'a same-number issue from another repository is ignored'
+
 assert_rc 2 'a non-numeric issue is a usage error' -- \
     env PATH="$bin:$PATH" "$script" --repo-root "$repo" --issue main
 
@@ -123,6 +141,31 @@ assert_contains "$out" '#101  item 1' 'asking for Done lists Done'
 
 out=$(run_board "$bin" --all)
 assert_contains "$out" '#101  item 1' '--all lists it too'
+
+# A plain listing already has every fact it needs in board.json and its one
+# project-item query. It must not spend a second request discovering the repo.
+rm "$repo/.agent/config.env"
+listing_bin="$tmp/listing-bin"
+mkdir -p "$listing_bin"
+cat > "$listing_bin/gh" <<EOF
+#!/usr/bin/env bash
+if [[ \${1:-} == repo ]]; then
+    touch "$tmp/repo-view-called"
+    exit 1
+fi
+jq -n '{totalCount: 1, items: [
+  {status: "Ready", title: "listed item", content: {number: 300, type: "Issue"}}
+]}'
+EOF
+chmod +x "$listing_bin/gh"
+out=$(run_board "$listing_bin")
+assert_contains "$out" 'items=1 of=1' 'a plain listing needs no repository lookup'
+if [[ -e $tmp/repo-view-called ]]; then
+    listing_repo_view=called
+else
+    listing_repo_view=not-called
+fi
+assert_eq not-called "$listing_repo_view" 'a plain listing makes only its project-item call'
 
 # --- the environment cannot support the query -------------------------------
 bare="$tmp/norepo"

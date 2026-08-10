@@ -171,6 +171,22 @@ AGENT_CMD_TEST=<the full suite, minutes>
 AGENT_CMD_VERIFY=tools/verify
 ```
 
+**Approval is separate from declaration.** A committed `AGENT_CMD_*` value is
+repository-controlled data, not permission to execute. Before the first run,
+review the declaration and approve the exact current command explicitly:
+
+```bash
+"$shared/agent-run.sh" --approve --cmd verify
+"$shared/agent-run.sh" --cmd verify
+```
+
+Approval lives outside the checkout and fingerprints the declaration plus
+repository-backed command inputs. If either changes, `agent-run.sh` refuses to
+run until it is reviewed and approved again. This preserves verification after
+ordinary source edits without allowing a changed `tools/verify` or package
+manifest to inherit an old approval. Literal commands (`agent-run.sh -- ...`)
+remain caller-supplied and do not use this repository-command trust record.
+
 **One ecosystem, several commands.** Declare each by name. Values are argv, so
 no shell syntax — no pipes, no `&&`, no `cd`. A command that must run inside a
 component says so with a companion key rather than by wrapping itself:
@@ -234,6 +250,7 @@ Then prove it parses, and prove every command you declared actually runs:
 ```bash
 "$shared/repo-config.sh" --list
 # ...then once per name you declared:
+"$shared/agent-run.sh" --approve --cmd verify
 "$shared/agent-run.sh" --cmd verify
 ```
 
@@ -305,6 +322,12 @@ as a result: which guards became active, and what `Stop` will now enforce.
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees are created |
 | `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | labels to reuse rather than invent |
+
+Named repository commands require an explicit approval before their first run
+and after a declaration or repository-backed input changes:
+`agent-run.sh --approve --cmd <name>`. The approval record is owner-only state
+outside the checkout; it is intentionally not a committed config key that a
+pull request could change alongside the command.
 
 **`VERIFY` and `TEST` are the only names anything relies on.** Skills reach for
 others (`lint`, `build`, `coverage`) with `--if-declared`, so a repository that

@@ -5,3 +5,4 @@ plugin/
 .agent/*
 !.agent/config.env
 !.agent/board.json
+.worktrees/
