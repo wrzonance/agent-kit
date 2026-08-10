@@ -213,7 +213,7 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-Twelve gates and thirteen suites — shellcheck on shipped and test scripts, `bash -n`,
+Twelve gates and fourteen suites — shellcheck on shipped and test scripts, `bash -n`,
 a bash 5.2 compatibility check, every fenced code block in the skill markdown,
 ecosystem- harness- and org-neutrality, then the unit suites. The suite prints
 its own totals; a gate checks that the counts here still match, because they
