@@ -102,8 +102,10 @@ path_newer_than_stamp() {
 
     parent=${rel%/*}
     [[ $parent == "$rel" ]] && parent=.
+    while [[ $parent != . && ! -d $root/$parent ]]; do
+        [[ $parent == */* ]] && parent=${parent%/*} || parent=.
+    done
     candidate=$root/$parent
-    [[ -d $candidate ]] || candidate=$root
     [[ $candidate -nt $stamp ]]
 }
 
@@ -126,8 +128,14 @@ if [[ ! -r $stamp ]]; then
     block "$reason"
 fi
 
+# A failed verification must not trap the harness in an unbounded active-retry
+# loop. The first Stop already issued the verification nudge; the retry is the
+# escape hatch when that command could not produce a fresh successful stamp.
+[[ $stop_active == true ]] && allow
+
 # 4. Any change newer than the stamp. A deleted path has no mtime of its own;
-# use the containing directory, whose mtime records the entry removal.
+# walk to the nearest surviving directory, whose mtime records the entry
+# removal.
 for rel in "${changed_paths[@]}"; do
     path_newer_than_stamp "$rel" && block "$reason"
 done

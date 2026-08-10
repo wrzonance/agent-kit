@@ -73,6 +73,20 @@ rm -- "$repo/deleted.txt"
 out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
 assert_eq block "$(verdict "$out")" 'a deleted path is not skipped'
 
+# Deleting a directory removes the file and its immediate parent. The nearest
+# surviving ancestor, not the repository root, records that entry removal.
+repo=$(make_repo)
+printf 'AGENT_CMD_VERIFY=true\n' > "$repo/.agent/config.env"
+mkdir -p "$repo/src/pkg"
+printf base > "$repo/src/pkg/deleted.txt"
+commit_base "$repo"
+touch -d '20 seconds ago' "$repo"
+touch "$repo/.agent/cache/stamp-verify"
+sleep 1
+rm -rf -- "$repo/src/pkg"
+out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
+assert_eq block "$(verdict "$out")" 'a recursively deleted directory is not skipped'
+
 # A rename has two NUL records; both sides must be consumed without turning the
 # second path into a fresh status record.
 repo=$(make_repo)
@@ -94,17 +108,15 @@ assert_eq block "$(verdict "$out")" 'an unverified first Stop blocks'
 out=$(stop_input "$repo" true | "$hooks/stop.sh" 2>/dev/null)
 assert_eq allow "$(verdict "$out")" 'an active retry without a stamp terminates the loop'
 
-# A retry rechecks changes made after the successful verification stamp.
+# A stale successful stamp cannot make a failed re-verification retry forever.
 repo=$(make_repo)
 printf 'AGENT_CMD_VERIFY=true\n' > "$repo/.agent/config.env"
 printf base > "$repo/changed.txt"
 commit_base "$repo"
-printf first-change > "$repo/changed.txt"
-touch "$repo/.agent/cache/stamp-verify"
-sleep 1
-printf second-change > "$repo/changed.txt"
+printf changed > "$repo/changed.txt"
+touch -d '20 seconds ago' "$repo/.agent/cache/stamp-verify"
 out=$(stop_input "$repo" true | "$hooks/stop.sh" 2>/dev/null)
-assert_eq block "$(verdict "$out")" 'an active retry re-attests a later edit'
+assert_eq allow "$(verdict "$out")" 'an active retry with a stale stamp terminates the loop'
 
 # A dirty file whose last edit predates the successful stamp is covered on the
 # retry, which preserves the useful end state after a real verify pass.
