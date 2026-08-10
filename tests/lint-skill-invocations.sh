@@ -30,7 +30,8 @@ contract_reads=0
 missing_contract_reads=0
 fallbacks=0
 
-fallbacks=$(rg -n '^[[:space:]]*agentkit=\$\(find ' "$skills_dir" --glob 'SKILL.md' | wc -l | tr -d ' ')
+fallback_matches=$(grep -R -n --include='SKILL.md' '^[[:space:]]*agentkit=\$(find ' "$skills_dir" || true)
+fallbacks=$(printf '%s\n' "$fallback_matches" | grep -c . || true)
 if [[ $fallbacks -ne 1 ]]; then
     printf 'EXPECTED exactly one contract-absent fallback resolver, found %s\n' "$fallbacks" >&2
     unguarded=$((unguarded + 1))

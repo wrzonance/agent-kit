@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Suite: the preflight skills-path contract and its single fallback resolver.
+# shellcheck disable=SC2016  # resolver text is intentionally literal
 set -uo pipefail
 
 TEST_NAME='skills-contract'
@@ -37,7 +38,8 @@ packaged_out=$("$packaged/.shared/scripts/agent-preflight.sh" --worktree "$repo"
 assert_contains "$packaged_out" "skills= path=$packaged" \
     'a packaged preflight reports its packaged skills tree'
 
-resolver_lines=$(rg -n 'agentkit=\$\(find ' "$skills" --glob 'SKILL.md' | wc -l | tr -d ' ')
+resolver_matches=$(find "$skills" -type f -name SKILL.md -exec grep -Hn 'agentkit=\$(find ' {} + || true)
+resolver_lines=$(printf '%s\n' "$resolver_matches" | grep -c . || true)
 assert_eq '1' "$resolver_lines" \
     'the skill tree keeps exactly one literal fallback resolver'
 
@@ -46,10 +48,11 @@ for skill in "$skills"/*/SKILL.md; do
     assert_contains "$(<"$skill")" 'skills= path=' \
         "$name documents the contract field"
     if [[ $name == onboard-repo ]]; then
-        assert_eq '1' "$(rg -c 'agentkit=\$\(find ' "$skill")" \
+        resolver_count=$(grep -c 'agentkit=\$(find ' "$skill" || true)
+        assert_eq '1' "$resolver_count" \
             "$name owns the sole fallback resolver"
     else
-        resolver_count=$(rg -c 'agentkit=\$\(find ' "$skill" || printf '0')
+        resolver_count=$(grep -c 'agentkit=\$(find ' "$skill" || true)
         assert_eq '0' "$resolver_count" \
             "$name does not repeat the fallback resolver"
     fi
