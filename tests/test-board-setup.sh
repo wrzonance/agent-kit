@@ -43,7 +43,8 @@ case "\$*" in
                             '{fields:[{id:"F_status",name:"Status",options:\$o}]}' ;;
   *"project item-list"*)  cat "$tmp/items.json" ;;
   *"project view"*)       printf '{"id":"PVT_project"}\n' ;;
-  *"api graphql"*)        jq -n --argjson o "\$(cat "$tmp/new-options.json")" \
+  *"api graphql"*)        [[ \${GH_STUB_DRAIN_INPUT:-1} == 1 ]] && cat > /dev/null
+                            jq -n --argjson o "\$(cat "$tmp/new-options.json")" \
                             '{data:{updateProjectV2Field:{projectV2Field:{id:"F_status",options:\$o}}}}' ;;
   *"project item-edit"*)  printf '%s\n' "\$*" >> "$tmp/edits.log"; printf '{}\n' ;;
   *"project link"*)       printf '{}\n' ;;
@@ -114,8 +115,10 @@ assert_contains "$out" 'replacing the columns clears all of them' \
 
 # Read the board BEFORE mutating it. Afterwards there is nothing left to read:
 # the assignments are gone and no call can say what they were.
-snapshot_pos=$(grep -n 'project item-list' "$tmp/gh.log" | head -1 | cut -d: -f1)
-mutate_pos=$(grep -n 'api graphql' "$tmp/gh.log" | head -1 | cut -d: -f1)
+# Scan the file directly. Piping grep into head makes grep keep writing after
+# head has found its first match, which is another avoidable SIGPIPE boundary.
+snapshot_pos=$(awk '/project item-list/ { print NR; exit }' "$tmp/gh.log")
+mutate_pos=$(awk '/api graphql/ { print NR; exit }' "$tmp/gh.log")
 if [[ -n $snapshot_pos && -n $mutate_pos ]] && ((snapshot_pos < mutate_pos)); then
     _pass 'the snapshot is taken before the mutation'
 else
@@ -147,6 +150,18 @@ out=$(run --repo-root "$repo" --project 9 --vocab 'Todo,Done')
 assert_contains "$out" 'not one of the new columns; left unset' \
     'an item whose column was dropped is named, not dropped silently'
 assert_contains "$out" '1 left unset' 'and counted separately from the restored ones'
+
+# --- a non-draining GraphQL consumer ---------------------------------------
+# The real gh CLI consumes --input, but a stub that exits before reading it can
+# close the pipe while jq is still serialising a large request body. Keep this
+# payload above the pipe buffer so the regression is deterministic rather than
+# depending on CI scheduling.
+set_board '[{"id":"a","name":"A"}]'
+repo=$(new_repo)
+large_column=$(printf '%131072s' '' | tr ' ' x)
+out=$(GH_STUB_DRAIN_INPUT=0 run --repo-root "$repo" --project 9 --vocab "$large_column")
+assert_not_contains "$out" 'Broken pipe' \
+    'a non-draining GraphQL consumer does not leak jq Broken pipe output'
 
 # --- already correct --------------------------------------------------------
 # The mutation rewrites every option id even when the names are unchanged, so

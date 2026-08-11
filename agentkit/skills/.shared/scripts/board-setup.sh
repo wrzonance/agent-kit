@@ -216,9 +216,9 @@ else
     mutation='mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
       updateProjectV2Field(input: {fieldId: $fieldId, singleSelectOptions: $options}) {
         projectV2Field { ... on ProjectV2SingleSelectField { id options { id name } } } } }'
-    updated=$(jq -n --arg q "$mutation" --arg fid "$field_id" --argjson opts "$options_arg" \
-        '{query: $q, variables: {fieldId: $fid, options: $opts}}' |
-        gh api graphql --input - 2> /dev/null) ||
+    mutation_payload=$(jq -n --arg q "$mutation" --arg fid "$field_id" --argjson opts "$options_arg" \
+        '{query: $q, variables: {fieldId: $fid, options: $opts}}')
+    updated=$(gh api graphql --input - 2> /dev/null <<< "$mutation_payload") ||
         die "could not set the Status columns on project $project_number"
     # A GraphQL error is a 200 with an errors array, so a non-zero exit is not
     # the only way this fails.
