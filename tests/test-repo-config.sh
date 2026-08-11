@@ -103,6 +103,30 @@ printf 'AGENT_CMD_VERIFY=/bin/sh -c true\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an absolute argv[0]'
 
+# Quoted argv tokens preserve spaces without invoking a shell. The executable
+# itself may be a repository-relative path containing a space, and later args
+# may be paths or literal globs with spaces too.
+mkdir -p "$repo/My Project/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/My Project/tools/verify"
+chmod +x "$repo/My Project/tools/verify"
+cat > "$repo/.agent/config.env" <<'CFG'
+AGENT_CMD_VERIFY="My Project/tools/verify" --input "My Project/input file"
+AGENT_RUNDIR_VERIFY="My Project"
+CFG
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_VERIFY="My Project/tools/verify" --input "My Project/input file"' \
+    'accepts quoted argv tokens containing spaces'
+assert_contains "$out" 'AGENT_RUNDIR_VERIFY=My Project' \
+    'accepts a rundir containing a space'
+mapfile -d '' -t parsed < <("$rc_sh" --repo-root "$repo" --get-argv AGENT_CMD_VERIFY)
+assert_eq 'My Project/tools/verify' "${parsed[0]:-}" 'returns the spaced executable as one argv token'
+assert_eq '--input' "${parsed[1]:-}" 'returns an ordinary argument after a spaced executable'
+assert_eq 'My Project/input file' "${parsed[2]:-}" 'returns a spaced argument as one argv token'
+
+printf 'AGENT_CMD_VERIFY=echo "unterminated\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an unterminated quoted argv token'
+
 # --- absent config ---------------------------------------------------------
 repo=$(mktemp -d "$tmp/repo.XXXXXX")
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
