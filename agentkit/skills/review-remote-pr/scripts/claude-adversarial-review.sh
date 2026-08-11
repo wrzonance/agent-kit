@@ -36,6 +36,7 @@ umask 077
 
 readonly PROGNAME=${0##*/}
 readonly MAX_DIFF_BYTES=10485760 # Claude Code piped-stdin limit (10 MiB)
+readonly DEFAULT_MAX_DURATION_SECONDS=900
 readonly REQUIRED_FLAGS=(
 	--print
 	--model
@@ -65,9 +66,11 @@ DIFF_PATH=""
 TRANSCRIPT_PATH=""
 POLL_SECONDS=120
 MAX_BUDGET_USD="5.00"
+MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
 WORK_DIR=""
 POLLER_PID=""
 CLAUDE_PID=""
+DEADLINE_EPOCH=0
 
 usage() {
 	cat <<EOF
@@ -92,6 +95,8 @@ Options:
   --effort <level>           low|medium|high|xhigh|max (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval (default: $POLL_SECONDS).
   --max-budget-usd <amount>  Hard API spend cap, 0.01-1000 (default: $MAX_BUDGET_USD).
+  --max-duration-seconds <1-86400>
+                             Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
   -h, --help                 Show this help.
 
 Output:
@@ -172,15 +177,34 @@ classify_blocked_reason() {
 # Run a short preflight command with its output captured to a FILE, never a pipe
 # (see the flush defect documented on preflight()), and bounded so a spawn that
 # wedges in a restricted sandbox cannot hang the run. timeout(1) reports 124 on
-# expiry; without coreutils timeout the command still runs, just unbounded.
+# expiry; the preflight requires timeout so a missing binary cannot silently
+# remove the safety bound.
 run_bounded() {
 	local seconds=$1 out_file=$2
 	shift 2
-	if command -v timeout >/dev/null 2>&1; then
-		timeout "$seconds" "$@" >"$out_file" 2>&1
+	timeout --signal=KILL "$seconds" "$@" >"$out_file" 2>&1
+}
+
+seconds_until_deadline() {
+	local now left
+	now=$(date +%s)
+	left=$((DEADLINE_EPOCH - now))
+	((left > 0)) || return 1
+	printf '%s' "$left"
+}
+
+bounded_seconds() {
+	local requested=$1 remaining
+	remaining=$(seconds_until_deadline) || return 1
+	if ((remaining < requested)); then
+		printf '%s' "$remaining"
 	else
-		"$@" >"$out_file" 2>&1
+		printf '%s' "$requested"
 	fi
+}
+
+die_duration() {
+	die "Claude review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
 }
 
 cleanup() {
@@ -248,6 +272,8 @@ parse_args() {
 		--poll-seconds=*) POLL_SECONDS=${1#*=} && shift ;;
 		--max-budget-usd) require_value "$1" "${2:-}" && MAX_BUDGET_USD=$2 && shift 2 ;;
 		--max-budget-usd=*) MAX_BUDGET_USD=${1#*=} && shift ;;
+		--max-duration-seconds) require_value "$1" "${2:-}" && MAX_DURATION_SECONDS=$2 && shift 2 ;;
+		--max-duration-seconds=*) MAX_DURATION_SECONDS=${1#*=} && shift ;;
 		-h | --help) usage && exit 0 ;;
 		*) usage >&2 && die "unknown argument: $1" ;;
 		esac
@@ -264,6 +290,9 @@ validate_args() {
 	esac
 	[[ $POLL_SECONDS =~ ^[0-9]+$ ]] || die "--poll-seconds must be an integer"
 	((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
+	[[ $MAX_DURATION_SECONDS =~ ^[0-9]+$ ]] || die "--max-duration-seconds must be an integer"
+	((MAX_DURATION_SECONDS >= 1 && MAX_DURATION_SECONDS <= 86400)) ||
+		die "--max-duration-seconds must be 1-86400"
 	[[ $MAX_BUDGET_USD =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--max-budget-usd must be a number"
 	awk -v v="$MAX_BUDGET_USD" 'BEGIN{exit !(v>=0.01 && v<=1000)}' ||
 		die "--max-budget-usd must be between 0.01 and 1000"
@@ -283,6 +312,7 @@ validate_args() {
 preflight() {
 	# jq first: every blocked report is emitted through it.
 	command -v jq >/dev/null || die "jq is required but was not found on PATH"
+	command -v timeout >/dev/null || die "timeout is required to enforce the review duration ceiling"
 	CLAUDE_RESOLVED=$(command -v -- "$CLAUDE_BIN" 2>/dev/null) ||
 		die_blocked claude-missing "claude executable not found: $CLAUDE_BIN"
 	[[ -x $CLAUDE_RESOLVED ]] ||
@@ -297,9 +327,11 @@ preflight() {
 # costs milliseconds and catches the sandbox-blocked launch (ENOTIMP/EPERM) that
 # would otherwise surface as an opaque failure mid-review.
 preflight_spawn() {
-	local version_file=$WORK_DIR/claude-version.txt status=0 detail
-	run_bounded 20 "$version_file" "$CLAUDE_RESOLVED" --version || status=$?
+	local version_file=$WORK_DIR/claude-version.txt status=0 detail seconds
+	seconds=$(bounded_seconds 20) || die_duration
+	run_bounded "$seconds" "$version_file" "$CLAUDE_RESOLVED" --version || status=$?
 	((status == 0)) && return 0
+	((status == 124 || status == 137)) && ! seconds_until_deadline >/dev/null && die_duration
 
 	detail=$(squash_text "$(cat -- "$version_file" 2>/dev/null || true)")
 	[[ -n $detail ]] || detail="no diagnostic emitted"
@@ -309,9 +341,11 @@ preflight_spawn() {
 }
 
 preflight_flags() {
-	local help_file=$WORK_DIR/claude-help.txt status=0 detail flag
-	run_bounded 60 "$help_file" "$CLAUDE_RESOLVED" --help || status=$?
+	local help_file=$WORK_DIR/claude-help.txt status=0 detail flag seconds
+	seconds=$(bounded_seconds 60) || die_duration
+	run_bounded "$seconds" "$help_file" "$CLAUDE_RESOLVED" --help || status=$?
 	if ((status != 0)); then
+		((status == 124 || status == 137)) && ! seconds_until_deadline >/dev/null && die_duration
 		detail=$(squash_text "$(cat -- "$help_file" 2>/dev/null || true)")
 		[[ -n $detail ]] || detail="no diagnostic emitted"
 		die_blocked "$(classify_blocked_reason "$detail" exec-denied)" \
@@ -455,6 +489,7 @@ poll_progress() {
 # disabled, in a throwaway working directory, with the verdict schema enforced.
 run_claude() {
 	local input_file=$1 stderr_file=$2 isolation_dir=$3 schema=$4 prompt=$5
+	local seconds
 	local -a args=(
 		--print
 		--model "$MODEL"
@@ -480,7 +515,8 @@ run_claude() {
 	# a CI cancellation would otherwise leave the API call running to completion.
 	# Blocking in `wait` lets the INT/TERM trap fire immediately and clean up.
 	local status=0
-	(cd "$isolation_dir" && exec "$CLAUDE_RESOLVED" "${args[@]}") \
+	seconds=$(seconds_until_deadline) || return 124
+	(cd "$isolation_dir" && exec timeout --signal=KILL "$seconds" "$CLAUDE_RESOLVED" "${args[@]}") \
 		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
 	wait "$CLAUDE_PID" || status=$?
@@ -507,6 +543,9 @@ claude_failure_detail() {
 # reported, not from the exit status alone, which is 1 for both classes.
 fail_claude_exit() {
 	local exit_code=$1 stderr_file=$2 detail reason
+	if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
+		die_duration
+	fi
 	detail=$(squash_text "$(claude_failure_detail "$stderr_file")")
 	reason=$(classify_blocked_reason "$detail" "")
 	if [[ -n $reason ]]; then
@@ -561,6 +600,9 @@ verify_model_identity() {
 main() {
 	parse_args "$@"
 	validate_args
+	local started exit_code=0
+	started=$(date +%s)
+	DEADLINE_EPOCH=$((started + MAX_DURATION_SECONDS))
 
 	WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-adversarial-XXXXXXXXXX")
 	chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
@@ -575,11 +617,10 @@ main() {
 	preflight
 
 	write_review_input "$input_file"
-	local schema prompt started exit_code=0
+	local schema prompt
 	schema=$(verdict_schema)
 	prompt=$(system_prompt)
 
-	started=$(date +%s)
 	poll_progress "$started" &
 	POLLER_PID=$!
 

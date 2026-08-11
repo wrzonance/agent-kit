@@ -30,10 +30,9 @@
 #      contract). stdout carries a blocked JSON object. Callers take the other
 #      harness's reviewer immediately and never report this as a failed review.
 #
-# COST NOTE: unlike Claude Code, `codex exec` exposes no spend-ceiling flag. There
-# is no --max-budget-usd equivalent to enforce. Cost is bounded here by the diff
-# size guard (--max-diff-bytes), the model, and the reasoning effort — so keep the
-# review diff tight; see --max-diff-bytes below.
+# COST NOTE: `codex exec` exposes no provider spend-ceiling flag. This helper
+# applies an observed token ceiling to the one-shot stream and a duration ceiling
+# around the process; both are hard safety failures rather than verdicts.
 #
 # Requires: bash >= 4.2, codex CLI, jq, GNU coreutils.
 
@@ -42,6 +41,8 @@ umask 077
 
 readonly PROGNAME=${0##*/}
 readonly WARN_DIFF_BYTES=262144   # 256 KiB — advise splitting beyond this
+readonly DEFAULT_MAX_DURATION_SECONDS=900
+readonly DEFAULT_MAX_TOKENS=400000
 readonly REQUIRED_FLAGS=(
     --model
     --config
@@ -64,9 +65,14 @@ DIFF_PATH=""
 TRANSCRIPT_PATH=""
 POLL_SECONDS=120
 MAX_DIFF_BYTES=1048576            # 1 MiB — a runaway-diff backstop, not a protocol limit
+MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
+MAX_TOKENS=$DEFAULT_MAX_TOKENS
 WORK_DIR=""
 POLLER_PID=""
 CODEX_PID=""
+LIMIT_PID=""
+LIMIT_REASON_FILE=""
+DEADLINE_EPOCH=0
 
 usage() {
     cat <<EOF
@@ -90,10 +96,12 @@ Options:
                              (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval on stderr (default: $POLL_SECONDS).
   --max-diff-bytes <n>       Reject a review diff larger than this (default: $MAX_DIFF_BYTES).
-                             \`codex exec\` has NO spend ceiling, so diff size is the
-                             primary cost lever. A warning is printed above $WARN_DIFF_BYTES
-                             bytes; split the review into coherent slices instead of
-                             sending one enormous diff.
+                             A warning is printed above $WARN_DIFF_BYTES bytes; split the
+                             review into coherent slices instead of sending one enormous diff.
+  --max-duration-seconds <1-86400>
+                             Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
+  --max-tokens <1024-1000000>
+                             Hard observed token ceiling (default: $MAX_TOKENS).
   -h, --help                 Show this help.
 
 Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
@@ -126,6 +134,11 @@ cleanup() {
         wait "$POLLER_PID" 2>/dev/null || true
         POLLER_PID=""
     fi
+    if [[ -n $LIMIT_PID ]]; then
+        kill "$LIMIT_PID" 2>/dev/null || true
+        wait "$LIMIT_PID" 2>/dev/null || true
+        LIMIT_PID=""
+    fi
     if [[ -n $CODEX_PID ]]; then
         kill "$CODEX_PID" 2>/dev/null || true
         wait "$CODEX_PID" 2>/dev/null || true
@@ -133,6 +146,18 @@ cleanup() {
     fi
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
     return 0
+}
+
+seconds_until_deadline() {
+    local now left
+    now=$(date +%s)
+    left=$((DEADLINE_EPOCH - now))
+    ((left > 0)) || return 1
+    printf '%s' "$left"
+}
+
+die_duration() {
+    die "Codex review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
 }
 
 # Review transcripts contain the complete private diff and must never be placed
@@ -185,6 +210,10 @@ parse_args() {
         --poll-seconds=*) POLL_SECONDS=${1#*=} && shift ;;
         --max-diff-bytes) require_value "$1" "${2:-}" && MAX_DIFF_BYTES=$2 && shift 2 ;;
         --max-diff-bytes=*) MAX_DIFF_BYTES=${1#*=} && shift ;;
+        --max-duration-seconds) require_value "$1" "${2:-}" && MAX_DURATION_SECONDS=$2 && shift 2 ;;
+        --max-duration-seconds=*) MAX_DURATION_SECONDS=${1#*=} && shift ;;
+        --max-tokens) require_value "$1" "${2:-}" && MAX_TOKENS=$2 && shift 2 ;;
+        --max-tokens=*) MAX_TOKENS=${1#*=} && shift ;;
         -h | --help) usage && exit 0 ;;
         *) usage >&2 && die "unknown argument: $1" ;;
         esac
@@ -203,6 +232,12 @@ validate_args() {
     ((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
     [[ $MAX_DIFF_BYTES =~ ^[0-9]+$ ]] || die "--max-diff-bytes must be an integer"
     ((MAX_DIFF_BYTES >= 1024)) || die "--max-diff-bytes must be at least 1024"
+    [[ $MAX_DURATION_SECONDS =~ ^[0-9]+$ ]] || die "--max-duration-seconds must be an integer"
+    ((MAX_DURATION_SECONDS >= 1 && MAX_DURATION_SECONDS <= 86400)) ||
+        die "--max-duration-seconds must be 1-86400"
+    [[ $MAX_TOKENS =~ ^[0-9]+$ ]] || die "--max-tokens must be an integer"
+    ((MAX_TOKENS >= 1024 && MAX_TOKENS <= 1000000)) ||
+        die "--max-tokens must be 1024-1000000"
     [[ $MODE == review && -z $DIFF_PATH ]] && die "--diff is required in review mode"
     return 0
 }
@@ -217,6 +252,7 @@ preflight() {
     [[ -x $CODEX_RESOLVED ]] ||
         die_blocked codex-missing "codex executable is not executable: $CODEX_RESOLVED"
     command -v jq >/dev/null || die "jq is required but was not found on PATH"
+    command -v timeout >/dev/null || die "timeout is required to enforce the review duration ceiling"
 
     local help_file=$WORK_DIR/codex-help.txt
     "$CODEX_RESOLVED" exec --help >"$help_file" 2>&1 ||
@@ -287,8 +323,11 @@ EOF
     grep -q '[^[:space:]]' -- "$resolved" || die "Review diff is empty: $resolved"
     ((bytes <= MAX_DIFF_BYTES)) ||
         die "Review diff is ${bytes} bytes, over --max-diff-bytes ($MAX_DIFF_BYTES). Split the review by coherent diff slices."
+    local estimated_tokens=$(((bytes + 3) / 4))
+    ((estimated_tokens <= MAX_TOKENS)) ||
+        die "Review diff is approximately ${estimated_tokens} input tokens, over --max-tokens $MAX_TOKENS. Raise the ceiling or split the review."
     ((bytes <= WARN_DIFF_BYTES)) ||
-        printf '%s: warning: diff is %s bytes; codex exec has no spend ceiling, consider splitting.\n' \
+        printf '%s: warning: diff is %s bytes; keep the review within --max-tokens and consider splitting.\n' \
             "$PROGNAME" "$bytes" >&2
 
     cat >>"$target" <<'EOF'
@@ -327,9 +366,13 @@ emit_progress() {
 }
 
 poll_progress() {
-    local started=$1
+    local started=$1 sleep_pid=""
+    trap 'if [[ -n $sleep_pid ]]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM
     while :; do
-        sleep "$POLL_SECONDS"
+        sleep "$POLL_SECONDS" &
+        sleep_pid=$!
+        wait "$sleep_pid" 2>/dev/null || true
+        sleep_pid=""
         emit_progress "$started"
     done
 }
@@ -351,6 +394,7 @@ classify_blocked_reason() {
 # all disabled, in a throwaway non-repo directory, with the verdict schema enforced.
 run_codex() {
     local input_file=$1 stderr_file=$2 isolation_dir=$3 schema_file=$4 final_file=$5
+    local seconds
     local -a args=(
         exec
         --model "$MODEL"
@@ -368,12 +412,33 @@ run_codex() {
     )
 
     local status=0
-    "$CODEX_RESOLVED" "${args[@]}" \
+    seconds=$(seconds_until_deadline) || return 124
+    timeout --signal=KILL "$seconds" "$CODEX_RESOLVED" "${args[@]}" \
         <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
+    monitor_token_limit &
+    LIMIT_PID=$!
     wait "$CODEX_PID" || status=$?
     CODEX_PID=""
+    kill "$LIMIT_PID" 2>/dev/null || true
+    wait "$LIMIT_PID" 2>/dev/null || true
+    LIMIT_PID=""
+    [[ $(<"$LIMIT_REASON_FILE") == token-budget ]] && return 125
     return "$status"
+}
+
+verify_token_budget() {
+    local usage
+    usage=$(token_usage_total)
+    if ! [[ $usage =~ ^[0-9]+$ ]]; then
+        printf '%s: warning: Codex omitted token usage; returning an unverified budget result.\n' \
+            "$PROGNAME" >&2
+        printf '%s' null
+        return 0
+    fi
+    ((usage <= MAX_TOKENS)) ||
+        die "Codex review exceeded --max-tokens $MAX_TOKENS (observed $usage)"
+    printf '%s' "$usage"
 }
 
 verify_verdict() {
@@ -405,8 +470,39 @@ observed_model() {
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf ''
 }
 
-# turn.completed carries the only cost signal codex exec exposes. There is no
-# spend ceiling to enforce, so report actual usage and let the caller decide.
+# turn.completed carries the usage signal codex exec exposes. Normalize the
+# common field spellings to one total so the helper can enforce its ceiling.
+token_usage_total() {
+    jq -r -s '
+        [ .[] | select(.type == "turn.completed") | .usage // empty |
+          if (.total_tokens? // .totalTokens? // null) != null then
+              (.total_tokens // .totalTokens)
+          else
+              ((.input_tokens // .inputTokens // 0) +
+               (.output_tokens // .outputTokens // 0) +
+               (.reasoning_tokens // .reasoningTokens // 0) +
+               (.reasoning_output_tokens // .reasoningOutputTokens // 0))
+          end
+        ] | if length == 0 then "null" else add end' \
+        <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
+}
+
+monitor_token_limit() {
+    local usage
+    while [[ -n $CODEX_PID ]] && kill -0 "$CODEX_PID" 2>/dev/null; do
+        usage=$(token_usage_total)
+        if [[ $usage =~ ^[0-9]+$ ]] && ((usage > MAX_TOKENS)); then
+            printf '%s\n' token-budget >"$LIMIT_REASON_FILE"
+            # timeout owns CODEX_PID and puts the reviewed command in its
+            # process group. Kill the group so the real Codex child cannot be
+            # orphaned when the observed token ceiling is exceeded.
+            kill -KILL -- -"$CODEX_PID" 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+    done
+}
+
 token_usage() {
     jq -c -s '[.[] | select(.type == "turn.completed") | .usage] | last // null' \
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
@@ -415,6 +511,9 @@ token_usage() {
 main() {
     parse_args "$@"
     validate_args
+    local started exit_code=0
+    started=$(date +%s)
+    DEADLINE_EPOCH=$((started + MAX_DURATION_SECONDS))
 
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-adversarial-XXXXXXXXXX")
     chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
@@ -425,6 +524,8 @@ main() {
     local stderr_file=$WORK_DIR/stderr.log
     local schema_file=$WORK_DIR/schema.json
     local final_file=$WORK_DIR/final.json
+    LIMIT_REASON_FILE=$WORK_DIR/limit.reason
+    : >"$LIMIT_REASON_FILE"
     mkdir -p -- "$isolation_dir"
 
     prepare_transcript
@@ -433,8 +534,6 @@ main() {
     write_review_input "$input_file"
     verdict_schema >"$schema_file"
 
-    local started exit_code=0
-    started=$(date +%s)
     poll_progress "$started" &
     POLLER_PID=$!
 
@@ -448,6 +547,12 @@ main() {
     local stderr_text reason
     stderr_text=$(cat -- "$stderr_file" 2>/dev/null || true)
     if ((exit_code != 0)); then
+        if [[ $(<"$LIMIT_REASON_FILE") == token-budget ]]; then
+            die "Codex review exceeded --max-tokens $MAX_TOKENS"
+        fi
+        if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
+            die_duration
+        fi
         reason=$(classify_blocked_reason "$stderr_text")
         [[ -n $reason ]] && die_blocked "$reason" "codex exec exited $exit_code: $stderr_text"
         die "Codex exited $exit_code: ${stderr_text:-no diagnostic emitted} (transcript: $TRANSCRIPT_PATH)"
@@ -456,10 +561,16 @@ main() {
     [[ -s $final_file ]] ||
         die "Codex produced no final message; the gate is blocked, not no_findings. Transcript: $TRANSCRIPT_PATH"
 
-    local verdict
+    local verdict used_tokens budget_ceiling
     verdict=$(jq -c . <"$final_file" 2>/dev/null) ||
         die "Codex final message is not valid JSON; see $TRANSCRIPT_PATH"
     verify_verdict "$verdict"
+    used_tokens=$(verify_token_budget)
+    if [[ $used_tokens == null ]]; then
+        budget_ceiling=unverified
+    else
+        budget_ceiling=token-limit
+    fi
 
     jq -n \
         --argjson exitCode "$exit_code" \
@@ -470,13 +581,17 @@ main() {
         --argjson eventCount "$(transcript_event_count)" \
         --arg transcript "$TRANSCRIPT_PATH" \
         --argjson tokenUsage "$(token_usage)" \
+        --argjson maxTokens "$MAX_TOKENS" \
+        --argjson usedTokens "$used_tokens" \
+        --arg budgetCeiling "$budget_ceiling" \
         --argjson verdict "$verdict" \
         '{status: "completed", harness: $harness, exitCode: $exitCode,
           requestedModel: $requestedModel,
           observedModel: (if $observedModel == "" then null else $observedModel end),
           modelVerification: (if $observedModel == "" then "unsupported-by-codex-exec" else "observed" end),
           effort: $effort, eventCount: $eventCount, transcript: $transcript,
-          budgetCeiling: "unsupported-by-codex-exec", tokenUsage: $tokenUsage,
+          budgetCeiling: $budgetCeiling, maxTokens: $maxTokens, usedTokens: $usedTokens,
+          tokenUsage: $tokenUsage,
           verdict: $verdict}'
 }
 

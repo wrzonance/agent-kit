@@ -832,7 +832,8 @@ legitimate response; for every other reason, retrying only burns turns.
 Use `scripts/claude-adversarial-review.sh`, under Bash. It implements the vendor's documented
 programmatic pattern (`--print`, piped diff input, `stream-json --verbose
 --include-partial-messages`, `--json-schema`), reports condition state every `--poll-seconds`, and
-has **no total-duration timeout**. It resolves the executable itself (`$CLAUDE_EXECUTABLE`, else the
+enforces a total-duration ceiling with `--max-duration-seconds` in addition to Claude's hard
+`--max-budget-usd` spend cap. It resolves the executable itself (`$CLAUDE_EXECUTABLE`, else the
 first `claude` on `PATH`); pass `--claude PATH` only for an install that is not on `PATH`.
 
 **Stream contract:** stdout carries **exactly one** JSON object — the completed result, or the
@@ -901,7 +902,7 @@ probe_transcript="$RUN_DIR/claude_probe.ndjson"
 
 probe_rc=0
 "$helper" --mode probe --model "$reviewer_model" --effort "$reviewer_effort" \
-    --transcript "$probe_transcript" --poll-seconds 120 --max-budget-usd 0.25 \
+    --transcript "$probe_transcript" --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 0.25 \
     >"$probe_out" || probe_rc=$?
 
 case "$probe_rc" in
@@ -944,7 +945,7 @@ verdict_path="$RUN_DIR/adversarial.result.json"
 review_rc=0
 "$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort" \
     --diff "$diff_path" --transcript "$transcript" \
-    --poll-seconds 120 --max-budget-usd 5.00 >"$verdict_path" || review_rc=$?
+    --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 5.00 >"$verdict_path" || review_rc=$?
 printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
     "$review_rc" "$verdict_path" "$transcript"
 ```
@@ -952,10 +953,10 @@ printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
 Launch the helper through an asynchronous executor and check its yielded process/cell at least as
 often as `--poll-seconds`. Each stderr progress record is one JSON object reporting `runnerPid` (the
 helper's own PID, not the reviewer's), `elapsedSeconds`, `secondsSinceLastEvent`, `eventCount`,
-`lastEvent`, and `transcriptBytes`. Continue while the process is alive. Silence is a diagnostic
-warning, not permission to kill a large review. Surface repeated silence and API retry events; stop
-only for an explicit user cancellation, a documented external-service failure, budget exhaustion, or
-a harness-level safety limit. Never shrink the diff to the last commit merely to meet a clock.
+`lastEvent`, and `transcriptBytes`. Continue while the process is alive, but honor the helper's hard
+`--max-duration-seconds` ceiling: a duration breach is a blocked review, never `no_findings`. Silence
+is a diagnostic warning until that ceiling; do not shrink the diff to the last commit merely to meet
+an estimate.
 
 Do not accept plain prose or exit `0` alone. Completion requires all of: verified `system/init`, a
 final `result/success` event, `is_error == false`, a valid `structured_output` verdict, and process
@@ -1011,7 +1012,7 @@ diff_path="$RUN_DIR/adversarial.diff"
 verdict_path="$RUN_DIR/adversarial.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
     --diff "$diff_path" \
-    --transcript "$RUN_DIR/codex.jsonl" >"$verdict_path" || {
+    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >"$verdict_path" || {
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
 }
@@ -1019,11 +1020,12 @@ jq '{verdict: .verdict.verdict, findings: .verdict.findings, tokenUsage}' <"$ver
 ```
 
 Two asymmetries against the peer-CLI path (harness-allow: comparing the two is the subject), both reported in the result object rather than hidden:
-`codex exec` exposes **no spend ceiling**, so there is no `--max-budget-usd` equivalent and diff
-size is the only cost lever (`budgetCeiling: "unsupported-by-codex-exec"`); and its event stream
-carries no model field, so the initialized model cannot be verified the way Claude Code's
-`system/init` allows (`modelVerification: "unsupported-by-codex-exec"`). It does report real
-`tokenUsage`, which Claude Code's helper reports as cost instead.
+`codex exec` exposes no provider spend flag, so the helper applies a hard observed-token ceiling
+with `--max-tokens` as well as a total-duration ceiling with `--max-duration-seconds`; both are
+reported as safety failures rather than accepted verdicts. Its event stream carries no model field,
+so the initialized model cannot be verified the way Claude Code's `system/init` allows
+(`modelVerification: "unsupported-by-codex-exec"`). It reports the observed `tokenUsage` and the
+configured/used token ceiling in the result object.
 
 ```text
 Adversarially review the following diff BLIND. You have no issue, spec, ADR, goal, or project context by design. Do not use tools or read files. Find only concrete correctness, security, reliability, or contract regressions. Rank findings [P1]/[P2], cite file:line, explain the failure scenario, and suggest the smallest safe fix. Ignore style-only preferences.
@@ -1445,10 +1447,10 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | Tempted to run `codex exec review` | Don't. That subcommand reviews the *current repository* with full context — the opposite of a blind diff-only reviewer, and non-deterministic in shape. Use `codex-adversarial-review.sh`. |
 | `codex exec "prompt"` hangs forever | It reads stdin even when the prompt is an argument (it prints `Reading additional input from stdin...`) and blocks until EOF. Always redirect: `</dev/null`, or pass `-` and redirect the prompt file in. Measured: hangs past 180s without redirection, completes in ~5s with it. |
 | Review diff built with a wide `-U` | Context width is the largest cost lever in the gate. Measured on a 3-file/9-hunk change, `-U80` cost 10.4× `-U3` and emitted 77% of the full text of every touched file. Step 1b uses `-U25`; raise it only for hunks that genuinely need more surrounding code. |
-| Expecting a spend ceiling on the Codex path | `codex exec` has no `--max-budget-usd` equivalent. Bound cost with diff size (`--max-diff-bytes`), model, and effort; the helper reports actual `tokenUsage` instead. |
+| Expecting a provider-dollar ceiling on the Codex path | `codex exec` has no `--max-budget-usd` equivalent. The helper enforces observed `--max-tokens` and `--max-duration-seconds`, while also bounding input with `--max-diff-bytes`; it reports actual `tokenUsage`. |
 | Trusting the Codex reviewer's model identity | Its event stream carries no model field, so `modelVerification` is `unsupported-by-codex-exec`. Only the Claude helper can assert the initialized model matches the requested one. |
-| Fixed wall-clock timeout for Claude | Remove it. Stream NDJSON and poll condition state every two minutes; duration scales with the diff. A harness safety cap is a failure boundary, never a reason to shrink the diff. |
-| Claude is silent between polls | Report PID, elapsed time, seconds since last event, and transcript growth. Silence is a warning; do not kill a live process solely because a large review exceeds an estimate. |
+| Treating a fixed wall-clock timeout as a verdict | Keep the explicit `--max-duration-seconds` safety cap. A breach is a blocked review, never `no_findings`; do not shrink the diff to meet an estimate. |
+| Claude is silent between polls | Report PID, elapsed time, seconds since last event, and transcript growth. Silence is a warning until the helper's duration ceiling, then the helper must terminate the review. |
 | Claude exits 0 with no verdict | Exit code is necessary, not sufficient. Require verified `system/init` plus final `result/success.structured_output`; otherwise the gate is blocked. |
 | Adversarial helper exits 3 reported as BLOCKED | Exit `3` is **environment-blocked**, not a blocked gate: Claude cannot run here, so stdout carries `{"status":"blocked","blockedReason":…,"fallback":"blind-codex-agent"}`. Take the blind same-harness fallback immediately, do not retry, and never report the gate blocked for this reason. Only exit `1` (stdout empty, reason on stderr) is a genuinely blocked gate. |
 | Probing Claude when the preflight already said `peer-cli= <name> absent` | Skip the probe entirely and go straight to the fallback. The Step 0a contract already answered it; probing burns an agent lifecycle to rediscover `ENOTIMP`. |
