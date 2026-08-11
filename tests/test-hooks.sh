@@ -567,6 +567,31 @@ out=$(pre_input "$repo" 'sed -n 1p .github/workflows/ci.yml 2>/dev/stderr' \
     'shell-read-stderr' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'allows a read with stderr sink redirection'
 
+# Quoting the sink target must not turn stderr housekeeping into a write. Cover
+# both a compound transcript and the minimal repro for every supported sink.
+quoted_read_id=0
+for quote in double single; do
+    for sink in null stdout stderr; do
+        if [[ $quote == double ]]; then
+            redirect="2>\"/dev/$sink\""
+        else
+            redirect="2>'/dev/$sink'"
+        fi
+        quoted_read_id=$((quoted_read_id + 1))
+        printf -v compound 'find . -path "*/instructions/*.md" -print %s | sort\nsed -n 1p .github/workflows/ci.yml %s' \
+            "$redirect" "$redirect"
+        out=$(pre_input "$repo" "$compound" "shell-quoted-compound-$quoted_read_id" \
+            | "$hooks/pre-tool-use.sh" 2>/dev/null)
+        assert_eq 'allow' "$(decision "$out")" \
+            "allows a $quote-quoted compound read with /dev/$sink sink"
+        out=$(pre_input "$repo" "sed -n 1p .github/workflows/ci.yml $redirect" \
+            "shell-quoted-minimal-$quoted_read_id" \
+            | "$hooks/pre-tool-use.sh" 2>/dev/null)
+        assert_eq 'allow' "$(decision "$out")" \
+            "allows a $quote-quoted minimal read with /dev/$sink sink"
+    done
+done
+
 # The sink forms remain harmless even when written explicitly or with an
 # appended fd redirect. None of these commands names a protected target.
 sink_id=0
@@ -592,6 +617,20 @@ for guarded_write in 'sed -i s/a/b/ .github/workflows/ci.yml 2>/dev/null' \
         | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "still guards protected write: $guarded_write"
 done
+
+# A device-like suffix is not a sink. Repository-declared paths extend the
+# defaults, so the complete redirect remains harmless while the suffix is
+# still denied as a protected write target.
+device_repo=$(make_repo)
+printf 'AGENT_REPO_SLUG=e/e\nAGENT_PROTECTED_PATHS=/dev/null.backup\n' \
+    > "$device_repo/.agent/config.env"
+out=$(pre_input "$device_repo" 'printf x >/dev/null' 'shell-device-sink' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'allows the complete /dev/null sink'
+out=$(pre_input "$device_repo" 'printf x >/dev/null.backup' 'shell-device-suffix' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'guards a protected device-like suffix instead of treating it as /dev/null'
 
 # Reading one of those files is not writing it, and an ordinary write elsewhere
 # is not this rule's business. Both would make the guard noise.

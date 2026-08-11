@@ -482,7 +482,9 @@ guard_shell_write_targets() {
     # Redirects to device sinks discard output but do not write a protected
     # path. Remove them before deciding whether the command is write-shaped.
     write_probe=$(sed -E \
-        's/[0-9]*>>?[[:space:]]*\/dev\/(null|stdout|stderr)//g' \
+        -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
+        -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
+        -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
         <<< "$write_probe")
 
     # Two stages, because the alternative is parsing operands per command and
