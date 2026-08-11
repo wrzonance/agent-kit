@@ -168,6 +168,10 @@ assert_contains "$session_notice" "$bootstrap_cmd --dry-run" \
     'model advice uses the resolver-relative inspect command'
 assert_contains "$session_human" "$bootstrap_cmd" \
     'operator advice uses the resolver-relative write command'
+assert_not_contains "$session_notice" 'hooks/../skills/.shared/scripts/bootstrap-repo.sh' \
+    'model advice does not expose the hook-relative install path'
+assert_not_contains "$session_human" 'hooks/../skills/.shared/scripts/bootstrap-repo.sh' \
+    'operator advice does not expose the hook-relative install path'
 if grep -qE "$pinned_path" <<< "$session_notice"; then
     _fail 'model advice does not teach a pinned plugin path' \
         "unexpected regex: $pinned_path"
