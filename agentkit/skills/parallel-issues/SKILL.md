@@ -588,7 +588,7 @@ config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
 max_concurrent_threads_per_session=''
 if [[ -r $config_file ]]; then
     max_concurrent_threads_per_session=$(awk '
-        /^[[:space:]]*\[multi_agent_v2\][[:space:]]*$/ { in_section=1; next }
+        /^[[:space:]]*\[(agents|features\.multi_agent_v2|multi_agent_v2)\][[:space:]]*$/ { in_section=1; next }
         /^[[:space:]]*\[/ { in_section=0 }
         in_section && /^[[:space:]]*max_concurrent_threads_per_session[[:space:]]*=/ {
             sub(/^[^=]*=/, "")
@@ -604,7 +604,7 @@ if [[ $max_concurrent_threads_per_session =~ ^[1-9][0-9]*$ ]]; then
     printf 'runtime concurrency cap: %s total threads, including the root\n' \
         "$max_concurrent_threads_per_session"
 else
-    printf 'Unable to advertise concurrency: %s is absent or lacks a valid [multi_agent_v2] max_concurrent_threads_per_session; do not infer a cap from prose.\n' "$config_file" >&2
+    printf 'Unable to advertise concurrency: %s is absent or lacks a valid max_concurrent_threads_per_session under [agents] (v1), [features.multi_agent_v2], or [multi_agent_v2] (v2); do not infer a cap from prose.\n' "$config_file" >&2
     exit 1
 fi
 ```

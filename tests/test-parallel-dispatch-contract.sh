@@ -51,6 +51,35 @@ out=$(CODEX_HOME="$codex_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/de
 assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
 
+v1_home="$tmp/v1-home"
+mkdir -p "$v1_home"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' 'max_depth = 2' \
+    > "$v1_home/config.toml"
+out=$(CODEX_HOME="$v1_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+status=$?
+assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+    'the v1 [agents] section advertises the cap'
+assert_eq '0' "$status" 'a v1 [agents] cap exits zero'
+
+v2_home="$tmp/v2-home"
+mkdir -p "$v2_home"
+printf '%s\n' '[features.multi_agent_v2]' 'enabled = true' \
+    'max_concurrent_threads_per_session = 8' > "$v2_home/config.toml"
+out=$(CODEX_HOME="$v2_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+status=$?
+assert_contains "$out" 'runtime concurrency cap: 8 total threads, including the root' \
+    'the v2 [features.multi_agent_v2] section advertises the cap'
+assert_eq '0' "$status" 'a v2 [features.multi_agent_v2] cap exits zero'
+
+commented_home="$tmp/commented-home"
+mkdir -p "$commented_home"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' \
+    '# [features.multi_agent_v2]' '# max_concurrent_threads_per_session = 99' \
+    > "$commented_home/config.toml"
+out=$(CODEX_HOME="$commented_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+    'a commented-out v2 block does not shadow the live [agents] cap'
+
 missing_home="$tmp/missing"
 mkdir -p "$missing_home"
 err=$(env -u CODEX_HOME HOME="$missing_home" bash -c "$snippet" 2>&1 >/dev/null)
