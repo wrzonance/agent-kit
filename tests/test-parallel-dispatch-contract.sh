@@ -27,6 +27,27 @@ assert_not_contains "$text" 'Max 5 issues' \
 assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 
+outer_open_count=$(awk '$0 == "````text" { count++ } END { print count + 0 }' "$skill")
+outer_close_count=$(awk '$0 == "````" { count++ } END { print count + 0 }' "$skill")
+assert_eq '1' "$outer_open_count" \
+    'the per-issue prompt has one four-backtick opening fence'
+assert_eq '1' "$outer_close_count" \
+    'the per-issue prompt has one four-backtick closing fence'
+
+prompt_body=$(awk '
+    $0 == "````text" { capture=1; next }
+    capture && $0 == "````" { exit }
+    capture { print }
+' "$skill")
+assert_contains "$prompt_body" '<PASTE the complete output selected by the boundary mode' \
+    'the prompt placeholders remain inside the outer fence'
+inner_open_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```bash" { count++ } END { print count + 0 }')
+inner_close_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```" { count++ } END { print count + 0 }')
+assert_eq '2' "$inner_open_count" \
+    'inner bash examples retain their triple-backtick openings'
+assert_eq '2' "$inner_close_count" \
+    'inner bash examples retain their triple-backtick closers'
+
 snippet=$(awk '
     index($0, "config_file=\"${CODEX_HOME:-$HOME/.codex}/config.toml\"") == 1 { capture=1 }
     capture && /^```$/ { exit }
