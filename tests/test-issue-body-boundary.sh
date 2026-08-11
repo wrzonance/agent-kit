@@ -33,10 +33,6 @@ assert_not_contains "$skill" '<BEGIN UNTRUSTED ISSUE DATA>' \
     'issue data is not fenced with a fixed opening delimiter'
 assert_not_contains "$skill" '<END UNTRUSTED ISSUE DATA>' \
     'issue data is not fenced with a fixed closing delimiter'
-assert_not_contains "$skill" '<BEGIN UNTRUSTED ISSUE DATA>' \
-    'issue data is not fenced with a fixed opening delimiter'
-assert_not_contains "$skill" '<END UNTRUSTED ISSUE DATA>' \
-    'issue data is not fenced with a fixed closing delimiter'
 assert_not_contains "$skill" 'Agents will treat issue bodies as the spec' \
     'autonomous mode no longer grants issue bodies instruction authority'
 assert_not_contains "$skill" 'agent reads the issue body as the spec and proceeds' \
