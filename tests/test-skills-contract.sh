@@ -58,4 +58,61 @@ for skill in "$skills"/*/SKILL.md; do
     fi
 done
 
+onboard="$skills/onboard-repo/SKILL.md"
+onboard_text=$(<"$onboard")
+assert_contains "$onboard_text" 'AGENTS.md' \
+    'onboarding reviews the repository instruction files'
+assert_contains "$onboard_text" 'CLAUDE.md' \
+    'onboarding includes the other common instruction file'
+assert_contains "$onboard_text" 'untrusted data' \
+    'instruction-file content is treated as repository data'
+assert_contains "$onboard_text" 'Conflicting' \
+    'onboarding classifies conflicting guidance'
+assert_contains "$onboard_text" 'Duplicated' \
+    'onboarding classifies duplicated guidance'
+assert_contains "$onboard_text" 'Repo-specific' \
+    'onboarding preserves repository-specific guidance'
+assert_contains "$onboard_text" 'discover equivalents' \
+    'onboarding discovers equivalent instruction files beyond the examples'
+assert_contains "$onboard_text" 'proposed diff' \
+    'onboarding emits a proposed diff'
+assert_contains "$onboard_text" 'must not delete, rewrite' \
+    'onboarding prohibits deleting or rewriting instruction files'
+assert_contains "$onboard_text" 'explicitly retained' \
+    'onboarding retains repository-specific guidance'
+
+assert_line_order() {
+    local label=$1 first=$2 second=$3
+    if [[ -n $first && -n $second && $first -lt $second ]]; then
+        printf 'ok - %s\n' "$label"
+    else
+        printf 'not ok - %s\n' "$label" >&2
+        exit 1
+    fi
+}
+
+step_two_line=$(grep -m1 -n '^## Step 2 ' "$onboard" | cut -d: -f1)
+review_line=$(grep -m1 -in 'review existing instructions' "$onboard" | cut -d: -f1)
+write_line=$(grep -m1 -n '^"\$shared/bootstrap-repo\.sh"$' "$onboard" | cut -d: -f1)
+audit_approval_line=$(grep -m1 -n 'explicitly approved onboarding pass' "$onboard" | cut -d: -f1)
+write_approval_line=$(grep -m1 -n 'approved the proposed onboarding additions' "$onboard" | cut -d: -f1)
+conflicting_line=$(grep -m1 -n '^- \*\*Conflicting\*\*' "$onboard" | cut -d: -f1)
+duplicated_line=$(grep -m1 -n '^- \*\*Duplicated\*\*' "$onboard" | cut -d: -f1)
+repo_specific_line=$(grep -m1 -n '^- \*\*Repo-specific\*\*' "$onboard" | cut -d: -f1)
+
+assert_line_order 'instruction review precedes the config write section' \
+    "$review_line" "$step_two_line"
+assert_line_order 'approval-gated review precedes the non-dry-run bootstrap write' \
+    "$review_line" "$write_line"
+assert_line_order 'the config write section precedes the non-dry-run bootstrap write' \
+    "$step_two_line" "$write_line"
+assert_line_order 'the audit demands an explicitly approved pass before Step 2' \
+    "$audit_approval_line" "$step_two_line"
+assert_line_order 'user approval of the additions precedes the non-dry-run bootstrap write' \
+    "$write_approval_line" "$write_line"
+assert_line_order 'Conflicting is classified before Duplicated' \
+    "$conflicting_line" "$duplicated_line"
+assert_line_order 'Duplicated is classified before Repo-specific' \
+    "$duplicated_line" "$repo_specific_line"
+
 finish
