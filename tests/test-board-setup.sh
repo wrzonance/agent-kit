@@ -43,7 +43,8 @@ case "\$*" in
                             '{fields:[{id:"F_status",name:"Status",options:\$o}]}' ;;
   *"project item-list"*)  cat "$tmp/items.json" ;;
   *"project view"*)       printf '{"id":"PVT_project"}\n' ;;
-  *"api graphql"*)        jq -n --argjson o "\$(cat "$tmp/new-options.json")" \
+  *"api graphql"*)        [[ ${GH_STUB_DRAIN_INPUT:-1} == 1 ]] && cat > /dev/null
+                            jq -n --argjson o "\$(cat "$tmp/new-options.json")" \
                             '{data:{updateProjectV2Field:{projectV2Field:{id:"F_status",options:\$o}}}}' ;;
   *"project item-edit"*)  printf '%s\n' "\$*" >> "$tmp/edits.log"; printf '{}\n' ;;
   *"project link"*)       printf '{}\n' ;;
@@ -156,7 +157,7 @@ assert_contains "$out" '1 left unset' 'and counted separately from the restored 
 set_board '[{"id":"a","name":"A"}]'
 repo=$(new_repo)
 large_column=$(printf '%131072s' '' | tr ' ' x)
-out=$(run --repo-root "$repo" --project 9 --vocab "$large_column")
+out=$(GH_STUB_DRAIN_INPUT=0 run --repo-root "$repo" --project 9 --vocab "$large_column")
 assert_not_contains "$out" 'Broken pipe' \
     'a non-draining GraphQL consumer does not leak jq Broken pipe output'
 
