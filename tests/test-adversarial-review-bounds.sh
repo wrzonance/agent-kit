@@ -64,6 +64,48 @@ sleep 5
 EOF
 chmod +x "$tmp/fake-codex"
 
+cat >"$tmp/fake-claude-success" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == --version ]]; then
+    printf '%s\n' 'claude 2.1.0'
+    exit 0
+fi
+if [[ ${1:-} == --help ]]; then
+    printf '%s\n' '--print --model --effort --system-prompt --tools --permission-mode'
+    printf '%s\n' '--no-session-persistence --safe-mode --disable-slash-commands'
+    printf '%s\n' '--strict-mcp-config --mcp-config --output-format'
+    printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
+    exit 0
+fi
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-test","tools":["StructuredOutput"],"mcp_servers":[]}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[]},"modelUsage":{"claude-test":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
+EOF
+chmod +x "$tmp/fake-claude-success"
+
+cat >"$tmp/fake-codex-success" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == exec && ${2:-} == --help ]]; then
+    printf '%s\n' '--model --config --sandbox --ephemeral --ignore-user-config'
+    printf '%s\n' '--ignore-rules --skip-git-repo-check --output-schema'
+    printf '%s\n' '--output-last-message --json'
+    exit 0
+fi
+last_file=''
+while (($#)); do
+    if [[ $1 == --output-last-message ]]; then
+        last_file=$2
+        shift 2
+    else
+        shift
+    fi
+done
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":20}}'
+printf '%s\n' '{"verdict":"no_findings","findings":[]}' >"$last_file"
+EOF
+chmod +x "$tmp/fake-codex-success"
+
 private="$tmp/run"
 mkdir -- "$private"
 chmod 700 -- "$private"
@@ -155,5 +197,33 @@ assert_contains "$skill_text" '--max-duration-seconds' \
     'the review skill passes an explicit duration ceiling'
 assert_contains "$skill_text" '--max-tokens 400000' \
     'the review skill passes an explicit Codex token ceiling'
+
+claude_success_dir="$tmp/claude-success"
+mkdir -- "$claude_success_dir"
+chmod 700 -- "$claude_success_dir"
+claude_success_result="$tmp/claude-success.result.json"
+CLAUDE_EXECUTABLE="$tmp/fake-claude-success" bash "$claude" \
+    --mode review --model claude-test --diff "$no_usage_diff" \
+    --transcript "$claude_success_dir/transcript.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-budget-usd 0.25 >"$claude_success_result"
+assert_contains "$(cat "$claude_success_result")" '"status": "completed"' \
+    'Claude returns a completed result for a valid provider stream'
+assert_contains "$(cat "$claude_success_result")" '"verdict": {' \
+    'Claude preserves the structured no-findings verdict'
+assert_contains "$(cat "$claude_success_result")" '"verdict": "no_findings"' \
+    'Claude preserves the no-findings verdict value'
+
+codex_success_dir="$tmp/codex-success"
+mkdir -- "$codex_success_dir"
+chmod 700 -- "$codex_success_dir"
+codex_success_result="$tmp/codex-success.result.json"
+CODEX_EXECUTABLE="$tmp/fake-codex-success" bash "$codex" \
+    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --transcript "$codex_success_dir/transcript.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-tokens 1024 >"$codex_success_result"
+assert_contains "$(cat "$codex_success_result")" '"status": "completed"' \
+    'Codex returns a completed result for a valid provider stream'
+assert_contains "$(cat "$codex_success_result")" '"budgetCeiling": "token-limit"' \
+    'Codex reports an observed token ceiling when usage is present'
 
 finish

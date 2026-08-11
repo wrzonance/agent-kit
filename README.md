@@ -271,17 +271,15 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-Twelve gates and 19 suites — shellcheck on shipped and test
-scripts, `bash -n`, a bash 5.2 compatibility check, every fenced code block in
-the skill markdown, ecosystem- harness- and org-neutrality, then the unit
-suites. The run prints its own totals, so read them from the run rather than
-from here; this file deliberately does not carry a suite count.
+The run checks shell syntax and style, bash 5.2 compatibility, every fenced code
+block in the skill markdown, ecosystem/harness/org neutrality, and the
+behavioral unit suites. It prints its own totals, so read them from the run
+rather than maintaining a count here.
 
-**Green does not mean "the tree is good"** — it used to say that, and an external
-review then found twenty-two defects through it, several of them in scripts with
-no behavioural suite at all (`worktree-commit.sh`, `gh-pr-state.sh`, the
-adversarial-review helpers, `ci-gap.sh`). Green means the gates that exist
-passed. See `docs/` for the standing review findings.
+**Green does not mean "the tree is good"** — an external review found twenty-two
+defects through this project, which is why the helper scripts have focused
+behavioral suites as well as structural gates. Green means the declared gates
+and suites passed. See `docs/` for the standing review findings.
 
 ---
 
