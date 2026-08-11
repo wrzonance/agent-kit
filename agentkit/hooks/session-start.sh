@@ -21,6 +21,16 @@ self_dir=${BASH_SOURCE[0]%/*}
 # shellcheck source=lib/guard-lib.sh
 source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
 
+# The guard library is optional so SessionStart can fail open on a partial
+# install. Keep the resolver-relative command only when its hint is available;
+# otherwise retain the hook-relative path that works from the source layout.
+resolve_hint=${RESOLVE_HINT-}
+if [[ -n $resolve_hint ]]; then
+    bootstrap_command="\"\$agentkit/.shared/scripts/bootstrap-repo.sh\""
+else
+    bootstrap_command="\"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\""
+fi
+
 # Shown when a repository has no .agent/config.env. Without it every
 # evidence-gated guard stays inert and the skills fall back to probing, which
 # looks identical to the tooling being broken -- the failure mode is silence, so
@@ -42,9 +52,9 @@ rediscovering.
 The script alone, if the user would rather do it by hand (safe to inspect first
 with --dry-run; it writes only .agent/ and .gitignore):
 
-${RESOLVE_HINT}
-  \"\$agentkit/.shared/scripts/bootstrap-repo.sh\" --dry-run   # inspect
-  \"\$agentkit/.shared/scripts/bootstrap-repo.sh\"             # then write
+${resolve_hint}
+  ${bootstrap_command} --dry-run   # inspect
+  ${bootstrap_command}             # then write
 
 It writes two files the repository is expected to commit:
   .agent/config.env   repo slug, trunk branch, board number, Status vocabulary
@@ -258,8 +268,8 @@ if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
     human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
 board, triage and commit guards are inert. Ask the agent to onboard it -- it has an onboard-repo skill that also fills in
 the verify commands -- or run:
-${RESOLVE_HINT}
-  \"\$agentkit/.shared/scripts/bootstrap-repo.sh\""
+${resolve_hint}
+  ${bootstrap_command}"
 elif [[ $in_repo -eq 0 ]]; then
     human='agentkit: this session did not start inside a git repository, so repository-scoped
 guards and the end-of-turn verification check are inert.'
