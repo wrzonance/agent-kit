@@ -31,7 +31,10 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
   --label NAME   Label used in the log file name (default: the command's basename).
   --approve      Record explicit approval for the current repository declaration and
-                 executable inputs, but do not run the command.
+                 executable inputs, but do not run the command. The confirmation
+                 is read from the terminal (defense-in-depth: a non-interactive
+                 agent shell cannot answer it, though it is not an unforgeable
+                 human-only gate). Review, then approve from your own terminal.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -53,9 +56,12 @@ Repository declarations (<git-toplevel>/.agent/config.env):
 
 Trust boundary:
   Commands selected with --cmd are repository-controlled. The first run, and any
-  run after the declaration or repository-backed command input changes, requires
-  `agent-run.sh --approve --cmd NAME`. Approval is stored outside the checkout in
-  an owner-only state directory and is never committed to the repository.
+  run after the declaration or repository-backed command input changes, prompt
+  for `agent-run.sh --approve --cmd NAME`. Review it, then approve from a
+  terminal. That terminal confirmation is defense-in-depth, not a human-only
+  guarantee: a same-user process can drive a pseudo-terminal or write the record
+  directly. Approval is stored outside the checkout in an owner-only state
+  directory and is never committed to the repository.
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
@@ -642,6 +648,35 @@ compute_trust_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
+# Approval reads a confirmation from the controlling terminal. This is
+# defense-in-depth, not a cryptographic human-only gate: an agent with arbitrary
+# command execution can allocate a pseudo-terminal or write the trust record
+# directly (same user), which no in-band check prevents. What it does buy is
+# closing the failure this was filed for -- an agent reading the refusal below
+# and re-running the exact `--approve` it printed -- since a non-interactive
+# shell cannot answer the prompt. Enforced here in the tool rather than in a
+# hook, whose command-line matcher fails open on ordinary shell spellings.
+# A declined or absent confirmation records no trust.
+require_human_approval() {
+    local cmd_name=$1 reply
+    # Scope the error suppression to the open attempt: a bare `exec ... 2>/dev/null`
+    # would redirect this script's stderr for good, swallowing every later message.
+    { exec 3< /dev/tty; } 2> /dev/null || die \
+        "approval reads a confirmation from an interactive terminal, which this
+  shell does not have. Review the declaration and approve it from your own
+  terminal (a defense-in-depth check, not a human-only guarantee)."
+    printf 'Approve repository command %s for this repository state? [y/N] ' \
+        "$cmd_name" > /dev/tty
+    IFS= read -r reply <&3 || reply=
+    # Scope this the same way: a bare `exec ... 2>/dev/null` would redirect the
+    # script's stderr permanently, not just for the fd-closing line.
+    { exec 3<&-; } 2> /dev/null || true
+    case $reply in
+        y | Y | yes | YES | Yes) return 0 ;;
+        *) die 'approval declined.' ;;
+    esac
+}
+
 trust_command() {
     local trust_id current recorded temp
     [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 0
@@ -652,6 +687,7 @@ trust_command() {
     current=$trust_fingerprint
 
     if ((approve_cmd)); then
+        require_human_approval "$cmd_name"
         temp=$trust_file.$$
         if ! printf '%s\n' "$current" > "$temp" 2>/dev/null; then
             die "cannot write temporary trust file: $temp"
@@ -672,8 +708,8 @@ trust_command() {
     [[ $recorded == "$current" ]] && return 0
     printf 'agent-run: refusing unapproved repository command: %s\n' "$cmd_name" >&2
     printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
-    printf '  Review it, then explicitly approve once with:\n' >&2
-    printf '  %s --approve --cmd %s\n' "$0" "$cmd_name" >&2
+    printf '  A human reviews the change and approves it from a terminal with --approve;\n' >&2
+    printf '  that terminal confirmation is defense-in-depth, not a human-only guarantee.\n' >&2
     return 1
 }
 

@@ -11,6 +11,10 @@ source "$here/lib/assert.sh"
 
 hooks="$root/agentkit/hooks"
 skills_root="$root/agentkit/skills"
+# Approval reads a confirmation from the controlling terminal (defense-in-depth,
+# not a human-only gate); the helper supplies that terminal so the end-to-end
+# stamp cases can approve their commands.
+tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 export AGENT_TRUST_ROOT="$tmp/trust"
@@ -870,15 +874,15 @@ repo=$(make_repo)
 printf 'AGENT_CMD_VERIFY=false\nAGENT_CMD_LINT=true\n' > "$repo/.agent/config.env"
 printf 'x\n' > "$repo/changed.txt"
 (cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1 || true
-(cd "$repo" && "$run_sh" --approve --cmd verify) > /dev/null 2>&1
+(cd "$repo" && "$tty_approve" y -- "$run_sh" --approve --cmd verify) > /dev/null 2>&1
 (cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1 || true
-(cd "$repo" && "$run_sh" --approve --cmd lint) > /dev/null 2>&1
+(cd "$repo" && "$tty_approve" y -- "$run_sh" --approve --cmd lint) > /dev/null 2>&1
 (cd "$repo" && "$run_sh" --cmd lint) > /dev/null 2>&1
 out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
 assert_eq 'block' "$(verdict "$out")" 'a passing lint does not satisfy a failing verify'
 
 printf 'AGENT_CMD_VERIFY=true\nAGENT_CMD_LINT=true\n' > "$repo/.agent/config.env"
-(cd "$repo" && "$run_sh" --approve --cmd verify) > /dev/null 2>&1
+(cd "$repo" && "$tty_approve" y -- "$run_sh" --approve --cmd verify) > /dev/null 2>&1
 (cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1
 out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
 assert_eq 'allow' "$(verdict "$out")" 'and the verify that passes does'

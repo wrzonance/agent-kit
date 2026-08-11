@@ -10,6 +10,11 @@ source "$here/lib/assert.sh"
 
 real_run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
 rc_sh="$root/agentkit/skills/.shared/scripts/repo-config.sh"
+# Approval reads a confirmation from the controlling terminal (defense-in-depth,
+# not a human-only gate); the helper supplies that terminal so these
+# resolution/logging cases can approve. See test-agent-run-approval-gate.sh for
+# the boundary itself.
+tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 export AGENT_TRUST_ROOT="$tmp/trust"
@@ -20,8 +25,8 @@ export AGENT_TRUST_ROOT="$tmp/trust"
 # declaration never executes.
 run_sh="$tmp/approved-agent-run.sh"
 # shellcheck disable=SC2016  # the dollar expressions are literal script text.
-printf '#!/bin/sh\n"%s" --approve "$@" >/dev/null 2>&1\nrc=$?\n[ "$rc" -eq 0 ] || exec "%s" "$@"\nexec "%s" "$@"\n' \
-    "$real_run_sh" "$real_run_sh" \
+printf '#!/bin/sh\n"%s" y -- "%s" --approve "$@" >/dev/null 2>&1\nexec "%s" "$@"\n' \
+    "$tty_approve" "$real_run_sh" \
     "$real_run_sh" > "$run_sh"
 chmod +x "$run_sh"
 
@@ -47,8 +52,8 @@ assert_contains "$out" 'refusing unapproved repository command' \
     'a repository command is denied before its first approval'
 assert_not_contains "$out" 'payload-ran' \
     'the denied command never executes'
-(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test) \
-    > /dev/null 2>&1
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" y -- "$real_run_sh" --approve --cmd test) > /dev/null 2>&1
 assert_eq 'no' "$([[ -e $tmp/payload-ran ]] && echo yes || echo no)" \
     'approval does not execute the repository command'
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1)
@@ -65,23 +70,17 @@ assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
     'a changed executable is not run under an old approval'
 
 # Approval persistence must fail loudly rather than claiming success when the
-# temporary record cannot be written or atomically replaced.
+# temporary record cannot be written or atomically replaced. Both cases approve
+# through the terminal helper; the write case additionally has the helper create
+# a directory where the trust temp file (`<trust_file>.<pid>`) would be written,
+# keyed to the approving process's own PID so the collision is deterministic.
 repo=$(make_repo)
 printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
 trust_id=$(printf '%s' "$repo\ntest" | sha256sum | awk '{print $1}')
-write_fail_runner="$tmp/write-fail-runner.sh"
-# shellcheck disable=SC2016  # These expressions belong to the generated runner.
-printf '%s\n' \
-    '#!/bin/sh' \
-    'id=$1' \
-    'trust=$2' \
-    'run=$3' \
-    'mkdir -p "$trust/$id.trust.$$"' \
-    'exec "$run" --approve --cmd test' > "$write_fail_runner"
-chmod +x "$write_fail_runner"
 rc=0
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
-    "$write_fail_runner" "$trust_id" "$trust_root" "$real_run_sh" 2>&1) || rc=$?
+    "$tty_approve" --mkdir-before "$trust_root/$trust_id.trust" y -- \
+    "$real_run_sh" --approve --cmd test 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a failed temporary trust-file write exits nonzero'
 assert_contains "$out" 'cannot write temporary trust file' \
     'a failed temporary trust-file write explains the persistence failure'
@@ -93,16 +92,16 @@ mkdir -p "$mv_fail_bin"
 printf '%s\n' '#!/bin/sh' 'exit 42' > "$mv_fail_bin/mv"
 chmod +x "$mv_fail_bin/mv"
 rc=0
-out=$(cd "$repo" && PATH="$mv_fail_bin:$PATH" \
-    AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test 2>&1) || rc=$?
+out=$(cd "$repo" && PATH="$mv_fail_bin:$PATH" AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" y -- "$real_run_sh" --approve --cmd test 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a failed atomic trust-file replacement exits nonzero'
 assert_contains "$out" 'cannot atomically replace trust file' \
     'a failed atomic trust-file replacement explains the persistence failure'
 assert_not_contains "$out" 'approved test' \
     'a failed atomic trust-file replacement never reports approval'
 
-(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --approve --cmd test) \
-    > /dev/null 2>&1
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" y -- "$real_run_sh" --approve --cmd test) > /dev/null 2>&1
 trust_file="$trust_root/$trust_id.trust"
 assert_eq '600' "$(stat -c '%a' "$trust_file")" \
     'successful trust persistence keeps the approval record owner-only'
@@ -279,7 +278,8 @@ printf '#!/bin/sh\ntouch "%s/option-original-ran"\n' "$tmp" \
 chmod +x "$repo/tools/require-runner" "$repo/tools/hook.sh"
 printf 'AGENT_CMD_OPTION=tools/require-runner --require=tools/hook.sh\n' \
     > "$repo/.agent/config.env"
-(cd "$repo" && "$real_run_sh" --approve --cmd option) > /dev/null 2>&1
+(cd "$repo" && "$tty_approve" y -- "$real_run_sh" --approve --cmd option) \
+    > /dev/null 2>&1
 printf '#!/bin/sh\ntouch "%s/option-changed-ran"\n' "$tmp" \
     > "$repo/tools/hook.sh"
 out=$( (cd "$repo" && "$real_run_sh" --cmd option 2>&1) || true)
@@ -298,7 +298,8 @@ printf '#!/bin/sh\ntouch "%s/module-original-ran"\n' "$tmp" \
 chmod +x "$repo/tools/module-runner" "$repo/tools/verify.py"
 printf 'AGENT_CMD_MODULE=tools/module-runner -m tools.verify\n' \
     > "$repo/.agent/config.env"
-(cd "$repo" && "$real_run_sh" --approve --cmd module) > /dev/null 2>&1
+(cd "$repo" && "$tty_approve" y -- "$real_run_sh" --approve --cmd module) \
+    > /dev/null 2>&1
 printf '#!/bin/sh\ntouch "%s/module-changed-ran"\n' "$tmp" \
     > "$repo/tools/verify.py"
 out=$( (cd "$repo" && "$real_run_sh" --cmd module 2>&1) || true)

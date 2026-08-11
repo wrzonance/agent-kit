@@ -115,14 +115,24 @@ hardcodes an ecosystem. If your repo drives everything through one dispatcher,
 point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
 
 The declaration is not execution consent. `agent-run.sh --cmd NAME` records no
-trust on its first invocation: review the command and run
-`agent-run.sh --approve --cmd NAME` once. Approval is kept in an owner-only
-state directory outside the checkout. The record fingerprints `config.env`,
-repository-backed argv paths, and nearby build manifests, so a changed
-declaration or repository-backed input cannot inherit an old approval while
-ordinary source edits remain runnable. This execution-trust check does not
-establish human review. Literal commands passed after `--` are caller-supplied
-and are not covered by this repository-command approval.
+trust on its first invocation; review the declaration and approve it with
+`--approve`, which reads its confirmation from the controlling terminal. That
+terminal confirmation is defense-in-depth, **not** a cryptographic human-only
+gate. It closes the specific failure it was filed for -- an agent reading an
+unapproved-command refusal and re-running the exact `--approve` command the old
+refusal printed -- because a non-interactive shell cannot answer the prompt and
+the refusal no longer hands back a runnable remedy. It does not authenticate a
+human: an agent with arbitrary command execution can allocate a pseudo-terminal
+(as this repo's own approval test does) or write the trust record directly,
+since it runs as the same user, and no in-band check prevents that. What the
+record *does* guarantee is durable and worth having: approval is kept in an
+owner-only state directory outside the checkout, and it fingerprints
+`config.env`, repository-backed argv paths, and nearby build manifests, so a
+changed declaration or repository-backed input cannot inherit an old approval
+while ordinary source edits remain runnable. Approval is also an explicit,
+logged step -- and under Claude Code, `--approve` surfaces a permission prompt.
+Literal commands passed after `--` are caller-supplied and are not covered by
+this repository-command approval.
 
 ---
 
