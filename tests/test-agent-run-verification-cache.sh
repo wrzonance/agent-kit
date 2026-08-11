@@ -82,6 +82,11 @@ out=$(run_test)
 assert_contains "$out" 'PASS: tools/run' 'an untracked addition causes a cache miss'
 assert_eq '4' "$(count "$counter")" 'the untracked addition executes the command again'
 
+printf 'changed\n' > "$repo/untracked.txt"
+out=$(run_test)
+assert_contains "$out" 'PASS: tools/run' 'changing an untracked file causes a cache miss'
+assert_eq '5' "$(count "$counter")" 'the changed untracked file executes the command again'
+
 # Give the intentionally failing invocation a tree state with no prior green
 # evidence, so a cache hit cannot hide the failure.
 touch "$repo/failure-state.txt"
@@ -90,17 +95,17 @@ out=$(cd "$repo" && COUNT_FILE="$counter" RESULT=1 AGENT_TRUST_ROOT="$trust_root
     "$real_run_sh" --cmd test 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a failing command returns its failure status'
 assert_contains "$out" 'FAIL(rc=1)' 'a failing command reports failure'
-assert_eq '5' "$(count "$counter")" 'the failing command executes'
+assert_eq '6' "$(count "$counter")" 'the failing command executes'
 
 out=$(run_test)
 assert_contains "$out" 'PASS: tools/run' 'a run after failure is not served by a stale cache entry'
-assert_eq '6' "$(count "$counter")" 'a failing run is never cached'
+assert_eq '7' "$(count "$counter")" 'a failing run is never cached'
 
 out=$(cd "$repo" && COUNT_FILE="$counter" AGENT_TRUST_ROOT="$trust_root" \
     "$real_run_sh" --force --cmd test 2>&1)
 assert_contains "$out" 'PASS: tools/run' '--force executes instead of short-circuiting'
 assert_not_contains "$out" 'verification current:' '--force does not report a cache hit'
-assert_eq '7' "$(count "$counter")" '--force executes the command'
+assert_eq '8' "$(count "$counter")" '--force executes the command'
 
 # Seed a would-be hit for the changed declaration, then prove the command trust
 # gate still refuses before it can inspect or use that cache entry.
@@ -121,6 +126,67 @@ out=$(cd "$repo" && COUNT_FILE="$counter" AGENT_TRUST_ROOT="$trust_root" \
 assert_eq '1' "$rc" 'the trust gate still refuses a changed declaration'
 assert_contains "$out" 'refusing unapproved repository command' 'trust refusal is reported before cache lookup'
 assert_not_contains "$out" 'verification current:' 'a would-be hit cannot bypass the trust gate'
-assert_eq '7' "$(count "$counter")" 'trust refusal never executes the command'
+assert_eq '8' "$(count "$counter")" 'trust refusal never executes the command'
+
+# --- execution directory scopes cache evidence -----------------------------
+scope_repo=$(make_repo)
+mkdir -p "$scope_repo/one" "$scope_repo/two"
+cp -- "$scope_repo/tools/run" "$scope_repo/one/tools-run"
+cp -- "$scope_repo/tools/run" "$scope_repo/two/tools-run"
+mkdir -p "$scope_repo/one/tools" "$scope_repo/two/tools"
+mv -- "$scope_repo/one/tools-run" "$scope_repo/one/tools/run"
+mv -- "$scope_repo/two/tools-run" "$scope_repo/two/tools/run"
+git -C "$scope_repo" add -- one two
+git -C "$scope_repo" commit -qm 'add scoped command payloads'
+scope_counter="$tmp/scope-count"
+scope_trust_one="$tmp/scope-trust-one"
+scope_trust_two="$tmp/scope-trust-two"
+(cd "$scope_repo" && AGENT_TRUST_ROOT="$scope_trust_one" \
+    "$tty_approve" y -- "$real_run_sh" --dir "$scope_repo/one" --approve --cmd test) > /dev/null 2>&1
+(cd "$scope_repo" && AGENT_TRUST_ROOT="$scope_trust_two" \
+    "$tty_approve" y -- "$real_run_sh" --dir "$scope_repo/two" --approve --cmd test) > /dev/null 2>&1
+
+run_scoped_test() {
+    local run_dir=$1
+    local trust_root="$scope_trust_one"
+    [[ $run_dir == "$scope_repo/two" ]] && trust_root="$scope_trust_two"
+    (cd "$scope_repo" && COUNT_FILE="$scope_counter" AGENT_TRUST_ROOT="$trust_root" \
+        "$real_run_sh" --dir "$run_dir" --cmd test 2>&1)
+}
+
+out=$(run_scoped_test "$scope_repo/one")
+assert_contains "$out" 'PASS: tools/run' 'the first execution directory runs the command'
+assert_eq '1' "$(count "$scope_counter")" 'the first execution directory executes once'
+out=$(run_scoped_test "$scope_repo/two")
+assert_contains "$out" 'PASS: tools/run' 'a different execution directory does not reuse evidence'
+assert_eq '2' "$(count "$scope_counter")" 'the second execution directory executes independently'
+out=$(run_scoped_test "$scope_repo/one")
+assert_contains "$out" 'agent-run: verification current:' 'repeating an execution directory may hit'
+assert_eq '2' "$(count "$scope_counter")" 'the repeated execution directory does not execute again'
+
+# --- state-producing command names are not cached ---------------------------
+build_repo=$(make_repo)
+printf 'AGENT_CMD_BUILD=tools/run\n' > "$build_repo/.agent/config.env"
+git -C "$build_repo" add -- .agent/config.env
+git -C "$build_repo" commit -qm 'declare build command'
+build_counter="$tmp/build-count"
+build_trust="$tmp/build-trust"
+(cd "$build_repo" && AGENT_TRUST_ROOT="$build_trust" \
+    "$tty_approve" y -- "$real_run_sh" --approve --cmd build) > /dev/null 2>&1
+
+run_build() {
+    (cd "$build_repo" && COUNT_FILE="$build_counter" AGENT_TRUST_ROOT="$build_trust" \
+        "$real_run_sh" --cmd build 2>&1)
+}
+
+out=$(run_build)
+assert_contains "$out" 'PASS: tools/run' 'a build command executes the first time'
+assert_eq '1' "$(count "$build_counter")" 'the first build executes once'
+out=$(run_build)
+assert_contains "$out" 'PASS: tools/run' 'a build command executes again on unchanged bytes'
+assert_not_contains "$out" 'verification current:' 'a build command never uses verification cache evidence'
+assert_eq '2' "$(count "$build_counter")" 'the unchanged build executes twice'
+build_cache=$(cat -- "$build_repo/.agent/verification-cache" 2>/dev/null || true)
+assert_not_contains "$build_cache" 'cmd=build ' 'a build command is never recorded in verification cache'
 
 finish

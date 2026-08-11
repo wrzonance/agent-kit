@@ -548,14 +548,18 @@ nearby build manifests, and deletions. Refused at the gate — as `unapproved re
 or by `--yolo` because an input differs from the trunk — report BLOCKED with that reason. Never
 forge the approval — no pseudo-terminals, no piped `y`, no hand-written trust records.
 
-**Verification cache and suite cadence.** A green `agent-run.sh` completion records
-the command name, tree-state key, log, and UTC timestamp in excluded per-worktree
-state at `.agent/verification-cache`. A repeated command on unchanged bytes prints
+**Verification cache and suite cadence.** A green `agent-run.sh` completion for an
+eligible verification name (`test`, `lint`, `typecheck`, `coverage`, `verify`, or
+`check`) records the command name, execution directory, tree-state key, log, and
+UTC timestamp in excluded per-worktree state at `.agent/verification-cache`. A
+repeated eligible command on unchanged bytes in the same directory prints
 `agent-run: verification current: <log>` and exits 0; use `--force` when a fresh
-execution is required. The trust gate evaluates on every invocation, including a
-cache hit. During red/green iteration, use focused suites for changed files and run
-the full suite once per tree state before commit. After push, GitHub CI is the
-authority for that SHA, so an unchanged local full-suite request adds no evidence.
+execution is required. State-producing names such as `build`, `setup`, `seed`, and
+`migrate` are always executed and never cached. The trust gate evaluates on every
+invocation, including a cache hit. During red/green iteration, use focused suites
+for changed files and run the full suite once per tree state before commit. After
+push, GitHub CI is the authority for that SHA, so an unchanged local full-suite
+request adds no evidence.
 
 Exit `2` from the commit helper means "obtain write permission for the named path
 and re-run the identical command" — it is safe to retry verbatim.
