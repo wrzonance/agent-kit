@@ -110,6 +110,10 @@ AGENT_CMD_VERIFY=tools/verify
 AGENT_CMD_TEST=<whatever this repo runs for tests>
 ```
 
+Command values are argv, not shell strings: unquoted spaces separate arguments,
+while single or double quotes keep spaces inside one argument. Shell operators
+and escapes are rejected; use `.agent/runner` for shell syntax.
+
 Skills refer to these **by name** (`agent-run.sh --cmd test`), so no skill ever
 hardcodes an ecosystem. If your repo drives everything through one dispatcher,
 point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.

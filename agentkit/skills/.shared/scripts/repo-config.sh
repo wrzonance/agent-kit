@@ -47,15 +47,16 @@ readonly ACCEPTED_KEYS=(
 # shape that survives being lowercased into a filename and an argument.
 readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
 
-# The directory a named command runs in. Values are argv executed from the
+# The directory a named command runs in. Paths may contain spaces and are
+# quoted in generated config. Values are argv executed from the
 # repository root, which suits a single-component repo and breaks a monorepo:
 # asked to declare a dashboard test command, an agent produced a root-run
 # invocation that globbed into node_modules and started running a DEPENDENCY's
 # test suite. The command was correct; the working directory was not
 # expressible.
 #
-# A separate key rather than a prefix inside the value, so the command stays
-# plain argv with no syntax of its own to learn or mis-quote.
+# A separate key rather than a prefix inside the value, so the command's argv
+# grammar stays independent from the working-directory path.
 readonly RUNDIR_KEY_PATTERN='^AGENT_RUNDIR_[A-Z][A-Z0-9_]*$'
 
 # Credential-shaped keys are refused loudly rather than ignored quietly, so a

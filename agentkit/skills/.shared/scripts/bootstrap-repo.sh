@@ -306,8 +306,9 @@ done
     fi
     if [[ -n $suggestions ]]; then
         printf '\n# Candidate verify commands found in this repository. Uncomment the ones\n'
-        printf '# agents should run, as AGENT_CMD_<NAME>=<command>. Commands are argv:\n'
-        printf '# no shell, no pipes, no redirects. For anything more, use .agent/runner.\n'
+        printf '# agents should run, as AGENT_CMD_<NAME>=<command>. Commands are argv;\n'
+        printf '# quote spaces inside one token. No shell, pipes, or redirects.\n'
+        printf '# For anything more, use .agent/runner.\n'
         printf '%s\n' "$suggestions"
         printf '# AGENT_CMD_VERIFY=\n# AGENT_CMD_TEST=\n# AGENT_CMD_LINT=\n'
     fi
