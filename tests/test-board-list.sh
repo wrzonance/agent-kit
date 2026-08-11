@@ -102,6 +102,8 @@ assert_contains "$out" '#101  Done' 'and reports the column it is actually in'
 # Absence is stated, not implied by empty output -- an empty answer reads as a
 # failed command, which invites running it again.
 out=$(run_board "$bin" --issue 999)
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'an issue miss identifies the board by title'
 assert_contains "$out" 'not on this board' 'an issue that is absent is said to be absent'
 
 # An issue lookup over a truncated read cannot distinguish absent from unread,
@@ -128,6 +130,14 @@ chmod +x "$dupe_bin/gh"
 out=$(run_board "$dupe_bin" --issue 42)
 assert_contains "$out" '#42  Ready  requested repo' 'same-number issues are matched by repository'
 assert_not_contains "$out" 'wrong repo' 'a same-number issue from another repository is ignored'
+
+# Older board metadata may not have a title. The title is descriptive only, so
+# that metadata remains usable and leaves the existing field empty.
+jq 'del(.project.title)' "$repo/.agent/board.json" > "$tmp/legacy-board.json"
+mv "$tmp/legacy-board.json" "$repo/.agent/board.json"
+out=$(run_board "$bin")
+assert_contains "$out" 'board= project=7 owner=example-org' \
+    'legacy metadata keeps an empty board title fallback'
 
 assert_rc 2 'a non-numeric issue is a usage error' -- \
     env PATH="$bin:$PATH" "$script" --repo-root "$repo" --issue main

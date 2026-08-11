@@ -182,8 +182,8 @@ if [[ -n $ARG_ISSUE ]]; then
     if [[ -n $hit ]]; then
         printf 'board=%s project=%s owner=%s calls=1\n%s\n' "$board_title" "$number" "$owner" "$hit"
     else
-        printf 'board= project=%s owner=%s calls=1\n#%s is not on this board\n' \
-            "$number" "$owner" "$ARG_ISSUE"
+        printf 'board=%s project=%s owner=%s calls=1\n#%s is not on this board\n' \
+            "$board_title" "$number" "$owner" "$ARG_ISSUE"
     fi
     exit 0
 fi
