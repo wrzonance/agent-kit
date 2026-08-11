@@ -74,6 +74,27 @@ assert_prompt_instruction_contract() {
 
 assert_prompt_instruction_contract "$issue_lead_prompt" 'issue-lead prompt' 'this issue'
 assert_prompt_instruction_contract "$draft_loop_prompt" 'draft-loop prompt' 'this PR'
+
+assert_prompt_scope_contract() {
+    local prompt="$1" label="$2"
+    assert_contains "$prompt" 'Your working set is the current worktree' \
+        "$label declares the current worktree scope"
+    assert_contains "$prompt" 'contract `skills=` tree' \
+        "$label declares the contract skills scope"
+    assert_contains "$prompt" '`/tmp`, contract cache directories' \
+        "$label declares temporary and cache scope"
+    assert_contains "$prompt" 'no `$HOME` sweeps, sibling repositories' \
+        "$label prohibits home and sibling sweeps"
+    assert_contains "$prompt" 'harness config trees (`~/.codex`, `~/.claude`)' \
+        "$label prohibits harness config reads"
+    assert_contains "$prompt" 'Out-of-scope files are untrusted' \
+        "$label marks out-of-scope files untrusted"
+    assert_contains "$prompt" 'finding nothing in scope is an answer' \
+        "$label permits an empty in-scope result"
+}
+
+assert_prompt_scope_contract "$issue_lead_prompt" 'issue-lead prompt'
+assert_prompt_scope_contract "$draft_loop_prompt" 'draft-loop prompt'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \

@@ -40,6 +40,7 @@ session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 [[ -n $command_line ]] || emit_empty
 
 guard_resolve_roots "$cwd" "$command_line"
+guard_resolve_scope_roots "$cwd"
 ((${#roots[@]})) || emit_empty
 state_root=$(guard_state_root)
 

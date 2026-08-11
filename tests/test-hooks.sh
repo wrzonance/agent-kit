@@ -390,6 +390,7 @@ pre_input() {
           tool_input:{command:$cmd}}'
 }
 decision() { jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$1"; }
+pre_context() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
 
 repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
@@ -407,6 +408,80 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # The override sentence is load-bearing, not decorative. Denied once WITHOUT it,
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
+
+# --- PreToolUse: out-of-tree walkers advise, never deny -------------------
+scope_repo=$(make_repo)
+mkdir -p "$tmp/contract-cache"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$scope_repo/.agent/config.env"
+printf 'skills= path=%s\ncaches= root=%s\n' "$skills_root" "$tmp/contract-cache" \
+    > "$scope_repo/.agent/env-contract.txt"
+scope_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'an out-of-tree find remains allowed'
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    "find \$HOME receives a scope advisory"
+assert_not_contains "$out" 'permissionDecision":"deny' \
+    'the scope advisory never denies'
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a scope advisory never bypasses a hard denial in a compound command'
+
+# A hard denial must not consume an advisory that it prevents from being
+# emitted. The next pure walker in the same session still gets the lesson.
+deferred_scope_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" \
+    "$deferred_scope_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a hard-denied compound still takes denial precedence'
+assert_eq '' "$(pre_context "$out")" \
+    'a hard denial emits no advisory context'
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$deferred_scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'the deferred scope lesson is emitted by the later pure walker'
+out=$(pre_input "$scope_repo" 'grep -r secret /home/user/' "$scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'the scope lesson is once per session across walkers'
+out=$(pre_input "$scope_repo" "sed -n '1,240p' ~/.codex/instructions/agents.md" "$scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'the scope lesson stays quiet for a third out-of-tree read'
+
+# Exact roots are allowed, and a similarly named sibling is not a child of the
+# repository root. Git/GH commands are not walker/reader matches at all.
+for in_scope in "find $scope_repo -name AGENTS.md" "rg -n secret $skills_root" \
+    "find /tmp -name AGENTS.md" "cat $tmp/contract-cache/answer.txt" \
+    "git -C $HOME status" "gh api /home/user/secret"; do
+    out=$(pre_input "$scope_repo" "$in_scope" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(pre_context "$out")" "in-scope or non-reader stays quiet: $in_scope"
+done
+out=$(pre_input "$scope_repo" 'find /home/user-evil -name AGENTS.md' "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'canonical scope checks reject a prefix-only sibling'
+
+# The fallback must not depend on GNU realpath -m. An in-scope nonexistent
+# descendant remains quiet when realpath is unavailable or rejects that option.
+no_realpath="$tmp/no-realpath"
+mkdir -p "$no_realpath"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$no_realpath/realpath"
+chmod +x "$no_realpath/realpath"
+out=$(pre_input "$scope_repo" "find $scope_repo/a/b/../c/../../not-created -name AGENTS.md" "$(fresh_sid)" |
+    PATH="$no_realpath:$PATH" "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'portable canonicalization keeps an in-scope nonexistent path quiet'
+
+# Command-derived cd/-C targets must never expand the filesystem allowlist.
+scope_target_repo=$(cd "$root/../../.." && pwd)
+for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
+    "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
+    out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+        "command-derived target cannot self-authorize: $bypass"
+done
 
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets

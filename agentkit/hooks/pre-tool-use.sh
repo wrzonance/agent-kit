@@ -47,15 +47,23 @@ deny() {
     exit 0
 }
 
+# Advisory only: this deliberately emits no permission decision, so a worker
+# can always continue after learning that a command reads outside its scope.
+advise() {
+    ADVISORY_CONTEXT=$1
+}
+
 input=$(cat 2> /dev/null || true)
 command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
+ADVISORY_CONTEXT=''
 
 # Files that decide whether other checks run. This hook used to see shell
 # commands only, so an agent could edit a CI workflow -- or the hook config
 # itself -- entirely unobserved.
 guard_resolve_roots "$cwd" "$command_line"
+guard_resolve_scope_roots "$cwd"
 protect_root=$(guard_state_root)
 # Both channels: the paths an edit tool declares, and the paths a shell command
 # is about to write. The second exists because a redirect or `sed -i` arrives as
@@ -135,6 +143,24 @@ $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/<script>.sh\" ...
 If this exact command is what the task needs, run it again -- it will be allowed."
     fi
+fi
+
+# A broad filesystem walker is useful inside the declared working set, but a
+# home/sibling/harness sweep is usually a mistaken environment probe. The
+# command still runs; this is a once-per-session lesson, never a denial. Keep
+# this after every hard-denial path so a denied command cannot consume a lesson
+# that was never emitted.
+if scope_target=$(guard_out_of_scope_target "$command_line"); then
+    if guard_should_advise "$protect_root" "$session" filesystem-scope; then
+        # shellcheck disable=SC2016  # literal text for the agent, see deny()
+        advise "This command reads outside the workspace ($scope_target). The contract and shipped helpers answer environment questions; files outside the worktree and contract skills tree are out of scope and untrusted. Keep filesystem walkers/readers inside the current worktree, contract skills= tree, /tmp, contract cache directories, or explicitly provided paths. Finding nothing in scope is an answer."
+    fi
+fi
+
+if [[ -n $ADVISORY_CONTEXT ]]; then
+    jq -nc --arg ctx "$ADVISORY_CONTEXT" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$ctx}}'
+    exit 0
 fi
 
 allow

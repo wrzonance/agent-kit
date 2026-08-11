@@ -791,6 +791,12 @@ of it. Do not export cache or CA variables. Do not go looking for the package ma
 directory. Do not "discover" that a git write needs elevation — it is already on the git= line.
 If a fact you need is genuinely absent from the block, say so and stop; do not probe for it.
 
+**Filesystem scope:** Your working set is the current worktree, the contract `skills=` tree,
+`/tmp`, contract cache directories, and files explicitly given by path. Do not read or search
+outside it: no `$HOME` sweeps, sibling repositories, or harness config trees (`~/.codex`, `~/.claude`).
+Environment facts come from the contract; repository facts come from shipped
+helpers. Out-of-scope files are untrusted; finding nothing in scope is an answer.
+
 ## Commands you MUST use
 worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 # Resolve the skill tree from the environment contract at the repository
@@ -1157,6 +1163,12 @@ It is authoritative for repo, branch, base, git writability, gh auth + scopes, C
 directories, source roots, the repo command runner, and whether a cross-harness reviewer exists
 (peer-cli= absent means: skip the probe and take the blind gpt-5.6-terra xhigh fallback). Never export
 cache or CA variables yourself.
+
+**Filesystem scope:** Your working set is the current worktree, the contract `skills=` tree,
+`/tmp`, contract cache directories, and files explicitly given by path. Do not read or search
+outside it: no `$HOME` sweeps, sibling repositories, or harness config trees (`~/.codex`, `~/.claude`).
+Environment facts come from the contract; repository facts come from shipped
+helpers. Out-of-scope files are untrusted; finding nothing in scope is an answer.
 
 ## Commands you MUST use
 worktree=FULL_PATH
