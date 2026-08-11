@@ -311,6 +311,14 @@ out of intended order.
 Never silently parallelize same-board issues. Maintainers use Projects to encode
 ordering that is invisible to file-path conflict analysis.
 
+**With `--fast-mode`, do not stop for board adjudication.** Nobody is watching, so
+the STOP-and-ask above becomes a decision rule: same-board candidates proceed in
+parallel when the Step 3 conflict analysis clears them, and any colliding pair is
+resolved by that step's own drop rule. This is not silent — print the shared-board
+finding (which Project, which issues) in the disclosure where an attended run would
+have asked. A candidate in a "Blocked"-style column is dropped with a printed
+reason, not asked about. Without `--fast-mode`, ask as above.
+
 **Pickup order (auto mode).** Rank the surviving candidates by their Status
 column and take from **Ready** first, top of column first. **Backlog** is not
 auto-pulled — surface it and ask. `active` and `done` are already excluded by
@@ -610,6 +618,15 @@ fi
 ```
 
 When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
+
+**Publishing is part of the dispatch.** Creating worktrees, pushing issue branches,
+and opening DRAFT PRs are the mechanical output this invocation asked for — the
+draft state is the safety valve, and a human flips it ready. Do not pause to re-ask
+for that authorization, in any mode. When the sandbox requires escalated execution
+for network or forge operations, request escalation through the harness's own
+approval flow (its reviewer can grant it); that is a runtime permission, not a user
+decision to re-litigate. The still-gated actions are unchanged: ready-flips, merges,
+bot triggers, and human-review responses.
 
 Every issue-lead call uses this shape (fill in a unique task name and the complete prompt below):
 
@@ -1140,7 +1157,8 @@ Cleanup runs only when user explicitly asks after merge.
 | Grabbing Backlog or in-flight issues in auto mode | Pick from **Ready** first; surface Backlog; `active` issues are already excluded by triage |
 | Not updating the board as work moves | Run `move-github-project-item.sh` with `--status 'In progress'` at dispatch and `--status 'In review'` when the PR opens |
 | Verifying a board move with a follow-up query | The helper prints one line per board and that line IS the evidence — a leading `moved ` means it moved, `no-op:` means it didn't, and both exit 0. Never re-query `projectItems` to confirm |
-| Parallelizing same-Project issues without asking | STOP and ask user to confirm or sequence |
+| Parallelizing same-Project issues without asking | Attended runs: STOP and ask user to confirm or sequence. `--fast-mode`: proceed when conflict analysis clears the set, printing the shared-board finding |
+| Asking permission to push branches or open draft PRs | The invocation authorized them and drafts are the safety valve. A sandbox gate goes to the harness approval flow, not back to the user |
 | Parallelizing brainstorm sessions | Never — user steers each brainstorm sequentially |
 | Skipping brainstorm without explicit user opt-in | Default is brainstorm. Only skip on `--yolo` / `--no-brainstorm` / `--skip-brainstorm`, or an explicit phrase ("skip brainstorm", "just dispatch", "well-defined"); confirm once otherwise |
 | Treating `--fast-mode` as permission to skip conflict analysis | It removes the approval gate, not the analysis. Unattended is when a file collision is *most* expensive, because nobody is watching to stop it |
