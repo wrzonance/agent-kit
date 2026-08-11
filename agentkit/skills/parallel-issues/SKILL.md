@@ -733,7 +733,7 @@ Every one of those exits 0 — a board move must never fail the real work — so
 
 Per-issue prompt:
 
-```text
+````text
 You are the sole mutating issue lead for GitHub issue #NNN.
 
 Repo: OWNER/REPO
@@ -917,7 +917,7 @@ and do not call the fence helper; private issue text is never passed through the
 Return the PR URL, the commit SHAs, and the agent-run.sh log path for the final green
 verification — or BLOCKED with one concrete reason. In issue-body autonomous mode, make
 reasonable decisions and document them rather than stalling.
-```
+````
 
 The spec and prior-art notes are pasted as **contents**, never as paths. In `public-fenced` mode
 they are explicitly fenced as untrusted data; the selected private or yolo exception is disclosed
