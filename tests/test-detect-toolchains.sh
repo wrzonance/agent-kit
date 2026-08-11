@@ -184,6 +184,16 @@ out=$("$dt_sh" --repo-root "$repo" --format drift)
 assert_contains "$out" 'drift= key=AGENT_RUNDIR_BACKEND_TEST declared=backend status=missing candidate=services/backend' \
     'a moved component must be found again by its marker file, or a command silently starts failing with "no such file" instead of "the directory moved"'
 
+# Drift records keep paths with spaces as one quoted field for readers and
+# downstream parsers.
+repo=$(new_repo)
+mkdir -p "$repo/.agent" "$repo/services/Missing Dir"
+printf '{}' > "$repo/services/Missing Dir/package.json"
+printf 'AGENT_RUNDIR_MISSING="Missing Dir"\n' > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format drift)
+assert_contains "$out" 'drift= key=AGENT_RUNDIR_MISSING declared="Missing Dir" status=missing candidate="services/Missing Dir"' \
+    'quotes spaced declared and candidate paths in drift output'
+
 # Drift must parse a quoted command executable before deriving its containing
 # directory; a valid spaced path must not be mistaken for a missing directory.
 repo=$(new_repo)

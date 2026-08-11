@@ -95,6 +95,12 @@ printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_contains "$out" 'AGENT_CMD_VERIFY=' 'accepts a bare name as argv[0]'
 
+# Keep accepting the historical form where the entire command value is quoted.
+printf 'AGENT_CMD_VERIFY="echo ok"\n' > "$repo/.agent/config.env"
+mapfile -d '' -t parsed < <("$rc_sh" --repo-root "$repo" --get-argv AGENT_CMD_VERIFY)
+assert_eq 'echo' "${parsed[0]:-}" 'preserves the legacy whole-value command executable'
+assert_eq 'ok' "${parsed[1]:-}" 'preserves the legacy whole-value command argument'
+
 printf 'AGENT_CMD_VERIFY=tools/../../etc/passwd\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects argv[0] traversing out of the repo'

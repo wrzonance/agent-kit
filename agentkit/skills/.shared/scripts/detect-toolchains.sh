@@ -687,7 +687,8 @@ print_drift() {
         [[ -n $value ]] || continue
         [[ -d "$repo_root/$value" ]] && continue
         candidate=$(find_drift_candidate "$value")
-        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' "$key" "$value" "$candidate"
+        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' \
+            "$key" "$(config_quote_token "$value")" "$(config_quote_token "$candidate")"
     done <<< "$declared"
 
     while IFS='=' read -r key value; do
@@ -699,7 +700,8 @@ print_drift() {
         dir=${argv0%/*}
         [[ -d "$repo_root/$dir" ]] && continue
         candidate=$(find_drift_candidate "$dir")
-        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' "$key" "$dir" "$candidate"
+        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' \
+            "$key" "$(config_quote_token "$dir")" "$(config_quote_token "$candidate")"
     done <<< "$declared"
 }
 

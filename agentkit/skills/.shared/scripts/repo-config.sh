@@ -199,6 +199,25 @@ runner_contained() {
 # reaches exec through a key with no check at all.
 declare -a PARSED_ARGV=()
 
+legacy_argv_value() {
+    local value=$1 quote i
+    [[ ${value:0:1} == '"' || ${value:0:1} == "'" ]] || {
+        printf '%s' "$value"
+        return
+    }
+    quote=${value:0:1}
+    for ((i = 1; i < ${#value}; i++)); do
+        [[ ${value:i:1} == "$quote" ]] || continue
+        if [[ $i -eq $((${#value} - 1)) ]]; then
+            printf '%s' "${value:1:${#value}-2}"
+        else
+            printf '%s' "$value"
+        fi
+        return
+    done
+    printf '%s' "$value"
+}
+
 safe_token() {
     local token=$1 char i
     for ((i = 0; i < ${#token}; i++)); do
@@ -214,6 +233,8 @@ safe_token() {
 parse_argv() {
     local value=$1 char quote='' token='' started=0 i
     PARSED_ARGV=()
+    [[ -n $value ]] || return 1
+    value=$(legacy_argv_value "$value")
     [[ -n $value ]] || return 1
 
     for ((i = 0; i < ${#value}; i++)); do
