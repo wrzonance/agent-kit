@@ -32,8 +32,20 @@ case "\$*" in
           cat "$here/fixtures/gh-field-list.json"
       fi
       ;;
-  *"project item-list"*)  [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1; cat "$here/fixtures/gh-item-list.json" ;;
-  *"project list"*)       [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1; cat "$here/fixtures/gh-project-list.json" ;;
+  *"project item-list"*)
+      [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1
+      cat "$here/fixtures/gh-item-list.json"
+      ;;
+  *"project list"*)
+      [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1
+      if [[ -n \${EMPTY_PROJECT_LIST:-} ]]; then
+          :
+      elif [[ -n \${MULTI_BOARD:-} ]]; then
+          printf '%s\\n' '{"projects":[{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board"},{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board"}]}'
+      else
+          cat "$here/fixtures/gh-project-list.json"
+      fi
+      ;;
   *) printf '{}\n' ;;
 esac
 exit 0
@@ -283,5 +295,33 @@ assert_rc 1 'project-list API failure exits 1' -- env FAIL_PROJECT_LIST=1 \
     GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
     "$mv_sh" --repo-root "$repo" --repository example-org/example-repo \
     --issue-number 57 --status Ready
+
+# --all-boards must bypass the single-board cache and update every matching card.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(MULTI_BOARD=1 run_mv "$repo" --issue-number 57 --status Ready --all-boards 2>&1)
+assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'all-boards updates the requested card on every board'
+assert_contains "$out" 'project #7 "Example Board"' \
+    'all-boards reports the first board move'
+assert_contains "$out" 'project #8 "Second Board"' \
+    'all-boards reports the second board move'
+
+# An unreadable board is skipped so an unrelated board cannot abort dispatch.
+repo=$(bare_repo)
+: > "$tmp/gh.log"
+out=$(FAIL_ITEM_LIST=1 run_mv "$repo" --issue-number 57 --status Ready 2>&1)
+assert_contains "$out" 'Warning: could not list items for project #7; skipping it.' \
+    'an unreadable board is reported and skipped'
+assert_contains "$out" 'no-op: issue #57 is not on any project board' \
+    'a skipped board leaves the issue with its terminal no-op'
+
+# Empty project-list responses still emit one terminal result per requested issue.
+repo=$(bare_repo)
+out=$(EMPTY_PROJECT_LIST=1 run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #57 is not on any project board' \
+    'an empty project response reports the first issue'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'an empty project response reports the second issue'
 
 finish

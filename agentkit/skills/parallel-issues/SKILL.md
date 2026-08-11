@@ -916,6 +916,9 @@ issue_contents=$(jq -r '
 
 # `prior_art_contents` is the exact prior-art note selected by the authoritative
 # triage digest for this surviving issue; it is prepared once alongside the body.
+# When the digest selected none, retain an explicit non-empty sentinel so the
+# persisted prior-art fence is still a complete canonical artifact.
+: "${prior_art_contents:="(no prior art selected by triage digest)"}"
 target="$worktree/.agent/fenced-spec.txt"
 prior_target="$worktree/.agent/fenced-prior-art.txt"
 tmp="$target.tmp"

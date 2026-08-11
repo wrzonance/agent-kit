@@ -285,6 +285,9 @@ try_known_board() {
     local project_number project_id project_title field_id option_id items_json item_id issue_number
     local project_owner project_json live_project_id live_project_title fields_json
 
+    # The cached board is a single-board acceleration.  It cannot satisfy the
+    # --all-boards contract, which must enumerate every board the owner has.
+    ((all_boards == 0)) || return 1
     board_readable || return 1
     project_number=$(jq -r '.project.number // empty' <"$board_file" 2>/dev/null) || return 1
     project_id=$(jq -r '.project.id // empty' <"$board_file" 2>/dev/null) || return 1
@@ -369,13 +372,15 @@ process_project() {
     # card is silently absent and this would report "not on any board" while exiting 0.
     if ! items_json=$(gh project item-list "$project_number" --owner "$owner" \
         --limit "$ITEM_LIMIT" --format json 2>/dev/null); then
-        die "Could not list items for project #$project_number."
+        printf 'Warning: could not list items for project #%s; skipping it.\n' \
+            "$project_number" >&2
+        return 3
     fi
     [[ -n $items_json ]] || return 3
 
     local -a board_issues=()
     for issue_number in "${issue_numbers[@]}"; do
-        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+        ((all_boards == 0)) && [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         item_id=$(select_item_id "$issue_number" "$items_json")
         [[ -n $item_id ]] || continue
         board_issues+=("$issue_number")
@@ -438,7 +443,9 @@ if ! projects_json=$(gh project list --owner "$owner" \
     die "Could not list projects for owner $owner."
 fi
 if [[ -z $projects_json ]]; then
-    printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
+    for issue_number in "${issue_numbers[@]}"; do
+        printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
+    done
     exit 0
 fi
 

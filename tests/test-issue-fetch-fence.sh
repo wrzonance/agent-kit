@@ -114,6 +114,8 @@ assert_contains "$recipe_text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'the canonical recipe keeps fenced bytes in excluded per-worktree state'
 assert_contains "$recipe_text" 'prior_target="$worktree/.agent/fenced-prior-art.txt"' \
     'the canonical recipe persists prior-art fence bytes beside the spec'
+assert_contains "$recipe_text" ': "${prior_art_contents:="(no prior art selected by triage digest)"}"' \
+    'the canonical recipe initializes the absent-prior-art sentinel before fencing'
 assert_contains "$recipe_text" 'cat -- "$worktree/.agent/fenced-spec.txt"' \
     'the worker embeds persisted spec bytes rather than re-fencing'
 assert_contains "$recipe_text" 'cat -- "$worktree/.agent/fenced-prior-art.txt"' \
