@@ -132,6 +132,27 @@ assert_contains "$sugg_out" 'AGENT_CMD_DASHBOARD_TEST=npm test' \
 assert_contains "$sugg_out" 'AGENT_RUNDIR_DASHBOARD_TEST=dashboard' \
     'a node command under dashboard/ must declare its own rundir or it globs into the wrong package.json'
 
+# A component directory containing a space must produce declarations that the
+# line-wise config parser can read back as one path.
+repo=$(new_repo)
+mkdir -p "$repo/My Project"
+cat > "$repo/My Project/package.json" <<'EOF'
+{"scripts": {"test": "jest"}}
+EOF
+printf '' > "$repo/My Project/package-lock.json"
+sugg_out=$($dt_sh --repo-root "$repo" --format suggestions)
+assert_contains "$sugg_out" 'AGENT_CMD_MY_PROJECT_TEST=npm test' \
+    'names a spaced component without losing its command'
+assert_contains "$sugg_out" 'AGENT_RUNDIR_MY_PROJECT_TEST="My Project"' \
+    'quotes a spaced component rundir for config.env'
+
+# The markdown suggestion is itself a quoted argv token, not shell syntax.
+repo=$(new_repo)
+printf '{}' > "$repo/.markdownlintrc"
+sugg_out=$($dt_sh --repo-root "$repo" --format suggestions)
+assert_contains "$sugg_out" 'AGENT_CMD_LINT_MARKDOWN=markdownlint-cli2 "**/*.md"' \
+    'keeps the markdown glob as a literal quoted argv token'
+
 # --- excluded directories: node_modules, .venv, dashboard/.next -------------
 repo=$(new_repo)
 printf '' > "$repo/go.mod"
@@ -162,6 +183,15 @@ printf 'AGENT_RUNDIR_BACKEND_TEST=backend\n' > "$repo/.agent/config.env"
 out=$("$dt_sh" --repo-root "$repo" --format drift)
 assert_contains "$out" 'drift= key=AGENT_RUNDIR_BACKEND_TEST declared=backend status=missing candidate=services/backend' \
     'a moved component must be found again by its marker file, or a command silently starts failing with "no such file" instead of "the directory moved"'
+
+# Drift must parse a quoted command executable before deriving its containing
+# directory; a valid spaced path must not be mistaken for a missing directory.
+repo=$(new_repo)
+mkdir -p "$repo/.agent" "$repo/My Project/tools"
+printf 'AGENT_CMD_CHECK="My Project/tools/check"\n' > "$repo/.agent/config.env"
+out=$($dt_sh --repo-root "$repo" --format drift)
+assert_eq '' "$out" \
+    'does not mistake a valid spaced command path for drift'
 
 # --- drift: silence when every declared path still resolves -----------------
 repo=$(new_repo)

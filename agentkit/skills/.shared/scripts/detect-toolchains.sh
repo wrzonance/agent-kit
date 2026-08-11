@@ -347,6 +347,16 @@ suggestion_name() {
     fi
 }
 
+# Config values are parsed line-wise, not sourced. Quote only tokens that need
+# grouping so a generated path such as "My Project" survives that parser as one
+# argv token while ordinary suggestions remain readable.
+config_quote_token() {
+    case $1 in
+        *' '*) printf '"%s"' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # Whether TOOL is actually available to a python component with runner
 # RUNNER. A resolved .venv is checked by binary presence, which is the
 # strongest evidence (a listed dependency is not necessarily installed); an
@@ -369,7 +379,7 @@ py_tool_present() {
 py_bin_prefix() {
     local runner=$1 tool=$2
     if [[ $runner == */* ]]; then
-        printf '%s/%s' "$runner" "$tool"
+        config_quote_token "$runner/$tool"
     elif [[ $runner == uv ]]; then
         printf 'uv run %s' "$tool" # ecosystem-allow: detection
     else
@@ -469,7 +479,7 @@ gen_dispatcher_tasks() {
     local script
     for script in tools/verify tools/dev/verify bin/verify scripts/verify; do
         if [[ -x "$repo_root/$script" ]]; then
-            printf 'VERIFY\t%s\n' "$script"
+            printf 'VERIFY\t%s\n' "$(config_quote_token "$script")"
             return 0
         fi
     done
@@ -556,7 +566,7 @@ print_suggestions() {
                 printf '# the paths this repository wants checked:\n'
             fi
             printf '# AGENT_CMD_%s=%s\n' "$name" "$value"
-            [[ $path == . ]] || printf '# AGENT_RUNDIR_%s=%s\n' "$name" "$path"
+            [[ $path == . ]] || printf '# AGENT_RUNDIR_%s=%s\n' "$name" "$(config_quote_token "$path")"
         done
         printf '\n'
     done <<< "$sorted"
@@ -668,6 +678,7 @@ find_drift_candidate() {
 
 print_drift() {
     local declared key value argv0 dir candidate
+    local -a argv=()
     declared=$("$self_dir/repo-config.sh" --repo-root "$repo_root" --list 2> /dev/null) || true
     [[ -n $declared ]] || return 0
 
@@ -681,7 +692,9 @@ print_drift() {
 
     while IFS='=' read -r key value; do
         [[ $key == AGENT_CMD_* ]] || continue
-        argv0=${value%% *}
+        argv=()
+        mapfile -d '' -t argv < <("$self_dir/repo-config.sh" --repo-root "$repo_root" --get-argv "$key" 2> /dev/null)
+        argv0=${argv[0]:-}
         [[ $argv0 == */* ]] || continue
         dir=${argv0%/*}
         [[ -d "$repo_root/$dir" ]] && continue
