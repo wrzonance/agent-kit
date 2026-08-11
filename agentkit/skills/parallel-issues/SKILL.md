@@ -66,6 +66,16 @@ BLOCKED with that reason and stops. Driving a pseudo-terminal (`script`,
 manufacturing the human's consent, and a green log obtained that way is not
 verification evidence.
 
+**Verification cache and suite cadence.** On a green completion, `agent-run.sh`
+records evidence in the excluded per-worktree `.agent/verification-cache`, keyed
+by the command name and the current tree state. Repeating the same `--cmd` on
+unchanged bytes prints `agent-run: verification current: <log>` and exits 0;
+`--force` bypasses that shortcut. The trust gate still runs on every invocation,
+including cache hits. During red/green iteration, run focused suites for changed
+files, then run the full suite once per tree state before commit. After push,
+GitHub CI is authoritative for that SHA; an unchanged local full-suite request
+is evidence-backed by the cache rather than a new run.
+
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
 not skip brainstorm, does not skip approval, and does not extend to a repository the

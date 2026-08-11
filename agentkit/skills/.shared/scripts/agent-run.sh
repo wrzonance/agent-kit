@@ -25,7 +25,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] [--force] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -48,6 +48,7 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  skip is announced on stderr and stamped into the run log.
                  Mutually exclusive with --approve; inert for a literal
                  command, which the gate never covered.
+  --force        Execute a named command even when green evidence is current.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -105,6 +106,7 @@ cmd_name=
 cmd=()
 approve_cmd=0
 yolo_cmd=0
+force_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -119,6 +121,10 @@ while (($#)); do
             ;;
         --yolo)
             yolo_cmd=1
+            shift
+            ;;
+        --force)
+            force_cmd=1
             shift
             ;;
         --dir|--label|--cmd)
@@ -156,6 +162,9 @@ else
 fi
 if ((approve_cmd)) && [[ -z $cmd_name ]]; then
     die '--approve requires --cmd NAME.'
+fi
+if ((force_cmd)) && [[ -z $cmd_name ]]; then
+    die '--force requires --cmd NAME.'
 fi
 if ((approve_cmd && yolo_cmd)); then
     die '--approve and --yolo are mutually exclusive: one records trust, the other skips it.'
@@ -950,6 +959,66 @@ write_command_stamp() {
     : >"$stamp_dir/stamp-$cmd_name" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------- verification cache ---
+# Green evidence is keyed to the complete checkout state that a caller can
+# observe. The status stream carries untracked paths; diff HEAD carries both
+# staged and unstaged tracked content. Cache state is ignored by git, so it does
+# not feed back into this hash.
+compute_tree_hash() {
+    [[ -n ${git_top:-} ]] || return 1
+    {
+        git -C "$git_top" rev-parse HEAD
+        git -C "$git_top" diff HEAD
+        git -C "$git_top" status --porcelain=v2
+    } | sha256sum | awk '{print $1}'
+}
+
+verification_cache_path() {
+    [[ -n ${git_top:-} ]] || return 1
+    printf '%s/.agent/verification-cache' "$git_top"
+}
+
+# A cache line is evidence only while its referenced log still has the exact
+# completion marker. This prevents an interrupted or hand-written line from
+# becoming a green result.
+verification_cache_hit() {
+    local tree_hash=$1 cache line log
+    ((force_cmd)) && return 1
+    [[ -n ${cmd_name:-} ]] || return 1
+    cache=$(verification_cache_path 2>/dev/null || true)
+    [[ -n $cache && -r $cache ]] || return 1
+    while IFS= read -r line; do
+        [[ $line == "$tree_hash cmd=$cmd_name log="*' at='* ]] || continue
+        log=${line#* log=}
+        log=${log% at=*}
+        [[ -f $log ]] || continue
+        grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || continue
+        printf 'agent-run: verification current: %s\n' "$log"
+        return 0
+    done < "$cache"
+    return 1
+}
+
+record_verification() {
+    local tree_hash=$1 log=$2 cache temp
+    [[ -n ${git_top:-} && -n ${cmd_name:-} ]] || return 0
+    grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || return 0
+    cache=$(verification_cache_path 2>/dev/null || true)
+    [[ -n $cache && ! -L $cache ]] || return 0
+    mkdir -p -- "${cache%/*}" 2>/dev/null || return 0
+    temp=$cache.$$
+    {
+        [[ ! -e $cache ]] || cat -- "$cache"
+        printf '%s cmd=%s log=%s at=%s\n' \
+            "$tree_hash" "$cmd_name" "$log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$temp" 2>/dev/null || {
+        rm -f -- "$temp" 2>/dev/null || true
+        return 0
+    }
+    chmod 600 -- "$temp" 2>/dev/null || true
+    mv -f -- "$temp" "$cache" 2>/dev/null || rm -f -- "$temp" 2>/dev/null || true
+}
+
 # --------------------------------------------------------------------- main ---
 if [[ -n $cmd_name ]]; then
     resolve_named_command "$cmd_name"
@@ -971,6 +1040,15 @@ if [[ -n $cmd_name ]]; then
         yolo_gate
     else
         trust_command || die "command '$cmd_name' is not approved"
+    fi
+fi
+
+tree_hash=''
+if [[ -n $cmd_name ]]; then
+    tree_hash=$(compute_tree_hash 2>/dev/null || true)
+    if [[ -n $tree_hash ]] && verification_cache_hit "$tree_hash"; then
+        write_command_stamp
+        exit 0
     fi
 fi
 
@@ -1072,6 +1150,7 @@ printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 
 if ((rc == 0)); then
     write_command_stamp
+    [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
     printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
 else
     report_failure "$rc" "$log_file"
