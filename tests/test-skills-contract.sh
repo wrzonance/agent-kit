@@ -72,18 +72,41 @@ assert_contains "$onboard_text" 'Duplicated' \
     'onboarding classifies duplicated guidance'
 assert_contains "$onboard_text" 'Repo-specific' \
     'onboarding preserves repository-specific guidance'
+assert_contains "$onboard_text" 'discover equivalents' \
+    'onboarding discovers equivalent instruction files beyond the examples'
 assert_contains "$onboard_text" 'proposed diff' \
     'onboarding emits a proposed diff'
-assert_contains "$onboard_text" 'must not delete' \
-    'onboarding never applies instruction-file cleanup'
+assert_contains "$onboard_text" 'must not delete, rewrite' \
+    'onboarding prohibits deleting or rewriting instruction files'
+assert_contains "$onboard_text" 'explicitly retained' \
+    'onboarding retains repository-specific guidance'
 
-step_two_line=$(grep -n '^## Step 2 ' "$onboard" | cut -d: -f1)
-review_line=$(grep -in 'review existing instructions' "$onboard" | cut -d: -f1)
-if [[ -n $step_two_line && -n $review_line && $review_line -lt $step_two_line ]]; then
-    printf 'ok - instruction review precedes the config write\n'
-else
-    printf 'not ok - instruction review precedes the config write\n' >&2
-    exit 1
-fi
+assert_line_order() {
+    local label=$1 first=$2 second=$3
+    if [[ -n $first && -n $second && $first -lt $second ]]; then
+        printf 'ok - %s\n' "$label"
+    else
+        printf 'not ok - %s\n' "$label" >&2
+        exit 1
+    fi
+}
+
+step_two_line=$(grep -m1 -n '^## Step 2 ' "$onboard" | cut -d: -f1)
+review_line=$(grep -m1 -in 'review existing instructions' "$onboard" | cut -d: -f1)
+write_line=$(grep -m1 -n '^"\$shared/bootstrap-repo\.sh"$' "$onboard" | cut -d: -f1)
+conflicting_line=$(grep -m1 -n '^- \*\*Conflicting\*\*' "$onboard" | cut -d: -f1)
+duplicated_line=$(grep -m1 -n '^- \*\*Duplicated\*\*' "$onboard" | cut -d: -f1)
+repo_specific_line=$(grep -m1 -n '^- \*\*Repo-specific\*\*' "$onboard" | cut -d: -f1)
+
+assert_line_order 'instruction review precedes the config write section' \
+    "$review_line" "$step_two_line"
+assert_line_order 'approval-gated review precedes the non-dry-run bootstrap write' \
+    "$review_line" "$write_line"
+assert_line_order 'the config write section precedes the non-dry-run bootstrap write' \
+    "$step_two_line" "$write_line"
+assert_line_order 'Conflicting is classified before Duplicated' \
+    "$conflicting_line" "$duplicated_line"
+assert_line_order 'Duplicated is classified before Repo-specific' \
+    "$duplicated_line" "$repo_specific_line"
 
 finish
