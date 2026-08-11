@@ -477,11 +477,13 @@ guard_protected_match() {
 # protected list afterwards. A general "commands that touch files" rule would
 # fire on every grep and be switched off within a week.
 guard_shell_write_targets() {
-    local cmd=$1
+    local cmd=$1 write_probe=$1
 
     # Redirects to device sinks discard output but do not write a protected
     # path. Remove them before deciding whether the command is write-shaped.
-    cmd=$(sed -E 's/[0-9]*>>?[[:space:]]*\/dev\/(null|stdout|stderr)//g' <<< "$cmd")
+    write_probe=$(sed -E \
+        's/[0-9]*>>?[[:space:]]*\/dev\/(null|stdout|stderr)//g' \
+        <<< "$write_probe")
 
     # Two stages, because the alternative is parsing operands per command and
     # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
@@ -491,7 +493,7 @@ guard_shell_write_targets() {
     # Stage one: does this command write at all? A path mentioned by grep or cat
     # is not a target, and matching those would fire this rule constantly.
     grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
-        <<< "$cmd" 2> /dev/null || return 0
+        <<< "$write_probe" 2> /dev/null || return 0
 
     # Stage two: offer every token and let the protected list decide. A token
     # that is not protected costs nothing; a target missed by clever parsing
