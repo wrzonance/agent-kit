@@ -73,6 +73,7 @@ CLAUDE_PID=""
 PID_FILE=""
 STATUS_FILE=""
 STATUS_TMP=""
+HEARTBEAT_FAILURE_FILE=""
 DEADLINE_EPOCH=0
 
 usage() {
@@ -208,6 +209,17 @@ bounded_seconds() {
 
 die_duration() {
 	die "Claude review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
+}
+
+record_heartbeat_failure() {
+	local detail=$1
+	printf '%s\n' "$detail" >"$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true
+}
+
+heartbeat_failure_detail() {
+	local detail
+	detail=$(cat -- "$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true)
+	printf '%s' "${detail:-unknown heartbeat publication failure}"
 }
 
 cleanup() {
@@ -498,9 +510,18 @@ emit_progress() {
 		'{status:"running", harness:"claude", elapsedSeconds:$elapsedSeconds,
 		  eventCount:$eventCount, transcriptBytes:$transcriptBytes,
 		  wallClockEpoch:$wallClockEpoch}')
-	printf '%s\n' "$status_json" >"$STATUS_TMP"
-	chmod 600 -- "$STATUS_TMP"
-	mv -f -- "$STATUS_TMP" "$STATUS_FILE"
+	local failure=''
+	if ! printf '%s\n' "$status_json" >"$STATUS_TMP"; then
+		failure="printf heartbeat status failed: $STATUS_TMP"
+	elif ! chmod 600 -- "$STATUS_TMP"; then
+		failure="chmod heartbeat status failed: $STATUS_TMP"
+	elif ! mv -f -- "$STATUS_TMP" "$STATUS_FILE"; then
+		failure="mv heartbeat status failed: $STATUS_FILE"
+	fi
+	if [[ -n $failure ]]; then
+		record_heartbeat_failure "$failure"
+		return 1
+	fi
 	jq -cn \
 		--argjson runnerPid "$$" \
 		--argjson elapsedSeconds "$((now - started))" \
@@ -565,8 +586,19 @@ run_claude() {
 	(cd "$isolation_dir" && exec timeout --signal=KILL "$seconds" "$CLAUDE_RESOLVED" "${args[@]}") \
 		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
+	while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+		if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
+			kill -TERM -- -"$CLAUDE_PID" 2>/dev/null ||
+				kill "$CLAUDE_PID" 2>/dev/null || true
+			wait "$CLAUDE_PID" 2>/dev/null || true
+			CLAUDE_PID=""
+			return 125
+		fi
+		sleep 0.1
+	done
 	wait "$CLAUDE_PID" || status=$?
 	CLAUDE_PID=""
+	[[ -s $HEARTBEAT_FAILURE_FILE ]] && return 125
 	return "$status"
 }
 
@@ -652,6 +684,7 @@ main() {
 
 	WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-adversarial-XXXXXXXXXX")
 	chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
+	HEARTBEAT_FAILURE_FILE="$WORK_DIR/heartbeat.failure"
 	trap cleanup EXIT
 	trap 'exit 130' INT TERM
 	local isolation_dir=$WORK_DIR/cwd
@@ -676,6 +709,9 @@ main() {
 	kill "$POLLER_PID" 2>/dev/null || true
 	wait "$POLLER_PID" 2>/dev/null || true
 	POLLER_PID=""
+	if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
+		die "heartbeat publication failed: $(heartbeat_failure_detail)"
+	fi
 
 	local init result
 	((exit_code == 0)) || fail_claude_exit "$exit_code" "$stderr_file"
