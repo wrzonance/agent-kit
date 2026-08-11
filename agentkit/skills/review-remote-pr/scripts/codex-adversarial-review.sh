@@ -363,9 +363,13 @@ emit_progress() {
 }
 
 poll_progress() {
-    local started=$1
+    local started=$1 sleep_pid=""
+    trap 'if [[ -n $sleep_pid ]]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM
     while :; do
-        sleep "$POLL_SECONDS"
+        sleep "$POLL_SECONDS" &
+        sleep_pid=$!
+        wait "$sleep_pid" 2>/dev/null || true
+        sleep_pid=""
         emit_progress "$started"
     done
 }
