@@ -14,6 +14,13 @@ readonly CONTRACT_MAX_AGE_MINUTES=30
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
 
+# The built plugin lays hooks and skills out as siblings under the plugin root,
+# so the helper is always ../skills/ from here. Located by parameter expansion
+# rather than readlink/dirname: a hook must still work on a PATH that resolves
+# nothing. The guard covers an invocation by bare name, where %/* strips nothing.
+# shellcheck source=lib/guard-lib.sh
+source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
+
 # Shown when a repository has no .agent/config.env. Without it every
 # evidence-gated guard stays inert and the skills fall back to probing, which
 # looks identical to the tooling being broken -- the failure mode is silence, so
@@ -35,8 +42,9 @@ rediscovering.
 The script alone, if the user would rather do it by hand (safe to inspect first
 with --dry-run; it writes only .agent/ and .gitignore):
 
-  \"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\" --dry-run   # inspect
-  \"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\"             # then write
+${RESOLVE_HINT}
+  \"\$agentkit/.shared/scripts/bootstrap-repo.sh\" --dry-run   # inspect
+  \"\$agentkit/.shared/scripts/bootstrap-repo.sh\"             # then write
 
 It writes two files the repository is expected to commit:
   .agent/config.env   repo slug, trunk branch, board number, Status vocabulary
@@ -59,14 +67,6 @@ form "cd <repo> && ..." or "git -C <repo> ...", but the end-of-turn
 verification check has no working tree to watch and stays inert.
 
 If the work targets a repository, prefer starting the session inside it.'
-
-# The built plugin lays hooks and skills out as siblings under the plugin root,
-# so the helper is always ../skills/ from here. Located by parameter expansion
-# rather than readlink/dirname: a hook must still work on a PATH that resolves
-# nothing. The guard covers an invocation by bare name, where %/* strips nothing.
-# shellcheck source=lib/guard-lib.sh
-source "$self_dir/lib/guard-lib.sh" 2> /dev/null || true
-
 
 # True when a cached contract was written by the CLI now running. Unknown either
 # way means "do not judge": re-probing costs a second, a wrong attribution
@@ -258,7 +258,8 @@ if [[ $in_repo -eq 1 && ! -r $root/.agent/config.env ]]; then
     human="agentkit: this repository is not onboarded (.agent/config.env is absent), so the
 board, triage and commit guards are inert. Ask the agent to onboard it -- it has an onboard-repo skill that also fills in
 the verify commands -- or run:
-  \"$self_dir/../skills/.shared/scripts/bootstrap-repo.sh\""
+${RESOLVE_HINT}
+  \"\$agentkit/.shared/scripts/bootstrap-repo.sh\""
 elif [[ $in_repo -eq 0 ]]; then
     human='agentkit: this session did not start inside a git repository, so repository-scoped
 guards and the end-of-turn verification check are inert.'

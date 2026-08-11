@@ -74,8 +74,8 @@ assert_contains "$ctx" '.agent/config.env' 'and which files must exist'
 assert_contains "$ctx" '.agent/board.json' 'including the board cache'
 assert_contains "$ctx" 'README' 'and where to read more'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
-assert_contains "$ctx" '../skills/.shared/scripts/bootstrap-repo.sh' \
-    'and it teaches the hook-relative skills path'
+assert_contains "$ctx" 'agentkit/.shared/scripts/bootstrap-repo.sh' \
+    'and it teaches the resolver-relative skills path'
 
 # --- what "do not re-probe" may not cover ----------------------------------
 # The contract is announced as established fact, and for most of it that is

@@ -20,6 +20,8 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 skills="$root/agentkit/skills"
+# shellcheck source=../agentkit/hooks/lib/guard-lib.sh
+source "$root/agentkit/hooks/lib/guard-lib.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -130,6 +132,53 @@ if command -v zsh > /dev/null 2>&1; then
     assert_eq "$cx/skills" "$out" 'and resolves identically under zsh'
 else
     printf '  skip zsh checks: zsh not installed\n'
+fi
+
+# --- SessionStart onboarding advice follows the installed resolver ----------
+# Exercise the hook from the layout users actually install. Running the source
+# checkout would hide the defect because its self-relative path is not under a
+# plugin cache.
+installed="$tmp/codex/plugins/cache/agent-kit/agentkit/0.1.0"
+mkdir -p "$installed"
+cp -a "$root/agentkit/hooks" "$installed/hooks"
+cp -a "$root/agentkit/skills" "$installed/skills"
+
+unboarded="$tmp/unboarded"
+mkdir -p "$unboarded/.agent"
+git init -q "$unboarded"
+session_input() {
+    jq -nc --arg cwd "$1" \
+        '{cwd:$cwd,source:"startup",session_id:"skill-path-resolution"}'
+}
+
+session_out=$(session_input "$unboarded" | \
+    CODEX_HOME="$tmp/codex" CLAUDE_CONFIG_DIR="$tmp/claude" \
+    "$installed/hooks/session-start.sh" 2>/dev/null)
+session_ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$session_out")
+session_notice=$(sed -n '/ACTION REQUIRED/,$p' <<< "$session_ctx")
+session_human=$(jq -r '.systemMessage // ""' <<< "$session_out")
+pinned_path='plugins/cache/[^[:space:]]*agentkit/[0-9]'
+bootstrap_cmd="\"\$agentkit/.shared/scripts/bootstrap-repo.sh\""
+
+assert_contains "$session_notice" "$RESOLVE_HINT" \
+    'SessionStart model advice emits the shared resolver verbatim'
+assert_contains "$session_human" "$RESOLVE_HINT" \
+    'SessionStart operator advice emits the shared resolver verbatim'
+assert_contains "$session_notice" "$bootstrap_cmd --dry-run" \
+    'model advice uses the resolver-relative inspect command'
+assert_contains "$session_human" "$bootstrap_cmd" \
+    'operator advice uses the resolver-relative write command'
+if grep -qE "$pinned_path" <<< "$session_notice"; then
+    _fail 'model advice does not teach a pinned plugin path' \
+        "unexpected regex: $pinned_path"
+else
+    _pass 'model advice does not teach a pinned plugin path'
+fi
+if grep -qE "$pinned_path" <<< "$session_human"; then
+    _fail 'operator advice does not teach a pinned plugin path' \
+        "unexpected regex: $pinned_path"
+else
+    _pass 'operator advice does not teach a pinned plugin path'
 fi
 
 # --- every SKILL.md invocation goes through the resolver -------------------
