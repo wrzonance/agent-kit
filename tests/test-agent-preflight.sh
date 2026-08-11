@@ -59,15 +59,32 @@ assert_not_contains "$out" 'nested/AGENTS.md' \
 
 printf 'root guidance\n' > "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_contains "$out" 'instructions= root=AGENTS.md' \
-    'preflight reports a root AGENTS.md'
+assert_eq 'instructions= root=AGENTS.md' "$(grep '^instructions=' <<< "$out")" \
+    'preflight reports exactly the root AGENTS.md'
 assert_not_contains "$(grep '^instructions=' <<< "$out")" 'CLAUDE.md' \
     'the root report omits an absent CLAUDE.md'
 
 printf 'root guidance\n' > "$repo/CLAUDE.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_contains "$out" 'instructions= root=AGENTS.md,CLAUDE.md' \
-    'preflight reports both root instruction files in stable order'
+assert_eq 'instructions= root=AGENTS.md,CLAUDE.md' "$(grep '^instructions=' <<< "$out")" \
+    'preflight reports exactly both root instruction files in stable order'
+
+# Root instruction files are a trust boundary. Reject both external and in-tree
+# symlinks rather than importing text through a path whose canonical target was
+# not explicitly selected by the contract.
+repo=$(new_repo)
+printf 'external guidance\n' > "$tmp/external-AGENTS.md"
+ln -s "$tmp/external-AGENTS.md" "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=none' "$(grep '^instructions=' <<< "$out")" \
+    'preflight rejects a symlinked root AGENTS.md'
+
+repo=$(new_repo)
+printf 'in-tree guidance\n' > "$repo/in-tree-AGENTS.md"
+ln -s in-tree-AGENTS.md "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=none' "$(grep '^instructions=' <<< "$out")" \
+    'preflight rejects an in-tree root AGENTS.md symlink'
 
 # --- the symlink ------------------------------------------------------------
 repo=$(new_repo)

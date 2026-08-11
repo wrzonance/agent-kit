@@ -69,7 +69,7 @@ Options:
                      outside the agent sandbox and can only report its own.
   -h, --help         Print this help and exit 0.
 
-Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
 Exit: 0 always, including when tools or facts are missing (they are reported as missing);
       2 only for invalid usage.
@@ -317,8 +317,8 @@ probe_config() {
 probe_instructions() {
     local -a roots=()
     local root_list
-    [[ -f "$WORKTREE/AGENTS.md" ]] && roots+=(AGENTS.md)
-    [[ -f "$WORKTREE/CLAUDE.md" ]] && roots+=(CLAUDE.md)
+    [[ -f "$WORKTREE/AGENTS.md" && ! -L "$WORKTREE/AGENTS.md" ]] && roots+=(AGENTS.md)
+    [[ -f "$WORKTREE/CLAUDE.md" && ! -L "$WORKTREE/CLAUDE.md" ]] && roots+=(CLAUDE.md)
     if (( ${#roots[@]} == 0 )); then
         emit 'instructions= root=none'
     else
