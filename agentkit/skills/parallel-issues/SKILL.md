@@ -81,8 +81,8 @@ digraph process {
     "Create worktrees\n(sequential)" -> "Dispatch issue leads\n(up to available slots)";
     "Dispatch issue leads\n(up to available slots)" -> "Collect results\n(PR URL or BLOCKED)";
     "Collect results\n(PR URL or BLOCKED)" -> "Dispatch N draft-phase\nreview-remote-pr agents (parallel)";
-    "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER marks ready + triggers review";
-    "Report: drafts ready\nUSER marks ready + triggers review" -> "Reviews land\n-> continue fix/reply/resolve";
+    "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER decides ready transition";
+    "Report: drafts ready\nUSER decides ready transition" -> "Provider findings land\n-> continue fix/reply/resolve";
     "Reviews land\n-> continue fix/reply/resolve" -> "Surface human reviews\n-> user confirms each response";
     "Surface human reviews\n-> user confirms each response" -> "Print PR table\n+ worktree handoff (no cleanup)";
 }
@@ -1116,7 +1116,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-### Step 3d: After the user flips PRs ready and triggers reviews — follow-up (parallel per-PR)
+### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
 Review behavior after a ready transition or push is repository/provider configuration. Watch each PR on a long interval under the polling discipline above — one check per interval, and `gh-pr-state.sh --pr N --repo OWNER/REPO` is that check: its digest carries `draft=`, CI counts, and thread counts in one call, and `--full` writes the reviews/comments/threads artifacts when you need to inspect authorship. Process a real CodeRabbit REVIEW landing — match `.reviews[]`, not `.comments[]`: the walkthrough/ack comment can land minutes before the review carrying findings; and match `github-code-quality[bot]` in paginated inline comments, which may arrive without any review submission. As findings land, dispatch a follow-up agent for that PR — or, with no spawn capability, run the follow-up yourself, one PR at a time, labelled `worker=self (spawn unavailable)` — following review-remote-pr Phase C — approved human actions first (threads left unresolved), then body nitpicks, then Code Quality findings (verbatim fix + scan auto-clear, or reasoned Dismiss finding), then CodeRabbit threads fixed/declined + replied (commit SHA) + resolved, all fixes batched into one push per cycle, never posting any bot command. If no review arrives, report the observed state and leave triggering decisions to the user.
 

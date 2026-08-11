@@ -406,7 +406,7 @@ git status --short
 **Run all subsequent commands from `$PR_WORKTREE`.** Never switch branches or make PR edits in a worktree owned by another issue/PR. All commits for this PR go to `$HEAD_BRANCH`.
 
 **The FIRST command inside the worktree is the environment preflight.** Run it once; its printed
-block is the environment contract for the entire run (see *Sandbox and environment*):
+block is the environment contract for the entire run (see *Runtime and provider neutrality*):
 
 ```bash
 # Resolve the skill tree from the environment contract at the repository
@@ -1059,7 +1059,9 @@ jq -r '
 - `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
   provider is configured for automatic, incremental, or manual review; continue the current phase
   and leave any trigger decision to the user.
-- `rate-limited` → the user's trigger got throttled; it auto-retries when the fair-usage window refreshes (no re-push, no command needed). Wait with long bounded rounds (Step 4). Never advise buying credits — the throttle self-resolves.
+- `rate-limited` → the provider reports a throttled trigger; it may auto-retry when the fair-usage
+  window refreshes (no re-push, no command needed). Wait with long bounded rounds (Step 4). Never
+  advise buying credits — follow the provider's reported state.
 
 ### Read the verdict
 
@@ -1137,7 +1139,7 @@ If the repository declares its own runner (`AGENT_REPO_RUNNER`, or a committed `
 
 ---
 
-## Step 3 (Phase B): Wait for the user to flip ready and trigger the review
+## Step 3 (Phase B): Wait for the user to decide the ready transition
 
 When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed or declined-with-comment, every discovered human item decided — report the draft-phase summary to the user (see Exit Report) and **wait**. The user, not you, marks the PR ready for review. Whether that transition starts a provider review is external repository configuration.
 
@@ -1150,7 +1152,7 @@ done
 echo "PR #$PR is ready for the user's transition; provider review behavior is repository-configured"
 ```
 
-Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack — Step 1b state check). If none arrives, that's the expected default — the user may not want a bot pass at all; ask rather than assume, and never trigger one yourself. If the state check reports `rate-limited`, keep waiting in long bounded rounds (~10 min each, up to ~90 min); escalate to the user after that instead of triggering anything.
+Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack — Step 1b state check). If none arrives, report that no matching review has landed; do not infer provider configuration or trigger one yourself. If the state check reports `rate-limited`, keep waiting in long bounded rounds (~10 min each, up to ~90 min); escalate to the user after that instead of triggering anything.
 
 ---
 
@@ -1427,7 +1429,7 @@ Marked agent-documentation threads may be resolved at exit only when every non-b
 
 Also re-open `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, `$RUN_DIR/state/pr_${PR}_issue_comments.json`, and `$RUN_DIR/state/pr_${PR}_code_quality_comments.json`. Confirm every automated-review body nitpick has a matching anchored thread (or fallback comment) recording its fix/decline, and every Code Quality comment is either gone/auto-cleared after the pushed fix or explicitly dismissed with a reason. Confirm every confirmed adversarial-review `[P1]/[P2]` finding has a matching fix/decline PR comment.
 
-If any CI failed OR any automated-review thread/finding remains unhandled OR any body nitpick remains unaddressed OR any confirmed adversarial-review finding remains unaddressed → go back to Step 1 (max 3 full cycles — see The Loop's iteration cap; remember another CodeRabbit pass needs the user's trigger). If human-authored content lacks an explicit user decision, surface the gate and wait; do not post, resolve, or claim readiness.
+If any CI failed OR any automated-review thread/finding remains unhandled OR any body nitpick remains unaddressed OR any confirmed adversarial-review finding remains unaddressed → go back to Step 1 (max 3 full cycles — see The Loop's iteration cap; a later CodeRabbit pass depends on provider configuration or user decision). If human-authored content lacks an explicit user decision, surface the gate and wait; do not post, resolve, or claim readiness.
 
 ---
 
@@ -1474,7 +1476,7 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | `.git/worktrees/<name>/index.lock` permission denied | The per-worktree metadata dir is outside the writable bind mount. `worktree-commit.sh` detects this *before* staging and exits `2` naming the path, with nothing staged — obtain write permission for that path and re-run the identical command. Never work around it by committing from the main checkout. |
 | Thread already resolved | Skip — don't re-resolve. Only target `isResolved: false` threads. |
 | Multiple CodeRabbit review cycles | Each provider review is a fresh pass. Fetch reviews sorted by `submitted_at` — process the latest. |
-| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait, it self-resolves; don't buy credits). `none` = the user simply hasn't triggered one. |
+| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait for provider state, don't buy credits). `none` = no matching review has landed. |
 | Body nitpick has no thread ID | Fix or decline it anyway, then open a NEW anchored thread on the nitpick's file/lines referencing the commit and mentioning @coderabbitai (Step 5). Only `PRRT_...` threads can be resolved through GraphQL. |
 | Body nitpick documented as top-level comment | A floating `gh pr comment` is disconnected from the code — CodeRabbit can't tie it to the change. Use the anchored-thread POST from Step 5; top-level comment is the 422 fallback only. |
 | Threads resolved before body nitpicks handled | Resolving CodeRabbit's threads arms its auto-approve (when enabled) — an approval can fire on a PR with unhandled nitpicks. Follow Step 5's order: nitpicks first, reply+resolve threads last. |
@@ -1538,7 +1540,7 @@ not trigger a review.
 ```
 PR #N: all CI green, N/N CodeRabbit threads handled, all body nitpicks handled,
 GitHub Code Quality: [no findings | all findings auto-cleared | inaccurate findings dismissed with reasons | blocked],
-CodeRabbit approval: [approved | n/a — approval workflow disabled | not re-triggered by user],
+CodeRabbit approval: [approved | n/a — approval workflow disabled | no provider review observed],
 Adversarial review [Claude Opus 5 | blind separate Codex-agent fallback (reason: <blockedReason> | claude absent)]: M findings, M handled.
 Implementation worker: [gpt-5.6-luna high | gpt-5.6-terra high | worker=self (spawn unavailable) — reason: <why>].
 Human review: [none | H1 approved/replied/open, H2 declined/open | H3 awaiting confirmation].
