@@ -51,8 +51,9 @@ the skills.
 
 Two differences worth knowing, neither of which needs configuring:
 
-- `SubagentStart` is a Codex event. On Claude Code, spawned workers don't
-  receive the injected contract; everything else behaves the same.
+- `SubagentStart` is a Codex event. It gives spawned workers the tooling
+  curriculum; the dispatcher pastes each worker's per-worktree environment
+  contract into its prompt. Claude Code has no equivalent hook event.
 - Nothing hardcodes which CLI you're in. The environment contract reports
   `harness=` and `peer-cli=`, so commit attribution credits whichever agent did
   the work, and an adversarial review always goes to the *other* CLI.
@@ -224,7 +225,7 @@ cheap next to that downside.
 | Hook | Behaviour |
 |---|---|
 | `SessionStart` | Probes the environment once and hands the agent a contract — repo, branch, base, sandbox state, CA bundle, cache roots — plus the list of helpers that exist here. With no `.agent/config.env` it prints how to onboard instead |
-| `SubagentStart` | Injects both into every spawned worker. This is the only channel that reaches one |
+| `SubagentStart` | Injects the worktree-independent tooling curriculum into every spawned worker; the dispatcher prompt is the contract channel for each worker's worktree |
 | `PreToolUse` | Refuses work-destroying commands outright; refuses *once* for a bare helper name or an edit to a file that gates other checks |
 | `PostToolUse` | Teaches the cheaper command *after* the call returned real data |
 | `Stop` | Won't let a turn finish when a declared verify command hasn't covered the current changes |

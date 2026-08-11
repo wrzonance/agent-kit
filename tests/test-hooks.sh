@@ -211,16 +211,6 @@ printf 'repo=cached/value\nharness= name=%s trailer="T <t@example.invalid>" othe
 out=$(session_input "$mine" | PATH="$stub_path" "$hooks/session-start.sh" 2>/dev/null)
 assert_contains "$out" 'cached/value' 'a contract from this harness is still reused'
 
-# A worker must not inherit the other CLI's identity either; it has no way to
-# notice, and nobody is watching it.
-printf 'repo=example-org/example-repo\nharness= name=someone-else trailer="X <x@example.invalid>" other=nobody\n' \
-    > "$foreign/.agent/env-contract.txt"
-out=$(printf '%s' "$(jq -nc --arg cwd "$foreign" \
-    '{cwd:$cwd,hook_event_name:"SubagentStart",model:"m",session_id:"s1",
-      agent_id:"a1",agent_type:"worker",transcript_path:null}')" \
-    | "$hooks/subagent-start.sh" 2>/dev/null)
-assert_not_contains "$out" 'someone-else' 'a worker is not handed the other CLI identity'
-
 # --- a repository cannot write the agent's context ------------------------
 # The contract is injected as established fact the agent is told not to
 # re-probe, so whatever can write it can put text in an agent's head. A hostile
@@ -288,14 +278,15 @@ while read -r rel; do
         "the curriculum names a helper that exists: $rel"
 done < <(grep -oE '\$agentkit/[^[:space:]]+\.sh' <<< "$ctx" | sed 's|^\$agentkit/||' | sort -u)
 
-# A worker gets it too, and this is the only channel that can reach it.
+# A worker gets the curriculum too, and the prompt is the separate contract
+# channel that carries the worker's worktree-specific facts.
 sub_in=$(jq -nc --arg cwd "$onboarded" \
     '{cwd:$cwd,hook_event_name:"SubagentStart",model:"m",session_id:"s1",
       agent_id:"a1",agent_type:"worker",transcript_path:null}')
 out=$(printf '%s' "$sub_in" | "$hooks/subagent-start.sh" 2>/dev/null)
 ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
-assert_contains "$ctx" 'triage-issues.sh' 'a spawned worker inherits the tooling contract'
-assert_contains "$ctx" 'example-org/example-repo' 'alongside the environment contract'
+assert_contains "$ctx" 'triage-issues.sh' 'a spawned worker inherits the tooling curriculum'
+assert_not_contains "$ctx" 'example-org/example-repo' 'without inheriting the repository contract'
 
 # --- compaction re-arms the lessons ---------------------------------------
 # Compaction is precisely when an injected lesson was summarised away, so the
@@ -341,9 +332,10 @@ out=$(session_input "$repo" compact | PATH="$stub_path" "$hooks/session-start.sh
 assert_contains "$out" 'additionalContext' 'source=compact re-emits the context'
 assert_not_contains "$out" 'example-org/example-repo' 'from a fresh probe, not the cache'
 
-# --- SubagentStart injects the same contract ------------------------------
+# --- SubagentStart injects curriculum only -------------------------------
 repo=$(make_repo)
 printf 'repo=example-org/example-repo\nbranch=feat/x\n%s\n' "$HARNESS_LINE" > "$repo/.agent/env-contract.txt"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 sub=$(jq -nc --arg cwd "$repo" \
     '{cwd:$cwd,hook_event_name:"SubagentStart",model:"m",session_id:"s1",
       agent_id:"a1",agent_type:"worker",transcript_path:null}')
@@ -351,7 +343,9 @@ out=$(printf '%s' "$sub" | "$hooks/subagent-start.sh" 2>/dev/null)
 rc=0; printf '%s' "$sub" | "$hooks/subagent-start.sh" >/dev/null 2>&1 || rc=$?
 assert_eq '0' "$rc" 'SubagentStart exits 0'
 assert_hook_output "$out" subagent-start 'SubagentStart emits schema-valid JSON'
-assert_contains "$out" 'example-org/example-repo' 'and injects the contract into the worker'
+assert_contains "$out" 'triage-issues.sh' 'and injects the tooling curriculum into the worker'
+assert_not_contains "$out" 'example-org/example-repo' 'without injecting the repository contract'
+assert_not_contains "$out" 'branch=feat/x' 'or its worktree-specific branch'
 
 # --- no contract, no context, still fine ----------------------------------
 repo=$(make_repo)
