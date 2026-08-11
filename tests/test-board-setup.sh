@@ -115,8 +115,10 @@ assert_contains "$out" 'replacing the columns clears all of them' \
 
 # Read the board BEFORE mutating it. Afterwards there is nothing left to read:
 # the assignments are gone and no call can say what they were.
-snapshot_pos=$(grep -n 'project item-list' "$tmp/gh.log" | head -1 | cut -d: -f1)
-mutate_pos=$(grep -n 'api graphql' "$tmp/gh.log" | head -1 | cut -d: -f1)
+# Scan the file directly. Piping grep into head makes grep keep writing after
+# head has found its first match, which is another avoidable SIGPIPE boundary.
+snapshot_pos=$(awk '/project item-list/ { print NR; exit }' "$tmp/gh.log")
+mutate_pos=$(awk '/api graphql/ { print NR; exit }' "$tmp/gh.log")
 if [[ -n $snapshot_pos && -n $mutate_pos ]] && ((snapshot_pos < mutate_pos)); then
     _pass 'the snapshot is taken before the mutation'
 else
