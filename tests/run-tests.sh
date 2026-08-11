@@ -172,7 +172,7 @@ step 'environment-neutrality'
 # repository configuration. A public skill must not turn one operator's
 # measured sandbox or SaaS settings into universal instructions.
 environment_rc=0
-if grep -rnE \
+if grep -rniE \
     -e 'The network is disabled inside the sandbox' \
     -e 'Every git write needs elevation' \
     -e 'Only the workspace is writable' \
@@ -182,7 +182,10 @@ if grep -rnE \
     -e 'no review is automatic' \
     -e 'Nothing is automatic' \
     -e 'automatic reviews are off' \
-    "$skills" --include='*.md' --include='*.sh'; then
+    "$skills" --include='*.md' --include='*.sh' |
+    # The preflight helper emits measured contract notes; these are runtime
+    # facts, not guidance the neutrality gate is meant to reject.
+    grep -vE '/agent-preflight\.sh:[0-9]+:.*note='; then
     printf '  FAIL  skill guidance hardcodes runtime or provider configuration\n' >&2
     environment_rc=1
 else

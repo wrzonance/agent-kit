@@ -1149,7 +1149,7 @@ When Phase A is done — CI green, conflicts resolved, every confirmed adversari
 while [ "$(gh pr view "$PR" --repo "$REPO" --json isDraft --jq .isDraft)" = "true" ]; do
   sleep 120
 done
-echo "PR #$PR is ready for the user's transition; provider review behavior is repository-configured"
+echo "PR #$PR is no longer a draft; provider review behavior is repository-configured"
 ```
 
 Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack — Step 1b state check). If none arrives, report that no matching review has landed; do not infer provider configuration or trigger one yourself. If the state check reports `rate-limited`, keep waiting in long bounded rounds (~10 min each, up to ~90 min); escalate to the user after that instead of triggering anything.

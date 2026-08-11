@@ -83,7 +83,7 @@ digraph process {
     "Collect results\n(PR URL or BLOCKED)" -> "Dispatch N draft-phase\nreview-remote-pr agents (parallel)";
     "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER decides ready transition";
     "Report: drafts ready\nUSER decides ready transition" -> "Provider findings land\n-> continue fix/reply/resolve";
-    "Reviews land\n-> continue fix/reply/resolve" -> "Surface human reviews\n-> user confirms each response";
+    "Provider findings land\n-> continue fix/reply/resolve" -> "Surface human reviews\n-> user confirms each response";
     "Surface human reviews\n-> user confirms each response" -> "Print PR table\n+ worktree handoff (no cleanup)";
 }
 ```
