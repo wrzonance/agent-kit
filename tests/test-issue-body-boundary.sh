@@ -42,8 +42,12 @@ assert_not_contains "$skill" 'agent reads the issue body as the spec and proceed
     'skip guidance no longer describes raw issue text as a specification'
 
 # --- visibility and explicit invocation exceptions -------------------------
+assert_contains "$skill" 'repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=' \
+    'the visibility selector resolves its repository in-block'
 assert_contains "$skill" 'gh repo view "$repository" --json isPrivate' \
     'visibility comes from the repository, not issue-derived text'
+assert_contains "$skill" ': "${yolo_invocation:?set from the invocation line}"' \
+    'the selector requires invocation policy instead of silently defaulting it'
 assert_contains "$skill" 'public-fenced' \
     'public repositories select the fenced boundary mode'
 assert_contains "$skill" 'private-trusted' \
