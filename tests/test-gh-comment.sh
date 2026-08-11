@@ -44,8 +44,13 @@ run_comment() {
 
 output=$(run_comment --pr 14 --repo owner/repo --body-file "$body")
 assert_contains "$output" 'posted id=101' 'top-level comment is posted and verified'
-assert_eq "$(jq -j '.body' "$tmp/payload.json")" "$(cat "$body")" \
-    'the API payload preserves the exact body bytes'
+jq -j '.body' "$tmp/payload.json" >"$tmp/payload-body.txt"
+if cmp -s "$body" "$tmp/payload-body.txt"; then
+    _pass 'the API payload preserves the exact body bytes'
+else
+    _fail 'the API payload preserves the exact body bytes' \
+        'the payload body differs from the source file'
+fi
 assert_contains "$(cat "$tmp/gh.log")" 'repos/owner/repo/issues/14/comments' \
     'top-level comments use the issue comment endpoint'
 

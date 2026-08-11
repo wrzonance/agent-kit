@@ -210,6 +210,8 @@ assert_contains "$(cat "$claude_success_result")" '"status": "completed"' \
     'Claude returns a completed result for a valid provider stream'
 assert_contains "$(cat "$claude_success_result")" '"verdict": {' \
     'Claude preserves the structured no-findings verdict'
+assert_contains "$(cat "$claude_success_result")" '"verdict": "no_findings"' \
+    'Claude preserves the no-findings verdict value'
 
 codex_success_dir="$tmp/codex-success"
 mkdir -- "$codex_success_dir"
