@@ -567,6 +567,32 @@ out=$(pre_input "$repo" 'sed -n 1p .github/workflows/ci.yml 2>/dev/stderr' \
     'shell-read-stderr' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'allows a read with stderr sink redirection'
 
+# The sink forms remain harmless even when written explicitly or with an
+# appended fd redirect. None of these commands names a protected target.
+sink_id=0
+for sink_redirect in '>/dev/null' '>>/dev/null' '2>/dev/null' '2>>/dev/null' \
+    '>/dev/stdout' '>>/dev/stdout' '2>/dev/stdout' '2>>/dev/stdout' \
+    '>/dev/stderr' '>>/dev/stderr' '2>/dev/stderr' '2>>/dev/stderr'; do
+    sink_id=$((sink_id + 1))
+    out=$(pre_input "$repo" "printf x $sink_redirect" "shell-sink-$sink_id" \
+        | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "allows sink-only redirect: $sink_redirect"
+done
+
+# Every protected write form remains deny-once when stderr is also discarded.
+write_id=0
+for guarded_write in 'sed -i s/a/b/ .github/workflows/ci.yml 2>/dev/null' \
+    'tee .github/workflows/ci.yml 2>/dev/null < x' \
+    'cp x .github/workflows/ci.yml 2>/dev/null' \
+    'mv x .github/workflows/ci.yml 2>/dev/null' \
+    'printf x > .github/workflows/ci.yml 2>/dev/null' \
+    'printf x >> .github/workflows/ci.yml 2>/dev/null'; do
+    write_id=$((write_id + 1))
+    out=$(pre_input "$repo" "$guarded_write" "shell-guarded-$write_id" \
+        | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "still guards protected write: $guarded_write"
+done
+
 # Reading one of those files is not writing it, and an ordinary write elsewhere
 # is not this rule's business. Both would make the guard noise.
 for fine in 'echo x >> README.md' 'sed -i s/a/b/ src/main.py' \
