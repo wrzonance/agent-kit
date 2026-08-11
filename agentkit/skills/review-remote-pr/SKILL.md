@@ -545,10 +545,12 @@ guessing a command.
 
 **Command-trust gate:** `--cmd` commands need a recorded human approval
 (`agent-run.sh --approve`, terminal-only). When the invocation that dispatched this loop was
-explicitly unattended (parallel-issues `--yolo`), its prompts carry `--yolo` on every
-`agent-run.sh` line, which skips the gate for that invocation, loudly, recording nothing.
-Refused as `unapproved repository command` without that flag: report BLOCKED. Never forge
-the approval — no pseudo-terminals, no piped `y`, no hand-written trust records.
+explicitly unattended (parallel-issues `--yolo`), append `--yolo` to **every** `agent-run.sh
+--cmd` invocation you make — the lines above and any you compose — which skips the gate for
+that invocation, loudly, recording nothing, provided the command's repository-controlled
+inputs match the remote trunk. Refused at the gate — as `unapproved repository command`, or
+by `--yolo` because an input differs from the trunk — report BLOCKED with that reason. Never
+forge the approval — no pseudo-terminals, no piped `y`, no hand-written trust records.
 
 Exit `2` from the commit helper means "obtain write permission for the named path
 and re-run the identical command" — it is safe to retry verbatim.
