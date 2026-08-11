@@ -53,6 +53,28 @@ assert_contains "$parallel" 'removes the approval gate, not the reasoning' \
 assert_contains "$parallel" 'removes the approval gate, not the disclosure' \
     'and still announces what it chose'
 
+# --- --fast-mode resolves board adjudication itself -------------------------
+# Unattended runs on a single-board repo hit the same-board STOP every time;
+# fast mode answers it from the conflict analysis and discloses, never asks.
+assert_contains "$parallel" 'With `--fast-mode`, do not stop for board adjudication' \
+    'fast mode does not block on the same-board question'
+assert_contains "$parallel" 'print the shared-board finding' \
+    'the shared-board disclosure survives the flag'
+assert_contains "$parallel" 'dropped with a printed reason, not asked about' \
+    'a Blocked-column candidate is excluded, not a question'
+
+# --- publishing is the invocation's own output -------------------------------
+# Branch pushes and DRAFT PR opens are what the skill was invoked to produce;
+# a sandbox escalation goes to the harness, not back to the user as a question.
+assert_contains "$parallel" 'Publishing is part of the dispatch' \
+    'branch pushes and draft PRs need no second permission'
+assert_contains "$parallel" 'Do not pause to re-ask for that authorization' \
+    'and the agent does not ask anyway'
+assert_contains "$parallel" 'request escalation through the harness' \
+    'a sandbox gate is answered by the harness approval flow'
+assert_contains "$parallel" 'ready-flips, merges' \
+    'the still-gated actions are named so the authority does not leak'
+
 # --- selection is mechanical where it can be --------------------------------
 assert_contains "$parallel" 'pick-issues.sh' 'fast mode selects through the helper'
 assert_contains "$parallel" 'Only `selectable` lines are eligible' \
