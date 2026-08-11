@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Suite: repository command approval is a human-only action.
+# Suite: repository command approval is a human-only action, enforced in the
+# tool itself. `agent-run.sh --approve` reads its confirmation from the
+# controlling terminal, so an agent session -- which has none -- cannot clear
+# repository trust by ANY shell spelling, while a human at a terminal can. The
+# PreToolUse hook does not police this: pattern-matching a command line fails
+# open on ordinary spellings, so the boundary lives where it cannot be evaded.
 set -uo pipefail
 
 TEST_NAME='agent-run-approval-gate'
@@ -10,75 +15,117 @@ source "$here/lib/assert.sh"
 
 hooks="$root/agentkit/hooks"
 run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
+tty_approve="$here/lib/tty-approve"
 readme="$root/README.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
-export AGENT_TRUST_ROOT="$tmp/trust"
 
 make_repo() {
     local dir
     dir=$(mktemp -d "$tmp/repo.XXXXXX")
     git -C "$dir" init -q
     mkdir -p "$dir/.agent/cache"
+    printf 'AGENT_CMD_VERIFY=true\n' > "$dir/.agent/config.env"
     printf '%s' "$dir"
 }
 
-pre_input() {
-    jq -nc --arg cwd "$1" --arg cmd "$2" --arg sid "$3" \
-        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
-          session_id:$sid,tool_name:"Bash",tool_use_id:"t",transcript_path:null,
-          tool_input:{command:$cmd}}'
+# A repo-local trust root, so an approval (or its absence) is observable and
+# never leaks into the developer's real state directory.
+trust_files() { find "$1" -name '*.trust' 2> /dev/null; }
+
+# --- the tool refuses approval with no controlling terminal, every spelling ---
+# `setsid` detaches from any controlling terminal, reproducing an agent session
+# regardless of whether the test itself runs under a TTY. Every spelling an
+# agent could reach for must fail identically and persist no trust -- that is
+# the property a command-line matcher cannot guarantee.
+repo=$(make_repo)
+trust_root="$tmp/trust-agent"
+
+agent_approve() {
+    setsid env AGENT_TRUST_ROOT="$trust_root" bash -c "$1" < /dev/null 2>&1
 }
 
+while IFS='|' read -r label spelling; do
+    out=$(cd "$repo" && agent_approve "$spelling") && rc=0 || rc=$?
+    assert_eq '1' "$rc" "agent approval fails without a terminal: $label"
+    assert_contains "$out" 'human-only action' \
+        "agent approval names the human-only boundary: $label"
+    assert_contains "$out" 'interactive terminal' \
+        "agent approval explains the missing capability: $label"
+done <<EOF
+plain|"$run_sh" --approve --cmd verify
+reordered|"$run_sh" --cmd verify --approve
+quoted-option|"$run_sh" "--approve" --cmd verify
+bash-c|bash -c '"$run_sh" --approve --cmd verify'
+sh-c|sh -c '"$run_sh" --approve --cmd verify'
+command-builtin|command "$run_sh" --approve --cmd verify
+env-prefix|env FOO=bar "$run_sh" --approve --cmd verify
+EOF
+
+# No spelling above wrote trust, so a normal run is still refused.
+assert_eq '' "$(trust_files "$trust_root")" \
+    'no agent spelling persisted repository trust'
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$run_sh" --cmd verify 2>&1) || true
+assert_contains "$out" 'refusing unapproved repository command' \
+    'the command stays unapproved after every agent attempt'
+
+# --- a human at the terminal can approve, and only then does the command run ---
+repo=$(make_repo)
+trust_root="$tmp/trust-human"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd verify 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'a human confirmation at the terminal approves'
+assert_contains "$out" 'approved verify' 'the approval is recorded for the human'
+assert_contains "$(trust_files "$trust_root")" '.trust' \
+    'the human approval persisted a trust record'
+assert_rc 0 'the approved command now runs' -- \
+    env AGENT_TRUST_ROOT="$trust_root" "$run_sh" --dir "$repo" --cmd verify
+
+# --- a human who declines approves nothing ---
+repo=$(make_repo)
+trust_root="$tmp/trust-declined"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" n -- "$run_sh" --approve --cmd verify 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a declined confirmation fails'
+assert_contains "$out" 'approval declined' 'a declined confirmation says so'
+assert_eq '' "$(trust_files "$trust_root")" 'a declined confirmation persists no trust'
+
+# --- the hook does not police approval, so it raises no false denial ---
+# The prior matcher misfired on literal commands after `--` and on quoted prose;
+# with enforcement in the tool, the hook simply allows these.
+pre_input() {
+    jq -nc --arg cwd "$1" --arg cmd "$2" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:"approval-gate",tool_name:"Bash",tool_use_id:"t",
+          transcript_path:null,tool_input:{command:$cmd}}'
+}
 decision() { jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$1"; }
 
 repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=true\n' > "$repo/.agent/config.env"
-
-# Every spelling that invokes the helper in command position is human-only, and
-# the rule remains a denial on retries rather than becoming a session lesson.
-approval_commands=(
-    "\"$run_sh\" --approve --cmd verify"
-    "$run_sh --cmd verify --approve"
-    "bash \"$run_sh\" --approve --cmd verify"
-)
-sid=approval-gate
-for command in "${approval_commands[@]}"; do
-    out=$(pre_input "$repo" "$command" "$sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_hook_output "$out" pre-tool-use "approval request is schema-valid: $command"
-    assert_eq 'deny' "$(decision "$out")" "denies agent approval request: $command"
-    assert_contains "$out" 'human' "approval denial names human action: $command"
-    assert_not_contains "$out" '--approve --cmd verify' \
-        "approval denial does not teach a copyable bypass: $command"
-
-    out=$(pre_input "$repo" "$command" "$sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'deny' "$(decision "$out")" "retry remains denied: $command"
+for allowed in \
+    "\"$run_sh\" --approve --cmd verify" \
+    "\"$run_sh\" -- some-tool --approve" \
+    "echo 'example; $run_sh --approve --cmd verify'" \
+    "grep -rn -- '--approve' agentkit/hooks"; do
+    out=$(pre_input "$repo" "$allowed" | "$hooks/pre-tool-use.sh" 2> /dev/null)
+    assert_hook_output "$out" pre-tool-use "hook output is schema-valid: $allowed"
+    assert_eq 'allow' "$(decision "$out")" "hook raises no false denial: $allowed"
 done
 
-# A command-position match is required; merely searching for the option or
-# mentioning the helper in prose must not create a false denial.
-for ordinary in \
-    "grep -rn -- '--approve' agentkit/hooks" \
-    "echo 'agent-run.sh --approve --cmd verify'" \
-    "\"$run_sh\" --cmd verify" \
-    "\"$run_sh\" --cmd verify --label approve"; do
-    out=$(pre_input "$repo" "$ordinary" "ordinary-${RANDOM}" | \
-        "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'allow' "$(decision "$out")" "allows ordinary command: $ordinary"
-done
-
-# The wrapper's own refusal must not expose the exact command that clears it.
-out=$(cd "$repo" && "$run_sh" --cmd verify 2>&1) || true
+# --- the wrapper refusal never prints a copyable bypass ---
+repo=$(make_repo)
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$tmp/trust-msg" "$run_sh" --cmd verify 2>&1) || true
 assert_contains "$out" 'refusing unapproved repository command' \
     'the wrapper refuses an unapproved repository command'
 assert_contains "$out" 'human' 'the wrapper says a human must clear approval'
 assert_not_contains "$out" '--approve --cmd verify' \
     'the wrapper refusal does not print the bypass command'
 
+# --- the README documents the tool-level human-only boundary ---
 readme_text=$(cat -- "$readme")
 assert_contains "$readme_text" 'Approval is deliberately human-only' \
     'README documents human-only approval'
-assert_contains "$readme_text" 'PreToolUse hook denies an agent attempt' \
-    'README documents the enforcement boundary'
+assert_contains "$readme_text" 'controlling terminal' \
+    'README documents the terminal-confirmation boundary'
 
 finish

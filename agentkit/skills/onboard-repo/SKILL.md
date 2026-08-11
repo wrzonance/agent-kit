@@ -175,19 +175,24 @@ AGENT_CMD_TEST=<the full suite, minutes>
 AGENT_CMD_VERIFY=tools/verify
 ```
 
-**Approval is separate from declaration.** A committed `AGENT_CMD_*` value is
-repository-controlled data, not permission to execute. Before the first run,
-review the declaration and approve the exact current command explicitly:
+**Approval is separate from declaration, and it is a human-only step.** A
+committed `AGENT_CMD_*` value is repository-controlled data, not permission to
+execute. Before the first run a human reviews the declaration and approves the
+exact current command from their own terminal — `--approve` reads its
+confirmation from the controlling terminal, so an agent session cannot clear
+trust on its own:
 
 ```bash
+# A human, in an interactive terminal:
 "$shared/agent-run.sh" --approve --cmd verify
+# Any session, once approval exists:
 "$shared/agent-run.sh" --cmd verify
 ```
 
 Approval lives outside the checkout and fingerprints the declaration plus
 repository-backed command inputs. If either changes, `agent-run.sh` refuses to
-run until it is reviewed and approved again. This preserves verification after
-ordinary source edits without allowing a changed `tools/verify` or package
+run until a human reviews and approves it again. This preserves verification
+after ordinary source edits without allowing a changed `tools/verify` or package
 manifest to inherit an old approval. Literal commands (`agent-run.sh -- ...`)
 remain caller-supplied and do not use this repository-command trust record.
 
@@ -249,17 +254,19 @@ Edit `.agent/config.env` directly. Values are read line-wise and never sourced,
 so no quoting is needed — write the command exactly as you would type it,
 unquoted, arguments and all.
 
-Then prove it parses, and prove every command you declared actually runs:
+Then prove it parses. Approval and the first run are a human-only step (above),
+so hand them off rather than running `--approve` yourself:
 
 ```bash
 "$shared/repo-config.sh" --list
-# ...then once per name you declared:
-"$shared/agent-run.sh" --approve --cmd verify
+# ...then, once per name you declared, a human approves and runs it:
+"$shared/agent-run.sh" --approve --cmd verify   # human, interactive terminal
 "$shared/agent-run.sh" --cmd verify
 ```
 
 `--list` prints warnings for values the resolver rejects. A declared command that
-does not pass here is not finished work — fix it or remove it before continuing.
+does not pass `--list` is not finished work — fix it or remove it before
+continuing.
 
 **This is the only place a candidate gets run.** A declaration you have to
 withdraw costs one edit; running everything twice costs the whole suite's

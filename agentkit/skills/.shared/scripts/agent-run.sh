@@ -31,7 +31,9 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
   --label NAME   Label used in the log file name (default: the command's basename).
   --approve      Record explicit approval for the current repository declaration and
-                 executable inputs, but do not run the command.
+                 executable inputs, but do not run the command. Human-only: the
+                 confirmation is read from the terminal, so an agent session
+                 (which has no /dev/tty) cannot grant it.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -54,8 +56,9 @@ Repository declarations (<git-toplevel>/.agent/config.env):
 Trust boundary:
   Commands selected with --cmd are repository-controlled. The first run, and any
   run after the declaration or repository-backed command input changes, requires
-  `agent-run.sh --approve --cmd NAME`. Approval is stored outside the checkout in
-  an owner-only state directory and is never committed to the repository.
+  a human to review it and run `agent-run.sh --approve --cmd NAME` from their own
+  terminal. Approval is stored outside the checkout in an owner-only state
+  directory and is never committed to the repository.
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
@@ -642,6 +645,33 @@ compute_trust_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
+# Approval is a human-only action, enforced here in the tool -- not in a hook,
+# which can only pattern-match a command line and so fails open on ordinary
+# shell spellings (a quoted `"--approve"`, `bash -c`, `command`, an environment
+# assignment prefix, `eval`, or a wrapper script). The confirmation is read from
+# the controlling terminal: an agent session's shell has no /dev/tty, so no
+# spelling can satisfy it, while a human running the command in their own
+# terminal is prompted. A declined or absent confirmation records no trust.
+require_human_approval() {
+    local cmd_name=$1 reply
+    # Scope the error suppression to the open attempt: a bare `exec ... 2>/dev/null`
+    # would redirect this script's stderr for good, swallowing every later message.
+    { exec 3< /dev/tty; } 2> /dev/null || die \
+        "approval is a human-only action and requires an interactive terminal.
+  A human must review the declaration and run --approve from their own shell;
+  an agent session cannot clear repository command trust."
+    printf 'Approve repository command %s for this repository state? [y/N] ' \
+        "$cmd_name" > /dev/tty
+    IFS= read -r reply <&3 || reply=
+    # Scope this the same way: a bare `exec ... 2>/dev/null` would redirect the
+    # script's stderr permanently, not just for the fd-closing line.
+    { exec 3<&-; } 2> /dev/null || true
+    case $reply in
+        y | Y | yes | YES | Yes) return 0 ;;
+        *) die 'approval declined.' ;;
+    esac
+}
+
 trust_command() {
     local trust_id current recorded temp
     [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 0
@@ -652,6 +682,7 @@ trust_command() {
     current=$trust_fingerprint
 
     if ((approve_cmd)); then
+        require_human_approval "$cmd_name"
         temp=$trust_file.$$
         if ! printf '%s\n' "$current" > "$temp" 2>/dev/null; then
             die "cannot write temporary trust file: $temp"

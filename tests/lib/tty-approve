@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Run a command with a pseudo-terminal as its controlling terminal, having
+queued one line of input on that terminal first.
+
+The repository command-approval gate (`agent-run.sh --approve`) reads its
+confirmation from the controlling terminal, so that no agent session -- which
+has no /dev/tty -- can grant approval by any shell spelling. Tests simulate the
+human at that terminal here: a PTY is allocated and a forked child adopts its
+slave as controlling terminal (so the child's /dev/tty is the PTY), while the
+child's stdout and stderr stay on this process's inherited descriptors. The
+gate's "approved"/"declined" line therefore reaches the caller's captured
+stderr directly, never the PTY, avoiding the read race where a slave that closes
+on child exit drops its last buffered output.
+
+    tty-approve [--mkdir-before PATH] <response> -- <command> [args...]
+
+--mkdir-before creates `PATH.<child-pid>` in the child immediately before exec.
+Because exec preserves that PID, it equals the approving `agent-run.sh`
+process's `$$`, so the directory lands exactly where the trust temp file would
+be written -- the deterministic way to exercise the persistence failure path
+from behind the human-only gate, with no PID guessing.
+"""
+import fcntl
+import os
+import signal
+import sys
+import termios
+import threading
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    mkdir_before = None
+    if argv[:1] == ["--mkdir-before"]:
+        if len(argv) < 2:
+            sys.exit("usage: tty-approve [--mkdir-before PATH] <response> -- <cmd>...")
+        mkdir_before = argv[1]
+        argv = argv[2:]
+    if "--" not in argv:
+        sys.exit("usage: tty-approve [--mkdir-before PATH] <response> -- <cmd>...")
+    sep = argv.index("--")
+    command = argv[sep + 1 :]
+    if sep != 1 or not command:
+        sys.exit("usage: tty-approve [--mkdir-before PATH] <response> -- <cmd>...")
+    response = argv[0]
+
+    master, slave = os.openpty()
+    pid = os.fork()
+    if pid == 0:
+        # Acquiring the fresh PTY as controlling terminal delivers a spurious
+        # SIGHUP from the session handover; a real terminal would not hang up.
+        # An ignored disposition survives the exec, so the command runs on.
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        os.dup2(slave, 0)  # stdin is the terminal; stdout/stderr stay inherited
+        if slave > 2:
+            os.close(slave)
+        os.close(master)
+        if mkdir_before is not None:
+            try:
+                os.mkdir(f"{mkdir_before}.{os.getpid()}")
+            except OSError:
+                pass
+        os.execvp(command[0], command)
+        os._exit(127)
+
+    os.close(slave)
+    os.write(master, (response + "\n").encode())
+    # Drain and discard the terminal's echo/prompt so a full buffer never blocks
+    # the child; the meaningful output is on the inherited stderr, not here.
+    def drain() -> None:
+        while True:
+            try:
+                if not os.read(master, 4096):
+                    break
+            except OSError:
+                break
+
+    reader = threading.Thread(target=drain)
+    reader.start()
+    _, status = os.waitpid(pid, 0)
+    reader.join()  # the child's exit closes the slave, ending the drain
+    os.close(master)
+    return os.waitstatus_to_exitcode(status)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
