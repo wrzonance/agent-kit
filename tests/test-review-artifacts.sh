@@ -183,6 +183,8 @@ assert_contains "$skill_text" 'relaunch exactly once' \
     'the skill bounds relaunches to one after the death predicate'
 assert_contains "$skill_text" 'launcher reports a terminal child' \
     'the skill prefers native launcher terminal state'
+assert_contains "$skill_text" 'Without native launcher state, a validated canonical verdict is Completed' \
+    'the skill permits detached canonical-verdict completion'
 assert_not_contains "$skill_text" 'kill -0' \
     'the skill never recommends cross-cell PID probes'
 assert_contains "$skill_text" 'bounded in both directions' \

@@ -998,9 +998,9 @@ heartbeat freshness.
 
 Every poll then lands in exactly one of three states, and only the third is ever "blocked":
 
-1. **Completed** — the launcher reports a terminal child and the helper published a canonical
-   verdict (success, or the rc=3 environment-blocked JSON). Consume that one verdict. An rc=3 JSON
-   object is final and must never trigger a retry.
+1. **Completed** — when native launcher state is available, the launcher reports a terminal child
+   and the helper published a canonical verdict. Without native launcher state, a validated canonical verdict is Completed
+   (success, or the rc=3 environment-blocked JSON). Consume that one verdict. An rc=3 JSON object is final and must never trigger a retry.
 2. **Still running** — no verdict, and either the launcher is nonterminal, the heartbeat is fresh,
    or transcript bytes grew since the prior sample. A missing/empty verdict, absent terminal event,
    or heartbeat-only transcript tail is healthy in-flight evidence. Do not relaunch in this state.
