@@ -479,6 +479,10 @@ guard_protected_match() {
 guard_shell_write_targets() {
     local cmd=$1
 
+    # Redirects to /dev/null discard output but do not write a protected path.
+    # Remove them before deciding whether the command is write-shaped.
+    cmd=$(sed -E 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' <<< "$cmd")
+
     # Two stages, because the alternative is parsing operands per command and
     # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
     # has no command word at all. Getting one of those wrong is how a rule ends

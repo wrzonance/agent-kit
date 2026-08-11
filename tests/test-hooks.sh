@@ -552,6 +552,15 @@ for write in 'echo x >> .git/config' 'sed -i s/a/b/ .github/workflows/ci.yml' \
     assert_eq 'deny' "$(decision "$out")" "sees the shell write: $write"
 done
 
+# Stderr housekeeping is not a write target. A read-only command that names a
+# protected file must remain usable even when it suppresses command errors.
+read_cmd=$'find . -path "*/instructions/*.md" -print 2>/dev/null | sort\nprintf "\\n--- CI ---\\n"\nsed -n 1,260p .github/workflows/ci.yml 2>/dev/null'
+out=$(pre_input "$repo" "$read_cmd" "shell-read-null" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'allows the read-only compound transcript'
+out=$(pre_input "$repo" 'sed -n 1p .github/workflows/ci.yml 2>/dev/null' \
+    'shell-read-minimal' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'allows the minimal read-only repro'
+
 # Reading one of those files is not writing it, and an ordinary write elsewhere
 # is not this rule's business. Both would make the guard noise.
 for fine in 'echo x >> README.md' 'sed -i s/a/b/ src/main.py' \
