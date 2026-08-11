@@ -71,6 +71,8 @@ WORK_DIR=""
 POLLER_PID=""
 CLAUDE_PID=""
 PID_FILE=""
+STATUS_FILE=""
+STATUS_TMP=""
 DEADLINE_EPOCH=0
 
 usage() {
@@ -223,15 +225,21 @@ cleanup() {
 		rm -f -- "$PID_FILE"
 		PID_FILE=""
 	fi
+	if [[ -n $STATUS_FILE ]]; then
+		rm -f -- "$STATUS_FILE"
+		STATUS_FILE=""
+	fi
+	if [[ -n $STATUS_TMP ]]; then
+		rm -f -- "$STATUS_TMP"
+		STATUS_TMP=""
+	fi
 	[[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
 	return 0
 }
 
-# Durable liveness for detached pollers: the launching cell's stderr (where the
-# runnerPid progress records go) can vanish with the cell, so the PID also
-# lives beside the transcript for the whole run. `kill -0` on this recorded PID
-# is the liveness probe; process-name patterns have false-reported a live,
-# sandbox-wrapped producer as dead.
+# The PID sidecar is retained for same-process helper bookkeeping and
+# corroboration only. Cross-cell pollers use the status heartbeat and transcript
+# byte growth; they must not infer producer liveness from this PID.
 record_helper_pid() {
 	PID_FILE="$TRANSCRIPT_PATH.pid"
 	[[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
@@ -243,7 +251,7 @@ record_helper_pid() {
 # in a shared temporary directory. The caller creates one 0700 run directory and
 # passes a fresh path inside it. Refuse anything weaker before invoking Claude.
 prepare_transcript() {
-	local parent mode
+	local parent mode artifact
 	parent=$(dirname -- "$TRANSCRIPT_PATH")
 	[[ -d $parent && ! -L $parent ]] ||
 		die "Transcript parent must be an existing private directory: $parent"
@@ -264,6 +272,16 @@ prepare_transcript() {
 	(set -o noclobber; : >"$TRANSCRIPT_PATH") ||
 		die "Cannot create transcript exclusively: $TRANSCRIPT_PATH"
 	chmod 600 -- "$TRANSCRIPT_PATH" || die "Cannot secure transcript: $TRANSCRIPT_PATH"
+	STATUS_FILE="$TRANSCRIPT_PATH.status"
+	STATUS_TMP="$STATUS_FILE.tmp"
+	for artifact in "$STATUS_FILE" "$STATUS_TMP"; do
+		[[ ! -L $artifact ]] || die "Refusing to write through a status-artifact symlink: $artifact"
+		if [[ -e $artifact ]]; then
+			[[ -f $artifact && -O $artifact ]] ||
+				die "Refusing to overwrite status artifact that is not an owned regular file: $artifact"
+			rm -f -- "$artifact" || die "Cannot remove previous status artifact: $artifact"
+		fi
+	done
 }
 
 require_value() {
@@ -468,10 +486,21 @@ transcript_last_label() {
 # Progress goes to stderr so stdout carries exactly one JSON object (the result or
 # the blocked report) and `$(...)` capture needs no filtering.
 emit_progress() {
-	local started=$1 now mtime bytes
+	local started=$1 now mtime bytes status_json
 	now=$(date +%s)
 	mtime=$(stat -c %Y -- "$TRANSCRIPT_PATH" 2>/dev/null) || mtime=$started
 	bytes=$(stat -c %s -- "$TRANSCRIPT_PATH" 2>/dev/null) || bytes=0
+	status_json=$(jq -cn \
+		--argjson elapsedSeconds "$((now - started))" \
+		--argjson eventCount "$(transcript_event_count)" \
+		--argjson transcriptBytes "$bytes" \
+		--argjson wallClockEpoch "$now" \
+		'{status:"running", harness:"claude", elapsedSeconds:$elapsedSeconds,
+		  eventCount:$eventCount, transcriptBytes:$transcriptBytes,
+		  wallClockEpoch:$wallClockEpoch}')
+	printf '%s\n' "$status_json" >"$STATUS_TMP"
+	chmod 600 -- "$STATUS_TMP"
+	mv -f -- "$STATUS_TMP" "$STATUS_FILE"
 	jq -cn \
 		--argjson runnerPid "$$" \
 		--argjson elapsedSeconds "$((now - started))" \
@@ -494,11 +523,11 @@ poll_progress() {
 	local started=$1 sleep_pid=""
 	trap 'if [[ -n $sleep_pid ]]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM
 	while :; do
+		emit_progress "$started"
 		sleep "$POLL_SECONDS" &
 		sleep_pid=$!
 		wait "$sleep_pid" 2>/dev/null || true
 		sleep_pid=""
-		emit_progress "$started"
 	done
 }
 

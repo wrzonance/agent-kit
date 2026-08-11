@@ -980,33 +980,43 @@ printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
     "$review_rc" "$verdict_path" "$transcript"
 ```
 
-Launch the helper through an asynchronous executor and check its yielded process/cell at least as
-often as `--poll-seconds`. Each stderr progress record is one JSON object reporting `runnerPid` (the
-helper's own PID, not the reviewer's), `elapsedSeconds`, `secondsSinceLastEvent`, `eventCount`,
-`lastEvent`, and `transcriptBytes`. Continue while the process is alive, but honor the helper's hard
-`--max-duration-seconds` ceiling: a duration breach is a blocked review, never `no_findings`. Silence
-is a diagnostic warning until that ceiling; do not shrink the diff to the last commit merely to meet
-an estimate.
+Launch the helper through an asynchronous executor and inspect the launcher's native terminal/child
+state whenever that state is available. If the executor cell is detached or its native state is not
+available, use the cross-cell heartbeat fallback at least as often as `--poll-seconds`. Each helper
+atomically replaces `<transcript>.status` in the transcript's private directory on every monitor
+tick (temporary file plus same-directory `mv`). The JSON status artifact contains
+`elapsedSeconds`, `transcriptBytes`, `eventCount`, and `wallClockEpoch`; cleanup removes the status
+artifact, its temporary sibling, and the PID sidecar on every normal exit. Stderr progress remains
+diagnostic only.
 
-For liveness, both helpers record their own PID at `<transcript>.pid` inside the private run
-directory for the whole run and remove it on exit. Check liveness with `kill -0` against that
-recorded PID, never a process-name pattern — `pgrep` matching has returned empty for a live,
-sandbox-wrapped producer and false-confirmed its death. Every poll then lands in exactly one of
-three states, and only the third is ever "blocked":
+The `.pid` sidecar is for same-process helper internals/corroboration. Cross-cell pollers must never
+use producer-PID liveness or a process-name probe: executor cells can have separate PID namespaces.
+Instead, maintain transcript byte-size samples at least one poll interval apart and compare the
+status artifact's `wallClockEpoch` to the current wall clock. A heartbeat is fresh when it is newer
+than `2 * --poll-seconds`. Any transcript growth means **Still running**, regardless of PID state or
+heartbeat freshness.
 
-1. **Completed** — the helper exited and published a verdict at the final path (success, or the
-   rc=3 environment-blocked JSON). Consume it.
-2. **Still running** — no published verdict, recorded PID alive, `--max-duration-seconds` not yet
-   elapsed. Keep polling; this state is never "blocked". An absent terminal event, a missing or
-   empty verdict file, and a heartbeat-only transcript tail are all consistent with a healthy
-   in-flight review — a live review has been wrongly declared blocked less than a minute before
-   it finished.
-3. **Blocked** — the ceiling elapsed, or the recorded PID is dead with no published verdict.
-   Report it definitively, artifacts preserved.
+Every poll then lands in exactly one of three states, and only the third is ever "blocked":
 
-The wait is bounded in both directions: the helper kills its producer at the ceiling, so state 2
-cannot outlive `--max-duration-seconds` — a slow review gets its whole window, a review that will
-never complete costs at most one window, and the poller needs no judgment in unattended runs.
+1. **Completed** — the launcher reports a terminal child and the helper published a canonical
+   verdict (success, or the rc=3 environment-blocked JSON). Consume that one verdict. An rc=3 JSON
+   object is final and must never trigger a retry.
+2. **Still running** — no verdict, and either the launcher is nonterminal, the heartbeat is fresh,
+   or transcript bytes grew since the prior sample. A missing/empty verdict, absent terminal event,
+   or heartbeat-only transcript tail is healthy in-flight evidence. Do not relaunch in this state.
+3. **Blocked** — no verdict at all, a stale/missing heartbeat, and zero transcript growth across
+   two byte-size samples at least one poll interval apart. Report the gate with artifacts preserved.
+
+The dead predicate requires all three conditions; orphaned PID files, stale heartbeat alone, a
+single unchanged sample, or a launcher-cell disappearance alone are insufficient. After that
+predicate, relaunch exactly once only when no verdict exists. Total launches are at most two per PR
+cycle and at most one verdict is consumed; no duplicate concurrent reviews are permitted. Never
+start a replacement while the first launch could still be growing the transcript. The duration
+ceiling remains a hard bound: a duration breach is a blocked review, never `no_findings`.
+
+The wait is bounded in both directions: the helper kills its producer at the ceiling, so a healthy
+review gets its whole window and a review that will never complete costs at most one window. Native
+launcher state is preferred; status freshness plus transcript growth is the cross-cell fallback.
 
 Completion is the producer's successful exit together with its terminal stream result event (for
 Claude, `result/success` with `is_error == false` and a valid structured verdict; for Codex, a
