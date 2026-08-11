@@ -776,7 +776,7 @@ yolo_changed_input() {
             fi
             if [[ -d $abs ]]; then
                 untracked=$(git -C "$git_top" status --porcelain=v1 \
-                    --untracked-files=all -- "$rel" 2> /dev/null || true)
+                    --untracked-files=all --ignored=matching -- "$rel" 2> /dev/null || true)
                 if [[ -n $untracked ]]; then
                     printf '%s' "$rel"
                     return 0
