@@ -175,12 +175,14 @@ AGENT_CMD_TEST=<the full suite, minutes>
 AGENT_CMD_VERIFY=tools/verify
 ```
 
-**Approval is separate from declaration, and it is a human-only step.** A
-committed `AGENT_CMD_*` value is repository-controlled data, not permission to
+**Approval is separate from declaration, and it is meant to be a human step.**
+A committed `AGENT_CMD_*` value is repository-controlled data, not permission to
 execute. Before the first run a human reviews the declaration and approves the
 exact current command from their own terminal — `--approve` reads its
-confirmation from the controlling terminal, so an agent session cannot clear
-trust on its own:
+confirmation from the controlling terminal. That is defense-in-depth (a
+non-interactive agent shell cannot answer the prompt), not a human-only
+guarantee: a same-user process could drive a pseudo-terminal or write the trust
+record directly.
 
 ```bash
 # A human, in an interactive terminal:
@@ -254,7 +256,7 @@ Edit `.agent/config.env` directly. Values are read line-wise and never sourced,
 so no quoting is needed — write the command exactly as you would type it,
 unquoted, arguments and all.
 
-Then prove it parses. Approval and the first run are a human-only step (above),
+Then prove it parses. Approval and the first run are a human step (above),
 so hand them off rather than running `--approve` yourself:
 
 ```bash

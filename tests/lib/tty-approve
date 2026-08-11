@@ -3,11 +3,13 @@
 queued one line of input on that terminal first.
 
 The repository command-approval gate (`agent-run.sh --approve`) reads its
-confirmation from the controlling terminal, so that no agent session -- which
-has no /dev/tty -- can grant approval by any shell spelling. Tests simulate the
-human at that terminal here: a PTY is allocated and a forked child adopts its
-slave as controlling terminal (so the child's /dev/tty is the PTY), while the
-child's stdout and stderr stay on this process's inherited descriptors. The
+confirmation from the controlling terminal. That is defense-in-depth, not a
+human-only boundary: this very helper is the proof that a same-user process can
+synthesize a terminal and answer the prompt -- it allocates a PTY, a forked
+child adopts its slave as controlling terminal (so the child's /dev/tty is the
+PTY), and the response is written to the master. Tests use it to drive the
+approve/decline paths; the child's stdout and stderr stay on this process's
+inherited descriptors. The
 gate's "approved"/"declined" line therefore reaches the caller's captured
 stderr directly, never the PTY, avoiding the read race where a slave that closes
 on child exit drops its last buffered output.

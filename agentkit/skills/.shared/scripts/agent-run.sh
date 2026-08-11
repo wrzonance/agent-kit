@@ -56,9 +56,11 @@ Repository declarations (<git-toplevel>/.agent/config.env):
 
 Trust boundary:
   Commands selected with --cmd are repository-controlled. The first run, and any
-  run after the declaration or repository-backed command input changes, requires
-  a human to review it and run `agent-run.sh --approve --cmd NAME` from their own
-  terminal. Approval is stored outside the checkout in an owner-only state
+  run after the declaration or repository-backed command input changes, prompt
+  for `agent-run.sh --approve --cmd NAME`. Review it, then approve from a
+  terminal. That terminal confirmation is defense-in-depth, not a human-only
+  guarantee: a same-user process can drive a pseudo-terminal or write the record
+  directly. Approval is stored outside the checkout in an owner-only state
   directory and is never committed to the repository.
 
 Output:
@@ -660,9 +662,9 @@ require_human_approval() {
     # Scope the error suppression to the open attempt: a bare `exec ... 2>/dev/null`
     # would redirect this script's stderr for good, swallowing every later message.
     { exec 3< /dev/tty; } 2> /dev/null || die \
-        "approval is a human-only action and requires an interactive terminal.
-  A human must review the declaration and run --approve from their own shell;
-  an agent session cannot clear repository command trust."
+        "approval reads a confirmation from an interactive terminal, which this
+  shell does not have. Review the declaration and approve it from your own
+  terminal (a defense-in-depth check, not a human-only guarantee)."
     printf 'Approve repository command %s for this repository state? [y/N] ' \
         "$cmd_name" > /dev/tty
     IFS= read -r reply <&3 || reply=
@@ -706,8 +708,8 @@ trust_command() {
     [[ $recorded == "$current" ]] && return 0
     printf 'agent-run: refusing unapproved repository command: %s\n' "$cmd_name" >&2
     printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
-    printf '  Approval cannot be cleared by an agent. A human must review the declaration\n' >&2
-    printf '  and clear its approval outside this agent session.\n' >&2
+    printf '  A human reviews the change and approves it from a terminal with --approve;\n' >&2
+    printf '  that terminal confirmation is defense-in-depth, not a human-only guarantee.\n' >&2
     return 1
 }
 

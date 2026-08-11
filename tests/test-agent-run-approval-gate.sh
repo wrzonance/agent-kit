@@ -53,10 +53,10 @@ agent_approve() {
 while IFS='|' read -r label spelling; do
     out=$(cd "$repo" && agent_approve "$spelling") && rc=0 || rc=$?
     assert_eq '1' "$rc" "agent approval fails without a terminal: $label"
-    assert_contains "$out" 'human-only action' \
-        "agent approval names the human-only boundary: $label"
     assert_contains "$out" 'interactive terminal' \
-        "agent approval explains the missing capability: $label"
+        "agent approval names the missing capability: $label"
+    assert_contains "$out" 'defense-in-depth' \
+        "agent approval does not overclaim the boundary: $label"
 done <<EOF
 plain|"$run_sh" --approve --cmd verify
 reordered|"$run_sh" --cmd verify --approve
