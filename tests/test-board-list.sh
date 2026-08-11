@@ -131,6 +131,24 @@ out=$(run_board "$dupe_bin" --issue 42)
 assert_contains "$out" '#42  Ready  requested repo' 'same-number issues are matched by repository'
 assert_not_contains "$out" 'wrong repo' 'a same-number issue from another repository is ignored'
 
+# Project titles are part of a whitespace-delimited header, so shell-escape
+# titles that contain whitespace without allowing an embedded newline to split
+# the header from the issue result.
+jq --arg title $'Agent Kit\nRoadmap' '.project.title = $title' \
+    "$repo/.agent/board.json" > "$tmp/titled-board.json"
+mv "$tmp/titled-board.json" "$repo/.agent/board.json"
+out=$(run_board "$bin")
+assert_contains "$out" "board=\$'Agent Kit\\nRoadmap' project=7 owner=example-org" \
+    'a multiline title stays one escaped header field'
+assert_not_contains "$out" $'board=Agent Kit\nRoadmap project=' \
+    'a multiline title does not split the header'
+out=$(run_board "$bin" --issue 100)
+assert_contains "$out" "board=\$'Agent Kit\\nRoadmap' project=7 owner=example-org" \
+    'issue lookups use the same escaped board header'
+
+jq '.project.title = "example-board"' "$repo/.agent/board.json" > "$tmp/restored-board.json"
+mv "$tmp/restored-board.json" "$repo/.agent/board.json"
+
 # Older board metadata may not have a title. The title is descriptive only, so
 # that metadata remains usable and leaves the existing field empty.
 jq 'del(.project.title)' "$repo/.agent/board.json" > "$tmp/legacy-board.json"

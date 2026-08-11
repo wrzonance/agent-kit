@@ -113,6 +113,11 @@ board_title=$(jq -r '.project.title // empty' "$board" 2> /dev/null || true)
 [[ -n $number && -n $owner ]] ||
     die_blocked '.agent/board.json declares no project number or owner'
 
+board_field='board='
+if [[ -n $board_title ]]; then
+    printf -v board_field 'board=%q' "$board_title"
+fi
+
 raw=$(gh project item-list "$number" --owner "$owner" --format json --limit "$ARG_LIMIT" 2>&1) ||
     die "gh project item-list failed: $(head -1 <<< "$raw")"
 
@@ -180,10 +185,10 @@ if [[ -n $ARG_ISSUE ]]; then
         | if . == null then "" else "#\(.number)  \(.status)  \(.title)" end
     ' <<< "$all_records" 2> /dev/null)
     if [[ -n $hit ]]; then
-        printf 'board=%s project=%s owner=%s calls=1\n%s\n' "$board_title" "$number" "$owner" "$hit"
+        printf '%s project=%s owner=%s calls=1\n%s\n' "$board_field" "$number" "$owner" "$hit"
     else
-        printf 'board=%s project=%s owner=%s calls=1\n#%s is not on this board\n' \
-            "$board_title" "$number" "$owner" "$ARG_ISSUE"
+        printf '%s project=%s owner=%s calls=1\n#%s is not on this board\n' \
+            "$board_field" "$number" "$owner" "$ARG_ISSUE"
     fi
     exit 0
 fi
@@ -198,8 +203,8 @@ if ((ARG_JSON)); then
 fi
 
 total=$(jq -r 'length' <<< "$records")
-printf 'board=%s project=%s owner=%s items=%s of=%s calls=1%s\n' \
-    "$board_title" "$number" "$owner" "$total" "${declared_total:-$fetched}" \
+printf '%s project=%s owner=%s items=%s of=%s calls=1%s\n' \
+    "$board_field" "$number" "$owner" "$total" "${declared_total:-$fetched}" \
     "${ARG_STATUS:+ status=$ARG_STATUS}"
 if ((truncated)); then
     printf 'TRUNCATED: read %s of %s items. Every count below is a count of what\n' \
