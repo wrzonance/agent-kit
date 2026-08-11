@@ -70,6 +70,8 @@ MAX_TOKENS=$DEFAULT_MAX_TOKENS
 WORK_DIR=""
 POLLER_PID=""
 CODEX_PID=""
+LIMIT_PID=""
+LIMIT_REASON_FILE=""
 DEADLINE_EPOCH=0
 
 usage() {
@@ -131,6 +133,11 @@ cleanup() {
         kill "$POLLER_PID" 2>/dev/null || true
         wait "$POLLER_PID" 2>/dev/null || true
         POLLER_PID=""
+    fi
+    if [[ -n $LIMIT_PID ]]; then
+        kill "$LIMIT_PID" 2>/dev/null || true
+        wait "$LIMIT_PID" 2>/dev/null || true
+        LIMIT_PID=""
     fi
     if [[ -n $CODEX_PID ]]; then
         kill "$CODEX_PID" 2>/dev/null || true
@@ -402,9 +409,25 @@ run_codex() {
     timeout --signal=KILL "$seconds" "$CODEX_RESOLVED" "${args[@]}" \
         <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
+    monitor_token_limit &
+    LIMIT_PID=$!
     wait "$CODEX_PID" || status=$?
     CODEX_PID=""
+    kill "$LIMIT_PID" 2>/dev/null || true
+    wait "$LIMIT_PID" 2>/dev/null || true
+    LIMIT_PID=""
+    [[ $(<"$LIMIT_REASON_FILE") == token-budget ]] && return 125
     return "$status"
+}
+
+verify_token_budget() {
+    local usage
+    usage=$(token_usage_total)
+    [[ $usage =~ ^[0-9]+$ ]] ||
+        die "Codex omitted token usage; cannot verify --max-tokens $MAX_TOKENS"
+    ((usage <= MAX_TOKENS)) ||
+        die "Codex review exceeded --max-tokens $MAX_TOKENS (observed $usage)"
+    printf '%s' "$usage"
 }
 
 verify_verdict() {
@@ -436,8 +459,36 @@ observed_model() {
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf ''
 }
 
-# turn.completed carries the only cost signal codex exec exposes. There is no
-# spend ceiling to enforce, so report actual usage and let the caller decide.
+# turn.completed carries the usage signal codex exec exposes. Normalize the
+# common field spellings to one total so the helper can enforce its ceiling.
+token_usage_total() {
+    jq -r -s '
+        [ .[] | select(.type == "turn.completed") | .usage // empty |
+          if (.total_tokens? // .totalTokens? // null) != null then
+              (.total_tokens // .totalTokens)
+          else
+              ((.input_tokens // .inputTokens // 0) +
+               (.output_tokens // .outputTokens // 0) +
+               (.reasoning_tokens // .reasoningTokens // 0) +
+               (.reasoning_output_tokens // .reasoningOutputTokens // 0))
+          end
+        ] | if length == 0 then "null" else add end' \
+        <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
+}
+
+monitor_token_limit() {
+    local usage
+    while [[ -n $CODEX_PID ]] && kill -0 "$CODEX_PID" 2>/dev/null; do
+        usage=$(token_usage_total)
+        if [[ $usage =~ ^[0-9]+$ ]] && ((usage > MAX_TOKENS)); then
+            printf '%s\n' token-budget >"$LIMIT_REASON_FILE"
+            kill -KILL "$CODEX_PID" 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+    done
+}
+
 token_usage() {
     jq -c -s '[.[] | select(.type == "turn.completed") | .usage] | last // null' \
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
@@ -459,6 +510,8 @@ main() {
     local stderr_file=$WORK_DIR/stderr.log
     local schema_file=$WORK_DIR/schema.json
     local final_file=$WORK_DIR/final.json
+    LIMIT_REASON_FILE=$WORK_DIR/limit.reason
+    : >"$LIMIT_REASON_FILE"
     mkdir -p -- "$isolation_dir"
 
     prepare_transcript
@@ -480,6 +533,9 @@ main() {
     local stderr_text reason
     stderr_text=$(cat -- "$stderr_file" 2>/dev/null || true)
     if ((exit_code != 0)); then
+        if [[ $(<"$LIMIT_REASON_FILE") == token-budget ]]; then
+            die "Codex review exceeded --max-tokens $MAX_TOKENS"
+        fi
         if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
             die_duration
         fi
@@ -491,10 +547,11 @@ main() {
     [[ -s $final_file ]] ||
         die "Codex produced no final message; the gate is blocked, not no_findings. Transcript: $TRANSCRIPT_PATH"
 
-    local verdict
+    local verdict used_tokens
     verdict=$(jq -c . <"$final_file" 2>/dev/null) ||
         die "Codex final message is not valid JSON; see $TRANSCRIPT_PATH"
     verify_verdict "$verdict"
+    used_tokens=$(verify_token_budget)
 
     jq -n \
         --argjson exitCode "$exit_code" \
@@ -505,13 +562,16 @@ main() {
         --argjson eventCount "$(transcript_event_count)" \
         --arg transcript "$TRANSCRIPT_PATH" \
         --argjson tokenUsage "$(token_usage)" \
+        --argjson maxTokens "$MAX_TOKENS" \
+        --argjson usedTokens "$used_tokens" \
         --argjson verdict "$verdict" \
         '{status: "completed", harness: $harness, exitCode: $exitCode,
           requestedModel: $requestedModel,
           observedModel: (if $observedModel == "" then null else $observedModel end),
           modelVerification: (if $observedModel == "" then "unsupported-by-codex-exec" else "observed" end),
           effort: $effort, eventCount: $eventCount, transcript: $transcript,
-          budgetCeiling: "unsupported-by-codex-exec", tokenUsage: $tokenUsage,
+          budgetCeiling: "token-limit", maxTokens: $maxTokens, usedTokens: $usedTokens,
+          tokenUsage: $tokenUsage,
           verdict: $verdict}'
 }
 
