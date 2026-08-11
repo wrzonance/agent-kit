@@ -481,7 +481,7 @@ guard_shell_write_targets() {
 
     # Redirects to device sinks discard output but do not write a protected
     # path. Remove them before deciding whether the command is write-shaped.
-    cmd=$(sed -E 's/[0-9]*>>?[[:space:]]*\/dev\/(null|stdout)//g' <<< "$cmd")
+    cmd=$(sed -E 's/[0-9]*>>?[[:space:]]*\/dev\/(null|stdout|stderr)//g' <<< "$cmd")
 
     # Two stages, because the alternative is parsing operands per command and
     # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
