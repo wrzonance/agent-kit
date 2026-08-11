@@ -560,6 +560,9 @@ assert_eq 'allow' "$(decision "$out")" 'allows the read-only compound transcript
 out=$(pre_input "$repo" 'sed -n 1p .github/workflows/ci.yml 2>/dev/null' \
     'shell-read-minimal' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'allows the minimal read-only repro'
+out=$(pre_input "$repo" 'sed -n 1p .github/workflows/ci.yml 2>/dev/stdout' \
+    'shell-read-stdout' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'allows a read with stdout sink redirection'
 
 # Reading one of those files is not writing it, and an ordinary write elsewhere
 # is not this rule's business. Both would make the guard noise.
