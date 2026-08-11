@@ -884,7 +884,7 @@ The jq program is deliberately single-quoted: its double quotes are jq syntax,
 not shell-escaped fragments.
 
 ```bash
-issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments)
+issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1
 issue_contents=$(jq -r '
   [
     ("Title: " + (.title // "")),
@@ -895,11 +895,13 @@ issue_contents=$(jq -r '
       | join("\n")))
   ] | join("\n\n")
 ' <<<"$issue_payload")
+[[ -n $issue_contents ]] || exit 1
 
-target="$PWD/fenced-spec.txt"
+target="$worktree/.agent/fenced-spec.txt"
 tmp="$target.tmp"
 cleanup_fence() { rm -f -- "$tmp"; }
 trap cleanup_fence EXIT HUP INT TERM
+mkdir -p -- "${target%/*}" || exit 1
 rm -f -- "$target" "$tmp"
 set -o pipefail
 if printf '%s' "$issue_contents" |

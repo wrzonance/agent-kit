@@ -161,7 +161,9 @@ guard_issue_view_is_distinct() {
 
     session=${session//[^A-Za-z0-9._-]/_}
     dir="$root/.agent/cache/brief/${session:-nosession}/issue-views"
-    mkdir -p "$dir" 2> /dev/null || return 1
+    # This feeds an advisory, so unrecordable state must SPEAK. Returning true
+    # lets guard_should_advise emit the lesson while still persisting nothing.
+    mkdir -p "$dir" 2> /dev/null || return 0
     if [[ ! -e "$dir/first" ]]; then
         mkdir "$dir/first" 2> /dev/null || return 1
         mkdir "$dir/$issue" 2> /dev/null || true

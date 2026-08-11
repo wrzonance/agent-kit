@@ -847,6 +847,23 @@ post_input "$repo" 'gh issue view 444' "$new_s" | "$hooks/post-tool-use.sh" >/de
 out=$(post_input "$repo" 'gh issue view 445' "$new_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'and a new session is taught again'
 
+# Advisory state is deliberately fail-open: unlike a denial, failure to record
+# issue views must still speak rather than silently losing the triage lesson.
+locked_issue=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$locked_issue/.agent/config.env"
+chmod -w "$locked_issue/.agent/cache" 2>/dev/null || true
+if [[ -w $locked_issue/.agent/cache ]]; then
+    printf '  skip unwritable issue-view advisory check: cache still writable (running as root?)\n'
+else
+    out=$(post_input "$locked_issue" 'gh issue view 1' "sLOCKISSUE" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+        'an unwritable issue-view state still emits the first advisory'
+    out=$(post_input "$locked_issue" 'gh issue view 2' "sLOCKISSUE" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+        'an unwritable issue-view state keeps speaking for later views'
+fi
+chmod +w "$locked_issue/.agent/cache" 2>/dev/null || true
+
 # Reading ONE issue body stays legitimate; the digest deliberately omits bodies.
 body_sid=$(fresh_sid)
 post_input "$repo" 'gh issue view 442' "$body_sid" | "$hooks/post-tool-use.sh" >/dev/null 2>&1

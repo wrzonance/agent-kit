@@ -41,6 +41,17 @@ run_fence_recipe() {
     fi
 }
 
+# The documented fetch recipe must fail before it creates a fence when GitHub
+# returns an error or when rendering somehow produces no issue content.
+run_fetch_and_fence_recipe() {
+    local fetcher=$1 producer=$2 target=$3
+    local issue_payload issue_contents
+    issue_payload=$("$fetcher") || return 1
+    issue_contents=$(jq -r '[(.title // "")] | join("")' <<<"$issue_payload")
+    [[ -n $issue_contents ]] || return 1
+    run_fence_recipe "$producer" "$target" "$issue_contents"
+}
+
 producer="$tmp_dir/producer.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s" "exact fenced bytes"' >"$producer"
 chmod +x "$producer"
@@ -60,6 +71,49 @@ assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
     'failed upstream leaves no final fence'
 assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
     'failed upstream removes its temporary fence'
+
+failed_fetch="$tmp_dir/failed-fetch.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 7' >"$failed_fetch"
+chmod +x "$failed_fetch"
+failed_fetch_rc=0
+run_fetch_and_fence_recipe "$failed_fetch" "$producer" "$target" || failed_fetch_rc=$?
+assert_eq 1 "$failed_fetch_rc" 'a failed issue fetch is reported'
+assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
+    'a failed issue fetch leaves no final fence'
+assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
+    'a failed issue fetch leaves no temporary fence'
+
+empty_fetch="$tmp_dir/empty-fetch.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s" "{}"' >"$empty_fetch"
+chmod +x "$empty_fetch"
+empty_fetch_rc=0
+run_fetch_and_fence_recipe "$empty_fetch" "$producer" "$target" || empty_fetch_rc=$?
+assert_eq 1 "$empty_fetch_rc" 'empty rendered issue content is rejected'
+assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
+    'empty rendered issue content leaves no final fence'
+assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
+    'empty rendered issue content leaves no temporary fence'
+
+recipe_text=$(<"$skill")
+assert_contains "$recipe_text" 'issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1' \
+    'the canonical recipe exits when GitHub issue fetch fails'
+assert_contains "$recipe_text" '[[ -n $issue_contents ]] || exit 1' \
+    'the canonical recipe rejects empty rendered issue content'
+assert_contains "$recipe_text" 'target="$worktree/.agent/fenced-spec.txt"' \
+    'the canonical recipe keeps fenced bytes in excluded per-worktree state'
+assert_contains "$recipe_text" 'mkdir -p -- "${target%/*}" || exit 1' \
+    'the canonical recipe creates its excluded artifact directory'
+
+worktree="$tmp_dir/worktree"
+git init -q "$worktree"
+printf '%s\n' '.agent/*' >"$worktree/.gitignore"
+git -C "$worktree" add .gitignore
+git -C "$worktree" -c user.email=t@example.invalid -c user.name=t commit -qm fixture
+worktree_target="$worktree/.agent/fenced-spec.txt"
+mkdir -p -- "${worktree_target%/*}"
+run_fence_recipe "$producer" "$worktree_target" "$rendered"
+assert_eq '' "$(git -C "$worktree" status --short)" \
+    'the canonical per-worktree fence artifact does not dirty the worktree'
 
 # The real helper remains the producer for boundary correctness; this assertion
 # checks its output has matching nonce-bound markers without persisting a partial

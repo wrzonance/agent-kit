@@ -964,7 +964,16 @@ if "$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort"
     fi
 else
     review_rc=$?
-    rm -f -- "$verdict_path" "$verdict_tmp"
+    if ((review_rc == 3)); then
+        if mv -f -- "$verdict_tmp" "$verdict_path"; then
+            :
+        else
+            review_rc=$?
+            rm -f -- "$verdict_path" "$verdict_tmp"
+        fi
+    else
+        rm -f -- "$verdict_path" "$verdict_tmp"
+    fi
 fi
 trap - EXIT HUP INT TERM
 printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
@@ -1053,7 +1062,16 @@ if "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
     fi
 else
     review_rc=$?
-    rm -f -- "$verdict_path" "$verdict_tmp"
+    if ((review_rc == 3)); then
+        if mv -f -- "$verdict_tmp" "$verdict_path"; then
+            :
+        else
+            review_rc=$?
+            rm -f -- "$verdict_path" "$verdict_tmp"
+        fi
+    else
+        rm -f -- "$verdict_path" "$verdict_tmp"
+    fi
 fi
 trap - EXIT HUP INT TERM
 if ((review_rc != 0)); then
