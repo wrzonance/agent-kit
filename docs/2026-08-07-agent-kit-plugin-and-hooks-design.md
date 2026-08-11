@@ -253,7 +253,7 @@ non-interactive harness. This must be confirmed interactively before layer 3 is
 worth building:
 
 ```bash
-cd ~/github/WrzDJ && codex   # then ask it to run a trivial shell command
+cd ~/github/<any-repo-with-the-plugin> && codex   # then ask it to run a trivial shell command
 ```
 
 If hooks turn out not to fire in this version, layers 1 and 2 still stand on their
