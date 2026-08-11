@@ -1,33 +1,33 @@
 # Agent Kit
 
-Skills, lifecycle hooks, and a per-repository contract that let a coding agent do
-board-driven work without rediscovering the same facts on every run.
+Keep your sub-agents in check while systematically working through a GitHub Projects board.
 
-Works with **Codex CLI** and **Claude Code** from the same directory.
+Agent Kit is a plugin for Codex CLI and Claude Code. It ships three skills, a set of bash
+helper scripts, and five lifecycle hooks. A repository you onboard declares its own facts
+once, in a committed `.agent/` directory: the trunk branch, the Projects board, the label
+taxonomy, and the commands that verify it. The skills and hooks read those declarations
+instead of rediscovering them on every run.
 
----
+## What it does
 
-## What's in it
-
-| Piece | What it does |
+| Piece | Purpose |
 |---|---|
-| **`onboard-repo`** skill | Walk a repository through onboarding, including the judgement calls a script can't make: which commands to declare, which labels mean what |
-| **`parallel-issues`** skill | Triage a GitHub Projects board, split independent issues across worktrees, drive each to a draft PR |
-| **`review-remote-pr`** skill | Take a PR from draft to green: CI, review threads, an adversarial review, and the board move |
-| **`.shared/scripts`** | The procedural half — preflight, command runner, board reader, mover and setup, one-call triage, startable-issue selection, commit guard, CI-gap report, toolchain detector |
-| **Five hooks** | Inject the environment contract, and teach the cheaper command without blocking the work |
-
-The idea throughout: **a repository declares its own facts once**, and everything
-else reads them instead of guessing.
-
----
+| `onboard-repo` skill | Walks a repository through setup. Runs the bootstrap script, audits existing instruction files, fills in verify commands and label meanings, and hands command approval to a human |
+| `parallel-issues` skill | Triages the Projects board, picks 2-5 independent issues, runs each in an isolated git worktree with its own sub-agent, and drives each to a draft PR |
+| `review-remote-pr` skill | Takes a draft PR to green: CI, merge conflicts, one adversarial cross-review by the peer CLI, review-bot threads, and the board move |
+| Helper scripts | Deterministic one-call operations: environment preflight, command runner, board reader and mover, one-request issue triage, worktree commits, PR state digests, verified comment posting |
+| Hooks | Inject the environment contract at session start, refuse a short list of destructive commands, teach cheaper commands after wasteful ones, and block the end of a turn until the declared verify command has covered the changes |
 
 ## Install
 
-Clone this repository anywhere; the path below is only an example. Both harnesses
-install it from a local directory — there is no registry to fetch from.
+Both harnesses install from a local checkout. Keep it under your home directory; Codex
+requires that for a local marketplace.
 
-**Codex CLI:**
+```bash
+git clone https://github.com/wrzonance/agent-kit.git ~/github/agent-kit
+```
+
+Codex CLI:
 
 ```bash
 codex plugin marketplace add ~/github/agent-kit
@@ -35,49 +35,24 @@ codex plugin add agentkit@agent-kit
 codex plugin list                        # agentkit@agent-kit  installed, enabled
 ```
 
-**Claude Code:**
+Claude Code:
 
 ```
 /plugin marketplace add ~/github/agent-kit
 /plugin install agentkit@agent-kit
 ```
 
-That's the whole install. No build step — the repository *is* the marketplace.
+There is no build step. The same checkout serves both harnesses, with one plugin manifest
+per harness and a resolver that searches both plugin caches. Install it on both and they
+share one copy of the skills.
 
-The same directory serves both: one manifest per harness (`.claude-plugin/` and
-`.codex-plugin/`), `hooks/hooks.json` where each looks for it, and a resolver
-that searches both plugin caches. Install it on both and they share one copy of
-the skills.
+## Onboard a repository
 
-Two differences worth knowing, neither of which needs configuring:
+Ask the agent to onboard the repository. The `onboard-repo` skill runs the bootstrap
+script and fills in the judgement calls the script leaves blank. A session in a repository
+that has no `.agent/config.env` says so in the terminal, unprompted.
 
-- `SubagentStart` is a Codex event. It gives spawned workers the tooling
-  curriculum; the dispatcher pastes each worker's per-worktree environment
-  contract into its prompt. Claude Code has no equivalent hook event.
-- Nothing hardcodes which CLI you're in. The environment contract reports
-  `harness=` and `peer-cli=`, so commit attribution credits whichever agent did
-  the work, and an adversarial review always goes to the *other* CLI.
-
-### Cross-provider review privacy
-
-The `review-remote-pr` skill can send a PR diff — including filenames and code — to the
-external provider behind the peer CLI for adversarial review. Repository ownership is not
-consent to disclose private, customer, or NDA-protected code. Before the first cross-provider
-send in a session, the agent must name the source payload, destination provider/CLI, and purpose,
-then ask for an explicit yes/no confirmation. A decline or missing confirmation sends nothing and
-leaves the review gate blocked. An affirmative answer is recorded for that session and provider
-so retries do not repeatedly prompt; a changed destination or payload requires confirmation
-again.
-
----
-
-## Set up a repository
-
-Ask the agent to onboard it — the `onboard-repo` skill runs the script *and*
-fills in what the script deliberately leaves blank. A session in an un-onboarded
-repository says so, unprompted, in the terminal.
-
-To do it by hand instead, run this once inside the repository:
+To run the script directly:
 
 ```bash
 cd /path/to/your/repo
@@ -89,182 +64,101 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
 ```
 
-This writes two committed files:
+This writes two committed files, plus the `.gitignore` rules that keep everything else
+under `.agent/` out of your history:
 
-- **`.agent/config.env`** — repo slug, trunk branch, board number, Status column
-  names, ADR directory, and commented suggestions for your verify commands.
-- **`.agent/board.json`** — the board's node IDs, so a status move costs one API
-  call instead of seven.
+- `.agent/config.env` holds the repo slug, trunk branch, board number, Status column
+  names, and commented suggestions for your verify commands.
+- `.agent/board.json` caches the board's node IDs, so a status move costs one API call.
 
-…and the `.gitignore` rules that keep everything *else* under `.agent/` out of
-your history — the environment contract carries local paths and your account
-name. Re-run with `--force` on a repository bootstrapped before this existed.
+Both files are committed and readable, so secrets are refused outright: tokens, proxies,
+and CA paths never belong in either.
 
-Both are readable text. Nothing secret goes in either — tokens, proxies, and CA
-paths are refused outright, because these files are committed and anyone who can
-open a pull request can influence them.
-
-Then open `.agent/config.env` and uncomment the verify commands it found:
+Then open `.agent/config.env` and uncomment the commands your repository runs:
 
 ```ini
 AGENT_CMD_VERIFY=tools/verify
 AGENT_CMD_TEST=<whatever this repo runs for tests>
 ```
 
-Command values are argv, not shell strings: unquoted spaces separate arguments,
-while single or double quotes keep spaces inside one argument. Shell operators
-and escapes are rejected; use `.agent/runner` for shell syntax.
+Command values are argv lists rather than shell strings: unquoted spaces separate
+arguments, quotes keep spaces inside one argument, and shell operators are rejected. If
+your repository drives everything through one dispatcher, point `AGENT_REPO_RUNNER` at it.
+Skills run commands by name (`agent-run.sh --cmd test`), so no skill hardcodes an
+ecosystem.
 
-Skills refer to these **by name** (`agent-run.sh --cmd test`), so no skill ever
-hardcodes an ecosystem. If your repo drives everything through one dispatcher,
-point `AGENT_REPO_RUNNER` at it and the skills will call `runner test` instead.
+### Command approval
 
-The declaration is not execution consent. `agent-run.sh --cmd NAME` records no
-trust on its first invocation; review the declaration and approve it with
-`--approve`, which reads its confirmation from the controlling terminal. That
-terminal confirmation is defense-in-depth, **not** a cryptographic human-only
-gate. It closes the specific failure it was filed for -- an agent reading an
-unapproved-command refusal and re-running the exact `--approve` command the old
-refusal printed -- because a non-interactive shell cannot answer the prompt and
-the refusal no longer hands back a runnable remedy. It does not authenticate a
-human: an agent with arbitrary command execution can allocate a pseudo-terminal
-(as this repo's own approval test does) or write the trust record directly,
-since it runs as the same user, and no in-band check prevents that. What the
-record *does* guarantee is durable and worth having: approval is kept in an
-owner-only state directory outside the checkout, and it fingerprints
-`config.env`, repository-backed argv paths, and nearby build manifests, so a
-changed declaration or repository-backed input cannot inherit an old approval
-while ordinary source edits remain runnable. Approval is also an explicit,
-logged step -- and under Claude Code, `--approve` surfaces a permission prompt.
-Literal commands passed after `--` are caller-supplied and are not covered by
-this repository-command approval.
+Declaring a command does not let the agent run it. Review the declaration, then approve it
+once with `agent-run.sh --approve --cmd NAME`; the confirmation is read from your
+controlling terminal. That confirmation is defense in depth, **not** a cryptographic human-only
+gate: an agent with arbitrary command execution runs as your user and can bypass it. What the record does guarantee is worth having. It lives in an owner-only state
+directory outside the checkout, it makes approval an explicit logged step, and it
+fingerprints the declaration, the runner, repository-backed argv paths, and nearby build
+manifests, so a changed command or input cannot inherit an old approval.
 
-This is a provenance boundary, not an interpreter allowlist: declarations may
-use `bash`, `make`, package managers, or other build tools, but `.agent/config.env`
-and the inputs those tools resolve are executable policy and belong under the
-same review as CI. The approval fingerprint covers the declaration, runner,
-path arguments, `--require`/`-r` payloads, `-m` module files, and nearby build
-manifests.
+Runs you launch unattended are the one exception. `agent-run.sh --yolo --cmd NAME` skips
+the terminal confirmation for that single invocation, announces the skip on stderr and in
+the run log, and records no trust. It applies only when the command's repository-controlled
+inputs are identical to the remote trunk's; anything new or changed on the checkout still
+requires a terminal approval. Skills thread the flag down from your own `--yolo`
+invocation and never add it on their own.
 
-Runs a human explicitly launched as unattended are the one exception:
-`agent-run.sh --yolo --cmd NAME` skips the confirmation for that single
-invocation, announces the skip on stderr and in the run log, and records no trust
--- but only when the command's repository-controlled inputs
-(`.agent/config.env`, `.agent/runner`, repo-backed argv paths) are identical to
-the remote trunk's. An input that is new or changed on the checkout is refused:
-that is new code asking to run unattended, and it still takes a terminal
-approval. The flag exists because the confirmation cannot bind an autonomous
-agent (see above) but can dead-end an honest one -- observed in a live
-unattended fleet, where blocked workers stalled and one forged the terminal
-confirmation instead. An explicit, logged, trunk-bounded bypass threaded down
-from the human's own `--yolo` invocation beats either outcome. Skills thread
-it; agents never add it on their own, and never forge the approval. The same
-input set used by the approval fingerprint is compared to the trunk, including
-build manifests, interpreter payloads, and deleted inputs.
-
----
-
-## Harness configuration
-
-Three settings decide whether the agent can do its job. Each one here was found
-by a real session losing time to its absence — and each failure arrived wearing
-someone else's costume, which is why they are worth knowing in advance.
-
-Run this in any repository and it tells you which, if any, you need:
-
-```bash
-"$agentkit/.shared/scripts/harness-advice.sh"
-```
-
-Silence means nothing needs changing. `onboard-repo` runs it for you.
-
-| Setting | Without it | Looks like |
-|---|---|---|
-| `sandbox_workspace_write.network_access = true` | No forge calls | **"the token in X is invalid"** — `gh` validates by calling the API, so a blocked network is reported as bad credentials. Costs a re-authentication that cannot help |
-| `sandbox_workspace_write.writable_roots = ["<repo>/.git"]` | Every commit, worktree and `.git/info/exclude` needs an approval | A fresh permissions fault, three times a day, each looking unrelated |
-| the repository's pinned runtime, active in the launching shell | Every command fails an engine check | `[ERR_PNPM_UNSUPPORTED_ENGINE]` — names the package manager, not the version manager, and not the shell that never activated it. **A version manager switches a shell, not a child process** |
-
-### The risk in `writable_roots`
-
-This is the one that trades something away, so it deserves the detail.
-
-A read-only `.git` is the only thing standing between an agent and the git
-*plumbing* — `update-ref`, `reflog expire`, `gc --prune`, `filter-branch` — and
-`.git/config` keys like `core.hooksPath` that execute commands during ordinary
-git operations, persist after the session, and run as **you** rather than as the
-agent.
-
-agentkit refuses those at command level, every time, with no override. Treat
-that as a speed bump, not a replacement. The protection moves from the
-filesystem to pattern matching, and **the patterns have been evaded in review**:
-an external audit found that `git push origin +main`, `git clean --force -d`,
-`git branch --delete --force main` and `rm --recursive --force /` all passed
-while their short-option spellings were refused. Those four are fixed and
-regression-tested, but they were found by reading git's man pages, not by
-anything clever — assume more exist.
-
-A read-only mount cannot be evaded by spelling. A pattern can. If you do not
-need git plumbing to work unattended, leave `.git` read-only and approve the
-occasional write.
-
-**Scope it to one repository's `.git`.** A parent directory like `~/github` hands
-every repository under it to any session, and nothing here is repo-aware enough
-to stop that. Prefer it per-invocation over a global config entry:
-
-```bash
-codex -c 'sandbox_workspace_write.writable_roots=["/path/to/repo/.git"]'
-```
-
-On a machine holding work you do not own, don't set it at all. Approvals are
-cheap next to that downside.
-
----
-
-## What the hooks do
+## Hooks
 
 | Hook | Behaviour |
 |---|---|
-| `SessionStart` | Probes the environment once and hands the agent a contract — repo, branch, base, sandbox state, CA bundle, cache roots — plus the list of helpers that exist here. With no `.agent/config.env` it prints how to onboard instead |
-| `SubagentStart` | Injects the worktree-independent tooling curriculum into every spawned worker; the dispatcher prompt is the contract channel for each worker's worktree |
-| `PreToolUse` | Refuses work-destroying commands outright; refuses *once* for a bare helper name or an edit to a file that gates other checks |
-| `PostToolUse` | Teaches the cheaper command *after* the call returned real data |
-| `Stop` | Won't let a turn finish when a declared verify command hasn't covered the current changes |
+| `SessionStart` | Probes the environment once and hands the agent a contract: repo, branch, base, sandbox state, CA bundle, cache roots, and the helpers available here. Without `.agent/config.env` it prints how to onboard instead |
+| `SubagentStart` | Codex-only event. Injects the tooling curriculum into spawned workers; each worker's per-worktree contract travels in the dispatcher's prompt |
+| `PreToolUse` | Refuses work-destroying commands every time; refuses once for a bare helper name, a trunk commit, or an edit to a file that gates other checks |
+| `PostToolUse` | Teaches the cheaper command after a wasteful call returned real data |
+| `Stop` | Blocks the end of a turn when the declared verify command has no run covering the current changes |
 
-Three rules they all follow:
+Three rules govern all five. Hooks always exit 0 and state what they want in JSON, because
+a nonzero exit halts an autonomous worker instead of informing it. Guards act only on
+declared evidence: a repository with no `.agent/` directory gets nothing, and the `Stop`
+check fires only when a verify command is declared. Anything with a usable alternative is
+allowed to run and corrected afterwards, so a single denial cannot end a line of work.
 
-**Nothing that has an alternative gets blocked.** A guard that refuses a command
-can end a line of work — a live agent, denied once, answered "It was not run"
-and stopped. So the guards let the command run and correct it afterwards, using
-a channel measured to reach the model. The agent pays for the wasteful call once
-and knows better before the second.
+The permanent deny list is short: force-push, `reset --hard`, `clean -f`, deleting the
+trunk branch, `gh pr merge`, `--no-verify`, and recursive deletes of `~` or `/`. A second
+class refuses once and then allows a deliberate retry: bare helper names that cannot
+resolve, and edits to files that decide whether other checks run (CI definitions, git
+hooks, harness config). Add repository-specific entries with `AGENT_PROTECTED_PATHS`; the
+list is additive, so a committed file cannot switch off its own guard.
 
-That matters most where nobody is watching. A blocked main session has a human
-who can rephrase; a blocked worker is a dead branch, silently.
+## Harness configuration
 
-**They never exit non-zero.** A hook that exits `2` halts the agent instead of
-informing it. Every hook exits `0` and says what it wants in JSON.
+Run this in any repository and it prints only the settings this machine measurably needs;
+silence means nothing needs changing:
 
-**Guards need evidence.** A repository with no `.agent/` directory gets nothing
-at all. Declaring a verify command is what opts you into the `Stop` check —
-declare none and it never fires.
+```bash
+agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" \
+    -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
+"$agentkit/.shared/scripts/harness-advice.sh"
+```
 
-Denials come in exactly two kinds:
+Its findings cover Codex sandbox network access (a blocked network is misreported by `gh`
+as a bad token), `gh` token storage the sandbox cannot read, write access to the
+repository's `.git`, and a pinned runtime that is not active in the launching shell.
+`onboard-repo` runs it for you.
 
-**Refused every time** — force-push, `reset --hard`, `clean -f`, deleting trunk,
-`gh pr merge`, `--no-verify`, `rm -rf ~|/`. There is no teach-after-the-fact for
-a force-push that already landed, and an override that permitted the second
-attempt would have it exactly backwards. The list is deliberately short: a long
-list of "risky" commands trains an agent to treat denials as noise.
+Granting the sandbox write access to `.git` deserves care. A writable `.git` exposes git
+plumbing and `.git/config` keys that execute commands as you and persist after the
+session. Agent Kit refuses those commands by pattern, but patterns have been evaded in
+review before, and a read-only mount is the stronger control. If you grant it, scope it to
+a single repository's `.git`, prefer a per-invocation flag over a global config entry, and
+skip it entirely on a machine holding work you do not own.
 
-**Refused once, then allowed** — a bare helper name (it cannot succeed; nothing
-is on `PATH`), and an edit to a file that decides whether other checks run:
-CI definitions, git hooks, harness config. That second one is ordinary work
-sometimes and quietly loosening a gate other times, and the diff alone doesn't
-say which — so one refusal makes the retry a deliberate choice. Add repo-specific
-entries with `AGENT_PROTECTED_PATHS` (additive; a committed file cannot switch
-off its own guard).
+## Cross-provider review privacy
 
----
+`review-remote-pr` can send a PR diff, including filenames and code, to the external
+provider behind the peer CLI for adversarial review. Repository ownership is not consent
+to disclose private, customer, or NDA-protected code. Before the first cross-provider send
+in a session, the agent must name the payload, the destination, and the purpose, then ask
+for an explicit yes or no. A decline sends nothing and leaves the review gate blocked. An
+affirmative answer covers that session and provider; a changed destination or payload
+requires fresh confirmation.
 
 ## Verify your changes
 
@@ -272,51 +166,42 @@ off its own guard).
 tests/run-tests.sh
 ```
 
-The run checks shell syntax and style, bash 5.2 compatibility, every fenced code
-block in the skill markdown, ecosystem/harness/org neutrality, and the
-behavioral unit suites. It prints its own totals, so read them from the run
-rather than maintaining a count here.
-
-**Green does not mean "the tree is good"** — an external review found twenty-two
-defects through this project, which is why the helper scripts have focused
-behavioral suites as well as structural gates. Green means the declared gates
-and suites passed. See `docs/` for the standing review findings.
-
----
+The run checks shell syntax and style, bash 5.2 compatibility, every fenced code block in
+the skill markdown, the ecosystem, harness, and environment neutrality gates, and the
+behavioural suites. CI runs the same script on every push and pull request. The suite
+needs `shellcheck` and `python3` in addition to the runtime requirements below.
 
 ## Repository layout
 
 ```
-.claude-plugin/marketplace.json   the marketplace, read by both harnesses
+.claude-plugin/marketplace.json     the marketplace, read by both harnesses
 agentkit/
-  .claude-plugin/plugin.json      one manifest per harness; both are required
+  .claude-plugin/plugin.json        one plugin manifest per harness; both are required
   .codex-plugin/plugin.json
   hooks/
-    hooks.json                    where both harnesses look for it
-    lib/guard-lib.sh              logic the hooks must agree on
-    *.sh                          the dispatchers
+    hooks.json                      where both harnesses look for it
+    lib/guard-lib.sh                logic the hooks must agree on
+    *.sh                            the five dispatchers
   skills/
     onboard-repo/
-    parallel-issues/
-    review-remote-pr/
-    .shared/scripts/              the procedural helpers
-tests/                            the harness; never shipped in the plugin
-docs/                             design specs
+    parallel-issues/                scripts/ holds the board mover and data fencing
+    review-remote-pr/               scripts/ holds PR digests, comment posting, reviewers
+    .shared/
+      schema/config.env.example     every AGENT_* key, documented
+      scripts/                      the shared procedural helpers
+tests/                              the test harness; never shipped in the plugin
+docs/                               design specs and review records
 ```
-
----
 
 ## Requirements
 
-- `bash` 5.2+, `jq`, `git`, and the `gh` CLI with the `project` scope
+- Linux with a GNU userland; the scripts target Debian 13 and `bash` 5.2+
+- `jq`, `git`, and the `gh` CLI authenticated with the `project` scope
   (`gh auth refresh -s project`)
-- Codex CLI 0.147+ or Claude Code for hooks; the skills work without them
+- Codex CLI or Claude Code for the hook layer; the skills work without hooks
 
-Targets Debian 13 (trixie). Shell commands run through the agent's login shell,
-which may be zsh, so every helper is a `bash` script rather than an inline
-snippet.
-
----
+Shell commands run through the agent's login shell, which may be zsh, so every helper is a
+`bash` script rather than an inline snippet.
 
 ## Licence
 
