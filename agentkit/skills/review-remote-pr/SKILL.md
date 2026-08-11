@@ -49,10 +49,11 @@ require_repo_context() {
 
 ## Runtime and provider neutrality
 
-Runtime facts come from the current session contract, not from this procedure. Read its
-`sandbox=`, `network=`, writable-root, and measured-by fields before choosing a path; if a fact is
-absent, say that it is unknown instead of inferring it. A denial or approval in one session does not
-establish the same result in another.
+Runtime facts come from the current session contract, not from this procedure. Read network state
+from the `sandbox=` record's `network=` attribute, writable status from the `git=` record's
+`writable=`/`worktree-writable=` attributes, and `measured-by=` only when present on hook-measured
+records, before choosing a path; if a fact is absent, say that it is unknown instead of inferring
+it. A denial or approval in one session does not establish the same result in another.
 
 **Shell state does NOT persist between tool calls.** Every command starts a fresh shell: exported
 variables, `cd`, and anything you `source`d are gone. Each command must therefore be self-sufficient
@@ -1059,9 +1060,9 @@ jq -r '
 - `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
   provider is configured for automatic, incremental, or manual review; continue the current phase
   and leave any trigger decision to the user.
-- `rate-limited` → the provider reports a throttled trigger; it may auto-retry when the fair-usage
-  window refreshes (no re-push, no command needed). Wait with long bounded rounds (Step 4). Never
-  advise buying credits — follow the provider's reported state.
+- `rate-limited` → the provider reports throttling. Do not infer automatic retry or the action
+  required to request another pass. Observe bounded rounds and report the state; leave any retry
+  decision to the user. Never advise buying credits.
 
 ### Read the verdict
 
@@ -1146,8 +1147,25 @@ When Phase A is done — CI green, conflicts resolved, every confirmed adversari
 ```bash
 # Long-interval poll; run as a background task so the wait survives turns.
 # NEVER gh pr ready "$PR" — the flip is the user's call, always.
-while [ "$(gh pr view "$PR" --repo "$REPO" --json isDraft --jq .isDraft)" = "true" ]; do
-  sleep 120
+# A failed status query must never read as a ready transition: tolerate a few
+# transient failures, then stop with an error instead of inferring the flip.
+failures=0
+while :; do
+  if draft_state="$(gh pr view "$PR" --repo "$REPO" --json isDraft --jq .isDraft)"; then
+    failures=0
+    case "$draft_state" in
+      true)  sleep 120 ;;
+      false) break ;;
+      *) printf 'Unexpected draft state: %s\n' "$draft_state" >&2; exit 1 ;;
+    esac
+  else
+    failures=$((failures + 1))
+    if [ "$failures" -ge 5 ]; then
+      printf '%s\n' 'Could not read PR draft state after repeated attempts; stopping without inferring a ready transition.' >&2
+      exit 1
+    fi
+    sleep 120
+  fi
 done
 echo "PR #$PR is no longer a draft; provider review behavior is repository-configured"
 ```
@@ -1475,7 +1493,7 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | A package-scoped tool run from the wrong cwd | Tools that resolve their config from the nearest ancestor manifest silently run the wrong target, or none, when invoked from a monorepo root. Pass the package directory explicitly: `agent-run.sh --dir web --cmd test`. |
 | `.git/worktrees/<name>/index.lock` permission denied | The per-worktree metadata dir is outside the writable bind mount. `worktree-commit.sh` detects this *before* staging and exits `2` naming the path, with nothing staged — obtain write permission for that path and re-run the identical command. Never work around it by committing from the main checkout. |
 | Thread already resolved | Skip — don't re-resolve. Only target `isResolved: false` threads. |
-| Multiple CodeRabbit review cycles | Each provider review is a fresh pass. Fetch reviews sorted by `submitted_at` — process the latest. |
+| Multiple provider review cycles | Do not assume full-pass or incremental semantics. Reconcile all unresolved findings from the state artifacts; use `submitted_at` only to identify newly observed reviews. |
 | CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait for provider state, don't buy credits). `none` = no matching review has landed. |
 | Body nitpick has no thread ID | Fix or decline it anyway, then open a NEW anchored thread on the nitpick's file/lines referencing the commit and mentioning @coderabbitai (Step 5). Only `PRRT_...` threads can be resolved through GraphQL. |
 | Body nitpick documented as top-level comment | A floating `gh pr comment` is disconnected from the code — CodeRabbit can't tie it to the change. Use the anchored-thread POST from Step 5; top-level comment is the 422 fallback only. |
@@ -1526,7 +1544,7 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 ## Exit Report
 
 **Draft-phase report (end of Phase A, before the Step 3 wait):**
-```
+```text
 PR #N: draft phase complete — CI green, conflicts none,
 Adversarial review [Claude Opus 5 | blind separate Codex-agent fallback (reason: <blockedReason> | claude absent)]: M findings, M handled.
 Implementation worker: [gpt-5.6-luna high | automatic gpt-5.6-terra high fallback
@@ -1537,10 +1555,10 @@ not trigger a review.
 ```
 
 **Final report (loop exit):**
-```
+```text
 PR #N: all CI green, N/N CodeRabbit threads handled, all body nitpicks handled,
 GitHub Code Quality: [no findings | all findings auto-cleared | inaccurate findings dismissed with reasons | blocked],
-CodeRabbit approval: [approved | n/a — approval workflow disabled | no provider review observed],
+CodeRabbit approval: [approved | approval status not observable | no provider review observed],
 Adversarial review [Claude Opus 5 | blind separate Codex-agent fallback (reason: <blockedReason> | claude absent)]: M findings, M handled.
 Implementation worker: [gpt-5.6-luna high | gpt-5.6-terra high | worker=self (spawn unavailable) — reason: <why>].
 Human review: [none | H1 approved/replied/open, H2 declined/open | H3 awaiting confirmation].
