@@ -1,11 +1,11 @@
 ---
 name: review-remote-pr
-description: Use when asked to review, babysit, monitor, or clean up a remote PR, including PRs in git worktrees — triggered by "/review-remote-pr", "/review-pr", "review remote PR", "babysit PR". Draft-first flow — while the PR is a draft, get CI green, resolve conflicts, and run + address ONE materiality-gated end-of-draft Claude (Opus 5, high) adversarial cross-review (or a blind separate gpt-5.6-terra Codex agent when Claude is unavailable); mechanically verifiable trivial diffs may document a skip. Then WAIT for the USER to mark the PR ready AND manually trigger any CodeRabbit review (automatic and incremental reviews are disabled — never post "@coderabbitai review"/"full review"). Handles CodeRabbit threads/body nitpicks, github-code-quality[bot] findings, and confirmation-gated human feedback; then proposes vetted Backlog issues for Ready.
+description: Use when asked to review, babysit, monitor, or clean up a remote PR, including PRs in git worktrees — triggered by "/review-remote-pr", "/review-pr", "review remote PR", "babysit PR". Draft-first flow — while the PR is a draft, get CI green, resolve conflicts, and run + address ONE materiality-gated end-of-draft Claude (Opus 5, high) adversarial cross-review (or a blind separate gpt-5.6-terra Codex agent when Claude is unavailable); mechanically verifiable trivial diffs may document a skip. Then wait for the USER to mark the PR ready; never trigger a provider review from this skill. Handles CodeRabbit threads/body nitpicks, github-code-quality[bot] findings, and confirmation-gated human feedback; then proposes vetted Backlog issues for Ready.
 ---
 
 # Review Remote PR
 
-Draft-first automated loop. **Phase A (draft):** watch CI, fix failures, resolve conflicts; then apply the Step 1b materiality gate. Run **the peer CLI named by the contract's `peer-cli=` line as the adversarial cross-reviewer** once for a behaviorally material diff, on its strongest reasoning model (or use the blind separate same-harness fallback); document a skip only for a mechanically verifiable trivial diff. **Phase B (handoff):** report draft-phase complete and wait for the **user** to mark the PR ready — and to **manually trigger** any CodeRabbit review they want: automatic reviews and incremental reviews are disabled. **Phase C (review):** once the user-triggered review lands, assess CodeRabbit and `github-code-quality[bot]` findings, batching fixes into one push per cycle. Human-authored reviews and comments remain confirmation-gated.
+Draft-first automated loop. **Phase A (draft):** watch CI, fix failures, resolve conflicts; then apply the Step 1b materiality gate. Run **the peer CLI named by the contract's `peer-cli=` line as the adversarial cross-reviewer** once for a behaviorally material diff, on its strongest reasoning model (or use the blind separate same-harness fallback); document a skip only for a mechanically verifiable trivial diff. **Phase B (handoff):** report draft-phase complete and wait for the **user** to mark the PR ready. Do not trigger a provider review; whether a review runs on a ready transition or a push is repository and organization configuration. **Phase C (review):** once a relevant review lands, assess CodeRabbit and `github-code-quality[bot]` findings, batching fixes into one push per cycle. Human-authored reviews and comments remain confirmation-gated.
 
 ## Flags
 
@@ -47,9 +47,13 @@ require_repo_context() {
 
 ```
 
-## Sandbox and environment
+## Runtime and provider neutrality
 
-These are facts about the runtime, not preferences.
+Runtime facts come from the current session contract, not from this procedure. Read network state
+from the `sandbox=` record's `network=` attribute, writable status from the `git=` record's
+`writable=`/`worktree-writable=` attributes, and `measured-by=` only when present on hook-measured
+records, before choosing a path; if a fact is absent, say that it is unknown instead of inferring
+it. A denial or approval in one session does not establish the same result in another.
 
 **Shell state does NOT persist between tool calls.** Every command starts a fresh shell: exported
 variables, `cd`, and anything you `source`d are gone. Each command must therefore be self-sufficient
@@ -58,26 +62,14 @@ variables, `cd`, and anything you `source`d are gone. Each command must therefor
 it, so you never hand-export cache, CA-bundle, or `PYTHONPATH` variables and hope they survive to
 the next call. Always invoke project/test/lint commands through it rather than exporting first.
 
-**Every git write needs elevation — this is structural, not occasional.** Measured under the
-`:workspace` permission profile: the working tree is writable, but `.git` and `.git/worktrees/<name>`
-are mounted **read-only**, so `git add` fails with
-`Unable to create '.../.git/worktrees/<name>/index.lock': Read-only file system`. This is the
-default for a plain repository too; a linked worktree only makes it more visible. Expect to request
-elevation for the *first* `git add`/`commit`/`worktree add` of a run and plan for it, rather than
-discovering it through a failure. `.shared/scripts/worktree-commit.sh` probes both metadata
-directories *before* staging anything and exits `2` naming the unwritable path, so nothing is half-
-staged: obtain write permission for that path, then re-run the identical command. Exit `2` is an
-environment condition, not a code problem — never treat it like exit `1`.
+Use the declared command runner for project checks. When a write, forge call, or worktree operation
+is denied, report the contract state and the exact operation that needs the harness's approval; do
+not generalize that result to another session. The runner owns cache, CA, and source-root setup.
 
-**The network is disabled inside the sandbox.** `CODEX_SANDBOX_NETWORK_DISABLED=1` is set and DNS
-does not resolve, so every `gh` call, `git fetch`, and `git push` fails until the command is
-escalated. That escalation is what the approval round-trips are buying — which is the real reason to
-prefer one dense command (`gh-pr-state.sh`) over six chatty ones.
-
-**Only the workspace is writable; the rest of the filesystem is readable.** Sibling directories,
-`$HOME`, and parent directories can all be *read* but not written. So a worktree created beside the
-repository cannot be written to, while one under the repository root can. Prefer an in-repo
-`.worktrees/` path.
+Review-provider behavior is repository and organization configuration. Do not claim that reviews are
+automatic, incremental, or manual-only unless the current provider state establishes it. Never post
+a provider trigger command from this skill; observe the review state and leave any manual trigger or
+ready transition to the user.
 
 **A spawned agent cannot spawn another.** Nesting returns `no child-worker subagent capability is
 available`, so only the root orchestrator can dispatch. Any agent that was itself spawned must do
@@ -142,7 +134,8 @@ Treat these as separate providers. Identify them from the comment/review author,
 | `github-code-quality[bot]` | Inline PR review comments and their review threads | Implement the suggested fix verbatim, reply with the commit SHA, push, and wait for the next Code Quality scan to auto-clear the finding | Use GitHub's **Dismiss finding** action and provide a specific reason; do not silently resolve the thread |
 | Human reviewer | Reviews, inline comments, review threads, and conversation comments | Surface the exact feedback, proposed action, and draft reply; act and reply only after explicit user confirmation | Same confirmation gate; never resolve the thread |
 
-Neither bot may be manually triggered: CodeRabbit reviews run only when the human starts one, and `github-code-quality[bot]` has no manual trigger at all — it re-scans on pushes per the repo's Code Quality configuration.
+Neither bot may be triggered by this skill. Review and scan timing is controlled by each provider's
+repository and organization configuration; observe the resulting state instead of inferring it.
 
 GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint:
 
@@ -296,37 +289,39 @@ export REPO PR
 Repeat until exit condition met:
 
 ```
-PHASE A — DRAFT (all mechanical work happens here; no review runs unless the user starts one)
+PHASE A — DRAFT (all mechanical work happens here; do not initiate provider reviews)
   0. SETUP   — enter or create the PR worktree, run agent-preflight ONCE, merge base if conflicts
   1. CHECK   — one gh-pr-state.sh --full call: CI status + every review/comment surface +
                body nitpicks + provider state, as one digest plus durable artifacts
   1a. HUMAN  — surface human-authored content; gate every action/reply on per-item user confirmation
   2. FIX CI  — diagnose failures, dispatch the Luna ultracode implementation worker (or take the
                documented degraded path when spawn_agent is unavailable), verify its fix,
-               commit/push once (pushes trigger no CodeRabbit review — none are
-               automatic); repeat 1–2 until CI is green
+               commit/push once; re-check CI and review state after the push; repeat 1–2 until CI is green
   2b. ADVERSARIAL — as the LAST draft step (CI green, conflicts resolved): apply the materiality
                gate; for a material diff run one cross-harness review (Step 1b), then verify + fix
                confirmed findings; for a trivial mechanical diff document the verified skip
 
 PHASE B — HANDOFF (user-gated)
-  3. WAIT-READY — report draft-phase complete, then wait for the USER to mark the PR ready AND to
-                  manually trigger any CodeRabbit review they want. NEVER flip it or trigger a
-                  review yourself.
+  3. WAIT-READY — report draft-phase complete, then wait for the USER to mark the PR ready. NEVER
+                  flip it or trigger a provider review yourself; provider automation is external state.
 
-PHASE C — REVIEW (runs only after the user manually triggers CodeRabbit)
-  4. WAIT    — wait for CI and the user-triggered review to land (gh-pr-state.sh --wait-ci,
+PHASE C — REVIEW (runs when relevant provider findings land)
+  4. WAIT    — wait for CI and any relevant review to land (gh-pr-state.sh --wait-ci,
                bounded rounds; escalate rather than wait forever)
   5. FIX     — apply approved human-review actions first (their threads stay unresolved); then triage
                body nitpicks and github-code-quality[bot] findings; then assess each CodeRabbit
                thread, fix or decline, reply AND resolve; batch all fixes into ONE push
   6. REPEAT  — while CI failures, unresolved automated threads, or unhandled findings remain
-               (cap: 3 cycles). Another CodeRabbit pass on the pushed fixes happens only if the
-               user re-triggers it — report that the fixes are pushed and let them decide.
+               (cap: 3 cycles). A later provider pass may depend on repository configuration or a
+               user trigger — report that the fixes are pushed and let the user decide.
   7. GROOM   — (after exit) fan out across the Backlog, propose Ready candidates for the next pickup
 ```
 
-**NEVER trigger CodeRabbit reviews.** The org config has automatic reviews OFF and incremental reviews OFF — nothing (not the ready flip, not a push) starts a review; only the human does, manually. Do not post `@coderabbitai review`, `@coderabbitai full review`, `@coderabbitai pause`, or `@coderabbitai resume` — ever, in any phase, for any reason. With automation off there is nothing to pause; the only `@coderabbitai` text you may post is mentions inside replies or anchored threads. `github-code-quality[bot]` likewise gets no bot commands.
+**NEVER trigger provider reviews.** Review automation, incremental scans, and ready/push behavior are
+repository and organization settings that this skill must not assume. Do not post `@coderabbitai review`,
+`@coderabbitai full review`, `@coderabbitai pause`, or `@coderabbitai resume` — ever, in any phase, for
+any reason. The only `@coderabbitai` text you may post is a mention inside an approved reply or
+anchored thread. `github-code-quality[bot]` likewise gets no bot commands.
 
 **Exit condition:** All CI checks pass; all CodeRabbit threads are resolved; all `github-code-quality[bot]` findings are either auto-cleared after a verified verbatim fix or explicitly dismissed with a reason; all CodeRabbit body-only nitpicks are fixed or explicitly declined and documented; every confirmed adversarial-review finding is fixed or declined with a documenting PR comment; and every discovered human-authored item has an explicit user decision (approve, edited approval, decline, or defer). Approved human replies are posted and verified but their threads remain unresolved. A deferred item does not restart the loop, but it must be reported and prevents a `Ready to merge` claim unless the user explicitly says otherwise. After exit, run **Backlog grooming** (below) before handing back.
 
@@ -334,7 +329,7 @@ PHASE C — REVIEW (runs only after the user manually triggers CodeRabbit)
 
 **Human-reviewer content is confirmation-gated** — surface it during the run (Step 1a), act or reply only after explicit per-item user approval, never resolve its thread, and list its decision and open state in the exit report.
 
-**Iteration cap: 3 full cycles.** CodeRabbit will keep finding new nitpicks on churned code — the loop does not naturally converge, and every extra pass costs the user a manual trigger. After the 3rd cycle, stop pushing: summarize every remaining item with your fix/decline stance and escalate to the user instead of iterating again.
+**Iteration cap: 3 full cycles.** CodeRabbit will keep finding new nitpicks on churned code — the loop does not naturally converge, and every extra pass consumes provider capacity and user attention. After the 3rd cycle, stop pushing: summarize every remaining item with your fix/decline stance and escalate to the user instead of iterating again.
 
 ---
 
@@ -360,7 +355,7 @@ EXISTING_WORKTREE=$(git worktree list --porcelain | awk -v branch="refs/heads/$H
 if [ -n "$EXISTING_WORKTREE" ]; then
   PR_WORKTREE="$EXISTING_WORKTREE"
 else
-  # In-repo, not a sibling: only the workspace is writable under the sandbox,
+  # In-repo, not a sibling: follow the current contract's writable-root guidance,
   # so ../<repo>-pr-N cannot be created. .worktrees/ is gitignored below.
   exclude_path="$(git rev-parse --git-path info/exclude)"
   worktree_root="${AGENT_WORKTREE_ROOT:-.worktrees}"
@@ -412,7 +407,7 @@ git status --short
 **Run all subsequent commands from `$PR_WORKTREE`.** Never switch branches or make PR edits in a worktree owned by another issue/PR. All commits for this PR go to `$HEAD_BRANCH`.
 
 **The FIRST command inside the worktree is the environment preflight.** Run it once; its printed
-block is the environment contract for the entire run (see *Sandbox and environment*):
+block is the environment contract for the entire run (see *Runtime and provider neutrality*):
 
 ```bash
 # Resolve the skill tree from the environment contract at the repository
@@ -1061,9 +1056,13 @@ jq -r '
 ' <"$RUN_DIR/state/pr_${PR}_issue_comments.json"
 ```
 
-- `reviewed` → a user-triggered review posted real findings; work its items (Phase C Step 5).
-- `none` → the user has not triggered a review yet (automatic and incremental reviews are disabled — silence is the default state, not an outage). Do NOT post any review command; continue the current phase and leave triggering to the user.
-- `rate-limited` → the user's trigger got throttled; it auto-retries when the fair-usage window refreshes (no re-push, no command needed). Wait with long bounded rounds (Step 4). Never advise buying credits — the throttle self-resolves.
+- `reviewed` → a review posted real findings; work its items (Phase C Step 5).
+- `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
+  provider is configured for automatic, incremental, or manual review; continue the current phase
+  and leave any trigger decision to the user.
+- `rate-limited` → the provider reports throttling. Do not infer automatic retry or the action
+  required to request another pass. Observe bounded rounds and report the state; leave any retry
+  decision to the user. Never advise buying credits.
 
 ### Read the verdict
 
@@ -1089,9 +1088,11 @@ Verify each finding against the actual code before acting. The reviewer can over
 
 ---
 
-## Step 1c: Batch pushes (tidiness — pushes trigger nothing)
+## Step 1c: Batch pushes (tidiness and stable review state)
 
-With automatic and incremental reviews disabled, pushes never trigger a CodeRabbit review in any phase — there is no quota mechanic to manage and nothing to pause. Still batch each cycle's fixes into **one** push: the user triggers reviews manually, and a settled branch state means their trigger reviews the whole batch instead of a moving target. Never post `@coderabbitai pause`/`resume` — with automation off they are meaningless, and all bot commands stay banned.
+Review behavior after a push is provider configuration, not a workflow guarantee. Still batch each
+cycle's fixes into **one** push so any later review sees a settled branch state. Never post
+`@coderabbitai pause`/`resume`; all provider trigger commands stay banned.
 
 ---
 
@@ -1139,20 +1140,37 @@ If the repository declares its own runner (`AGENT_REPO_RUNNER`, or a committed `
 
 ---
 
-## Step 3 (Phase B): Wait for the user to flip ready and trigger the review
+## Step 3 (Phase B): Wait for the user to decide the ready transition
 
-When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed or declined-with-comment, every discovered human item decided — report the draft-phase summary to the user (see Exit Report) and **wait**. The user, not you, marks the PR ready for review AND manually triggers any CodeRabbit review they want: with automatic reviews off, the flip alone starts nothing.
+When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed or declined-with-comment, every discovered human item decided — report the draft-phase summary to the user (see Exit Report) and **wait**. The user, not you, marks the PR ready for review. Whether that transition starts a provider review is external repository configuration.
 
 ```bash
 # Long-interval poll; run as a background task so the wait survives turns.
 # NEVER gh pr ready "$PR" — the flip is the user's call, always.
-while [ "$(gh pr view "$PR" --repo "$REPO" --json isDraft --jq .isDraft)" = "true" ]; do
-  sleep 120
+# A failed status query must never read as a ready transition: tolerate a few
+# transient failures, then stop with an error instead of inferring the flip.
+failures=0
+while :; do
+  if draft_state="$(gh pr view "$PR" --repo "$REPO" --json isDraft --jq .isDraft)"; then
+    failures=0
+    case "$draft_state" in
+      true)  sleep 120 ;;
+      false) break ;;
+      *) printf 'Unexpected draft state: %s\n' "$draft_state" >&2; exit 1 ;;
+    esac
+  else
+    failures=$((failures + 1))
+    if [ "$failures" -ge 5 ]; then
+      printf '%s\n' 'Could not read PR draft state after repeated attempts; stopping without inferring a ready transition.' >&2
+      exit 1
+    fi
+    sleep 120
+  fi
 done
-echo "PR #$PR marked ready — waiting for the user-triggered CodeRabbit review (if any)"
+echo "PR #$PR is no longer a draft; provider review behavior is repository-configured"
 ```
 
-Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack — Step 1b state check). If none arrives, that's the expected default — the user may not want a bot pass at all; ask rather than assume, and never trigger one yourself. If the state check reports `rate-limited`, keep waiting in long bounded rounds (~10 min each, up to ~90 min); escalate to the user after that instead of triggering anything.
+Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack — Step 1b state check). If none arrives, report that no matching review has landed; do not infer provider configuration or trigger one yourself. If the state check reports `rate-limited`, keep waiting in long bounded rounds (~10 min each, up to ~90 min); escalate to the user after that instead of triggering anything.
 
 ---
 
@@ -1187,7 +1205,8 @@ Do NOT grep for repo-specific check names ("Test|Build|Lint"): names differ per 
 
 If the digest still reports `pending` after the bounded rounds, **stop and escalate to the user**. Do not keep waiting, and do not keep raising `--rounds`.
 
-Do NOT wait for a CodeRabbit review after a push — pushes trigger nothing. A fresh pass on the pushed fixes happens only if the user re-triggers it; report that the fixes are pushed and let them decide.
+Do NOT infer review behavior from a push. Re-check the provider state in bounded rounds, report that
+the fixes are pushed, and let the user decide whether any additional trigger is appropriate.
 
 ---
 
@@ -1330,7 +1349,7 @@ printf '🤖 Co-authored by %s.\n' "$agent_identity" >>"$doc_body"
 API 422s because the line is not in the PR diff — e.g. a declined nitpick on an untouched line — the
 helper prints that exact hint; follow it by re-running the identical command with `--anchor` dropped,
 which posts a top-level comment quoting the nitpick. These **marked agent-documentation** threads are
-yours: leave them open so CodeRabbit sees the mention on its next user-triggered pass, then resolve
+yours: leave them open so CodeRabbit sees the mention on its next provider pass, then resolve
 them at exit only if no unmarked human comment has joined the thread.
 
 **Resolve threads (requires GraphQL thread node ID from Step 1):**
@@ -1347,7 +1366,12 @@ Resolve CodeRabbit threads — both accepted fixes and declined suggestions — 
 
 ### End of cycle: one push, zero review commands
 
-The cycle ends with its **single batched push** (Step 1c). Post **no** review command in any phase — a fresh CodeRabbit pass on the batch happens only if the user manually triggers one; report that the fixes are pushed so they can decide. Why decline replies still matter: when the user does trigger a `full review`, it re-evaluates the PR **from scratch, disregarding previous comments** — it can re-raise previously declined items. Decline replies store Learnings (see Decline Rationale Templates) that survive that; post them before the cycle's push.
+The cycle ends with its **single batched push** (Step 1c). Post **no** review command in any phase —
+a fresh CodeRabbit pass on the batch depends on provider configuration or a user decision; report that
+the fixes are pushed so they can decide. Why decline replies still matter: a later `full review` can
+re-evaluate the PR **from scratch, disregarding previous comments** — it can re-raise previously
+declined items. Decline replies store Learnings (see Decline Rationale Templates) that survive that;
+post them before the cycle's push.
 
 ---
 
@@ -1423,7 +1447,7 @@ Marked agent-documentation threads may be resolved at exit only when every non-b
 
 Also re-open `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, `$RUN_DIR/state/pr_${PR}_issue_comments.json`, and `$RUN_DIR/state/pr_${PR}_code_quality_comments.json`. Confirm every automated-review body nitpick has a matching anchored thread (or fallback comment) recording its fix/decline, and every Code Quality comment is either gone/auto-cleared after the pushed fix or explicitly dismissed with a reason. Confirm every confirmed adversarial-review `[P1]/[P2]` finding has a matching fix/decline PR comment.
 
-If any CI failed OR any automated-review thread/finding remains unhandled OR any body nitpick remains unaddressed OR any confirmed adversarial-review finding remains unaddressed → go back to Step 1 (max 3 full cycles — see The Loop's iteration cap; remember another CodeRabbit pass needs the user's trigger). If human-authored content lacks an explicit user decision, surface the gate and wait; do not post, resolve, or claim readiness.
+If any CI failed OR any automated-review thread/finding remains unhandled OR any body nitpick remains unaddressed OR any confirmed adversarial-review finding remains unaddressed → go back to Step 1 (max 3 full cycles — see The Loop's iteration cap; a later CodeRabbit pass depends on provider configuration or user decision). If human-authored content lacks an explicit user decision, surface the gate and wait; do not post, resolve, or claim readiness.
 
 ---
 
@@ -1432,9 +1456,9 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | Problem | Fix |
 |---|---|
 | `resolveReviewThread` returns NOT_FOUND | You passed REST comment ID, not GraphQL thread node ID (`PRRT_...`). Fetch thread IDs via GraphQL first. |
-| Tempted to trigger a review | `@coderabbitai review` / `full review` / `pause` / `resume` are ALL banned. Automatic + incremental reviews are disabled — only the human triggers reviews, manually. Silence is the default state, not an outage. |
-| Waiting for a review after the ready flip | The flip triggers nothing (automation is off). Report draft-phase complete; the user triggers a review if and when they want one. |
-| Waiting for a review after a push | Pushes trigger nothing either. Report fixes pushed; the user decides whether to re-trigger. |
+| Tempted to trigger a review | `@coderabbitai review` / `full review` / `pause` / `resume` are ALL banned. Review automation and trigger behavior belong to repository/provider configuration; observe state and leave trigger decisions to the user. |
+| Waiting for a review after the ready flip | The flip's review behavior is repository/provider configuration. Report draft-phase complete; do not trigger a review yourself. |
+| Waiting for a review after a push | Re-check observed provider state in bounded rounds. Report fixes pushed; the user decides whether to trigger anything. |
 | Running the adversarial review early or repeatedly | Apply the materiality gate ONCE as the LAST draft step (CI green first). For a material diff, fix confirmed findings and do not re-review the fixes. |
 | Same-harness fallback given context | A reviewer that reads the issue/ADRs/design doc rubber-stamps intent. Create a separate no-history agent in the running CLI; give it only the diff and review rubric, and instruct it not to use tools or read files. |
 | Contextual PR-loop agent writes fixes itself | Dispatch the separate Luna implementation worker; the loop agent orchestrates, reviews, verifies, pushes, and handles GitHub state |
@@ -1469,8 +1493,8 @@ If any CI failed OR any automated-review thread/finding remains unhandled OR any
 | A package-scoped tool run from the wrong cwd | Tools that resolve their config from the nearest ancestor manifest silently run the wrong target, or none, when invoked from a monorepo root. Pass the package directory explicitly: `agent-run.sh --dir web --cmd test`. |
 | `.git/worktrees/<name>/index.lock` permission denied | The per-worktree metadata dir is outside the writable bind mount. `worktree-commit.sh` detects this *before* staging and exits `2` naming the path, with nothing staged — obtain write permission for that path and re-run the identical command. Never work around it by committing from the main checkout. |
 | Thread already resolved | Skip — don't re-resolve. Only target `isResolved: false` threads. |
-| Multiple CodeRabbit review cycles | Each user-triggered review is a fresh pass. Fetch reviews sorted by `submitted_at` — process the latest. |
-| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait, it self-resolves; don't buy credits). `none` = the user simply hasn't triggered one. |
+| Multiple provider review cycles | Do not assume full-pass or incremental semantics. Reconcile all unresolved findings from the state artifacts; use `submitted_at` only to identify newly observed reviews. |
+| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait for provider state, don't buy credits). `none` = no matching review has landed. |
 | Body nitpick has no thread ID | Fix or decline it anyway, then open a NEW anchored thread on the nitpick's file/lines referencing the commit and mentioning @coderabbitai (Step 5). Only `PRRT_...` threads can be resolved through GraphQL. |
 | Body nitpick documented as top-level comment | A floating `gh pr comment` is disconnected from the code — CodeRabbit can't tie it to the change. Use the anchored-thread POST from Step 5; top-level comment is the 422 fallback only. |
 | Threads resolved before body nitpicks handled | Resolving CodeRabbit's threads arms its auto-approve (when enabled) — an approval can fire on a PR with unhandled nitpicks. Follow Step 5's order: nitpicks first, reply+resolve threads last. |
@@ -1520,21 +1544,21 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 ## Exit Report
 
 **Draft-phase report (end of Phase A, before the Step 3 wait):**
-```
+```text
 PR #N: draft phase complete — CI green, conflicts none,
 Adversarial review [Claude Opus 5 | blind separate Codex-agent fallback (reason: <blockedReason> | claude absent)]: M findings, M handled.
 Implementation worker: [gpt-5.6-luna high | automatic gpt-5.6-terra high fallback
                         | worker=self (spawn unavailable) — reason: <why>], six-step gate complete.
 Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
-Waiting for you to mark it ready and trigger any CodeRabbit review you want
-(automatic reviews are off — nothing runs until you trigger it).
+Waiting for you to mark it ready. Provider review behavior is repository-configured; this skill will
+not trigger a review.
 ```
 
 **Final report (loop exit):**
-```
+```text
 PR #N: all CI green, N/N CodeRabbit threads handled, all body nitpicks handled,
 GitHub Code Quality: [no findings | all findings auto-cleared | inaccurate findings dismissed with reasons | blocked],
-CodeRabbit approval: [approved | n/a — approval workflow disabled | not re-triggered by user],
+CodeRabbit approval: [approved | approval status not observable | no provider review observed],
 Adversarial review [Claude Opus 5 | blind separate Codex-agent fallback (reason: <blockedReason> | claude absent)]: M findings, M handled.
 Implementation worker: [gpt-5.6-luna high | gpt-5.6-terra high | worker=self (spawn unavailable) — reason: <why>].
 Human review: [none | H1 approved/replied/open, H2 declined/open | H3 awaiting confirmation].

@@ -16,7 +16,7 @@ Run this skill from Bash. Every Bash block below is self-contained: shell state 
 persist between tool calls, so each block re-derives the repository, owner, and base branch
 it needs rather than relying on variables set by an earlier block.
 
-Run multiple independent GitHub issues simultaneously: detect Project (v2) membership, validate against ADRs and closed PRs, analyze conflicts, brainstorm each issue with the user (or skip brainstorm for autonomous handoff via `--no-brainstorm`), create isolated worktrees, dispatch **one Codex issue lead per worktree** with the same ultracode design-first gates as Claude's Workflow harness, then drive parallel **draft-phase** loops (CI, conflicts, then ONE end-of-draft adversarial cross-review) on each PR. PRs stay drafts until the USER marks them ready AND manually triggers any CodeRabbit review — automatic and incremental reviews are disabled, so nothing runs on the flip or on pushes. Never post `@coderabbitai review`/`full review`.
+Run multiple independent GitHub issues simultaneously: detect Project (v2) membership, validate against ADRs and closed PRs, analyze conflicts, brainstorm each issue with the user (or skip brainstorm for autonomous handoff via `--no-brainstorm`), create isolated worktrees, dispatch **one Codex issue lead per worktree** with the same ultracode design-first gates as Claude's Workflow harness, then drive parallel **draft-phase** loops (CI, conflicts, then ONE end-of-draft adversarial cross-review) on each PR. PRs stay drafts until the USER marks them ready; this skill never triggers a provider review. Never post `@coderabbitai review`/`full review`.
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
@@ -53,6 +53,18 @@ authorised rather than leaving it to be reconstructed later.
 
 **Review providers & human feedback:** the follow-up loops handle both CodeRabbit and `github-code-quality[bot]` per `review-remote-pr`'s provider rules — never issue a manual command to either bot. For a Code Quality finding: reply to the original comment, implement the suggested fix verbatim, and let the next scan auto-clear it; if inaccurate, reply with a concrete reason and use GitHub's Dismiss finding action (the public Code Quality REST API is read-only for findings — don't invent a `gh` mutation). Human-authored reviews and comments use `review-remote-pr`'s confirmation gate: surface each item with its exact proposed handling, act and reply only after explicit per-item approval, and never resolve the human's thread. Feedback authored by the authenticated `gh` login is human too — login equality is not agent ownership.
 
+## Runtime and provider neutrality
+
+Runtime facts come from the current session contract, not from this procedure. Read its
+`sandbox=`, `network=`, writable-root, and measured-by fields before choosing a path; if a fact is
+absent, say that it is unknown instead of inferring it. A denial or approval in one session does not
+establish the same result in another.
+
+Review-provider behavior is repository and organization configuration. Do not claim that reviews are
+automatic, incremental, or manual-only unless the current provider state establishes it. Never post
+a provider trigger command from this skill; observe the review state and leave any manual trigger or
+ready transition to the user.
+
 ## Process
 
 ```dot
@@ -69,9 +81,9 @@ digraph process {
     "Create worktrees\n(sequential)" -> "Dispatch issue leads\n(up to available slots)";
     "Dispatch issue leads\n(up to available slots)" -> "Collect results\n(PR URL or BLOCKED)";
     "Collect results\n(PR URL or BLOCKED)" -> "Dispatch N draft-phase\nreview-remote-pr agents (parallel)";
-    "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER marks ready + triggers review";
-    "Report: drafts ready\nUSER marks ready + triggers review" -> "Reviews land\n-> continue fix/reply/resolve";
-    "Reviews land\n-> continue fix/reply/resolve" -> "Surface human reviews\n-> user confirms each response";
+    "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER decides ready transition";
+    "Report: drafts ready\nUSER decides ready transition" -> "Provider findings land\n-> continue fix/reply/resolve";
+    "Provider findings land\n-> continue fix/reply/resolve" -> "Surface human reviews\n-> user confirms each response";
     "Surface human reviews\n-> user confirms each response" -> "Print PR table\n+ worktree handoff (no cleanup)";
 }
 ```
@@ -903,7 +915,7 @@ fi
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
-As each Phase 2 lead returns a PR URL, drive that PR through `/review-remote-pr`'s **draft-first** flow — in parallel, without waiting for the other issues' leads. The PRs are drafts and STAY drafts through all mechanical work (CI fixes, merge conflicts, then the ONE end-of-draft adversarial cross-review). CodeRabbit's automatic and incremental reviews are disabled — it reviews only when the USER manually triggers it, so silence is the default state, never an outage — and it must never be woken by an agent: **never post `@coderabbitai review` or `full review` on any PR**.
+As each Phase 2 lead returns a PR URL, drive that PR through `/review-remote-pr`'s **draft-first** flow — in parallel, without waiting for the other issues' leads. The PRs are drafts and STAY drafts through all mechanical work (CI fixes, merge conflicts, then the ONE end-of-draft adversarial cross-review). Review automation and ready/push behavior are repository and organization configuration; observe the state and never initiate a provider review: **never post `@coderabbitai review` or `full review` on any PR**.
 
 **As each PR opens, move its issue to `In review`** (see `github-projects.md`):
 ```bash
@@ -937,7 +949,7 @@ Same evidence rule as the dispatch move: the helper's printed line is the record
 
 ### Step 3a: Dispatch draft-phase agents immediately
 
-There is nothing to wait for at PR-open time — no review is automatic. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
+Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
 
@@ -1035,7 +1047,7 @@ string is how SHAs silently vanish from replies).
 ## Your Workflow (DRAFT PHASE ONLY — the PR stays a draft)
 1. Apply the self-contained draft-phase workflow in this skill to PR number NNN; do not load `review-remote-pr/SKILL.md` just to dispatch this worker.
 2. Run its Phase A (draft) to completion:
-   - All CI checks green (fix, commit, push — pushes trigger no reviews)
+   - All CI checks green (fix, commit, push, then re-check observed review state)
    - Merge conflicts vs base resolved (merge, never rebase pushed history)
    - ONE adversarial cross-review at the END of the draft phase (per
      review-remote-pr Step 1b: Claude Opus 5 high, or the blind
@@ -1043,10 +1055,10 @@ string is how SHAs silently vanish from replies).
      documented in a PR comment with commit SHA / rationale; never re-run
 3. HARD RULES: never `gh pr ready` — the USER flips the PR out of draft.
    Never post `@coderabbitai review` or `@coderabbitai full review` —
-   CodeRabbit's automatic and incremental reviews are disabled; ONLY the
-   USER triggers a review, manually. Silence is the default, not an outage.
+   review automation and trigger behavior belong to repository/provider configuration.
+   Observe state and leave any trigger decision to the USER.
 4. If CodeRabbit items ALREADY exist on the PR (from an earlier
-   user-triggered review), handle them per review-remote-pr Step 5: body
+   provider-triggered review), handle them per review-remote-pr Step 5: body
    nitpicks first (fixed/declined as NEW anchored threads on the cited
    lines), then each thread — assess VALID / INVALID / NITPICK, fix or
    decline, reply with rationale + commit SHA, THEN resolve. Never resolve
@@ -1079,7 +1091,7 @@ string is how SHAs silently vanish from replies).
 ## Exit Report
 Report back one line:
   "PR #NNN: draft phase complete — CI green, adversarial review M/M findings handled.
-   Awaiting user ready-flip + manual review trigger."
+   Awaiting user ready-flip; provider review behavior is external configuration."
 Or:
   "PR #NNN: BLOCKED — [specific reason, e.g. coverage gate at 78%, need product input on thread N]"
 Or:
@@ -1098,15 +1110,15 @@ After all draft-phase agents return, print the table and tell the user the draft
 #54 Rate limiting      → ✅ PR #68 draft-ready (CI green, adversarial review 0 findings)   worker=gpt-5.6-terra high
 #62 Logging cleanup    → ⚠️  PR #69 BLOCKED — coverage 78% < 80% gate; needs more tests    worker=gpt-5.6-luna high
 
-Mark the ✅ PRs ready and manually trigger CodeRabbit when you want a review
-(automatic reviews are off) — I'll pick up CodeRabbit and GitHub Code Quality feedback.
+Mark the ✅ PRs ready when you want to review them — provider review behavior is repository-configured;
+I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 ```
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-### Step 3d: After the user flips PRs ready and triggers reviews — follow-up (parallel per-PR)
+### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
-Nothing is automatic: the ready flip triggers no review, and pushes trigger none either — the user manually triggers any CodeRabbit pass they want. Watch each PR on a long interval under the polling discipline above — one check per interval, and `gh-pr-state.sh --pr N --repo OWNER/REPO` is that check: its digest carries `draft=`, CI counts, and thread counts in one call, and `--full` writes the reviews/comments/threads artifacts when you need to inspect authorship. Trigger on a real CodeRabbit REVIEW landing — match `.reviews[]`, not `.comments[]`: the walkthrough/ack comment can land minutes before the review carrying findings; and match `github-code-quality[bot]` in paginated inline comments, which may arrive without any review submission. As findings land, dispatch a follow-up agent for that PR — or, with no spawn capability, run the follow-up yourself, one PR at a time, labelled `worker=self (spawn unavailable)` — following review-remote-pr Phase C — approved human actions first (threads left unresolved), then body nitpicks, then Code Quality findings (verbatim fix + scan auto-clear, or reasoned Dismiss finding), then CodeRabbit threads fixed/declined + replied (commit SHA) + resolved, all fixes batched into one push per cycle, never posting any bot command. If no review arrives, that's the default state — report and leave triggering to the user.
+Review behavior after a ready transition or push is repository/provider configuration. Watch each PR on a long interval under the polling discipline above — one check per interval, and `gh-pr-state.sh --pr N --repo OWNER/REPO` is that check: its digest carries `draft=`, CI counts, and thread counts in one call, and `--full` writes the reviews/comments/threads artifacts when you need to inspect authorship. Process a real CodeRabbit REVIEW landing — match `.reviews[]`, not `.comments[]`: the walkthrough/ack comment can land minutes before the review carrying findings; and match `github-code-quality[bot]` in paginated inline comments, which may arrive without any review submission. As findings land, dispatch a follow-up agent for that PR — or, with no spawn capability, run the follow-up yourself, one PR at a time, labelled `worker=self (spawn unavailable)` — following review-remote-pr Phase C — approved human actions first (threads left unresolved), then body nitpicks, then Code Quality findings (verbatim fix + scan auto-clear, or reasoned Dismiss finding), then CodeRabbit threads fixed/declined + replied (commit SHA) + resolved, all fixes batched into one push per cycle, never posting any bot command. If no review arrives, report the observed state and leave triggering decisions to the user.
 
 When human content lands, surface it with per-item labels, exact feedback, assessment, proposed action, and exact attributed draft reply; wait for explicit per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and cannot be called ready to merge.
 
@@ -1192,9 +1204,9 @@ Cleanup runs only when user explicitly asks after merge.
 | Blocking Phase 3 until every issue lead completes | Act per-completion: board move + draft loop the moment each PR URL lands |
 | Re-issuing wait while a task is still running | One wait per interval. If the wait reports no actual completion, wait again; read durable state only after an actual completion |
 | Narrating a wait | "Still running", "still waiting", "checking again" carry no fact. Speak only for a state change or a decision; otherwise wait again silently |
-| Waiting for CodeRabbit before dispatching Phase 3 | Nothing to wait for — no review is automatic. Dispatch draft-phase agents the moment each PR URL lands (Step 3a) |
-| Marking a PR ready / triggering a review | NEVER `gh pr ready`, never `@coderabbitai review`/`full review` — automatic + incremental reviews are disabled; ONLY the USER triggers reviews, manually |
-| Waiting for a review after the ready flip or a push | Neither triggers anything (automation off). Report state; the user triggers reviews when they choose |
+| Waiting for CodeRabbit before dispatching Phase 3 | Review timing is external provider state. Dispatch draft-phase agents the moment each PR URL lands (Step 3a) and observe state |
+| Marking a PR ready / triggering a review | NEVER `gh pr ready`, never `@coderabbitai review`/`full review` — review automation and trigger behavior belong to repository/provider configuration; leave the decision to the USER |
+| Waiting for a review after the ready flip or a push | Review timing is repository/provider configuration. Report state; do not trigger a review yourself |
 | Running the adversarial review early or repeatedly | ONE cross-review, at the END of the draft phase (CI green first); never re-run on the fix push |
 | Step 3d poll fires on CodeRabbit's ack/walkthrough comment | Match `.reviews[]` authors only — the findings-bearing review can land minutes after the first comment; a too-early dispatch sees a false-clean PR |
 | Expecting a spawned agent to spawn its own helper | Nesting is blocked by the harness — a worker gets `no child-worker subagent capability is available`. Every spawned agent does its own work; only the root orchestrator can spawn |
@@ -1215,4 +1227,4 @@ Cleanup runs only when user explicitly asks after merge.
 - Requires GitHub remote (`gh` CLI) with Projects v2 scope: reading needs `read:project`; moving items via the Bash Project helper needs write `project` (`gh auth refresh -s project` if missing — Step 0's `project-scope=` line tells you before a move fails)
 - Requires the shared helpers under `${CODEX_HOME:-$HOME/.codex}/skills/.shared/scripts/` (`agent-preflight.sh`, `agent-run.sh`, `worktree-commit.sh`), the board helper under `parallel-issues/scripts/`, and `review-remote-pr/scripts/gh-pr-state.sh` for PR state. `jq` is required by the board and PR helpers
 - Works on any repo with `AGENTS.md`, `CLAUDE.md`, or equivalent local instructions and a `main` or `master` branch
-- CodeRabbit reviews only run when the USER manually triggers one (automatic + incremental reviews disabled) — polls in Step 3d are for user-triggered reviews landing, and silence is the normal state, not a failure
+- Review timing is repository/provider configuration — polls in Step 3d are for observing findings landing, and silence is an observed state, not a trigger decision
