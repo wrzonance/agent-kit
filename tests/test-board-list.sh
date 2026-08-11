@@ -26,7 +26,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 repo="$tmp/repo"
 mkdir -p "$repo/.agent"
-printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
+printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7,"title":"example-board"}}\n' \
     > "$repo/.agent/board.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 
@@ -67,6 +67,8 @@ run_board() {
 # --- the whole board fits: no warning, and none deserved --------------------
 bin=$(make_gh small 12)
 out=$(run_board "$bin")
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'a complete listing identifies the board by title'
 assert_contains "$out" 'items=12 of=12' 'a complete read reports both counts agreeing'
 assert_not_contains "$out" 'TRUNCATED' 'and does not warn about a board it read fully'
 
@@ -89,6 +91,8 @@ assert_not_contains "$out" 'TRUNCATED' 'so the backstop stays quiet on an ordina
 # hand-written filter differs from the last. Answers that look like they
 # disagree are what turned a check into a loop.
 out=$(run_board "$bin" --issue 100)
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'an issue hit identifies the board by title'
 assert_contains "$out" '#100  Ready' 'a single issue is answered directly'
 assert_not_contains "$out" 'Done  (' 'without printing the board around it'
 
@@ -98,6 +102,8 @@ assert_contains "$out" '#101  Done' 'and reports the column it is actually in'
 # Absence is stated, not implied by empty output -- an empty answer reads as a
 # failed command, which invites running it again.
 out=$(run_board "$bin" --issue 999)
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'an issue miss identifies the board by title'
 assert_contains "$out" 'not on this board' 'an issue that is absent is said to be absent'
 
 # An issue lookup over a truncated read cannot distinguish absent from unread,
@@ -124,6 +130,32 @@ chmod +x "$dupe_bin/gh"
 out=$(run_board "$dupe_bin" --issue 42)
 assert_contains "$out" '#42  Ready  requested repo' 'same-number issues are matched by repository'
 assert_not_contains "$out" 'wrong repo' 'a same-number issue from another repository is ignored'
+
+# Project titles are part of a whitespace-delimited header, so shell-escape
+# titles that contain whitespace without allowing an embedded newline to split
+# the header from the issue result.
+jq --arg title $'Agent Kit\nRoadmap' '.project.title = $title' \
+    "$repo/.agent/board.json" > "$tmp/titled-board.json"
+mv "$tmp/titled-board.json" "$repo/.agent/board.json"
+out=$(run_board "$bin")
+assert_contains "$out" "board=\$'Agent Kit\\nRoadmap' project=7 owner=example-org" \
+    'a multiline title stays one escaped header field'
+assert_not_contains "$out" $'board=Agent Kit\nRoadmap project=' \
+    'a multiline title does not split the header'
+out=$(run_board "$bin" --issue 100)
+assert_contains "$out" "board=\$'Agent Kit\\nRoadmap' project=7 owner=example-org" \
+    'issue lookups use the same escaped board header'
+
+jq '.project.title = "example-board"' "$repo/.agent/board.json" > "$tmp/restored-board.json"
+mv "$tmp/restored-board.json" "$repo/.agent/board.json"
+
+# Older board metadata may not have a title. The title is descriptive only, so
+# that metadata remains usable and leaves the existing field empty.
+jq 'del(.project.title)' "$repo/.agent/board.json" > "$tmp/legacy-board.json"
+mv "$tmp/legacy-board.json" "$repo/.agent/board.json"
+out=$(run_board "$bin")
+assert_contains "$out" 'board= project=7 owner=example-org' \
+    'legacy metadata keeps an empty board title fallback'
 
 assert_rc 2 'a non-numeric issue is a usage error' -- \
     env PATH="$bin:$PATH" "$script" --repo-root "$repo" --issue main
