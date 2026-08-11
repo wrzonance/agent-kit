@@ -113,6 +113,31 @@ out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'an untracked module payload blocks unattended command execution'
 
+# Repository-relative inputs beginning with `__` are ordinary paths, not
+# sentinels. Track a directory passed through --require and refuse it only
+# after its payload changes.
+repo=$(make_repo)
+mkdir -p "$repo/__tests__/unit" "$repo/tools"
+printf 'base\n' > "$repo/__tests__/unit/payload"
+printf '#!/bin/sh\ntouch "%s/valid-input-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner --require=__tests__/unit\n' > "$repo/.agent/config.env"
+git -C "$repo" add -- .agent/config.env __tests__ tools
+git -C "$repo" commit -qm base
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '0' "$rc" 'an unchanged repo-relative __ path passes --yolo'
+assert_eq 'yes' "$([[ -e $tmp/valid-input-ran ]] && echo yes || echo no)" \
+    'the valid __ path reaches its command'
+
+printf 'changed\n' > "$repo/__tests__/unit/payload"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a changed repo-relative __ path is refused under --yolo'
+assert_contains "$out" 'refusing --yolo' 'the changed __ path is named as a trust failure'
+
 # Deleting a declaration must be a change too. Keep a runner fallback so
 # resolution reaches the yolo gate after the config disappears.
 repo=$(make_repo)

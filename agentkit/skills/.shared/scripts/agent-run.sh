@@ -627,11 +627,18 @@ emit_declared_path_input() {
     fi
 }
 
+is_command_input_sentinel() {
+    case $1 in
+        __invalid-command-input__|__external-command-input__) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 hash_command_inputs() {
     local input
     while IFS= read -r input; do
         [[ -n $input ]] || continue
-        if [[ $input == __* ]]; then
+        if is_command_input_sentinel "$input"; then
             printf '%s\n' "$input"
         else
             printf 'declared=%s\n' "$input"
@@ -760,10 +767,10 @@ yolo_changed_input() {
     local base=$1 rel abs untracked
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
-        [[ $rel == __* ]] && {
+        if is_command_input_sentinel "$rel"; then
             printf '%s' "$rel"
             return 0
-        }
+        fi
         abs=$git_top/$rel
         if [[ -e $abs || -L $abs ]]; then
             if ! git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
