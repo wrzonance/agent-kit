@@ -19,7 +19,7 @@
 #   the origin URL, and the only writes are under <worktree>/.agent/.
 #
 # OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
-#   skills= path= repo= branch= worktree= base= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= path= repo= branch= worktree= base= config= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 #   The first record is `skills= path=/abs/skills-tree` -- the literal "skills=" key
 #   followed by a separate "path=" field; consumers parse the exact "skills= path="
 #   prefix, so the run-together form "skills=/abs/path" is incompatible.
@@ -309,6 +309,22 @@ probe_config() {
     keys="$shown"
     if (( extra > 0 )); then keys="$shown,+$extra more"; fi
     emit "config= present=yes keys=$count supplied=\"$keys\""
+}
+
+# Root instruction files are the only instruction files preflight reports. The
+# worker may inspect matching files in directories changed by its task, but the
+# environment contract must never enumerate the wider worktree or filesystem.
+probe_instructions() {
+    local -a roots=()
+    local root_list
+    [[ -f "$WORKTREE/AGENTS.md" ]] && roots+=(AGENTS.md)
+    [[ -f "$WORKTREE/CLAUDE.md" ]] && roots+=(CLAUDE.md)
+    if (( ${#roots[@]} == 0 )); then
+        emit 'instructions= root=none'
+    else
+        root_list=$(join_by , "${roots[@]}")
+        emit "instructions= root=$root_list"
+    fi
 }
 
 # A read-only real git dir is the most expensive surprise in a sandbox: it turns every
@@ -737,6 +753,7 @@ main() {
     resolve_worktree
     probe_identity
     probe_config
+    probe_instructions
     probe_git
     probe_gh
     probe_sandbox

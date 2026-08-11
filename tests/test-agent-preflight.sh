@@ -47,6 +47,28 @@ fi
 mode=$(stat -c '%a' "$repo/.agent/env-contract.txt" 2> /dev/null || printf '?')
 assert_eq '600' "$mode" 'the contract is written private to the user'
 
+# --- bounded root instruction report ---------------------------------------
+repo=$(new_repo)
+mkdir -p "$repo/nested"
+printf 'nested guidance\n' > "$repo/nested/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$out" 'instructions= root=none' \
+    'a bare fixture reports no root instruction files'
+assert_not_contains "$out" 'nested/AGENTS.md' \
+    'nested instruction files are not enumerated by preflight'
+
+printf 'root guidance\n' > "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$out" 'instructions= root=AGENTS.md' \
+    'preflight reports a root AGENTS.md'
+assert_not_contains "$(grep '^instructions=' <<< "$out")" 'CLAUDE.md' \
+    'the root report omits an absent CLAUDE.md'
+
+printf 'root guidance\n' > "$repo/CLAUDE.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$out" 'instructions= root=AGENTS.md,CLAUDE.md' \
+    'preflight reports both root instruction files in stable order'
+
 # --- the symlink ------------------------------------------------------------
 repo=$(new_repo)
 printf 'ORIGINAL-MUST-SURVIVE\n' > "$repo/victim.txt"
