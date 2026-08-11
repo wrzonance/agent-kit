@@ -427,6 +427,20 @@ out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" 
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a scope advisory never bypasses a hard denial in a compound command'
+
+# A hard denial must not consume an advisory that it prevents from being
+# emitted. The next pure walker in the same session still gets the lesson.
+deferred_scope_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" \
+    "$deferred_scope_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a hard-denied compound still takes denial precedence'
+assert_eq '' "$(pre_context "$out")" \
+    'a hard denial emits no advisory context'
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$deferred_scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'the deferred scope lesson is emitted by the later pure walker'
 out=$(pre_input "$scope_repo" 'grep -r secret /home/user/' "$scope_sid" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(pre_context "$out")" 'the scope lesson is once per session across walkers'
@@ -447,6 +461,27 @@ out=$(pre_input "$scope_repo" 'find /home/user-evil -name AGENTS.md' "$(fresh_si
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'canonical scope checks reject a prefix-only sibling'
+
+# The fallback must not depend on GNU realpath -m. An in-scope nonexistent
+# descendant remains quiet when realpath is unavailable or rejects that option.
+no_realpath="$tmp/no-realpath"
+mkdir -p "$no_realpath"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$no_realpath/realpath"
+chmod +x "$no_realpath/realpath"
+out=$(pre_input "$scope_repo" "find $scope_repo/a/b/../c/../../not-created -name AGENTS.md" "$(fresh_sid)" |
+    PATH="$no_realpath:$PATH" "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'portable canonicalization keeps an in-scope nonexistent path quiet'
+
+# Command-derived cd/-C targets must never expand the filesystem allowlist.
+scope_target_repo=$(cd "$root/../../.." && pwd)
+for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
+    "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
+    out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+        "command-derived target cannot self-authorize: $bypass"
+done
 
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets

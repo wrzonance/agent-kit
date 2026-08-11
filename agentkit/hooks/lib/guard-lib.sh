@@ -39,6 +39,11 @@ readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-con
 # Populated by guard_resolve_roots.
 roots=()
 
+# Filesystem scope is narrower than repository targeting. `roots` may include
+# repositories named by a command so repository-scoped advice follows `cd` and
+# `git -C`; those names are untrusted input and must never authorize a walker.
+scope_roots=()
+
 guard_add_root() {
     local resolved existing
     resolved=$(git -C "$1" rev-parse --show-toplevel 2> /dev/null) || return 0
@@ -72,13 +77,32 @@ guard_resolve_roots() {
         <<< "$command_line" 2> /dev/null | sed -E 's/.*(cd|-C)[[:space:]]+//' || true)
 }
 
+# Resolve only the hook's trusted working directory and its current repository.
+# Command-derived `cd`/`-C` paths intentionally never enter this list.
+guard_add_scope_root() {
+    local resolved existing
+    resolved=$(guard_scope_canonical "$1") || return 0
+    for existing in ${scope_roots[@]+"${scope_roots[@]}"}; do
+        [[ $existing != "$resolved" ]] || return 0
+    done
+    scope_roots+=("$resolved")
+}
+
+guard_resolve_scope_roots() {
+    local cwd=$1 repo
+    [[ -n $cwd && -d $cwd ]] || return 0
+    guard_add_scope_root "$cwd"
+    repo=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null) || return 0
+    guard_add_scope_root "$repo"
+}
+
 # Roots in which a dispatched worker is expected to read. The contract is the
 # source for skills and cache paths; no path from the command line is executed
 # while resolving this list.
 guard_scope_allowed_roots() {
     local r contract skills cache
 
-    for r in ${roots[@]+"${roots[@]}"}; do
+    for r in ${scope_roots[@]+"${scope_roots[@]}"}; do
         printf '%s\n' "$r"
         contract="$r/.agent/env-contract.txt"
         guard_contract_is_ours "$contract" "$r" || continue
@@ -93,7 +117,8 @@ guard_scope_allowed_roots() {
 # Canonicalize a path without requiring that it exists. This makes the
 # component boundary explicit: /repo is not a parent of /repo-evil.
 guard_scope_canonical() {
-    local path=$1
+    local path=$1 component canonical=''
+    local -a components kept=()
     case $path in
         '~') path=${HOME:-}/;;
         \~/*) path=${HOME:-}${path#\~};;
@@ -102,7 +127,26 @@ guard_scope_canonical() {
         '${HOME}') path=${HOME:-}/;;
         '${HOME}/'*) path=${HOME:-}${path#'${HOME}'};;
     esac
-    realpath -m -- "$path" 2>/dev/null
+    case $path in
+        /*) ;;
+        *) path=$PWD/$path;;
+    esac
+    IFS=/ read -r -a components <<< "$path"
+    for component in "${components[@]}"; do
+        case $component in
+            ''|.) ;;
+            ..)
+                if ((${#kept[@]})); then
+                    kept=("${kept[@]:0:${#kept[@]}-1}")
+                fi
+                ;;
+            *) kept+=("$component");;
+        esac
+    done
+    for component in "${kept[@]}"; do
+        canonical+="/$component"
+    done
+    printf '%s\n' "${canonical:-/}"
 }
 
 guard_scope_path_allowed() {
