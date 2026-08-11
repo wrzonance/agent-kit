@@ -173,10 +173,20 @@ assert_eq 2 "$(grep -Fc 'if ((review_rc == 3)); then' "$skill")" \
     'both adversarial wrappers publish their rc=3 blocked artifacts'
 assert_contains "$skill_text" 'A final file' \
     'the skill defines completion by terminal producer events'
-assert_contains "$skill_text" 'never a process-name pattern' \
-    'the skill keys liveness on the recorded PID file'
-assert_contains "$skill_text" 'PID alive' \
-    'the skill names the still-running poll state as never blocked'
+assert_contains "$skill_text" 'cross-cell heartbeat fallback' \
+    'the skill documents the cross-cell heartbeat fallback'
+assert_contains "$skill_text" '2 * --poll-seconds' \
+    'the skill pins the heartbeat freshness window'
+assert_contains "$skill_text" 'zero transcript growth across' \
+    'the skill requires two unchanged byte samples before declaring death'
+assert_contains "$skill_text" 'relaunch exactly once' \
+    'the skill bounds relaunches to one after the death predicate'
+assert_contains "$skill_text" 'launcher reports a terminal child' \
+    'the skill prefers native launcher terminal state'
+assert_contains "$skill_text" 'Without native launcher state, a validated canonical verdict is Completed' \
+    'the skill permits detached canonical-verdict completion'
+assert_not_contains "$skill_text" 'kill -0' \
+    'the skill never recommends cross-cell PID probes'
 assert_contains "$skill_text" 'bounded in both directions' \
     'the skill bounds the wait against both stalls and premature verdicts'
 assert_not_contains "$skill_text" '>"$verdict_path"' \
@@ -185,6 +195,19 @@ assert_not_contains "$skill_text" 'claude.result.json' \
     'the skill has no Claude-specific verdict path'
 assert_not_contains "$skill_text" 'codex.result.json' \
     'the skill has no Codex-specific verdict path'
+
+for helper in "$claude" "$codex"; do
+    helper_text=$(<"$helper")
+    helper_name=${helper##*/}
+    assert_contains "$helper_text" 'STATUS_FILE="$TRANSCRIPT_PATH.status"' \
+        "$helper_name derives the status sidecar beside the transcript"
+    assert_contains "$helper_text" 'mv -f -- "$STATUS_TMP" "$STATUS_FILE"' \
+        "$helper_name publishes status atomically in the transcript directory"
+    assert_contains "$helper_text" 'wallClockEpoch' \
+        "$helper_name records the wall-clock epoch in status"
+    assert_contains "$helper_text" 'rm -f -- "$STATUS_FILE"' \
+        "$helper_name removes status during cleanup"
+done
 diff_pattern="git --no-pager diff.*\"\\\$diff_path\""
 diff_line=$(grep -n "$diff_pattern" "$skill" | head -1 | cut -d: -f1)
 probe_line=$(grep -n '^probe_rc=0$' "$skill" | head -1 | cut -d: -f1)

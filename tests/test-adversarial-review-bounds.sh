@@ -13,6 +13,22 @@ trap 'rm -rf -- "$tmp"' EXIT
 claude="$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh"
 codex="$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh"
 
+wait_for_heartbeat_advance() {
+    local status_file=$1 first_epoch=$2 message=$3
+    local deadline=$((SECONDS + 4)) current_epoch=''
+    while ((SECONDS < deadline)); do
+        if [[ -s $status_file ]]; then
+            current_epoch=$(jq -r '.wallClockEpoch // empty' <"$status_file" 2>/dev/null || true)
+            if [[ $current_epoch =~ ^[0-9]+$ && $current_epoch != "$first_epoch" ]]; then
+                _pass "$message"
+                return 0
+            fi
+        fi
+        sleep 0.1
+    done
+    _fail "$message" "epoch remained: ${current_epoch:-unavailable}"
+}
+
 cat >"$tmp/fake-claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -99,8 +115,11 @@ if [[ ${1:-} == --help ]]; then
     printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
     exit 0
 fi
+if [[ -n ${FAKE_CLAUDE_PID_FILE:-} ]]; then
+    printf '%s\n' "$BASHPID" >"$FAKE_CLAUDE_PID_FILE"
+fi
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-test","tools":["StructuredOutput"],"mcp_servers":[]}'
-sleep 2
+sleep "${FAKE_CLAUDE_SLEEP:-2}"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[]},"modelUsage":{"claude-test":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
 EOF
 chmod +x "$tmp/fake-claude-slow"
@@ -127,6 +146,33 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_token
 printf '%s\n' '{"verdict":"no_findings","findings":[]}' >"$last_file"
 EOF
 chmod +x "$tmp/fake-codex-success"
+
+cat >"$tmp/fake-codex-slow" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == exec && ${2:-} == --help ]]; then
+    printf '%s\n' '--model --config --sandbox --ephemeral --ignore-user-config'
+    printf '%s\n' '--ignore-rules --skip-git-repo-check --output-schema'
+    printf '%s\n' '--output-last-message --json'
+    exit 0
+fi
+last_file=''
+while (($#)); do
+    if [[ $1 == --output-last-message ]]; then
+        last_file=$2
+        shift 2
+    else
+        shift
+    fi
+done
+if [[ -n ${FAKE_CODEX_PID_FILE:-} ]]; then
+    printf '%s\n' "$BASHPID" >"$FAKE_CODEX_PID_FILE"
+fi
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":20}}'
+printf '%s\n' '{"verdict":"no_findings","findings":[]}' >"$last_file"
+sleep "${FAKE_CODEX_SLEEP:-2}"
+EOF
+chmod +x "$tmp/fake-codex-slow"
 
 private="$tmp/run"
 mkdir -- "$private"
@@ -235,9 +281,8 @@ assert_contains "$(cat "$claude_success_result")" '"verdict": {' \
 assert_contains "$(cat "$claude_success_result")" '"verdict": "no_findings"' \
     'Claude preserves the no-findings verdict value'
 
-# Durable liveness: a detached poller must be able to answer "is the review
-# still running" from the recorded PID alone — the launching cell's stderr can
-# vanish, and process-name patterns have false-reported a live producer dead.
+# Cross-cell heartbeat: a detached poller must observe a status artifact that
+# appears immediately, ticks while the producer runs, and disappears on cleanup.
 pid_dir="$tmp/claude-pidfile"
 mkdir -- "$pid_dir"
 chmod 700 -- "$pid_dir"
@@ -248,22 +293,121 @@ CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" bash "$claude" \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$pid_result" &
 helper_pid=$!
 pid_file="$pid_dir/transcript.jsonl.pid"
+status_file="$pid_dir/transcript.jsonl.status"
 pid_seen=''
+status_first=''
 for _ in $(seq 1 100); do
     if [[ -s $pid_file ]]; then
         pid_seen=$(<"$pid_file")
+    fi
+    if [[ -s $status_file ]]; then
+        status_first=$(<"$status_file")
+    fi
+    [[ -n $pid_seen && -n $status_first ]] && break
+    sleep 0.1
+done
+assert_contains "$status_first" '"elapsedSeconds"' 'Claude status records elapsed seconds'
+assert_contains "$status_first" '"transcriptBytes"' 'Claude status records transcript bytes'
+assert_contains "$status_first" '"eventCount"' 'Claude status records event count'
+assert_contains "$status_first" '"wallClockEpoch"' 'Claude status records wall-clock epoch'
+first_epoch=$(jq -r '.wallClockEpoch' <<<"$status_first")
+wait_for_heartbeat_advance "$status_file" "$first_epoch" \
+    'Claude status heartbeat advances while the review runs'
+assert_eq "$helper_pid" "$pid_seen" 'a running helper records its own PID beside the transcript'
+wait "$helper_pid"
+assert_eq no "$( [[ ! -e $pid_file ]] && printf no || printf yes )" \
+    'a finished helper removes its PID file'
+assert_eq no "$( [[ ! -e $status_file ]] && printf no || printf yes )" \
+    'a finished Claude helper removes its status file'
+assert_contains "$(cat "$pid_result")" '"status": "completed"' \
+    'the PID-file run still completes normally'
+
+# A heartbeat publication failure is a blocked review, and must stop the
+# producer instead of leaving it running behind a stale status artifact.
+mv_bin="$tmp/mv-bin"
+mkdir -- "$mv_bin"
+real_mv=$(command -v mv)
+cat >"$mv_bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${!#} == *.status ]]; then
+    printf '%s\n' 'simulated heartbeat publication failure' >&2
+    exit 1
+fi
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$mv_bin/mv"
+failure_dir="$tmp/claude-heartbeat-failure"
+mkdir -- "$failure_dir"
+chmod 700 -- "$failure_dir"
+failure_result="$tmp/claude-heartbeat-failure.result.json"
+failure_err="$tmp/claude-heartbeat-failure.err"
+failure_producer_pid_file="$tmp/claude-heartbeat-failure.pid"
+CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" FAKE_CLAUDE_PID_FILE="$failure_producer_pid_file" \
+    PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$claude" \
+    --mode review --model claude-test --diff "$no_usage_diff" \
+    --transcript "$failure_dir/transcript.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-budget-usd 0.25 >"$failure_result" 2>"$failure_err" &
+failure_helper_pid=$!
+failure_producer_pid=''
+for _ in $(seq 1 100); do
+    if [[ -s $failure_producer_pid_file ]]; then
+        failure_producer_pid=$(<"$failure_producer_pid_file")
         break
     fi
     sleep 0.1
 done
-assert_eq "$helper_pid" "$pid_seen" 'a running helper records its own PID beside the transcript'
-kill -0 "$pid_seen" 2>/dev/null && pid_live=yes || pid_live=no
-assert_eq yes "$pid_live" 'the recorded PID answers liveness while the review runs'
-wait "$helper_pid"
-assert_eq no "$( [[ ! -e $pid_file ]] && printf no || printf yes )" \
-    'a finished helper removes its PID file'
-assert_contains "$(cat "$pid_result")" '"status": "completed"' \
-    'the PID-file run still completes normally'
+failure_rc=0
+wait "$failure_helper_pid" || failure_rc=$?
+assert_eq 1 "$failure_rc" 'Claude blocks when heartbeat publication fails'
+assert_contains "$(cat "$failure_err")" 'heartbeat publication failed' \
+    'Claude reports the heartbeat publication failure'
+failure_live=1
+for _ in {1..50}; do
+    failure_state=$(ps -o stat= -p "$failure_producer_pid" 2>/dev/null | tr -d ' ' || true)
+    if [[ -z $failure_state || $failure_state == Z* ]]; then
+        failure_live=0
+        break
+    fi
+    sleep 0.1
+done
+assert_eq 0 "$failure_live" 'Claude stops the producer after heartbeat publication fails'
+
+codex_failure_dir="$tmp/codex-heartbeat-failure"
+mkdir -- "$codex_failure_dir"
+chmod 700 -- "$codex_failure_dir"
+codex_failure_result="$tmp/codex-heartbeat-failure.result.json"
+codex_failure_err="$tmp/codex-heartbeat-failure.err"
+codex_failure_producer_pid_file="$tmp/codex-heartbeat-failure.pid"
+CODEX_EXECUTABLE="$tmp/fake-codex-slow" FAKE_CODEX_PID_FILE="$codex_failure_producer_pid_file" \
+    FAKE_CODEX_SLEEP=10 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$codex" \
+    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --transcript "$codex_failure_dir/transcript.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-tokens 1024 >"$codex_failure_result" 2>"$codex_failure_err" &
+codex_failure_helper_pid=$!
+codex_failure_producer_pid=''
+for _ in $(seq 1 100); do
+    if [[ -s $codex_failure_producer_pid_file ]]; then
+        codex_failure_producer_pid=$(<"$codex_failure_producer_pid_file")
+        break
+    fi
+    sleep 0.1
+done
+codex_failure_rc=0
+wait "$codex_failure_helper_pid" || codex_failure_rc=$?
+assert_eq 1 "$codex_failure_rc" 'Codex blocks when heartbeat publication fails'
+assert_contains "$(cat "$codex_failure_err")" 'heartbeat publication failed' \
+    'Codex reports the heartbeat publication failure'
+codex_failure_live=1
+for _ in {1..50}; do
+    codex_failure_state=$(ps -o stat= -p "$codex_failure_producer_pid" 2>/dev/null | tr -d ' ' || true)
+    if [[ -z $codex_failure_state || $codex_failure_state == Z* ]]; then
+        codex_failure_live=0
+        break
+    fi
+    sleep 0.1
+done
+assert_eq 0 "$codex_failure_live" 'Codex stops the producer after heartbeat publication fails'
 
 codex_text=$(<"$codex")
 assert_contains "$codex_text" 'TRANSCRIPT_PATH.pid' \
@@ -281,5 +425,36 @@ assert_contains "$(cat "$codex_success_result")" '"status": "completed"' \
     'Codex returns a completed result for a valid provider stream'
 assert_contains "$(cat "$codex_success_result")" '"budgetCeiling": "token-limit"' \
     'Codex reports an observed token ceiling when usage is present'
+
+codex_status_dir="$tmp/codex-status"
+mkdir -- "$codex_status_dir"
+chmod 700 -- "$codex_status_dir"
+codex_status_result="$tmp/codex-status.result.json"
+CODEX_EXECUTABLE="$tmp/fake-codex-slow" bash "$codex" \
+    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --transcript "$codex_status_dir/transcript.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-tokens 1024 >"$codex_status_result" &
+codex_helper_pid=$!
+codex_status_file="$codex_status_dir/transcript.jsonl.status"
+codex_status_first=''
+for _ in $(seq 1 100); do
+    if [[ -s $codex_status_file ]]; then
+        codex_status_first=$(<"$codex_status_file")
+        break
+    fi
+    sleep 0.1
+done
+assert_contains "$codex_status_first" '"elapsedSeconds"' 'Codex status records elapsed seconds'
+assert_contains "$codex_status_first" '"transcriptBytes"' 'Codex status records transcript bytes'
+assert_contains "$codex_status_first" '"eventCount"' 'Codex status records event count'
+assert_contains "$codex_status_first" '"wallClockEpoch"' 'Codex status records wall-clock epoch'
+codex_first_epoch=$(jq -r '.wallClockEpoch' <<<"$codex_status_first")
+wait_for_heartbeat_advance "$codex_status_file" "$codex_first_epoch" \
+    'Codex status heartbeat advances while the review runs'
+wait "$codex_helper_pid"
+assert_eq no "$( [[ ! -e $codex_status_file ]] && printf no || printf yes )" \
+    'a finished Codex helper removes its status file'
+assert_contains "$(cat "$codex_status_result")" '"status": "completed"' \
+    'the status-file Codex run still completes normally'
 
 finish
