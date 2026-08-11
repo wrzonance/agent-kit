@@ -131,15 +131,35 @@ assert_not_contains "$out" '--approve --cmd verify' \
 # --- an explicitly unattended run passes the gate with --yolo, loudly ---
 # The flag exists for fleets a human launched as unattended: without it, blocked
 # workers stall (or worse, forge the confirmation). It must run the command with
-# no approval record, announce the skip, and persist nothing.
+# no approval record, announce the skip on stderr -- the audit stream -- and
+# persist nothing. Streams are captured separately so a wrong-stream audit line
+# cannot pass, and the PASS line proves the declared command actually ran.
 repo=$(make_repo)
 trust_root="$tmp/trust-yolo"
+yolo_err="$tmp/yolo-stderr"
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
-    setsid "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+    setsid "$run_sh" --yolo --cmd verify < /dev/null 2> "$yolo_err") && rc=0 || rc=$?
+err=$(cat -- "$yolo_err")
 assert_eq '0' "$rc" '--yolo runs an unapproved declared command without a terminal'
-assert_contains "$out" 'trust gate skipped (--yolo)' \
-    '--yolo announces the skip in the output'
+assert_contains "$out" 'PASS: true' '--yolo actually ran the declared command'
+assert_contains "$err" 'trust gate skipped (--yolo)' \
+    '--yolo announces the skip on stderr'
+assert_not_contains "$out" 'trust gate skipped' \
+    'the audit line stays off stdout'
 assert_eq '' "$(trust_files "$trust_root")" '--yolo persists no trust record'
+
+# --yolo is inert for a literal command -- the gate never covered those, so
+# there is no skip to announce and still nothing to persist.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid "$run_sh" --yolo -- true < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'a literal command runs under --yolo'
+assert_not_contains "$out" 'trust gate skipped' \
+    '--yolo is inert for a literal command'
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid "$run_sh" -- true < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'the same literal command runs without --yolo'
+assert_eq '' "$(trust_files "$trust_root")" \
+    'literal commands persist no trust either way'
 
 # The skip is per-invocation: the very next plain run is still refused.
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$run_sh" --cmd verify 2>&1) || true
@@ -159,7 +179,9 @@ assert_contains "$readme_text" 'controlling terminal' \
     'README documents the terminal-confirmation boundary'
 assert_contains "$readme_text" 'not** a cryptographic human-only' \
     'README does not overclaim the boundary as human-only'
-assert_contains "$readme_text" '--yolo' \
-    'README documents the unattended bypass beside the boundary it opens'
+assert_contains "$readme_text" 'agent-run.sh --yolo --cmd NAME' \
+    'README documents the unattended bypass by its exact invocation'
+assert_contains "$readme_text" 'records no trust' \
+    'README states the bypass persists nothing'
 
 finish

@@ -545,7 +545,7 @@ guessing a command.
 
 **Command-trust gate:** `--cmd` commands need a recorded human approval
 (`agent-run.sh --approve`, terminal-only). When the invocation that dispatched this loop was
-explicitly unattended (parallel-issues `--yolo`), its prompts carry ` --yolo` on every
+explicitly unattended (parallel-issues `--yolo`), its prompts carry `--yolo` on every
 `agent-run.sh` line, which skips the gate for that invocation, loudly, recording nothing.
 Refused as `unapproved repository command` without that flag: report BLOCKED. Never forge
 the approval — no pseudo-terminals, no piped `y`, no hand-written trust records.

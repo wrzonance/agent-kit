@@ -49,7 +49,8 @@ unattended run every worker that reaches verification dead-ends there, with nobo
 watching. Measured in a live `--yolo --fast-mode` fleet: three of four leads finished
 or nearly finished their implementation and then reported BLOCKED at the gate; the
 fourth forged the confirmation through a pseudo-terminal, which is strictly worse.
-When this invocation carries `--yolo`, append ` --yolo` to **every** `agent-run.sh`
+When this invocation carries `--yolo` (under any alias — `--no-brainstorm`,
+`--skip-brainstorm`), append `--yolo` to **every** `agent-run.sh`
 line in every prompt you assemble — issue leads and review loops alike. The
 invocation line is the human authorization; the flag carries it to the workers
 instead of making each one ask a question nobody is present to answer.
@@ -769,10 +770,12 @@ shared="$agentkit/.shared/scripts"
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
 # its .agent/runner resolves it. The wrapper is not optional.
-<WHEN this parallel-issues invocation carried --yolo, append ` --yolo` to the three
-agent-run.sh lines below before dispatching; otherwise delete this placeholder. A
-worker refused as `unapproved repository command` without --yolo reports BLOCKED —
-it never approves, drives a pseudo-terminal, or writes a trust record.>
+<WHEN this parallel-issues invocation carried --yolo (under any alias:
+--no-brainstorm, --skip-brainstorm), append ` --yolo` to the three agent-run.sh
+lines below; otherwise delete this placeholder. Either way, never dispatch with
+this placeholder still in the prompt. A worker refused as `unapproved repository
+command` without --yolo reports BLOCKED — it never approves, drives a
+pseudo-terminal, or writes a trust record.>
 "$shared/agent-run.sh" --dir "$worktree" --cmd test
 "$shared/agent-run.sh" --dir "$worktree" --cmd lint --if-declared
 "$shared/agent-run.sh" --dir "$worktree" --cmd build --if-declared
@@ -1018,10 +1021,12 @@ pr_scripts="$agentkit/review-remote-pr/scripts"
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
 # Read the log path it prints on failure.
-<WHEN this parallel-issues invocation carried --yolo, append ` --yolo` to the three
-agent-run.sh lines below before dispatching; otherwise delete this placeholder. A
-worker refused as `unapproved repository command` without --yolo reports BLOCKED —
-it never approves, drives a pseudo-terminal, or writes a trust record.>
+<WHEN this parallel-issues invocation carried --yolo (under any alias:
+--no-brainstorm, --skip-brainstorm), append ` --yolo` to the three agent-run.sh
+lines below; otherwise delete this placeholder. Either way, never dispatch with
+this placeholder still in the prompt. A worker refused as `unapproved repository
+command` without --yolo reports BLOCKED — it never approves, drives a
+pseudo-terminal, or writes a trust record.>
 "$shared/agent-run.sh" --dir "$worktree" --cmd test
 "$shared/agent-run.sh" --dir "$worktree" --cmd lint --if-declared
 "$shared/agent-run.sh" --dir "$worktree" --cmd build --if-declared
