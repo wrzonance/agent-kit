@@ -74,19 +74,21 @@ out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$run_sh" --cmd verify 2>&1) 
 assert_contains "$out" 'refusing unapproved repository command' \
     'the command stays unapproved after every agent attempt'
 
-# --- a human at the terminal can approve, and only then does the command run ---
+# --- a terminal confirmation approves, and only then does the command run ---
+# (The helper's PTY stands in for a terminal; it authenticates no human -- that
+# is the point of the defense-in-depth framing above.)
 repo=$(make_repo)
-trust_root="$tmp/trust-human"
+trust_root="$tmp/trust-confirmed"
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
     "$tty_approve" y -- "$run_sh" --approve --cmd verify 2>&1) && rc=0 || rc=$?
-assert_eq '0' "$rc" 'a human confirmation at the terminal approves'
-assert_contains "$out" 'approved verify' 'the approval is recorded for the human'
+assert_eq '0' "$rc" 'a terminal confirmation approves'
+assert_contains "$out" 'approved verify' 'the approval is recorded'
 assert_contains "$(trust_files "$trust_root")" '.trust' \
-    'the human approval persisted a trust record'
+    'the confirmed approval persisted a trust record'
 assert_rc 0 'the approved command now runs' -- \
     env AGENT_TRUST_ROOT="$trust_root" "$run_sh" --dir "$repo" --cmd verify
 
-# --- a human who declines approves nothing ---
+# --- a declined terminal confirmation approves nothing ---
 repo=$(make_repo)
 trust_root="$tmp/trust-declined"
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
@@ -122,7 +124,7 @@ repo=$(make_repo)
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$tmp/trust-msg" "$run_sh" --cmd verify 2>&1) || true
 assert_contains "$out" 'refusing unapproved repository command' \
     'the wrapper refuses an unapproved repository command'
-assert_contains "$out" 'human' 'the wrapper says a human must clear approval'
+assert_contains "$out" 'human' 'the wrapper refusal points at a human review'
 assert_not_contains "$out" '--approve --cmd verify' \
     'the wrapper refusal does not print the bypass command'
 

@@ -11,8 +11,9 @@ source "$here/lib/assert.sh"
 
 hooks="$root/agentkit/hooks"
 skills_root="$root/agentkit/skills"
-# Approval is a human-only action read from the controlling terminal; the helper
-# supplies that terminal so the end-to-end stamp cases can approve their commands.
+# Approval reads a confirmation from the controlling terminal (defense-in-depth,
+# not a human-only gate); the helper supplies that terminal so the end-to-end
+# stamp cases can approve their commands.
 tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT

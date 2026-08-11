@@ -10,9 +10,10 @@ source "$here/lib/assert.sh"
 
 real_run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
 rc_sh="$root/agentkit/skills/.shared/scripts/repo-config.sh"
-# Approval is a human-only action read from the controlling terminal; the helper
-# supplies that terminal so these resolution/logging cases can approve. See
-# test-agent-run-approval-gate.sh for the boundary itself.
+# Approval reads a confirmation from the controlling terminal (defense-in-depth,
+# not a human-only gate); the helper supplies that terminal so these
+# resolution/logging cases can approve. See test-agent-run-approval-gate.sh for
+# the boundary itself.
 tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT

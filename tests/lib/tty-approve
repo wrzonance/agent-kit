@@ -20,7 +20,7 @@ on child exit drops its last buffered output.
 Because exec preserves that PID, it equals the approving `agent-run.sh`
 process's `$$`, so the directory lands exactly where the trust temp file would
 be written -- the deterministic way to exercise the persistence failure path
-from behind the human-only gate, with no PID guessing.
+from behind the terminal-confirmation gate, with no PID guessing.
 """
 import fcntl
 import os
