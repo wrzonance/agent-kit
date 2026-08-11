@@ -1012,7 +1012,7 @@ diff_path="$RUN_DIR/adversarial.diff"
 verdict_path="$RUN_DIR/adversarial.result.json"
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
     --diff "$diff_path" \
-    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 30000 >"$verdict_path" || {
+    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >"$verdict_path" || {
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
 }

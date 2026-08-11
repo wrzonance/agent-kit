@@ -40,6 +40,9 @@ if [[ ${1:-} == exec && ${2:-} == --help ]]; then
     printf '%s\n' '--output-last-message --json'
     exit 0
 fi
+if [[ -n ${FAKE_CODEX_PID_FILE:-} ]]; then
+    printf '%s\n' "$$" >"$FAKE_CODEX_PID_FILE"
+fi
 last_file=''
 while (($#)); do
     if [[ $1 == --output-last-message ]]; then
@@ -49,7 +52,11 @@ while (($#)); do
         shift
     fi
 done
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":'"${FAKE_CODEX_USAGE:-1000}"',"output_tokens":'"${FAKE_CODEX_USAGE:-1000}"'}}'
+if [[ ${FAKE_CODEX_NO_USAGE:-0} != 1 ]]; then
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":'"${FAKE_CODEX_USAGE:-1000}"',"output_tokens":'"${FAKE_CODEX_USAGE:-1000}"'}}'
+else
+    printf '%s\n' '{"type":"turn.completed"}'
+fi
 if [[ -n $last_file ]]; then
     printf '%s\n' '{"verdict":"no_findings","findings":[]}' >"$last_file"
 fi
@@ -80,12 +87,51 @@ assert_contains "$(<"$claude_err")" 'duration' \
 
 codex_err="$tmp/codex.err"
 codex_rc=0
-CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode probe --model gpt-test \
+FAKE_CODEX_PID_FILE="$tmp/codex.pid" CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode probe --model gpt-test \
     --transcript "$private/codex.jsonl" --poll-seconds 1 --max-duration-seconds 30 \
     --max-tokens 1024 > /dev/null 2>"$codex_err" || codex_rc=$?
 assert_eq 1 "$codex_rc" 'Codex rejects usage above its token ceiling'
 assert_contains "$(<"$codex_err")" 'token' \
     'Codex reports a token-bound review as a safety failure'
+codex_pid=$(<"$tmp/codex.pid")
+codex_live=1
+for _ in {1..20}; do
+    codex_state=$(ps -o stat= -p "$codex_pid" 2>/dev/null | tr -d ' ' || true)
+    if [[ -z $codex_state || $codex_state == Z* ]]; then
+        codex_live=0
+        break
+    fi
+    sleep 0.1
+done
+assert_eq 0 "$codex_live" 'Codex token limit terminates the reviewed process group'
+
+codex_no_usage_result="$tmp/codex-no-usage.json"
+codex_no_usage_err="$tmp/codex-no-usage.err"
+no_usage_diff="$tmp/no-usage.diff"
+printf '%s\n' 'diff --git a/example.txt b/example.txt' '+safe' >"$no_usage_diff"
+codex_no_usage_rc=0
+FAKE_CODEX_NO_USAGE=1 CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" \
+    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --transcript "$private/codex-no-usage.jsonl" \
+    --poll-seconds 1 --max-duration-seconds 30 --max-tokens 1024 \
+    >"$codex_no_usage_result" 2>"$codex_no_usage_err" || codex_no_usage_rc=$?
+assert_eq 0 "$codex_no_usage_rc" 'Codex accepts a valid verdict without usage telemetry'
+assert_contains "$(<"$codex_no_usage_result")" '"budgetCeiling": "unverified"' \
+    'Codex reports an unverified budget when telemetry is absent'
+assert_contains "$(<"$codex_no_usage_result")" '"usedTokens": null' \
+    'Codex preserves a nullable token usage result'
+
+oversized_diff="$tmp/oversized.diff"
+head -c 8192 /dev/zero | tr '\0' x >"$oversized_diff"
+oversized_err="$tmp/oversized.err"
+oversized_rc=0
+CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode review --model gpt-test \
+    --diff "$oversized_diff" --transcript "$private/oversized.jsonl" \
+    --poll-seconds 1 --max-duration-seconds 30 --max-tokens 1024 \
+    > /dev/null 2>"$oversized_err" || oversized_rc=$?
+assert_eq 1 "$oversized_rc" 'Codex rejects a diff that cannot fit the token ceiling'
+assert_contains "$(<"$oversized_err")" 'input tokens' \
+    'Codex explains the input-token admission failure'
 
 codex_duration_err="$tmp/codex-duration.err"
 codex_duration_rc=0
@@ -100,12 +146,14 @@ assert_contains "$(<"$codex_duration_err")" 'duration' \
 codex_text=$(<"$codex")
 assert_contains "$codex_text" "sleep \"\$POLL_SECONDS\" &" \
     'Codex progress sleep is interruptible during cleanup'
+assert_contains "$codex_text" 'DEFAULT_MAX_TOKENS=400000' \
+    'Codex default token ceiling covers the maximum diff budget'
 
 skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
 skill_text=$(<"$skill")
 assert_contains "$skill_text" '--max-duration-seconds' \
     'the review skill passes an explicit duration ceiling'
-assert_contains "$skill_text" '--max-tokens' \
+assert_contains "$skill_text" '--max-tokens 400000' \
     'the review skill passes an explicit Codex token ceiling'
 
 finish

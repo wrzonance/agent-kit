@@ -42,7 +42,7 @@ umask 077
 readonly PROGNAME=${0##*/}
 readonly WARN_DIFF_BYTES=262144   # 256 KiB — advise splitting beyond this
 readonly DEFAULT_MAX_DURATION_SECONDS=900
-readonly DEFAULT_MAX_TOKENS=30000
+readonly DEFAULT_MAX_TOKENS=400000
 readonly REQUIRED_FLAGS=(
     --model
     --config
@@ -323,6 +323,9 @@ EOF
     grep -q '[^[:space:]]' -- "$resolved" || die "Review diff is empty: $resolved"
     ((bytes <= MAX_DIFF_BYTES)) ||
         die "Review diff is ${bytes} bytes, over --max-diff-bytes ($MAX_DIFF_BYTES). Split the review by coherent diff slices."
+    local estimated_tokens=$(((bytes + 3) / 4))
+    ((estimated_tokens <= MAX_TOKENS)) ||
+        die "Review diff is approximately ${estimated_tokens} input tokens, over --max-tokens $MAX_TOKENS. Raise the ceiling or split the review."
     ((bytes <= WARN_DIFF_BYTES)) ||
         printf '%s: warning: diff is %s bytes; keep the review within --max-tokens and consider splitting.\n' \
             "$PROGNAME" "$bytes" >&2
@@ -427,8 +430,12 @@ run_codex() {
 verify_token_budget() {
     local usage
     usage=$(token_usage_total)
-    [[ $usage =~ ^[0-9]+$ ]] ||
-        die "Codex omitted token usage; cannot verify --max-tokens $MAX_TOKENS"
+    if ! [[ $usage =~ ^[0-9]+$ ]]; then
+        printf '%s: warning: Codex omitted token usage; returning an unverified budget result.\n' \
+            "$PROGNAME" >&2
+        printf '%s' null
+        return 0
+    fi
     ((usage <= MAX_TOKENS)) ||
         die "Codex review exceeded --max-tokens $MAX_TOKENS (observed $usage)"
     printf '%s' "$usage"
@@ -486,7 +493,10 @@ monitor_token_limit() {
         usage=$(token_usage_total)
         if [[ $usage =~ ^[0-9]+$ ]] && ((usage > MAX_TOKENS)); then
             printf '%s\n' token-budget >"$LIMIT_REASON_FILE"
-            kill -KILL "$CODEX_PID" 2>/dev/null || true
+            # timeout owns CODEX_PID and puts the reviewed command in its
+            # process group. Kill the group so the real Codex child cannot be
+            # orphaned when the observed token ceiling is exceeded.
+            kill -KILL -- -"$CODEX_PID" 2>/dev/null || true
             return 0
         fi
         sleep 1
@@ -551,11 +561,16 @@ main() {
     [[ -s $final_file ]] ||
         die "Codex produced no final message; the gate is blocked, not no_findings. Transcript: $TRANSCRIPT_PATH"
 
-    local verdict used_tokens
+    local verdict used_tokens budget_ceiling
     verdict=$(jq -c . <"$final_file" 2>/dev/null) ||
         die "Codex final message is not valid JSON; see $TRANSCRIPT_PATH"
     verify_verdict "$verdict"
     used_tokens=$(verify_token_budget)
+    if [[ $used_tokens == null ]]; then
+        budget_ceiling=unverified
+    else
+        budget_ceiling=token-limit
+    fi
 
     jq -n \
         --argjson exitCode "$exit_code" \
@@ -568,13 +583,14 @@ main() {
         --argjson tokenUsage "$(token_usage)" \
         --argjson maxTokens "$MAX_TOKENS" \
         --argjson usedTokens "$used_tokens" \
+        --arg budgetCeiling "$budget_ceiling" \
         --argjson verdict "$verdict" \
         '{status: "completed", harness: $harness, exitCode: $exitCode,
           requestedModel: $requestedModel,
           observedModel: (if $observedModel == "" then null else $observedModel end),
           modelVerification: (if $observedModel == "" then "unsupported-by-codex-exec" else "observed" end),
           effort: $effort, eventCount: $eventCount, transcript: $transcript,
-          budgetCeiling: "token-limit", maxTokens: $maxTokens, usedTokens: $usedTokens,
+          budgetCeiling: $budgetCeiling, maxTokens: $maxTokens, usedTokens: $usedTokens,
           tokenUsage: $tokenUsage,
           verdict: $verdict}'
 }
