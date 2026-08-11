@@ -88,7 +88,7 @@ assert_contains "$(<"$codex_err")" 'token' \
     'Codex reports a token-bound review as a safety failure'
 
 codex_text=$(<"$codex")
-assert_contains "$codex_text" 'sleep "$POLL_SECONDS" &' \
+assert_contains "$codex_text" "sleep \"\$POLL_SECONDS\" &" \
     'Codex progress sleep is interruptible during cleanup'
 
 skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
