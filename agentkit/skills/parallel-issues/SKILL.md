@@ -798,6 +798,7 @@ spec_fence=$(printf '%s' "$spec_contents" |
     "$agentkit/parallel-issues/scripts/fence-untrusted-data.sh")
 prior_art_fence=$(printf '%s' "$prior_art_contents" |
     "$agentkit/parallel-issues/scripts/fence-untrusted-data.sh")
+printf '## Spec\n%s\n\n## Prior art\n%s\n' "$spec_fence" "$prior_art_fence"
 ```
 
 Embed the two complete helper outputs verbatim under `## Spec` and `## Prior art`. The helper
