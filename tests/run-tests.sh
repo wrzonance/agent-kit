@@ -194,7 +194,11 @@ fi
 [[ $environment_rc -eq 0 ]] || rc=1
 
 step 'org-neutrality'
-if grep -rniE 'jacobs|tango|bravo|wrzonance|thewrz|adam@|192\.168\.' \
+# The identifier list is deliberately not committed: export AGENTKIT_ORG_PATTERN
+# as a grep -E pattern of org-identifying strings (names, hosts, addresses).
+if [[ -z "${AGENTKIT_ORG_PATTERN:-}" ]]; then
+    printf '  ok (AGENTKIT_ORG_PATTERN unset; nothing to scan for)\n'
+elif grep -rniE "$AGENTKIT_ORG_PATTERN" \
     "$plugin" \
     --include='*.sh' --include='*.md' --include='*.yaml' --include='*.json'; then
     printf '  FAIL  organization-identifying text in the shipped tree\n' >&2
