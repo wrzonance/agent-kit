@@ -10,6 +10,10 @@ if [[ -n ${GH_STUB_LOG:-} ]]; then
     # ONE invocation, and must not read as many.
     printf '%s\n' "${*//$'\n'/ }" >> "$GH_STUB_LOG"
 fi
+# Match gh's --input contract: a caller may stream a request body on stdin, so
+# drain it before returning the canned response instead of closing the pipe
+# while the producer is still writing.
+cat > /dev/null
 if [[ -n ${GH_STUB_RESPONSE:-} && -f ${GH_STUB_RESPONSE} ]]; then
     cat -- "$GH_STUB_RESPONSE"
 fi
