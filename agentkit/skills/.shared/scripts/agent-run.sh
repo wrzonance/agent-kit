@@ -25,7 +25,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] [--force] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -48,6 +48,7 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  skip is announced on stderr and stamped into the run log.
                  Mutually exclusive with --approve; inert for a literal
                  command, which the gate never covered.
+  --force        Execute a named command even when green evidence is current.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -105,6 +106,7 @@ cmd_name=
 cmd=()
 approve_cmd=0
 yolo_cmd=0
+force_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -119,6 +121,10 @@ while (($#)); do
             ;;
         --yolo)
             yolo_cmd=1
+            shift
+            ;;
+        --force)
+            force_cmd=1
             shift
             ;;
         --dir|--label|--cmd)
@@ -156,6 +162,9 @@ else
 fi
 if ((approve_cmd)) && [[ -z $cmd_name ]]; then
     die '--approve requires --cmd NAME.'
+fi
+if ((force_cmd)) && [[ -z $cmd_name ]]; then
+    die '--force requires --cmd NAME.'
 fi
 if ((approve_cmd && yolo_cmd)); then
     die '--approve and --yolo are mutually exclusive: one records trust, the other skips it.'
@@ -391,6 +400,13 @@ maybe_use_package_dir() {
         add_note "package root $pkg_dir used instead of $run_dir"
         return 0
     done
+}
+
+canonicalise_work_dir() {
+    local resolved
+    resolved=$(cd -- "$work_dir" 2>/dev/null && pwd -P) ||
+        die "Working directory cannot be resolved: $work_dir"
+    work_dir=$resolved
 }
 
 # ------------------------------------------------- repository declarations ---
@@ -950,12 +966,150 @@ write_command_stamp() {
     : >"$stamp_dir/stamp-$cmd_name" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------- verification cache ---
+# Only commands whose names describe verification are eligible for reusable
+# green evidence. State-producing commands must run again when their ignored
+# outputs disappear, even when the checkout bytes are unchanged.
+verification_cache_eligible() {
+    case ${cmd_name:-} in
+        test|lint|typecheck|coverage|verify|check) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+hash_untracked_files() {
+    local paths path file digest link
+    paths=$(mktemp "${TMPDIR:-/tmp}/agent-run-untracked.XXXXXX") || return 1
+    if ! git -C "$git_top" ls-files --others --exclude-standard -z >"$paths"; then
+        rm -f -- "$paths"
+        return 1
+    fi
+
+    exec 3<"$paths" || {
+        rm -f -- "$paths"
+        return 1
+    }
+    while IFS= read -r -d '' path <&3; do
+        file=$git_top/$path
+        if [[ ! -e $file && ! -L $file ]]; then
+            exec 3<&-
+            rm -f -- "$paths"
+            return 1
+        fi
+        printf 'untracked\0path\0%s\0' "$path"
+        if [[ -L $file ]]; then
+            if ! link=$(readlink -- "$file"); then
+                exec 3<&-
+                rm -f -- "$paths"
+                return 1
+            fi
+            printf 'symlink\0%s\0' "$link"
+        elif digest=$(sha256sum -- "$file" | awk '{print $1}'); then
+            if [[ ! $digest =~ ^[[:xdigit:]]{64}$ ]]; then
+                exec 3<&-
+                rm -f -- "$paths"
+                return 1
+            fi
+            printf 'file\0%s\0' "$digest"
+        else
+            exec 3<&-
+            rm -f -- "$paths"
+            return 1
+        fi
+    done
+    exec 3<&-
+    rm -f -- "$paths"
+}
+
+# Green evidence is keyed to the complete checkout state that a caller can
+# observe. The status stream carries untracked paths; diff HEAD carries both
+# staged and unstaged tracked content. Untracked file contents are added from a
+# NUL-delimited manifest, so same-path edits cannot reuse stale evidence and
+# unusual filenames cannot be split by shell text parsing. Cache state is
+# ignored by git, so it does not feed back into this hash.
+compute_tree_hash() {
+    local hash_input digest
+    [[ -n ${git_top:-} ]] || return 1
+    hash_input=$(mktemp "${TMPDIR:-/tmp}/agent-run-tree.XXXXXX") || return 1
+    if ! : >"$hash_input" ||
+        ! git -C "$git_top" rev-parse HEAD >>"$hash_input" ||
+        ! printf '\0' >>"$hash_input" ||
+        ! git -C "$git_top" diff HEAD >>"$hash_input" ||
+        ! printf '\0' >>"$hash_input" ||
+        ! git -C "$git_top" status --porcelain=v2 -z --untracked-files=all >>"$hash_input" ||
+        ! printf '\0work-dir\0%s\0' "$work_dir" >>"$hash_input" ||
+        ! hash_untracked_files >>"$hash_input"; then
+        rm -f -- "$hash_input"
+        return 1
+    fi
+    if ! digest=$(sha256sum -- "$hash_input" | awk '{print $1}') ||
+        [[ ! $digest =~ ^[[:xdigit:]]{64}$ ]]; then
+        rm -f -- "$hash_input"
+        return 1
+    fi
+    rm -f -- "$hash_input"
+    printf '%s' "$digest"
+}
+
+verification_cache_path() {
+    [[ -n ${git_top:-} ]] || return 1
+    printf '%s/.agent/verification-cache' "$git_top"
+}
+
+# A cache line is evidence only while its referenced log still has the exact
+# completion marker. This prevents an interrupted or hand-written line from
+# becoming a green result.
+verification_cache_hit() {
+    local tree_hash=$1 cache line log
+    ((force_cmd)) && return 1
+    verification_cache_eligible || return 1
+    cache=$(verification_cache_path 2>/dev/null || true)
+    [[ -n $cache && -r $cache ]] || return 1
+    while IFS= read -r line; do
+        [[ $line == "$tree_hash cmd=$cmd_name log="*' at='* ]] || continue
+        log=${line#* log=}
+        log=${log% at=*}
+        [[ -f $log ]] || continue
+        grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || continue
+        printf 'agent-run: verification current: %s\n' "$log"
+        return 0
+    done < "$cache"
+    return 1
+}
+
+record_verification() {
+    local tree_hash=$1 log=$2 cache temp
+    [[ -n ${git_top:-} ]] || return 0
+    verification_cache_eligible || return 0
+    grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || return 0
+    cache=$(verification_cache_path 2>/dev/null || true)
+    [[ -n $cache && ! -L $cache ]] || return 0
+    mkdir -p -- "${cache%/*}" 2>/dev/null || return 0
+    temp=$cache.$$
+    {
+        [[ ! -e $cache ]] || cat -- "$cache"
+        printf '%s cmd=%s log=%s at=%s\n' \
+            "$tree_hash" "$cmd_name" "$log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$temp" 2>/dev/null || {
+        rm -f -- "$temp" 2>/dev/null || true
+        return 0
+    }
+    chmod 600 -- "$temp" 2>/dev/null || true
+    mv -f -- "$temp" "$cache" 2>/dev/null || rm -f -- "$temp" 2>/dev/null || true
+}
+
 # --------------------------------------------------------------------- main ---
 if [[ -n $cmd_name ]]; then
     resolve_named_command "$cmd_name"
 fi
 finalise_label
 refresh_cmd_str
+
+# Resolve the directory before trust and verification identity are computed.
+# This keeps --dir, repository-declared rundirs, and package-root adjustments
+# scoped to the exact directory where the command will execute.
+maybe_use_package_dir
+canonicalise_work_dir
 
 # --yolo skips the approval record for this one invocation -- when the trunk
 # already carries the command's inputs (see yolo_gate). Measured in a live
@@ -971,6 +1125,15 @@ if [[ -n $cmd_name ]]; then
         yolo_gate
     else
         trust_command || die "command '$cmd_name' is not approved"
+    fi
+fi
+
+tree_hash=''
+if verification_cache_eligible; then
+    tree_hash=$(compute_tree_hash 2>/dev/null || true)
+    if [[ -n $tree_hash ]] && verification_cache_hit "$tree_hash"; then
+        write_command_stamp
+        exit 0
     fi
 fi
 
@@ -998,7 +1161,6 @@ warn_if_root_readonly
 
 set_pythonpath
 maybe_enable_system_certs
-maybe_use_package_dir
 export AGENT_RUN_LABEL="$label"
 
 # A declared AGENT_CMD_* value is the entire command: the repository has already
@@ -1072,6 +1234,7 @@ printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 
 if ((rc == 0)); then
     write_command_stamp
+    [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
     printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
 else
     report_failure "$rc" "$log_file"
