@@ -72,6 +72,102 @@ guard_resolve_roots() {
         <<< "$command_line" 2> /dev/null | sed -E 's/.*(cd|-C)[[:space:]]+//' || true)
 }
 
+# Roots in which a dispatched worker is expected to read. The contract is the
+# source for skills and cache paths; no path from the command line is executed
+# while resolving this list.
+guard_scope_allowed_roots() {
+    local r contract skills cache
+
+    for r in ${roots[@]+"${roots[@]}"}; do
+        printf '%s\n' "$r"
+        contract="$r/.agent/env-contract.txt"
+        guard_contract_is_ours "$contract" "$r" || continue
+        skills=$(sed -n 's/^skills= path=//p' "$contract" 2>/dev/null | head -n 1)
+        [[ -n $skills ]] && printf '%s\n' "$skills"
+        cache=$(sed -n 's/^caches= root=\([^[:space:]]*\).*/\1/p' "$contract" 2>/dev/null | head -n 1)
+        [[ -n $cache ]] && printf '%s\n' "$cache"
+    done
+    printf '%s\n' /tmp
+}
+
+# Canonicalize a path without requiring that it exists. This makes the
+# component boundary explicit: /repo is not a parent of /repo-evil.
+guard_scope_canonical() {
+    local path=$1
+    case $path in
+        '~') path=${HOME:-}/;;
+        \~/*) path=${HOME:-}${path#\~};;
+        '$HOME') path=${HOME:-}/;;
+        '$HOME/'*) path=${HOME:-}${path#'$HOME'};;
+        '${HOME}') path=${HOME:-}/;;
+        '${HOME}/'*) path=${HOME:-}${path#'${HOME}'};;
+    esac
+    realpath -m -- "$path" 2>/dev/null
+}
+
+guard_scope_path_allowed() {
+    local candidate root root_canonical
+    candidate=$(guard_scope_canonical "$1") || return 1
+    [[ -n $candidate ]] || return 1
+    while IFS= read -r root; do
+        [[ -n $root ]] || continue
+        root_canonical=$(guard_scope_canonical "$root") || continue
+        [[ -n $root_canonical ]] || continue
+        if [[ $candidate == "$root_canonical" || $candidate == "$root_canonical"/* ]]; then
+            return 0
+        fi
+    done < <(guard_scope_allowed_roots)
+    return 1
+}
+
+# Return the first absolute/home-expanded path outside the allowed roots when
+# a command segment is a walker/reader. Relative paths are intentionally left
+# alone: the resolved repository/cwd contract answers those without guessing.
+guard_out_of_scope_target() {
+    local command_line=$1 segment verb token cleaned has_walker=0
+    local -a words
+    local segments=${command_line//[;&|]/$'\n'}
+
+    while IFS= read -r segment; do
+        [[ -n ${segment//[[:space:]]/} ]] || continue
+        read -r -a words <<< "$segment"
+        ((${#words[@]})) || continue
+        verb=${words[0]#\(}
+        case $verb in
+            find|rg|fd|du|cat|sed|head|tail) has_walker=1 ;;
+            grep)
+                for token in "${words[@]:1}"; do
+                    [[ $token == -* && $token != -- ]] || continue
+                    [[ $token == *r* || $token == *R* ]] && has_walker=1
+                done
+                ;;
+            ls)
+                for token in "${words[@]:1}"; do
+                    [[ $token == -* && $token != -- ]] || continue
+                    [[ $token == *R* ]] && has_walker=1
+                done
+                ;;
+        esac
+        ((has_walker)) || continue
+
+        for token in "${words[@]:1}"; do
+            cleaned=${token#\"}; cleaned=${cleaned%\"}
+            cleaned=${cleaned#\'}; cleaned=${cleaned%\'}
+            cleaned=${cleaned%,}; cleaned=${cleaned%)}
+            case $cleaned in
+                /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
+                    if ! guard_scope_path_allowed "$cleaned"; then
+                        printf '%s' "$cleaned"
+                        return 0
+                    fi
+                    ;;
+            esac
+        done
+        has_walker=0
+    done <<< "$segments"
+    return 1
+}
+
 # Is this cached contract OURS, or did the repository supply it?
 #
 # The contract is read straight into model context and announced as established
