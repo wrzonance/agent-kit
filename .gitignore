@@ -6,3 +6,5 @@ plugin/
 !.agent/config.env
 !.agent/board.json
 .worktrees/
+.claude/
+.codex/
