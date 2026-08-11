@@ -112,6 +112,22 @@ printf 'AGENT_CMD_TEST=echo declared-test-ran\n' > "$repo/.agent/config.env"
 out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
 assert_contains "$out" 'declared-test-ran' 'runs the declared AGENT_CMD_TEST'
 
+# Quoted argv survives the resolver and reaches the executable as the same
+# tokens, including a repository path and an argument containing spaces.
+repo=$(make_repo)
+mkdir -p "$repo/My Project/tools"
+printf '#!/bin/sh\nprintf "<%%s>\\n" "$@" > "%s/space-argv"\n' "$tmp" \
+    > "$repo/My Project/tools/check"
+chmod +x "$repo/My Project/tools/check"
+printf 'AGENT_CMD_TEST="My Project/tools/check" --input "My Project/input file"\n' \
+    > "$repo/.agent/config.env"
+out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+assert_contains "$out" 'PASS:' 'runs a command whose executable path contains a space'
+assert_contains "$(cat "$tmp/space-argv")" '<--input>' \
+    'preserves an ordinary argument after the spaced executable'
+assert_contains "$(cat "$tmp/space-argv")" '<My Project/input file>' \
+    'preserves a spaced argument as one argv token'
+
 # --- argv, not a shell string ---------------------------------------------
 repo=$(make_repo)
 printf 'AGENT_CMD_TEST=echo one;touch %s/PWNED\n' "$tmp" > "$repo/.agent/config.env"
