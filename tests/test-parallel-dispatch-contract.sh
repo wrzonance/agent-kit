@@ -56,7 +56,8 @@ draft_loop_prompt=$(awk '
 ' "$skill")
 
 assert_prompt_instruction_contract() {
-    local prompt="$1" label="$2"
+    local prompt="$1" label="$2" scope="$3" normalized_prompt
+    normalized_prompt=$(tr '\n' ' ' <<< "$prompt" | tr -s '[:space:]' ' ')
     assert_contains "$prompt" 'Harness-global rules are already applied' \
         "$label does not rescan harness-global rules"
     assert_contains "$prompt" 'Never search outside the worktree' \
@@ -67,10 +68,12 @@ assert_prompt_instruction_contract() {
         "$label has no unbounded instruction-file rule"
     assert_contains "$prompt" "canonical path" \
         "$label requires canonical containment for instruction files"
+    assert_contains "$normalized_prompt" "at the worktree root and in directories changed by $scope" \
+        "$label limits instruction discovery to the root and changed directories"
 }
 
-assert_prompt_instruction_contract "$issue_lead_prompt" 'issue-lead prompt'
-assert_prompt_instruction_contract "$draft_loop_prompt" 'draft-loop prompt'
+assert_prompt_instruction_contract "$issue_lead_prompt" 'issue-lead prompt' 'this issue'
+assert_prompt_instruction_contract "$draft_loop_prompt" 'draft-loop prompt' 'this PR'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \
