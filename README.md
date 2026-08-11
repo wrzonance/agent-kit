@@ -138,6 +138,13 @@ logged step -- and under Claude Code, `--approve` surfaces a permission prompt.
 Literal commands passed after `--` are caller-supplied and are not covered by
 this repository-command approval.
 
+This is a provenance boundary, not an interpreter allowlist: declarations may
+use `bash`, `make`, package managers, or other build tools, but `.agent/config.env`
+and the inputs those tools resolve are executable policy and belong under the
+same review as CI. The approval fingerprint covers the declaration, runner,
+path arguments, `--require`/`-r` payloads, `-m` module files, and nearby build
+manifests.
+
 Runs a human explicitly launched as unattended are the one exception:
 `agent-run.sh --yolo --cmd NAME` skips the confirmation for that single
 invocation, announces the skip on stderr and in the run log, and records no trust
@@ -150,7 +157,9 @@ agent (see above) but can dead-end an honest one -- observed in a live
 unattended fleet, where blocked workers stalled and one forged the terminal
 confirmation instead. An explicit, logged, trunk-bounded bypass threaded down
 from the human's own `--yolo` invocation beats either outcome. Skills thread
-it; agents never add it on their own, and never forge the approval.
+it; agents never add it on their own, and never forge the approval. The same
+input set used by the approval fingerprint is compared to the trunk, including
+build manifests, interpreter payloads, and deleted inputs.
 
 ---
 

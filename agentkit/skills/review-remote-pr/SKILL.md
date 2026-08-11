@@ -543,8 +543,9 @@ guessing a command.
 explicitly unattended (parallel-issues `--yolo`), append `--yolo` to **every** `agent-run.sh
 --cmd` invocation you make — the lines above and any you compose — which skips the gate for
 that invocation, loudly, recording nothing, provided the command's repository-controlled
-inputs match the remote trunk. Refused at the gate — as `unapproved repository command`, or
-by `--yolo` because an input differs from the trunk — report BLOCKED with that reason. Never
+inputs match the remote trunk. This includes its declaration, runner, argv/module payloads,
+nearby build manifests, and deletions. Refused at the gate — as `unapproved repository command`,
+or by `--yolo` because an input differs from the trunk — report BLOCKED with that reason. Never
 forge the approval — no pseudo-terminals, no piped `y`, no hand-written trust records.
 
 Exit `2` from the commit helper means "obtain write permission for the named path
