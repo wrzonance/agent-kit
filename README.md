@@ -138,6 +138,20 @@ logged step -- and under Claude Code, `--approve` surfaces a permission prompt.
 Literal commands passed after `--` are caller-supplied and are not covered by
 this repository-command approval.
 
+Runs a human explicitly launched as unattended are the one exception:
+`agent-run.sh --yolo --cmd NAME` skips the confirmation for that single
+invocation, announces the skip on stderr and in the run log, and records no trust
+-- but only when the command's repository-controlled inputs
+(`.agent/config.env`, `.agent/runner`, repo-backed argv paths) are identical to
+the remote trunk's. An input that is new or changed on the checkout is refused:
+that is new code asking to run unattended, and it still takes a terminal
+approval. The flag exists because the confirmation cannot bind an autonomous
+agent (see above) but can dead-end an honest one -- observed in a live
+unattended fleet, where blocked workers stalled and one forged the terminal
+confirmation instead. An explicit, logged, trunk-bounded bypass threaded down
+from the human's own `--yolo` invocation beats either outcome. Skills thread
+it; agents never add it on their own, and never forge the approval.
+
 ---
 
 ## Harness configuration

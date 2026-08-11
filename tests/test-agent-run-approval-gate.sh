@@ -128,11 +128,112 @@ assert_contains "$out" 'human' 'the wrapper refusal points at a human review'
 assert_not_contains "$out" '--approve --cmd verify' \
     'the wrapper refusal does not print the bypass command'
 
+# --- an explicitly unattended run passes the gate with --yolo, loudly ---
+# The flag exists for fleets a human launched as unattended: without it, blocked
+# workers stall (or worse, forge the confirmation). It must run the command with
+# no approval record, announce the skip on stderr -- the audit stream -- and
+# persist nothing. Streams are captured separately so a wrong-stream audit line
+# cannot pass, and the PASS line proves the declared command actually ran.
+# --yolo validates the declaration against the remote trunk, so this fixture
+# publishes its config.env to a local origin first. setsid runs with -w so the
+# child's exit status propagates instead of a fork-and-exit 0.
+make_published_repo() {
+    local dir origin
+    dir=$(mktemp -d "$tmp/repo.XXXXXX")
+    origin=$(mktemp -d "$tmp/origin.XXXXXX")
+    git -C "$dir" init -q
+    mkdir -p "$dir/.agent/cache"
+    printf 'AGENT_CMD_VERIFY=true\n' > "$dir/.agent/config.env"
+    git -C "$dir" add .agent/config.env
+    git -C "$dir" -c user.email=t@example.invalid -c user.name=t commit -qm init
+    git -C "$dir" init -q --bare "$origin" 2> /dev/null || git init -q --bare "$origin"
+    git -C "$dir" remote add origin "$origin"
+    git -C "$dir" push -q origin HEAD:main
+    git -C "$dir" fetch -q origin
+    printf '%s' "$dir"
+}
+repo=$(make_published_repo)
+trust_root="$tmp/trust-yolo"
+yolo_err="$tmp/yolo-stderr"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2> "$yolo_err") && rc=0 || rc=$?
+err=$(cat -- "$yolo_err")
+assert_eq '0' "$rc" '--yolo runs an unapproved declared command without a terminal'
+assert_contains "$out" 'PASS: true' '--yolo actually ran the declared command'
+assert_contains "$err" 'trust gate skipped (--yolo)' \
+    '--yolo announces the skip on stderr'
+assert_not_contains "$out" 'trust gate skipped' \
+    'the audit line stays off stdout'
+assert_eq '' "$(trust_files "$trust_root")" '--yolo persists no trust record'
+
+# The skip survives in the durable artifact: an audit reading only the retained
+# logs must be able to tell a bypassed run from an approved one.
+yolo_log=$(find "$repo/.agent/logs" -name '*.log' | head -1)
+assert_contains "$(cat -- "$yolo_log")" 'trust gate skipped (--yolo)' \
+    'the run log records the bypass'
+
+# --yolo is trunk-bounded: an input that differs from the remote trunk is new
+# code asking to run unattended, and is refused without a trust record.
+printf 'AGENT_CMD_VERIFY=false\n' > "$repo/.agent/config.env"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a declaration changed from the trunk is refused under --yolo'
+assert_contains "$out" 'refusing --yolo' 'the refusal names the yolo gate'
+assert_contains "$out" '.agent/config.env' 'the refusal names the changed input'
+assert_eq '' "$(trust_files "$trust_root")" 'the trunk-mismatch refusal persists no trust'
+git -C "$repo" checkout -q -- .agent/config.env
+
+# An untracked runner is equally a changed input: present here, absent at trunk.
+printf '#!/bin/sh\nexit 0\n' > "$repo/.agent/runner"
+chmod +x "$repo/.agent/runner"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an untracked runner is refused under --yolo'
+assert_contains "$out" '.agent/runner' 'the refusal names the introduced runner'
+rm -f "$repo/.agent/runner"
+
+# Without a remote trunk to validate against, --yolo refuses rather than guesses.
+repo=$(make_repo)
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" '--yolo without a remote trunk ref is refused'
+assert_contains "$out" 'no remote trunk ref' 'the refusal names the missing baseline'
+
+# --yolo is inert for a literal command -- the gate never covered those, so
+# there is no skip to announce and still nothing to persist. No trunk is needed
+# either: the check guards repository-declared commands only.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --yolo -- true < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'a literal command runs under --yolo'
+assert_not_contains "$out" 'trust gate skipped' \
+    '--yolo is inert for a literal command'
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" -- true < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'the same literal command runs without --yolo'
+assert_eq '' "$(trust_files "$trust_root")" \
+    'literal commands persist no trust either way'
+
+# The skip is per-invocation: the very next plain run is still refused.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$run_sh" --cmd verify 2>&1) || true
+assert_contains "$out" 'refusing unapproved repository command' \
+    'a plain run after --yolo is still refused'
+
+# --approve records trust and --yolo skips it; together they are a usage error.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$run_sh" --approve --yolo --cmd verify 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" '--approve with --yolo is refused'
+assert_contains "$out" 'mutually exclusive' '--approve/--yolo refusal names the conflict'
+assert_eq '' "$(trust_files "$trust_root")" 'the refused combination persists no trust'
+
 # --- the README documents the terminal confirmation and is honest about it ---
 readme_text=$(cat -- "$readme")
 assert_contains "$readme_text" 'controlling terminal' \
     'README documents the terminal-confirmation boundary'
 assert_contains "$readme_text" 'not** a cryptographic human-only' \
     'README does not overclaim the boundary as human-only'
+assert_contains "$readme_text" 'agent-run.sh --yolo --cmd NAME' \
+    'README documents the unattended bypass by its exact invocation'
+assert_contains "$readme_text" 'records no trust' \
+    'README states the bypass persists nothing'
 
 finish

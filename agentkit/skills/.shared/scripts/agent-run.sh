@@ -25,7 +25,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -35,6 +35,18 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  is read from the terminal (defense-in-depth: a non-interactive
                  agent shell cannot answer it, though it is not an unforgeable
                  human-only gate). Review, then approve from your own terminal.
+  --yolo         Run a --cmd command without an approval record, and record
+                 none -- PROVIDED the command's repository-controlled inputs
+                 (.agent/config.env, .agent/runner, repo-backed argv paths)
+                 are identical to the remote trunk's. An input that is new or
+                 changed on this checkout is refused: that is new code asking
+                 to run unattended, and it still takes a terminal approval.
+                 For runs a human explicitly launched as unattended (a skill
+                 invoked with --yolo/--fast-mode), where stalling on the
+                 terminal-only gate dead-ends workers nobody is watching. The
+                 skip is announced on stderr and stamped into the run log.
+                 Mutually exclusive with --approve; inert for a literal
+                 command, which the gate never covered.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -62,7 +74,11 @@ Trust boundary:
   terminal. That terminal confirmation is defense-in-depth, not a human-only
   guarantee: a same-user process can drive a pseudo-terminal or write the record
   directly. Approval is stored outside the checkout in an owner-only state
-  directory and is never committed to the repository.
+  directory and is never committed to the repository. A run the human explicitly
+  launched as unattended may pass --yolo instead: when the command's
+  repository-controlled inputs match the remote trunk, the gate is skipped for
+  that one invocation, loudly, and no trust is recorded; when they differ from
+  the trunk, --yolo refuses.
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
@@ -87,6 +103,7 @@ label=
 cmd_name=
 cmd=()
 approve_cmd=0
+yolo_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -97,6 +114,10 @@ while (($#)); do
         --if-declared) if_declared=1; shift ;;
         --approve)
             approve_cmd=1
+            shift
+            ;;
+        --yolo)
+            yolo_cmd=1
             shift
             ;;
         --dir|--label|--cmd)
@@ -134,6 +155,9 @@ else
 fi
 if ((approve_cmd)) && [[ -z $cmd_name ]]; then
     die '--approve requires --cmd NAME.'
+fi
+if ((approve_cmd && yolo_cmd)); then
+    die '--approve and --yolo are mutually exclusive: one records trust, the other skips it.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -656,6 +680,87 @@ compute_trust_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
+# ---------------------------------------------------------------- yolo gate ---
+# --yolo replaces the approval RECORD, not the approval DECISION. The decision
+# it leans on is the trunk's: a human launched this run unattended, and the
+# remote trunk already carries every input the command resolves from -- so
+# executing exactly what the trunk reviewed needs no second confirmation. What
+# it never covers is an input that is new or changed on THIS checkout: a branch
+# or fork that edits the declaration, the runner, or a repo-backed argv path is
+# new code asking to run unattended, and that still takes an explicit approval
+# from a terminal. (Like any test run, the wrapped command's own transitive
+# inputs -- the files a suite discovers and executes -- are the branch's code;
+# the line drawn here matches the fingerprint's scope minus nearby manifests,
+# which churn on every ordinary branch.)
+yolo_base_ref() {
+    local ref
+    ref=$(git -C "$git_top" rev-parse --abbrev-ref -q origin/HEAD 2> /dev/null) || ref=''
+    if [[ -z $ref || $ref == origin/HEAD ]]; then
+        for ref in origin/main origin/master origin/trunk; do
+            git -C "$git_top" rev-parse -q --verify "$ref^{commit}" > /dev/null 2>&1 && break
+            ref=''
+        done
+    fi
+    [[ -n $ref ]] || return 1
+    printf '%s' "$ref"
+}
+
+yolo_repo_inputs() {
+    local token
+    printf '%s\n' .agent/config.env .agent/runner
+    if [[ -n ${runner_path:-} && $runner_path == "$git_top"/* ]]; then
+        printf '%s\n' "${runner_path#"$git_top/"}"
+    fi
+    for token in "${cmd[@]}"; do
+        [[ $token == */* ]] || continue
+        if [[ $token == /* ]]; then
+            [[ $token == "$git_top"/* ]] && printf '%s\n' "${token#"$git_top/"}"
+        else
+            printf '%s\n' "$token"
+            [[ $work_dir == "$git_top" ]] || printf '%s\n' "${work_dir#"$git_top/"}/$token"
+        fi
+    done
+}
+
+# A path counts as changed when the checkout has content the base does not:
+# modified tracked content, or a file that exists here and not there. A path
+# absent from the checkout is not this gate's problem -- resolution already
+# failed or never used it.
+yolo_changed_input() {
+    local base=$1 rel abs
+    while IFS= read -r rel; do
+        [[ -n $rel ]] || continue
+        abs=$git_top/$rel
+        [[ -e $abs || -L $abs ]] || continue
+        if ! git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
+            printf '%s' "$rel"
+            return 0
+        fi
+        if ! git -C "$git_top" diff --quiet "$base" -- "$rel" 2> /dev/null; then
+            printf '%s' "$rel"
+            return 0
+        fi
+    done < <(yolo_repo_inputs | sort -u)
+    return 1
+}
+
+yolo_gate() {
+    local base changed
+    base=$(yolo_base_ref) \
+        || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    if changed=$(yolo_changed_input "$base"); then
+        printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
+            "$cmd_name" "$changed" "$base" >&2
+        printf '  --yolo trusts only command inputs the trunk already carries. This checkout\n' >&2
+        printf '  changes one, so it is new code asking to run unattended -- review the\n' >&2
+        printf '  change and approve it from your own terminal.\n' >&2
+        exit 1
+    fi
+    printf 'agent-run: trust gate skipped (--yolo): %s inputs match %s; no approval record\n' \
+        "$cmd_name" "$base" >&2
+    add_note "trust gate skipped (--yolo): inputs match $base; no approval record"
+}
+
 # Approval reads a confirmation from the controlling terminal. This is
 # defense-in-depth, not a cryptographic human-only gate: an agent with arbitrary
 # command execution can allocate a pseudo-terminal or write the trust record
@@ -799,8 +904,21 @@ fi
 finalise_label
 refresh_cmd_str
 
+# --yolo skips the approval record for this one invocation -- when the trunk
+# already carries the command's inputs (see yolo_gate). Measured in a live
+# unattended fleet: three workers dead-ended reporting BLOCKED at this refusal,
+# and a fourth piped `y` through `script -qec` to forge the terminal
+# confirmation, then reported the result as approved. A gate that cannot bind
+# an agent but can stall or corrupt one is worse than an explicit, logged
+# opt-out: the flag puts the bypass in the transcript instead of disguising it
+# as an approval. The human authorization is the unattended invocation the
+# flag was threaded down from -- and it covers trunk-reviewed inputs only.
 if [[ -n $cmd_name ]]; then
-    trust_command || die "command '$cmd_name' is not approved"
+    if ((yolo_cmd)); then
+        yolo_gate
+    else
+        trust_command || die "command '$cmd_name' is not approved"
+    fi
 fi
 
 select_caches
@@ -860,11 +978,21 @@ printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 #
 # LOG_HEADER_LINES keeps the "N lines suppressed" count honest -- it reports the
 # command's own output, not this bookkeeping.
-readonly LOG_HEADER_LINES=2
+LOG_HEADER_LINES=2
+if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
+    LOG_HEADER_LINES=3
+fi
+readonly LOG_HEADER_LINES
 {
     printf '=== agent-run %s\n' "$cmd_str"
     printf '=== started %s  pid=%s  cwd=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir"
+    # The skip must survive in the durable artifact, not only on the process's
+    # stderr -- an after-the-fact audit reads logs, and a bypassed run must not
+    # read as an approved one.
+    if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
+        printf '=== trust gate skipped (--yolo): no approval record\n'
+    fi
 } > "$log_file"
 
 # A killed run cannot write its own terminator on SIGKILL, which is correct:
