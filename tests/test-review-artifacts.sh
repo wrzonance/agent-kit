@@ -173,6 +173,12 @@ assert_eq 2 "$(grep -Fc 'if ((review_rc == 3)); then' "$skill")" \
     'both adversarial wrappers publish their rc=3 blocked artifacts'
 assert_contains "$skill_text" 'A final file' \
     'the skill defines completion by terminal producer events'
+assert_contains "$skill_text" 'never a process-name pattern' \
+    'the skill keys liveness on the recorded PID file'
+assert_contains "$skill_text" 'PID alive' \
+    'the skill names the still-running poll state as never blocked'
+assert_contains "$skill_text" 'bounded in both directions' \
+    'the skill bounds the wait against both stalls and premature verdicts'
 assert_not_contains "$skill_text" '>"$verdict_path"' \
     'the skill never streams directly into the final verdict path'
 assert_not_contains "$skill_text" 'claude.result.json' \

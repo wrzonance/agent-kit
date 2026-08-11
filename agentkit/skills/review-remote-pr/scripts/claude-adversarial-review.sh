@@ -70,6 +70,7 @@ MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
 WORK_DIR=""
 POLLER_PID=""
 CLAUDE_PID=""
+PID_FILE=""
 DEADLINE_EPOCH=0
 
 usage() {
@@ -218,8 +219,24 @@ cleanup() {
 		wait "$CLAUDE_PID" 2>/dev/null || true
 		CLAUDE_PID=""
 	fi
+	if [[ -n $PID_FILE ]]; then
+		rm -f -- "$PID_FILE"
+		PID_FILE=""
+	fi
 	[[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
 	return 0
+}
+
+# Durable liveness for detached pollers: the launching cell's stderr (where the
+# runnerPid progress records go) can vanish with the cell, so the PID also
+# lives beside the transcript for the whole run. `kill -0` on this recorded PID
+# is the liveness probe; process-name patterns have false-reported a live,
+# sandbox-wrapped producer as dead.
+record_helper_pid() {
+	PID_FILE="$TRANSCRIPT_PATH.pid"
+	[[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
+	rm -f -- "$PID_FILE"
+	printf '%s\n' "$$" >"$PID_FILE" || die "Cannot record helper PID: $PID_FILE"
 }
 
 # Review transcripts contain the complete private diff and must never be placed
@@ -614,6 +631,7 @@ main() {
 	mkdir -p -- "$isolation_dir"
 
 	prepare_transcript
+	record_helper_pid
 	preflight
 
 	write_review_input "$input_file"

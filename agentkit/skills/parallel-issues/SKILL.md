@@ -885,6 +885,11 @@ not shell-escaped fragments.
 
 ```bash
 issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1
+issue_has_content=$(jq -r '
+  ((.title // "") != "") or ((.body // "") != "")
+    or (((.labels // []) | length) > 0) or (((.comments // []) | length) > 0)
+' <<<"$issue_payload")
+[[ $issue_has_content == true ]] || exit 1
 issue_contents=$(jq -r '
   [
     ("Title: " + (.title // "")),
@@ -895,7 +900,6 @@ issue_contents=$(jq -r '
       | join("\n")))
   ] | join("\n\n")
 ' <<<"$issue_payload")
-[[ -n $issue_contents ]] || exit 1
 
 target="$worktree/.agent/fenced-spec.txt"
 tmp="$target.tmp"

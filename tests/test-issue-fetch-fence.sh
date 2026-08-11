@@ -41,14 +41,23 @@ run_fence_recipe() {
     fi
 }
 
+# Pull the documented content-validation program the same way, so the test
+# executes the recipe's actual guard rather than a test-local approximation.
+validation=$(sed -n '/^issue_has_content=$(jq -r /,/<<<"\$issue_payload")$/p' "$skill" |
+    sed '1d;$d')
+[[ -n $validation ]] || { printf '%s\n' 'canonical validation program not found' >&2; exit 1; }
+
 # The documented fetch recipe must fail before it creates a fence when GitHub
-# returns an error or when rendering somehow produces no issue content.
+# returns an error or when the payload carries no issue content. Both jq
+# programs here are the extracted canonical ones: the renderer emits fixed
+# headings, so only the validation program can reject an empty payload.
 run_fetch_and_fence_recipe() {
     local fetcher=$1 producer=$2 target=$3
-    local issue_payload issue_contents
+    local issue_payload issue_contents issue_has_content
     issue_payload=$("$fetcher") || return 1
-    issue_contents=$(jq -r '[(.title // "")] | join("")' <<<"$issue_payload")
-    [[ -n $issue_contents ]] || return 1
+    issue_has_content=$(jq -r "$validation" <<<"$issue_payload")
+    [[ $issue_has_content == true ]] || return 1
+    issue_contents=$(jq -r "$program" <<<"$issue_payload")
     run_fence_recipe "$producer" "$target" "$issue_contents"
 }
 
@@ -83,22 +92,24 @@ assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
 assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
     'a failed issue fetch leaves no temporary fence'
 
+# {} through the CANONICAL renderer would still produce the fixed headings, so
+# this fixture proves the validation program is what rejects an empty payload.
 empty_fetch="$tmp_dir/empty-fetch.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s" "{}"' >"$empty_fetch"
 chmod +x "$empty_fetch"
 empty_fetch_rc=0
 run_fetch_and_fence_recipe "$empty_fetch" "$producer" "$target" || empty_fetch_rc=$?
-assert_eq 1 "$empty_fetch_rc" 'empty rendered issue content is rejected'
+assert_eq 1 "$empty_fetch_rc" 'an empty issue payload is rejected before rendering'
 assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
-    'empty rendered issue content leaves no final fence'
+    'an empty issue payload leaves no final fence'
 assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
-    'empty rendered issue content leaves no temporary fence'
+    'an empty issue payload leaves no temporary fence'
 
 recipe_text=$(<"$skill")
 assert_contains "$recipe_text" 'issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1' \
     'the canonical recipe exits when GitHub issue fetch fails'
-assert_contains "$recipe_text" '[[ -n $issue_contents ]] || exit 1' \
-    'the canonical recipe rejects empty rendered issue content'
+assert_contains "$recipe_text" '[[ $issue_has_content == true ]] || exit 1' \
+    'the canonical recipe rejects an empty issue payload before rendering'
 assert_contains "$recipe_text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'the canonical recipe keeps fenced bytes in excluded per-worktree state'
 assert_contains "$recipe_text" 'mkdir -p -- "${target%/*}" || exit 1' \

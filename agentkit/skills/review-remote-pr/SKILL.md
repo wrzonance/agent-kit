@@ -988,6 +988,26 @@ helper's own PID, not the reviewer's), `elapsedSeconds`, `secondsSinceLastEvent`
 is a diagnostic warning until that ceiling; do not shrink the diff to the last commit merely to meet
 an estimate.
 
+For liveness, both helpers record their own PID at `<transcript>.pid` inside the private run
+directory for the whole run and remove it on exit. Check liveness with `kill -0` against that
+recorded PID, never a process-name pattern — `pgrep` matching has returned empty for a live,
+sandbox-wrapped producer and false-confirmed its death. Every poll then lands in exactly one of
+three states, and only the third is ever "blocked":
+
+1. **Completed** — the helper exited and published a verdict at the final path (success, or the
+   rc=3 environment-blocked JSON). Consume it.
+2. **Still running** — no published verdict, recorded PID alive, `--max-duration-seconds` not yet
+   elapsed. Keep polling; this state is never "blocked". An absent terminal event, a missing or
+   empty verdict file, and a heartbeat-only transcript tail are all consistent with a healthy
+   in-flight review — a live review has been wrongly declared blocked less than a minute before
+   it finished.
+3. **Blocked** — the ceiling elapsed, or the recorded PID is dead with no published verdict.
+   Report it definitively, artifacts preserved.
+
+The wait is bounded in both directions: the helper kills its producer at the ceiling, so state 2
+cannot outlive `--max-duration-seconds` — a slow review gets its whole window, a review that will
+never complete costs at most one window, and the poller needs no judgment in unattended runs.
+
 Completion is the producer's successful exit together with its terminal stream result event (for
 Claude, `result/success` with `is_error == false` and a valid structured verdict; for Codex, a
 successful exit plus its terminal result message). A final file's existence or size, or the tail of

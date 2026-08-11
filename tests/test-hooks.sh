@@ -864,6 +864,34 @@ else
 fi
 chmod +w "$locked_issue/.agent/cache" 2>/dev/null || true
 
+# A re-read of one issue is not a second distinct number: the issue marker is
+# recorded before the quiet first view is elected, so a duplicate read can never
+# masquerade as digest-worthy breadth.
+dup_s=$(fresh_sid)
+post_input "$repo" 'gh issue view 500' "$dup_s" | "$hooks/post-tool-use.sh" >/dev/null 2>&1
+out=$(post_input "$repo" 'gh issue view 500' "$dup_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'a re-read of the same issue stays quiet'
+out=$(post_input "$repo" 'gh issue view 501' "$dup_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+    'a genuinely distinct second issue still teaches'
+
+# Fail-open must also cover the narrower failure where the views directory
+# exists but cannot accept markers: the lesson still speaks instead of the
+# guard silently failing closed on the marker mkdir.
+part_locked=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$part_locked/.agent/config.env"
+part_views="$part_locked/.agent/cache/brief/sLOCKDIR/issue-views"
+mkdir -p "$part_views"
+chmod -w "$part_views" 2>/dev/null || true
+if [[ -w $part_views ]]; then
+    printf '  skip unwritable views-dir advisory check: dir still writable (running as root?)\n'
+else
+    out=$(post_input "$part_locked" 'gh issue view 1' "sLOCKDIR" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+        'an unwritable views directory still speaks instead of failing closed'
+fi
+chmod +w "$part_views" 2>/dev/null || true
+
 # Reading ONE issue body stays legitimate; the digest deliberately omits bodies.
 body_sid=$(fresh_sid)
 post_input "$repo" 'gh issue view 442' "$body_sid" | "$hooks/post-tool-use.sh" >/dev/null 2>&1

@@ -164,12 +164,17 @@ guard_issue_view_is_distinct() {
     # This feeds an advisory, so unrecordable state must SPEAK. Returning true
     # lets guard_should_advise emit the lesson while still persisting nothing.
     mkdir -p "$dir" 2> /dev/null || return 0
-    if [[ ! -e "$dir/first" ]]; then
-        mkdir "$dir/first" 2> /dev/null || return 1
-        mkdir "$dir/$issue" 2> /dev/null || true
-        return 1
+    # Record the issue marker BEFORE electing the quiet first view: the marker
+    # mkdir is the atomic transition, so of two concurrent reads of one issue
+    # exactly one records it and neither can masquerade as a distinct second
+    # number. A marker that already exists is a re-read: quiet. Any other
+    # marker failure is unrecordable state: fail open and speak.
+    if ! mkdir "$dir/$issue" 2> /dev/null; then
+        [[ -d "$dir/$issue" ]] && return 1
+        return 0
     fi
-    mkdir "$dir/$issue" 2> /dev/null
+    mkdir "$dir/first" 2> /dev/null && return 1
+    return 0
 }
 
 # Denial: deny ONLY on a claim that was actually recorded.
