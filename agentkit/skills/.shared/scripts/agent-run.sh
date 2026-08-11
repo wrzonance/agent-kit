@@ -25,7 +25,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -35,6 +35,13 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  is read from the terminal (defense-in-depth: a non-interactive
                  agent shell cannot answer it, though it is not an unforgeable
                  human-only gate). Review, then approve from your own terminal.
+  --yolo         Run a --cmd command without an approval record, and record none.
+                 For runs a human explicitly launched as unattended (a skill
+                 invoked with --yolo/--fast-mode), where stalling on the
+                 terminal-only gate dead-ends workers nobody is watching. The
+                 skip is announced on stderr so every log shows which runs
+                 bypassed the gate. Mutually exclusive with --approve; inert
+                 for a literal command, which the gate never covered.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -62,7 +69,9 @@ Trust boundary:
   terminal. That terminal confirmation is defense-in-depth, not a human-only
   guarantee: a same-user process can drive a pseudo-terminal or write the record
   directly. Approval is stored outside the checkout in an owner-only state
-  directory and is never committed to the repository.
+  directory and is never committed to the repository. A run the human explicitly
+  launched as unattended may pass --yolo instead: the gate is skipped for that
+  one invocation, loudly, and no trust is recorded.
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
@@ -87,6 +96,7 @@ label=
 cmd_name=
 cmd=()
 approve_cmd=0
+yolo_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -97,6 +107,10 @@ while (($#)); do
         --if-declared) if_declared=1; shift ;;
         --approve)
             approve_cmd=1
+            shift
+            ;;
+        --yolo)
+            yolo_cmd=1
             shift
             ;;
         --dir|--label|--cmd)
@@ -134,6 +148,9 @@ else
 fi
 if ((approve_cmd)) && [[ -z $cmd_name ]]; then
     die '--approve requires --cmd NAME.'
+fi
+if ((approve_cmd && yolo_cmd)); then
+    die '--approve and --yolo are mutually exclusive: one records trust, the other skips it.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -799,8 +816,21 @@ fi
 finalise_label
 refresh_cmd_str
 
+# --yolo skips the gate for this one invocation and records nothing. Measured
+# in a live unattended fleet: three workers dead-ended reporting BLOCKED at
+# this refusal, and a fourth piped `y` through `script -qec` to forge the
+# terminal confirmation, then reported the result as approved. A gate that
+# cannot bind an agent but can stall or corrupt one is worse than an explicit,
+# logged opt-out: the flag puts the bypass in the transcript instead of
+# disguising it as an approval. The human authorization is the unattended
+# invocation the flag was threaded down from.
 if [[ -n $cmd_name ]]; then
-    trust_command || die "command '$cmd_name' is not approved"
+    if ((yolo_cmd)); then
+        printf 'agent-run: trust gate skipped (--yolo): running %s without an approval record\n' \
+            "$cmd_name" >&2
+    else
+        trust_command || die "command '$cmd_name' is not approved"
+    fi
 fi
 
 select_caches

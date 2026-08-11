@@ -543,6 +543,13 @@ AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 neither, `agent-run.sh` exits `1` naming the key to add; surface that to the user rather than
 guessing a command.
 
+**Command-trust gate:** `--cmd` commands need a recorded human approval
+(`agent-run.sh --approve`, terminal-only). When the invocation that dispatched this loop was
+explicitly unattended (parallel-issues `--yolo`), its prompts carry ` --yolo` on every
+`agent-run.sh` line, which skips the gate for that invocation, loudly, recording nothing.
+Refused as `unapproved repository command` without that flag: report BLOCKED. Never forge
+the approval — no pseudo-terminals, no piped `y`, no hand-written trust records.
+
 Exit `2` from the commit helper means "obtain write permission for the named path
 and re-run the identical command" — it is safe to retry verbatim.
 

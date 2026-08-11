@@ -128,11 +128,38 @@ assert_contains "$out" 'human' 'the wrapper refusal points at a human review'
 assert_not_contains "$out" '--approve --cmd verify' \
     'the wrapper refusal does not print the bypass command'
 
+# --- an explicitly unattended run passes the gate with --yolo, loudly ---
+# The flag exists for fleets a human launched as unattended: without it, blocked
+# workers stall (or worse, forge the confirmation). It must run the command with
+# no approval record, announce the skip, and persist nothing.
+repo=$(make_repo)
+trust_root="$tmp/trust-yolo"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" '--yolo runs an unapproved declared command without a terminal'
+assert_contains "$out" 'trust gate skipped (--yolo)' \
+    '--yolo announces the skip in the output'
+assert_eq '' "$(trust_files "$trust_root")" '--yolo persists no trust record'
+
+# The skip is per-invocation: the very next plain run is still refused.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$run_sh" --cmd verify 2>&1) || true
+assert_contains "$out" 'refusing unapproved repository command' \
+    'a plain run after --yolo is still refused'
+
+# --approve records trust and --yolo skips it; together they are a usage error.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$run_sh" --approve --yolo --cmd verify 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" '--approve with --yolo is refused'
+assert_contains "$out" 'mutually exclusive' '--approve/--yolo refusal names the conflict'
+assert_eq '' "$(trust_files "$trust_root")" 'the refused combination persists no trust'
+
 # --- the README documents the terminal confirmation and is honest about it ---
 readme_text=$(cat -- "$readme")
 assert_contains "$readme_text" 'controlling terminal' \
     'README documents the terminal-confirmation boundary'
 assert_contains "$readme_text" 'not** a cryptographic human-only' \
     'README does not overclaim the boundary as human-only'
+assert_contains "$readme_text" '--yolo' \
+    'README documents the unattended bypass beside the boundary it opens'
 
 finish

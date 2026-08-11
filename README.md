@@ -138,6 +138,15 @@ logged step -- and under Claude Code, `--approve` surfaces a permission prompt.
 Literal commands passed after `--` are caller-supplied and are not covered by
 this repository-command approval.
 
+Runs a human explicitly launched as unattended are the one exception:
+`agent-run.sh --yolo --cmd NAME` skips the gate for that single invocation,
+announces the skip on stderr, and records no trust. The flag exists because the
+gate cannot bind an autonomous agent (see above) but can dead-end an honest one
+-- observed in a live unattended fleet, where blocked workers stalled and one
+forged the terminal confirmation instead. An explicit, logged bypass threaded
+down from the human's own `--yolo` invocation beats either outcome. Skills
+thread it; agents never add it on their own, and never forge the approval.
+
 ---
 
 ## Harness configuration
