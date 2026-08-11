@@ -139,4 +139,37 @@ assert_contains "$out" 'cannot acquire transaction lock' \
 assert_eq '' "$(git -C "$worktree_a" diff --cached --name-only)" \
     'a failed lock acquisition stages nothing'
 
+trunk_repo="$tmp/trunk-repo"
+git init -q -b main "$trunk_repo"
+git -C "$trunk_repo" config user.name test
+git -C "$trunk_repo" config user.email test@example.invalid
+mkdir -- "$trunk_repo/.agent"
+printf 'AGENT_BASE_BRANCH=main\n' >"$trunk_repo/.agent/config.env"
+printf 'base\n' >"$trunk_repo/base.txt"
+git -C "$trunk_repo" add -- .
+git -C "$trunk_repo" commit -qm init
+printf 'must not stage\n' >"$trunk_repo/blocked.txt"
+trunk_err="$tmp/trunk.err"
+trunk_rc=0
+(cd "$trunk_repo" && "$script" --message 'feat: forbidden' -- blocked.txt \
+    > /dev/null 2>"$trunk_err") || trunk_rc=$?
+assert_eq '1' "$trunk_rc" 'declared trunk refusal exits before staging'
+assert_contains "$(cat "$trunk_err")" 'refusing to commit' \
+    'trunk refusal explains the protected branch'
+assert_eq '' "$(git -C "$trunk_repo" diff --cached --name-only)" \
+    'trunk refusal leaves the index untouched'
+
+printf 'trailing space  \n' >"$worktree_a/whitespace.txt"
+check_err="$tmp/check.err"
+check_rc=0
+(cd "$worktree_a" && "$script" --message 'feat: bad whitespace' -- whitespace.txt \
+    > /dev/null 2>"$check_err") || check_rc=$?
+assert_eq '1' "$check_rc" 'cached whitespace check rejects the commit'
+assert_contains "$(cat "$check_err")" 'diff --cached --check' \
+    'whitespace rejection names the failing gate'
+assert_eq 'whitespace.txt' "$(git -C "$worktree_a" diff --cached --name-only)" \
+    'whitespace rejection occurs after staging and before commit'
+assert_eq 'feat: commit a' "$(git -C "$worktree_a" log -1 --format=%s)" \
+    'whitespace rejection does not create a commit'
+
 finish
