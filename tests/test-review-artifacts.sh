@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Regression coverage for private review-artifact creation.
+# shellcheck disable=SC2016
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -120,6 +121,14 @@ assert_contains "$skill_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
     'the skill names one shared adversarial diff artifact'
 assert_contains "$skill_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
     'the skill names one neutral adversarial verdict artifact'
+assert_contains "$skill_text" 'verdict_tmp="$verdict_path.tmp"' \
+    'the skill stages adversarial verdicts beside the final artifact'
+assert_contains "$skill_text" 'mv -f -- "$verdict_tmp" "$verdict_path"' \
+    'the skill publishes verdicts atomically after producer success'
+assert_contains "$skill_text" 'A final file' \
+    'the skill defines completion by terminal producer events'
+assert_not_contains "$skill_text" '>"$verdict_path"' \
+    'the skill never streams directly into the final verdict path'
 assert_not_contains "$skill_text" 'claude.result.json' \
     'the skill has no Claude-specific verdict path'
 assert_not_contains "$skill_text" 'codex.result.json' \
