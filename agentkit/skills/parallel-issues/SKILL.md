@@ -55,8 +55,9 @@ line in every prompt you assemble — issue leads and review loops alike. The
 invocation line is the human authorization; the flag carries it to the workers
 instead of making each one ask a question nobody is present to answer. The
 bypass is trunk-bounded: a command whose declaration, runner, or repo-backed
-argv changed on the branch is still refused under `--yolo`, and that refusal
-is a correct BLOCKED report, not a defect to work around.
+argv/module payload or nearby build manifest changed on the branch is still
+refused under `--yolo`, and that refusal is a correct BLOCKED report, not a
+defect to work around.
 
 **Never forge the gate — any flag, any mode.** A worker that hits
 `refusing unapproved repository command` on a prompt without `--yolo` reports

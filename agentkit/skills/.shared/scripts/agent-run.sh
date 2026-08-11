@@ -37,7 +37,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  human-only gate). Review, then approve from your own terminal.
   --yolo         Run a --cmd command without an approval record, and record
                  none -- PROVIDED the command's repository-controlled inputs
-                 (.agent/config.env, .agent/runner, repo-backed argv paths)
+                 (.agent/config.env, .agent/runner, repo-backed argv/module
+                 paths, and nearby build manifests)
                  are identical to the remote trunk's. An input that is new or
                  changed on this checkout is refused: that is new code asking
                  to run unattended, and it still takes a terminal approval.
