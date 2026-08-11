@@ -177,7 +177,8 @@ classify_blocked_reason() {
 # Run a short preflight command with its output captured to a FILE, never a pipe
 # (see the flush defect documented on preflight()), and bounded so a spawn that
 # wedges in a restricted sandbox cannot hang the run. timeout(1) reports 124 on
-# expiry; without coreutils timeout the command still runs, just unbounded.
+# expiry; the preflight requires timeout so a missing binary cannot silently
+# remove the safety bound.
 run_bounded() {
 	local seconds=$1 out_file=$2
 	shift 2

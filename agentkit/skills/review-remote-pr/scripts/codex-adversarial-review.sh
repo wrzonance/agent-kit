@@ -324,7 +324,7 @@ EOF
     ((bytes <= MAX_DIFF_BYTES)) ||
         die "Review diff is ${bytes} bytes, over --max-diff-bytes ($MAX_DIFF_BYTES). Split the review by coherent diff slices."
     ((bytes <= WARN_DIFF_BYTES)) ||
-        printf '%s: warning: diff is %s bytes; codex exec has no spend ceiling, consider splitting.\n' \
+        printf '%s: warning: diff is %s bytes; keep the review within --max-tokens and consider splitting.\n' \
             "$PROGNAME" "$bytes" >&2
 
     cat >>"$target" <<'EOF'

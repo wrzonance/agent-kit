@@ -49,7 +49,7 @@ while (($#)); do
         shift
     fi
 done
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"output_tokens":1000}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":'"${FAKE_CODEX_USAGE:-1000}"',"output_tokens":'"${FAKE_CODEX_USAGE:-1000}"'}}'
 if [[ -n $last_file ]]; then
     printf '%s\n' '{"verdict":"no_findings","findings":[]}' >"$last_file"
 fi
@@ -86,6 +86,16 @@ CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode probe --model gpt-test \
 assert_eq 1 "$codex_rc" 'Codex rejects usage above its token ceiling'
 assert_contains "$(<"$codex_err")" 'token' \
     'Codex reports a token-bound review as a safety failure'
+
+codex_duration_err="$tmp/codex-duration.err"
+codex_duration_rc=0
+FAKE_CODEX_USAGE=1 CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" \
+    --mode probe --model gpt-test --transcript "$private/codex-duration.jsonl" \
+    --poll-seconds 1 --max-duration-seconds 1 --max-tokens 1024 > /dev/null \
+    2>"$codex_duration_err" || codex_duration_rc=$?
+assert_eq 1 "$codex_duration_rc" 'Codex review expires at its duration ceiling'
+assert_contains "$(<"$codex_duration_err")" 'duration' \
+    'Codex reports a duration-bound review as a safety failure'
 
 codex_text=$(<"$codex")
 assert_contains "$codex_text" "sleep \"\$POLL_SECONDS\" &" \
