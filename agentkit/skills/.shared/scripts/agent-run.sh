@@ -757,7 +757,7 @@ yolo_repo_inputs() {
 # when a base input was deleted here. Sentinel inputs are deliberately refused:
 # they describe a command input that cannot be proven repository-contained.
 yolo_changed_input() {
-    local base=$1 rel abs
+    local base=$1 rel abs untracked
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
         [[ $rel == __* ]] && {
@@ -773,6 +773,14 @@ yolo_changed_input() {
             if ! git -C "$git_top" diff --quiet "$base" -- "$rel" 2> /dev/null; then
                 printf '%s' "$rel"
                 return 0
+            fi
+            if [[ -d $abs ]]; then
+                untracked=$(git -C "$git_top" status --porcelain=v1 \
+                    --untracked-files=all -- "$rel" 2> /dev/null || true)
+                if [[ -n $untracked ]]; then
+                    printf '%s' "$rel"
+                    return 0
+                fi
             fi
         elif git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
             printf '%s' "$rel"

@@ -94,15 +94,21 @@ git -C "$repo" config user.name test
 git -C "$repo" config user.email test@example.invalid
 mkdir -p "$repo/tools"
 touch "$repo/tools/__init__.py"
-printf 'AGENT_CMD_TEST=python -m tools.verify\n' > "$repo/.agent/config.env"
-printf 'print("base")\n' > "$repo/tools/verify.py"
+printf 'AGENT_CMD_TEST=python -m tools\n' > "$repo/.agent/config.env"
+printf 'print("base")\n' > "$repo/tools/__main__.py"
 git -C "$repo" add -- .agent/config.env tools
 git -C "$repo" commit -qm base
 git -C "$repo" update-ref refs/remotes/origin/main HEAD
-printf 'print("changed")\n' > "$repo/tools/verify.py"
+printf 'print("changed")\n' > "$repo/tools/__main__.py"
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'a changed module payload blocks unattended command execution'
+
+printf 'print("added")\n' > "$repo/tools/payload.py"
+git -C "$repo" checkout -- tools/__main__.py
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
+assert_contains "$out" 'refusing --yolo' \
+    'an untracked module payload blocks unattended command execution'
 
 # Deleting a declaration must be a change too. Keep a runner fallback so
 # resolution reaches the yolo gate after the config disappears.
