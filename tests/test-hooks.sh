@@ -74,8 +74,8 @@ assert_contains "$ctx" '.agent/config.env' 'and which files must exist'
 assert_contains "$ctx" '.agent/board.json' 'including the board cache'
 assert_contains "$ctx" 'README' 'and where to read more'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
-assert_contains "$ctx" '../skills/.shared/scripts/bootstrap-repo.sh' \
-    'and it teaches the hook-relative skills path'
+assert_contains "$ctx" 'agentkit/.shared/scripts/bootstrap-repo.sh' \
+    'and it teaches the resolver-relative skills path'
 
 # --- what "do not re-probe" may not cover ----------------------------------
 # The contract is announced as established fact, and for most of it that is
@@ -128,6 +128,53 @@ bare_repo=$(make_repo)
 out=$(session_input "$bare_repo" | env PATH="$nogh" "$hooks/session-start.sh" 2>/dev/null)
 assert_contains "$out" 'bootstrap-repo.sh' 'no contract still yields the notice'
 assert_not_contains "$out" 'Environment contract' 'and claims no contract it does not have'
+
+# A missing guard library must keep SessionStart fail-open. The resolver hint is
+# optional because the hook deliberately tolerates a partial package install.
+# Its fallback must still be a path the operator can paste, and must reach both
+# the model and the operator instead of becoming an unset-variable exit.
+missing_lib="$tmp/missing-guard-lib"
+mkdir -p "$missing_lib/hooks"
+cp "$hooks/session-start.sh" "$missing_lib/hooks/session-start.sh"
+missing_repo=$(make_repo)
+rc=0
+out=$(session_input "$missing_repo" | \
+    "$missing_lib/hooks/session-start.sh" 2>/dev/null) || rc=$?
+assert_eq '0' "$rc" 'a missing guard library keeps SessionStart fail-open'
+assert_hook_output "$out" session-start 'missing guard library still emits schema-valid JSON'
+fallback="$missing_lib/hooks/../skills/.shared/scripts/bootstrap-repo.sh"
+unresolved_bootstrap="\$agentkit/.shared/scripts/bootstrap-repo.sh"
+ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
+human=$(jq -r '.systemMessage // ""' <<< "$out")
+assert_contains "$ctx" "$fallback" 'missing-helper model advice uses the hook-relative fallback'
+assert_contains "$human" "$fallback" 'missing-helper operator advice uses the hook-relative fallback'
+assert_not_contains "$ctx" "$unresolved_bootstrap" \
+    'missing-helper model advice does not use an unset resolver variable'
+assert_not_contains "$human" "$unresolved_bootstrap" \
+    'missing-helper operator advice does not use an unset resolver variable'
+
+# An installed library may define an empty hint, which is equivalent to no
+# resolver. Exercise that contract separately from a missing file so both
+# fail-open entry points stay covered.
+empty_hint="$tmp/empty-resolve-hint"
+mkdir -p "$empty_hint/hooks/lib"
+cp "$hooks/session-start.sh" "$empty_hint/hooks/session-start.sh"
+printf '%s\n' 'RESOLVE_HINT=' > "$empty_hint/hooks/lib/guard-lib.sh"
+empty_repo=$(make_repo)
+rc=0
+out=$(session_input "$empty_repo" | \
+    "$empty_hint/hooks/session-start.sh" 2>/dev/null) || rc=$?
+assert_eq '0' "$rc" 'an empty resolver hint keeps SessionStart fail-open'
+assert_hook_output "$out" session-start 'empty resolver hint still emits schema-valid JSON'
+fallback="$empty_hint/hooks/../skills/.shared/scripts/bootstrap-repo.sh"
+ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
+human=$(jq -r '.systemMessage // ""' <<< "$out")
+assert_contains "$ctx" "$fallback" 'empty-hint model advice uses the hook-relative fallback'
+assert_contains "$human" "$fallback" 'empty-hint operator advice uses the hook-relative fallback'
+assert_not_contains "$ctx" "$unresolved_bootstrap" \
+    'empty-hint model advice does not use an unresolved variable'
+assert_not_contains "$human" "$unresolved_bootstrap" \
+    'empty-hint operator advice does not use an unresolved variable'
 
 # A plain directory is not a repository; bootstrapping cannot succeed there.
 # It gets the OTHER notice instead -- silently degrading is the thing to avoid,
