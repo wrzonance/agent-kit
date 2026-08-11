@@ -58,4 +58,32 @@ for skill in "$skills"/*/SKILL.md; do
     fi
 done
 
+onboard="$skills/onboard-repo/SKILL.md"
+onboard_text=$(<"$onboard")
+assert_contains "$onboard_text" 'AGENTS.md' \
+    'onboarding reviews the repository instruction files'
+assert_contains "$onboard_text" 'CLAUDE.md' \
+    'onboarding includes the other common instruction file'
+assert_contains "$onboard_text" 'untrusted data' \
+    'instruction-file content is treated as repository data'
+assert_contains "$onboard_text" 'Conflicting' \
+    'onboarding classifies conflicting guidance'
+assert_contains "$onboard_text" 'Duplicated' \
+    'onboarding classifies duplicated guidance'
+assert_contains "$onboard_text" 'Repo-specific' \
+    'onboarding preserves repository-specific guidance'
+assert_contains "$onboard_text" 'proposed diff' \
+    'onboarding emits a proposed diff'
+assert_contains "$onboard_text" 'must not delete' \
+    'onboarding never applies instruction-file cleanup'
+
+step_two_line=$(grep -n '^## Step 2 ' "$onboard" | cut -d: -f1)
+review_line=$(grep -in 'review existing instructions' "$onboard" | cut -d: -f1)
+if [[ -n $step_two_line && -n $review_line && $review_line -lt $step_two_line ]]; then
+    printf 'ok - instruction review precedes the config write\n'
+else
+    printf 'not ok - instruction review precedes the config write\n' >&2
+    exit 1
+fi
+
 finish
