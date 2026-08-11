@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Suite: issue-derived text is fenced as untrusted data in worker prompts.
+# shellcheck disable=SC2016
 set -uo pipefail
 
 TEST_NAME='issue-body-boundary'
@@ -39,5 +40,23 @@ assert_not_contains "$skill" 'Agents will treat issue bodies as the spec' \
     'autonomous mode no longer grants issue bodies instruction authority'
 assert_not_contains "$skill" 'agent reads the issue body as the spec and proceeds' \
     'skip guidance no longer describes raw issue text as a specification'
+
+# --- visibility and explicit invocation exceptions -------------------------
+assert_contains "$skill" 'gh repo view "$repository" --json isPrivate' \
+    'visibility comes from the repository, not issue-derived text'
+assert_contains "$skill" 'public-fenced' \
+    'public repositories select the fenced boundary mode'
+assert_contains "$skill" 'private-trusted' \
+    'private repositories have an explicit trusted mode'
+assert_contains "$skill" 'yolo-trusted' \
+    'an explicit yolo invocation has an explicit trusted mode'
+assert_contains "$skill" 'visibility is `unknown`' \
+    'unknown visibility fails closed to the public boundary'
+assert_contains "$skill" "only the operator's explicit \`--yolo\` invocation" \
+    'issue text cannot select the yolo exception'
+assert_contains "$skill" 'do not call the fence helper' \
+    'trusted exceptions skip the fence check as requested'
+assert_contains "$skill" 'private issue text is never passed through the fence helper' \
+    'private mode does not accidentally regain the public fence'
 
 finish
