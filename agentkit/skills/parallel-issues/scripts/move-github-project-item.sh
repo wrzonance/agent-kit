@@ -9,14 +9,16 @@ readonly FIELD_LIMIT=100
 readonly PROJECT_LIMIT=100
 
 usage() {
-    printf 'Usage: %s --issue-number N --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
+    printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
+    printf '       %s --issue-numbers N,N,... --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
     cat <<'EOF'
 
 Sets the Status field of an issue's card on the GitHub Project board(s) that
 issue belongs to, and reports on stdout what it did.
 
 Options:
-  --issue-number N          Issue number, a positive integer (e.g. 42).
+  --issue-number N          Issue number, repeatable (e.g. 42).
+  --issue-numbers N,N,...   Comma-separated issue numbers (may be repeated).
   --status STATUS           One of the canonical board columns:
                             'Backlog', 'Ready', 'In progress', 'In review', 'Done'.
                             Matched against the board's own options case-insensitively.
@@ -53,17 +55,39 @@ die() {
     exit 1
 }
 
-issue_number=
+issue_numbers=()
 status=
 repository=
 repo_root=
 all_boards=0
 
+add_issue_number() {
+    local number=$1
+    [[ $number =~ ^[1-9][0-9]*$ ]] || die 'Issue number must be a positive integer.'
+    issue_numbers+=("$number")
+}
+
+add_issue_numbers() {
+    local csv=$1 number
+    [[ $csv =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] ||
+        die 'Issue numbers must be a comma-separated list of positive integers.'
+    local -a numbers=()
+    IFS=',' read -ra numbers <<< "$csv"
+    for number in "${numbers[@]}"; do
+        add_issue_number "$number"
+    done
+}
+
 while (($#)); do
     case $1 in
         --issue-number)
             (($# >= 2)) || die "Missing value for $1."
-            issue_number=$2
+            add_issue_number "$2"
+            shift 2
+            ;;
+        --issue-numbers)
+            (($# >= 2)) || die "Missing value for $1."
+            add_issue_numbers "$2"
             shift 2
             ;;
         --status)
@@ -96,8 +120,18 @@ while (($#)); do
     esac
 done
 
-[[ $issue_number =~ ^[1-9][0-9]*$ ]] || die 'Issue number must be a positive integer.'
+(( ${#issue_numbers[@]} > 0 )) || die 'At least one issue number is required.'
 [[ $repository =~ ^[^/]+/[^/]+$ ]] || die 'Repository must have the form OWNER/REPO.'
+
+declare -a requested_issues=()
+declare -A requested_seen=()
+for issue_number in "${issue_numbers[@]}"; do
+    [[ ${requested_seen[$issue_number]+yes} == yes ]] && continue
+    requested_seen[$issue_number]=1
+    requested_issues+=("$issue_number")
+done
+issue_numbers=("${requested_issues[@]}")
+declare -A completed_issues=()
 
 owner=${repository%%/*}
 
@@ -221,6 +255,7 @@ refresh_board_metadata() {
 # mutate an unrelated card. .content.repository is a URL on some gh versions and
 # OWNER/REPO on others; accept either, and fall back to .content.url.
 select_item_id() {
+    local issue_number=$1 items_json=$2
     jq -r --argjson issue_number "$issue_number" --arg repository "$repository" '
         first(
             .items[]?
@@ -236,9 +271,9 @@ select_item_id() {
                          | sub("^https?://[^/]+/"; "")
                          | startswith(($repository | ascii_downcase) + "/")))
                 )
-            )
+        )
             | .id
-        ) // empty' <<< "$1"
+        ) // empty' <<< "$items_json"
 }
 
 # board.json names the project, but its IDs are repository-controlled hints, not
@@ -247,9 +282,12 @@ select_item_id() {
 # preventing a forged board or item cache from selecting an unrelated card.
 # Returns 0 moved, 1 cannot use this path, 2 the API rejected the edit.
 try_known_board() {
-    local project_number project_id project_title field_id option_id items_json item_id
+    local project_number project_id project_title field_id option_id items_json item_id issue_number
     local project_owner project_json live_project_id live_project_title fields_json
 
+    # The cached board is a single-board acceleration.  It cannot satisfy the
+    # --all-boards contract, which must enumerate every board the owner has.
+    ((all_boards == 0)) || return 1
     board_readable || return 1
     project_number=$(jq -r '.project.number // empty' <"$board_file" 2>/dev/null) || return 1
     project_id=$(jq -r '.project.id // empty' <"$board_file" 2>/dev/null) || return 1
@@ -271,9 +309,6 @@ try_known_board() {
     items_json=$(gh project item-list "$project_number" --owner "$project_owner" \
         --limit "$ITEM_LIMIT" --format json 2>/dev/null) || return 1
     [[ -n $items_json ]] || return 1
-    item_id=$(select_item_id "$items_json")
-    [[ -n $item_id ]] || return 1
-
     # Field and option IDs are also rebound live. board.json is useful for
     # validating a status before network access, but must not supply mutation
     # IDs after a branch has changed the board.
@@ -288,19 +323,29 @@ try_known_board() {
         <<< "$fields_json")
     [[ -n $field_id && -n $option_id ]] || return 1
 
-    gh project item-edit \
-        --id "$item_id" \
-        --project-id "$project_id" \
-        --field-id "$field_id" \
-        --single-select-option-id "$option_id" >/dev/null 2>&1 || return 2
-
-    cache_item_id "$project_id" "$issue_number" "$item_id"
-    if ! refresh_board_metadata "$project_owner" "$project_number" "$live_project_id" \
-        "$live_project_title" "$fields_json"; then
-        printf 'Warning: moved issue but could not refresh .agent/board.json\n' >&2
+    for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+        item_id=$(select_item_id "$issue_number" "$items_json")
+        [[ -n $item_id ]] || continue
+        gh project item-edit \
+            --id "$item_id" \
+            --project-id "$project_id" \
+            --field-id "$field_id" \
+            --single-select-option-id "$option_id" >/dev/null 2>&1 || return 2
+        cache_item_id "$project_id" "$issue_number" "$item_id"
+        completed_issues[$issue_number]=1
+        printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 4 calls)\n' \
+            "$issue_number" "$status" "$project_number" "$project_title"
+    done
+    if ((${#completed_issues[@]} > 0)); then
+        if ! refresh_board_metadata "$project_owner" "$project_number" "$live_project_id" \
+            "$live_project_title" "$fields_json"; then
+            printf 'Warning: moved issue but could not refresh .agent/board.json\n' >&2
+        fi
     fi
-    printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 4 calls)\n' \
-        "$issue_number" "$status" "$project_number" "$project_title"
+    for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] || return 1
+    done
     return 0
 }
 
@@ -321,23 +366,26 @@ fi
 # Returns: 0 moved, 3 issue not on this board, 4 no-op reported for this board.
 process_project() {
     local project_number=$1 project_id=$2 project_title=$3
-    local items_json item_id fields_json status_field_id option_id
+    local items_json item_id fields_json status_field_id option_id issue_number
 
     # --limit is mandatory: gh defaults to 30 items, so on any real board the target
     # card is silently absent and this would report "not on any board" while exiting 0.
     if ! items_json=$(gh project item-list "$project_number" --owner "$owner" \
         --limit "$ITEM_LIMIT" --format json 2>/dev/null); then
-        printf 'Warning: could not list items for project #%s; skipping it.\n' "$project_number" >&2
+        printf 'Warning: could not list items for project #%s; skipping it.\n' \
+            "$project_number" >&2
         return 3
     fi
     [[ -n $items_json ]] || return 3
 
-    # Match on issue number AND repository. Project v2 boards are routinely shared
-    # across every repo in an org, so number alone can select another repo's #N and
-    # mutate an unrelated card. .content.repository is a URL on some gh versions and
-    # OWNER/REPO on others; accept either, and fall back to .content.url.
-    item_id=$(select_item_id "$items_json")
-    [[ -n $item_id ]] || return 3
+    local -a board_issues=()
+    for issue_number in "${issue_numbers[@]}"; do
+        ((all_boards == 0)) && [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+        item_id=$(select_item_id "$issue_number" "$items_json")
+        [[ -n $item_id ]] || continue
+        board_issues+=("$issue_number")
+    done
+    ((${#board_issues[@]} > 0)) || return 3
 
     if ! fields_json=$(gh project field-list "$project_number" --owner "$owner" \
         --limit "$FIELD_LIMIT" --format json); then
@@ -348,7 +396,11 @@ process_project() {
         'first(.fields[]? | select((.name | ascii_downcase) == "status") | .id) // empty' \
         <<< "$fields_json")
     if [[ -z $status_field_id ]]; then
-        printf 'no-op: project #%s "%s" has no Status field\n' "$project_number" "$project_title"
+        for issue_number in "${board_issues[@]}"; do
+            printf 'no-op: project #%s "%s" has no Status field\n' \
+                "$project_number" "$project_title"
+            completed_issues[$issue_number]=1
+        done
         return 4
     fi
 
@@ -356,59 +408,65 @@ process_project() {
         'first(.fields[]? | select((.name | ascii_downcase) == "status") | .options[]? | select((.name | ascii_downcase) == ($status | ascii_downcase)) | .id) // empty' \
         <<< "$fields_json")
     if [[ -z $option_id ]]; then
-        printf 'no-op: project #%s "%s" has no matching Status option "%s"\n' \
-            "$project_number" "$project_title" "$status"
+        for issue_number in "${board_issues[@]}"; do
+            printf 'no-op: project #%s "%s" has no matching Status option "%s"\n' \
+                "$project_number" "$project_title" "$status"
+            completed_issues[$issue_number]=1
+        done
         return 4
     fi
 
-    if ! gh project item-edit \
-        --id "$item_id" \
-        --project-id "$project_id" \
-        --field-id "$status_field_id" \
-        --single-select-option-id "$option_id" >/dev/null; then
-        die "Could not move issue #$issue_number to '$status'."
-    fi
+    for issue_number in "${board_issues[@]}"; do
+        item_id=$(select_item_id "$issue_number" "$items_json")
+        if ! gh project item-edit \
+            --id "$item_id" \
+            --project-id "$project_id" \
+            --field-id "$status_field_id" \
+            --single-select-option-id "$option_id" >/dev/null; then
+            die "Could not move issue #$issue_number to '$status'."
+        fi
+        cache_item_id "$project_id" "$issue_number" "$item_id"
+        completed_issues[$issue_number]=1
+        printf 'moved #%s -> "%s" on project #%s "%s"\n' \
+            "$issue_number" "$status" "$project_number" "$project_title"
+    done
 
-    # Refresh the cache for diagnostics and future discovery, but never use it
-    # as authority for a later mutation.
-    cache_item_id "$project_id" "$issue_number" "$item_id"
     if ! refresh_board_metadata "$owner" "$project_number" "$project_id" "$project_title" \
         "$fields_json"; then
         printf 'Warning: moved issue but could not refresh .agent/board.json\n' >&2
     fi
-
-    printf 'moved #%s -> "%s" on project #%s "%s"\n' \
-        "$issue_number" "$status" "$project_number" "$project_title"
     return 0
 }
 
 if ! projects_json=$(gh project list --owner "$owner" \
     --limit "$PROJECT_LIMIT" --format json 2>/dev/null); then
-    printf 'no-op: could not list projects for owner %s (gh may need the project scope)\n' "$owner"
-    exit 0
+    die "Could not list projects for owner $owner."
 fi
 if [[ -z $projects_json ]]; then
-    printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
+    for issue_number in "${issue_numbers[@]}"; do
+        printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
+    done
     exit 0
 fi
 
-found_on_board=0
 while IFS=$'\t' read -r project_number project_id project_title; do
     [[ -n $project_number && -n $project_id ]] || continue
     [[ -n $project_title ]] || project_title='(untitled)'
 
     board_rc=0
     process_project "$project_number" "$project_id" "$project_title" || board_rc=$?
-    if ((board_rc == 3)); then
-        continue
-    fi
+    ((board_rc == 3)) && continue
 
-    found_on_board=1
     if ((all_boards == 0)); then
-        exit 0
+        all_complete=1
+        for issue_number in "${issue_numbers[@]}"; do
+            [[ ${completed_issues[$issue_number]+yes} == yes ]] || { all_complete=0; break; }
+        done
+        ((all_complete == 1)) && break
     fi
 done < <(jq -r '.projects[]? | [.number, .id, (.title // "")] | @tsv' <<< "$projects_json")
 
-if ((found_on_board == 0)); then
+for issue_number in "${issue_numbers[@]}"; do
+    [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
     printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
-fi
+done
