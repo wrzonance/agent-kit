@@ -148,6 +148,18 @@ assert_contains "$out" 'not one of the new columns; left unset' \
     'an item whose column was dropped is named, not dropped silently'
 assert_contains "$out" '1 left unset' 'and counted separately from the restored ones'
 
+# --- a non-draining GraphQL consumer ---------------------------------------
+# The real gh CLI consumes --input, but a stub that exits before reading it can
+# close the pipe while jq is still serialising a large request body. Keep this
+# payload above the pipe buffer so the regression is deterministic rather than
+# depending on CI scheduling.
+set_board '[{"id":"a","name":"A"}]'
+repo=$(new_repo)
+large_column=$(printf '%131072s' '' | tr ' ' x)
+out=$(run --repo-root "$repo" --project 9 --vocab "$large_column")
+assert_not_contains "$out" 'Broken pipe' \
+    'a non-draining GraphQL consumer does not leak jq Broken pipe output'
+
 # --- already correct --------------------------------------------------------
 # The mutation rewrites every option id even when the names are unchanged, so
 # running it against a board that is already right is pure downside: a restore
