@@ -91,6 +91,8 @@ assert_not_contains "$out" 'TRUNCATED' 'so the backstop stays quiet on an ordina
 # hand-written filter differs from the last. Answers that look like they
 # disagree are what turned a check into a loop.
 out=$(run_board "$bin" --issue 100)
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'an issue hit identifies the board by title'
 assert_contains "$out" '#100  Ready' 'a single issue is answered directly'
 assert_not_contains "$out" 'Done  (' 'without printing the board around it'
 

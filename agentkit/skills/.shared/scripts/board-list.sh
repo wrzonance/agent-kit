@@ -180,7 +180,7 @@ if [[ -n $ARG_ISSUE ]]; then
         | if . == null then "" else "#\(.number)  \(.status)  \(.title)" end
     ' <<< "$all_records" 2> /dev/null)
     if [[ -n $hit ]]; then
-        printf 'board= project=%s owner=%s calls=1\n%s\n' "$number" "$owner" "$hit"
+        printf 'board=%s project=%s owner=%s calls=1\n%s\n' "$board_title" "$number" "$owner" "$hit"
     else
         printf 'board= project=%s owner=%s calls=1\n#%s is not on this board\n' \
             "$number" "$owner" "$ARG_ISSUE"
