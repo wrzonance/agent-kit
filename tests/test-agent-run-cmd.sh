@@ -81,6 +81,7 @@ git -C "$repo" add -- .agent/config.env Makefile
 git -C "$repo" commit -qm base
 git -C "$repo" update-ref refs/remotes/origin/main HEAD
 printf 'test:\n\t@touch "%s/make-changed-ran"\n' "$tmp" > "$repo/Makefile"
+# shellcheck disable=SC2015  # the || true captures expected refusal output
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'a changed build manifest blocks unattended command execution'
@@ -100,12 +101,14 @@ git -C "$repo" add -- .agent/config.env tools
 git -C "$repo" commit -qm base
 git -C "$repo" update-ref refs/remotes/origin/main HEAD
 printf 'print("changed")\n' > "$repo/tools/__main__.py"
+# shellcheck disable=SC2015  # the || true captures expected refusal output
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'a changed module payload blocks unattended command execution'
 
 printf 'print("added")\n' > "$repo/tools/payload.py"
 git -C "$repo" checkout -- tools/__main__.py
+# shellcheck disable=SC2015  # the || true captures expected refusal output
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'an untracked module payload blocks unattended command execution'
@@ -124,6 +127,7 @@ git -C "$repo" add -- .agent/config.env .agent/runner tools/runner
 git -C "$repo" commit -qm base
 git -C "$repo" update-ref refs/remotes/origin/main HEAD
 rm -- "$repo/.agent/config.env"
+# shellcheck disable=SC2015  # the || true captures expected refusal output
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'a deleted declaration blocks unattended command execution'
