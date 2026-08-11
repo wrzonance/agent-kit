@@ -49,9 +49,10 @@ Environment:
 
 Repository declarations (<git-toplevel>/.agent/config.env):
   AGENT_RUNDIR_<NAME> Directory to run that command in, relative to the repo root.
-  AGENT_CMD_<NAME>    What `--cmd <name>` runs here. Values are argv: split on
-                      whitespace and exec'd directly, never through a shell. A
-                      path-shaped first word must resolve inside the repository.
+  AGENT_CMD_<NAME>    What `--cmd <name>` runs here. Values are argv: spaces
+                      inside single/double quotes stay in one token, then argv
+                      is exec'd directly, never through a shell. A path-shaped
+                      first token must resolve inside the repository.
   AGENT_REPO_RUNNER   Runner to delegate to, as a repository-relative path.
 
 Trust boundary:
@@ -382,6 +383,12 @@ repo_config_get() {
     "$resolver" --repo-root "${git_top:-$run_dir}" --get "$key" 2>/dev/null
 }
 
+repo_config_argv() {
+    local key=$1 resolver=$self_dir/repo-config.sh
+    [[ -x $resolver ]] || return 1
+    "$resolver" --repo-root "${git_top:-$run_dir}" --get-argv "$key" 2>/dev/null
+}
+
 # ------------------------------------------------------------------- runner ---
 runner_path='' runner_src=''
 
@@ -464,9 +471,10 @@ resolve_named_command() {
     key="AGENT_CMD_$upper"
     declared=$(repo_config_get "$key" || true)
     if [[ -n $declared ]]; then
-        # Word-split deliberately: the value is argv, and repo-config.sh has
-        # already refused every character a shell would interpret.
-        read -r -a cmd <<< "$declared"
+        # repo-config.sh parses the safe quoting grammar once and emits NUL-
+        # delimited argv so spaces survive the process boundary without eval.
+        mapfile -d '' -t cmd < <(repo_config_argv "$key")
+        ((${#cmd[@]})) || die "invalid argv for $key"
         cmd_declared=yes
 
         # A monorepo command usually has to run IN its component. Without this

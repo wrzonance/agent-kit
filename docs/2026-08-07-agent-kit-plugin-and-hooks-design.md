@@ -166,7 +166,7 @@ No ecosystem name survives in the shipped tree.
 
 Resolution order:
 
-1. `AGENT_CMD_<NAME>` from `.agent/config.env`, split to argv
+1. `AGENT_CMD_<NAME>` from `.agent/config.env`, parsed to argv
 2. else the existing runner (`AGENT_REPO_RUNNER` / `.agent/runner`) invoked as
    `runner <name>`
 3. else exit 2 naming exactly which key to add
@@ -179,12 +179,13 @@ returned to the agent as normal tool output. The two cases are unrelated.
 Step 2 matters: a bespoke dispatcher **is** the runner, and `runner test` is
 already how the runner convention invokes it. No special case is required for it.
 
-**The command is argv, never a shell string.** Values are split on whitespace and
-`exec`'d directly. `;`, `|`, `&`, backticks, `$(…)`, redirects, and newlines are
-rejected at validation rather than interpreted. This also removes the shell
-question entirely — nothing passes through a login shell, so the zsh-versus-bash
-split cannot affect it. A repository that genuinely needs shell syntax uses
-`.agent/runner`, which is an executable it already controls.
+**The command is argv, never a shell string.** Unquoted spaces separate tokens;
+single or double quotes group spaces into one token, and the resulting argv is
+`exec`'d directly. `;`, `|`, `&`, backticks, `$(…)`, redirects, backslashes, and
+newlines are rejected at validation rather than interpreted. This also removes
+the shell question entirely — nothing passes through a login shell, so the
+zsh-versus-bash split cannot affect it. A repository that genuinely needs shell
+syntax uses `.agent/runner`, which is an executable it already controls.
 
 New `config.env` keys, validated as above: `AGENT_CMD_VERIFY`, `AGENT_CMD_TEST`,
 `AGENT_CMD_LINT`, `AGENT_CMD_TYPECHECK`, `AGENT_CMD_BUILD`.

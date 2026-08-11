@@ -12,6 +12,7 @@
 # Usage:
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
 #   repo-config.sh --get KEY         # one value; exit 1 if absent
+#   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
 #   repo-config.sh --list            # K=V lines for accepted keys
 # Options:
 #   --repo-root DIR                  # skip git-toplevel detection
@@ -25,7 +26,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] (--export | --get KEY | --list)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] (--export | --get KEY | --get-argv KEY | --list)\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -46,15 +47,16 @@ readonly ACCEPTED_KEYS=(
 # shape that survives being lowercased into a filename and an argument.
 readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
 
-# The directory a named command runs in. Values are argv executed from the
+# The directory a named command runs in. Paths may contain spaces and are
+# quoted in generated config. Values are argv executed from the
 # repository root, which suits a single-component repo and breaks a monorepo:
 # asked to declare a dashboard test command, an agent produced a root-run
 # invocation that globbed into node_modules and started running a DEPENDENCY's
 # test suite. The command was correct; the working directory was not
 # expressible.
 #
-# A separate key rather than a prefix inside the value, so the command stays
-# plain argv with no syntax of its own to learn or mis-quote.
+# A separate key rather than a prefix inside the value, so the command's argv
+# grammar stays independent from the working-directory path.
 readonly RUNDIR_KEY_PATTERN='^AGENT_RUNDIR_[A-Z][A-Z0-9_]*$'
 
 # Credential-shaped keys are refused loudly rather than ignored quietly, so a
@@ -73,6 +75,12 @@ while (($#)); do
             mode='get'
             shift
             (($#)) || die_usage '--get requires a KEY'
+            want_key=$1
+            ;;
+        --get-argv)
+            mode='argv'
+            shift
+            (($#)) || die_usage '--get-argv requires a KEY'
             want_key=$1
             ;;
         --repo-root)
@@ -117,7 +125,7 @@ safe_relpath() {
     local value=$1
     [[ $value != /* ]] || return 1
     [[ $value != *..* ]] || return 1
-    [[ $value =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+    [[ $value =~ ^[A-Za-z0-9._/\ -]+$ ]] || return 1
     return 0
 }
 
@@ -179,23 +187,108 @@ runner_contained() {
     return 0
 }
 
-# A command line that will be split on whitespace and exec'd as argv. No shell
-# is involved, so anything a shell would interpret is refused outright rather
-# than silently treated as a literal argument.
+# A command line expressed as safe, shell-like argv. Quotes only group spaces;
+# they are not evaluated, and no shell syntax or escaping is accepted. The
+# parsed array is also the source for --get-argv, so validation and execution
+# cannot disagree about where an argument begins.
 #
 # argv[0] is an executable this repository points at -- the same capability
 # AGENT_REPO_RUNNER grants -- so it gets the same containment. A bare name is a
 # PATH lookup and stays one; a name carrying a slash is a path, and a path must
 # resolve inside the repository. Without this, `tools/../../outside/payload`
 # reaches exec through a key with no check at all.
-safe_argv() {
-    local value=$1 argv0
+declare -a PARSED_ARGV=()
+
+legacy_argv_value() {
+    local value=$1 quote i
+    [[ ${value:0:1} == '"' || ${value:0:1} == "'" ]] || {
+        printf '%s' "$value"
+        return
+    }
+    quote=${value:0:1}
+    for ((i = 1; i < ${#value}; i++)); do
+        [[ ${value:i:1} == "$quote" ]] || continue
+        if [[ $i -eq $((${#value} - 1)) ]]; then
+            printf '%s' "${value:1:${#value}-2}"
+        else
+            printf '%s' "$value"
+        fi
+        return
+    done
+    printf '%s' "$value"
+}
+
+safe_token() {
+    local token=$1 char i
+    for ((i = 0; i < ${#token}; i++)); do
+        char=${token:i:1}
+        case $char in
+            [[:alnum:]]|_|.|/|=|@|:|,|'?'|'*'|'%'|' '|-) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+parse_argv() {
+    local value=$1 char quote='' token='' started=0 i
+    PARSED_ARGV=()
     [[ -n $value ]] || return 1
-    [[ $value != *[\;\|\&\`\<\>\(\)\{\}\$\!\\\'\"]* ]] || return 1
-    [[ $value != *$'\n'* && $value != *$'\t'* ]] || return 1
-    [[ $value != *..* ]] || return 1
-    [[ $value =~ ^[A-Za-z0-9_][A-Za-z0-9_./=:-]*( +[A-Za-z0-9_./=:@,-]+)*$ ]] || return 1
-    argv0=${value%% *}
+    value=$(legacy_argv_value "$value")
+    [[ -n $value ]] || return 1
+
+    for ((i = 0; i < ${#value}; i++)); do
+        char=${value:i:1}
+        if [[ -n $quote ]]; then
+            if [[ $char == "$quote" ]]; then
+                quote=''
+                started=1
+                continue
+            fi
+            [[ $char != $'\n' && $char != $'\t' ]] || return 1
+            if [[ $char == ' ' ]]; then
+                token+=$char
+                continue
+            fi
+        else
+            case $char in
+                \" | \')
+                    quote=$char
+                    started=1
+                    continue
+                    ;;
+                ' ')
+                    if ((started)); then
+                        safe_token "$token" || return 1
+                        PARSED_ARGV+=("$token")
+                        token=''
+                        started=0
+                    fi
+                    continue
+                    ;;
+            esac
+        fi
+
+        case $char in
+            [[:alnum:]_./=@:,?*%-]) token+=$char ;;
+            *) return 1 ;;
+        esac
+        started=1
+    done
+
+    [[ -z $quote ]] || return 1
+    if ((started)); then
+        safe_token "$token" || return 1
+        PARSED_ARGV+=("$token")
+    fi
+    ((${#PARSED_ARGV[@]})) || return 1
+    [[ ${PARSED_ARGV[0]} == [[:alnum:]_]* ]] || return 1
+}
+
+safe_argv() {
+    local argv0
+    parse_argv "$1" || return 1
+    argv0=${PARSED_ARGV[0]}
     [[ $argv0 != */* ]] || resolve_contained "$argv0" > /dev/null || return 1
     return 0
 }
@@ -269,7 +362,10 @@ while IFS= read -r line || [[ -n $line ]]; do
     fi
 
     key=$(trim "${line%%=*}")
-    value=$(unquote "$(trim "${line#*=}")")
+    value=$(trim "${line#*=}")
+    if [[ ! $key =~ $CMD_KEY_PATTERN ]]; then
+        value=$(unquote "$value")
+    fi
 
     if ! is_accepted "$key"; then
         if [[ $key =~ $SECRET_PATTERN ]]; then
@@ -313,6 +409,16 @@ case $mode in
         for i in "${!out_keys[@]}"; do
             if [[ ${out_keys[$i]} == "$want_key" ]]; then
                 printf '%s\n' "${out_values[$i]}"
+                exit 0
+            fi
+        done
+        exit 1
+        ;;
+    argv)
+        for i in "${!out_keys[@]}"; do
+            if [[ ${out_keys[$i]} == "$want_key" ]]; then
+                parse_argv "${out_values[$i]}" || exit 1
+                printf '%s\0' "${PARSED_ARGV[@]}"
                 exit 0
             fi
         done
