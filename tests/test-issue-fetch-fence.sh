@@ -112,6 +112,16 @@ assert_contains "$recipe_text" '[[ $issue_has_content == true ]] || exit 1' \
     'the canonical recipe rejects an empty issue payload before rendering'
 assert_contains "$recipe_text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'the canonical recipe keeps fenced bytes in excluded per-worktree state'
+assert_contains "$recipe_text" 'prior_target="$worktree/.agent/fenced-prior-art.txt"' \
+    'the canonical recipe persists prior-art fence bytes beside the spec'
+assert_contains "$recipe_text" 'cat -- "$worktree/.agent/fenced-spec.txt"' \
+    'the worker embeds persisted spec bytes rather than re-fencing'
+assert_contains "$recipe_text" 'cat -- "$worktree/.agent/fenced-prior-art.txt"' \
+    'the worker embeds persisted prior-art bytes rather than re-fencing'
+assert_contains "$recipe_text" 'Re-running the fence helper for an existing block is churn' \
+    'the recipe documents deliberate deletion before re-fencing'
+assert_contains "$recipe_text" 'fence artifacts already exist; delete the affected file deliberately' \
+    'the recipe refuses implicit re-fencing of persisted artifacts'
 assert_contains "$recipe_text" 'mkdir -p -- "${target%/*}" || exit 1' \
     'the canonical recipe creates its excluded artifact directory'
 

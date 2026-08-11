@@ -28,6 +28,16 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
+assert_contains "$text" 'target="$worktree/.agent/fenced-prior-art.txt"' \
+    'issue preparation persists prior-art fence bytes'
+assert_contains "$text" 'one canonical issue-body fetch during preparation' \
+    'triage digest limits surviving issue body reads to preparation'
+assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
+    'triage flow forbids redundant timeline and project item reads'
+assert_contains "$text" '--issue-numbers "$issue_numbers_csv"' \
+    'dispatch moves selected issues with one batch invocation'
+assert_contains "$text" 'that issue/status/phase is complete' \
+    'a moved output line is terminal for its issue phase'
 assert_not_contains "$text" 'target="$PWD/fenced-spec.txt"' \
     'issue fencing never writes untrusted bytes to the worktree root'
 

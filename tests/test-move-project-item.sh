@@ -32,8 +32,8 @@ case "\$*" in
           cat "$here/fixtures/gh-field-list.json"
       fi
       ;;
-  *"project item-list"*)  cat "$here/fixtures/gh-item-list.json" ;;
-  *"project list"*)       cat "$here/fixtures/gh-project-list.json" ;;
+  *"project item-list"*)  [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1; cat "$here/fixtures/gh-item-list.json" ;;
+  *"project list"*)       [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1; cat "$here/fixtures/gh-project-list.json" ;;
   *) printf '{}\n' ;;
 esac
 exit 0
@@ -240,5 +240,48 @@ mv "$repo/.agent/b.tmp" "$repo/.agent/board.json"
 : > "$tmp/gh.log"
 out=$(CUSTOM_STATUS=1 run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
 assert_contains "$(cat "$tmp/gh.log")" 'opt-ice' 'a board-declared column outside the canonical five works'
+
+# --- batch moves share live board lookups ----------------------------------
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 99 --status Ready 2>&1)
+assert_contains "$out" 'moved #57' 'batch reports the first moved issue'
+assert_contains "$out" 'moved #99' 'batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'batch edits each issue'
+assert_eq '1' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
+    'batch shares project lookup'
+assert_eq '1' "$(grep -c 'item-list' "$tmp/gh.log" || true)" \
+    'batch shares item lookup'
+assert_eq '1' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
+    'batch shares Status lookup'
+
+# A moved/no-op mixture terminates the moved issue and emits one terminal
+# no-op for the issue absent from every board.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'moved #57' 'mixed batch keeps the moved outcome'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'mixed batch emits the absent issue no-op'
+assert_eq '1' "$(grep -c -- '--id PVTI_example57' "$tmp/gh.log" || true)" \
+    'mixed batch does not repeat the moved issue'
+
+# Same-number cards on a shared board remain repository-scoped in a batch.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-numbers 57 --status Ready 2>&1)
+assert_contains "$out" 'moved #57' 'CSV batch accepts one issue'
+assert_contains "$(cat "$tmp/gh.log")" '--id PVTI_example57' \
+    'CSV batch selects the requested repository card'
+assert_not_contains "$(cat "$tmp/gh.log")" 'PVTI_otherrepo57' \
+    'CSV batch never edits the same-number card from another repository'
+
+# API failures are errors, not successful no-ops.
+repo=$(bare_repo)
+assert_rc 1 'project-list API failure exits 1' -- env FAIL_PROJECT_LIST=1 \
+    GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
+    "$mv_sh" --repo-root "$repo" --repository example-org/example-repo \
+    --issue-number 57 --status Ready
 
 finish

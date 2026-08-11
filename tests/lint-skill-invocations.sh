@@ -36,6 +36,17 @@ if [[ $fallbacks -ne 1 ]]; then
     printf 'EXPECTED exactly one contract-absent fallback resolver, found %s\n' "$fallbacks" >&2
     unguarded=$((unguarded + 1))
 fi
+if [[ $fallbacks -eq 1 ]] && ! grep -q '/onboard-repo/SKILL\.md:' <<< "$fallback_matches"; then
+    printf 'EXPECTED the contract-absent fallback only in onboard-repo bootstrap\n' >&2
+    unguarded=$((unguarded + 1))
+fi
+
+pinned_paths=$(grep -R -nE --include='SKILL.md' \
+    'plugins/cache/[^[:space:]"`$}]*/agentkit/[0-9]+(\.[0-9]+)*' "$skills_dir" || true)
+if [[ -n $pinned_paths ]]; then
+    printf 'PINNED plugin-cache path in skill text:\n%s\n' "$pinned_paths" >&2
+    unguarded=$((unguarded + 1))
+fi
 
 while IFS= read -r skill_file; do
     name=$(basename "$(dirname "$skill_file")")
