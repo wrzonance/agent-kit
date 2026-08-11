@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+source "$here/lib/assert.sh"
+TEST_NAME='ci-gap'
+
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
+make_repo() {
+    local repo=$1 config=$2 workflow=$3
+    mkdir -p "$repo/.agent" "$repo/.github/workflows"
+    [[ -z $config ]] || printf '%s\n' "$config" >"$repo/.agent/config.env"
+    [[ -z $workflow ]] || printf '%s\n' "$workflow" >"$repo/.github/workflows/ci.yml"
+}
+
+covered_repo="$tmp/covered"
+make_repo "$covered_repo" $'AGENT_CMD_TEST=tests/run-tests.sh\nAGENT_CMD_LINT=lint' \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Setup runtime
+      - name: Lint checks
+      - name: Security scan'
+
+covered_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$covered_repo")
+assert_contains "$covered_output" 'ci-gap= workflows=1 gates=2 covered=1 uncovered=1' \
+    'mixed workflow report counts gates and coverage'
+assert_contains "$covered_output" 'NOT covered by any declared command' \
+    'mixed workflow names the uncovered gate'
+assert_contains "$covered_output" 'Security scan' \
+    'mixed workflow includes the uncovered gate name'
+assert_not_contains "$covered_output" 'Setup runtime' \
+    'setup steps are excluded from the gate report'
+assert_contains "$covered_output" 'Plausibly covered' \
+    'mixed workflow reports the covered gate section'
+
+no_contract="$tmp/no-contract"
+make_repo "$no_contract" '' \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Security scan'
+no_contract_err="$tmp/no-contract.err"
+no_contract_rc=0
+no_contract_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$no_contract" 2>"$no_contract_err") || no_contract_rc=$?
+assert_eq '3' "$no_contract_rc" 'missing command contract has its documented exit'
+assert_contains "$(cat "$no_contract_err")" 'declares no commands' \
+    'missing command contract explains the comparison cannot run'
+assert_eq '' "$no_contract_output" 'missing command contract has no partial report'
+
+no_workflow="$tmp/no-workflow"
+make_repo "$no_workflow" 'AGENT_CMD_TEST=tests/run-tests.sh' ''
+no_workflow_err="$tmp/no-workflow.err"
+no_workflow_rc=0
+no_workflow_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$no_workflow" 2>"$no_workflow_err") || no_workflow_rc=$?
+assert_eq '3' "$no_workflow_rc" 'missing workflow has its documented exit'
+assert_contains "$(cat "$no_workflow_err")" 'no CI workflows' \
+    'missing workflow explains the absent comparison source'
+assert_eq '' "$no_workflow_output" 'missing workflow has no partial report'
+
+finish
