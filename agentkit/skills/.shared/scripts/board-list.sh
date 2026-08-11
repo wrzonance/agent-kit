@@ -109,6 +109,7 @@ board="$repo_root/.agent/board.json"
 
 number=$(jq -r '.project.number // empty' "$board" 2> /dev/null || true)
 owner=$(jq -r '.owner // empty' "$board" 2> /dev/null || true)
+board_title=$(jq -r '.project.title // empty' "$board" 2> /dev/null || true)
 [[ -n $number && -n $owner ]] ||
     die_blocked '.agent/board.json declares no project number or owner'
 
@@ -197,8 +198,8 @@ if ((ARG_JSON)); then
 fi
 
 total=$(jq -r 'length' <<< "$records")
-printf 'board= project=%s owner=%s items=%s of=%s calls=1%s\n' \
-    "$number" "$owner" "$total" "${declared_total:-$fetched}" \
+printf 'board=%s project=%s owner=%s items=%s of=%s calls=1%s\n' \
+    "$board_title" "$number" "$owner" "$total" "${declared_total:-$fetched}" \
     "${ARG_STATUS:+ status=$ARG_STATUS}"
 if ((truncated)); then
     printf 'TRUNCATED: read %s of %s items. Every count below is a count of what\n' \

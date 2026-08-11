@@ -26,7 +26,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 repo="$tmp/repo"
 mkdir -p "$repo/.agent"
-printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
+printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7,"title":"example-board"}}\n' \
     > "$repo/.agent/board.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 
@@ -67,6 +67,8 @@ run_board() {
 # --- the whole board fits: no warning, and none deserved --------------------
 bin=$(make_gh small 12)
 out=$(run_board "$bin")
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'a complete listing identifies the board by title'
 assert_contains "$out" 'items=12 of=12' 'a complete read reports both counts agreeing'
 assert_not_contains "$out" 'TRUNCATED' 'and does not warn about a board it read fully'
 
