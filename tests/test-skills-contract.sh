@@ -94,6 +94,8 @@ assert_line_order() {
 step_two_line=$(grep -m1 -n '^## Step 2 ' "$onboard" | cut -d: -f1)
 review_line=$(grep -m1 -in 'review existing instructions' "$onboard" | cut -d: -f1)
 write_line=$(grep -m1 -n '^"\$shared/bootstrap-repo\.sh"$' "$onboard" | cut -d: -f1)
+audit_approval_line=$(grep -m1 -n 'explicitly approved onboarding pass' "$onboard" | cut -d: -f1)
+write_approval_line=$(grep -m1 -n 'approved the proposed onboarding additions' "$onboard" | cut -d: -f1)
 conflicting_line=$(grep -m1 -n '^- \*\*Conflicting\*\*' "$onboard" | cut -d: -f1)
 duplicated_line=$(grep -m1 -n '^- \*\*Duplicated\*\*' "$onboard" | cut -d: -f1)
 repo_specific_line=$(grep -m1 -n '^- \*\*Repo-specific\*\*' "$onboard" | cut -d: -f1)
@@ -104,6 +106,10 @@ assert_line_order 'approval-gated review precedes the non-dry-run bootstrap writ
     "$review_line" "$write_line"
 assert_line_order 'the config write section precedes the non-dry-run bootstrap write' \
     "$step_two_line" "$write_line"
+assert_line_order 'the audit demands an explicitly approved pass before Step 2' \
+    "$audit_approval_line" "$step_two_line"
+assert_line_order 'user approval of the additions precedes the non-dry-run bootstrap write' \
+    "$write_approval_line" "$write_line"
 assert_line_order 'Conflicting is classified before Duplicated' \
     "$conflicting_line" "$duplicated_line"
 assert_line_order 'Duplicated is classified before Repo-specific' \
