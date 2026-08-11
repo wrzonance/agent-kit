@@ -26,6 +26,10 @@ assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
 assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
+assert_contains "$text" 'target="$worktree/.agent/fenced-spec.txt"' \
+    'issue fencing uses the established excluded per-worktree path'
+assert_not_contains "$text" 'target="$PWD/fenced-spec.txt"' \
+    'issue fencing never writes untrusted bytes to the worktree root'
 
 outer_open_count=$(awk '$0 == "````text" { count++ } END { print count + 0 }' "$skill")
 outer_close_count=$(awk '$0 == "````" { count++ } END { print count + 0 }' "$skill")
@@ -43,9 +47,9 @@ assert_contains "$prompt_body" '<PASTE the complete output selected by the bound
     'the prompt placeholders remain inside the outer fence'
 inner_open_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```bash" { count++ } END { print count + 0 }')
 inner_close_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```" { count++ } END { print count + 0 }')
-assert_eq '2' "$inner_open_count" \
+assert_eq '3' "$inner_open_count" \
     'inner bash examples retain their triple-backtick openings'
-assert_eq '2' "$inner_close_count" \
+assert_eq '3' "$inner_close_count" \
     'inner bash examples retain their triple-backtick closers'
 
 snippet=$(awk '

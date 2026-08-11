@@ -843,7 +843,8 @@ first `claude` on `PATH`); pass `--claude PATH` only for an install that is not 
 
 **Stream contract:** stdout carries **exactly one** JSON object — the completed result, or the
 blocked object on exit `3`. Progress objects go to **stderr**, one per `--poll-seconds`. Capture
-stdout directly (`>"$verdict_path"` or `verdict=$(…)`); there is no stream to fold with `jq -s last`,
+stdout into a temporary path and publish it with `mv` only after the producer exits successfully;
+never redirect a live stream to the final verdict path. There is no stream to fold with `jq -s last`,
 and do not redirect stderr to `/dev/null` if you want the liveness signal.
 
 The helper preflights the installed CLI and blocks before sending the diff unless the tested
@@ -948,9 +949,33 @@ verdict_path="$RUN_DIR/adversarial.result.json"
 # stdout = one JSON object (verdict, or the blocked object on rc 3).
 # stderr = one progress object per --poll-seconds.  --transcript = raw NDJSON for auditing.
 review_rc=0
-"$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort" \
+verdict_tmp="$verdict_path.tmp"
+cleanup_verdict() { rm -f -- "$verdict_tmp"; }
+trap cleanup_verdict EXIT HUP INT TERM
+rm -f -- "$verdict_path" "$verdict_tmp"
+if "$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort" \
     --diff "$diff_path" --transcript "$transcript" \
-    --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 5.00 >"$verdict_path" || review_rc=$?
+    --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 5.00 >"$verdict_tmp"; then
+    if mv -f -- "$verdict_tmp" "$verdict_path"; then
+        :
+    else
+        review_rc=$?
+        rm -f -- "$verdict_path" "$verdict_tmp"
+    fi
+else
+    review_rc=$?
+    if ((review_rc == 3)); then
+        if mv -f -- "$verdict_tmp" "$verdict_path"; then
+            :
+        else
+            review_rc=$?
+            rm -f -- "$verdict_path" "$verdict_tmp"
+        fi
+    else
+        rm -f -- "$verdict_path" "$verdict_tmp"
+    fi
+fi
+trap - EXIT HUP INT TERM
 printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
     "$review_rc" "$verdict_path" "$transcript"
 ```
@@ -962,6 +987,32 @@ helper's own PID, not the reviewer's), `elapsedSeconds`, `secondsSinceLastEvent`
 `--max-duration-seconds` ceiling: a duration breach is a blocked review, never `no_findings`. Silence
 is a diagnostic warning until that ceiling; do not shrink the diff to the last commit merely to meet
 an estimate.
+
+For liveness, both helpers record their own PID at `<transcript>.pid` inside the private run
+directory for the whole run and remove it on exit. Check liveness with `kill -0` against that
+recorded PID, never a process-name pattern — `pgrep` matching has returned empty for a live,
+sandbox-wrapped producer and false-confirmed its death. Every poll then lands in exactly one of
+three states, and only the third is ever "blocked":
+
+1. **Completed** — the helper exited and published a verdict at the final path (success, or the
+   rc=3 environment-blocked JSON). Consume it.
+2. **Still running** — no published verdict, recorded PID alive, `--max-duration-seconds` not yet
+   elapsed. Keep polling; this state is never "blocked". An absent terminal event, a missing or
+   empty verdict file, and a heartbeat-only transcript tail are all consistent with a healthy
+   in-flight review — a live review has been wrongly declared blocked less than a minute before
+   it finished.
+3. **Blocked** — the ceiling elapsed, or the recorded PID is dead with no published verdict.
+   Report it definitively, artifacts preserved.
+
+The wait is bounded in both directions: the helper kills its producer at the ceiling, so state 2
+cannot outlive `--max-duration-seconds` — a slow review gets its whole window, a review that will
+never complete costs at most one window, and the poller needs no judgment in unattended runs.
+
+Completion is the producer's successful exit together with its terminal stream result event (for
+Claude, `result/success` with `is_error == false` and a valid structured verdict; for Codex, a
+successful exit plus its terminal result message). A final file's existence or size, or the tail of
+a live log, is never completion. The wrappers below remove both final and temporary verdict
+artifacts on failure and only make the final artifact canonical after `mv`.
 
 Do not accept plain prose or exit `0` alone. Completion requires all of: verified `system/init`, a
 final `result/success` event, `is_error == false`, a valid `structured_output` verdict, and process
@@ -1015,12 +1066,38 @@ fi
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 diff_path="$RUN_DIR/adversarial.diff"
 verdict_path="$RUN_DIR/adversarial.result.json"
-"$helper" --mode review --model gpt-5.6-terra --effort xhigh \
+verdict_tmp="$verdict_path.tmp"
+cleanup_verdict() { rm -f -- "$verdict_tmp"; }
+trap cleanup_verdict EXIT HUP INT TERM
+rm -f -- "$verdict_path" "$verdict_tmp"
+review_rc=0
+if "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
     --diff "$diff_path" \
-    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >"$verdict_path" || {
+    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >"$verdict_tmp"; then
+    if mv -f -- "$verdict_tmp" "$verdict_path"; then
+        :
+    else
+        review_rc=$?
+        rm -f -- "$verdict_path" "$verdict_tmp"
+    fi
+else
+    review_rc=$?
+    if ((review_rc == 3)); then
+        if mv -f -- "$verdict_tmp" "$verdict_path"; then
+            :
+        else
+            review_rc=$?
+            rm -f -- "$verdict_path" "$verdict_tmp"
+        fi
+    else
+        rm -f -- "$verdict_path" "$verdict_tmp"
+    fi
+fi
+trap - EXIT HUP INT TERM
+if ((review_rc != 0)); then
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
-}
+fi
 jq '{verdict: .verdict.verdict, findings: .verdict.findings, tokenUsage}' <"$verdict_path"
 ```
 

@@ -8,12 +8,30 @@
 
 # The exact snippet the skills use. Defined once so no message can teach a path
 # that does not resolve -- which is what these messages did after packaging moved
-# the tree, and only a live session caught it.
+# the tree, and only a live session caught it. The contract is the guarded,
+# worktree-rooted source of truth; the cache search is an explicit bootstrap for
+# a contract-absent checkout.
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
-readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
-  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"'
+readonly RESOLVE_HINT='  agentkit=
+  contract_root=$(git rev-parse --show-toplevel 2>/dev/null) || contract_root=
+  contract=
+  if [[ -n "$contract_root" ]]; then
+      contract="$contract_root/.agent/env-contract.txt"
+  fi
+  if [[ -n "$contract_root" && -r "$contract" && -f "$contract" &&
+        ! -L "$contract" && -O "$contract" ]] &&
+      ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \
+          >/dev/null 2>&1; then
+      agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+  fi
+  if [[ -z "$agentkit" ]]; then
+      # Contract-absent bootstrap: discover the installed plugin tree.
+      agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
+          "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
+          -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
+      [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+  fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment'
@@ -131,6 +149,32 @@ guard_should_advise() {
     local rc=0
     guard_claim "$@" || rc=$?
     ((rc != 1))
+}
+
+# Record issue numbers independently from the once-per-rule lesson claim. A
+# single body read is useful and should stay quiet; the first distinct second
+# number is where the digest becomes the cheaper route. mkdir is the atomic
+# state transition, so concurrent hook invocations cannot lose a number.
+guard_issue_view_is_distinct() {
+    local root=$1 session=$2 issue=$3 dir
+    [[ -n $root && $issue =~ ^[0-9]+$ ]] || return 1
+
+    session=${session//[^A-Za-z0-9._-]/_}
+    dir="$root/.agent/cache/brief/${session:-nosession}/issue-views"
+    # This feeds an advisory, so unrecordable state must SPEAK. Returning true
+    # lets guard_should_advise emit the lesson while still persisting nothing.
+    mkdir -p "$dir" 2> /dev/null || return 0
+    # Record the issue marker BEFORE electing the quiet first view: the marker
+    # mkdir is the atomic transition, so of two concurrent reads of one issue
+    # exactly one records it and neither can masquerade as a distinct second
+    # number. A marker that already exists is a re-read: quiet. Any other
+    # marker failure is unrecordable state: fail open and speak.
+    if ! mkdir "$dir/$issue" 2> /dev/null; then
+        [[ -d "$dir/$issue" ]] && return 1
+        return 0
+    fi
+    mkdir "$dir/first" 2> /dev/null && return 1
+    return 0
 }
 
 # Denial: deny ONLY on a claim that was actually recorded.

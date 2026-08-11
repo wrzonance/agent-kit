@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Regression coverage for private review-artifact creation.
+# shellcheck disable=SC2016
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -106,6 +107,50 @@ assert_eq 'keep this directory' "$(<"$owned_dir_run/pr_1_reviews.json/sentinel")
     'gh-pr-state rejects the directory before publication'
 
 skill_text=$(<"$skill")
+
+# The skill's wrappers stage a verdict before publication. Environment-blocked
+# rc=3 is special: its JSON tells the caller whether to fall back or retry, so
+# it must survive. Every other failed producer remains non-canonical.
+publish_verdict() {
+    local producer=$1 verdict_path=$2 verdict_tmp="$2.tmp" rc=0
+    rm -f -- "$verdict_path" "$verdict_tmp"
+    if "$producer" >"$verdict_tmp"; then
+        mv -f -- "$verdict_tmp" "$verdict_path"
+    else
+        rc=$?
+        if ((rc == 3)); then
+            mv -f -- "$verdict_tmp" "$verdict_path"
+        else
+            rm -f -- "$verdict_path" "$verdict_tmp"
+        fi
+        return "$rc"
+    fi
+}
+
+blocked_producer="$tmp/blocked-producer.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s" "{\"status\":\"blocked\"}"' 'exit 3' >"$blocked_producer"
+chmod +x "$blocked_producer"
+blocked_verdict="$tmp/blocked.result.json"
+blocked_rc=0
+publish_verdict "$blocked_producer" "$blocked_verdict" || blocked_rc=$?
+assert_eq 3 "$blocked_rc" 'an environment-blocked review retains its rc'
+assert_eq '{"status":"blocked"}' "$(<"$blocked_verdict")" \
+    'an environment-blocked review publishes its JSON artifact'
+assert_eq no "$( [[ ! -e "$blocked_verdict.tmp" ]] && printf no || printf yes )" \
+    'an environment-blocked review removes its temporary artifact'
+
+failed_producer="$tmp/failed-producer.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s" partial' 'exit 1' >"$failed_producer"
+chmod +x "$failed_producer"
+failed_verdict="$tmp/failed.result.json"
+failed_rc=0
+publish_verdict "$failed_producer" "$failed_verdict" || failed_rc=$?
+assert_eq 1 "$failed_rc" 'a non-blocked review failure retains its rc'
+assert_eq no "$( [[ ! -e "$failed_verdict" ]] && printf no || printf yes )" \
+    'a non-blocked review failure leaves no final artifact'
+assert_eq no "$( [[ ! -e "$failed_verdict.tmp" ]] && printf no || printf yes )" \
+    'a non-blocked review failure removes its temporary artifact'
+
 assert_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
     'the skill creates a random per-run artifact directory'
 assert_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
@@ -120,6 +165,22 @@ assert_contains "$skill_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
     'the skill names one shared adversarial diff artifact'
 assert_contains "$skill_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
     'the skill names one neutral adversarial verdict artifact'
+assert_contains "$skill_text" 'verdict_tmp="$verdict_path.tmp"' \
+    'the skill stages adversarial verdicts beside the final artifact'
+assert_contains "$skill_text" 'mv -f -- "$verdict_tmp" "$verdict_path"' \
+    'the skill publishes verdicts atomically after producer success'
+assert_eq 2 "$(grep -Fc 'if ((review_rc == 3)); then' "$skill")" \
+    'both adversarial wrappers publish their rc=3 blocked artifacts'
+assert_contains "$skill_text" 'A final file' \
+    'the skill defines completion by terminal producer events'
+assert_contains "$skill_text" 'never a process-name pattern' \
+    'the skill keys liveness on the recorded PID file'
+assert_contains "$skill_text" 'PID alive' \
+    'the skill names the still-running poll state as never blocked'
+assert_contains "$skill_text" 'bounded in both directions' \
+    'the skill bounds the wait against both stalls and premature verdicts'
+assert_not_contains "$skill_text" '>"$verdict_path"' \
+    'the skill never streams directly into the final verdict path'
 assert_not_contains "$skill_text" 'claude.result.json' \
     'the skill has no Claude-specific verdict path'
 assert_not_contains "$skill_text" 'codex.result.json' \

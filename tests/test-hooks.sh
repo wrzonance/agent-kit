@@ -58,6 +58,9 @@ assert_eq '0' "$rc" 'SessionStart exits 0'
 assert_hook_output "$out" session-start 'SessionStart emits schema-valid JSON'
 assert_contains "$out" 'example-org/example-repo' 'and carries the contract'
 assert_contains "$out" 'SessionStart' 'tagged with its event name'
+assert_contains "$out" '.agent/env-contract.txt' 'resolver advice starts at the worktree contract'
+assert_contains "$out" 'ls-files --error-unmatch' 'resolver advice rejects tracked contracts'
+assert_contains "$out" 'sed -n' 'resolver advice extracts the skills path with sed and head'
 
 # --- an un-onboarded repository is told how to onboard --------------------
 # The failure mode this covers is SILENCE: with no .agent/config.env every
@@ -344,6 +347,7 @@ rc=0; printf '%s' "$sub" | "$hooks/subagent-start.sh" >/dev/null 2>&1 || rc=$?
 assert_eq '0' "$rc" 'SubagentStart exits 0'
 assert_hook_output "$out" subagent-start 'SubagentStart emits schema-valid JSON'
 assert_contains "$out" 'triage-issues.sh' 'and injects the tooling curriculum into the worker'
+assert_contains "$out" '.agent/env-contract.txt' 'and teaches the guarded contract resolver'
 assert_not_contains "$out" 'example-org/example-repo' 'without injecting the repository contract'
 assert_not_contains "$out" 'branch=feat/x' 'or its worktree-specific branch'
 
@@ -829,19 +833,71 @@ done
 # how the environment contract stops being read.
 s=$(fresh_sid)
 out=$(post_input "$repo" 'gh issue view 442' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
-assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'the first per-issue call is taught'
+assert_eq '' "$(ctx_of "$out")" 'the first per-issue body read stays quiet'
 out=$(post_input "$repo" 'gh issue view 443' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
-assert_eq '' "$(ctx_of "$out")" 'the second is not repeated'
+assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'a second distinct issue number is taught'
+out=$(post_input "$repo" 'gh issue view 444' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'the lesson remains once per session after the second issue'
 # Keyed by RULE, not by command: hashing the command would make 442, 443, 444
 # three separate lessons and teach twelve times where one was intended.
 out=$(post_input "$repo" 'git add -A' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'worktree-commit.sh' 'a different rule still speaks in that session'
-out=$(post_input "$repo" 'gh issue view 444' | "$hooks/post-tool-use.sh" 2>/dev/null)
+new_s=$(fresh_sid)
+post_input "$repo" 'gh issue view 444' "$new_s" | "$hooks/post-tool-use.sh" >/dev/null 2>&1
+out=$(post_input "$repo" 'gh issue view 445' "$new_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'and a new session is taught again'
 
+# Advisory state is deliberately fail-open: unlike a denial, failure to record
+# issue views must still speak rather than silently losing the triage lesson.
+locked_issue=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$locked_issue/.agent/config.env"
+chmod -w "$locked_issue/.agent/cache" 2>/dev/null || true
+if [[ -w $locked_issue/.agent/cache ]]; then
+    printf '  skip unwritable issue-view advisory check: cache still writable (running as root?)\n'
+else
+    out=$(post_input "$locked_issue" 'gh issue view 1' "sLOCKISSUE" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+        'an unwritable issue-view state still emits the first advisory'
+    out=$(post_input "$locked_issue" 'gh issue view 2' "sLOCKISSUE" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+        'an unwritable issue-view state keeps speaking for later views'
+fi
+chmod +w "$locked_issue/.agent/cache" 2>/dev/null || true
+
+# A re-read of one issue is not a second distinct number: the issue marker is
+# recorded before the quiet first view is elected, so a duplicate read can never
+# masquerade as digest-worthy breadth.
+dup_s=$(fresh_sid)
+post_input "$repo" 'gh issue view 500' "$dup_s" | "$hooks/post-tool-use.sh" >/dev/null 2>&1
+out=$(post_input "$repo" 'gh issue view 500' "$dup_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'a re-read of the same issue stays quiet'
+out=$(post_input "$repo" 'gh issue view 501' "$dup_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+    'a genuinely distinct second issue still teaches'
+
+# Fail-open must also cover the narrower failure where the views directory
+# exists but cannot accept markers: the lesson still speaks instead of the
+# guard silently failing closed on the marker mkdir.
+part_locked=$(make_repo)
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$part_locked/.agent/config.env"
+part_views="$part_locked/.agent/cache/brief/sLOCKDIR/issue-views"
+mkdir -p "$part_views"
+chmod -w "$part_views" 2>/dev/null || true
+if [[ -w $part_views ]]; then
+    printf '  skip unwritable views-dir advisory check: dir still writable (running as root?)\n'
+else
+    out=$(post_input "$part_locked" 'gh issue view 1' "sLOCKDIR" | "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
+        'an unwritable views directory still speaks instead of failing closed'
+fi
+chmod +w "$part_views" 2>/dev/null || true
+
 # Reading ONE issue body stays legitimate; the digest deliberately omits bodies.
-out=$(post_input "$repo" 'gh issue view 442' | "$hooks/post-tool-use.sh" 2>/dev/null)
-assert_contains "$(ctx_of "$out")" 'does not carry bodies' 'the advice does not forbid reading a body'
+body_sid=$(fresh_sid)
+post_input "$repo" 'gh issue view 442' "$body_sid" | "$hooks/post-tool-use.sh" >/dev/null 2>&1
+out=$(post_input "$repo" 'gh issue view 443' "$body_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'body read in a session stays quiet' \
+    'the advice does not forbid reading a body'
 
 # --- a hardcoded plugin path ------------------------------------------------
 # Observed live: the resolver came back empty, the call produced no output at
@@ -863,6 +919,12 @@ correct='agentkit=$(find "$HOME/.codex/plugins/cache" -maxdepth 4 -type d -path 
 out=$(post_input "$repo" "$correct" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'the resolver form is not corrected'
 
+# A command that demonstrably reads the guarded contract is already following
+# the lesson and must not receive a competing advisory.
+out=$(post_input "$repo" 'sed -n "s/^skills= path=//p" .agent/env-contract.txt' |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading env-contract.txt does not trigger an advisory'
+
 # Unrecordable state SPEAKS -- the inverse of the denial rule. A repeated
 # sentence is noise; silence would lose the lesson, and nothing here can block.
 locked2=$(make_repo)
@@ -870,7 +932,7 @@ printf 'AGENT_REPO_SLUG=e/e\n' > "$locked2/.agent/config.env"
 chmod -w "$locked2/.agent/cache" 2>/dev/null || true
 if [[ ! -w $locked2/.agent/cache ]]; then
     for attempt in 1 2; do
-        out=$(post_input "$locked2" 'gh issue view 1' "sLOCK2" | "$hooks/post-tool-use.sh" 2>/dev/null)
+        out=$(post_input "$locked2" 'gh api repos/e/e/issues/1/timeline' "sLOCK2" | "$hooks/post-tool-use.sh" 2>/dev/null)
         assert_contains "$(ctx_of "$out")" 'triage-issues.sh' "unrecordable state still teaches (attempt $attempt)"
     done
 fi
@@ -884,7 +946,11 @@ mkdir -p "$outside"
 for cmd in "cd $repo && gh project item-list 7 --owner x" \
     "gh issue view 442; cd $repo"; do
     out=$(post_input "$outside" "$cmd" | "$hooks/post-tool-use.sh" 2>/dev/null)
-    assert_contains "$(ctx_of "$out")" 'triage-issues.sh' "follows the named repository: $cmd"
+    if [[ $cmd == gh\ issue\ view* ]]; then
+        assert_eq '' "$(ctx_of "$out")" "a first body read stays quiet: $cmd"
+    else
+        assert_contains "$(ctx_of "$out")" 'triage-issues.sh' "follows the named repository: $cmd"
+    fi
 done
 
 # --- no evidence, nothing to say ------------------------------------------

@@ -874,6 +874,60 @@ fi
 printf 'boundary mode: %s\n' "$boundary_mode"
 ```
 
+### Canonical issue fetch and fence preparation
+
+When the complete issue text is needed, use this one fetch-and-render form for
+the title, body, labels, and comments. Do not compose alternative fetch,
+formatting, or fencing recipes; composing alternatives is churn. The current
+base has no #55 body cache, so the canonical source is `gh issue view` itself.
+The jq program is deliberately single-quoted: its double quotes are jq syntax,
+not shell-escaped fragments.
+
+```bash
+issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1
+issue_has_content=$(jq -r '
+  ((.title // "") != "") or ((.body // "") != "")
+    or (((.labels // []) | length) > 0) or (((.comments // []) | length) > 0)
+' <<<"$issue_payload")
+[[ $issue_has_content == true ]] || exit 1
+issue_contents=$(jq -r '
+  [
+    ("Title: " + (.title // "")),
+    ("Body:\n" + (.body // "")),
+    ("Labels:\n" + ((.labels // []) | map(.name) | join(", "))),
+    ("Comments:\n" + ((.comments // [])
+      | map("- " + ((.author.login // "unknown") | tostring) + ": " + (.body // ""))
+      | join("\n")))
+  ] | join("\n\n")
+' <<<"$issue_payload")
+
+target="$worktree/.agent/fenced-spec.txt"
+tmp="$target.tmp"
+cleanup_fence() { rm -f -- "$tmp"; }
+trap cleanup_fence EXIT HUP INT TERM
+mkdir -p -- "${target%/*}" || exit 1
+rm -f -- "$target" "$tmp"
+set -o pipefail
+if printf '%s' "$issue_contents" |
+    "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$tmp"; then
+    if mv -f -- "$tmp" "$target"; then
+        :
+    else
+        mv_rc=$?
+        rm -f -- "$target" "$tmp"
+        exit "$mv_rc"
+    fi
+else
+    rm -f -- "$target" "$tmp"
+    exit 1
+fi
+trap - EXIT HUP INT TERM
+```
+
+The final `fenced-spec.txt` is canonical only when this recipe produced it.
+An upstream failure leaves neither the final file nor `$target.tmp`; a producer
+that is killed can leave only the temporary path, never a final fence.
+
 Select exactly one boundary mode from the current invocation line and that visibility:
 
 | Mode | Selection | Rendering rule |

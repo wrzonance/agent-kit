@@ -68,19 +68,42 @@ that look like they disagree invite asking again -- which is a loop, not a check
 fi
 
 # Per-issue triage. Reading ONE issue body is legitimate and stays that way --
-# the digest deliberately omits bodies. What this replaces is walking every issue
-# one call at a time.
+# the digest deliberately omits bodies. What this replaces is walking every
+# issue one call at a time. The first distinct issue number is deliberately
+# quiet; a second number in the same session is the evidence that a digest is
+# cheaper. Timeline fetches still advise immediately because they are never a
+# single-body read.
+issue_number=''
+if [[ $command_line =~ (^|[[:space:];&|])gh[[:space:]]+issue[[:space:]]+view[[:space:]]+([0-9]+)([[:space:];&|]|$) ]]; then
+    issue_number=${BASH_REMATCH[2]}
+fi
 if guard_has_evidence .agent/config.env &&
-    grep -qE '(^|[[:space:];&|])gh[[:space:]]+(api[[:space:]]+[^[:space:]]*/timeline|issue[[:space:]]+view)' \
+    [[ -n $issue_number ]] &&
+    ! grep -qE '(^|[[:space:];&|])(cat|head|tail|sed|awk|grep|less|more|read)[^;|&]*\.agent/env-contract\.txt' \
         <<< "$command_line" &&
+    guard_issue_view_is_distinct "$state_root" "$session" "$issue_number" &&
     guard_should_advise "$state_root" "$session" issue-triage; then
     # shellcheck disable=SC2016  # literal text, see teach()
-    teach "Triaging issues one call at a time is replaced by one query:
+    teach "Triaging issues one at a time is replaced by one query:
 $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/triage-issues.sh\"
 It returns board status and cross-referenced pull requests for every candidate
-together. Reading a single issue body directly is still the right call -- the
-digest does not carry bodies."
+together. Reading one issue body directly is still the right call; the first
+body read in a session stays quiet, while a second distinct issue number means
+the digest is cheaper. Timeline fetches are still covered by this advice."
+fi
+
+if guard_has_evidence .agent/config.env &&
+    grep -qE '(^|[[:space:];&|])gh[[:space:]]+api[[:space:]]+[^[:space:]]*/timeline' \
+        <<< "$command_line" &&
+    guard_should_advise "$state_root" "$session" issue-triage; then
+    # shellcheck disable=SC2016  # literal text, see teach()
+    teach "Triaging issues one at a time is replaced by one query:
+$RESOLVE_HINT
+  \"\$agentkit/.shared/scripts/triage-issues.sh\"
+It returns board status and cross-referenced pull requests for every candidate
+together. Timeline fetches and repeated per-issue exploration cost more than
+the digest."
 fi
 
 # A hardcoded plugin path. Observed live: the resolver line came back empty, the

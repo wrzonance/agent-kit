@@ -83,6 +83,28 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured
 EOF
 chmod +x "$tmp/fake-claude-success"
 
+# Same success stream, but slow enough for a concurrent poller to observe the
+# helper mid-run (the PID-file liveness fixture below).
+cat >"$tmp/fake-claude-slow" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == --version ]]; then
+    printf '%s\n' 'claude 2.1.0'
+    exit 0
+fi
+if [[ ${1:-} == --help ]]; then
+    printf '%s\n' '--print --model --effort --system-prompt --tools --permission-mode'
+    printf '%s\n' '--no-session-persistence --safe-mode --disable-slash-commands'
+    printf '%s\n' '--strict-mcp-config --mcp-config --output-format'
+    printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
+    exit 0
+fi
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-test","tools":["StructuredOutput"],"mcp_servers":[]}'
+sleep 2
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[]},"modelUsage":{"claude-test":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
+EOF
+chmod +x "$tmp/fake-claude-slow"
+
 cat >"$tmp/fake-codex-success" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -212,6 +234,40 @@ assert_contains "$(cat "$claude_success_result")" '"verdict": {' \
     'Claude preserves the structured no-findings verdict'
 assert_contains "$(cat "$claude_success_result")" '"verdict": "no_findings"' \
     'Claude preserves the no-findings verdict value'
+
+# Durable liveness: a detached poller must be able to answer "is the review
+# still running" from the recorded PID alone — the launching cell's stderr can
+# vanish, and process-name patterns have false-reported a live producer dead.
+pid_dir="$tmp/claude-pidfile"
+mkdir -- "$pid_dir"
+chmod 700 -- "$pid_dir"
+pid_result="$tmp/claude-pidfile.result.json"
+CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" bash "$claude" \
+    --mode review --model claude-test --diff "$no_usage_diff" \
+    --transcript "$pid_dir/transcript.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-budget-usd 0.25 >"$pid_result" &
+helper_pid=$!
+pid_file="$pid_dir/transcript.jsonl.pid"
+pid_seen=''
+for _ in $(seq 1 100); do
+    if [[ -s $pid_file ]]; then
+        pid_seen=$(<"$pid_file")
+        break
+    fi
+    sleep 0.1
+done
+assert_eq "$helper_pid" "$pid_seen" 'a running helper records its own PID beside the transcript'
+kill -0 "$pid_seen" 2>/dev/null && pid_live=yes || pid_live=no
+assert_eq yes "$pid_live" 'the recorded PID answers liveness while the review runs'
+wait "$helper_pid"
+assert_eq no "$( [[ ! -e $pid_file ]] && printf no || printf yes )" \
+    'a finished helper removes its PID file'
+assert_contains "$(cat "$pid_result")" '"status": "completed"' \
+    'the PID-file run still completes normally'
+
+codex_text=$(<"$codex")
+assert_contains "$codex_text" 'TRANSCRIPT_PATH.pid' \
+    'the Codex helper records its PID beside the transcript too'
 
 codex_success_dir="$tmp/codex-success"
 mkdir -- "$codex_success_dir"
