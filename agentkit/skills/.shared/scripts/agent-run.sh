@@ -31,9 +31,10 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
   --label NAME   Label used in the log file name (default: the command's basename).
   --approve      Record explicit approval for the current repository declaration and
-                 executable inputs, but do not run the command. Human-only: the
-                 confirmation is read from the terminal, so an agent session
-                 (which has no /dev/tty) cannot grant it.
+                 executable inputs, but do not run the command. The confirmation
+                 is read from the terminal (defense-in-depth: a non-interactive
+                 agent shell cannot answer it, though it is not an unforgeable
+                 human-only gate). Review, then approve from your own terminal.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -645,13 +646,15 @@ compute_trust_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
-# Approval is a human-only action, enforced here in the tool -- not in a hook,
-# which can only pattern-match a command line and so fails open on ordinary
-# shell spellings (a quoted `"--approve"`, `bash -c`, `command`, an environment
-# assignment prefix, `eval`, or a wrapper script). The confirmation is read from
-# the controlling terminal: an agent session's shell has no /dev/tty, so no
-# spelling can satisfy it, while a human running the command in their own
-# terminal is prompted. A declined or absent confirmation records no trust.
+# Approval reads a confirmation from the controlling terminal. This is
+# defense-in-depth, not a cryptographic human-only gate: an agent with arbitrary
+# command execution can allocate a pseudo-terminal or write the trust record
+# directly (same user), which no in-band check prevents. What it does buy is
+# closing the failure this was filed for -- an agent reading the refusal below
+# and re-running the exact `--approve` it printed -- since a non-interactive
+# shell cannot answer the prompt. Enforced here in the tool rather than in a
+# hook, whose command-line matcher fails open on ordinary shell spellings.
+# A declined or absent confirmation records no trust.
 require_human_approval() {
     local cmd_name=$1 reply
     # Scope the error suppression to the open attempt: a bare `exec ... 2>/dev/null`

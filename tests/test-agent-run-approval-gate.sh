@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Suite: repository command approval is a human-only action, enforced in the
-# tool itself. `agent-run.sh --approve` reads its confirmation from the
-# controlling terminal, so an agent session -- which has none -- cannot clear
-# repository trust by ANY shell spelling, while a human at a terminal can. The
-# PreToolUse hook does not police this: pattern-matching a command line fails
-# open on ordinary spellings, so the boundary lives where it cannot be evaded.
+# Suite: repository command approval reads its confirmation from the controlling
+# terminal, enforced in `agent-run.sh` itself. This is defense-in-depth, not a
+# cryptographic human-only gate (an agent that allocates a pseudo-terminal, as
+# the helper here does, or writes the trust record directly, still can) -- its
+# value is that a non-interactive agent shell cannot answer the prompt, so the
+# refusal no longer hands back a runnable `--approve`. These cases pin that a
+# terminal-less attempt fails and persists no trust across every shell spelling,
+# that a terminal confirmation approves or declines, and that the removed hook
+# matcher raises no false denial.
 set -uo pipefail
 
 TEST_NAME='agent-run-approval-gate'
@@ -34,10 +37,12 @@ make_repo() {
 trust_files() { find "$1" -name '*.trust' 2> /dev/null; }
 
 # --- the tool refuses approval with no controlling terminal, every spelling ---
-# `setsid` detaches from any controlling terminal, reproducing an agent session
-# regardless of whether the test itself runs under a TTY. Every spelling an
-# agent could reach for must fail identically and persist no trust -- that is
-# the property a command-line matcher cannot guarantee.
+# `setsid` detaches from any controlling terminal, reproducing a non-interactive
+# agent shell regardless of whether the test itself runs under a TTY. Every
+# spelling an agent could reach for by re-running the printed refusal must fail
+# identically and persist no trust. (A determined agent that allocates its own
+# pseudo-terminal is out of scope -- the gate is defense-in-depth, not a proof
+# of humanity; see the suite header.)
 repo=$(make_repo)
 trust_root="$tmp/trust-agent"
 
@@ -121,11 +126,11 @@ assert_contains "$out" 'human' 'the wrapper says a human must clear approval'
 assert_not_contains "$out" '--approve --cmd verify' \
     'the wrapper refusal does not print the bypass command'
 
-# --- the README documents the tool-level human-only boundary ---
+# --- the README documents the terminal confirmation and is honest about it ---
 readme_text=$(cat -- "$readme")
-assert_contains "$readme_text" 'Approval is deliberately human-only' \
-    'README documents human-only approval'
 assert_contains "$readme_text" 'controlling terminal' \
     'README documents the terminal-confirmation boundary'
+assert_contains "$readme_text" 'not** a cryptographic human-only' \
+    'README does not overclaim the boundary as human-only'
 
 finish
