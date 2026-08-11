@@ -167,6 +167,29 @@ fi
 
 [[ $harness_rc -eq 0 ]] && printf '  ok\n' || rc=1
 
+step 'environment-neutrality'
+# Runtime permissions and review automation belong to the current session and
+# repository configuration. A public skill must not turn one operator's
+# measured sandbox or SaaS settings into universal instructions.
+environment_rc=0
+if grep -rnE \
+    -e 'The network is disabled inside the sandbox' \
+    -e 'Every git write needs elevation' \
+    -e 'Only the workspace is writable' \
+    -e 'automatic and incremental reviews are disabled' \
+    -e 'push(es)? trigger(s)? (no|nothing)' \
+    -e 'ready flip triggers no review' \
+    -e 'no review is automatic' \
+    -e 'Nothing is automatic' \
+    -e 'automatic reviews are off' \
+    "$skills" --include='*.md' --include='*.sh'; then
+    printf '  FAIL  skill guidance hardcodes runtime or provider configuration\n' >&2
+    environment_rc=1
+else
+    printf '  ok\n'
+fi
+[[ $environment_rc -eq 0 ]] || rc=1
+
 step 'org-neutrality'
 if grep -rniE 'jacobs|tango|bravo|wrzonance|thewrz|adam@|192\.168\.' \
     "$plugin" \
