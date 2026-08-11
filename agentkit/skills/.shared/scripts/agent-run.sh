@@ -598,57 +598,82 @@ hash_repo_input() {
     fi
 }
 
-hash_declared_path_input() {
-    local input=$1
-    if [[ -z $input ]]; then
-        printf 'missing-path-input\n'
-    elif [[ $input == /* ]]; then
-        hash_repo_input "$input"
+repo_relative_path() {
+    local path=$1
+    if [[ $path == "$git_top"/* ]]; then
+        printf '%s' "${path#"$git_top/"}"
     else
-        hash_repo_input "$git_top/$input"
-        [[ $work_dir == "$git_top" ]] || hash_repo_input "$work_dir/$input"
+        printf '%s' "$path"
     fi
 }
 
-hash_module_input() {
-    local module=$1 module_path
-    if [[ ! $module =~ ^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$ ]]; then
-        printf 'invalid-module=%s\n' "$module"
-        return
+emit_declared_path_input() {
+    local input=$1
+    if [[ -z $input ]]; then
+        printf '__invalid-command-input__\n'
+    elif [[ $input == /* ]]; then
+        if [[ $input == "$git_top"/* ]]; then
+            printf '%s\n' "${input#"$git_top/"}"
+        else
+            printf '__external-command-input__\n'
+        fi
+    elif [[ $input == .. || $input == ../* || $input == */../* || $input == */.. ]]; then
+        printf '__external-command-input__\n'
+    else
+        printf '%s\n' "$input"
+        [[ $work_dir == "$git_top" ]] ||
+            printf '%s/%s\n' "${work_dir#"$git_top/"}" "$input"
     fi
-    module_path=${module//./\/}
-    hash_declared_path_input "$module_path.py"
-    hash_declared_path_input "$module_path"
 }
 
 hash_command_inputs() {
-    local index input
+    local input
+    while IFS= read -r input; do
+        [[ -n $input ]] || continue
+        if [[ $input == __* ]]; then
+            printf '%s\n' "$input"
+        else
+            printf 'declared=%s\n' "$input"
+            hash_repo_input "$git_top/$input"
+        fi
+    done < <(command_input_paths | sort -u)
+}
+
+command_input_paths() {
+    local index input module module_path
     for ((index = 0; index < ${#cmd[@]}; index++)); do
         input=${cmd[index]}
         case $input in
-            --require=*) hash_declared_path_input "${input#--require=}" ;;
+            --require=*) emit_declared_path_input "${input#--require=}" ;;
             --require|-r)
                 if ((index + 1 < ${#cmd[@]})); then
                     ((index += 1))
-                    hash_declared_path_input "${cmd[index]}"
+                    emit_declared_path_input "${cmd[index]}"
                 else
-                    printf 'missing-option-value=%s\n' "$input"
+                    printf '__invalid-command-input__\n'
                 fi
                 ;;
             -m)
                 if ((index + 1 < ${#cmd[@]})); then
                     ((index += 1))
-                    hash_module_input "${cmd[index]}"
+                    module=${cmd[index]}
+                    if [[ $module =~ ^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$ ]]; then
+                        module_path=${module//./\/}
+                        emit_declared_path_input "$module_path.py"
+                        emit_declared_path_input "$module_path"
+                    else
+                        printf '__invalid-command-input__\n'
+                    fi
                 else
-                    printf 'missing-option-value=%s\n' "$input"
+                    printf '__invalid-command-input__\n'
                 fi
                 ;;
-            *) [[ $input == */* ]] && hash_declared_path_input "$input" ;;
+            *) [[ $input == */* ]] && emit_declared_path_input "$input" ;;
         esac
     done
 }
 
-hash_nearby_manifests() {
+manifest_paths() {
     local base=$1 file name
     local -a manifest_names=(package.json package-lock.json)
     manifest_names+=(pnpm-lock.yaml yarn.lock) # ecosystem-allow: manifest filenames, never commands
@@ -657,12 +682,23 @@ hash_nearby_manifests() {
     while [[ $base == "$git_top" || $base == "$git_top"/* ]]; do
         for name in "${manifest_names[@]}"; do
             file=$base/$name
-            [[ -f $file ]] || continue
-            printf 'manifest=%s\n' "${file#"$git_top/"}"
-            sha256sum -- "$file" | awk '{print $1}'
+            printf '%s\n' "$(repo_relative_path "$file")"
         done
         base=$(dirname -- "$base")
     done
+}
+
+hash_nearby_manifests() {
+    local rel file
+    while IFS= read -r rel; do
+        file=$git_top/$rel
+        printf 'manifest=%s\n' "$rel"
+        if [[ -f $file ]]; then
+            sha256sum -- "$file" | awk '{print $1}'
+        else
+            printf 'missing\n'
+        fi
+    done < <(manifest_paths "$1")
 }
 
 compute_trust_fingerprint() {
@@ -686,12 +722,11 @@ compute_trust_fingerprint() {
 # remote trunk already carries every input the command resolves from -- so
 # executing exactly what the trunk reviewed needs no second confirmation. What
 # it never covers is an input that is new or changed on THIS checkout: a branch
-# or fork that edits the declaration, the runner, or a repo-backed argv path is
-# new code asking to run unattended, and that still takes an explicit approval
-# from a terminal. (Like any test run, the wrapped command's own transitive
-# inputs -- the files a suite discovers and executes -- are the branch's code;
-# the line drawn here matches the fingerprint's scope minus nearby manifests,
-# which churn on every ordinary branch.)
+# or fork that edits the declaration, runner, payload, or build manifest is new
+# code asking to run unattended, and that still takes an explicit approval from
+# a terminal. Like any test run, the wrapped command's other transitive inputs
+# are the branch's code; the line is drawn at inputs this command contract can
+# identify deterministically.
 yolo_base_ref() {
     local ref
     ref=$(git -C "$git_top" rev-parse --abbrev-ref -q origin/HEAD 2> /dev/null) || ref=''
@@ -706,37 +741,39 @@ yolo_base_ref() {
 }
 
 yolo_repo_inputs() {
-    local token
+    local rel
     printf '%s\n' .agent/config.env .agent/runner
     if [[ -n ${runner_path:-} && $runner_path == "$git_top"/* ]]; then
         printf '%s\n' "${runner_path#"$git_top/"}"
     fi
-    for token in "${cmd[@]}"; do
-        [[ $token == */* ]] || continue
-        if [[ $token == /* ]]; then
-            [[ $token == "$git_top"/* ]] && printf '%s\n' "${token#"$git_top/"}"
-        else
-            printf '%s\n' "$token"
-            [[ $work_dir == "$git_top" ]] || printf '%s\n' "${work_dir#"$git_top/"}/$token"
-        fi
-    done
+    command_input_paths
+    while IFS= read -r rel; do
+        printf '%s\n' "$rel"
+    done < <(manifest_paths "$work_dir")
 }
 
-# A path counts as changed when the checkout has content the base does not:
-# modified tracked content, or a file that exists here and not there. A path
-# absent from the checkout is not this gate's problem -- resolution already
-# failed or never used it.
+# A path counts as changed when the checkout has content the base does not, or
+# when a base input was deleted here. Sentinel inputs are deliberately refused:
+# they describe a command input that cannot be proven repository-contained.
 yolo_changed_input() {
     local base=$1 rel abs
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
-        abs=$git_top/$rel
-        [[ -e $abs || -L $abs ]] || continue
-        if ! git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
+        [[ $rel == __* ]] && {
             printf '%s' "$rel"
             return 0
-        fi
-        if ! git -C "$git_top" diff --quiet "$base" -- "$rel" 2> /dev/null; then
+        }
+        abs=$git_top/$rel
+        if [[ -e $abs || -L $abs ]]; then
+            if ! git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
+                printf '%s' "$rel"
+                return 0
+            fi
+            if ! git -C "$git_top" diff --quiet "$base" -- "$rel" 2> /dev/null; then
+                printf '%s' "$rel"
+                return 0
+            fi
+        elif git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
             printf '%s' "$rel"
             return 0
         fi

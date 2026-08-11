@@ -69,6 +69,61 @@ assert_contains "$out" 'refusing unapproved repository command' \
 assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
     'a changed executable is not run under an old approval'
 
+# --yolo must cover build definitions, not only literal argv paths. A command
+# such as `make test` executes the repository's Makefile even though neither
+# argv token names it.
+repo=$(make_repo)
+git -C "$repo" config user.name test
+git -C "$repo" config user.email test@example.invalid
+printf 'AGENT_CMD_TEST=make test\n' > "$repo/.agent/config.env"
+printf 'test:\n\t@touch "%s/make-base-ran"\n' "$tmp" > "$repo/Makefile"
+git -C "$repo" add -- .agent/config.env Makefile
+git -C "$repo" commit -qm base
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+printf 'test:\n\t@touch "%s/make-changed-ran"\n' "$tmp" > "$repo/Makefile"
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
+assert_contains "$out" 'refusing --yolo' \
+    'a changed build manifest blocks unattended command execution'
+assert_eq 'no' "$([[ -e $tmp/make-changed-ran ]] && echo yes || echo no)" \
+    'a changed build manifest is not executed under --yolo'
+
+# Module-mode interpreters carry their repository payload in a token without a
+# slash, so the gate must derive the module's .py and package paths explicitly.
+repo=$(make_repo)
+git -C "$repo" config user.name test
+git -C "$repo" config user.email test@example.invalid
+mkdir -p "$repo/tools"
+touch "$repo/tools/__init__.py"
+printf 'AGENT_CMD_TEST=python -m tools.verify\n' > "$repo/.agent/config.env"
+printf 'print("base")\n' > "$repo/tools/verify.py"
+git -C "$repo" add -- .agent/config.env tools
+git -C "$repo" commit -qm base
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+printf 'print("changed")\n' > "$repo/tools/verify.py"
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
+assert_contains "$out" 'refusing --yolo' \
+    'a changed module payload blocks unattended command execution'
+
+# Deleting a declaration must be a change too. Keep a runner fallback so
+# resolution reaches the yolo gate after the config disappears.
+repo=$(make_repo)
+git -C "$repo" config user.name test
+git -C "$repo" config user.email test@example.invalid
+mkdir -p "$repo/tools"
+printf '#!/bin/sh\ntouch "%s/deleted-config-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
+printf '%s/tools/runner\n' "$repo" > "$repo/.agent/runner"
+git -C "$repo" add -- .agent/config.env .agent/runner tools/runner
+git -C "$repo" commit -qm base
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+rm -- "$repo/.agent/config.env"
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
+assert_contains "$out" 'refusing --yolo' \
+    'a deleted declaration blocks unattended command execution'
+assert_eq 'no' "$([[ -e $tmp/deleted-config-ran ]] && echo yes || echo no)" \
+    'a deleted declaration does not fall through to execution'
+
 # Approval persistence must fail loudly rather than claiming success when the
 # temporary record cannot be written or atomically replaced. Both cases approve
 # through the terminal helper; the write case additionally has the helper create
