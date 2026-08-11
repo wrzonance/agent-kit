@@ -43,7 +43,7 @@ case "\$*" in
                             '{fields:[{id:"F_status",name:"Status",options:\$o}]}' ;;
   *"project item-list"*)  cat "$tmp/items.json" ;;
   *"project view"*)       printf '{"id":"PVT_project"}\n' ;;
-  *"api graphql"*)        [[ ${GH_STUB_DRAIN_INPUT:-1} == 1 ]] && cat > /dev/null
+  *"api graphql"*)        [[ \${GH_STUB_DRAIN_INPUT:-1} == 1 ]] && cat > /dev/null
                             jq -n --argjson o "\$(cat "$tmp/new-options.json")" \
                             '{data:{updateProjectV2Field:{projectV2Field:{id:"F_status",options:\$o}}}}' ;;
   *"project item-edit"*)  printf '%s\n' "\$*" >> "$tmp/edits.log"; printf '{}\n' ;;
