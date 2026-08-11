@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "owner": "wrzonance",
+  "project": {
+    "number": 10,
+    "id": "PVT_kwDOEMq2wc4Bf9Ju",
+    "title": "agent-kit"
+  },
+  "statusField": {
+    "id": "PVTSSF_lADOEMq2wc4Bf9JuzhaMRyI",
+    "name": "Status",
+    "options": {
+      "Backlog": "b718189c",
+      "Ready": "e3d3c7a0",
+      "In progress": "38806afa",
+      "In review": "d062f6f7",
+      "Done": "679ceda2"
+    }
+  },
+  "generatedAt": "2026-08-11T04:42:05Z",
+  "fingerprint": "sha256:f0efa32925fe9e1f6e62ef1a63714ae9b7707ed3abfb8f643657801113d81dde"
+}
