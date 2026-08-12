@@ -179,7 +179,7 @@ out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
     setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
 assert_eq '1' "$rc" 'a declaration changed from the trunk is refused under --yolo'
 assert_contains "$out" 'refusing --yolo' 'the refusal names the yolo gate'
-assert_contains "$out" '.agent/config.env' 'the refusal names the changed input'
+assert_contains "$out" 'AGENT_CMD_VERIFY' 'the refusal names the changed declaration key'
 assert_eq '' "$(trust_files "$trust_root")" 'the trunk-mismatch refusal persists no trust'
 git -C "$repo" checkout -q -- .agent/config.env
 

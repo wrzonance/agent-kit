@@ -14,6 +14,9 @@
 #   repo-config.sh --get KEY         # one value; exit 1 if absent
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
 #   repo-config.sh --list            # K=V lines for accepted keys
+#   repo-config.sh --canonical-keys K1,K2
+#                                    # strict, sorted canonical K=V lines
+#   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
 # Options:
 #   --repo-root DIR                  # skip git-toplevel detection
 #
@@ -26,7 +29,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] (--export | --get KEY | --get-argv KEY | --list)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -66,6 +69,10 @@ readonly SECRET_PATTERN='(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PROXY|CA_BUNDL
 mode=''
 want_key=''
 repo_root=''
+config_file_opt=''
+canonical_keys_csv=''
+declare -a resolve_keys=()
+declare -A resolve_requested_keys=()
 
 while (($#)); do
     case $1 in
@@ -83,6 +90,23 @@ while (($#)); do
             (($#)) || die_usage '--get-argv requires a KEY'
             want_key=$1
             ;;
+        --canonical-keys)
+            mode='canonical'
+            shift
+            (($#)) || die_usage '--canonical-keys requires a comma-separated KEY list'
+            canonical_keys_csv=$1
+            ;;
+        --resolve)
+            mode='resolve'
+            shift
+            (($#)) || die_usage '--resolve requires at least one KEY'
+            resolve_keys+=("$1")
+            ;;
+        --config-file)
+            shift
+            (($#)) || die_usage '--config-file requires a file'
+            config_file_opt=$1
+            ;;
         --repo-root)
             shift
             (($#)) || die_usage '--repo-root requires a directory'
@@ -94,14 +118,20 @@ while (($#)); do
     shift
 done
 
-[[ -n $mode ]] || die_usage 'one of --export, --get, --list is required'
+[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --canonical-keys, or --resolve is required'
+
+if [[ $mode == resolve ]]; then
+    for key in "${resolve_keys[@]}"; do
+        resolve_requested_keys[$key]=yes
+    done
+fi
 
 if [[ -z $repo_root ]]; then
     repo_root=$(git rev-parse --show-toplevel 2> /dev/null || true)
 fi
 [[ -n $repo_root ]] || exit 0
 
-config_file="$repo_root/.agent/config.env"
+config_file=${config_file_opt:-$repo_root/.agent/config.env}
 [[ -f $config_file ]] || exit 0
 
 is_accepted() {
@@ -363,6 +393,12 @@ shell_quote() {
 }
 
 declare -a out_keys=() out_values=()
+declare -A value_by_key=() seen_by_key=()
+# Canonical comparison is strict for every parse error. Resolve mode keeps the
+# established warn/drop behavior, but records errors for requested keys so the
+# yolo gate can fail closed without treating unrelated config as invocation
+# input.
+parse_failed=0
 lineno=0
 
 while IFS= read -r line || [[ -n $line ]]; do
@@ -372,6 +408,9 @@ while IFS= read -r line || [[ -n $line ]]; do
 
     if [[ $line != *=* ]]; then
         warn "line $lineno has no equals sign, ignoring"
+        malformed_key=$(trim "$line")
+        [[ $mode == resolve && -n ${resolve_requested_keys[$malformed_key]+yes} ]] && parse_failed=1
+        [[ $mode == canonical ]] && parse_failed=1
         continue
     fi
 
@@ -387,6 +426,9 @@ while IFS= read -r line || [[ -n $line ]]; do
         else
             warn "unknown key on line $lineno, ignoring: $key"
         fi
+        # Unknown keys are deliberately dropped. In resolve mode they are not
+        # relevant to the requested declaration set.
+        [[ $mode == canonical ]] && parse_failed=1
         continue
     fi
 
@@ -401,12 +443,24 @@ while IFS= read -r line || [[ -n $line ]]; do
         else
             warn "invalid value for $key on line $lineno, ignoring"
         fi
+        [[ $mode == canonical ||
+            ( $mode == resolve && -n ${resolve_requested_keys[$key]+yes} ) ]] && parse_failed=1
         continue
     fi
 
+    # Existing readers resolve the first accepted occurrence. Preserve that
+    # behavior while retaining a key-indexed view for canonical output.
+    if [[ -z ${seen_by_key[$key]+yes} ]]; then
+        seen_by_key[$key]=yes
+        value_by_key[$key]=$value
+    fi
     out_keys+=("$key")
     out_values+=("$value")
 done < "$config_file"
+
+if [[ $mode == canonical ]] && ((parse_failed)); then
+    exit 1
+fi
 
 case $mode in
     export)
@@ -437,6 +491,45 @@ case $mode in
             fi
         done
         exit 1
+        ;;
+    canonical)
+        declare -a requested_keys=() canonical_lines=()
+        IFS=, read -ra requested_keys <<< "$canonical_keys_csv"
+        for key in "${requested_keys[@]}"; do
+            [[ -n $key ]] || continue
+            is_accepted "$key" || {
+                warn "invalid canonical key: $key"
+                exit 1
+            }
+            if [[ -n ${seen_by_key[$key]+yes} ]]; then
+                canonical_lines+=("$key=${value_by_key[$key]}")
+            fi
+        done
+        if ((${#canonical_lines[@]})); then
+            printf '%s\n' "${canonical_lines[@]}" | LC_ALL=C sort -t= -k1,1
+        fi
+        ;;
+    resolve)
+        local_key=''
+        for local_key in "${resolve_keys[@]}"; do
+            is_accepted "$local_key" || {
+                warn "invalid resolve key: $local_key"
+                exit 1
+            }
+            [[ -n ${seen_by_key[$local_key]+yes} ]] || continue
+            value=${value_by_key[$local_key]}
+            if [[ $local_key =~ $CMD_KEY_PATTERN ]]; then
+                parse_argv "$value" || exit 1
+                printf '%s\0%s\0%s\0' "$local_key" "$value" "${#PARSED_ARGV[@]}"
+                printf '%s\0' "${PARSED_ARGV[@]}"
+            else
+                printf '%s\0%s\0%s\0' "$local_key" "$value" 0
+            fi
+        done
+        # Resolution remains warn/drop/fall-through for ordinary callers. The
+        # invocation gate consumes this marker to fail closed under --yolo
+        # without turning unrelated config mistakes into usage errors.
+        printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
         ;;
 esac
 

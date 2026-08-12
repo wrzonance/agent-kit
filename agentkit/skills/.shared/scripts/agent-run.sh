@@ -435,18 +435,95 @@ self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 # THIS process's cwd, which is not necessarily inside the repository --dir names.
 repo_config_get() {
     local key=$1 resolver=$self_dir/repo-config.sh
+    relevant_config_add "$key"
+    if [[ -n ${resolved_config_present[$key]+yes} ]]; then
+        printf '%s' "${resolved_config_values[$key]}"
+        return 0
+    fi
     [[ -x $resolver ]] || return 1
     "$resolver" --repo-root "${git_top:-$run_dir}" --get "$key" 2>/dev/null
 }
 
-repo_config_argv() {
-    local key=$1 resolver=$self_dir/repo-config.sh
-    [[ -x $resolver ]] || return 1
-    "$resolver" --repo-root "${git_top:-$run_dir}" --get-argv "$key" 2>/dev/null
-}
-
 # ------------------------------------------------------------------- runner ---
 runner_path='' runner_src=''
+declare -a relevant_config_keys=()
+declare -A resolved_config_values=() resolved_config_present=()
+declare -a resolved_command_argv=() resolved_focus_argv=()
+resolved_command_key=''
+resolved_parse_failed=no
+
+relevant_config_add() {
+    local key=$1 existing
+    for existing in "${relevant_config_keys[@]}"; do
+        [[ $existing == "$key" ]] && return 0
+    done
+    relevant_config_keys+=("$key")
+}
+
+relevant_config_remove() {
+    local key=$1 existing
+    local -a retained=()
+    for existing in "${relevant_config_keys[@]}"; do
+        [[ $existing == "$key" ]] || retained+=("$existing")
+    done
+    relevant_config_keys=("${retained[@]}")
+}
+
+# Resolve all keys needed for this invocation in one parser process. The
+# resolver emits NUL-delimited records containing key, raw validated value,
+# argv-count, and parsed argv. Keeping those parsed values in memory means the
+# gate and execution cannot disagree after a second config read.
+repo_config_resolve_keys() {
+    local resolver=$self_dir/repo-config.sh key tmp field argc i
+    local -a keys=("$@")
+    local -a resolve_args=(--repo-root "${git_top:-$run_dir}")
+    tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-config.XXXXXX") || return 1
+    for key in "${keys[@]}"; do
+        [[ -n $key ]] || continue
+        relevant_config_add "$key"
+        resolve_args+=(--resolve "$key")
+    done
+    if ! "$resolver" "${resolve_args[@]}" >"$tmp" 2>/dev/null; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    exec 3<"$tmp" || { rm -f -- "$tmp"; return 1; }
+    while IFS= read -r -d '' field <&3; do
+        key=$field
+        if [[ $key == __AGENT_CONFIG_PARSE_STATUS__ ]]; then
+            IFS= read -r -d '' field <&3 || {
+                exec 3<&-
+                rm -f -- "$tmp"
+                return 1
+            }
+            [[ $field == 0 || $field == 1 ]] || {
+                exec 3<&-
+                rm -f -- "$tmp"
+                return 1
+            }
+            [[ $field == 1 ]] && resolved_parse_failed=yes
+            continue
+        fi
+        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+        resolved_config_values[$key]=$field
+        resolved_config_present[$key]=yes
+        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+        [[ $field =~ ^[0-9]+$ ]] || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+        argc=$field
+        local -a parsed=()
+        for ((i = 0; i < argc; i++)); do
+            IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+            parsed+=("$field")
+        done
+        if [[ $key == "$resolved_command_key" ]]; then
+            resolved_command_argv=("${parsed[@]}")
+        elif [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
+            resolved_focus_argv=("${parsed[@]}")
+        fi
+    done
+    exec 3<&-
+    rm -f -- "$tmp"
+}
 
 # Sets runner_path/runner_src from an explicit declaration: $AGENT_REPO_RUNNER,
 # else the same key in .agent/config.env. Returns 1 when neither declares one. A
@@ -525,18 +602,26 @@ resolve_named_command() {
     local upper rundir
     upper=$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')
     key="AGENT_CMD_$upper"
-    declared=$(repo_config_get "$key" || true)
-    if [[ -n $declared ]]; then
-        # repo-config.sh parses the safe quoting grammar once and emits NUL-
-        # delimited argv so spaces survive the process boundary without eval.
-        mapfile -d '' -t cmd < <(repo_config_argv "$key")
+    resolved_command_key=$key
+    relevant_config_add "$key"
+    local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper")
+    ((focus_requested)) && resolve_keys+=(AGENT_CMD_TEST_FOCUS)
+    [[ -z ${AGENT_REPO_RUNNER:-} ]] && resolve_keys+=(AGENT_REPO_RUNNER)
+    repo_config_resolve_keys "${resolve_keys[@]}" || die "cannot resolve repository declarations for $key"
+    declared=${resolved_config_values[$key]:-}
+    if [[ -n ${resolved_config_present[$key]+yes} && -n $declared ]]; then
+        # The runner was parsed in the same resolver pass to close the
+        # fallback TOCTOU window, but it is not relevant when the declaration
+        # wins command resolution.
+        [[ -z ${AGENT_REPO_RUNNER:-} ]] && relevant_config_remove AGENT_REPO_RUNNER
+        cmd=("${resolved_command_argv[@]}")
         ((${#cmd[@]})) || die "invalid argv for $key"
         cmd_declared=yes
 
         # A monorepo command usually has to run IN its component. Without this
         # the only root-runnable form of a dashboard test invocation globbed
         # into node_modules and started running a dependency's test suite.
-        rundir=$(repo_config_get "AGENT_RUNDIR_$upper" || true)
+        rundir=${resolved_config_values[AGENT_RUNDIR_$upper]:-}
         if [[ -n $rundir ]]; then
             [[ -n $git_top ]] || die "AGENT_RUNDIR_$upper is set but this is not a git repository"
             [[ -d $git_top/$rundir ]] ||
@@ -548,6 +633,8 @@ resolve_named_command() {
 
     # A bespoke dispatcher IS the runner; `runner <name>` is how the runner
     # convention already invokes it, so this needs no special case.
+    # AGENT_REPO_RUNNER is consulted only on the fallback path. If the caller
+    # supplied AGENT_REPO_RUNNER in the environment, the resolver is not read.
     if resolve_runner; then
         cmd=("$name")
         return 0
@@ -570,9 +657,11 @@ apply_test_focus() {
     ((focus_requested)) || return 0
     [[ $cmd_name == test ]] || die '--only is supported only with --cmd test.'
 
-    declared=$(repo_config_get "$key" || true)
-    [[ -n $declared ]] || die "--only requires $key in .agent/config.env."
-    mapfile -d '' -t focus_cmd < <(repo_config_argv "$key")
+    relevant_config_add "$key"
+    declared=${resolved_config_values[$key]:-}
+    [[ -n ${resolved_config_present[$key]+yes} && -n $declared ]] ||
+        die "--only requires $key in .agent/config.env."
+    focus_cmd=("${resolved_focus_argv[@]}")
     ((${#focus_cmd[@]})) || die "invalid argv for $key"
     [[ ${focus_cmd[0]} != *%s* ]] ||
         die "$key cannot contain %s in its executable token."
@@ -767,14 +856,19 @@ hash_nearby_manifests() {
 }
 
 compute_trust_fingerprint() {
-    local input
+    local input key
     {
         printf 'schema=1\ncommand=%s\n' "$cmd_name"
         printf 'argv=%s\n' "$cmd_str"
-        if [[ -f $git_top/.agent/config.env ]]; then
-            printf 'declaration=%s\n' "$git_top/.agent/config.env"
-            sha256sum -- "$git_top/.agent/config.env" | awk '{print $1}'
-        fi
+        printf 'declarations=\n'
+        while IFS= read -r key; do
+            [[ -n $key ]] || continue
+            if [[ -n ${resolved_config_present[$key]+yes} ]]; then
+                printf '%s=%s\n' "$key" "${resolved_config_values[$key]}"
+            else
+                printf '%s=<absent>\n' "$key"
+            fi
+        done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
         hash_command_inputs
         [[ -n ${runner_path:-} ]] && hash_repo_input "$runner_path"
         hash_nearby_manifests "$work_dir"
@@ -807,7 +901,7 @@ yolo_base_ref() {
 
 yolo_repo_inputs() {
     local rel
-    printf '%s\n' .agent/config.env .agent/runner
+    printf '%s\n' .agent/runner
     if [[ -n ${runner_path:-} && $runner_path == "$git_top"/* ]]; then
         printf '%s\n' "${runner_path#"$git_top/"}"
     fi
@@ -815,6 +909,39 @@ yolo_repo_inputs() {
     while IFS= read -r rel; do
         printf '%s\n' "$rel"
     done < <(manifest_paths "$work_dir")
+}
+
+canonical_relevant_lines() {
+    local key
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        if [[ -n ${resolved_config_present[$key]+yes} ]]; then
+            printf '%s=%s\n' "$key" "${resolved_config_values[$key]}"
+        fi
+    done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
+}
+
+# Materialize and parse the base config through repo-config.sh itself. The
+# temporary is owner-only and removed before returning. Status 3 means the base
+# has no config blob; other nonzero statuses are parse/extraction failures.
+yolo_base_declarations() {
+    local base=$1 resolver=$self_dir/repo-config.sh tmp keys_csv rc
+    local -a keys=("${relevant_config_keys[@]}")
+    tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-base-config.XXXXXX") || return 2
+    if ! git -C "$git_top" cat-file -e "$base:.agent/config.env" 2>/dev/null; then
+        rm -f -- "$tmp"
+        return 3
+    fi
+    if ! git -C "$git_top" show "$base:.agent/config.env" >"$tmp" 2>/dev/null; then
+        rm -f -- "$tmp"
+        return 2
+    fi
+    keys_csv=$(IFS=,; printf '%s' "${keys[*]}")
+    rc=0
+    "$resolver" --repo-root "$git_top" --config-file "$tmp" \
+        --canonical-keys "$keys_csv" 2>/dev/null || rc=$?
+    rm -f -- "$tmp"
+    return "$rc"
 }
 
 # A path counts as changed when the checkout has content the base does not, or
@@ -855,9 +982,55 @@ yolo_changed_input() {
 }
 
 yolo_gate() {
-    local base changed
+    local base changed canonical_out rc key current_value base_value
+    declare -A base_present=() base_values=() current_present=() current_values=()
     base=$(yolo_base_ref) \
         || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    if [[ $resolved_parse_failed == yes ]]; then
+        printf 'agent-run: refusing --yolo for %s: AGENT_CMD_%s cannot be proven equal after config parse errors\n' \
+            "$cmd_name" "$(printf '%s' "$cmd_name" | tr '[:lower:]-' '[:upper:]_')" >&2
+        exit 1
+    fi
+    canonical_out=''
+    rc=0
+    canonical_out=$(yolo_base_declarations "$base") || rc=$?
+    if ((rc == 2)); then
+        die "--yolo: cannot read base .agent/config.env from $base"
+    elif ((rc == 3)); then
+        while IFS= read -r key; do
+            [[ -n $key && -n ${resolved_config_present[$key]+yes} ]] || continue
+            printf 'agent-run: refusing --yolo for %s: %s is declared on this checkout but missing from %s\n' \
+                "$cmd_name" "$key" "$base" >&2
+            exit 1
+        done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
+        canonical_out=''
+    elif ((rc != 0)); then
+        die "--yolo: cannot parse base .agent/config.env from $base"
+    fi
+    while IFS='=' read -r key base_value; do
+        [[ -n $key ]] || continue
+        base_present[$key]=yes
+        base_values[$key]=$base_value
+    done <<< "$canonical_out"
+    while IFS='=' read -r key current_value; do
+        [[ -n $key ]] || continue
+        current_present[$key]=yes
+        current_values[$key]=$current_value
+    done < <(canonical_relevant_lines)
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        if [[ -z ${current_present[$key]+yes} && -n ${base_present[$key]+yes} ||
+            -n ${current_present[$key]+yes} && -z ${base_present[$key]+yes} ]]; then
+            printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
+                "$cmd_name" "$key" "$base" >&2
+            exit 1
+        fi
+        if [[ -n ${current_present[$key]+yes} && ${current_values[$key]} != "${base_values[$key]}" ]]; then
+            printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
+                "$cmd_name" "$key" "$base" >&2
+            exit 1
+        fi
+    done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
     if changed=$(yolo_changed_input "$base"); then
         printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
             "$cmd_name" "$changed" "$base" >&2
