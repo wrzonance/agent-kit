@@ -1043,9 +1043,9 @@ yolo_pinned_base() {
     # forgery cannot satisfy it).
     local advertised='' candidate='' pin_ok=''
     advertised=$(git -C "$git_top" ls-remote --heads origin 2> /dev/null | awk '{print $1}') ||
-        die "--yolo-base: cannot query origin to validate the pin; refusing."
+        die "--yolo-base: cannot query origin to validate pin $sha; refusing."
     [[ -n $advertised ]] ||
-        die "--yolo-base: origin advertises no heads to validate the pin against; refusing."
+        die "--yolo-base: origin advertises no heads to validate pin $sha against; refusing."
     while IFS= read -r candidate; do
         [[ -n $candidate ]] || continue
         if [[ $candidate == "$sha" ]]; then

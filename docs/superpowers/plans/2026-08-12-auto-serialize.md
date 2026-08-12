@@ -12,7 +12,7 @@
 
 - Branch: `feat/auto-serialize` from `origin/main`; never commit to main.
 - Every verification through the wrapper: `agent-run.sh --cmd test --only <suite> --yolo` (focused) and `agent-run.sh --cmd test --yolo` (full). Focused suite names are logical (`agent-run-cmd`, `parallel-dispatch-contract`), not filenames.
-- Trust anchor rules (spec, verbatim): `--yolo-base` requires `--yolo`; value is a full 40-hex commit SHA; SHA must be reachable from some `refs/remotes/origin/*` ref AND an ancestor of the worktree's HEAD; all failures fail closed with a message naming the SHA.
+- Trust anchor rules (spec, verbatim): `--yolo-base` requires `--yolo`; value is a full 40-hex commit SHA; SHA must be a server-advertised origin head or a content-addressed ancestor of one (`git ls-remote --heads origin` — never locally writable `refs/remotes/origin/*` tracking refs; adversarial-review P1) AND an ancestor of the worktree's HEAD; all failures fail closed with a message naming the SHA.
 - Ordering sources (spec, verbatim): Step 3 file-conflict pairs + native blocked-by edges pointing inside the selected set. Issue-body prose is never an ordering input.
 - Chain depth cap: 4. Chains gate on root-published commits, never PR state.
 - Conventional Commits with `Co-Authored-By` trailer naming the actual implementing agent.
@@ -164,8 +164,12 @@ yolo_pinned_base() {
     local sha=$1
     git -C "$git_top" cat-file -e "$sha^{commit}" 2> /dev/null ||
         die "--yolo-base: no such commit in this repository: $sha"
-    [[ -n $(git -C "$git_top" branch -r --contains "$sha" 2> /dev/null) ]] ||
-        die "--yolo-base: $sha is not reachable from any origin ref; only root-published commits can anchor trust."
+    # AMENDED (adversarial-review P1): remote-tracking refs are writable local
+    # files. Validate against server-advertised heads instead — the pin must be
+    # an advertised head or a content-addressed ancestor of one:
+    #   git ls-remote --heads origin  →  accept iff sha == head, or
+    #   merge-base --is-ancestor sha head for some advertised head.
+    # See the shipped yolo_pinned_base() for the final implementation.
     git -C "$git_top" merge-base --is-ancestor "$sha" HEAD 2> /dev/null ||
         die "--yolo-base: $sha is not an ancestor of this worktree's HEAD."
     printf '%s' "$sha"

@@ -2,7 +2,7 @@
 
 **Status:** approved design, pre-implementation
 **Date:** 2026-08-12
-**Owner decisions:** trust anchor = origin-reachable pinned SHA; ordering sources = file conflicts + intra-batch blockedBy
+**Owner decisions:** trust anchor = server-advertised pinned SHA (amended post-adversarial-review P1); ordering sources = file conflicts + intra-batch blockedBy
 
 ## Problem
 
@@ -56,9 +56,11 @@ New option. Requirements, all fail-closed:
 - requires `--yolo` (usage error otherwise);
 - value must be a full 40-hex commit SHA (no refs, no abbreviations — symbolic self-references
   are the trivial self-trust bypass);
-- the SHA must be **reachable from some `refs/remotes/origin/*` ref** (`git branch -r
-  --contains` non-empty). Workers cannot push; only root-published states can anchor trust.
-  This preserves the gate's real property at its existing defense-in-depth level;
+- the SHA must be **a server-advertised origin head, or a content-addressed ancestor of
+  one** (`git ls-remote --heads origin`, queried live). Local remote-tracking refs
+  (`refs/remotes/origin/*`) are writable files and must never serve as publication
+  evidence — a forged ref would satisfy them without any push (adversarial-review P1).
+  Workers cannot push; only server-published states can anchor trust;
 - the SHA must be an ancestor of the worktree's HEAD;
 - when valid, `yolo_base_ref()` yields the SHA and the entire existing gate runs against it:
   `yolo_base_declarations` (base blob via `repo-config.sh --config-file`), `yolo_changed_input`
@@ -72,8 +74,9 @@ New option. Requirements, all fail-closed:
 - A's PR: unchanged.
 - B's PR: `gh pr create --draft --base feat/issue-A …` (the recipe already parameterizes
   `--base`), plus one generated body line:
-  > Stacked on #<A-PR> — merge that PR first; GitHub retargets this one to `main`
-  > automatically when its base branch is deleted on merge.
+  > Stacked on #<A-PR> — merge that PR first. After it merges, retarget this PR to the
+  > default branch and verify the new base before merging; GitHub only retargets
+  > automatically when the base branch is deleted on merge (amended post-review P2).
 - Step 3c's ready-flip handoff lists the chain's merge order explicitly.
 - Adversarial review and provider reviews already diff each PR against its own base; stacked
   PRs therefore review only their own delta. No review-loop changes.
@@ -85,7 +88,7 @@ New option. Requirements, all fail-closed:
 | Chain predecessor worker fails / BLOCKED | Successors never dispatch; chain parked with a named report |
 | Predecessor gets review fixes after successor branched | Root merges predecessor's new head into successor's branch (existing Step 0b machinery) and **re-pins** `--yolo-base` to the new merge base — a root-only action, recorded in the run report |
 | Operator drops a mid-chain issue | Downstream parks; never silently re-parented |
-| Human merges a stacked PR before its base PR | Merges into the base *branch*, not `main` — mitigated by the body warning + ordered handoff; accepted residual risk |
+| Human merges a stacked PR before its base PR | Merges into the base *branch*, not `main` — prevented by the explicit retarget-and-verify step after each predecessor merges (amended post-review P2) |
 | Cycle in ordering evidence | Report; cyclic members fall back to today's drop/ask |
 
 ## Touch map
@@ -94,7 +97,7 @@ New option. Requirements, all fail-closed:
 |---|---|
 | `agentkit/skills/parallel-issues/SKILL.md` | Step 3 chain planning; Step 5 parameterized base; dispatch deferral rule; WHEN-yolo threading of `--yolo-base`; publication stacked-base + body line; Step 3c merge order; Limits (depth cap) |
 | `agentkit/skills/.shared/scripts/agent-run.sh` | `--yolo-base` option (~30 lines: parsing, validation, `yolo_base_ref` override, message text) |
-| `tests/test-agent-run-cmd.sh` | Red-first: valid pin passes and executes; non-origin-reachable SHA refused; non-ancestor refused; abbreviated/ref value refused; `--yolo-base` without `--yolo` usage error; refusal/skip messages name the pin |
+| `tests/test-agent-run-cmd.sh` | Red-first: valid pin passes and executes; locally-forged/non-advertised SHA refused; non-ancestor refused; abbreviated/ref value refused; `--yolo-base` without `--yolo` usage error; refusal/skip messages name the pin |
 | `tests/test-parallel-dispatch-contract.sh` | Recipe pins: parameterized worktree base, `--yolo-base` threading, stacked `--base` in `gh pr create`, stacked body line, merge-order handoff phrase, depth-cap prose |
 
 Deliberately untouched (v1 / YAGNI):
@@ -107,7 +110,7 @@ Deliberately untouched (v1 / YAGNI):
 
 ## Invariants
 
-- Trust is anchored only at states the root published: trunk, or an origin-reachable ancestor
+- Trust is anchored only at states the server carries: trunk, or a server-advertised-head ancestor
   SHA pinned by the root. A worker cannot widen its own anchor.
 - A chain never gates on PR state — only on root-published commits.
 - Every stacked PR reviews and merges exactly one issue's delta; merge order is stated
@@ -116,7 +119,7 @@ Deliberately untouched (v1 / YAGNI):
 
 ## Test plan
 
-Fixture-repo chains of length 2 in `test-agent-run-cmd.sh` (real commits, real origin refs via
-`update-ref`), recipe-text assertions in the dispatch contract, and one full suite green via
+Fixture-repo chains of length 2 in `test-agent-run-cmd.sh` (real commits, real bare origins
+queried via `ls-remote` — plus a forged local `update-ref` fixture that must be refused), recipe-text assertions in the dispatch contract, and one full suite green via
 `agent-run.sh --cmd test --yolo`. The `--yolo-base` validation tests are the security surface
 and land red-first before any implementation.

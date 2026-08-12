@@ -391,6 +391,32 @@ out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$forged_sha" 2
 assert_eq 1 "$rc" 'a locally forged remote-tracking ref cannot anchor trust'
 assert_contains "$out" 'advertised' 'forged-ref refusal cites server-advertised refs'
 
+# Every refusal path names the rejected pin, including the origin-query paths.
+repo=$tmp/yolo-base-empty-origin
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+git -C "$repo" add -- . && git -C "$repo" commit -qm base
+empty_sha=$(git -C "$repo" rev-parse HEAD)
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$empty_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'an origin with no advertised heads refuses the pin'
+assert_contains "$out" "$empty_sha" 'the no-heads refusal names the rejected pin'
+
+repo=$tmp/yolo-base-dead-origin
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+dead_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" remote set-url origin "$tmp/no-such-origin-$$"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$dead_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'an unreachable origin refuses the pin'
+assert_contains "$out" "$dead_sha" 'the origin-query failure names the rejected pin'
+
 # --- --yolo-base drives the gate; the verdict names the pin -----------------
 # Chain link: predecessor changed a declared input; the pin authorizes it.
 repo=$tmp/yolo-base-chain
