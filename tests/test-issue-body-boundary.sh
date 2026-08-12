@@ -20,10 +20,14 @@ assert_contains "$skill" 'fence-untrusted-data.sh' \
     'prompt construction uses the mechanical fence helper'
 assert_contains "$skill" "\"\$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh\"" \
     'the documented helper path resolves from the skills root'
-assert_contains "$skill" "spec_fence=\$(printf" \
-    'the specification is piped through the helper'
-assert_contains "$skill" "prior_art_fence=\$(printf" \
-    'prior art is piped through the helper'
+assert_contains "$skill" '<"$spec_payload"' \
+    'the specification is file-fed through the helper'
+assert_contains "$skill" '<"$prior_payload"' \
+    'prior art is file-fed through the helper'
+assert_not_contains "$skill" 'printf '\''%s'\'' "$issue_contents" |' \
+    'the specification is never piped through the helper'
+assert_not_contains "$skill" 'printf '\''%s'\'' "$prior_art_contents" |' \
+    'prior art is never piped through the helper'
 assert_contains "$skill" 'rejects a token that occurs in the text it fences' \
     'the helper enforces token collision rejection'
 assert_contains "$skill" 'Do not type, copy, or substitute marker tokens by hand' \
