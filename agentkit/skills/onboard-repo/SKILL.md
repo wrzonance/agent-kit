@@ -235,6 +235,8 @@ identity and byte equality are verified. Report this churn as
 the hook-suppression flag (`--no-verify`), `core.hooksPath`,
 aliases, or configuration that changes hook execution. A refusal is one bounded
 named park, never a bypass investigation.
+The shared commit helper returns exit `3` for that attended park; exit `2` is
+reserved for unwritable git metadata and its elevation handback.
 
 ## Step 4 — work out the commands
 

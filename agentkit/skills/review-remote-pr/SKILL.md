@@ -554,6 +554,9 @@ Protected files are never a reason to weaken the repository boundary. If a base
 merge carries a protected path, preserve the staged bytes and use the shared
 commit handoff's explicit named-base affordance; report the churn class
 `merge-inherited paths parked/handed off` when attended work cannot authorize it.
+That attended park returns exit `3`; exit `2` remains reserved for the git
+metadata elevation handback, so callers must not treat a park as an elevation
+retry loop.
 The helper verifies that each such path is staged by the active merge and is
 byte-identical to the named base before unattended authorization. A repository
 hook refusal is one bounded named park, not an invitation to investigate a

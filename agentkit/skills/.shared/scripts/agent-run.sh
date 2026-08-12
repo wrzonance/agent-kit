@@ -425,22 +425,31 @@ canonicalise_work_dir() {
 }
 
 # A literal executable path is an ad-hoc command, not a repository declaration.
-# Resolve its relative form from the repository toplevel so `--dir nested --
-# ./tools/check` has the same meaning as the same command from the root. Plain
-# names deliberately fall through to PATH lookup. When the token cannot be
-# proven to name a contained executable, leave it untouched so the wrapped
-# command supplies its normal failure status while the diagnostic records both
-# the execution cwd and the toplevel-resolution result.
+# Prefer its relative form from the exact execution directory, then fall back to
+# the repository toplevel for the common root-relative spelling. Plain names
+# deliberately fall through to PATH lookup. When the token cannot be proven to
+# name a contained executable, leave it untouched so the wrapped command
+# supplies its normal failure status while the diagnostic records both the
+# execution cwd and the toplevel-resolution result.
 resolve_literal_executable() {
     local token=${cmd[0]} candidate resolved
     [[ $cmd_declared == no && $token == */* ]] || return 0
     [[ $token != /* && -n $git_top ]] || return 0
 
+    candidate=$work_dir/$token
+    resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
+    if [[ -n $resolved && $resolved == "$git_top"/* && -x $resolved && ! -d $resolved ]]; then
+        cmd[0]=$resolved
+        add_note "ad-hoc argv[0] '$token' resolved at execution cwd: yes ($resolved); execution cwd: $work_dir"
+        refresh_cmd_str
+        return 0
+    fi
+
     candidate=$git_top/$token
     resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
     if [[ -n $resolved && $resolved == "$git_top"/* && -x $resolved && ! -d $resolved ]]; then
         cmd[0]=$resolved
-        add_note "ad-hoc argv[0] '$token' resolved at toplevel: yes ($resolved); execution cwd: $work_dir"
+        add_note "ad-hoc argv[0] '$token' resolved at toplevel fallback: yes ($resolved); execution cwd: $work_dir"
     else
         add_note "ad-hoc argv[0] '$token' resolved at toplevel: no; execution cwd: $work_dir"
     fi

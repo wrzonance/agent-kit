@@ -25,11 +25,14 @@
 # EXIT CODES
 #   0  committed
 #   2  a git metadata directory is not writable -- needs elevation, then retry
+#   3  an active merge carries protected paths that attended work must park
 #   1  usage error, not a repository, trunk branch, or any git failure
 #
 set -euo pipefail
 
 readonly PROGNAME="${0##*/}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+readonly SCRIPT_DIR
 
 SUBJECT=""
 BODY=""
@@ -163,17 +166,18 @@ readonly -a PROTECTED_DEFAULTS=(
 )
 
 protected_pattern() {
-    local candidate=$1 pattern declared
+    local candidate=$1 pattern declared root
     candidate=${candidate#./}
     local -a patterns=("${PROTECTED_DEFAULTS[@]}")
-    if [[ -r .agent/config.env ]]; then
-        declared=$(sed -n 's/^[[:space:]]*AGENT_PROTECTED_PATHS[[:space:]]*=[[:space:]]*//p' \
-            .agent/config.env 2>/dev/null | tail -1)
-        if [[ -n $declared ]]; then
-            local IFS=,
-            read -r -a extra <<< "$declared"
-            patterns+=("${extra[@]}")
-        fi
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n $root && -x $SCRIPT_DIR/repo-config.sh ]]; then
+        declared=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$root" \
+            --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+    fi
+    if [[ -n $declared ]]; then
+        local IFS=,
+        read -r -a extra <<< "$declared"
+        patterns+=("${extra[@]}")
     fi
     for pattern in "${patterns[@]}"; do
         pattern=${pattern#./}
@@ -209,7 +213,13 @@ park_inherited_paths() {
         "$PROGNAME" >&2
     printf '%s: re-run with --allow-base-inherited BASE --yolo only after naming the merged base.\n' \
         "$PROGNAME" >&2
-    exit 2
+    exit 3
+}
+
+active_merge() {
+    local merge_head_file
+    merge_head_file=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 1
+    [[ -s $merge_head_file ]]
 }
 
 base_merge_contains() {
@@ -230,8 +240,6 @@ verify_base_inherited() {
         die 1 "--allow-base-inherited base is not the active merge head: $BASE_INHERITED_REF"
     while IFS= read -r path; do
         [[ -n $path ]] || continue
-        git cat-file -e "$base_commit:$path" 2>/dev/null ||
-            die 1 "merge-inherited protected path is absent from base $BASE_INHERITED_REF: $path"
         git diff --quiet --cached "$base_commit" -- "$path" ||
             die 1 "merge-inherited protected path differs from base $BASE_INHERITED_REF: $path"
     done <<< "$paths"
@@ -239,6 +247,7 @@ verify_base_inherited() {
 
 guard_staged_protected_paths() {
     local paths
+    active_merge || return 0
     paths=$(staged_protected_paths)
     [[ -n $paths ]] || return 0
     if (( ALLOW_BASE_INHERITED == 1 && YOLO == 1 )); then

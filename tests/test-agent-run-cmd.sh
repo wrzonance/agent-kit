@@ -369,18 +369,26 @@ assert_contains "$(cat "$tmp/space-argv")" '<--input>' \
 assert_contains "$(cat "$tmp/space-argv")" '<My Project/input file>' \
     'preserves a spaced argument as one argv token'
 
-# A literal slash command is resolved from the repository toplevel even when
-# the command executes from a nested --dir. Plain names still use PATH lookup.
+# A literal slash command prefers the execution directory and falls back to
+# the repository toplevel only when that candidate is absent. Plain names still
+# use PATH lookup.
 repo=$(make_repo)
-mkdir -p "$repo/tools" "$repo/nested"
+mkdir -p "$repo/tools" "$repo/nested/tools"
 printf '#!/bin/sh\nprintf toplevel-slash\n' > "$repo/tools/toplevel-command"
 chmod +x "$repo/tools/toplevel-command"
 out=$(cd "$repo" && "$real_run_sh" --dir nested -- "$repo/tools/toplevel-command" 2>&1)
 assert_contains "$(cat "$repo"/.agent/logs/*-toplevel-command.log)" 'toplevel-slash' \
     'an absolute literal executable remains runnable from a nested directory'
+printf '#!/bin/sh\nprintf nested-slash\n' > "$repo/nested/tools/toplevel-command"
+chmod +x "$repo/nested/tools/toplevel-command"
 out=$(cd "$repo" && "$real_run_sh" --dir nested -- ./tools/toplevel-command 2>&1)
-assert_contains "$(grep -R -h 'toplevel-slash' "$repo"/.agent/logs)" 'toplevel-slash' \
-    'a relative slash executable resolves from the repository toplevel'
+assert_contains "$(grep -R -h 'nested-slash' "$repo"/.agent/logs)" 'nested-slash' \
+    'a relative slash executable resolves from the execution directory first'
+printf '#!/bin/sh\nprintf root-fallback\n' > "$repo/tools/root-only-command"
+chmod +x "$repo/tools/root-only-command"
+out=$(cd "$repo" && "$real_run_sh" --dir nested -- ./tools/root-only-command 2>&1)
+assert_contains "$(grep -R -h 'root-fallback' "$repo"/.agent/logs)" 'root-fallback' \
+    'a relative slash executable falls back to the repository toplevel'
 printf '#!/bin/sh\nprintf path-lookup\n' > "$tmp/path-command"
 chmod +x "$tmp/path-command"
 out=$(cd "$repo" && PATH="$tmp:$PATH" "$real_run_sh" --dir nested -- path-command 2>&1)
