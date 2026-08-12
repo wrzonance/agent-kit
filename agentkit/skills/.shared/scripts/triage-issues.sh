@@ -186,10 +186,17 @@ build_explicit_query() {
 }
 
 raw_response_file="$repo_root/.agent/cache/triage-response.json"
-mkdir -p -- "${raw_response_file%/*}" || die 'could not create the raw triage response directory'
-[[ ! -L $raw_response_file ]] || die 'refusing to overwrite a symlink at the raw triage response path'
-raw_response_tmp=$(mktemp "${raw_response_file%/*}/.triage-response.XXXXXX") ||
-    die 'could not create a file for the raw triage response'
+raw_response_tmp=''
+if [[ ! -L $raw_response_file ]] &&
+    mkdir -p -- "${raw_response_file%/*}" 2>/dev/null; then
+    raw_response_tmp=$(mktemp "${raw_response_file%/*}/.triage-response.XXXXXX" 2>/dev/null || true)
+fi
+if [[ -z $raw_response_tmp ]]; then
+    raw_response_tmp=$(mktemp "${TMPDIR:-/tmp}/triage-response.XXXXXX" 2>/dev/null || true)
+    [[ -n $raw_response_tmp ]] || die 'could not create a raw triage evidence cache; evidence unavailable'
+    raw_response_file="$raw_response_tmp"
+    warn "repo-local raw cache unavailable; using temporary evidence cache $raw_response_file"
+fi
 chmod 600 -- "$raw_response_tmp" || die 'could not secure the raw triage response file'
 if [[ -n $issues ]]; then
     query=$(build_explicit_query "$issues")
@@ -200,9 +207,20 @@ else
     gh api graphql -F "owner=$owner" -F "name=$name" -F "first=$limit" \
         -f "query=$query" >"$raw_response_tmp" 2> /dev/null || true
 fi
-mv -- "$raw_response_tmp" "$raw_response_file" ||
-    die 'could not publish the raw triage response'
-[[ -s $raw_response_file ]] || classify_failure 'the GraphQL query returned nothing'
+if [[ "$raw_response_tmp" != "$raw_response_file" ]]; then
+    if [[ -s $raw_response_tmp ]]; then
+        if ! mv -- "$raw_response_tmp" "$raw_response_file"; then
+            warn "could not publish repo-local raw cache; using temporary evidence cache $raw_response_tmp"
+            raw_response_file="$raw_response_tmp"
+        fi
+    else
+        rm -f -- "$raw_response_tmp"
+        classify_failure 'the GraphQL query returned nothing'
+    fi
+elif [[ ! -s $raw_response_file ]]; then
+    rm -f -- "$raw_response_file"
+    classify_failure 'the GraphQL query returned nothing'
+fi
 # Keep the fetched bytes on disk before the first parser invocation. If jq
 # rejects malformed evidence, the raw response remains available for diagnosis.
 jq -e . <"$raw_response_file" > /dev/null 2>&1 ||

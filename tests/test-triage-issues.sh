@@ -48,6 +48,35 @@ assert_eq 'yes' "$([[ -f "$repo/.agent/cache/triage-response.json" ]] && echo ye
 assert_contains "$(cat "$repo/.agent/cache/triage-response.json")" '"data"' \
     'persisted triage response retains fetched evidence'
 
+# An empty transient response must not replace a previously good raw cache.
+good_raw=$(cat "$repo/.agent/cache/triage-response.json")
+empty_response="$tmp/empty-response.json"
+: > "$empty_response"
+set +e
+GH_STUB_LOG="$tmp/gh-empty.log" GH_STUB_RESPONSE="$empty_response" PATH="$tmp/stub:$PATH" \
+    "$tr_sh" --repo-root "$repo" >"$tmp/empty.out" 2>"$tmp/empty.err"
+empty_rc=$?
+set -e
+assert_eq '1' "$empty_rc" 'an empty transient response is blocked'
+assert_eq "$good_raw" "$(cat "$repo/.agent/cache/triage-response.json")" \
+    'an empty transient response preserves the previous raw cache'
+
+# A read-only repository cache falls back to a secure temporary raw artifact,
+# while the primary digest remains usable.
+fallback_repo=$(make_repo)
+mkdir -p "$fallback_repo/.agent/cache"
+chmod 500 "$fallback_repo/.agent/cache"
+set +e
+fallback_out=$(run_triage "$fallback_repo" triage-mixed.json 2>"$tmp/fallback.err")
+fallback_rc=$?
+set -e
+chmod 700 "$fallback_repo/.agent/cache"
+assert_eq '0' "$fallback_rc" 'an unwritable repo cache does not block triage'
+assert_contains "$fallback_out" 'triage= repo=example-org/example-repo' \
+    'the primary triage digest remains usable with an unwritable cache'
+assert_contains "$(cat "$tmp/fallback.err")" 'temporary evidence cache' \
+    'cache fallback names the persistence limitation'
+
 # --- verdicts --------------------------------------------------------------
 assert_contains "$(line_for 57)" 'clean' '#57 with no referencing PR is clean'
 assert_contains "$(line_for 54)" 'merged-ref' '#54 with a merged PR is merged-ref'

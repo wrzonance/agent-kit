@@ -804,6 +804,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1
 issue_payload_file="$worktree/.agent/fetched-issue.json"
+mkdir -p -- "${issue_payload_file%/*}" || exit 1
 printf '%s\n' "$issue_payload" >"$issue_payload_file" || exit 1
 issue_has_content=$(jq -r '
   ((.title // "") != "") or ((.body // "") != "")
