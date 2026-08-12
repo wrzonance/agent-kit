@@ -10,17 +10,21 @@ set -euo pipefail
 skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 
 # A skill already over budget stays green here only by an explicit, named
-# entry below: CEILING is that skill's body-line count as of the entry being
-# written (a hard cap -- the skill may shrink but must never grow past it),
-# and TARGET is the size to eventually work back down to, tracked in the
-# named issue. Remove the entry the moment the skill is back under the
-# standard budget -- see the ratchet check further down. If a deliberate
-# change legitimately grows an allowlisted skill, raise its CEILING in the
-# same PR so this stays a conscious ratchet, not a rubber stamp.
+# entry below, in the form LINES:TOKENS:TARGET. LINES and TOKENS are that
+# skill's body-line and estimated-token counts as of the entry being written
+# -- hard caps in BOTH dimensions, because the budget this gate defends is
+# context, and a body can grow by hundreds of kilobytes without adding a
+# single line. TARGET is the line count to eventually work back down to,
+# tracked in the named issue. Remove the entry the moment the skill is back
+# under the standard budget -- see the ratchet check further down. If a
+# deliberate change legitimately grows an allowlisted skill, raise the
+# ceiling it crosses in the same PR so this stays a conscious ratchet, not a
+# rubber stamp.
 declare -A KNOWN_OVERSIZE=(
-    [review-remote-pr]="2087:450"  # CEILING:TARGET -- target <=450 lines, tracked in issue #106
-    [parallel-issues]="1783:450"   # CEILING:TARGET -- target <=450 lines, tracked in issue #107
-    [onboard-repo]="464:350"       # CEILING:TARGET -- target <=350 lines, tracked in issue #108
+    # LINES:TOKENS:TARGET
+    [review-remote-pr]="2087:34808:450"  # target <=450 lines, tracked in issue #106
+    [parallel-issues]="1783:29014:450"   # target <=450 lines, tracked in issue #107
+    [onboard-repo]="464:5476:350"        # target <=350 lines, tracked in issue #108
 )
 
 readonly MAX_BODY_LINES=500
@@ -37,13 +41,27 @@ report() {
     violations=$((violations + 1))
 }
 
-# Prints the line number of the frontmatter's closing `---`, or nothing if
-# no closing delimiter exists. Deliberately reports nothing itself -- callers
-# run this via command substitution, and a subshell's report() can't bump the
-# parent's violation counter, so the caller must check for emptiness and call
-# report() itself in the parent shell.
+# Prints the line number of the frontmatter's closing `---`, or nothing if the
+# file has no frontmatter block. The opening delimiter must be line 1: without
+# that anchor, any later pair of `---` rules in the body impersonates a
+# frontmatter block, so a SKILL.md with no frontmatter at all passes every
+# check below (its "description" being whatever sat between two horizontal
+# rules). Deliberately reports nothing itself -- callers run this via command
+# substitution, and a subshell's report() can't bump the parent's violation
+# counter, so the caller must check for emptiness and call report() itself in
+# the parent shell.
 frontmatter_end() {
-    awk '/^---[[:space:]]*$/ { c++; if (c == 2) { print NR; exit } }' "$1"
+    awk '
+        NR == 1 && !/^---[[:space:]]*$/ { exit }
+        /^---[[:space:]]*$/ { c++; if (c == 2) { print NR; exit } }
+    ' "$1"
+}
+
+# `wc -l` counts newline characters, so a file whose final line is unterminated
+# measures one line short -- exactly enough to sit on a boundary and pass. NR
+# counts logical lines, including that last one.
+count_lines() {
+    awk 'END { print NR }' "$1"
 }
 
 # Prints "LINES BYTES" for the body -- everything after the frontmatter's
@@ -51,7 +69,7 @@ frontmatter_end() {
 body_stats() {
     local file=$1 fm_end=$2
     local total_lines body_lines body_bytes
-    total_lines=$(wc -l < "$file")
+    total_lines=$(count_lines "$file")
     body_lines=$((total_lines - fm_end))
     body_bytes=$(tail -n "+$((fm_end + 1))" "$file" | wc -c)
     printf '%s %s\n' "$body_lines" "$body_bytes"
@@ -66,15 +84,37 @@ check_size() {
     fi
 
     if [[ -v KNOWN_OVERSIZE[$name] ]]; then
-        local entry=${KNOWN_OVERSIZE[$name]} ceiling target
-        ceiling=${entry%%:*}
-        target=${entry##*:}
+        local entry=${KNOWN_OVERSIZE[$name]} line_ceiling token_ceiling target
+        IFS=: read -r line_ceiling token_ceiling target <<< "$entry"
+        # Every field must be a plain decimal integer before it reaches the
+        # arithmetic below. Under `set -u` a non-numeric field is not a loud
+        # zero -- `(( x > foo ))` aborts the whole lint with "unbound
+        # variable". `08` dies as an invalid octal literal, and an expression
+        # like `1+1` is silently evaluated, quietly moving the ceiling.
+        # Leading zeros are rejected rather than normalized: a ceiling should
+        # read as the number it is.
+        local field
+        for field in "$line_ceiling" "$token_ceiling" "$target"; do
+            if [[ ! $field =~ ^(0|[1-9][0-9]*)$ ]]; then
+                report "$file" \
+                    "malformed KNOWN_OVERSIZE entry for '$name' ('$entry') -- expected LINES:TOKENS:TARGET, each a decimal integer without leading zeros"
+                return 0
+            fi
+        done
         if ((over == 0)); then
             report "$file" \
                 "allowlisted skill '$name' is now within budget ($body_lines lines, ~$est_tokens tokens) -- remove the stale KNOWN_OVERSIZE entry (target <=$target lines)"
-        elif ((body_lines > ceiling)); then
+            return 0
+        fi
+        # Both dimensions ratchet: a skill that trades lines for longer lines
+        # is still growing the context it costs.
+        if ((body_lines > line_ceiling)); then
             report "$file" \
-                "allowlisted skill '$name' grew to $body_lines lines, past its ratcheted ceiling of $ceiling lines -- the allowlist tracks a skill shrinking toward its target (<=$target lines), never growing; either shrink it back or, for a deliberate change, raise CEILING in this file's KNOWN_OVERSIZE entry in the same PR"
+                "allowlisted skill '$name' grew to $body_lines lines, past its ratcheted ceiling of $line_ceiling lines -- the allowlist tracks a skill shrinking toward its target (<=$target lines), never growing; either shrink it back or, for a deliberate change, raise LINES in this file's KNOWN_OVERSIZE entry in the same PR"
+        fi
+        if ((est_tokens > token_ceiling)); then
+            report "$file" \
+                "allowlisted skill '$name' grew to ~$est_tokens estimated tokens, past its ratcheted ceiling of $token_ceiling tokens -- either shrink it back or, for a deliberate change, raise TOKENS in this file's KNOWN_OVERSIZE entry in the same PR"
         fi
         return 0
     fi
@@ -101,6 +141,16 @@ extract_description() {
             next
         }
         found && folding {
+            # A blank line inside a block scalar is a paragraph break, not the
+            # end of the value -- YAML keeps folding afterwards. Ending here
+            # would leave everything past the blank line uncounted, which is a
+            # free way to smuggle an over-long description past the limit.
+            # The break itself folds to one newline character, so it counts as
+            # one character rather than nothing.
+            if ($0 ~ /^[[:space:]]*$/) {
+                if (desc != "") { desc = desc " " }
+                next
+            }
             if ($0 ~ /^[[:space:]]+/) {
                 val = $0
                 sub(/^[[:space:]]+/, "", val)
@@ -114,9 +164,45 @@ extract_description() {
     ' "$file"
 }
 
+# YAML lets a trailing `#` comment follow a scalar, and the comment is not part
+# of the value. Scoring it as part of the description rejects legal frontmatter
+# -- `description: "Use when ..." # note` was reported as not starting with
+# "Use when", which is both a false failure and a misleading message.
+#
+# The cut must never land on a quote *inside* the value: `"... \"q\" ..."` and
+# `'... it''s ...'` both carry interior quotes, and cutting at the first one
+# truncates the description to a few characters, so an over-long one measures
+# short and passes. So a quoted scalar is closed by its LAST quote, and only
+# when what follows is actually a comment. Anything else is left whole and
+# measured in full -- this gate errs toward over-measuring, which fails loudly,
+# never toward under-measuring, which fails silently.
+strip_inline_comment() {
+    local value=$1 quote=${1:0:1} head tail
+    if [[ $quote == '"' || $quote == "'" ]]; then
+        # Already a complete quoted scalar: no comment to remove.
+        if ((${#value} >= 2)) && [[ ${value: -1} == "$quote" ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        head=${value%"$quote"*}   # everything before the LAST quote
+        tail=${value##*"$quote"}  # everything after it
+        if [[ -n $head && $tail =~ ^[[:space:]]*# ]]; then
+            printf '%s%s\n' "$head" "$quote"
+            return 0
+        fi
+        printf '%s\n' "$value"
+        return 0
+    fi
+    if [[ $value == *' #'* ]]; then
+        value=${value%%' #'*}
+    fi
+    printf '%s\n' "$value"
+}
+
 check_description() {
     local file=$1 desc
     desc=$(extract_description "$file")
+    desc=$(strip_inline_comment "$desc")
     if [[ -z $desc ]]; then
         report "$file" "frontmatter description is empty or missing"
         return 0
@@ -148,7 +234,7 @@ check_references() {
 
     local doc lines has_toc
     while IFS= read -r doc; do
-        lines=$(wc -l < "$doc")
+        lines=$(count_lines "$doc")
         ((lines > MAX_REF_LINES_WITHOUT_TOC)) || continue
         has_toc=$(head -n "$TOC_SCAN_WINDOW" "$doc" |
             grep -ciE '^(## Contents|## Table of contents)' || true)
@@ -167,7 +253,8 @@ while IFS= read -r skill_file; do
 
     fm_end=$(frontmatter_end "$skill_file")
     if [[ -z $fm_end ]]; then
-        report "$skill_file" "no closing frontmatter delimiter (second ---)"
+        report "$skill_file" \
+            "no YAML frontmatter block -- it must open with --- on line 1 and close with a later ---"
         continue
     fi
 
