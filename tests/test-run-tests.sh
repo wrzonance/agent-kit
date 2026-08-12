@@ -98,7 +98,12 @@ run_parallel_fixture() {
         CONTROL_DIR="$tmp" "$fixture/tests/run-tests.sh" --only alpha,beta,gamma \
         >"$tmp/out" 2>&1 &
     parallel_pid=$!
-    exec 9<"$tmp/start.fifo"
+    # Read-write open: the test itself keeps one writer on the fifo, so the
+    # writer count never drops to zero between the two suites' one-shot writes.
+    # Without this, a suite that writes and closes before its sibling opens
+    # hands the reader EOF and the second read returns empty (observed on a
+    # 2-core CI runner; unobservable on wide local machines).
+    exec 9<>"$tmp/start.fifo"
 }
 
 wait_for_trace() {
@@ -149,8 +154,8 @@ assert_eq $'alpha-start\nalpha-end\nbeta-start\nbeta-end' "$serial_trace" \
     'AGENT_TEST_JOBS=1 preserves serial suite execution'
 
 run_parallel_fixture
-first_event=$(read -r event <&9; printf '%s' "$event")
-second_event=$(read -r event <&9; printf '%s' "$event")
+first_event=$(read -t 30 -r event <&9; printf '%s' "$event")
+second_event=$(read -t 30 -r event <&9; printf '%s' "$event")
 assert_contains "$first_event" '-start' 'first synchronized event is a suite start'
 assert_contains "$second_event" '-start' 'second synchronized event is a suite start'
 parallel_trace=$(<"$trace")
