@@ -1380,6 +1380,8 @@ marker is the bound.
 
 ## Step 3 (Phase B): Wait for the user to decide the ready transition
 
+**Never run `gh pr ready`.** The draft-to-ready flip is always the user's call.
+
 When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed
 or declined-with-comment, every discovered human item decided — report the draft-phase summary to the
 user (see Exit Report) and **wait at the harness level**. The user, not you, marks the PR ready for
@@ -1388,8 +1390,10 @@ starts a provider review is external repository configuration.
 
 Then observe a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack —
 Step 1b state check). If none arrives, report that no matching review has landed; do not infer
-provider configuration or trigger one yourself. If the state check reports `rate-limited`, stop and
-escalate to the user rather than spending turns on repeated checks.
+provider configuration or trigger one yourself. If the state check reports `rate-limited`, perform
+bounded blocking re-check rounds (~10 minutes each, up to ~90 minutes total). Use one blocking helper/harness wait to own the rounds, so the retry spends no model turns. Never issue separate
+`sleep` and re-check tool calls. After that bounded wait, escalate to the user if the state remains
+rate-limited. Never trigger a review.
 
 ---
 

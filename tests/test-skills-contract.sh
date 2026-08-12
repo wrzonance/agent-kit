@@ -142,6 +142,21 @@ assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its ow
     'review wait rule rejects sleep and re-check tool churn'
 assert_eq '' "$(grep -nE '^[[:space:]]*sleep[[:space:]]+[0-9]' "$review_skill" || true)" \
     'review skill has no sleep polling recipe'
+step3=$(sed -n '/^## Step 3 (Phase B)/,/^## Step 4:/p' "$review_skill")
+assert_contains "$step3" 'Never run `gh pr ready`' \
+    'Step 3 keeps the ready transition as a user-only action'
+assert_contains "$step3" 'bounded blocking re-check rounds' \
+    'Step 3 bounds CodeRabbit rate-limit re-checks'
+assert_contains "$step3" '~10 minutes each' \
+    'Step 3 gives each rate-limit re-check round a ten-minute bound'
+assert_contains "$step3" '~90 minutes total' \
+    'Step 3 caps the total rate-limit wait'
+assert_contains "$step3" 'one blocking helper/harness wait' \
+    'Step 3 keeps rate-limit polling turn-free'
+assert_contains "$step3" 'Never trigger a review' \
+    'Step 3 never triggers a provider review while retrying'
+assert_not_contains "$step3" 'stop and escalate to the user rather than spending turns on repeated checks' \
+    'Step 3 does not escalate immediately on a rate limit'
 assert_contains "$(<"$review_skill")" 'blocked check and must never be summarized as “no findings.”' \
     'review Step 5 treats missing parsers as blocked checks'
 
