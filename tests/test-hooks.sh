@@ -627,7 +627,13 @@ assert_contains "$out" 'classification: workspace' \
 
 # A real repository outside the workspace and designated fixture roots is
 # foreign, but foreign protected writes remain deny-once policy targets.
-foreign_parent=$(cd -- "$root/../../../.." && pwd)
+# GitHub Actions exposes RUNNER_TEMP as writable scratch space, but it is not a
+# fixture root. Locally, /dev/shm gives the same foreign-repository boundary
+# without assuming that the runner permits writes directly under /home (or
+# accidentally remaining under the shared Git root). Do not fall back to /tmp:
+# guard_fixture_path deliberately classifies that tree (and TMPDIR) as fixture
+# space.
+foreign_parent=${RUNNER_TEMP:-/dev/shm}
 foreign_repo=$(mktemp -d "$foreign_parent/hooks-foreign.XXXXXX")
 git -C "$foreign_repo" init -q
 mkdir -p "$foreign_repo/.agent" "$foreign_repo/.github/workflows"
