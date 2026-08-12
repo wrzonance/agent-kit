@@ -44,9 +44,12 @@ assert_receipt_contract() {
     marker_count=$(grep -o -- '<!-- adversarial-review:spent -->' <<<"$template" | wc -l | tr -d ' ')
     assert_eq '1' "$marker_count" "$label receipt template has exactly one marker"
 
-    assert_contains "$section" 'agentkit=' "$label publication resolves agentkit"
-    assert_contains "$section" 'contract_root=' "$label publication validates the contract root"
-    assert_contains "$section" 'agentkit=$(sed -n "s/^skills= path=//' "$label publication reads the trusted skills path"
+    # The full resolver (agentkit=, contract_root=, the trusted skills-path
+    # read) is single-sourced in Step 0 under the new convention -- this
+    # publication block instead carries the two-line guard that fails loudly
+    # unless the Step 0 resolver was prepended first.
+    assert_contains "$section" '${agentkit:-}/.shared/scripts' "$label publication guards against a missing resolver"
+    assert_contains "$section" 'agentkit unresolved: prepend the Step 0 resolver block' "$label publication fails loudly without the resolver"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'
@@ -86,10 +89,10 @@ assert_not_contains "$precheck_block" 'gh-comment.sh' \
 publication_block=$(awk '/^```bash$/{block++; next} block == 2 && /^```$/{exit} block == 2{print}' <<<"$parallel_section")
 assert_contains "$publication_block" 'gh-comment.sh' \
     'parallel-issues publication block posts the receipt'
-assert_contains "$publication_block" 'contract_root=' \
-    'parallel-issues publication block resolves the contract root'
-assert_contains "$publication_block" 'agentkit=$(sed -n "s/^skills= path=//' \
-    'parallel-issues publication block reads the trusted skills path'
+assert_contains "$publication_block" '${agentkit:-}/.shared/scripts' \
+    'parallel-issues publication block guards a missing resolver'
+assert_contains "$publication_block" 'agentkit unresolved: prepend the Step 0 resolver block' \
+    'parallel-issues publication block fails loudly without the resolver'
 
 review_section=$(awk '
     /^### Adversarial-review receipt:/{capture=1; next}
@@ -98,10 +101,10 @@ review_section=$(awk '
     capture{print}
 ' <<<"$review_text")
 review_publication_block=$(awk '/^```bash$/{block++; next} block == 1 && /^```$/{exit} block == 1{print}' <<<"$review_section")
-assert_contains "$review_publication_block" 'contract_root=' \
-    'review-remote-pr publication block resolves the contract root'
-assert_contains "$review_publication_block" 'agentkit=$(sed -n "s/^skills= path=//' \
-    'review-remote-pr publication block reads the trusted skills path'
+assert_contains "$review_publication_block" '${agentkit:-}/.shared/scripts' \
+    'review-remote-pr publication block guards a missing resolver'
+assert_contains "$review_publication_block" 'agentkit unresolved: prepend the Step 0 resolver block' \
+    'review-remote-pr publication block fails loudly without the resolver'
 
 receipt_line=$(grep -n '^### Adversarial-review receipt:' "$review" | cut -d: -f1)
 phase_b_line=$(grep -n '^## Step 3 (Phase B):' "$review" | cut -d: -f1)
