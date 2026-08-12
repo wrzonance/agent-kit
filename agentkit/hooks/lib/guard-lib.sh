@@ -39,6 +39,14 @@ readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-con
 # Populated by guard_resolve_roots.
 roots=()
 
+# The session repository is the workspace anchor. Target guards classify every
+# command target against it instead of inferring intent from path spelling.
+workspace_root=''
+workspace_common=''
+GUARD_TARGET_CLASSIFICATION=''
+GUARD_TARGET_ROOT=''
+GUARD_SCOPE_CLASSIFICATION=''
+
 # Filesystem scope is narrower than repository targeting. `roots` may include
 # repositories named by a command so repository-scoped advice follows `cd` and
 # `git -C`; those names are untrusted input and must never authorize a walker.
@@ -53,6 +61,123 @@ guard_add_root() {
     roots+=("$resolved")
 }
 
+guard_repository_common() {
+    local root=$1 common
+    common=$(git -C "$root" rev-parse --git-common-dir 2> /dev/null) || return 1
+    case $common in
+        /*) ;;
+        *) common="$root/$common";;
+    esac
+    guard_scope_canonical "$common"
+}
+
+guard_fixture_path() {
+    local candidate=$1 fixture configured=${AGENT_FIXTURE_ROOTS:-}
+    local -a fixtures=(/tmp "${TMPDIR:-/tmp}") extra=()
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+    [[ -n ${AGENT_FIXTURE_ROOT:-} ]] && fixtures+=("$AGENT_FIXTURE_ROOT")
+    if [[ -n $configured ]]; then
+        local IFS=:
+        read -r -a extra <<< "$configured"
+        fixtures+=("${extra[@]}")
+    fi
+    for fixture in "${fixtures[@]}"; do
+        [[ -n $fixture ]] || continue
+        fixture=$(guard_scope_canonical "$fixture") || continue
+        [[ $candidate == "$fixture" || $candidate == "$fixture"/* ]] && return 0
+    done
+    return 1
+}
+
+guard_workspace_root() {
+    local root=$1 common
+    [[ -n $workspace_root ]] || return 1
+    [[ $root == "$workspace_root" ]] && return 0
+    common=$(guard_repository_common "$root") || return 1
+    [[ -n $workspace_common && $common == "$workspace_common" ]]
+}
+
+# Classify a resolved repository root. A root with no git toplevel is handled
+# by guard_classify_target as unresolved for policy guards; scope maps it to a
+# foreign escape because that is the safe answer for a walker.
+guard_classify_root() {
+    local root=$1
+    GUARD_TARGET_ROOT=$root
+    if [[ -z $root ]]; then
+        GUARD_TARGET_CLASSIFICATION=unresolved
+    elif guard_workspace_root "$root"; then
+        if [[ $root == "$workspace_root" && -n ${AGENT_FIXTURE_ROOT:-} ]] &&
+            guard_fixture_path "$root" 2> /dev/null; then
+            GUARD_TARGET_CLASSIFICATION=fixture
+        else
+            GUARD_TARGET_CLASSIFICATION=workspace
+        fi
+    elif guard_fixture_path "$root"; then
+        GUARD_TARGET_CLASSIFICATION=fixture
+    else
+        GUARD_TARGET_CLASSIFICATION=foreign
+    fi
+    printf '%s' "$GUARD_TARGET_CLASSIFICATION"
+}
+
+guard_target_path() {
+    local target=$1 base=${2:-$PWD} candidate probe root
+    case $target in
+        /*) candidate=$target;;
+        *) candidate="$base/$target";;
+    esac
+    candidate=$(guard_scope_canonical "$candidate") || return 2
+    probe=$candidate
+    [[ -d $probe ]] || probe=${probe%/*}
+    [[ -n $probe ]] || probe=/
+    root=$(git -C "$probe" rev-parse --show-toplevel 2> /dev/null) || return 1
+    printf '%s\n%s' "$root" "$candidate"
+}
+
+guard_command_target_dir() {
+    local cwd=$1 command_line=$2 candidate
+    candidate=$(grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+[^[:space:];&|]+' \
+        <<< "$command_line" 2> /dev/null | tail -1 |
+        sed -E 's/.*cd[[:space:]]+//' || true)
+    if [[ -z $candidate ]]; then
+        candidate=$(grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:];&|]+' \
+            <<< "$command_line" 2> /dev/null | tail -1 |
+            sed -E 's/.*-C[[:space:]]+//' || true)
+    fi
+    [[ -n $candidate ]] || { printf '%s' "$cwd"; return 0; }
+    case $candidate in
+        /*) guard_scope_canonical "$candidate";;
+        *) guard_scope_canonical "$cwd/$candidate";;
+    esac
+}
+
+guard_command_repository_root() {
+    local cwd=$1 command_line=$2 dir
+    dir=$(guard_command_target_dir "$cwd" "$command_line") || return 1
+    git -C "$dir" rev-parse --show-toplevel 2> /dev/null
+}
+
+# Shared boundary for all repository-policy and scope guards. It resolves the
+# target path relative to the command's effective directory, then classifies
+# the resulting git root. A failed root lookup remains unresolved so policy
+# callers can fail closed exactly as they did before classification existed.
+guard_classify_target() {
+    local target=$1 cwd=$2 command_line=${3:-} base resolved candidate
+    base=$(guard_command_target_dir "$cwd" "$command_line") || base=$cwd
+    resolved=$(guard_target_path "$target" "$base" 2> /dev/null) || {
+        case $target in
+            /*) candidate=$target;;
+            *) candidate="$base/$target";;
+        esac
+        GUARD_TARGET_ROOT=''
+        GUARD_TARGET_CLASSIFICATION=unresolved
+        printf '%s' "$GUARD_TARGET_CLASSIFICATION"
+        return 0
+    }
+    GUARD_TARGET_ROOT=${resolved%%$'\n'*}
+    guard_classify_root "$GUARD_TARGET_ROOT"
+}
+
 # Every repository a command might act on -- not just the one the session started
 # in. An agent launched in $HOME and told "commit my work in <repo>" reaches it
 # with `cd <repo> && ...` or `git -C <repo> ...`. Anchoring to the session cwd
@@ -62,6 +187,10 @@ guard_resolve_roots() {
     local cwd=$1 command_line=$2 candidate
 
     if [[ -n $cwd && -d $cwd ]]; then
+        workspace_root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || true)
+        if [[ -n $workspace_root ]]; then
+            workspace_common=$(guard_repository_common "$workspace_root" 2> /dev/null || true)
+        fi
         guard_add_root "$cwd"
     fi
 
@@ -169,8 +298,19 @@ guard_scope_path_allowed() {
 # alone: the resolved repository/cwd contract answers those without guessing.
 guard_out_of_scope_target() {
     local command_line=$1 segment verb token cleaned has_walker=0
+    local cwd=${2:-$PWD} command_root='' command_class='' command_dir=''
     local -a words
     local segments=${command_line//[;&|]/$'\n'}
+    # shellcheck disable=SC2034  # consumed by the sourcing PreToolUse hook
+    GUARD_SCOPE_CLASSIFICATION=''
+    command_root=$(guard_command_repository_root "$cwd" "$command_line" 2> /dev/null || true)
+    if [[ -z $command_root ]]; then
+        command_dir=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
+        if [[ -n $command_dir && $command_dir != "$(guard_scope_canonical "$cwd")" ]]; then
+            command_root=$command_dir
+            command_class=foreign
+        fi
+    fi
 
     while IFS= read -r segment; do
         [[ -n ${segment//[[:space:]]/} ]] || continue
@@ -194,6 +334,24 @@ guard_out_of_scope_target() {
         esac
         ((has_walker)) || continue
 
+        # A relative walk inherits the command's effective directory. If that
+        # directory resolves to a foreign repository, advise even though the
+        # command never spelled an absolute path.
+        if [[ -n $command_root ]]; then
+            [[ -n $command_class ]] || command_class=$(guard_classify_root "$command_root")
+            if [[ $command_class == foreign ]]; then
+                # shellcheck disable=SC2034  # consumed by the sourcing hook
+                GUARD_SCOPE_CLASSIFICATION=foreign
+                printf '%s' "$command_root"
+                return 0
+            fi
+        elif [[ $segment =~ (^|[[:space:];&|])cd[[:space:]]+ ]]; then
+            # shellcheck disable=SC2034  # consumed by the sourcing hook
+            GUARD_SCOPE_CLASSIFICATION=foreign
+            printf '%s' "$(guard_command_target_dir "$cwd" "$segment")"
+            return 0
+        fi
+
         for token in "${words[@]:1}"; do
             cleaned=${token#\"}; cleaned=${cleaned%\"}
             cleaned=${cleaned#\'}; cleaned=${cleaned%\'}
@@ -201,6 +359,13 @@ guard_out_of_scope_target() {
             case $cleaned in
                 /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
                     if ! guard_scope_path_allowed "$cleaned"; then
+                        case $cleaned in
+                            /*) command_class=$(guard_classify_target "$cleaned" "$cwd" "$command_line");;
+                            *) command_class=foreign;;
+                        esac
+                        [[ $command_class == workspace ]] && continue
+                        # shellcheck disable=SC2034  # consumed by the sourcing hook
+                        GUARD_SCOPE_CLASSIFICATION=foreign
                         printf '%s' "$cleaned"
                         return 0
                     fi
