@@ -37,7 +37,8 @@ jobs:
           download_dir=$(mktemp -d)
           install_dir="${RUNNER_TEMP}/shellcheck-v${version}/bin"
           trap 'rm -rf -- "$download_dir"' EXIT
-          curl --fail --location --silent --show-error "$url" --output "$download_dir/$archive"
+          curl --fail --location --silent --show-error --retry 3 --retry-delay 2 --retry-all-errors \
+            "$url" --output "$download_dir/$archive"
           printf '%s  %s\n' "$expected_sha256" "$download_dir/$archive" |
             sha256sum --check --status -
           tar -xJf "$download_dir/$archive" -C "$download_dir"

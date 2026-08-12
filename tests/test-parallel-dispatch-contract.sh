@@ -256,8 +256,14 @@ assert_not_contains "$publication_section" '<<EOF' \
     'draft PR publication has no interpolating heredoc'
 assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
     'draft PR publication secures the body file with mode 600'
-assert_contains "$publication_section" 'pr_body_template="$pr_body_file.template"' \
-    'draft PR publication names its literal template file'
+assert_contains "$publication_section" 'pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX")' \
+    'draft PR publication allocates an independent template file'
+assert_not_contains "$publication_section" 'pr_body_template="$pr_body_file.template"' \
+    'draft PR publication never derives a predictable template path'
+assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file" "$pr_body_template"' \
+    'draft PR publication secures both body files with mode 600'
+assert_not_contains "$publication_section" 'cat >"$pr_body_file.template"' \
+    'draft PR publication never writes through the derived template path'
 assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file" "$pr_body_template"'\'' EXIT' \
     'draft PR publication removes both body files on exit'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
@@ -321,6 +327,8 @@ assert_contains "$ci_text" '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65
     'CI verifies the documented ShellCheck checksum'
 assert_contains "$ci_text" 'shellcheck --version' \
     'CI logs the pinned ShellCheck version'
+assert_contains "$ci_text" 'curl --fail --location --silent --show-error --retry 3 --retry-delay 2 --retry-all-errors' \
+    'CI retries transient pinned ShellCheck downloads'
 assert_contains "$ci_text" 'install_dir="${RUNNER_TEMP}/shellcheck-v${version}/bin"' \
     'CI installs ShellCheck into a persistent versioned runner-temp directory'
 assert_contains "$ci_text" 'printf '\''%s\n'\'' "$install_dir" >>"$GITHUB_PATH"' \

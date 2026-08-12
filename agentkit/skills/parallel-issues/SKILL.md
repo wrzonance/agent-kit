@@ -1137,9 +1137,10 @@ with fixed-string Bash parameter expansion.
 
 ```bash
 pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
-pr_body_template="$pr_body_file.template"
+pr_body_template=''
 trap 'rm -f -- "$pr_body_file" "$pr_body_template"' EXIT
-chmod 600 -- "$pr_body_file" || exit 1
+pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX") || exit 1
+chmod 600 -- "$pr_body_file" "$pr_body_template" || exit 1
 agent_identity=${agent_identity:?set the actual agent identity for PR attribution}
 pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}
 # The quoted heredoc keeps every body byte literal, including Markdown backticks and $().
