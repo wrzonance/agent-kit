@@ -44,6 +44,19 @@ assert_contains "$output" 'classification: known-provider=1 type=Bot=1 login-suf
     'state dump excludes agent-marked-only replies from the human signal'
 assert_not_contains "$output" '{"number"' 'digest does not leak raw API JSON'
 
+bare_output=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    14 --repo owner/repo)
+assert_contains "$bare_output" 'pr=14' 'a bare positional PR number is accepted'
+
+set +e
+bare_err=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    nope --repo owner/repo 2>&1)
+bare_rc=$?
+set -e
+assert_eq '1' "$bare_rc" 'a nonnumeric bare PR is a usage error'
+assert_contains "$bare_err" 'did you mean --pr N?' \
+    'a bare PR usage error gives the exact option guidance'
+
 # A missing parser is a blocked evidence check, never an empty digest.
 mkdir -p "$tmp/no-jq"
 cp "$tmp/gh" "$tmp/no-jq/gh"

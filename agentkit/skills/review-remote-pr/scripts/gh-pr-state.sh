@@ -50,14 +50,14 @@ HEAD_REF=""
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --pr N [--repo OWNER/REPO] [--digest|--full|--wait-ci]
+Usage: $PROGNAME [--pr N | N] [--repo OWNER/REPO] [--digest|--full|--wait-ci]
                  [--tmpdir DIR] [--rounds N] [--interval SECONDS] [-h]
 
 Prints one compact digest of a pull request's draft/mergeable state, CI, review
 threads, outstanding nitpicks, and open code-scanning alerts. Never prints JSON.
 
 Required:
-  --pr N                 Pull request number (e.g. 42).
+  --pr N                 Pull request number (e.g. 42). A bare N is also accepted.
 
 Options:
   --repo OWNER/REPO      Repository. Default: derived from the current checkout
@@ -145,7 +145,14 @@ parse_args() {
         --wait-ci) WANT_WAIT=1; shift ;;
         -h | --help) usage; exit 0 ;;
         --) shift; break ;;
-        *) die "unknown argument: $1 (try --help)" ;;
+        *)
+            if [[ -z $PR && $1 =~ ^[1-9][0-9]*$ ]]; then
+                PR=$1
+                shift
+            else
+                die "unexpected argument: $1 (did you mean --pr N?)"
+            fi
+            ;;
         esac
     done
     (($# == 0)) || die "unexpected trailing argument: $1"

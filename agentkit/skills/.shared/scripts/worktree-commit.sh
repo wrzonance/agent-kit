@@ -25,15 +25,21 @@
 # EXIT CODES
 #   0  committed
 #   2  a git metadata directory is not writable -- needs elevation, then retry
+#   3  an active merge carries protected paths that attended work must park
 #   1  usage error, not a repository, trunk branch, or any git failure
 #
 set -euo pipefail
 
 readonly PROGNAME="${0##*/}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+readonly SCRIPT_DIR
 
 SUBJECT=""
 BODY=""
 ALLOW_EMPTY=0
+ALLOW_BASE_INHERITED=0
+BASE_INHERITED_REF=""
+YOLO=0
 TRAILERS=()
 FILES=()
 MESSAGE_ARGS=()
@@ -43,7 +49,8 @@ LOCK_FD=""
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty] [--] FILE...
+Usage: $PROGNAME --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
+                 [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
 front that the repository's git metadata directories are writable.
@@ -55,6 +62,12 @@ Options:
                       Repeatable; all trailers share the final paragraph so git
                       parses them as one trailer block.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
+  --allow-base-inherited BASE
+                      Name the exact merge base whose protected paths may be
+                      carried into this commit after byte-identity checks.
+  --yolo              In unattended mode, authorize --allow-base-inherited BASE
+                      when the named commit is the active merge head. Attended
+                      runs park inherited paths and preserve them in the index.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
 
@@ -119,11 +132,131 @@ parse_args() {
                 ;;
             --trailer) need_value "$@"; TRAILERS+=("$2"); shift 2 ;;
             --allow-empty) ALLOW_EMPTY=1; shift ;;
+            --allow-base-inherited)
+                need_value "$@"
+                (( ALLOW_BASE_INHERITED == 0 )) || die 1 "--allow-base-inherited given more than once"
+                BASE_INHERITED_REF="$2"
+                ALLOW_BASE_INHERITED=1
+                shift 2
+                ;;
+            --yolo) YOLO=1; shift ;;
             --) shift; FILES+=("$@"); break ;;
             -*) die 1 "unknown option: $opt (try --help)" ;;
             *) FILES+=("$1"); shift ;;
         esac
     done
+}
+
+# Keep this list aligned with the hook's protected-path defaults. Repository
+# declarations are additive, so an agent cannot edit config.env to make an
+# inherited gate disappear.
+readonly -a PROTECTED_DEFAULTS=(
+    '.github/workflows/'
+    '.gitlab-ci.yml'
+    '.circleci/'
+    'azure-pipelines.yml'
+    'Jenkinsfile'
+    '.githooks/'
+    '.git/hooks/'
+    '.git/config'
+    '.pre-commit-config.yaml'
+    '.codex/config.toml'
+    '.claude/settings.json'
+    '.claude/settings.local.json'
+)
+
+protected_pattern() {
+    local candidate=$1 pattern declared root
+    candidate=${candidate#./}
+    local -a patterns=("${PROTECTED_DEFAULTS[@]}")
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n $root && -x $SCRIPT_DIR/repo-config.sh ]]; then
+        declared=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$root" \
+            --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+    fi
+    if [[ -n $declared ]]; then
+        local IFS=,
+        read -r -a extra <<< "$declared"
+        patterns+=("${extra[@]}")
+    fi
+    for pattern in "${patterns[@]}"; do
+        pattern=${pattern#./}
+        [[ -n $pattern ]] || continue
+        if [[ $pattern == */ ]]; then
+            [[ $candidate == "$pattern"* ]] || continue
+        else
+            [[ $candidate == "$pattern" ]] || continue
+        fi
+        printf '%s' "$pattern"
+        return 0
+    done
+    return 1
+}
+
+staged_protected_paths() {
+    local path
+    while IFS= read -r -d '' path; do
+        protected_pattern "$path" >/dev/null || continue
+        printf '%s\n' "$path"
+    done < <(git diff --cached --name-only -z --diff-filter=ACDMRTUXB)
+}
+
+park_inherited_paths() {
+    local paths=$1
+    printf '%s: merge-inherited protected paths parked/handed off (churn: merge-inherited):\n' \
+        "$PROGNAME" >&2
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        printf '  %s\n' "$path" >&2
+    done <<< "$paths"
+    printf '%s: inherited bytes remain staged; attended mode will not silently drop them.\n' \
+        "$PROGNAME" >&2
+    printf '%s: re-run with --allow-base-inherited BASE --yolo only after naming the merged base.\n' \
+        "$PROGNAME" >&2
+    exit 3
+}
+
+active_merge() {
+    local merge_head_file
+    merge_head_file=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 1
+    [[ -s $merge_head_file ]]
+}
+
+base_merge_contains() {
+    local base_commit=$1 merge_head_file head
+    merge_head_file=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 1
+    [[ -r $merge_head_file ]] || return 1
+    while IFS= read -r head; do
+        [[ $head == "$base_commit" ]] && return 0
+    done < "$merge_head_file"
+    return 1
+}
+
+verify_base_inherited() {
+    local paths=$1 base_commit path
+    base_commit=$(git rev-parse --verify "$BASE_INHERITED_REF^{commit}" 2>/dev/null) ||
+        die 1 "--allow-base-inherited names an unresolved base: $BASE_INHERITED_REF"
+    base_merge_contains "$base_commit" ||
+        die 1 "--allow-base-inherited base is not the active merge head: $BASE_INHERITED_REF"
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        git diff --quiet --cached "$base_commit" -- "$path" ||
+            die 1 "merge-inherited protected path differs from base $BASE_INHERITED_REF: $path"
+    done <<< "$paths"
+}
+
+guard_staged_protected_paths() {
+    local paths
+    active_merge || return 0
+    paths=$(staged_protected_paths)
+    [[ -n $paths ]] || return 0
+    if (( ALLOW_BASE_INHERITED == 1 && YOLO == 1 )); then
+        verify_base_inherited "$paths"
+        printf '%s: merge-inherited paths authorized by named base (churn: merge-inherited): %s\n' \
+            "$PROGNAME" "${paths//$'\n'/, }" >&2
+        return 0
+    fi
+    park_inherited_paths "$paths"
 }
 
 validate_args() {
@@ -314,6 +447,7 @@ main() {
     refuse_trunk
     acquire_transaction_lock
     stage_files
+    guard_staged_protected_paths
     check_staged
     build_message_args
     do_commit

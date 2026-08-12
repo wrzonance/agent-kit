@@ -550,6 +550,23 @@ retry, not a code problem).
 
 ### 0b — Check for merge conflicts
 
+Protected files are never a reason to weaken the repository boundary. If a base
+merge carries a protected path, preserve the staged bytes and use the shared
+commit handoff's explicit named-base affordance; report the churn class
+`merge-inherited paths parked/handed off` when attended work cannot authorize it.
+That attended park returns exit `3`; exit `2` remains reserved for the git
+metadata elevation handback, so callers must not treat a park as an elevation
+retry loop.
+The helper verifies that each such path is staged by the active merge and is
+byte-identical to the named base before unattended authorization. A repository
+hook refusal is one bounded named park, not an invitation to investigate a
+bypass. Never bypass hooks or guards with the hook-suppression flag
+(`--no-verify`), `core.hooksPath`, git aliases, or configuration
+that changes hook execution. In particular, never use that flag, a `git -c`
+override targeting `core.hooksPath`, the `git config` command targeting
+`core.hooksPath`, the `git config` command targeting `alias.…`, or any equivalent
+spelling.
+
 ```bash
 if ! command -v jq >/dev/null 2>&1; then
     printf '%s\n' 'jq is not installed; evidence unavailable' >&2
