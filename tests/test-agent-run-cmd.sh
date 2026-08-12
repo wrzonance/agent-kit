@@ -38,6 +38,25 @@ make_repo() {
     printf '%s' "$dir"
 }
 
+make_yolo_repo() {
+    local dir=$1 origin
+    origin=$tmp/origin-$(basename "$1")
+    git init -q -b feature "$dir"
+    git -C "$dir" config user.name test
+    git -C "$dir" config user.email test@example.invalid
+    mkdir -p "$dir/.agent" "$dir/tools"
+    git init -q --bare "$origin"
+    git -C "$dir" remote add origin "$origin"
+}
+
+commit_yolo_base() {
+    local dir=$1
+    git -C "$dir" add -- .
+    git -C "$dir" commit -qm base
+    git -C "$dir" push -q origin HEAD:main
+    git -C "$dir" fetch -q origin
+}
+
 # --- repository command trust boundary ------------------------------------
 repo=$(make_repo)
 mkdir -p "$repo/tools"
@@ -68,6 +87,124 @@ assert_contains "$out" 'refusing unapproved repository command' \
     'changing the repository executable requires fresh approval'
 assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
     'a changed executable is not run under an old approval'
+
+# Unrelated declarations are outside the invocation identity. They may change
+# on a checkout while the declared command remains yolo-safe and executable.
+repo=$tmp/unrelated-yolo
+make_yolo_repo "$repo"
+printf '#!/bin/sh\ntouch "%s/unrelated-yolo-ran"\n' "$tmp" > "$repo/tools/payload"
+chmod +x "$repo/tools/payload"
+printf 'AGENT_CMD_TEST=tools/payload\nAGENT_PROJECT_OWNER=before\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf '# comment\nAGENT_PROJECT_OWNER = after\nAGENT_CMD_TEST = tools/payload\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '0' "$rc" 'an unrelated declaration edit passes yolo'
+assert_eq 'yes' "$([[ -e $tmp/unrelated-yolo-ran ]] && echo yes || echo no)" \
+    'an unrelated declaration edit still executes the command'
+
+# Invoked declaration edits and removals are named by key, even when a runner
+# fallback lets resolution reach the yolo comparison after removal.
+repo=$tmp/invoked-yolo
+make_yolo_repo "$repo"
+printf '#!/bin/sh\ntouch "%s/invoked-yolo-ran"\n' "$tmp" > "$repo/tools/payload"
+printf '#!/bin/sh\nprintf runner\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/payload" "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'an invoked declaration edit refuses yolo'
+assert_contains "$out" 'AGENT_CMD_TEST' 'an invoked declaration edit names its key'
+printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
+printf '%s/tools/runner\n' "$repo" > "$repo/.agent/runner"
+git -C "$repo" add -- .agent/runner tools/runner
+git -C "$repo" commit -qm runner
+git -C "$repo" push -q origin HEAD:main
+git -C "$repo" fetch -q origin
+: > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a removed invoked declaration refuses yolo'
+assert_contains "$out" 'AGENT_CMD_TEST' 'a removed invoked declaration names its key'
+
+# Focus declarations are relevant only when --only is present. A newly added
+# focus declaration is ignored by a plain full-suite invocation, then scoped in
+# and refused for an unattended focused invocation.
+repo=$tmp/focus-scope-yolo
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nprintf full\n' > "$repo/tools/full"
+printf '#!/bin/sh\nprintf focused\n' > "$repo/tools/focused"
+chmod +x "$repo/tools/full" "$repo/tools/focused"
+printf 'AGENT_CMD_TEST=tools/full\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'AGENT_CMD_TEST=tools/full\nAGENT_CMD_TEST_FOCUS=tools/focused --only %%s\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '0' "$rc" 'a newly added focus declaration is ignored for plain yolo'
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --only unit --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a newly added focus declaration is scoped for focused yolo'
+assert_contains "$out" 'AGENT_CMD_TEST_FOCUS' 'focused yolo names the added focus key'
+
+# Formatting, comments, and declaration order do not alter either trust path.
+repo=$tmp/format-yolo
+make_yolo_repo "$repo"
+printf '#!/bin/sh\ntouch "%s/format-yolo-ran"\n' "$tmp" > "$repo/tools/payload"
+chmod +x "$repo/tools/payload"
+printf 'AGENT_CMD_TEST=tools/payload\nAGENT_PROJECT_OWNER=before\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf '# moved comment\nAGENT_PROJECT_OWNER = before\n\n# command\nAGENT_CMD_TEST = tools/payload\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '0' "$rc" 'comments whitespace and reorder are yolo-immune'
+assert_eq 'yes' "$([[ -e $tmp/format-yolo-ran ]] && echo yes || echo no)" \
+    'the formatted declaration still executes'
+
+# Interactive trust has the same declaration scope: unrelated edits survive,
+# while changing the command's own key requires a fresh approval.
+repo=$tmp/format-trust
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+printf '#!/bin/sh\ntouch "%s/format-trust-ran"\n' "$tmp" > "$repo/tools/payload"
+chmod +x "$repo/tools/payload"
+printf 'AGENT_CMD_TEST=tools/payload\nAGENT_PROJECT_OWNER=before\n' > "$repo/.agent/config.env"
+trust_root=$tmp/format-trust-state
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$tty_approve" y -- "$real_run_sh" --approve --cmd test) > /dev/null 2>&1
+printf '# comment\nAGENT_PROJECT_OWNER=after\nAGENT_CMD_TEST = tools/payload\n' > "$repo/.agent/config.env"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1)
+assert_contains "$out" 'PASS:' 'interactive trust survives unrelated formatting edits'
+printf 'AGENT_CMD_TEST=echo changed\nAGENT_PROJECT_OWNER=after\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" "$real_run_sh" --cmd test 2>&1) || rc=$?
+assert_eq '1' "$rc" 'interactive trust refuses an own-key edit'
+assert_contains "$out" 'refusing unapproved repository command' 'own-key trust refusal is explicit'
+
+# Malformed checkout config and an unavailable base config both fail closed.
+repo=$tmp/malformed-yolo
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/payload"
+chmod +x "$repo/tools/payload"
+printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'AGENT_CMD_TEST=tools/payload\nnot-a-declaration\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'malformed config refuses yolo'
+assert_contains "$out" 'cannot resolve repository declarations' 'malformed config names the resolver failure'
+
+repo=$tmp/missing-base-config
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/payload"
+chmod +x "$repo/tools/payload"
+: > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a checkout declaration with no base blob refuses yolo'
+assert_contains "$out" 'AGENT_CMD_TEST' 'missing base config refusal names the relevant key'
 
 # --yolo must cover build definitions, not only literal argv paths. A command
 # such as `make test` executes the repository's Makefile even though neither
