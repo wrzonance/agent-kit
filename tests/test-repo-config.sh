@@ -273,4 +273,9 @@ out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
 assert_contains "$out" 'invalid value for AGENT_BASE_BRANCH' 'a malformed value is still called invalid'
 assert_not_contains "$out" 'comment the line out' 'and is not offered the empty-value advice'
 
+# This repository's own focused runner is part of the committed command contract.
+root_config=$(<"$root/.agent/config.env")
+assert_contains "$root_config" 'AGENT_CMD_TEST_FOCUS=tests/run-tests.sh --only %s' \
+    'agent-kit declares its supported focused test selector'
+
 finish
