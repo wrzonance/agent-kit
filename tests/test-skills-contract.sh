@@ -125,6 +125,23 @@ assert_contains "$(<"$parallel_skill")" 'jq is not installed; evidence unavailab
     'parallel recipes name jq parser failures as unavailable evidence'
 assert_contains "$(<"$parallel_skill")" 'issue_payload_file="$worktree/.agent/fetched-issue.json"' \
     'parallel fetch persists raw issue bytes before parsing'
+review_wait_contract=$(<"$review_skill")
+assert_contains "$review_wait_contract" 'A wait must never spend model turns.' \
+    'review skill states the no-model-turn wait rule'
+assert_contains "$review_wait_contract" 'claude-adversarial-review.sh … > verdict.json' \
+    'review wait rule names the blocking adversarial helper'
+assert_contains "$review_wait_contract" 'gh-pr-state.sh --wait-ci --rounds N --interval S' \
+    'review wait rule names the blocking CI helper'
+assert_contains "$review_wait_contract" 'adversarial max-duration-seconds' \
+    'review wait rule names the adversarial duration bound'
+assert_contains "$review_wait_contract" 'CI round cap' \
+    'review wait rule names the CI round bound'
+assert_contains "$review_wait_contract" 'runner completion marker' \
+    'review wait rule names the runner completion bound'
+assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
+    'review wait rule rejects sleep and re-check tool churn'
+assert_eq '' "$(grep -nE '^[[:space:]]*sleep[[:space:]]+[0-9]' "$review_skill" || true)" \
+    'review skill has no sleep polling recipe'
 assert_contains "$(<"$review_skill")" 'blocked check and must never be summarized as “no findings.”' \
     'review Step 5 treats missing parsers as blocked checks'
 

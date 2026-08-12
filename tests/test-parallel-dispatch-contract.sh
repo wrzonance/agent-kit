@@ -17,6 +17,20 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+assert_contains "$text" 'A wait must never spend model turns.' \
+    'parallel skill states the no-model-turn wait rule'
+assert_contains "$text" 'gh-pr-state.sh --wait-ci --rounds N --interval S' \
+    'parallel wait rule names the blocking CI exemplar'
+assert_contains "$text" 'agent-run.sh --cmd test' \
+    'parallel wait rule names the blocking test runner'
+assert_contains "$text" 'worker completion marker' \
+    'parallel wait rule names the worker completion bound'
+assert_contains "$text" 'test-runner logs' \
+    'parallel wait rule covers test-runner logs'
+assert_contains "$text" 'A `sleep N` + re-check issued as its own tool call is churn' \
+    'parallel wait rule rejects sleep and re-check tool churn'
+assert_eq '' "$(grep -nE '^[[:space:]]*sleep[[:space:]]+[0-9]' "$skill" || true)" \
+    'parallel skill has no sleep polling recipe'
 assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
     'polling does not inspect durable state between empty waits'
 assert_contains "$text" 'Between waits, wait again; read durable state only when a wait reports an actual completion.' \

@@ -1365,42 +1365,31 @@ If the repository declares its own runner (`AGENT_REPO_RUNNER`, or a committed `
 
 ---
 
+### Wait contract: one turn-free wait
+
+**A wait must never spend model turns.** Wait either by invoking the bounded helper blocking in a
+single cell — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test` — or by one harness-level wait on a background terminal. A `sleep N` + re-check issued as its own tool call is churn: the model pays a turn to do what the helper's internal poll loop already does for free.
+
+Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial max-duration-seconds, the CI round cap, or the runner completion marker. Background a producer only
+when useful work can continue concurrently; when it is the last task standing, rejoin once with a
+harness-level terminal wait. This rule covers adversarial verdicts, CI, worker waits, and
+test-runner logs; for the latter, run `agent-run.sh --cmd test` in the foreground so its completion
+marker is the bound.
+
+---
+
 ## Step 3 (Phase B): Wait for the user to decide the ready transition
 
-When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed or declined-with-comment, every discovered human item decided — report the draft-phase summary to the user (see Exit Report) and **wait**. The user, not you, marks the PR ready for review. Whether that transition starts a provider review is external repository configuration.
+When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed
+or declined-with-comment, every discovered human item decided — report the draft-phase summary to the
+user (see Exit Report) and **wait at the harness level**. The user, not you, marks the PR ready for
+review. Do not spend model turns on a `gh pr view` plus sleep/re-check loop. Whether that transition
+starts a provider review is external repository configuration.
 
-```bash
-# Long-interval poll; run as a background task so the wait survives turns.
-# A missing jq parser blocks the state check; it is never a ready/no-findings result.
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
-    exit 1
-fi
-# NEVER gh pr ready "$PR" — the flip is the user's call, always.
-# A failed status query must never read as a ready transition: tolerate a few
-# transient failures, then stop with an error instead of inferring the flip.
-failures=0
-while :; do
-  if draft_state="$(gh pr view "$PR" --repo "$REPO" --json isDraft --jq .isDraft)"; then
-    failures=0
-    case "$draft_state" in
-      true)  sleep 120 ;;
-      false) break ;;
-      *) printf 'Unexpected draft state: %s\n' "$draft_state" >&2; exit 1 ;;
-    esac
-  else
-    failures=$((failures + 1))
-    if [ "$failures" -ge 5 ]; then
-      printf '%s\n' 'Could not read PR draft state after repeated attempts; stopping without inferring a ready transition.' >&2
-      exit 1
-    fi
-    sleep 120
-  fi
-done
-echo "PR #$PR is no longer a draft; provider review behavior is repository-configured"
-```
-
-Then watch for a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack — Step 1b state check). If none arrives, report that no matching review has landed; do not infer provider configuration or trigger one yourself. If the state check reports `rate-limited`, keep waiting in long bounded rounds (~10 min each, up to ~90 min); escalate to the user after that instead of triggering anything.
+Then observe a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack —
+Step 1b state check). If none arrives, report that no matching review has landed; do not infer
+provider configuration or trigger one yourself. If the state check reports `rate-limited`, stop and
+escalate to the user rather than spending turns on repeated checks.
 
 ---
 

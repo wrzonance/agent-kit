@@ -1163,6 +1163,17 @@ adversarial review, consent, replies, and publication.
 
 Waiting is not work, and narrating a wait is not a status report. One observed run spent ~27 empty wait cycles and ~15 paragraphs that carried no new fact — pure cost, zero progress.
 
+**A wait must never spend model turns.** Wait either by invoking the bounded helper blocking in a
+single cell — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test` — or by one harness-level wait on a background terminal. A `sleep N` + re-check issued as its own tool call is churn: the model pays a turn to do what the helper's internal poll loop already does for free.
+
+Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial
+`max-duration-seconds`, the CI round cap, the worker completion marker, or the runner completion
+marker. Background a worker or producer only when useful work can continue concurrently; when it is
+the last task standing, rejoin once with a harness-level terminal wait. This rule covers adversarial
+verdicts, CI, worker waits, and test-runner logs. For logs, run `agent-run.sh --cmd test` in the
+foreground or poll the log only from inside one bounded harness cell; never issue separate sleep and
+tail/re-check tool calls.
+
 - **One wait per interval.** Issue at most one blocking wait per polling interval, and only while a task is genuinely outstanding. Re-issuing wait the instant it returns empty is the failure mode: it produces nothing and costs a turn every time.
 - **Between waits, wait again; read durable state only when a wait reports an actual completion.** A running lead leaves evidence on disk and on the forge; inspect it after completion rather than asking the runtime again.
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
