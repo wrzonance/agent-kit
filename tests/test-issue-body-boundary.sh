@@ -20,10 +20,10 @@ assert_contains "$skill" 'fence-untrusted-data.sh' \
     'prompt construction uses the mechanical fence helper'
 assert_contains "$skill" "\"\$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh\"" \
     'the documented helper path resolves from the skills root'
-assert_contains "$skill" '<"$spec_payload"' \
-    'the specification is file-fed through the helper'
-assert_contains "$skill" '<"$prior_payload"' \
-    'prior art is file-fed through the helper'
+assert_contains "$skill" 'spec_fence=$("$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload")' \
+    'the specification uses the complete file-fed fence producer command'
+assert_contains "$skill" 'prior_art_fence=$("$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload")' \
+    'prior art uses the complete file-fed fence producer command'
 assert_not_contains "$skill" 'printf '\''%s'\'' "$issue_contents" |' \
     'the specification is never piped through the helper'
 assert_not_contains "$skill" 'printf '\''%s'\'' "$prior_art_contents" |' \

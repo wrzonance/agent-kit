@@ -852,7 +852,13 @@ cleanup_fence() {
     [[ -z $spec_payload ]] || rm -f -- "$spec_payload"
     [[ -z $prior_payload ]] || rm -f -- "$prior_payload"
 }
-trap cleanup_fence EXIT HUP INT TERM
+fence_signal_handler() {
+    cleanup_fence
+    trap - EXIT HUP INT TERM
+    exit 1
+}
+trap cleanup_fence EXIT
+trap fence_signal_handler HUP INT TERM
 spec_payload=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-fence-spec.XXXXXXXXXX") || exit 1
 prior_payload=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-fence-prior.XXXXXXXXXX") || exit 1
 chmod 600 -- "$spec_payload" "$prior_payload" || exit 1
