@@ -105,6 +105,16 @@ assert_contains "$text" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
 assert_contains "$text" 'once against the final tree state' \
     'the final tree receives one unfocused full-suite run'
+assert_contains "$text" '`--trust-trunk`' \
+    'dispatch contract documents the standalone trunk-trust flag'
+assert_contains "$text" 'Attended command-approval handoff' \
+    'attended dispatch has one approval handoff section'
+assert_contains "$text" 'one line per worktree per needed' \
+    'approval handoff batches every predictable command approval'
+assert_contains "$text" 'agent-run.sh --approve --cmd <name>' \
+    'approval handoff carries a copy-pasteable command recipe'
+assert_contains "$text" 'never hand off the main checkout' \
+    'approval recipes reject the main checkout'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
 assert_contains "$(<"$review_skill")" 'full-suite verdict' \

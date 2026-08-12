@@ -154,6 +154,24 @@ make_published_repo() {
 }
 repo=$(make_published_repo)
 trust_root="$tmp/trust-yolo"
+# An attended refusal teaches the operator about the unattended grant only when
+# this checkout's command inputs still match origin/main.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a trunk-matched interactive refusal still blocks'
+assert_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
+    'a trunk-matched refusal teaches the unattended grant'
+
+# Once a command input differs from origin/main, the teaching line must not
+# suggest that the trunk grant covers the changed checkout.
+printf 'AGENT_CMD_VERIFY=false\n' > "$repo/.agent/config.env"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a trunk-mismatched interactive refusal still blocks'
+assert_not_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
+    'a trunk-mismatched refusal does not teach an inapplicable grant'
+git -C "$repo" checkout -q -- .agent/config.env
+
 yolo_err="$tmp/yolo-stderr"
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
     setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2> "$yolo_err") && rc=0 || rc=$?
