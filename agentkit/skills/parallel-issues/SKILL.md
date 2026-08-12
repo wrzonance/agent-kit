@@ -833,8 +833,6 @@ prior_target="$worktree/.agent/fenced-prior-art.txt"
 ready_marker="$worktree/.agent/fenced-ready"
 tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"
-cleanup_fence() { rm -f -- "$tmp" "$prior_tmp"; }
-trap cleanup_fence EXIT HUP INT TERM
 mkdir -p -- "${target%/*}" || exit 1
 if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
     if [[ -d $ready_marker && -f $target && -f $prior_target &&
@@ -847,28 +845,44 @@ if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior
     rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
 fi
 set -o pipefail
+spec_payload=''
+prior_payload=''
+cleanup_fence() {
+    rm -f -- "$tmp" "$prior_tmp"
+    [[ -z $spec_payload ]] || rm -f -- "$spec_payload"
+    [[ -z $prior_payload ]] || rm -f -- "$prior_payload"
+}
+fence_signal_handler() {
+    cleanup_fence
+    trap - EXIT HUP INT TERM
+    exit 1
+}
+trap cleanup_fence EXIT
+trap fence_signal_handler HUP INT TERM
+spec_payload=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-fence-spec.XXXXXXXXXX") || exit 1
+prior_payload=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-fence-prior.XXXXXXXXXX") || exit 1
+chmod 600 -- "$spec_payload" "$prior_payload" || exit 1
+if ! printf '%s' "$issue_contents" >"$spec_payload" ||
+    ! printf '%s' "$prior_art_contents" >"$prior_payload"; then
+    exit 1
+fi
 # Named producer shapes remain here so the canonical recipe is executable and
 # testable without ever moving issue-derived data into a worker prompt.
-# spec_fence=$(printf '%s' "$issue_contents" |
-#     "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh")
-# prior_art_fence=$(printf '%s' "$prior_art_contents" |
-#     "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh")
+# spec_fence=$("$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload")
+# prior_art_fence=$("$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload")
 if [[ $boundary_mode == public-fenced ]]; then
-    if printf '%s' "$issue_contents" |
-        "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$tmp" &&
-        printf '%s' "$prior_art_contents" |
-        "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$prior_tmp"; then
+    if "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload" >"$tmp" &&
+        "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload" >"$prior_tmp"; then
         :
     else
-        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp" "$spec_payload" "$prior_payload"
         exit 1
     fi
 else
-    if printf '%s' "$issue_contents" >"$tmp" &&
-        printf '%s' "$prior_art_contents" >"$prior_tmp"; then
+    if cp -- "$spec_payload" "$tmp" && cp -- "$prior_payload" "$prior_tmp"; then
         :
     else
-        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp" "$spec_payload" "$prior_payload"
         exit 1
     fi
 fi
@@ -880,6 +894,7 @@ else
     rm -f -- "$tmp" "$prior_tmp"
     exit "$mv_rc"
 fi
+rm -f -- "$spec_payload" "$prior_payload" || exit 1
 trap - EXIT HUP INT TERM
 ```
 
@@ -1122,17 +1137,20 @@ the root-owned draft phase.
 
 Write every multiline PR body to a private temporary file with a quoted heredoc, then pass that
 file to GitHub. Never pass a multiline PR body through inline `--body`: shell and orchestration
-layers can preserve escape sequences literally and collapse the rendered body to one line.
+layers can preserve escape sequences literally and collapse the rendered body to one line. Body
+content is data, so author the static template literally and substitute only explicit placeholders
+with fixed-string Bash parameter expansion.
 
 ```bash
 pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
-trap 'rm -f -- "$pr_body_file"' EXIT
-chmod 600 -- "$pr_body_file" || exit 1
+pr_body_template=''
+trap 'rm -f -- "$pr_body_file" "$pr_body_template"' EXIT
+pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX") || exit 1
+chmod 600 -- "$pr_body_file" "$pr_body_template" || exit 1
 agent_identity=${agent_identity:?set the actual agent identity for PR attribution}
 pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}
-# This heredoc is intentionally unquoted: the required dynamic fields below
-# must expand. Keep all other body text literal and free of command substitutions.
-cat >"$pr_body_file" <<EOF
+# The quoted heredoc keeps every body byte literal, including Markdown backticks and $().
+cat >"$pr_body_template" <<'EOF'
 ## Why
 
 <motivation>
@@ -1149,8 +1167,19 @@ cat >"$pr_body_file" <<EOF
 
 - [ ] <verification command and result>
 
-🤖 Co-authored by $agent_identity. $pr_close_line
+🤖 Co-authored by __AGENT_IDENTITY__. __PR_CLOSE_LINE__
 EOF
+body=$(<"$pr_body_template")
+body+=$'\n'
+# Split around each unique token so replacement bytes are never interpreted as
+# a Bash replacement string (`&` and backslashes stay byte-identical).
+body_prefix=${body%%__AGENT_IDENTITY__*}
+body_remainder=${body#*__AGENT_IDENTITY__}
+body_middle=${body_remainder%%__PR_CLOSE_LINE__*}
+body_suffix=${body_remainder#*__PR_CLOSE_LINE__}
+body=$body_prefix$agent_identity$body_middle$pr_close_line$body_suffix
+printf %s "$body" >"$pr_body_file"
+rm -f -- "$pr_body_template"
 gh pr create --draft --body-file "$pr_body_file" \
   --title "$pr_title" --base "$base" --head "$branch"
 ```

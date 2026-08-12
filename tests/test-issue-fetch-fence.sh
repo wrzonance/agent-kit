@@ -263,6 +263,36 @@ assert_contains "$recipe_text" 'incomplete stale fence artifacts; removing them 
     'the canonical recipe removes an incomplete stale pair before retry'
 assert_contains "$recipe_text" 'mkdir -- "$ready_marker"' \
     'the canonical recipe publishes readiness only after both moves'
+assert_contains "$recipe_text" 'spec_payload=$(mktemp' \
+    'the canonical recipe creates a temporary spec payload file'
+assert_contains "$recipe_text" 'prior_payload=$(mktemp' \
+    'the canonical recipe creates a temporary prior-art payload file'
+assert_contains "$recipe_text" 'chmod 600 -- "$spec_payload" "$prior_payload"' \
+    'the canonical recipe protects both temporary payload files'
+assert_contains "$recipe_text" 'rm -f -- "$spec_payload" "$prior_payload"' \
+    'the canonical recipe removes both temporary payload files after publication'
+assert_contains "$recipe_text" 'trap cleanup_fence EXIT' \
+    'the canonical recipe cleans up on normal exit'
+assert_contains "$recipe_text" 'fence_signal_handler()' \
+    'the canonical recipe defines a signal cleanup handler'
+assert_contains "$recipe_text" 'trap fence_signal_handler HUP INT TERM' \
+    'the canonical recipe routes termination signals to the cleanup handler'
+assert_contains "$recipe_text" 'trap - EXIT HUP INT TERM' \
+    'the signal handler clears traps before exiting'
+assert_not_contains "$recipe_text" 'trap cleanup_fence EXIT HUP INT TERM' \
+    'the canonical recipe does not resume after signals through a combined cleanup trap'
+cleanup_line=$(grep -nF 'trap cleanup_fence EXIT' <<<"$recipe_text" | head -n 1 | cut -d: -f1)
+first_payload_line=$(grep -nF 'spec_payload=$(mktemp' <<<"$recipe_text" | head -n 1 | cut -d: -f1)
+assert_eq yes "$([[ -n $cleanup_line && -n $first_payload_line && $cleanup_line -lt $first_payload_line ]] && printf yes || printf no)" \
+    'the canonical fence cleanup trap is installed before payload allocation'
+assert_contains "$recipe_text" '<"$spec_payload"' \
+    'the canonical recipe feeds the spec fence producer by stdin redirection'
+assert_contains "$recipe_text" '<"$prior_payload"' \
+    'the canonical recipe feeds the prior-art fence producer by stdin redirection'
+assert_not_contains "$recipe_text" 'printf '\''%s'\'' "$issue_contents" |' \
+    'the canonical recipe never pipes spec bytes into a fence producer'
+assert_not_contains "$recipe_text" 'printf '\''%s'\'' "$prior_art_contents" |' \
+    'the canonical recipe never pipes prior-art bytes into a fence producer'
 
 worktree="$tmp_dir/worktree"
 git init -q "$worktree"

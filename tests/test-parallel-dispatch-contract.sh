@@ -12,6 +12,7 @@ source "$here/lib/assert.sh"
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
+ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -235,18 +236,68 @@ assert_contains "$publication_section" 'gh pr create --draft --body-file "$pr_bo
     'draft PR publication passes a newline-preserving body file to gh'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" 'cat >"$pr_body_file" <<EOF' \
-    'draft PR publication uses an interpolating heredoc for dynamic body fields'
+assert_contains "$publication_section" "cat >\"\$pr_body_template\" <<'EOF'" \
+    'draft PR publication uses a quoted heredoc for literal body bytes'
+assert_not_contains "$publication_section" 'body=${body//__AGENT_IDENTITY__/$agent_identity}' \
+    'draft PR publication never uses replacement-string expansion for identity bytes'
+assert_not_contains "$publication_section" 'body=${body//__PR_CLOSE_LINE__/$pr_close_line}' \
+    'draft PR publication never uses replacement-string expansion for close-line bytes'
+assert_contains "$publication_section" 'body_prefix=${body%%__AGENT_IDENTITY__*}' \
+    'draft PR publication isolates the identity prefix without replacement expansion'
+assert_contains "$publication_section" 'body_remainder=${body#*__AGENT_IDENTITY__}' \
+    'draft PR publication isolates the body remainder without replacement expansion'
+assert_contains "$publication_section" 'body_middle=${body_remainder%%__PR_CLOSE_LINE__*}' \
+    'draft PR publication isolates the close-line prefix without replacement expansion'
+assert_contains "$publication_section" 'body_suffix=${body_remainder#*__PR_CLOSE_LINE__}' \
+    'draft PR publication isolates the close-line suffix without replacement expansion'
+assert_contains "$publication_section" 'printf %s "$body" >"$pr_body_file"' \
+    'draft PR publication writes the substituted body without shell expansion'
+assert_not_contains "$publication_section" '<<EOF' \
+    'draft PR publication has no interpolating heredoc'
 assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
     'draft PR publication secures the body file with mode 600'
-assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file"'\'' EXIT' \
-    'draft PR publication removes the body file on exit'
+assert_contains "$publication_section" 'pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX")' \
+    'draft PR publication allocates an independent template file'
+assert_not_contains "$publication_section" 'pr_body_template="$pr_body_file.template"' \
+    'draft PR publication never derives a predictable template path'
+assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file" "$pr_body_template"' \
+    'draft PR publication secures both body files with mode 600'
+assert_not_contains "$publication_section" 'cat >"$pr_body_file.template"' \
+    'draft PR publication never writes through the derived template path'
+assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file" "$pr_body_template"'\'' EXIT' \
+    'draft PR publication removes both body files on exit'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an agent identity before interpolation'
 assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \
     'draft PR publication requires a close line before interpolation'
-assert_contains "$publication_section" '$agent_identity. $pr_close_line' \
-    'draft PR publication interpolates identity and issue closure text'
+assert_contains "$publication_section" '__AGENT_IDENTITY__' \
+    'draft PR publication keeps the identity placeholder literal in the template'
+assert_contains "$publication_section" '__PR_CLOSE_LINE__' \
+    'draft PR publication keeps the close placeholder literal in the template'
+
+body_template="$tmp/body-template"
+cat >"$body_template" <<'EOF'
+literal `sha` and $(printf should-not-run)
+__AGENT_IDENTITY__ __PR_CLOSE_LINE__
+EOF
+body_identity='agent & \\path\\ `identity` $(not-run)'
+body_close_line='Closes &82 \\close\\ `line` $(not-run)'
+body_bytes=$(<"$body_template")
+body_bytes+=$'\n'
+body_prefix=${body_bytes%%__AGENT_IDENTITY__*}
+body_remainder=${body_bytes#*__AGENT_IDENTITY__}
+body_middle=${body_remainder%%__PR_CLOSE_LINE__*}
+body_suffix=${body_remainder#*__PR_CLOSE_LINE__}
+body_bytes=$body_prefix$body_identity$body_middle$body_close_line$body_suffix
+body_output="$tmp/body-output"
+printf %s "$body_bytes" >"$body_output"
+expected_body='literal `sha` and $(printf should-not-run)
+agent & \\path\\ `identity` $(not-run) Closes &82 \\close\\ `line` $(not-run)
+'
+actual_body=$(<"$body_output")
+actual_body+=$'\n'
+assert_eq "$expected_body" "$actual_body" \
+    'quoted body substitution preserves backticks and command substitutions byte-for-byte'
 
 assert_eq 'yes' "$([[ -f $github_body_policy ]] && printf yes || printf no)" \
     'shared GitHub body policy exists'
@@ -260,10 +311,32 @@ assert_contains "$body_policy" '`--body-file` or `--input`' \
     'shared policy requires file-backed GitHub bodies'
 assert_contains "$body_policy" 'Comments already comply through `gh-comment.sh`.' \
     'shared policy records the existing comment transport'
+assert_contains "$body_policy" 'Body content is data' \
+    'shared policy treats body content as data'
+assert_contains "$body_policy" 'never pass through interpolating heredocs or eval-adjacent expansion' \
+    'shared policy rejects expansion adjacent to body transport'
 assert_contains "$text" '../.shared/github-body-policy.md' \
     'parallel-issues inherits the shared GitHub body policy'
 assert_contains "$(<"$review_skill")" '../.shared/github-body-policy.md' \
     'review-remote-pr inherits the shared GitHub body policy'
+
+ci_text=$(<"$ci_workflow")
+assert_contains "$ci_text" 'shellcheck-v0.11.0.linux.x86_64.tar.xz' \
+    'CI installs the documented ShellCheck release'
+assert_contains "$ci_text" '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' \
+    'CI verifies the documented ShellCheck checksum'
+assert_contains "$ci_text" 'shellcheck --version' \
+    'CI logs the pinned ShellCheck version'
+assert_contains "$ci_text" 'curl --fail --location --silent --show-error --retry 3 --retry-delay 2 --retry-all-errors' \
+    'CI retries transient pinned ShellCheck downloads'
+assert_contains "$ci_text" 'install_dir="${RUNNER_TEMP}/shellcheck-v${version}/bin"' \
+    'CI installs ShellCheck into a persistent versioned runner-temp directory'
+assert_contains "$ci_text" 'printf '\''%s\n'\'' "$install_dir" >>"$GITHUB_PATH"' \
+    'CI exports the persistent ShellCheck directory across workflow steps'
+assert_not_contains "$ci_text" 'printf '\''%s\n'\'' "$download_dir" >>"$GITHUB_PATH"' \
+    'CI never exports the cleaned download scratch directory'
+assert_not_contains "$ci_text" 'apt-get install -y -qq shellcheck' \
+    'CI has no unpinned apt ShellCheck install path'
 
 inline_body_recipes=$(sed -nE '/^[[:space:]]*gh[[:space:]]/ {
     /(^|[[:space:]])--body([=[:space:]]|$)/p
