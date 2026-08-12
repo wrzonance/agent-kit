@@ -18,6 +18,13 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
+assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
+    'chain ordering sources are exactly the two mechanical ones'
+assert_contains "$text" 'never an ordering input' \
+    'issue-body prose is excluded from ordering'
+assert_contains "$text" 'chain depth cap: 4' 'chain depth cap is pinned'
+assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'A wait must never spend model turns.' \
     'parallel skill states the no-model-turn wait rule'
 assert_contains "$text" 'gh-pr-state.sh --wait-ci --rounds N --interval S' \

@@ -22,7 +22,7 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 
 ## Flags
 
-Four flags decide how much this skill stops to ask. They are read from the invocation
+Five flags decide how much this skill stops to ask. They are read from the invocation
 line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
@@ -31,6 +31,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. |
+| `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's root-published commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
 
@@ -589,6 +590,13 @@ colliding pair yourself, and continue. The analysis is still mandatory — `--fa
 the approval gate, not the reasoning that gate was there to check. Two workers editing one file
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
+
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Build the
+dependency graph from file-conflict pairs and native blocked-by edges inside the selected set,
+decompose it into linear chains, and print the chain plan next to the conflict table
+(attended: get approval; `--fast-mode`: proceed). A cycle cannot be chained — report the cyclic
+members and fall back to drop/ask for exactly those. Chains respect a chain depth cap: 4; deeper
+tails are dropped with a named report. Chains gate on root-published commits, never on PR state.
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -1746,6 +1754,7 @@ Cleanup runs only when user explicitly asks after merge.
 ## Limits
 
 - Max 10 issues. Issue concurrency is runtime-advertised. Include the root in the configured cap, queue overflow issues, and refill slots as they free; if the cap is unavailable, do not dispatch until the runtime owner supplies it.
+- Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
 - Invoking this skill is explicit multi-agent opt-in for the issue leads. Only this root orchestrator
   can spawn; issue leads cannot spawn helpers of their own.
 - Requires GitHub remote (`gh` CLI) with Projects v2 scope: reading needs `read:project`; moving items via the Bash Project helper needs write `project` (`gh auth refresh -s project` if missing — Step 0's `project-scope=` line tells you before a move fails)
