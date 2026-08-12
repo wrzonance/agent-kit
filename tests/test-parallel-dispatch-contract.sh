@@ -15,6 +15,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
+normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
 assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
     'polling does not inspect durable state between empty waits'
 assert_contains "$text" 'Between waits, wait again; read durable state only when a wait reports an actual completion.' \
@@ -148,6 +149,8 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_contains "$prompt_text" '[ -n "$AGENT_TRAILER" ] ||' "$prompt_label guards an empty harness trailer"
     assert_contains "$prompt_text" 'worker_attribution=' "$prompt_label appends the worker model id"
     assert_contains "$prompt_text" 'expanded literal value' "$prompt_label expands the attribution before handback"
+    assert_contains "$prompt_text" '!= '\''<worker model id selected by the root dispatch>'\''' \
+        "$prompt_label rejects the literal worker model placeholder"
 done
 assert_not_contains "$issue_lead_prompt" 'issue_contents' 'issue lead does not produce fence content'
 assert_not_contains "$issue_lead_prompt" 'prior_art_contents' 'issue lead does not produce prior-art fence content'
@@ -161,11 +164,42 @@ assert_contains "$root_fence_section" 'mv -f -- "$tmp" "$target"' 'root atomical
 assert_contains "$root_fence_section" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
 assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
-assert_contains "$text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
+assert_contains "$normalized_text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
     'root draft PR carries the required report fields'
 assert_contains "$text" 'PR URL feeds Collect and Step 3a' \
     'root feeds the resulting PR URL into collection and draft dispatch'
-root_sections=$(cat "$skill" "$review_skill")
+assert_contains "$text" 'worker leaves scoped changes unstaged and returns a publication handback' \
+    'Finish leaves worker changes unstaged for root publication'
+assert_contains "$text" 'Step 3b workers receive only root-approved fix batches' \
+    'Step 3b restricts workers to root-approved mechanical batches'
+assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
+    'Phase A orchestration remains root-owned'
+assert_contains "$normalized_text" 'preserves the raw command text for audit' \
+    'parallel dispatch preserves worker handback command text'
+assert_contains "$text" 'parse into validated arguments without eval' \
+    'parallel dispatch parses handback arguments without eval'
+assert_contains "$text" 'expected worktree-commit.sh helper' \
+    'parallel dispatch validates the expected commit helper'
+assert_contains "$normalized_text" 'every explicit path is inside the worktree and allowed handback set' \
+    'parallel dispatch validates handback path containment'
+assert_contains "$normalized_text" 'git diff -- <explicit handback paths>' \
+    'parallel dispatch inspects unstaged explicit paths before commit'
+assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
+    'parallel dispatch defers base diff inspection until publication'
+assert_not_contains "$text" '` --yolo`' \
+    'parallel dispatch has no MD038-leading-space code span'
+
+# Root safeguards are asserted only in bounded orchestration/publication
+# sections. Worker prompt prose may mention the same words with different
+# ownership semantics and must not satisfy these root-only checks.
+root_sections=$(
+    sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill"
+    sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
+    sed -n '/^## Runtime and provider neutrality$/,/^## Automated review provider rules/p' "$review_skill"
+    sed -n '/^### Implementation-worker gate (MANDATORY for every code change)$/,/^## Step 0: Setup/p' "$review_skill"
+    sed -n '/^### Root-owned publication handback$/,/^Tier mapping:/p' "$review_skill"
+    sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill"
+)
 assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
 assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
 assert_contains "$root_sections" 'peer-cli= <name> absent' 'root-facing prose owns peer availability'

@@ -645,7 +645,7 @@ The spawn request itself is the model-selection evidence. The completion table m
 | 5. Invariants | **Invariants** — fold spike learnings back, state boundary pre/postconditions, and cut 5–10 ordered tasks (cap 12) |
 | 6. Implementation (TDD) | **Implement** — red → green → refactor per task; scoped checks per commit and the full suite at the final task, all through `agent-run.sh`; commits through `worktree-commit.sh` |
 | review gate | **Review** — correctness, house-rules, and test lenses; adversarially verify before fixing; max 2 rounds |
-| verify + ship | **Finish** — evidence-based full green gate (fresh `agent-run.sh` output, log path quoted) → push → draft PR (`Closes #NNN`) |
+| verify + ship | **Finish** — worker leaves scoped changes unstaged and returns a publication handback; root alone verifies, commits, pushes, and opens the draft PR (`Closes #NNN`) |
 
 ### Dispatch (one round, then refill slots)
 
@@ -809,16 +809,22 @@ issue_contents=$(jq -r '
 : "${prior_art_contents:="(no prior art selected by triage digest)"}"
 target="$worktree/.agent/fenced-spec.txt"
 prior_target="$worktree/.agent/fenced-prior-art.txt"
+ready_marker="$worktree/.agent/fenced-ready"
 tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"
 cleanup_fence() { rm -f -- "$tmp" "$prior_tmp"; }
 trap cleanup_fence EXIT HUP INT TERM
 mkdir -p -- "${target%/*}" || exit 1
-if [[ -e $target || -e $prior_target ]]; then
-    printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2
-    exit 1
+if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
+    if [[ -d $ready_marker && -f $target && -f $prior_target &&
+        ! -e $tmp && ! -e $prior_tmp ]]; then
+        printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2
+        exit 1
+    fi
+    printf '%s\n' 'incomplete stale fence artifacts; removing them before retry' >&2
+    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+    rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
 fi
-rm -f -- "$tmp" "$prior_tmp"
 set -o pipefail
 # Named producer shapes remain here so the canonical recipe is executable and
 # testable without ever moving issue-derived data into a worker prompt.
@@ -845,11 +851,12 @@ else
         exit 1
     fi
 fi
-if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target"; then
+if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target" &&
+    mkdir -- "$ready_marker"; then
     :
 else
     mv_rc=$?
-    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+    rm -f -- "$tmp" "$prior_tmp"
     exit "$mv_rc"
 fi
 trap - EXIT HUP INT TERM
@@ -913,7 +920,7 @@ shared=<PASTE the validated shared-scripts path from the contract>
 # its .agent/runner resolves it. The wrapper is not optional.
 <WHEN this parallel-issues invocation carried --yolo (under any alias:
 --no-brainstorm, --skip-brainstorm), replace this placeholder with the rule:
-"append ` --yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
+"append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
 check)." Otherwise delete this placeholder. Either way, never dispatch with the
 placeholder still in the prompt. A worker refused at the trust gate — as
@@ -957,6 +964,10 @@ AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
+[ "$worker_model" != '<worker model id selected by the root dispatch>' ] || {
+    printf 'root did not supply a worker model id; report BLOCKED\n' >&2
+    exit 1
+}
 worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
 [ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
 
@@ -994,7 +1005,7 @@ Before implementation, report the six-step checklist and its status. Do not coll
 
 The lead must report transitions such as `Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Revert ✅ · 5 Invariants ✅ · 6 Implementation (TDD) in progress`. `N/A` is valid only when the accepted scope contains no code changes. After step 6, continue with Review and Finish as separate gates:
 
-7. **REVIEW** — inspect the full base...HEAD diff through correctness, repo-rule/security, and tests lenses. Try to refute every suspected finding before acting. Fix confirmed findings with regression tests; max two rounds.
+7. **REVIEW** — inspect the full scoped unstaged diff through correctness, repo-rule/security, and tests lenses. Try to refute every suspected finding before acting. Fix confirmed findings with regression tests; max two rounds.
 8. **FINISH** — run the full repo verification through agent-run.sh from fresh output, confirm the scoped unstaged tree, and return the publication handback. The top-level session owns board moves, metadata publication, forge actions, and any privileged command.
 
 ### Issue-body trust policy
@@ -1068,9 +1079,23 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
-After reviewing the scoped diff, the root executes the worker's identical handback commit command
-verbatim exactly once. The root then must push the branch and open a DRAFT PR containing Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN. PR URL feeds Collect and Step 3a;
-the URL moves the issue to `In review` and starts the root-owned draft phase.
+Before reviewing or executing a worker handback, the root preserves the raw command text for audit
+verbatim in the worktree's excluded audit file (for example `.agent/handback.raw`). It parses that text into
+an argv array with a non-evaluating parser (such as `shlex.split`), never eval or a shell string;
+parse into validated arguments without eval, then validate the expected worktree-commit.sh helper,
+the Conventional Commit message/body,
+the required worker trailer, and that every explicit path is inside the worktree and allowed
+handback set. The root compares `git status --short`, `git diff -- <explicit handback paths>`,
+and any staged state against those validated paths, including unstaged changes, before invoking
+the helper as argv exactly once. Only after publication does the root inspect `base...HEAD`; a
+worker handback is never validated from a pre-existing base diff. The root then pushes the branch
+and opens a DRAFT PR containing Why, What, Design decisions, tickable Testing, agent credit, and
+Closes #NNN. PR URL feeds Collect and Step 3a; the URL moves the issue to `In review` and starts
+the root-owned draft phase.
+
+The worker leaves scoped changes unstaged and returns a publication handback; root alone must
+push the branch and open a DRAFT PR; root handles CI state/verification, forge conflicts,
+adversarial review, consent, replies, and publication.
 
 ### Polling discipline (applies to every wait in this skill)
 
@@ -1127,7 +1152,15 @@ fi
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
-As each Phase 2 lead returns a PR URL, drive that PR through `/review-remote-pr`'s **draft-first** flow — in parallel, without waiting for the other issues' leads. The PRs are drafts and STAY drafts through all mechanical work (CI fixes, merge conflicts, then the ONE end-of-draft adversarial cross-review). Review automation and ready/push behavior are repository and organization configuration; observe the state and never initiate a provider review: **never post `@coderabbitai review` or `full review` on any PR**.
+Phase A orchestration remains with the root. As each Phase 2 lead returns a PR URL, the root
+observes the draft through `/review-remote-pr`'s **draft-first** flow — in parallel, without
+waiting for the other issues' leads. Step 3b workers receive only root-approved fix batches for
+mechanical implementation. The root handles CI state/verification, forge conflicts, adversarial
+review, consent, replies, and publication. Workers do not poll or mutate forge state, resolve
+conflicts, launch reviews, make consent decisions, reply to reviewers, or publish. Review
+automation and ready/push behavior are repository and organization configuration; observe the
+state and never initiate a provider review: **never post `@coderabbitai review` or `full review`
+on any PR**.
 
 **As each PR opens, move its issue to `In review`** (see `github-projects.md`):
 ```bash
@@ -1235,6 +1268,10 @@ AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
+[ "$worker_model" != '<worker model id selected by the root dispatch>' ] || {
+    printf 'root did not supply a worker model id; report BLOCKED\n' >&2
+    exit 1
+}
 worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
 [ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
 
@@ -1247,7 +1284,7 @@ as an unresolved placeholder. Its provider-neutral base comes from the contract'
 # Read the log path it prints on failure.
 <WHEN this parallel-issues invocation carried --yolo (under any alias:
 --no-brainstorm, --skip-brainstorm), replace this placeholder with the rule:
-"append ` --yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
+"append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
 check)." Otherwise delete this placeholder. Either way, never dispatch with the
 placeholder still in the prompt. A worker refused at the trust gate — as

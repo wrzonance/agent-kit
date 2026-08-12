@@ -287,11 +287,11 @@ select_item_status() {
             | select(.id == $item_id)
             | (
                 .status
-                // (.fieldValues.nodes[]?
-                    | select(((.field.name // .name // "") | ascii_downcase) == "status")
-                    | (.name // .value.name // .value.text // .value // empty)
-                    | select(type == "string"))
-                // (.fieldValues[]?
+                // (
+                    (.fieldValues? // null) as $values
+                    | (if ($values | type) == "object" then ($values.nodes? // [])
+                       elif ($values | type) == "array" then $values
+                       else [] end)[]?
                     | select(((.field.name // .name // "") | ascii_downcase) == "status")
                     | (.name // .value.name // .value.text // .value // empty)
                     | select(type == "string"))

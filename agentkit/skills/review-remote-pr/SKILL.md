@@ -5,7 +5,18 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 # Review Remote PR
 
-Draft-first automated loop. **Phase A (draft):** watch CI, fix failures, resolve conflicts; then apply the Step 1b materiality gate. Run **the peer CLI named by the contract's `peer-cli=` line as the adversarial cross-reviewer** once for a behaviorally material diff, on its strongest reasoning model (or use the blind separate same-harness fallback); document a skip only for a mechanically verifiable trivial diff. **Phase B (handoff):** report draft-phase complete and wait for the **user** to mark the PR ready. Do not trigger a provider review; whether a review runs on a ready transition or a push is repository and organization configuration. **Phase C (review):** once a relevant review lands, assess CodeRabbit and `github-code-quality[bot]` findings, batching fixes into one push per cycle. Human-authored reviews and comments remain confirmation-gated.
+Draft-first automated loop. **Phase A (draft) is root-orchestrated:** the root watches CI state,
+verifies it, resolves forge conflicts, applies the Step 1b materiality gate, and owns consent,
+replies, adversarial review, and publication. When a change is needed, a worker receives only a
+root-approved mechanical fix batch and returns an unstaged publication handback. Run **the peer
+CLI named by the contract's `peer-cli=` line as the adversarial cross-reviewer** once for a
+behaviorally material diff, on its strongest reasoning model (or use the blind separate
+same-harness fallback); document a skip only for a mechanically verifiable trivial diff. **Phase
+B (handoff):** report draft-phase complete and wait for the **user** to mark the PR ready. Do not
+trigger a provider review; whether a review runs on a ready transition or a push is repository and
+organization configuration. **Phase C (review):** once a relevant review lands, assess CodeRabbit
+and `github-code-quality[bot]` findings, batching fixes into one push per cycle. Human-authored
+reviews and comments remain confirmation-gated.
 
 ## Flags
 
@@ -235,7 +246,7 @@ implement the batch itself, under all of these conditions:
    capability is a reason; "it seemed faster to do it myself" is not.
 2. **Run the same six-step ultracode gate on yourself**, in order, producing the same evidence:
    Structs, Interfaces, Todos, Spike + Revert, Invariants, Implementation (TDD).
-3. **Verify to the same standard** — inspect `base...HEAD`, run the repository checks through
+3. **Verify to the same standard** — inspect the scoped unstaged worker diff, run the repository checks through
    `agent-run.sh`, and push once per cycle.
 4. **Label it in the exit report as `worker=self (spawn unavailable)`**, naming the reason. Never
    report a self-implemented batch as if a worker had been dispatched.
@@ -254,9 +265,11 @@ The worker reports and completes these gates in order. Stages 1–3 precede ever
 6. **IMPLEMENTATION (TDD)** — red → verify the expected failure → minimal green → refactor; run scoped checks per task and the full relevant suite before handoff, each through `agent-run.sh`.
 
 The worker returns the six-stage status, changed paths, RED/GREEN evidence, full verification output
-summary, and scoped unstaged-tree status. The root independently inspects `base...HEAD`, runs
-the required verification through `agent-run.sh`, then republishes the handback command verbatim
-once before the single cycle push and any forge replies. Resume the same worker with
+summary, and scoped unstaged-tree status. Before publication, the root independently inspects the
+explicit handback paths against `git status --short` and `git diff -- <explicit handback paths>`,
+including unstaged changes, and runs the required verification through `agent-run.sh`. Only after
+the handback commit is published does the root inspect `base...HEAD`; it then republishes the
+handback command verbatim once before the single cycle push and any forge replies. Resume the same worker with
 `followup_task` for corrections when possible; do not create concurrent writers in one PR worktree.
 
 ### Root-owned publication handback
@@ -267,8 +280,12 @@ publication handback. The handback names scoped dirty files and diffstat, the fr
 marker-bearing log, the branch, and one exact ready-to-run `worktree-commit.sh` invocation with
 the worker-attributing trailer and explicit files. Workers never invoke that helper, stage,
 commit, stash, push, call forge or board helpers, create PRs, launch reviews, or request
-escalation. The root reviews the scoped diff and executes the supplied command verbatim exactly
-once, then pushes the branch and opens a DRAFT PR containing Why, What, Design decisions, tickable
+escalation. Before execution, the root preserves the raw command text for audit, parses it into
+validated arguments without eval, verifies the expected worktree-commit.sh helper, message/body,
+and trailer, and confirms explicit paths are inside the worktree and allowed handback set. It then
+invokes the helper as argv exactly once after inspecting `git diff -- <explicit handback paths>`;
+only after publication does it inspect `base...HEAD`. The root reviews the scoped diff and executes
+the supplied command verbatim exactly once, then pushes the branch and opens a DRAFT PR containing Why, What, Design decisions, tickable
 Testing, agent credit, and Closes #NNN; the resulting PR URL feeds collection and the draft
 phase. A dirty tree not authored by the worker is surfaced before validation; unexplained dirt is
 not adopted.
@@ -1803,5 +1820,5 @@ done
 ```
 
 A leading `moved ` is the evidence the promotion happened; an already-target line such as
-`no-op: issue #123 already "In progress"` is the terminal redundant no-op evidence. Both exit
+`no-op: issue #123 already "Ready"` is the terminal redundant no-op evidence. Both exit
 `0`, so never treat the exit status alone as proof.
