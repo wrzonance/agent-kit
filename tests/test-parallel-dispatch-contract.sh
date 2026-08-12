@@ -75,6 +75,13 @@ assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
 assert_contains "$(<"$review_skill")" 'full-suite verdict' \
     'review workflow requires a final full-suite verdict'
+review_verification_section=$(sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill")
+assert_contains "$review_verification_section" '--only NAME[,NAME...]' \
+    'review workflow forwards focused selectors'
+assert_contains "$review_verification_section" 'AGENT_CMD_TEST_FOCUS' \
+    'review workflow pins the focused declaration gate'
+assert_contains "$review_verification_section" 'run the unfocused `"$agent_run" --cmd test` once' \
+    'review workflow pins the final unfocused full-suite sequencing'
 assert_contains "$text" 'that issue/status/phase is complete' \
     'a moved output line is terminal for its issue phase'
 assert_not_contains "$text" 'target="$PWD/fenced-spec.txt"' \
@@ -206,6 +213,10 @@ assert_contains "$publication_section" 'Never pass a multiline PR body through i
     'draft PR publication forbids inline multiline body strings'
 assert_contains "$publication_section" 'cat >"$pr_body_file" <<EOF' \
     'draft PR publication uses an interpolating heredoc for dynamic body fields'
+assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
+    'draft PR publication secures the body file with mode 600'
+assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file"'\'' EXIT' \
+    'draft PR publication removes the body file on exit'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an agent identity before interpolation'
 assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \

@@ -1109,6 +1109,7 @@ layers can preserve escape sequences literally and collapse the rendered body to
 
 ```bash
 pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
+trap 'rm -f -- "$pr_body_file"' EXIT
 chmod 600 -- "$pr_body_file" || exit 1
 agent_identity=${agent_identity:?set the actual agent identity for PR attribution}
 pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}

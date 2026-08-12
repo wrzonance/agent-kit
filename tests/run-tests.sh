@@ -26,6 +26,10 @@ while (($#)); do
             (($# >= 2)) || { printf 'run-tests: --only requires a value\n' >&2; usage; }
             only=$2
             [[ -n $only ]] || { printf 'run-tests: --only requires a non-empty value\n' >&2; usage; }
+            [[ $only != ,* && $only != *, && $only != *,,* ]] || {
+                printf 'run-tests: --only contains an empty suite name\n' >&2
+                usage
+            }
             shift 2
             ;;
         -h|--help)

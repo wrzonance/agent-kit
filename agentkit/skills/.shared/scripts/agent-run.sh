@@ -574,6 +574,8 @@ apply_test_focus() {
     [[ -n $declared ]] || die "--only requires $key in .agent/config.env."
     mapfile -d '' -t focus_cmd < <(repo_config_argv "$key")
     ((${#focus_cmd[@]})) || die "invalid argv for $key"
+    [[ ${focus_cmd[0]} != *%s* ]] ||
+        die "$key cannot contain %s in its executable token."
     for i in "${!focus_cmd[@]}"; do
         token=${focus_cmd[i]}
         without=${token//%s/}

@@ -320,7 +320,11 @@ validate() {
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)
-            command_value_valid "$value"
+            command_value_valid "$value" || return 1
+            # The focused selector is interpolated into every occurrence of
+            # %s. argv[0] is executable data, so accepting the placeholder
+            # there would turn a suite name into the command path.
+            [[ ${PARSED_ARGV[0]} != *%s* ]]
             ;;
         *)
             if [[ $key =~ $RUNDIR_KEY_PATTERN ]]; then
