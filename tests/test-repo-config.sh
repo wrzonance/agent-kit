@@ -109,6 +109,21 @@ printf 'AGENT_CMD_VERIFY=/bin/sh -c true\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an absolute argv[0]'
 
+# Focus declarations use the same path-shaped argv[0] containment rule as
+# ordinary command declarations.
+printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_TEST_FOCUS=' 'accepts a valid in-repo focus declaration'
+for bad_focus in \
+    'tools/../../outside/focus --only %s' \
+    '/bin/sh --only %s' \
+    '../outside/focus --only %s'; do
+    printf 'AGENT_CMD_TEST_FOCUS=%s\n' "$bad_focus" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+    assert_not_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+        "rejects an escaping focus declaration: $bad_focus"
+done
+
 # Quoted argv tokens preserve spaces without invoking a shell. The executable
 # itself may be a repository-relative path containing a space, and later args
 # may be paths or literal globs with spaces too.

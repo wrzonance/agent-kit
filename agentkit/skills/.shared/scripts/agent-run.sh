@@ -107,6 +107,7 @@ label=
 cmd_name=
 cmd=()
 focus_opt=''
+focus_requested=0
 approve_cmd=0
 yolo_cmd=0
 force_cmd=0
@@ -132,6 +133,7 @@ while (($#)); do
             ;;
         --only)
             (($# >= 2)) || die 'Missing value for --only.'
+            focus_requested=1
             focus_opt=$2
             shift 2
             ;;
@@ -162,6 +164,11 @@ while (($#)); do
             ;;
     esac
 done
+
+if ((focus_requested)); then
+    [[ -n $focus_opt ]] || die '--only requires a non-empty value.'
+    [[ -n $cmd_name ]] || die '--only requires --cmd test.'
+fi
 
 if [[ -n $cmd_name ]]; then
     ((${#cmd[@]} == 0)) || die '--cmd NAME and a literal command are mutually exclusive.'
@@ -560,7 +567,7 @@ resolve_named_command() {
 apply_test_focus() {
     local key='AGENT_CMD_TEST_FOCUS' declared token without replaced=0 occurrences i
     local -a focus_cmd=()
-    [[ -n $focus_opt ]] || return 0
+    ((focus_requested)) || return 0
     [[ $cmd_name == test ]] || die '--only is supported only with --cmd test.'
 
     declared=$(repo_config_get "$key" || true)
@@ -578,6 +585,7 @@ apply_test_focus() {
     done
     ((replaced == 1)) || die "$key must contain exactly one %s placeholder."
     cmd=("${focus_cmd[@]}")
+    cmd_declared=yes
 }
 
 # ----------------------------------------------------------- command trust ---
@@ -894,7 +902,7 @@ trust_command() {
     local trust_id current recorded temp
     [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 0
     trust_root=$(trust_state_root)
-    trust_id=$(sha256_text "$git_top\n$cmd_name")
+    trust_id=$(sha256_text "$git_top\n$cmd_name\nfocus=$focus_opt")
     trust_file=$trust_root/$trust_id.trust
     trust_fingerprint=$(compute_trust_fingerprint)
     current=$trust_fingerprint

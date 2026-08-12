@@ -42,6 +42,32 @@ EOF
     git -C "$dir" fetch -q origin
 }
 
+make_runner_focus_repo() {
+    local dir=$1 origin=$tmp/runner-origin
+    git init -q -b main "$dir"
+    git -C "$dir" config user.name test
+    git -C "$dir" config user.email test@example.invalid
+    mkdir -p "$dir/.agent" "$dir/tools"
+    cat >"$dir/tools/focused" <<'EOF'
+#!/usr/bin/env bash
+printf 'direct-focused:%s\n' "$*"
+EOF
+    cat >"$dir/tools/runner" <<'EOF'
+#!/usr/bin/env bash
+printf 'runner-received:%s\n' "$*"
+exit 99
+EOF
+    chmod +x "$dir/tools/focused" "$dir/tools/runner"
+    printf 'AGENT_REPO_RUNNER=tools/runner\nAGENT_CMD_TEST_FOCUS=tools/focused --only %%s\n' \
+        >"$dir/.agent/config.env"
+    git -C "$dir" add -- .agent/config.env tools
+    git -C "$dir" commit -qm base
+    git init -q --bare "$origin"
+    git -C "$dir" remote add origin "$origin"
+    git -C "$dir" push -q origin HEAD:main
+    git -C "$dir" fetch -q origin
+}
+
 repo=$tmp/repo
 make_repo "$repo"
 full_count=$tmp/full-count
@@ -88,5 +114,45 @@ rc=0
 out=$(cd "$missing" && "$run_sh" --cmd test --only unit --yolo 2>&1) || rc=$?
 assert_eq '1' "$rc" 'focus is usage-invalid without its declaration'
 assert_contains "$out" 'AGENT_CMD_TEST_FOCUS' 'the usage error names the missing declaration'
+
+# Focus may be the repository's only test declaration when a generic runner is
+# present; it must execute the focused argv directly rather than delegating the
+# declaration argv back to the runner as a subcommand.
+runner_repo=$tmp/runner-repo
+make_runner_focus_repo "$runner_repo"
+rc=0
+out=$(cd "$runner_repo" && "$run_sh" --cmd test --only unit --yolo 2>&1) || rc=$?
+assert_eq '0' "$rc" 'focus declaration executes directly with a repository runner'
+assert_contains "$out" 'PASS: tools/focused --only unit' \
+    'runner fallback does not receive the focused declaration as a subcommand'
+assert_not_contains "$out" 'runner-received:' 'focused declaration bypasses the generic runner'
+
+# Focus and full approvals are separate records and remain usable independently.
+trust_root=$tmp/trust
+tty_approve="$here/lib/tty-approve"
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd test) > /dev/null 2>&1
+(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd test --only unit,smoke) > /dev/null 2>&1
+assert_eq '2' "$(find "$trust_root" -type f -name '*.trust' | wc -l | tr -d ' ')" \
+    'full and focused approvals persist as separate trust records'
+out=$(cd "$repo" && FULL_COUNT="$full_count" FOCUS_COUNT="$focus_count" \
+    AGENT_TRUST_ROOT="$trust_root" "$run_sh" --force --cmd test 2>&1)
+assert_contains "$out" 'PASS: tools/full' 'the approved full command remains executable'
+out=$(cd "$repo" && FULL_COUNT="$full_count" FOCUS_COUNT="$focus_count" \
+    AGENT_TRUST_ROOT="$trust_root" "$run_sh" --force --cmd test --only unit,smoke 2>&1)
+assert_contains "$out" 'PASS: tools/focused --only unit,smoke' \
+    'the approved focused command remains executable'
+
+# --only is a named-command option, not a literal-command option, and an empty
+# selector must fail before trust, cache, or execution.
+rc=0
+out=$(cd "$repo" && "$run_sh" --only unit -- echo literal 2>&1) || rc=$?
+assert_eq '1' "$rc" 'literal commands reject --only'
+assert_contains "$out" '--only requires --cmd test' 'literal focus usage names its contract'
+rc=0
+out=$(cd "$repo" && "$run_sh" --only '' --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'empty --only is rejected'
+assert_contains "$out" 'non-empty' 'empty focus usage explains the required value'
 
 finish
