@@ -30,16 +30,48 @@ assert_contains "$rendered" 'unknown: A comment without an author is still data.
 
 run_fence_recipe() {
     local producer=$1 target=$2 input=$3
-    local tmp="$target.tmp"
+    local tmp="$target.tmp" input_file
+    input_file=$(mktemp "$tmp_dir/fence-input.XXXXXX") || return 1
     rm -f -- "$target" "$tmp"
-    set -o pipefail
-    if printf '%s' "$input" | "$producer" >"$tmp"; then
+    if ! printf '%s' "$input" >"$input_file"; then
+        rm -f -- "$input_file"
+        return 1
+    fi
+    if "$producer" <"$input_file" >"$tmp"; then
+        rm -f -- "$input_file"
         mv -f -- "$tmp" "$target"
     else
-        rm -f -- "$target" "$tmp"
+        rm -f -- "$target" "$tmp" "$input_file"
         return 1
     fi
 }
+
+# Deterministic regression fixture: an early-exiting consumer closes stdin
+# before a large writer finishes, reproducing the historical SIGPIPE race.
+early_exit="$tmp_dir/early-exit.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$early_exit"
+chmod +x "$early_exit"
+large_input=$(printf '%*s' 1048576 '' | tr ' ' x)
+large_input_file="$tmp_dir/large-input"
+printf '%s' "$large_input" >"$large_input_file"
+direct_err="$tmp_dir/direct.err"
+set +e
+{ cat "$large_input_file" | "$early_exit" > /dev/null; } 2>"$direct_err"
+direct_rc=$?
+set -e
+if [[ $direct_rc == 141 || $(grep -c 'Broken pipe' "$direct_err" || true) -gt 0 ]]; then
+    _pass 'the old pipe writer reports SIGPIPE or Broken pipe deterministically'
+else
+    _fail 'the old pipe writer reports SIGPIPE or Broken pipe deterministically' \
+        "writer rc=$direct_rc; stderr=$(<"$direct_err")"
+fi
+early_target="$tmp_dir/early-fence.txt"
+early_rc=0
+run_fence_recipe "$early_exit" "$early_target" "$large_input" || early_rc=$?
+assert_eq 0 "$early_rc" \
+    'the fence recipe accepts an early-exiting producer without killing its writer'
+assert_eq yes "$( [[ -e "$early_target" ]] && printf yes || printf no )" \
+    'the fence recipe publishes the early producer output'
 
 # Pull the documented content-validation program the same way, so the test
 # executes the recipe's actual guard rather than a test-local approximation.
