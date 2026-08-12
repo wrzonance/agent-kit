@@ -50,6 +50,9 @@ assert_receipt_contract() {
     # unless the Step 0 resolver was prepended first.
     assert_contains "$section" '${agentkit:-}/.shared/scripts' "$label publication guards against a missing resolver"
     assert_contains "$section" 'agentkit unresolved: prepend the Step 0 resolver block' "$label publication fails loudly without the resolver"
+    # The directory check alone passes on a stale inherited value; the sentinel
+    # is what proves the Step 0 resolver actually ran.
+    assert_contains "$section" '${agentkit_provenance:-}' "$label publication requires the provenance sentinel"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'
@@ -93,6 +96,8 @@ assert_contains "$publication_block" '${agentkit:-}/.shared/scripts' \
     'parallel-issues publication block guards a missing resolver'
 assert_contains "$publication_block" 'agentkit unresolved: prepend the Step 0 resolver block' \
     'parallel-issues publication block fails loudly without the resolver'
+assert_contains "$publication_block" '${agentkit_provenance:-}' \
+    'parallel-issues publication block requires the provenance sentinel'
 
 review_section=$(awk '
     /^### Adversarial-review receipt:/{capture=1; next}
@@ -105,6 +110,8 @@ assert_contains "$review_publication_block" '${agentkit:-}/.shared/scripts' \
     'review-remote-pr publication block guards a missing resolver'
 assert_contains "$review_publication_block" 'agentkit unresolved: prepend the Step 0 resolver block' \
     'review-remote-pr publication block fails loudly without the resolver'
+assert_contains "$review_publication_block" '${agentkit_provenance:-}' \
+    'review-remote-pr publication block requires the provenance sentinel'
 
 receipt_line=$(grep -n '^### Adversarial-review receipt:' "$review" | cut -d: -f1)
 phase_b_line=$(grep -n '^## Step 3 (Phase B):' "$review" | cut -d: -f1)

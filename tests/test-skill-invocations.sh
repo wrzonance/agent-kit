@@ -58,8 +58,10 @@ fi
 agentkit_provenance=ok
 ```'
 
+# The guard is two conditions, not one: the directory check proves some tree is
+# there, the sentinel proves THIS resolver put it there.
 GUARDED_FENCE='```bash
-[ -d "${agentkit:-}/.shared/scripts" ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 "$agentkit/.shared/scripts/agent-run.sh" --help
 ```'
 
@@ -129,6 +131,34 @@ EOF
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'a helper fence with no guard fails'
 assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unguarded fence is named'
+
+# --- a directory-only guard is not a guard ------------------------------
+# `[ -d "${agentkit:-}/.shared/scripts" ]` alone is satisfied by any stale or
+# profile-inherited value that happens to point at a real tree -- precisely the
+# case the sentinel was added to reject. Without this rule the sentinel is
+# decorative: the skills carry it, but nothing keeps them carrying it.
+root=$tmp/sentinel-less
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when the guard omits the provenance sentinel.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+
+## Later step
+
+\`\`\`bash
+[ -d "\${agentkit:-}/.shared/scripts" ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+"\$agentkit/.shared/scripts/agent-run.sh" --help
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'a guard that omits the provenance sentinel fails'
+assert_contains "$LINT_OUT" 'GUARD WITHOUT SENTINEL' 'the sentinel-less guard is named'
 
 # --- the resolver must be defined exactly once --------------------------
 root=$tmp/duplicate

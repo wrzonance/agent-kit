@@ -47,7 +47,8 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
         function flush() {
             full_checks = (block ~ /! -L \$contract/ && block ~ /-O \$contract/ &&
                 block ~ /git -C "\$contract_root" ls-files --error-unmatch -- \.agent\/env-contract\.txt/)
-            guard_only = (block ~ /agentkit unresolved: prepend the Step 0 resolver block/)
+            guard_only = (block ~ /agentkit unresolved: prepend the Step 0 resolver block/ &&
+                block ~ /agentkit_provenance/)
             local_redefine = (block ~ /(^|[^[:alnum:]_])contract(_root)?=[^=]/)
             if (has_read && !full_checks && (!guard_only || local_redefine))
                 printf "unguarded contract read in block ending line %d\n", FNR

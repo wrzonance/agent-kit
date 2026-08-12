@@ -37,6 +37,11 @@ trap 'rm -rf -- "$work"' EXIT
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues'
 readonly FULL_RESOLVER_MARK='agentkit=\$(sed -n "s/\^skills= path='
 readonly GUARD_MARK='${agentkit:-}/.shared/scripts'
+# The directory check alone is satisfied by any stale or profile-inherited
+# $agentkit that happens to point at a real tree, which is exactly the case the
+# sentinel exists to reject. Requiring both is what makes the provenance
+# boundary enforced rather than decorative.
+readonly SENTINEL_MARK='${agentkit_provenance:-}'
 # Skills whose earliest setup step keeps the single boxed resolver definition;
 # every other bash block in these two files must carry the guard instead.
 readonly SINGLE_SOURCE_SKILLS='review-remote-pr parallel-issues'
@@ -50,6 +55,7 @@ fallbacks=0
 no_resolver=0
 def_count_violations=0
 resolver_side_effects=0
+sentinel_gaps=0
 
 fallback_matches=$(grep -R -n --include='SKILL.md' '^[[:space:]]*agentkit=\$(find ' "$skills_dir" || true)
 fallbacks=$(printf '%s\n' "$fallback_matches" | grep -c . || true)
@@ -149,15 +155,22 @@ while IFS= read -r skill_file; do
                 continue
             fi
             grep -qE "($HELPERS)\.sh" "$fence" || continue
-            grep -qF "$GUARD_MARK" "$fence" && continue
+            if grep -qF "$GUARD_MARK" "$fence"; then
+                grep -qF "$SENTINEL_MARK" "$fence" && continue
+                sentinel_gaps=$((sentinel_gaps + 1))
+                printf 'GUARD WITHOUT SENTINEL in %s (fence %s): a directory-only guard is satisfied by a stale inherited agentkit; require [ "${agentkit_provenance:-}" = ok ] too\n' \
+                    "$skill_file" "$fence_name" >&2
+                continue
+            fi
             no_resolver=$((no_resolver + 1))
             printf 'MISSING RESOLVER in %s (fence %s): a helper is invoked with neither the full resolver nor the guard\n' \
-                "$skill_file" "$(basename "$fence")" >&2
+                "$skill_file" "$fence_name" >&2
         done
     fi
 done < <(find "$skills_dir" -maxdepth 2 -name SKILL.md -not -path '*/.system/*' | sort)
 
-printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects\n' \
-    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects"
+printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps\n' \
+    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps"
 [[ $bare -eq 0 && $unguarded -eq 0 && $missing_contract_reads -eq 0 && $fallbacks -eq 1 &&
-   $no_resolver -eq 0 && $def_count_violations -eq 0 && $resolver_side_effects -eq 0 ]]
+   $no_resolver -eq 0 && $def_count_violations -eq 0 && $resolver_side_effects -eq 0 &&
+   $sentinel_gaps -eq 0 ]]
