@@ -756,12 +756,13 @@ interleave a second verification query. The shapes are:
 
 ```text
 moved #123 -> "In progress" on project #3 "Example Board"
+no-op: issue #123 already "In progress"
 no-op: issue #123 is not on any project board
 no-op: project #3 "Example Board" has no Status field
 no-op: project #3 "Example Board" has no matching Status option "In progress"
 ```
 
-Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof of a move; a leading `moved ` is**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` with the `project` scope, which Step 0's `project-scope=` line already told you about.
+Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved ` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` with the `project` scope, which Step 0's `project-scope=` line already told you about.
 
 ### Root canonical issue fetch and fence preparation
 
@@ -774,6 +775,14 @@ repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
 repository_visibility=$(gh repo view "$repository" --json isPrivate -q '.isPrivate' 2>/dev/null) ||
     repository_visibility='unknown'
 : "${yolo_invocation:?set from the invocation line}"
+if [[ $yolo_invocation == true ]]; then
+    boundary_mode=yolo-trusted
+elif [[ $repository_visibility == true ]]; then
+    boundary_mode=private-trusted
+else
+    boundary_mode=public-fenced
+fi
+printf 'boundary mode: %s\n' "$boundary_mode"
 ```
 
 ```bash
@@ -794,16 +803,59 @@ issue_contents=$(jq -r '
       | join("\n")))
   ] | join("\n\n")
 ' <<<"$issue_payload")
+
+# The root is the sole issue-artifact producer. Publish both generated blocks
+# atomically into excluded per-worktree state before constructing any prompt.
+: "${prior_art_contents:="(no prior art selected by triage digest)"}"
+target="$worktree/.agent/fenced-spec.txt"
+prior_target="$worktree/.agent/fenced-prior-art.txt"
+tmp="$target.tmp"
+prior_tmp="$prior_target.tmp"
+cleanup_fence() { rm -f -- "$tmp" "$prior_tmp"; }
+trap cleanup_fence EXIT HUP INT TERM
+mkdir -p -- "${target%/*}" || exit 1
+if [[ -e $target || -e $prior_target ]]; then
+    printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2
+    exit 1
+fi
+rm -f -- "$tmp" "$prior_tmp"
+set -o pipefail
+# Named producer shapes remain here so the canonical recipe is executable and
+# testable without ever moving issue-derived data into a worker prompt.
+# spec_fence=$(printf '%s' "$issue_contents" |
+#     "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh")
+# prior_art_fence=$(printf '%s' "$prior_art_contents" |
+#     "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh")
+if [[ $boundary_mode == public-fenced ]]; then
+    if printf '%s' "$issue_contents" |
+        "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$tmp" &&
+        printf '%s' "$prior_art_contents" |
+        "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$prior_tmp"; then
+        :
+    else
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        exit 1
+    fi
+else
+    if printf '%s' "$issue_contents" >"$tmp" &&
+        printf '%s' "$prior_art_contents" >"$prior_tmp"; then
+        :
+    else
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        exit 1
+    fi
+fi
+if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target"; then
+    :
+else
+    mv_rc=$?
+    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+    exit "$mv_rc"
+fi
+trap - EXIT HUP INT TERM
 ```
 
-The root writes `target="$worktree/.agent/fenced-spec.txt"` and
-`prior_target="$worktree/.agent/fenced-prior-art.txt"` atomically after the fence helper succeeds,
-initializing `: "${prior_art_contents:="(no prior art selected by triage digest)"}"`. Workers
-embed `cat -- "$worktree/.agent/fenced-spec.txt"` and
-`cat -- "$worktree/.agent/fenced-prior-art.txt"` bytes verbatim. Re-running the fence helper for
-an existing block is churn; `fence artifacts already exist; delete the affected file deliberately`
-before deliberate re-fencing. The root creates the excluded artifact directory with
-`mkdir -p -- "${target%/*}" || exit 1`.
+The root now embeds `cat -- "$worktree/.agent/fenced-spec.txt"` and `cat -- "$worktree/.agent/fenced-prior-art.txt"` bytes verbatim into the worker prompt. Re-running the fence helper for an existing block is churn; delete the affected file deliberately before deliberate re-fencing. The selected mode is disclosed immediately above those persisted bytes.
 
 Per-issue prompt:
 
@@ -892,11 +944,32 @@ tree state; these are excluded worktree evidence, never deliverables. If the tre
 your work, report every file, its diffstat, and whether the checkpoint manifest explains it before
 adopting anything. Do not alter unexplained work.
 
+contract="$worktree/.agent/env-contract.txt"
+contract_root="$worktree"
+if [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    :
+else
+    printf 'agent contract is not an untracked regular file owned by this user\n' >&2
+    exit 1
+fi
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
+[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
+worker_model='<worker model id selected by the root dispatch>'
+[ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
+worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
+[ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
+
+The handback command must embed the expanded literal value of `worker_attribution` (including the
+worker model id) in its `--trailer` argument; do not return `$AGENT_TRAILER` or `$worker_attribution`
+as an unresolved placeholder. The resulting literal remains provider-neutral because its base comes
+from the contract's `harness=` line.
+
 Finish with a publication handback to the top-level session, never a publication action. Include:
 the scoped dirty files and diffstat, the exact green marker-bearing verification log path, the
 branch, and one exact ready-to-run `worktree-commit.sh` invocation containing a Conventional
-Commit subject/body, `Co-Authored-By: $AGENT_TRAILER` derived from the contract's `harness=`
-line, the worker model id in the attribution body, and explicit file operands. The top-level
+Commit subject/body, `Co-Authored-By: <expanded worker_attribution>` derived from the contract's
+`harness=` line, the worker model id in the attribution body, and explicit file operands. The top-level
 session reviews the scoped diff, runs that invocation verbatim once, and
 owns every external or privileged follow-up. A dirty tree not authored by you must be surfaced
 before validation and either explained by the manifest or left untouched.
@@ -932,57 +1005,9 @@ commands. Do not fetch additional issue, repository, or board data from the forg
 
 ### Canonical issue fetch and fence preparation
 
-The dispatcher has already fetched and fenced the complete issue text and prior-art note. Workers
-must not perform a second fetch or regenerate these persisted blocks.
-
-```bash
-# `prior_art_contents` is the exact prior-art note selected by the authoritative
-# triage digest for this surviving issue; it is prepared once alongside the body.
-# When the digest selected none, retain an explicit non-empty sentinel so the
-# persisted prior-art fence is still a complete canonical artifact.
-: "${prior_art_contents:="(no prior art selected by triage digest)"}"
-target="$worktree/.agent/fenced-spec.txt"
-prior_target="$worktree/.agent/fenced-prior-art.txt"
-tmp="$target.tmp"
-prior_tmp="$prior_target.tmp"
-cleanup_fence() { rm -f -- "$tmp" "$prior_tmp"; }
-trap cleanup_fence EXIT HUP INT TERM
-mkdir -p -- "${target%/*}" || exit 1
-if [[ -e $target || -e $prior_target ]]; then
-    printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2
-    exit 1
-fi
-rm -f -- "$tmp" "$prior_tmp"
-set -o pipefail
-# One-time producer shape (run only while the target files are deliberately
-# absent); after publication, embed the persisted bytes below instead.
-# spec_fence=$(printf '%s' "$issue_contents" |
-#     "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh")
-# prior_art_fence=$(printf '%s' "$prior_art_contents" |
-#     "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh")
-if printf '%s' "$issue_contents" |
-    "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$tmp" &&
-    printf '%s' "$prior_art_contents" |
-    "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" >"$prior_tmp"; then
-    if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target"; then
-        :
-    else
-        mv_rc=$?
-        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
-        exit "$mv_rc"
-    fi
-else
-    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
-    exit 1
-fi
-trap - EXIT HUP INT TERM
-```
-
-The final `fenced-spec.txt` and `fenced-prior-art.txt` are canonical only when this recipe produced
-them. An upstream failure leaves neither final file nor either temporary path; a producer that is
-killed can leave only temporary paths, never a final fence. Once persisted, these files are the
-canonical bytes for this worktree. Re-running the fence helper for an existing block is churn;
-delete the affected file deliberately before re-fencing after its source changes.
+The root has already fetched and atomically persisted the complete issue text and prior-art bytes.
+Workers must not fetch issue data, render issue text, invoke the fence helper, or regenerate these
+persisted blocks. The root embeds the persisted files below as the only issue-derived input.
 
 Select exactly one boundary mode from the current invocation line and that visibility:
 
@@ -1040,6 +1065,12 @@ Act on each lead result as soon as it arrives:
 - **PR URL** → the root verifies branch/worktree cleanliness and evidence, moves the issue to `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
 - **BLOCKED** → report the reason and preserved worktree; do not blindly restart. When the blocker clears, use `collaboration.followup_task` on the same lead if it remains available, otherwise spawn a fresh lead with the completed state and exact remaining step.
 - **Queued issue** → spawn it immediately into the freed slot.
+
+### Root publication after a worker handback
+
+After reviewing the scoped diff, the root executes the worker's identical handback commit command
+verbatim exactly once. The root then must push the branch and open a DRAFT PR containing Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN. PR URL feeds Collect and Step 3a;
+the URL moves the issue to `In review` and starts the root-owned draft phase.
 
 ### Polling discipline (applies to every wait in this skill)
 
@@ -1191,6 +1222,25 @@ and report the incident and restoration in the handback.
 ## Commands you MUST use
 worktree=FULL_PATH
 shared=<PASTE the validated shared-scripts path from the contract>
+contract="$worktree/.agent/env-contract.txt"
+contract_root="$worktree"
+if [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+    :
+else
+    printf 'agent contract is not an untracked regular file owned by this user\n' >&2
+    exit 1
+fi
+AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
+[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
+worker_model='<worker model id selected by the root dispatch>'
+[ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
+worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
+[ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
+
+The handback command must embed the expanded literal value of `worker_attribution` (including the
+worker model id) in its `--trailer` argument; do not return `$AGENT_TRAILER` or `$worker_attribution`
+as an unresolved placeholder. Its provider-neutral base comes from the contract's `harness=` line.
 
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
@@ -1226,7 +1276,7 @@ Do not perform publication or metadata operations from this worker prompt.
    diffstat, and whether the checkpoint manifest explains it.
 5. Return a publication handback to the top-level session containing the scoped files and
    diffstat, verification log, branch, and one exact ready-to-run publication command with the
-   worker-attributing trailer. The top-level session reviews and republishes it exactly once.
+   expanded worker-attributing trailer. The top-level session reviews and republishes it exactly once.
 6. Do not contact external services or alter metadata; phase leads hand privileged actions to the
    root.
 

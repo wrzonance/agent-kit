@@ -31,6 +31,32 @@ assert_contains "$text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
 assert_contains "$text" 'target="$worktree/.agent/fenced-prior-art.txt"' \
     'issue preparation persists prior-art fence bytes'
+root_fence_section=$(sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill")
+assert_contains "$root_fence_section" 'if [[ $yolo_invocation == true ]]; then' \
+    'root derives boundary mode from the explicit invocation'
+assert_contains "$root_fence_section" 'boundary_mode=private-trusted' \
+    'private visibility selects the trusted boundary'
+assert_contains "$root_fence_section" 'boundary_mode=public-fenced' \
+    'unknown visibility has a public fenced fallback'
+assert_contains "$root_fence_section" 'if [[ $boundary_mode == public-fenced ]]; then' \
+    'trusted modes persist exact bytes without invoking the fence helper'
+assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
+    'root prints the selected boundary mode'
+boundary_snippet=$(awk '
+    /^if \[\[ \$yolo_invocation == true \]\]; then$/ { capture=1 }
+    capture { print }
+    capture && /^printf '\''boundary mode:/ { exit }
+' "$skill")
+assert_contains "$boundary_snippet" 'boundary_mode=public-fenced' \
+    'boundary selector snippet is extractable for regression checks'
+for visibility in false unknown ''; do
+    selected=$(repository_visibility="$visibility" yolo_invocation=false bash -c "$boundary_snippet" 2>/dev/null | tail -n 1)
+    assert_eq 'boundary mode: public-fenced' "$selected" \
+        "visibility '$visibility' fails closed to public-fenced"
+done
+selected=$(repository_visibility=false yolo_invocation=true bash -c "$boundary_snippet" 2>/dev/null | tail -n 1)
+assert_eq 'boundary mode: yolo-trusted' "$selected" \
+    'explicit yolo selects yolo-trusted regardless of visibility'
 assert_contains "$text" 'one canonical issue-body fetch during preparation' \
     'triage digest limits surviving issue body reads to preparation'
 assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
@@ -115,6 +141,30 @@ done
 assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'publication handback' 'issue lead returns a publication handback'
 assert_contains "$draft_loop_prompt" 'publication handback' 'phase lead returns a publication handback'
+for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
+    prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
+    assert_contains "$prompt_text" 'contract="$worktree/.agent/env-contract.txt"' "$prompt_label derives its contract trailer"
+    assert_contains "$prompt_text" 'AGENT_TRAILER=$(sed -n' "$prompt_label parses the harness trailer"
+    assert_contains "$prompt_text" '[ -n "$AGENT_TRAILER" ] ||' "$prompt_label guards an empty harness trailer"
+    assert_contains "$prompt_text" 'worker_attribution=' "$prompt_label appends the worker model id"
+    assert_contains "$prompt_text" 'expanded literal value' "$prompt_label expands the attribution before handback"
+done
+assert_not_contains "$issue_lead_prompt" 'issue_contents' 'issue lead does not produce fence content'
+assert_not_contains "$issue_lead_prompt" 'prior_art_contents' 'issue lead does not produce prior-art fence content'
+assert_not_contains "$issue_lead_prompt" 'fence-untrusted-data.sh' 'issue lead does not invoke the fence helper'
+assert_not_contains "$draft_loop_prompt" 'issue_contents' 'phase lead does not produce fence content'
+assert_not_contains "$draft_loop_prompt" 'prior_art_contents' 'phase lead does not produce prior-art fence content'
+assert_not_contains "$draft_loop_prompt" 'fence-untrusted-data.sh' 'phase lead does not invoke the fence helper'
+assert_contains "$root_fence_section" 'issue_contents=$(jq -r' 'root owns issue rendering'
+assert_contains "$root_fence_section" 'fence-untrusted-data.sh' 'root owns fence helper invocation'
+assert_contains "$root_fence_section" 'mv -f -- "$tmp" "$target"' 'root atomically publishes the spec fence'
+assert_contains "$root_fence_section" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
+assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
+assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
+assert_contains "$text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
+    'root draft PR carries the required report fields'
+assert_contains "$text" 'PR URL feeds Collect and Step 3a' \
+    'root feeds the resulting PR URL into collection and draft dispatch'
 root_sections=$(cat "$skill" "$review_skill")
 assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
 assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
@@ -141,9 +191,9 @@ assert_contains "$prompt_body" '<PASTE the complete output selected by the bound
     'the prompt placeholders remain inside the outer fence'
 inner_open_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```bash" { count++ } END { print count + 0 }')
 inner_close_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```" { count++ } END { print count + 0 }')
-assert_eq '3' "$inner_open_count" \
+assert_eq '2' "$inner_open_count" \
     'inner bash examples retain their triple-backtick openings'
-assert_eq '3' "$inner_close_count" \
+assert_eq '2' "$inner_close_count" \
     'inner bash examples retain their triple-backtick closers'
 
 snippet=$(awk '

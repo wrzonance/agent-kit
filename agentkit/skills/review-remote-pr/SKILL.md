@@ -268,8 +268,10 @@ marker-bearing log, the branch, and one exact ready-to-run `worktree-commit.sh` 
 the worker-attributing trailer and explicit files. Workers never invoke that helper, stage,
 commit, stash, push, call forge or board helpers, create PRs, launch reviews, or request
 escalation. The root reviews the scoped diff and executes the supplied command verbatim exactly
-once, then owns the push, PR, board, reply, and review decisions. A dirty tree not authored by the
-worker is surfaced before validation; unexplained dirt is not adopted.
+once, then pushes the branch and opens a DRAFT PR containing Why, What, Design decisions, tickable
+Testing, agent credit, and Closes #NNN; the resulting PR URL feeds collection and the draft
+phase. A dirty tree not authored by the worker is surfaced before validation; unexplained dirt is
+not adopted.
 
 Every worker file operation uses an absolute path rooted in its assigned worktree. The writable
 sandbox may span the parent tree, so cwd is not an ownership boundary. If a worker discovers its
@@ -1800,5 +1802,6 @@ for issue_number in 62 71; do   # only the numbers the user approved
 done
 ```
 
-A leading `moved ` is the evidence the promotion happened; a `no-op:` line means it did not. Both
-exit `0`, so never treat the exit status alone as proof.
+A leading `moved ` is the evidence the promotion happened; an already-target line such as
+`no-op: issue #123 already "In progress"` is the terminal redundant no-op evidence. Both exit
+`0`, so never treat the exit status alone as proof.

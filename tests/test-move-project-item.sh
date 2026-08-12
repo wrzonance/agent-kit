@@ -109,6 +109,8 @@ repo=$(seed_repo)
 out=$(CURRENT_STATUS='Ready' run_mv "$repo" --issue-number 57 --status Ready 2>&1)
 assert_contains "$out" 'no-op: issue #57 already "Ready"' 'already-target status reports a redundant no-op'
 assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" 'already-target status does not call item-edit'
+assert_contains "$(<"$mv_sh")" 'no-op: issue #%s already "%s"' \
+    'mover documents the exact already-target stdout shape'
 
 # An identical second move must not rewrite board.json just because generatedAt
 # is fresh. Commit the first move so the second invocation can prove it leaves
