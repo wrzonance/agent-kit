@@ -81,6 +81,46 @@ assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
 assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
     'failed upstream removes its temporary fence'
 
+# A crash after publishing only one member of the pair must be recoverable on
+# the next invocation. The canonical recipe removes an incomplete pair and
+# republishes both files, while a complete ready-marked pair is refused as
+# deliberate existing state.
+run_recoverable_pair_recipe() {
+    local producer=$1 target=$2 prior_target=$3 input=$4 prior_input=$5
+    local tmp="$target.tmp" prior_tmp="$prior_target.tmp" ready="$target.ready"
+    if [[ -d $ready && -f $target && -f $prior_target &&
+        ! -e $tmp && ! -e $prior_tmp ]]; then
+        return 1
+    fi
+    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+    rmdir -- "$ready" 2>/dev/null || rm -f -- "$ready"
+    if ! printf '%s' "$input" | "$producer" >"$tmp" ||
+        ! printf '%s' "$prior_input" | "$producer" >"$prior_tmp"; then
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        return 1
+    fi
+    mv -f -- "$tmp" "$target" || return 1
+    mv -f -- "$prior_tmp" "$prior_target" || return 1
+    mkdir -- "$ready" || return 1
+}
+
+recovery_target="$tmp_dir/recovery-spec.txt"
+recovery_prior="$tmp_dir/recovery-prior.txt"
+printf '%s\n' stale >"$recovery_target"
+printf '%s\n' stale-marker >"$recovery_target.ready"
+run_recoverable_pair_recipe "$producer" "$recovery_target" "$recovery_prior" \
+    'new spec' 'new prior'
+assert_eq 'exact fenced bytes' "$(<"$recovery_target")" \
+    'an incomplete first-move pair is replaced on retry'
+assert_eq 'exact fenced bytes' "$(<"$recovery_prior")" \
+    'recovery publishes the missing prior-art member'
+assert_eq yes "$( [[ -d "$recovery_target.ready" ]] && printf yes || printf no )" \
+    'recovery leaves the ready marker'
+complete_rc=0
+run_recoverable_pair_recipe "$producer" "$recovery_target" "$recovery_prior" \
+    'new spec' 'new prior' || complete_rc=$?
+assert_eq 1 "$complete_rc" 'a complete ready-marked pair is not silently overwritten'
+
 failed_fetch="$tmp_dir/failed-fetch.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 7' >"$failed_fetch"
 chmod +x "$failed_fetch"
@@ -126,6 +166,12 @@ assert_contains "$recipe_text" 'fence artifacts already exist; delete the affect
     'the recipe refuses implicit re-fencing of persisted artifacts'
 assert_contains "$recipe_text" 'mkdir -p -- "${target%/*}" || exit 1' \
     'the canonical recipe creates its excluded artifact directory'
+assert_contains "$recipe_text" 'ready_marker="$worktree/.agent/fenced-ready"' \
+    'the canonical recipe has a ready marker for the artifact pair'
+assert_contains "$recipe_text" 'incomplete stale fence artifacts; removing them before retry' \
+    'the canonical recipe removes an incomplete stale pair before retry'
+assert_contains "$recipe_text" 'mkdir -- "$ready_marker"' \
+    'the canonical recipe publishes readiness only after both moves'
 
 worktree="$tmp_dir/worktree"
 git init -q "$worktree"

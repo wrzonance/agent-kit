@@ -13,8 +13,9 @@
 #   after the files were already chosen and the change already narrated. The
 #   cause is fully detectable before any staging happens, so this wrapper probes
 #   BOTH git metadata directories for writability up front and exits 2 naming
-#   the exact offending path, telling the caller to retry the identical command
-#   with elevated filesystem permission. It never tries to elevate itself.
+#   the exact offending path. The worker hands the identical command to the
+#   top-level session, which owns any privileged retry; this helper never
+#   elevates itself.
 #
 # IT ALSO
 #   * refuses to commit onto a trunk branch (main/master/trunk),
@@ -163,7 +164,7 @@ report_unwritable() {
     local dir="$1" consequence="$2"
     printf '%s: git metadata directory is not writable: %s\n' "$PROGNAME" "$dir" >&2
     printf '%s: %s\n' "$PROGNAME" "$consequence" >&2
-    printf '%s: nothing was staged. Retry this identical command with elevated filesystem permission for that path.\n' \
+    printf '%s: nothing was staged. This workflow uses a designed handback: hand the identical command back to the top-level session for publication, then retry it there after the path is writable.\n' \
         "$PROGNAME" >&2
     exit 2
 }

@@ -10,10 +10,12 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
+review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
+normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
 assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
     'polling does not inspect durable state between empty waits'
 assert_contains "$text" 'Between waits, wait again; read durable state only when a wait reports an actual completion.' \
@@ -30,6 +32,32 @@ assert_contains "$text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
 assert_contains "$text" 'target="$worktree/.agent/fenced-prior-art.txt"' \
     'issue preparation persists prior-art fence bytes'
+root_fence_section=$(sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill")
+assert_contains "$root_fence_section" 'if [[ $yolo_invocation == true ]]; then' \
+    'root derives boundary mode from the explicit invocation'
+assert_contains "$root_fence_section" 'boundary_mode=private-trusted' \
+    'private visibility selects the trusted boundary'
+assert_contains "$root_fence_section" 'boundary_mode=public-fenced' \
+    'unknown visibility has a public fenced fallback'
+assert_contains "$root_fence_section" 'if [[ $boundary_mode == public-fenced ]]; then' \
+    'trusted modes persist exact bytes without invoking the fence helper'
+assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
+    'root prints the selected boundary mode'
+boundary_snippet=$(awk '
+    /^if \[\[ \$yolo_invocation == true \]\]; then$/ { capture=1 }
+    capture { print }
+    capture && /^printf '\''boundary mode:/ { exit }
+' "$skill")
+assert_contains "$boundary_snippet" 'boundary_mode=public-fenced' \
+    'boundary selector snippet is extractable for regression checks'
+for visibility in false unknown ''; do
+    selected=$(repository_visibility="$visibility" yolo_invocation=false bash -c "$boundary_snippet" 2>/dev/null | tail -n 1)
+    assert_eq 'boundary mode: public-fenced' "$selected" \
+        "visibility '$visibility' fails closed to public-fenced"
+done
+selected=$(repository_visibility=false yolo_invocation=true bash -c "$boundary_snippet" 2>/dev/null | tail -n 1)
+assert_eq 'boundary mode: yolo-trusted' "$selected" \
+    'explicit yolo selects yolo-trusted regardless of visibility'
 assert_contains "$text" 'one canonical issue-body fetch during preparation' \
     'triage digest limits surviving issue body reads to preparation'
 assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
@@ -95,6 +123,87 @@ assert_prompt_scope_contract() {
 
 assert_prompt_scope_contract "$issue_lead_prompt" 'issue-lead prompt'
 assert_prompt_scope_contract "$draft_loop_prompt" 'draft-loop prompt'
+for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
+    prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
+    assert_contains "$prompt_text" 'Every file operation must use an absolute path rooted in this assigned' "$prompt_label uses absolute worktree paths"
+    assert_contains "$prompt_text" 'writable sandbox commonly spans the parent tree' "$prompt_label names the sandbox ownership hazard"
+    assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
+    assert_contains "$prompt_text" 'report the incident and restoration in the handback' "$prompt_label reports restored incidents"
+    assert_not_contains "$prompt_text" 'Co-Authored-By: Codex' "$prompt_label has no literal Codex provider trailer"
+    assert_not_contains "$prompt_text" 'Co-Authored-By: Claude' "$prompt_label has no literal Claude provider trailer"
+    assert_not_contains "$prompt_text" 'Co-Authored-By: gpt-' "$prompt_label has no literal model trailer"
+    assert_not_contains "$prompt_text" 'merge origin/main' "$prompt_label has no root conflict merge command"
+    assert_not_contains "$prompt_text" 'NEVER rebase' "$prompt_label has no rebase guard"
+    assert_not_contains "$prompt_text" 'force-push' "$prompt_label has no force-push guard"
+    assert_not_contains "$prompt_text" 'git add -A' "$prompt_label has no broad staging instruction"
+    assert_not_contains "$prompt_text" 'peer-cli=' "$prompt_label has no reviewer provider selection"
+    assert_not_contains "$prompt_text" 'gpt-5.6-terra' "$prompt_label has no blind reviewer fallback"
+done
+assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
+assert_contains "$issue_lead_prompt" 'publication handback' 'issue lead returns a publication handback'
+assert_contains "$draft_loop_prompt" 'publication handback' 'phase lead returns a publication handback'
+for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
+    prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
+    assert_contains "$prompt_text" 'contract="$worktree/.agent/env-contract.txt"' "$prompt_label derives its contract trailer"
+    assert_contains "$prompt_text" 'AGENT_TRAILER=$(sed -n' "$prompt_label parses the harness trailer"
+    assert_contains "$prompt_text" '[ -n "$AGENT_TRAILER" ] ||' "$prompt_label guards an empty harness trailer"
+    assert_contains "$prompt_text" 'worker_attribution=' "$prompt_label appends the worker model id"
+    assert_contains "$prompt_text" 'expanded literal value' "$prompt_label expands the attribution before handback"
+    assert_contains "$prompt_text" '!= '\''<worker model id selected by the root dispatch>'\''' \
+        "$prompt_label rejects the literal worker model placeholder"
+done
+assert_not_contains "$issue_lead_prompt" 'issue_contents' 'issue lead does not produce fence content'
+assert_not_contains "$issue_lead_prompt" 'prior_art_contents' 'issue lead does not produce prior-art fence content'
+assert_not_contains "$issue_lead_prompt" 'fence-untrusted-data.sh' 'issue lead does not invoke the fence helper'
+assert_not_contains "$draft_loop_prompt" 'issue_contents' 'phase lead does not produce fence content'
+assert_not_contains "$draft_loop_prompt" 'prior_art_contents' 'phase lead does not produce prior-art fence content'
+assert_not_contains "$draft_loop_prompt" 'fence-untrusted-data.sh' 'phase lead does not invoke the fence helper'
+assert_contains "$root_fence_section" 'issue_contents=$(jq -r' 'root owns issue rendering'
+assert_contains "$root_fence_section" 'fence-untrusted-data.sh' 'root owns fence helper invocation'
+assert_contains "$root_fence_section" 'mv -f -- "$tmp" "$target"' 'root atomically publishes the spec fence'
+assert_contains "$root_fence_section" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
+assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
+assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
+assert_contains "$normalized_text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
+    'root draft PR carries the required report fields'
+assert_contains "$text" 'PR URL feeds Collect and Step 3a' \
+    'root feeds the resulting PR URL into collection and draft dispatch'
+assert_contains "$text" 'worker leaves scoped changes unstaged and returns a publication handback' \
+    'Finish leaves worker changes unstaged for root publication'
+assert_contains "$text" 'Step 3b workers receive only root-approved fix batches' \
+    'Step 3b restricts workers to root-approved mechanical batches'
+assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
+    'Phase A orchestration remains root-owned'
+assert_contains "$normalized_text" 'preserves the raw command text for audit' \
+    'parallel dispatch preserves worker handback command text'
+assert_contains "$text" 'parse into validated arguments without eval' \
+    'parallel dispatch parses handback arguments without eval'
+assert_contains "$text" 'expected worktree-commit.sh helper' \
+    'parallel dispatch validates the expected commit helper'
+assert_contains "$normalized_text" 'every explicit path is inside the worktree and allowed handback set' \
+    'parallel dispatch validates handback path containment'
+assert_contains "$normalized_text" 'git diff -- <explicit handback paths>' \
+    'parallel dispatch inspects unstaged explicit paths before commit'
+assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
+    'parallel dispatch defers base diff inspection until publication'
+assert_not_contains "$text" '` --yolo`' \
+    'parallel dispatch has no MD038-leading-space code span'
+
+# Root safeguards are asserted only in bounded orchestration/publication
+# sections. Worker prompt prose may mention the same words with different
+# ownership semantics and must not satisfy these root-only checks.
+root_sections=$(
+    sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill"
+    sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
+    sed -n '/^## Runtime and provider neutrality$/,/^## Automated review provider rules/p' "$review_skill"
+    sed -n '/^### Implementation-worker gate (MANDATORY for every code change)$/,/^## Step 0: Setup/p' "$review_skill"
+    sed -n '/^### Root-owned publication handback$/,/^Tier mapping:/p' "$review_skill"
+    sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill"
+)
+assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
+assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
+assert_contains "$root_sections" 'peer-cli= <name> absent' 'root-facing prose owns peer availability'
+assert_contains "$root_sections" 'blind same-harness fallback' 'root-facing prose owns blind fallback'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \
@@ -116,9 +225,9 @@ assert_contains "$prompt_body" '<PASTE the complete output selected by the bound
     'the prompt placeholders remain inside the outer fence'
 inner_open_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```bash" { count++ } END { print count + 0 }')
 inner_close_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```" { count++ } END { print count + 0 }')
-assert_eq '3' "$inner_open_count" \
+assert_eq '2' "$inner_open_count" \
     'inner bash examples retain their triple-backtick openings'
-assert_eq '3' "$inner_close_count" \
+assert_eq '2' "$inner_close_count" \
     'inner bash examples retain their triple-backtick closers'
 
 snippet=$(awk '

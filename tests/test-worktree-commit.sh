@@ -159,6 +159,11 @@ assert_contains "$(cat "$trunk_err")" 'refusing to commit' \
 assert_eq '' "$(git -C "$trunk_repo" diff --cached --name-only)" \
     'trunk refusal leaves the index untouched'
 
+# An unwritable metadata preflight points workers back to the designed root
+# publication handback, rather than asking the worker to escalate itself.
+assert_contains "$(cat "$script")" 'hand the identical command back to the top-level session for publication' \
+    'metadata refusal names the top-level publication handback'
+
 printf 'trailing space  \n' >"$worktree_a/whitespace.txt"
 check_err="$tmp/check.err"
 check_rc=0

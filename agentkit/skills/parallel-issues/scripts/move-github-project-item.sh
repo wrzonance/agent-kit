@@ -276,6 +276,29 @@ select_item_id() {
         ) // empty' <<< "$items_json"
 }
 
+# Return the live Status value for an item when the CLI includes field values.
+# Older gh versions omit it; an empty result deliberately preserves the existing
+# move behavior rather than guessing that a card is already at the target.
+select_item_status() {
+    local item_id=$1 items_json=$2
+    jq -r --arg item_id "$item_id" '
+        first(
+            .items[]?
+            | select(.id == $item_id)
+            | (
+                .status
+                // (
+                    (.fieldValues? // null) as $values
+                    | (if ($values | type) == "object" then ($values.nodes? // [])
+                       elif ($values | type) == "array" then $values
+                       else [] end)[]?
+                    | select(((.field.name // .name // "") | ascii_downcase) == "status")
+                    | (.name // .value.name // .value.text // .value // empty)
+                    | select(type == "string"))
+            )
+        ) // empty' <<< "$items_json"
+}
+
 # board.json names the project, but its IDs are repository-controlled hints, not
 # authority. Rebind every ID against the live project before editing. This is
 # still cheaper than walking every board the owner has on a fresh clone, while
@@ -327,6 +350,12 @@ try_known_board() {
         [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         item_id=$(select_item_id "$issue_number" "$items_json")
         [[ -n $item_id ]] || continue
+        current_status=$(select_item_status "$item_id" "$items_json")
+        if [[ -n $current_status && $current_status == "$status" ]]; then
+            printf 'no-op: issue #%s already "%s"\n' "$issue_number" "$current_status"
+            completed_issues[$issue_number]=1
+            continue
+        fi
         gh project item-edit \
             --id "$item_id" \
             --project-id "$project_id" \
@@ -366,7 +395,7 @@ fi
 # Returns: 0 moved, 3 issue not on this board, 4 no-op reported for this board.
 process_project() {
     local project_number=$1 project_id=$2 project_title=$3
-    local items_json item_id fields_json status_field_id option_id issue_number
+    local items_json item_id current_status fields_json status_field_id option_id issue_number
 
     # --limit is mandatory: gh defaults to 30 items, so on any real board the target
     # card is silently absent and this would report "not on any board" while exiting 0.
@@ -418,6 +447,12 @@ process_project() {
 
     for issue_number in "${board_issues[@]}"; do
         item_id=$(select_item_id "$issue_number" "$items_json")
+        current_status=$(select_item_status "$item_id" "$items_json")
+        if [[ -n $current_status && $current_status == "$status" ]]; then
+            printf 'no-op: issue #%s already "%s"\n' "$issue_number" "$current_status"
+            completed_issues[$issue_number]=1
+            continue
+        fi
         if ! gh project item-edit \
             --id "$item_id" \
             --project-id "$project_id" \
