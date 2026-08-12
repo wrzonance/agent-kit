@@ -1430,6 +1430,8 @@ exact-body helper for transport; never inline this multiline comment body.
 
 ```bash
 # The loop runs this before reviewer launch, using the Step 1 artifact.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+: "${PR:?re-set PR to the current pull request; shell state does not persist}"
 receipt_marker='<!-- adversarial-review:spent -->'
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 if ! command -v jq >/dev/null 2>&1 || [[ ! -r $receipt_comments ]]; then
@@ -1447,9 +1449,31 @@ else
         exit 1
     fi
 fi
+```
 
-# After the finding-fix push, render this body to a private file and call the
-# exact-body helper. Keep exactly one marker in the resulting receipt.
+After all confirmed findings are fixed or explicitly declined and those fixes are pushed, publish
+the receipt in a fresh shell. This publication block is separate from the pre-launch gate above;
+the precheck must not fall through to a placeholder receipt.
+
+```bash
+# Run only after the finding-fix push; keep exactly one marker in the receipt.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+: "${PR:?re-set PR to the current pull request; shell state does not persist}"
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt >/dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || {
+    printf 'agentkit: invalid skills path: %s\n' "$agentkit" >&2
+    exit 1
+}
 receipt_body=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-receipt.XXXXXXXXXX")
 chmod 600 -- "$receipt_body"
 trap 'rm -f -- "$receipt_body"' EXIT

@@ -1488,42 +1488,39 @@ marker is the bound.
 
 ---
 
-## Step 3 (Phase B): Wait for the user to decide the ready transition
-
-**Never run `gh pr ready`.** The draft-to-ready flip is always the user's call.
-
-When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed
-or declined-with-comment, every discovered human item decided — report the draft-phase summary to the
-user (see Exit Report) and **wait at the harness level**. The user, not you, marks the PR ready for
-review. Do not spend model turns on a `gh pr view` plus sleep/re-check loop. Whether that transition
-starts a provider review is external repository configuration.
-
-Then observe a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack —
-Step 1b state check). If none arrives, report that no matching review has landed; do not infer
-provider configuration or trigger one yourself. If the state check reports `rate-limited`, perform
-bounded blocking re-check rounds (~10 minutes each, up to ~90 minutes total). Use one blocking helper/harness wait to own the rounds, so the retry spends no model turns. Never issue separate
-`sleep` and re-check tool calls. After that bounded wait, escalate to the user if the state remains
-rate-limited. Never trigger a review.
-
----
-
 ### Adversarial-review receipt:
 
 After all confirmed adversarial findings have been fixed or explicitly declined, push those fixes;
 the receipt is published **after fixes are pushed** and then exactly one durable top-level PR
-comment **before draft-phase-complete handoff**. This
-receipt is the spent-budget marker and is required for both a material review and a verified trivial-
-diff skip; a review or skip without it is never complete. The receipt records provider, reviewer
-model, effort, and mode (`cross-provider` or `blind fallback`, including the fallback reason),
-severity counts (`P1`, `P2`, and total), and one `confirmed finding` line per finding with a short
-title, verdict, and fix commit SHA(s), or an explicit `decline rationale`. A trivial skip records
-the exact `verified-skip rationale` and its mechanical oracle. Include the standard agentic
-attribution banner and footer exactly as shown. The body is rendered to a private file and sent
-through `gh-comment.sh --body-file`; never put this multiline body in `gh pr comment --body`.
+comment **before draft-phase-complete handoff**. This receipt is the spent-budget marker and is
+required for both a material review and a verified trivial-diff skip; a review or skip without it is
+never complete. The receipt records provider, reviewer model, effort, and mode (`cross-provider` or
+`blind fallback`, including the fallback reason), severity counts (`P1`, `P2`, and total), and one
+`confirmed finding` line per finding with a short title, verdict, and fix commit SHA(s), or an
+explicit `decline rationale`. A trivial skip records the exact `verified-skip rationale` and its
+mechanical oracle. Include the standard agentic attribution banner and footer exactly as shown. The
+body is rendered to a private file and sent through `gh-comment.sh --body-file`; never put this
+multiline body in `gh pr comment --body`.
 
 ```bash
 # Run only after the finding-fix push; this is the final Phase A action.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+: "${PR:?re-set PR to the current pull request; shell state does not persist}"
+agentkit=''
+contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+contract="$contract_root/.agent/env-contract.txt"
+if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
+    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt >/dev/null 2>&1; then
+    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+fi
+if [[ -z $agentkit ]]; then
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    exit 1
+fi
+[ -d "$agentkit/.shared/scripts" ] || {
+    printf 'agentkit: invalid skills path: %s\n' "$agentkit" >&2
+    exit 1
+}
 receipt_body=$(mktemp "${TMPDIR:-/tmp}/review-remote-pr-receipt.XXXXXXXXXX")
 chmod 600 -- "$receipt_body"
 trap 'rm -f -- "$receipt_body"' EXIT
@@ -1548,6 +1545,25 @@ The finding line is repeated once per confirmed finding; for a no-finding review
 `none confirmed` line, and for a skip leave no finding line while retaining the verified-skip
 rationale. The helper's exact-body verification is part of receipt completion. Exactly one marker
 belongs in the receipt body, and no later step may post a second receipt or rerun the reviewer.
+
+## Step 3 (Phase B): Wait for the user to decide the ready transition
+
+**Never run `gh pr ready`.** The draft-to-ready flip is always the user's call.
+
+When Phase A is done — CI green, conflicts resolved, every confirmed adversarial-review finding fixed
+or declined-with-comment, every discovered human item decided — report the draft-phase summary to the
+user (see Exit Report) and **wait at the harness level**. The user, not you, marks the PR ready for
+review. Do not spend model turns on a `gh pr view` plus sleep/re-check loop. Whether that transition
+starts a provider review is external repository configuration.
+
+Then observe a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an ack —
+Step 1b state check). If none arrives, report that no matching review has landed; do not infer
+provider configuration or trigger one yourself. If the state check reports `rate-limited`, perform
+bounded blocking re-check rounds (~10 minutes each, up to ~90 minutes total). Use one blocking helper/harness wait to own the rounds, so the retry spends no model turns. Never issue separate
+`sleep` and re-check tool calls. After that bounded wait, escalate to the user if the state remains
+rate-limited. Never trigger a review.
+
+---
 
 ## Step 4: Wait for CI
 

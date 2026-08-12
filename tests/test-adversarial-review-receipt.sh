@@ -15,7 +15,12 @@ parallel_text=$(<"$parallel")
 
 assert_receipt_contract() {
     local text=$1 label=$2 section normalized
-    section=$(awk '/^### Adversarial-review receipt:/{capture=1; next} capture && /^### /{exit} capture{print}' <<<"$text")
+    section=$(awk '
+        /^### Adversarial-review receipt:/{capture=1; next}
+        capture && /^```/{fenced=!fenced; print; next}
+        capture && !fenced && /^#{1,6} /{exit}
+        capture{print}
+    ' <<<"$text")
     normalized=$(tr '\n' ' ' <<<"$section" | tr -s '[:space:]' ' ')
 
     assert_contains "$section" 'adversarial-review:spent' "$label has the stable spent marker"
@@ -38,6 +43,10 @@ assert_receipt_contract() {
     template=$(awk '/^cat >"\$receipt_body" <<\x27EOF\x27$/{capture=1; next} capture && /^EOF$/{exit} capture{print}' <<<"$section")
     marker_count=$(grep -o -- '<!-- adversarial-review:spent -->' <<<"$template" | wc -l | tr -d ' ')
     assert_eq '1' "$marker_count" "$label receipt template has exactly one marker"
+
+    assert_contains "$section" 'agentkit=' "$label publication resolves agentkit"
+    assert_contains "$section" 'contract_root=' "$label publication validates the contract root"
+    assert_contains "$section" 'agentkit=$(sed -n "s/^skills= path=//' "$label publication reads the trusted skills path"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'
@@ -55,5 +64,52 @@ assert_contains "$parallel_text" 'do not rerun' \
     'parallel-issues marker precheck prevents double spend'
 assert_contains "$parallel_text" 'no-silent-skip' \
     'parallel-issues receipt contract rejects silent skips'
+
+parallel_section=$(awk '
+    /^### Adversarial-review receipt:/{capture=1; next}
+    capture && /^```/{fenced=!fenced; print; next}
+    capture && !fenced && /^#{1,6} /{exit}
+    capture{print}
+' <<<"$parallel_text")
+parallel_bash_blocks=$(grep -c '^```bash$' <<<"$parallel_section" || true)
+assert_eq '2' "$parallel_bash_blocks" \
+    'parallel-issues separates precheck and publication into two fenced blocks'
+assert_contains "$parallel_section" ': "${RUN_DIR:?re-set RUN_DIR' \
+    'parallel-issues precheck guards RUN_DIR'
+assert_contains "$parallel_section" ': "${PR:?re-set PR' \
+    'parallel-issues precheck guards PR'
+precheck_block=$(awk '/^```bash$/{block++; next} block == 1 && /^```$/{exit} block == 1{print}' <<<"$parallel_section")
+assert_not_contains "$precheck_block" 'receipt_body=' \
+    'parallel-issues precheck cannot fall through to receipt publication'
+assert_not_contains "$precheck_block" 'gh-comment.sh' \
+    'parallel-issues precheck cannot publish a receipt'
+publication_block=$(awk '/^```bash$/{block++; next} block == 2 && /^```$/{exit} block == 2{print}' <<<"$parallel_section")
+assert_contains "$publication_block" 'gh-comment.sh' \
+    'parallel-issues publication block posts the receipt'
+assert_contains "$publication_block" 'contract_root=' \
+    'parallel-issues publication block resolves the contract root'
+assert_contains "$publication_block" 'agentkit=$(sed -n "s/^skills= path=//' \
+    'parallel-issues publication block reads the trusted skills path'
+
+review_section=$(awk '
+    /^### Adversarial-review receipt:/{capture=1; next}
+    capture && /^```/{fenced=!fenced; print; next}
+    capture && !fenced && /^#{1,6} /{exit}
+    capture{print}
+' <<<"$review_text")
+review_publication_block=$(awk '/^```bash$/{block++; next} block == 1 && /^```$/{exit} block == 1{print}' <<<"$review_section")
+assert_contains "$review_publication_block" 'contract_root=' \
+    'review-remote-pr publication block resolves the contract root'
+assert_contains "$review_publication_block" 'agentkit=$(sed -n "s/^skills= path=//' \
+    'review-remote-pr publication block reads the trusted skills path'
+
+receipt_line=$(grep -n '^### Adversarial-review receipt:' "$review" | cut -d: -f1)
+phase_b_line=$(grep -n '^## Step 3 (Phase B):' "$review" | cut -d: -f1)
+if [[ $receipt_line =~ ^[0-9]+$ && $phase_b_line =~ ^[0-9]+$ && $receipt_line -lt $phase_b_line ]]; then
+    _pass 'review-remote-pr receipt is before the Phase B handoff'
+else
+    _fail 'review-remote-pr receipt is before the Phase B handoff' \
+        "receipt line=${receipt_line:-missing}, phase-b line=${phase_b_line:-missing}"
+fi
 
 finish
