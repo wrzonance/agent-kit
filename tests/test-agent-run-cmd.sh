@@ -166,7 +166,7 @@ assert_eq 'no' "$([[ -e $tmp/deleted-config-ran ]] && echo yes || echo no)" \
 # keyed to the approving process's own PID so the collision is deterministic.
 repo=$(make_repo)
 printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
-trust_id=$(printf '%s' "$repo\ntest" | sha256sum | awk '{print $1}')
+trust_id=$(printf '%s' "$repo\ntest\nfocus=" | sha256sum | awk '{print $1}')
 rc=0
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
     "$tty_approve" --mkdir-before "$trust_root/$trust_id.trust" y -- \

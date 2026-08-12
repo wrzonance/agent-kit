@@ -13,13 +13,96 @@ skills="$plugin/skills"
 rc=0
 step() { printf '\n== %s\n' "$1"; }
 
+usage() {
+    printf 'Usage: %s [--only NAME[,NAME...]]\n' "${0##*/}" >&2
+    printf '  --only NAME[,NAME...]  run only the named test suites\n' >&2
+    exit "${1:-2}"
+}
+
+only=''
+while (($#)); do
+    case $1 in
+        --only)
+            (($# >= 2)) || { printf 'run-tests: --only requires a value\n' >&2; usage; }
+            only=$2
+            [[ -n $only ]] || { printf 'run-tests: --only requires a non-empty value\n' >&2; usage; }
+            [[ $only != ,* && $only != *, && $only != *,,* ]] || {
+                printf 'run-tests: --only contains an empty suite name\n' >&2
+                usage
+            }
+            shift 2
+            ;;
+        -h|--help)
+            usage 0
+            ;;
+        *)
+            printf 'run-tests: unknown argument: %s\n' "$1" >&2
+            usage
+            ;;
+    esac
+done
+
+jobs=${AGENT_TEST_JOBS:-}
+if [[ -z $jobs ]]; then
+    jobs=$(nproc 2>/dev/null || printf '1')
+fi
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || {
+    printf 'run-tests: AGENT_TEST_JOBS must be a positive integer\n' >&2
+    exit 2
+}
+
+shopt -s nullglob
+suites=()
+suite_names=()
+for suite in "$here"/test-*.sh; do
+    name=${suite##*/test-}
+    name=${name%.sh}
+    suites+=("$suite")
+    suite_names+=("$name")
+done
+
+selected=()
+selected_names=()
+if [[ -n $only ]]; then
+    IFS=, read -r -a requested <<< "$only"
+    for name in "${requested[@]}"; do
+        valid=no
+        for known in "${suite_names[@]}"; do
+            [[ $name == "$known" ]] && valid=yes && break
+        done
+        if [[ $valid == no || -z $name ]]; then
+            printf 'run-tests: unknown suite name: %s\n' "$name" >&2
+            printf 'Valid suite names: %s\n' "${suite_names[*]:-none}" >&2
+            exit 2
+        fi
+    done
+    # Discovery order is sorted by the glob, so output order is deterministic
+    # even when callers provide a different focus-list order.
+    for i in "${!suites[@]}"; do
+        for name in "${requested[@]}"; do
+            if [[ ${suite_names[i]} == "$name" ]]; then
+                selected+=("${suites[i]}")
+                selected_names+=("${suite_names[i]}")
+                break
+            fi
+        done
+    done
+else
+    selected=("${suites[@]}")
+    selected_names=("${suite_names[@]}")
+fi
+
 step 'shellcheck (shipped scripts)'
 mapfile -t scripts < <(find "$plugin" -name '*.sh' | sort)
 printf '  %d scripts\n' "${#scripts[@]}"
 # -x follows `# shellcheck source=` so the hooks' shared library is analysed as
 # part of each caller; -P SCRIPTDIR resolves those paths against each script's
 # own directory rather than the one this gate is invoked from.
-shellcheck -x -P SCRIPTDIR -S style "${scripts[@]}" || rc=1
+if ((${#scripts[@]})); then
+    shellcheck -x -P SCRIPTDIR -S style "${scripts[@]}" || rc=1
+else
+    printf '  ok (none)\n'
+fi
 
 step 'bash -n (shipped scripts)'
 for f in "${scripts[@]}"; do
@@ -219,10 +302,53 @@ fi
 # a count, which is the honest version of the same claim.
 
 step 'unit suites'
-shopt -s nullglob
-for suite in "$here"/test-*.sh; do
-    printf '\n-- %s\n' "$(basename "$suite")"
-    "$suite" || rc=1
+printf '  %d selected (jobs=%s%s)\n' "${#selected[@]}" "$jobs" \
+    "$([[ -n $only ]] && printf ', focus=%s' "$only")"
+
+suite_tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-test-suites.XXXXXX")
+trap 'rm -rf -- "$suite_tmp"' EXIT
+declare -a suite_status suite_output suite_pid active_pids=()
+declare -A pid_index=()
+
+wait_for_suite() {
+    local done_pid index status
+    if wait -n -p done_pid "${active_pids[@]}"; then
+        status=0
+    else
+        status=$?
+    fi
+    index=${pid_index[$done_pid]}
+    suite_status[index]=$status
+    unset 'pid_index[$done_pid]'
+    for index in "${!active_pids[@]}"; do
+        [[ ${active_pids[index]} == "$done_pid" ]] || continue
+        unset 'active_pids[index]'
+        break
+    done
+}
+
+for i in "${!selected[@]}"; do
+    suite_output[i]=$suite_tmp/$i.out
+    if ((jobs == 1)); then
+        "${selected[i]}" >"${suite_output[i]}" 2>&1 || suite_status[i]=$?
+    else
+        "${selected[i]}" >"${suite_output[i]}" 2>&1 &
+        suite_pid[i]=$!
+        active_pids+=("${suite_pid[i]}")
+        pid_index[${suite_pid[i]}]=$i
+        while ((${#active_pids[@]} >= jobs)); do
+            wait_for_suite
+        done
+    fi
+done
+while ((${#active_pids[@]})); do
+    wait_for_suite
+done
+
+for i in "${!selected[@]}"; do
+    printf '\n-- test-%s.sh\n' "${selected_names[i]}"
+    cat -- "${suite_output[i]}"
+    [[ ${suite_status[i]:-0} -eq 0 ]] || rc=1
 done
 
 printf '\n%s\n' "$([[ $rc -eq 0 ]] && echo 'ALL GREEN' || echo 'FAILURES ABOVE')"

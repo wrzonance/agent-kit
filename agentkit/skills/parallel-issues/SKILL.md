@@ -92,6 +92,10 @@ authorised rather than leaving it to be reconstructed later.
 
 ## Runtime and provider neutrality
 
+Before any GitHub body mutation, read and follow the shared
+[GitHub body transport policy](../.shared/github-body-policy.md). It governs every `gh` body
+surface used by this skill, not only draft PR creation.
+
 Runtime facts come from the current session contract, not from this procedure. Read its
 `sandbox=`, `network=`, writable-root, and measured-by fields before choosing a path; if a fact is
 absent, say that it is unknown instead of inferring it. A denial or approval in one session does not
@@ -931,6 +935,12 @@ pseudo-terminal, or writes a trust record.>
 "$shared/agent-run.sh" --dir "$worktree" --cmd lint --if-declared
 "$shared/agent-run.sh" --dir "$worktree" --cmd build --if-declared
 
+During red/green iteration, use the repository-declared focused selector for the changed suites:
+`"$shared/agent-run.sh" --dir "$worktree" --cmd test --only NAME[,NAME...]`. This requires
+`AGENT_CMD_TEST_FOCUS` and captures evidence only for the named suites; it never claims that
+skipped suites passed. Run the unfocused `"$shared/agent-run.sh" --dir "$worktree" --cmd test`
+once against the final tree state before handback.
+
 ```bash
 git branch --show-current
 ```
@@ -1092,6 +1102,41 @@ worker handback is never validated from a pre-existing base diff. The root then 
 and opens a DRAFT PR containing Why, What, Design decisions, tickable Testing, agent credit, and
 Closes #NNN. PR URL feeds Collect and Step 3a; the URL moves the issue to `In review` and starts
 the root-owned draft phase.
+
+Write every multiline PR body to a private temporary file with a quoted heredoc, then pass that
+file to GitHub. Never pass a multiline PR body through inline `--body`: shell and orchestration
+layers can preserve escape sequences literally and collapse the rendered body to one line.
+
+```bash
+pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
+trap 'rm -f -- "$pr_body_file"' EXIT
+chmod 600 -- "$pr_body_file" || exit 1
+agent_identity=${agent_identity:?set the actual agent identity for PR attribution}
+pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}
+# This heredoc is intentionally unquoted: the required dynamic fields below
+# must expand. Keep all other body text literal and free of command substitutions.
+cat >"$pr_body_file" <<EOF
+## Why
+
+<motivation>
+
+## What
+
+<high-level outcome>
+
+## Design decisions
+
+<decisions>
+
+## Testing
+
+- [ ] <verification command and result>
+
+🤖 Co-authored by $agent_identity. $pr_close_line
+EOF
+gh pr create --draft --body-file "$pr_body_file" \
+  --title "$pr_title" --base "$base" --head "$branch"
+```
 
 The worker leaves scoped changes unstaged and returns a publication handback; root alone must
 push the branch and open a DRAFT PR; root handles CI state/verification, forge conflicts,

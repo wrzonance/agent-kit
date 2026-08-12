@@ -293,6 +293,13 @@ safe_argv() {
     return 0
 }
 
+# All repository-declared command variants, including focused test commands,
+# share one argv boundary validator. A path-shaped executable must resolve
+# inside this repository; bare names remain PATH lookups.
+command_value_valid() {
+    safe_argv "$1"
+}
+
 validate() {
     local key=$1 value=$2
     case $key in
@@ -312,13 +319,20 @@ validate() {
             ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
+        AGENT_CMD_TEST_FOCUS)
+            command_value_valid "$value" || return 1
+            # The focused selector is interpolated into every occurrence of
+            # %s. argv[0] is executable data, so accepting the placeholder
+            # there would turn a suite name into the command path.
+            [[ ${PARSED_ARGV[0]} != *%s* ]]
+            ;;
         *)
             if [[ $key =~ $RUNDIR_KEY_PATTERN ]]; then
                 safe_relpath "$value"
                 return
             fi
             [[ $key =~ $CMD_KEY_PATTERN ]] || return 1
-            safe_argv "$value"
+            command_value_valid "$value"
             ;;
     esac
 }

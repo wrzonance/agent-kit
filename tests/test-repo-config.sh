@@ -109,6 +109,37 @@ printf 'AGENT_CMD_VERIFY=/bin/sh -c true\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an absolute argv[0]'
 
+# Focus declarations use the same path-shaped argv[0] containment rule as
+# ordinary command declarations.
+printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_TEST_FOCUS=' 'accepts a valid in-repo focus declaration'
+for bad_focus in \
+    'tools/../../outside/focus --only %s' \
+    '/bin/sh --only %s' \
+    '../outside/focus --only %s'; do
+    printf 'AGENT_CMD_TEST_FOCUS=%s\n' "$bad_focus" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+    assert_not_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+        "rejects an escaping focus declaration: $bad_focus"
+done
+
+# The executable token is interpolated nowhere; only later argument tokens may
+# carry the focused suite placeholder. A literal in-repo path named tools/%s
+# must therefore be rejected at the declaration boundary.
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/%s"
+chmod +x "$repo/tools/%s"
+printf 'AGENT_CMD_TEST_FOCUS=tools/%%s --only %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+    'rejects a focus placeholder in the executable token'
+
+# A placeholder in a later argument remains a supported declaration form.
+printf 'AGENT_CMD_TEST_FOCUS=tools/verify --label %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+    'accepts a focus placeholder in a later argument token'
+
 # Quoted argv tokens preserve spaces without invoking a shell. The executable
 # itself may be a repository-relative path containing a space, and later args
 # may be paths or literal globs with spaces too.

@@ -60,6 +60,10 @@ require_repo_context() {
 
 ## Runtime and provider neutrality
 
+Before any GitHub body mutation, read and follow the shared
+[GitHub body transport policy](../.shared/github-body-policy.md). It governs PR, issue, API, and
+comment body transport used by this skill.
+
 Runtime facts come from the current session contract, not from this procedure. Read network state
 from the `sandbox=` record's `network=` attribute, writable status from the `git=` record's
 `writable=`/`worktree-writable=` attributes, and `measured-by=` only when present on hook-measured
@@ -1296,6 +1300,12 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd lint --if-declared
 "$agent_run" --cmd test
 ```
+
+For red/green fix iterations, select only the affected suites with
+`"$agent_run" --cmd test --only NAME[,NAME...]`; this forwards through the repository's
+`AGENT_CMD_TEST_FOCUS` declaration and does not make claims about skipped suites. After the final
+tree change, run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict before
+publication.
 
 A successful run prints one `PASS:` line and suppresses the output into `.agent/logs/`. A failure prints `FAIL(rc=N):`, the `cwd`/`runner` context, any environment `note:` lines (cache fallback, `UV_SYSTEM_CERTS`), up to 20 matched error lines, and the full log path — so a failing run needs no follow-up turn to explain itself. `agent-run.sh` passes the wrapped command's exit status through unchanged; its own usage errors are distinguishable because they print `agent-run: error: …` and no `PASS`/`FAIL` line.
 

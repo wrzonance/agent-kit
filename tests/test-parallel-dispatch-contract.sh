@@ -11,6 +11,7 @@ source "$here/lib/assert.sh"
 
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -64,6 +65,23 @@ assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
 assert_contains "$text" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
+assert_contains "$text" '--only NAME[,NAME...]' \
+    'red/green iteration documents the focused suite selector'
+assert_contains "$text" 'AGENT_CMD_TEST_FOCUS' \
+    'focused iteration is gated by the repository declaration'
+assert_contains "$text" 'once against the final tree state' \
+    'the final tree receives one unfocused full-suite run'
+assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
+    'review workflow documents the focused suite selector'
+assert_contains "$(<"$review_skill")" 'full-suite verdict' \
+    'review workflow requires a final full-suite verdict'
+review_verification_section=$(sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill")
+assert_contains "$review_verification_section" '--only NAME[,NAME...]' \
+    'review workflow forwards focused selectors'
+assert_contains "$review_verification_section" 'AGENT_CMD_TEST_FOCUS' \
+    'review workflow pins the focused declaration gate'
+assert_contains "$review_verification_section" 'run the unfocused `"$agent_run" --cmd test` once' \
+    'review workflow pins the final unfocused full-suite sequencing'
 assert_contains "$text" 'that issue/status/phase is complete' \
     'a moved output line is terminal for its issue phase'
 assert_not_contains "$text" 'target="$PWD/fenced-spec.txt"' \
@@ -186,6 +204,49 @@ assert_contains "$normalized_text" 'git diff -- <explicit handback paths>' \
     'parallel dispatch inspects unstaged explicit paths before commit'
 assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
     'parallel dispatch defers base diff inspection until publication'
+publication_section=$(
+    sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
+)
+assert_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
+    'draft PR publication passes a newline-preserving body file to gh'
+assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
+    'draft PR publication forbids inline multiline body strings'
+assert_contains "$publication_section" 'cat >"$pr_body_file" <<EOF' \
+    'draft PR publication uses an interpolating heredoc for dynamic body fields'
+assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
+    'draft PR publication secures the body file with mode 600'
+assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file"'\'' EXIT' \
+    'draft PR publication removes the body file on exit'
+assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
+    'draft PR publication requires an agent identity before interpolation'
+assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \
+    'draft PR publication requires a close line before interpolation'
+assert_contains "$publication_section" '$agent_identity. $pr_close_line' \
+    'draft PR publication interpolates identity and issue closure text'
+
+assert_eq 'yes' "$([[ -f $github_body_policy ]] && printf yes || printf no)" \
+    'shared GitHub body policy exists'
+body_policy=''
+[[ ! -f $github_body_policy ]] || body_policy=$(<"$github_body_policy")
+assert_contains "$body_policy" 'ANY multiline body handed to `gh`' \
+    'shared policy covers the whole multiline GitHub body class'
+assert_contains "$body_policy" '`pr create`, `pr edit`, `issue create`, `issue edit`, and `api -f body=`' \
+    'shared policy names every supported GitHub body mutation surface'
+assert_contains "$body_policy" '`--body-file` or `--input`' \
+    'shared policy requires file-backed GitHub bodies'
+assert_contains "$body_policy" 'Comments already comply through `gh-comment.sh`.' \
+    'shared policy records the existing comment transport'
+assert_contains "$text" '../.shared/github-body-policy.md' \
+    'parallel-issues inherits the shared GitHub body policy'
+assert_contains "$(<"$review_skill")" '../.shared/github-body-policy.md' \
+    'review-remote-pr inherits the shared GitHub body policy'
+
+inline_body_recipes=$(sed -nE '/^[[:space:]]*gh[[:space:]]/ {
+    /(^|[[:space:]])--body([=[:space:]]|$)/p
+    /api.*(^|[[:space:]])(-f|--field)[[:space:]]+body=/p
+}' "$skill" "$review_skill")
+assert_eq '' "$inline_body_recipes" \
+    'skill recipes never pass multiline GitHub bodies inline'
 assert_not_contains "$text" '` --yolo`' \
     'parallel dispatch has no MD038-leading-space code span'
 
