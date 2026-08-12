@@ -22,12 +22,13 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 
 ## Flags
 
-Three flags decide how much this skill stops to ask. They are read from the invocation
+Four flags decide how much this skill stops to ask. They are read from the invocation
 line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
-| `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. Also threads `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt — an unattended run never stalls on the command-trust gate for commands whose inputs the trunk already carries. |
+| `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. It implies `--trust-trunk`, so it also threads `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt. |
+| `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. |
 
@@ -43,6 +44,11 @@ Do not infer one from the other. Someone who asked for unattended dispatch *and*
 steer every design has asked for two things that cannot both happen, and picking one
 for them is worse than the extra round trip.
 
+**`--trust-trunk` is orthogonal to workflow approval.** It grants only the trunk-bounded
+command trust needed by dispatched verification. It does not skip brainstorm or set approval;
+issue-body review remains interactive too, and it never changes `yolo_invocation`: only an explicit
+`--yolo` (or one of its aliases) selects `yolo-trusted` fencing.
+
 **`--yolo` threads through to verification.** `agent-run.sh`'s command-trust gate reads
 its approval from an interactive terminal, and a dispatched worker has none — so in an
 unattended run every worker that reaches verification dead-ends there, with nobody
@@ -50,7 +56,7 @@ watching. Measured in a live `--yolo --fast-mode` fleet: three of four leads fin
 or nearly finished their implementation and then reported BLOCKED at the gate; the
 fourth forged the confirmation through a pseudo-terminal, which is strictly worse.
 When this invocation carries `--yolo` (under any alias — `--no-brainstorm`,
-`--skip-brainstorm`), append `--yolo` to **every** `agent-run.sh`
+`--skip-brainstorm`) or `--trust-trunk`, append `--yolo` to **every** `agent-run.sh`
 line in every prompt you assemble — issue leads and review loops alike. The
 invocation line is the human authorization; the flag carries it to the workers
 instead of making each one ask a question nobody is present to answer. The
@@ -975,6 +981,28 @@ trap - EXIT HUP INT TERM
 
 The root now embeds `cat -- "$worktree/.agent/fenced-spec.txt"` and `cat -- "$worktree/.agent/fenced-prior-art.txt"` bytes verbatim into the worker prompt. Re-running the fence helper for an existing block is churn; delete the affected file deliberately before deliberate re-fencing. The selected mode is disclosed immediately above those persisted bytes.
 
+### Attended command-approval handoff
+
+When an attended invocation carries neither `--yolo` nor `--trust-trunk`, prepare one
+batched, copy-pasteable approval block **before or at dispatch**. Collect the exact
+verification invocations the prompts will use, then print one line per worktree per needed
+command using the absolute runner path resolved by Step 0:
+
+```text
+Workers will block at command approval until these are run from an operator terminal:
+
+cd /ABS/PATH/.worktrees/feat/issue-123 && /ABS/PATH/agentkit/skills/.shared/scripts/agent-run.sh --approve --cmd test
+cd /ABS/PATH/.worktrees/feat/issue-123 && /ABS/PATH/agentkit/skills/.shared/scripts/agent-run.sh --approve --cmd lint
+cd /ABS/PATH/.worktrees/feat/issue-124 && /ABS/PATH/agentkit/skills/.shared/scripts/agent-run.sh --approve --cmd test
+```
+
+Use the actual absolute worktree and runner paths and include focused selectors when they
+are part of the exact invocation. This is one batched handoff for the entire predictable
+approval burden: workers block until it runs, and predictable refusals are never surfaced
+serially. Every recipe must start with `cd <worktree>`; never hand off the main checkout
+or substitute its path for a worker worktree. If `--trust-trunk` or `--yolo` is present,
+do not print this approval block because the dispatched prompts carry the trunk grant.
+
 Per-issue prompt:
 
 ````text
@@ -1030,7 +1058,7 @@ shared=<PASTE the validated shared-scripts path from the contract>
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
 # its .agent/runner resolves it. The wrapper is not optional.
 <WHEN this parallel-issues invocation carried --yolo (under any alias:
---no-brainstorm, --skip-brainstorm), replace this placeholder with the rule:
+--no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
 "append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
 check)." Otherwise delete this placeholder. Either way, never dispatch with the
@@ -1150,6 +1178,10 @@ query selects `public-fenced`; only the operator's explicit `--yolo` invocation 
 `yolo-trusted`. The private exception is intentionally narrower than general repository access:
 it changes only issue-body rendering, while the worker still follows the actionable task and
 branch rules in this prompt.
+
+`--trust-trunk` is deliberately absent from the mode selector: it grants verification-command
+threading only and never selects `yolo-trusted`. Visibility and the explicit `--yolo` invocation
+continue to decide issue-content fencing.
 
 For `public-fenced`, use the already-persisted canonical files and embed their contents verbatim:
 
@@ -1458,7 +1490,7 @@ as an unresolved placeholder. Its provider-neutral base comes from the contract'
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
 # Read the log path it prints on failure.
 <WHEN this parallel-issues invocation carried --yolo (under any alias:
---no-brainstorm, --skip-brainstorm), replace this placeholder with the rule:
+--no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
 "append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
 check)." Otherwise delete this placeholder. Either way, never dispatch with the
@@ -1581,6 +1613,7 @@ Cleanup runs only when user explicitly asks after merge.
 | Skipping brainstorm without explicit user opt-in | Default is brainstorm. Only skip on `--yolo` / `--no-brainstorm` / `--skip-brainstorm`, or an explicit phrase ("skip brainstorm", "just dispatch", "well-defined"); confirm once otherwise |
 | Treating `--fast-mode` as permission to skip conflict analysis | It removes the approval gate, not the analysis. Unattended is when a file collision is *most* expensive, because nobody is watching to stop it |
 | Inferring `--yolo` from `--fast-mode` | `--fast-mode` alone is a usage error. Say so and stop; do not pick one of the two incompatible things the user asked for |
+| Treating `--trust-trunk` as `--yolo` workflow approval | `--trust-trunk` threads command trust only; brainstorm, issue-body review, set approval, and visibility-based fencing remain unchanged |
 | Reading `--auto-review` as blanket autonomy | It authorises one thing: the cross-provider send. It is not approval to skip brainstorm, skip the set gate, merge, or flip a PR ready |
 | Dispatching an issue `pick-issues.sh` marked SKIP | The blocker is on the issue, not the card. A board read alone cannot see it, which is why the script is the authority here |
 | Leaving available collaboration slots idle | Start as many disjoint issue leads as slots permit, then refill slots immediately |
@@ -1588,6 +1621,8 @@ Cleanup runs only when user explicitly asks after merge.
 | Skipping ultracode phases in the lead prompt | Keep Structs → Interfaces → Todos → mandatory code-bearing Spike + Revert → Invariants → TDD Implementation → adversarial Review → Finish intact |
 | Omitting the issue-lead model override | Use `fork_context: false`, the selected Luna-or-Terra model, and `reasoning_effort: "high"`; never inherit the orchestrator |
 | Dropping `--yolo` from the `agent-run.sh` lines in a `--yolo` run | Workers dead-end BLOCKED at the command-trust gate with nobody watching. Thread the flag through every prompt template — that is what the unattended authorization means |
+| Dropping the attended approval handoff | Print one batch before dispatch with an absolute runner path and one `cd <worktree> && agent-run.sh --approve --cmd <name>` line per worktree per needed command; workers block until it runs |
+| Handing off the main checkout for approval | Approval records are per worktree. Every recipe starts by changing into the exact absolute worker worktree; never substitute the main checkout |
 | Forging the command-trust gate (PTY tricks, piped `y`, hand-written trust records) | The gate is the human's decision point. In a `--yolo` run it is already open — threading the flag is the fix. In any other run, BLOCKED is the correct report, and a log obtained by forgery is not verification evidence |
 | Luna unavailable in `spawn_agent` | Select `gpt-5.6-terra` at high reasoning automatically; block before mutations only when neither Luna nor Terra is available |
 | Blocking the run because `spawn_agent` is unavailable | With `multi_agent = false` there is no worker to configure and no model to select — do the work yourself, serially, under the same six-step gate, and label every report and table row `worker=self (spawn unavailable)` |

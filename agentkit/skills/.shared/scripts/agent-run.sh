@@ -1076,6 +1076,15 @@ yolo_gate() {
     add_note "trust gate skipped (--yolo): inputs match $base; no approval record"
 }
 
+# Reuse the exact trunk comparison for the interactive refusal teaching line,
+# without duplicating its config, runner, argv, and manifest rules. Run it in a
+# subshell because yolo_gate deliberately exits on an unprovable or mismatched
+# input and its audit note must not leak into the normal run.
+trunk_inputs_match() {
+    [[ $cmd_declared == yes ]] || return 1
+    (yolo_gate >/dev/null 2>&1)
+}
+
 # Approval reads a confirmation from the controlling terminal. This is
 # defense-in-depth, not a cryptographic human-only gate: an agent with arbitrary
 # command execution can allocate a pseudo-terminal or write the trust record
@@ -1138,6 +1147,9 @@ trust_command() {
     printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
     printf '  A human reviews the change and approves it from a terminal with --approve;\n' >&2
     printf '  that terminal confirmation is defense-in-depth, not a human-only guarantee.\n' >&2
+    if [[ -t 2 ]] && trunk_inputs_match; then
+        printf '  An operator-granted --yolo/--trust-trunk run would thread this command without approval.\n' >&2
+    fi
     return 1
 }
 

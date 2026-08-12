@@ -670,8 +670,8 @@ neither, `agent-run.sh` exits `1` naming the key to add; surface that to the use
 guessing a command.
 
 **Command-trust gate:** `--cmd` commands need a recorded human approval
-(`agent-run.sh --approve`, terminal-only). When the invocation that dispatched this loop was
-explicitly unattended (parallel-issues `--yolo`), append `--yolo` to **every** `agent-run.sh
+(`agent-run.sh --approve`, terminal-only). When the invocation that dispatched this loop carried
+parallel-issues `--yolo` (or its aliases) or `--trust-trunk`, append `--yolo` to **every** `agent-run.sh
 --cmd` invocation you make — the lines above and any you compose — which skips the gate for
 that invocation, loudly, recording nothing, provided the command's repository-controlled
 inputs match the remote trunk. This includes its declaration, runner, argv/module payloads,
