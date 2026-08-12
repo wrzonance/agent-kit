@@ -136,12 +136,61 @@ assert_contains "$review_wait_contract" 'adversarial max-duration-seconds' \
     'review wait rule names the adversarial duration bound'
 assert_contains "$review_wait_contract" 'CI round cap' \
     'review wait rule names the CI round bound'
+assert_contains "$review_wait_contract" 'worker completion marker/contract' \
+    'review wait rule names the worker completion marker contract'
 assert_contains "$review_wait_contract" 'runner completion marker' \
     'review wait rule names the runner completion bound'
 assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'review wait rule rejects sleep and re-check tool churn'
-assert_eq '' "$(grep -nE '^[[:space:]]*sleep[[:space:]]+[0-9]' "$review_skill" || true)" \
+assert_eq '' "$(scan_skill_recipes "$review_skill" | grep 'sleep command' || true)" \
     'review skill has no sleep polling recipe'
+
+scanner_fixture="$tmp/recipe.md"
+printf '%s\n' \
+    'Never run `sleep 1` in prose.' \
+    '```bash' \
+    'sleep 1' \
+    'sleep "$WAIT_SECONDS"' \
+    '/usr/bin/sleep "$WAIT_SECONDS"' \
+    'sleep deliberately' \
+    '# sleep 1' \
+    'printf "%s\\n" "sleep 1"' \
+    '```' \
+    'The prose still mentions sleep 1.' >"$scanner_fixture"
+scanner_script="$tmp/recipe.sh"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'sleep 2' \
+    'sleep "$WAIT_SECONDS"' \
+    './sleep intentionally' \
+    'echo "sleep 3"' >"$scanner_script"
+chmod +x "$scanner_script"
+sleep_findings=$(scan_skill_recipes "$scanner_fixture" "$scanner_script")
+assert_eq '7' "$(grep -c 'sleep command' <<<"$sleep_findings" || true)" \
+    'recipe scanner detects every executable sleep argument form'
+assert_not_contains "$sleep_findings" 'Never run' \
+    'recipe scanner ignores prose sleep prohibitions'
+assert_not_contains "$sleep_findings" 'printf' \
+    'recipe scanner ignores sleep text in non-sleep commands'
+
+ban_fixture="$tmp/banned.md"
+printf '%s\n' \
+    'Never run `gh pr ready` or post `@coderabbitai review`.' \
+    '```bash' \
+    'gh pr ready 81' \
+    'gh pr comment 81 --body "@coderabbitai review"' \
+    'printf "%s\\n" "gh pr ready 81"' \
+    '```' >"$ban_fixture"
+ban_findings=$(scan_skill_recipes "$ban_fixture")
+assert_eq '1' "$(grep -c 'gh pr ready command' <<<"$ban_findings" || true)" \
+    'recipe scanner detects a ready command in an executable fence'
+assert_eq '1' "$(grep -c 'provider review trigger' <<<"$ban_findings" || true)" \
+    'recipe scanner detects a provider trigger in an executable fence'
+assert_not_contains "$ban_findings" 'Never run' \
+    'recipe scanner ignores prose command prohibitions'
+
+assert_eq '' "$(scan_skill_recipes "$review_skill" "$parallel_skill" | grep -E 'gh pr ready|provider review trigger' || true)" \
+    'review skill recipes contain no ready or provider trigger commands'
 step3=$(sed -n '/^## Step 3 (Phase B)/,/^## Step 4:/p' "$review_skill")
 assert_contains "$step3" 'Never run `gh pr ready`' \
     'Step 3 keeps the ready transition as a user-only action'

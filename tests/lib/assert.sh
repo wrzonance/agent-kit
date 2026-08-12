@@ -46,6 +46,47 @@ assert_not_contains() {
     fi
 }
 
+# Scan executable skill recipes only: shell scripts are scanned as-is, while
+# Markdown contributes only explicitly executable fenced blocks. This keeps
+# prose prohibitions and output examples from looking like commands. Findings
+# are emitted as path:line:description records; an empty result is clean.
+scan_skill_recipes() {
+    local path markdown
+    for path in "$@"; do
+        [[ -f $path ]] || continue
+        markdown=0
+        [[ $path == *.md ]] && markdown=1
+        [[ $markdown == 1 || -x $path ]] || continue
+        awk -v recipe="$path" -v markdown="$markdown" '
+            function scan_segment(segment, number, words, count, position, command) {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
+                if (segment == "" || segment ~ /^#/) return
+                sub(/^(if|then|do|while)[[:space:]]+(![[:space:]]+)?/, "", segment)
+                count = split(segment, words, /[[:space:]]+/)
+                position = 1
+                while (position <= count && words[position] ~ /^[[:alnum:]_]+=[^[:space:]]*$/) position++
+                if (position <= count && (words[position] == "!" || words[position] == "command" || words[position] == "builtin")) position++
+                if (position > count) return
+                command = words[position]
+                sub(/^.*\//, "", command)
+                if (command == "sleep")
+                    print recipe ":" number ": sleep command"
+                if (command == "gh" && words[position + 1] == "pr" && words[position + 2] == "ready")
+                    print recipe ":" number ": gh pr ready command"
+                if (command == "gh" && segment ~ /@coderabbitai[[:space:]]+(review|full[[:space:]]+review|pause|resume|resolve)([^[:alnum:]_]|$)/)
+                    print recipe ":" number ": provider review trigger"
+            }
+            function scan_line(line, number, segments, count, position) {
+                count = split(line, segments, /[;&|]+/)
+                for (position = 1; position <= count; position++) scan_segment(segments[position], number)
+            }
+            markdown && /^```(bash|sh|shell|zsh)[[:space:]]*$/ { fenced = 1; next }
+            markdown && fenced && /^```[[:space:]]*$/ { fenced = 0; next }
+            (!markdown || fenced) { scan_line($0, NR) }
+        ' "$path"
+    done
+}
+
 # assert_rc WANT_RC MSG -- COMMAND [ARGS...]
 assert_rc() {
     local want=$1 msg=$2

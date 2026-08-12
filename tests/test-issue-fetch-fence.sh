@@ -14,6 +14,22 @@ skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 fixture="$here/fixtures/issue-fetch.json"
 fence="$root/agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh"
 
+fence_rm() {
+    if [[ ${FENCE_TEST_FAIL_RM_PATH:-} == "$1" ]]; then
+        unset FENCE_TEST_FAIL_RM_PATH
+        return 1
+    fi
+    rm -f -- "$1"
+}
+
+fence_mv() {
+    if [[ ${FENCE_TEST_FAIL_MV_PATH:-} == "$2" ]]; then
+        unset FENCE_TEST_FAIL_MV_PATH
+        return 1
+    fi
+    mv -f -- "$1" "$2"
+}
+
 # Pull the one documented jq program from the canonical snippet. Executing this
 # extracted program, rather than a copied test filter, prevents documentation and
 # behavior from drifting apart.
@@ -30,18 +46,39 @@ assert_contains "$rendered" 'unknown: A comment without an author is still data.
 
 run_fence_recipe() {
     local producer=$1 target=$2 input=$3
-    local tmp="$target.tmp" input_file
+    local tmp="$target.tmp" input_file cleanup_rc
     input_file=$(mktemp "$tmp_dir/fence-input.XXXXXX") || return 1
-    rm -f -- "$target" "$tmp"
+    cleanup_rc=0
+    fence_rm "$target" || cleanup_rc=1
+    fence_rm "$tmp" || cleanup_rc=1
+    if (( cleanup_rc != 0 )); then
+        fence_rm "$input_file" || cleanup_rc=1
+        return 1
+    fi
     if ! printf '%s' "$input" >"$input_file"; then
-        rm -f -- "$input_file"
+        fence_rm "$input_file" || cleanup_rc=1
         return 1
     fi
     if "$producer" <"$input_file" >"$tmp"; then
-        rm -f -- "$input_file"
-        mv -f -- "$tmp" "$target"
+        if ! fence_rm "$input_file"; then
+            cleanup_rc=1
+        fi
+        if (( cleanup_rc != 0 )); then
+            fence_rm "$target" || cleanup_rc=1
+            fence_rm "$tmp" || cleanup_rc=1
+            return 1
+        fi
+        if ! fence_mv "$tmp" "$target"; then
+            cleanup_rc=1
+            fence_rm "$target" || cleanup_rc=1
+            fence_rm "$tmp" || cleanup_rc=1
+            return 1
+        fi
     else
-        rm -f -- "$target" "$tmp" "$input_file"
+        cleanup_rc=0
+        fence_rm "$target" || cleanup_rc=1
+        fence_rm "$tmp" || cleanup_rc=1
+        fence_rm "$input_file" || cleanup_rc=1
         return 1
     fi
 }
@@ -115,6 +152,23 @@ assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
     'failed upstream leaves no final fence'
 assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
     'failed upstream removes its temporary fence'
+
+# Every cleanup and publication operation is part of the recipe contract. A
+# deterministic command shim is added by the implementation below; these
+# probes must fail closed even when the operation itself fails.
+rm_failure_target="$tmp_dir/rm-failure.txt"
+rm_failure_rc=0
+FENCE_TEST_FAIL_RM_PATH="$rm_failure_target" \
+    run_fence_recipe "$producer" "$rm_failure_target" "$rendered" || rm_failure_rc=$?
+assert_eq 1 "$rm_failure_rc" 'a stale-target cleanup failure is reported'
+
+mv_failure_target="$tmp_dir/mv-failure.txt"
+mv_failure_rc=0
+FENCE_TEST_FAIL_MV_PATH="$mv_failure_target" \
+    run_fence_recipe "$producer" "$mv_failure_target" "$rendered" || mv_failure_rc=$?
+assert_eq 1 "$mv_failure_rc" 'a publication move failure is reported'
+assert_eq no "$( [[ ! -e "$mv_failure_target.tmp" ]] && printf no || printf yes )" \
+    'a publication move failure removes its temporary fence'
 
 # A crash after publishing only one member of the pair must be recoverable on
 # the next invocation. The canonical recipe removes an incomplete pair and

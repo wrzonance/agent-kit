@@ -1166,9 +1166,7 @@ Waiting is not work, and narrating a wait is not a status report. One observed r
 **A wait must never spend model turns.** Wait either by invoking the bounded helper blocking in a
 single cell — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test` — or by one harness-level wait on a background terminal. A `sleep N` + re-check issued as its own tool call is churn: the model pays a turn to do what the helper's internal poll loop already does for free.
 
-Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial
-`max-duration-seconds`, the CI round cap, the worker completion marker, or the runner completion
-marker. Background a worker or producer only when useful work can continue concurrently; when it is
+Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial max-duration-seconds, the CI round cap, the worker completion marker/contract, or the runner completion marker/contract. Background a worker or producer only when useful work can continue concurrently; when it is
 the last task standing, rejoin once with a harness-level terminal wait. This rule covers adversarial
 verdicts, CI, worker waits, and test-runner logs. For logs, run `agent-run.sh --cmd test` in the
 foreground or poll the log only from inside one bounded harness cell; never issue separate sleep and
