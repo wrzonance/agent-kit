@@ -144,13 +144,11 @@ Run `agent-preflight.sh` once, in the repository you are about to work in, befor
 
 #### The resolver (prepend to EVERY shell call)
 
-```bash
-set -euo pipefail
+Resolution only, and deliberately so: this is the block prepended to every later shell call, so it
+must stay free of anything that is supposed to happen once. Running the preflight lives in its own
+block below.
 
-if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
-    printf '%s\n' 'Run this skill from a Git repository.' >&2
-    exit 1
-fi
+```bash
 # The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
 # Resolve the skill tree from the environment contract at the repository
 # root; trust it only when it is an untracked regular file owned by this
@@ -174,6 +172,32 @@ fi
 # some directory exists. (Read only by the guard in a later block.)
 # shellcheck disable=SC2034
 agentkit_provenance=ok
+```
+
+Shell state does not persist between an agent's tool calls, so every command block below that
+touches `$agentkit` assumes this resolver was prepended immediately before it ran. A block executed
+without it fails loudly on its own guard line — `agentkit unresolved: prepend the Step 0 resolver
+block` — instead of silently operating on an empty variable.
+
+The guard also checks `agentkit_provenance=ok`, a sentinel the resolver sets only after its provenance checks pass — a stale or profile-inherited `agentkit` shell variable that merely resolves to a real directory does not carry that sentinel and still fails the guard.
+
+#### Run the preflight — ONCE, and only here
+
+This block is **not** part of the resolver above and must never be folded back into it. It writes
+`.agent/env-contract.txt` and prints the whole contract, so running it per shell call would
+re-probe the environment on every command — overwriting a good contract with whatever a transient
+`gh`/network failure reports (the preflight reports rather than blocks, so that degradation is
+silent), and prefixing every later command's stdout with the contract block.
+
+```bash
+set -euo pipefail
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+
+if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
+    printf '%s\n' 'Run this skill from a Git repository.' >&2
+    exit 1
+fi
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
     printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
@@ -190,13 +214,6 @@ fi
 environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
 printf '%s\n' "$environment_contract"
 ```
-
-Shell state does not persist between an agent's tool calls, so every command block below that
-touches `$agentkit` assumes this resolver was prepended immediately before it ran. A block executed
-without it fails loudly on its own guard line — `agentkit unresolved: prepend the Step 0 resolver
-block` — instead of silently operating on an empty variable.
-
-The guard also checks `agentkit_provenance=ok`, a sentinel the resolver sets only after its provenance checks pass — a stale or profile-inherited `agentkit` shell variable that merely resolves to a real directory does not carry that sentinel and still fails the guard.
 
 `agent-preflight.sh` **reports, it never blocks**: it exits 0 even when `gh` is absent, unauthenticated, or the forge is unreachable — the condition comes back as a value inside the block. Exit 2 means you passed bad arguments, nothing else. Diagnostics go to stderr, so the `2>/dev/null` above captures the contract; the same bytes are also written to `<worktree>/.agent/env-contract.txt`, which is why `.agent/*` goes into `.git/info/exclude` (local-only, no repo change) before the probe runs. The `/*` is load-bearing: `.agent/` would exclude the directory itself, and git does not descend into an excluded directory, so the `!.agent/config.env` allowlist in `.gitignore` would never be reached. Re-running it is safe and idempotent.
 

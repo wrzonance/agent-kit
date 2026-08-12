@@ -49,6 +49,7 @@ missing_contract_reads=0
 fallbacks=0
 no_resolver=0
 def_count_violations=0
+resolver_side_effects=0
 
 fallback_matches=$(grep -R -n --include='SKILL.md' '^[[:space:]]*agentkit=\$(find ' "$skills_dir" || true)
 fallbacks=$(printf '%s\n' "$fallback_matches" | grep -c . || true)
@@ -126,8 +127,28 @@ while IFS= read -r skill_file; do
         ' "$skill_file"
         for fence in "$fence_dir"/*; do
             [[ -f $fence ]] || continue
+            # The boxed resolver is prepended to EVERY later shell call, so any
+            # run-once work left inside it runs once per call. agent-preflight.sh
+            # is the sharp case: it rewrites .agent/env-contract.txt and prints
+            # the whole contract, so a copy inside the resolver re-probes the
+            # environment on every command -- letting one transient gh/network
+            # failure overwrite a good contract (preflight reports rather than
+            # blocks, so the degradation is silent) and prefixing every later
+            # command's stdout with the contract block. The resolver fence
+            # resolves and validates $agentkit; nothing else.
+            fence_name=$(basename "$fence")
+            if grep -q "$FULL_RESOLVER_MARK" "$fence"; then
+                while IFS= read -r line; do
+                    grep -qE "($HELPERS)\.sh" <<< "$line" || continue
+                    [[ $line =~ ^[[:space:]]*# ]] && continue
+                    grep -qE "(printf|echo)" <<< "$line" && continue
+                    resolver_side_effects=$((resolver_side_effects + 1))
+                    printf 'RUN-ONCE WORK IN RESOLVER in %s (fence %s): %s\n' \
+                        "$skill_file" "$fence_name" "$line" >&2
+                done < "$fence"
+                continue
+            fi
             grep -qE "($HELPERS)\.sh" "$fence" || continue
-            grep -q "$FULL_RESOLVER_MARK" "$fence" && continue
             grep -qF "$GUARD_MARK" "$fence" && continue
             no_resolver=$((no_resolver + 1))
             printf 'MISSING RESOLVER in %s (fence %s): a helper is invoked with neither the full resolver nor the guard\n' \
@@ -136,7 +157,7 @@ while IFS= read -r skill_file; do
     fi
 done < <(find "$skills_dir" -maxdepth 2 -name SKILL.md -not -path '*/.system/*' | sort)
 
-printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations\n' \
-    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations"
+printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects\n' \
+    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects"
 [[ $bare -eq 0 && $unguarded -eq 0 && $missing_contract_reads -eq 0 && $fallbacks -eq 1 &&
-   $no_resolver -eq 0 && $def_count_violations -eq 0 ]]
+   $no_resolver -eq 0 && $def_count_violations -eq 0 && $resolver_side_effects -eq 0 ]]
