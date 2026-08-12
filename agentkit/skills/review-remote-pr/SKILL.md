@@ -253,7 +253,35 @@ The worker reports and completes these gates in order. Stages 1–3 precede ever
 5. **INVARIANTS** — fold spike learnings back into the design and state boundary invariants that become regression tests.
 6. **IMPLEMENTATION (TDD)** — red → verify the expected failure → minimal green → refactor; run scoped checks per task and the full relevant suite before handoff, each through `agent-run.sh`.
 
-The worker returns the six-stage status, commit SHA(s), changed paths, RED/GREEN evidence, full verification output summary, and clean-worktree status. The orchestrator independently inspects `base...HEAD`, runs the required verification through `agent-run.sh`, performs any elevated commands the platform requires, pushes once per cycle, and posts/rechecks GitHub replies. Resume the same worker with `followup_task` for corrections when possible; do not create concurrent writers in one PR worktree.
+The worker returns the six-stage status, changed paths, RED/GREEN evidence, full verification output
+summary, and scoped unstaged-tree status. The root independently inspects `base...HEAD`, runs
+the required verification through `agent-run.sh`, then republishes the handback command verbatim
+once before the single cycle push and any forge replies. Resume the same worker with
+`followup_task` for corrections when possible; do not create concurrent writers in one PR worktree.
+
+### Root-owned publication handback
+
+Fix-batch workers are turn-and-burn mechanical executors. They edit only the assigned worktree,
+leave progress unstaged, run focused/full checks through `agent-run.sh`, and finish with a
+publication handback. The handback names scoped dirty files and diffstat, the fresh green
+marker-bearing log, the branch, and one exact ready-to-run `worktree-commit.sh` invocation with
+the worker-attributing trailer and explicit files. Workers never invoke that helper, stage,
+commit, stash, push, call forge or board helpers, create PRs, launch reviews, or request
+escalation. The root reviews the scoped diff and executes the supplied command verbatim exactly
+once, then owns the push, PR, board, reply, and review decisions. A dirty tree not authored by the
+worker is surfaced before validation; unexplained dirt is not adopted.
+
+Every worker file operation uses an absolute path rooted in its assigned worktree. The writable
+sandbox may span the parent tree, so cwd is not an ownership boundary. If a worker discovers its
+own write outside the worktree, it stops, restores only those bytes with
+`git diff --binary | git apply -R`, verifies sibling worktrees are untouched, and reports the
+incident and restoration in its handback. When the harness supports it, dispatch sets the worker
+session cwd to the assigned worktree.
+
+Tier mapping: root is the trust/judgment tier; Luna workers perform mechanical execution and
+clerical assessment, with a phase lead spawned only when assessment volume warrants it; Terra
+xhigh is reserved for a context-free blind same-harness review fallback. A clean single PR is
+handled by root without spawning a phase lead.
 
 ```bash
 # Re-derive these at the top of EVERY shell call: env does NOT persist between
@@ -463,6 +491,9 @@ git merge "origin/$BASE_BRANCH"
 ```
 
 If the merge has conflicts, resolve each conflicting file:
+
+Root owns conflict integration: merge the base and plain-push the resulting history; never rebase
+an already-published branch and never force-push it.
 
 ```bash
 # List conflicting files
@@ -783,6 +814,11 @@ Proceed only after an unambiguous affirmative answer to that question. An earlie
 the skill, repository ownership, or an ambiguous response does not satisfy this gate.
 
 #### `--auto-review` — consent given in advance
+
+Recommended disclosure wording is explicit about payload, destination, and count: “sending each
+PR diff (filenames and code) to the peer CLI for exactly one adversarial review; destination:
+<peer CLI/provider>; count: one review for this PR.” Record that exact payload/destination/count
+before using the flag; it is not consent for any other data or a second attempt.
 
 `--auto-review` (alias `--auto-approve`) on the invocation line answers the question above for
 this invocation, before it is asked. It is consent from the user in the user's own words, so
@@ -1482,6 +1518,9 @@ the fixes are pushed so they can decide. Why decline replies still matter: a lat
 re-evaluate the PR **from scratch, disregarding previous comments** — it can re-raise previously
 declined items. Decline replies store Learnings (see Decline Rationale Templates) that survive that;
 post them before the cycle's push.
+
+Root publication stages only the explicit handback files; never use `git add -A` because `.agent/`
+is untracked working state.
 
 ---
 

@@ -10,6 +10,7 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
+review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -95,6 +96,30 @@ assert_prompt_scope_contract() {
 
 assert_prompt_scope_contract "$issue_lead_prompt" 'issue-lead prompt'
 assert_prompt_scope_contract "$draft_loop_prompt" 'draft-loop prompt'
+for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
+    prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
+    assert_contains "$prompt_text" 'Every file operation must use an absolute path rooted in this assigned' "$prompt_label uses absolute worktree paths"
+    assert_contains "$prompt_text" 'writable sandbox commonly spans the parent tree' "$prompt_label names the sandbox ownership hazard"
+    assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
+    assert_contains "$prompt_text" 'report the incident and restoration in the handback' "$prompt_label reports restored incidents"
+    assert_not_contains "$prompt_text" 'Co-Authored-By: Codex' "$prompt_label has no literal Codex provider trailer"
+    assert_not_contains "$prompt_text" 'Co-Authored-By: Claude' "$prompt_label has no literal Claude provider trailer"
+    assert_not_contains "$prompt_text" 'Co-Authored-By: gpt-' "$prompt_label has no literal model trailer"
+    assert_not_contains "$prompt_text" 'merge origin/main' "$prompt_label has no root conflict merge command"
+    assert_not_contains "$prompt_text" 'NEVER rebase' "$prompt_label has no rebase guard"
+    assert_not_contains "$prompt_text" 'force-push' "$prompt_label has no force-push guard"
+    assert_not_contains "$prompt_text" 'git add -A' "$prompt_label has no broad staging instruction"
+    assert_not_contains "$prompt_text" 'peer-cli=' "$prompt_label has no reviewer provider selection"
+    assert_not_contains "$prompt_text" 'gpt-5.6-terra' "$prompt_label has no blind reviewer fallback"
+done
+assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
+assert_contains "$issue_lead_prompt" 'publication handback' 'issue lead returns a publication handback'
+assert_contains "$draft_loop_prompt" 'publication handback' 'phase lead returns a publication handback'
+root_sections=$(cat "$skill" "$review_skill")
+assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
+assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
+assert_contains "$root_sections" 'peer-cli= <name> absent' 'root-facing prose owns peer availability'
+assert_contains "$root_sections" 'blind same-harness fallback' 'root-facing prose owns blind fallback'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \

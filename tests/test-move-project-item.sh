@@ -34,7 +34,11 @@ case "\$*" in
       ;;
   *"project item-list"*)
       [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1
-      cat "$here/fixtures/gh-item-list.json"
+      if [[ -n "\${CURRENT_STATUS:-}" ]]; then
+          jq --arg status "\${CURRENT_STATUS:-}" '.items |= map(if .id == "PVTI_example57" then .status = \$status else . end)' "$here/fixtures/gh-item-list.json"
+      else
+          cat "$here/fixtures/gh-item-list.json"
+      fi
       ;;
   *"project list"*)
       [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1
@@ -97,6 +101,14 @@ assert_contains "$log" 'opt-inprog' 'uses the live option id'
 assert_contains "$log" 'field-list' 're-resolves the Status field'
 assert_contains "$log" 'item-list' 're-scans the board'
 assert_contains "$out" 'moved #57' 'reports the move'
+
+# An item already at the requested live Status is a terminal no-op and must
+# never issue an item-edit mutation.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CURRENT_STATUS='Ready' run_mv "$repo" --issue-number 57 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #57 already "Ready"' 'already-target status reports a redundant no-op'
+assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" 'already-target status does not call item-edit'
 
 # An identical second move must not rewrite board.json just because generatedAt
 # is fresh. Commit the first move so the second invocation can prove it leaves
