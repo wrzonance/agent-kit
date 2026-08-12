@@ -154,24 +154,6 @@ make_published_repo() {
 }
 repo=$(make_published_repo)
 trust_root="$tmp/trust-yolo"
-# An attended refusal teaches the operator about the unattended grant only when
-# this checkout's command inputs still match origin/main.
-out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
-    setsid -w "$run_sh" --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
-assert_eq '1' "$rc" 'a trunk-matched interactive refusal still blocks'
-assert_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
-    'a trunk-matched refusal teaches the unattended grant'
-
-# Once a command input differs from origin/main, the teaching line must not
-# suggest that the trunk grant covers the changed checkout.
-printf 'AGENT_CMD_VERIFY=false\n' > "$repo/.agent/config.env"
-out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
-    setsid -w "$run_sh" --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
-assert_eq '1' "$rc" 'a trunk-mismatched interactive refusal still blocks'
-assert_not_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
-    'a trunk-mismatched refusal does not teach an inapplicable grant'
-git -C "$repo" checkout -q -- .agent/config.env
-
 yolo_err="$tmp/yolo-stderr"
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
     setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2> "$yolo_err") && rc=0 || rc=$?
@@ -189,6 +171,32 @@ assert_eq '' "$(trust_files "$trust_root")" '--yolo persists no trust record'
 yolo_log=$(find "$repo/.agent/logs" -name '*.log' | head -1)
 assert_contains "$(cat -- "$yolo_log")" 'trust gate skipped (--yolo)' \
     'the run log records the bypass'
+
+# A non-interactive worker refusal must never teach an unattended grant, even
+# when this checkout's command inputs still match origin/main.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a trunk-matched worker refusal still blocks'
+assert_not_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
+    'a trunk-matched worker refusal does not teach the unattended grant'
+
+# An attended refusal teaches the operator about the unattended grant only
+# when stderr is an interactive terminal and inputs still match origin/main.
+out=$(cd "$repo" && script -qefc \
+    "env AGENT_TRUST_ROOT='$trust_root' '$run_sh' --cmd verify" /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a trunk-matched interactive refusal still blocks'
+assert_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
+    'a trunk-matched interactive refusal teaches the unattended grant'
+
+# Once a command input differs from origin/main, the teaching line must not
+# suggest that the trunk grant covers the changed checkout.
+printf 'AGENT_CMD_VERIFY=false\n' > "$repo/.agent/config.env"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
+    setsid -w "$run_sh" --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a trunk-mismatched worker refusal still blocks'
+assert_not_contains "$out" 'operator-granted --yolo/--trust-trunk run would thread this command without approval' \
+    'a trunk-mismatched refusal does not teach an inapplicable grant'
+git -C "$repo" checkout -q -- .agent/config.env
 
 # --yolo is trunk-bounded: an input that differs from the remote trunk is new
 # code asking to run unattended, and is refused without a trust record.

@@ -1147,7 +1147,7 @@ trust_command() {
     printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
     printf '  A human reviews the change and approves it from a terminal with --approve;\n' >&2
     printf '  that terminal confirmation is defense-in-depth, not a human-only guarantee.\n' >&2
-    if trunk_inputs_match; then
+    if [[ -t 2 ]] && trunk_inputs_match; then
         printf '  An operator-granted --yolo/--trust-trunk run would thread this command without approval.\n' >&2
     fi
     return 1
