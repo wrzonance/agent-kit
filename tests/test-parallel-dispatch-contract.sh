@@ -307,6 +307,11 @@ assert_contains "$publication_section" '__AGENT_IDENTITY__' \
     'draft PR publication keeps the identity placeholder literal in the template'
 assert_contains "$publication_section" '__PR_CLOSE_LINE__' \
     'draft PR publication keeps the close placeholder literal in the template'
+assert_contains "$publication_section" 'Stacked on #' \
+    'stacked PRs declare their base PR in the body'
+assert_contains "$publication_section" 'retargets this one to' \
+    'stacked body explains the auto-retarget unwind'
+assert_contains "$text" 'merge order' 'ready-flip handoff states the chain merge order'
 
 body_template="$tmp/body-template"
 cat >"$body_template" <<'EOF'
