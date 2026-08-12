@@ -120,6 +120,14 @@ guard_classify_root() {
     printf '%s' "$GUARD_TARGET_CLASSIFICATION"
 }
 
+# Command substitutions run in a child shell, so the globals populated by the
+# classifier do not survive `classification=$(...)`. Return both values as a
+# small, explicit record for callers that need diagnostics or policy roots.
+guard_classify_root_result() {
+    guard_classify_root "$1" > /dev/null
+    printf '%s\n%s' "$GUARD_TARGET_CLASSIFICATION" "$GUARD_TARGET_ROOT"
+}
+
 guard_target_path() {
     local target=$1 base=${2:-$PWD} candidate probe root
     case $target in
@@ -134,21 +142,72 @@ guard_target_path() {
     printf '%s\n%s' "$root" "$candidate"
 }
 
-guard_command_target_dir() {
-    local cwd=$1 command_line=$2 candidate
-    candidate=$(grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+[^[:space:];&|]+' \
-        <<< "$command_line" 2> /dev/null | tail -1 |
-        sed -E 's/.*cd[[:space:]]+//' || true)
-    if [[ -z $candidate ]]; then
-        candidate=$(grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:];&|]+' \
-            <<< "$command_line" 2> /dev/null | tail -1 |
-            sed -E 's/.*-C[[:space:]]+//' || true)
-    fi
-    [[ -n $candidate ]] || { printf '%s' "$cwd"; return 0; }
+guard_command_dir_candidate() {
+    local cwd=$1 candidate=$2
+    candidate=${candidate#\"}; candidate=${candidate%\"}
+    candidate=${candidate#\'}; candidate=${candidate%\'}
     case $candidate in
-        /*) guard_scope_canonical "$candidate";;
-        *) guard_scope_canonical "$cwd/$candidate";;
+        /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*) ;;
+        *) candidate="$cwd/$candidate";;
     esac
+    guard_scope_canonical "$candidate"
+}
+
+guard_command_target_dir() {
+    local cwd=$1 command_line=$2 target=${3:-}
+    local current segment trimmed candidate git_candidate segment_dir last_effective
+    local -a words
+    current=$(guard_scope_canonical "$cwd") || current=$cwd
+    last_effective=$current
+
+    # Walk shell segments in order. A target is resolved against the directory
+    # in force at the segment that names it; a later `cd` cannot rewrite that
+    # earlier target. Git's -C is parsed only before the git subcommand, so
+    # grep's -C context flag and `git commit -C <message>` are not directories.
+    local segments=${command_line//[;&|]/$'\n'}
+    while IFS= read -r segment; do
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        read -r -a words <<< "$trimmed"
+        ((${#words[@]})) || continue
+        segment_dir=$current
+        git_candidate=''
+
+        if [[ ${words[0]} == cd && ${#words[@]} -ge 2 ]]; then
+            candidate=$(guard_command_dir_candidate "$current" "${words[1]}") || candidate=''
+            [[ -n $candidate ]] && current=$candidate
+            segment_dir=$current
+        elif [[ ${words[0]} == git ]]; then
+            local i word next
+            for ((i = 1; i < ${#words[@]}; i++)); do
+                word=${words[i]}
+                case $word in
+                    --) break;;
+                    -C)
+                        ((i + 1 < ${#words[@]})) || break
+                        next=${words[i + 1]}
+                        candidate=$(guard_command_dir_candidate "$current" "$next") || candidate=''
+                        [[ -d $candidate ]] && git_candidate=$candidate
+                        ((i++))
+                        ;;
+                    -C*)
+                        candidate=$(guard_command_dir_candidate "$current" "${word#-C}") || candidate=''
+                        [[ -d $candidate ]] && git_candidate=$candidate
+                        ;;
+                    -*) ;;
+                    *) break;;
+                esac
+            done
+            [[ -n $git_candidate ]] && segment_dir=$git_candidate
+        fi
+
+        last_effective=$segment_dir
+        if [[ -n $target && $trimmed == *"$target"* ]]; then
+            printf '%s' "$segment_dir"
+            return 0
+        fi
+    done <<< "$segments"
+    printf '%s' "$last_effective"
 }
 
 guard_command_repository_root() {
@@ -163,7 +222,7 @@ guard_command_repository_root() {
 # callers can fail closed exactly as they did before classification existed.
 guard_classify_target() {
     local target=$1 cwd=$2 command_line=${3:-} base resolved candidate
-    base=$(guard_command_target_dir "$cwd" "$command_line") || base=$cwd
+    base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
     resolved=$(guard_target_path "$target" "$base" 2> /dev/null) || {
         case $target in
             /*) candidate=$target;;
@@ -176,6 +235,11 @@ guard_classify_target() {
     }
     GUARD_TARGET_ROOT=${resolved%%$'\n'*}
     guard_classify_root "$GUARD_TARGET_ROOT"
+}
+
+guard_classify_target_result() {
+    guard_classify_target "$1" "$2" "${3:-}" > /dev/null
+    printf '%s\n%s' "$GUARD_TARGET_CLASSIFICATION" "$GUARD_TARGET_ROOT"
 }
 
 # Every repository a command might act on -- not just the one the session started
@@ -194,16 +258,11 @@ guard_resolve_roots() {
         guard_add_root "$cwd"
     fi
 
-    # Paths the command names. Read as text and never evaluated: this parses an
-    # untrusted command line, where a substitution would execute it.
-    while IFS= read -r candidate; do
-        [[ -n $candidate ]] || continue
-        candidate=${candidate/#\~/$HOME}
-        if [[ -d $candidate ]]; then
-            guard_add_root "$candidate"
-        fi
-    done < <(grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+[^[:space:];&|]+|-C[[:space:]]+[^[:space:];&|]+' \
-        <<< "$command_line" 2> /dev/null | sed -E 's/.*(cd|-C)[[:space:]]+//' || true)
+    # Add only the effective directory selected by the segment-aware parser.
+    # Broad grep over the whole command mistakes grep context and commit
+    # message reuse flags for directory-bearing -C options.
+    candidate=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
+    [[ -d $candidate ]] && guard_add_root "$candidate"
 }
 
 # Resolve only the hook's trusted working directory and its current repository.
@@ -308,7 +367,13 @@ guard_out_of_scope_target() {
         command_dir=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
         if [[ -n $command_dir && $command_dir != "$(guard_scope_canonical "$cwd")" ]]; then
             command_root=$command_dir
-            command_class=foreign
+            # A temporary non-git fixture is still in-scope. Only an
+            # unambiguously foreign directory receives the advisory.
+            if guard_fixture_path "$command_dir"; then
+                command_class=fixture
+            else
+                command_class=foreign
+            fi
         fi
     fi
 
@@ -338,7 +403,10 @@ guard_out_of_scope_target() {
         # directory resolves to a foreign repository, advise even though the
         # command never spelled an absolute path.
         if [[ -n $command_root ]]; then
-            [[ -n $command_class ]] || command_class=$(guard_classify_root "$command_root")
+            if [[ -z $command_class ]]; then
+                guard_classify_root "$command_root" > /dev/null
+                command_class=$GUARD_TARGET_CLASSIFICATION
+            fi
             if [[ $command_class == foreign ]]; then
                 # shellcheck disable=SC2034  # consumed by the sourcing hook
                 GUARD_SCOPE_CLASSIFICATION=foreign
@@ -360,7 +428,10 @@ guard_out_of_scope_target() {
                 /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
                     if ! guard_scope_path_allowed "$cleaned"; then
                         case $cleaned in
-                            /*) command_class=$(guard_classify_target "$cleaned" "$cwd" "$command_line");;
+                            /*)
+                                classification_result=$(guard_classify_target_result "$cleaned" "$cwd" "$command_line")
+                                command_class=${classification_result%%$'\n'*}
+                                ;;
                             *) command_class=foreign;;
                         esac
                         [[ $command_class == workspace ]] && continue
@@ -852,6 +923,7 @@ guard_shell_write_targets() {
     # costs the whole guard.
     tr -s '[:space:]' '\n' <<< "$cmd" 2> /dev/null |
         sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+        sed -E 's/[;|&()]+$//' |
         grep -vE '^-|^$' || true
 }
 

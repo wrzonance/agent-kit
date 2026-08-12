@@ -71,11 +71,13 @@ protect_root=$(guard_state_root)
 # workflow be rewritten straight past this rule.
 while IFS= read -r target; do
     [[ -n $target ]] || continue
-    target_classification=$(guard_classify_target "$target" "$cwd" "$command_line")
+    classification_result=$(guard_classify_target_result "$target" "$cwd" "$command_line")
+    target_classification=${classification_result%%$'\n'*}
+    target_root=${classification_result#*$'\n'}
+    [[ $target_root == "$classification_result" ]] && target_root=''
     case $target_classification in
-        fixture|foreign) continue;;
+        fixture) continue;;
     esac
-    target_root=$GUARD_TARGET_ROOT
     [[ -n $target_root ]] || target_root=$protect_root
     policy_root=$protect_root
     [[ $target_classification == workspace && -n $policy_root ]] || policy_root=$target_root
@@ -112,7 +114,8 @@ fi
 # turns the default into a choice.
 target_root=$(guard_command_repository_root "$cwd" "$command_line" 2> /dev/null || true)
 if [[ -n $target_root ]]; then
-    target_classification=$(guard_classify_root "$target_root")
+    classification_result=$(guard_classify_root_result "$target_root")
+    target_classification=${classification_result%%$'\n'*}
 else
     target_classification=unresolved
 fi

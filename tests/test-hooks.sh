@@ -614,6 +614,33 @@ git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
 out=$(pre_input "$root" "cd $fixture_repo && printf x > .github/workflows/ci.yml" \
     "fixture-workflow" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a designated fixture workflow write is allowed'
+
+# A later shell segment must not change the repository of an earlier write.
+# Without segment-aware target resolution, the trailing cd makes the workspace
+# workflow look like a fixture target and silently skips its protection.
+out=$(pre_input "$root" "printf x > .github/workflows/ci.yml; cd $fixture_repo" \
+    "${classification_sid}-workspace-write-before-cd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a protected workspace write stays guarded before a later fixture cd'
+assert_contains "$out" 'classification: workspace' \
+    'the preceding workspace write reports its own classification'
+
+# A real repository outside the workspace and designated fixture roots is
+# foreign, but foreign protected writes remain deny-once policy targets.
+foreign_parent=$(cd -- "$root/../../../.." && pwd)
+foreign_repo=$(mktemp -d "$foreign_parent/hooks-foreign.XXXXXX")
+git -C "$foreign_repo" init -q
+mkdir -p "$foreign_repo/.agent" "$foreign_repo/.github/workflows"
+printf 'AGENT_REPO_SLUG=foreign/example\n' > "$foreign_repo/.agent/config.env"
+out=$(pre_input "$root" "printf x > $foreign_repo/.github/workflows/ci.yml" \
+    "${classification_sid}-foreign-protected-write" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a foreign repository protected write is still guarded'
+assert_contains "$out" 'classification: foreign' \
+    'foreign protected-write diagnostics name the classification'
+assert_contains "$out" "$foreign_repo" \
+    'foreign protected-write diagnostics name the resolved repository root'
+rm -rf -- "$foreign_repo"
 out=$(pre_input "$fixture_repo" 'git commit --allow-empty -m fixture' \
     "fixture-trunk" | AGENT_FIXTURE_ROOT="$tmp" "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a designated fixture main commit is allowed'
@@ -625,12 +652,29 @@ assert_contains "$out" 'classification: workspace' \
     'workspace refusal states the computed classification'
 assert_contains "$out" "$root" 'workspace refusal names the repository target'
 
-foreign_walk="$tmp/foreign-not-a-repo"
-mkdir -p "$foreign_walk"
+foreign_walk=$(mktemp -d "$foreign_parent/hooks-foreign-walk.XXXXXX")
 out=$(pre_input "$root" "cd $foreign_walk && find . -name AGENTS.md" \
     "${classification_sid}-foreign" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'a relative walk in foreign territory receives a scope advisory'
+rm -rf -- "$foreign_walk"
+
+# `-C` is a grep context flag, not a directory. It must not create a fake
+# command root and a false scope advisory for an otherwise in-scope walk.
+out=$(pre_input "$root" 'grep -r -C 3 secret .' "grep-context" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'grep context flags do not become effective directories'
+
+# A non-git temporary fixture is still an allowed fixture walk. Repository
+# lookup failure must preserve its /tmp fixture classification instead of
+# falling back to foreign.
+temp_fixture="$tmp/nonrepo-fixture"
+mkdir -p "$temp_fixture"
+out=$(pre_input "$root" "cd $temp_fixture && find . -name AGENTS.md" \
+    "temp-fixture-walk" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a temporary non-git fixture walk has no foreign advisory'
 
 unresolved="$tmp/unresolved"
 mkdir -p "$unresolved"
