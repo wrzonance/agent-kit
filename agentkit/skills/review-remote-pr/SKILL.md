@@ -512,6 +512,44 @@ else
   fi
 fi
 
+```
+
+### Run environment preflight for the new worktree — BEFORE entering it
+
+**Run this while you are still in the main repository, not after `cd`.** The resolver reads
+`.agent/env-contract.txt` from the toplevel of the current directory, and that file is untracked, so
+a freshly created `$PR_WORKTREE` does not have one yet. Prepending the resolver to a command run
+*inside* the new worktree therefore exits with *"skills path is absent … run agent-preflight.sh
+first"* — which is the very command being run. Resolving here, in the main repository whose contract
+already exists, and passing `--worktree "$PR_WORKTREE"` writes the contract into the new worktree so
+every later in-worktree call resolves normally.
+
+Run it once. This block is a run-once step, not the resolver above — do not prepend it to other
+shell calls; re-running it re-probes and rewrites the contract for nothing. `$REPO` and
+`$PR_WORKTREE` are the literal values established in Step 0a above.
+
+```bash
+# >>> prepend THE RESOLVER (defined above) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# --worktree targets the NEW worktree while this command runs in the main repo,
+# so the contract exists before anything is executed from inside it.
+"$agentkit/.shared/scripts/agent-preflight.sh" \
+  --repo "$REPO" --worktree "$PR_WORKTREE"
+
+# Keep the untracked .agent/ directory out of any accidental `git add -A`.
+# --git-common-dir is shared by the main repo and every linked worktree, so
+# writing the exclude here covers the new worktree too.
+git_common_dir=$(git rev-parse --git-common-dir)
+mkdir -p "$git_common_dir/info"
+# `.agent/*`, never `.agent/`: excluding the directory stops git descending
+# into it and defeats the .gitignore allowlist that keeps config.env committable.
+grep -qxF '.agent/*' "$git_common_dir/info/exclude" 2>/dev/null ||
+  printf '%s\n' '.agent/*' >>"$git_common_dir/info/exclude"
+```
+
+### Enter the worktree
+
+```bash
 # Guard the cd — if worktree creation failed you are STILL IN THE MAIN REPO;
 # proceeding would edit/commit on whatever branch is checked out there.
 cd "$PR_WORKTREE" || { echo "STOP: worktree missing at $PR_WORKTREE"; exit 1; }
@@ -520,29 +558,6 @@ git status --short
 ```
 
 **Run all subsequent commands from `$PR_WORKTREE`.** Never switch branches or make PR edits in a worktree owned by another issue/PR. All commits for this PR go to `$HEAD_BRANCH`.
-
-### Run environment preflight (once, inside the worktree)
-
-**The FIRST command inside the worktree is the environment preflight.** Run it once; its printed
-block is the environment contract for the entire run (see *Runtime and provider neutrality*). This
-block is a run-once step, not the resolver above — do not prepend it to other shell calls; re-running
-it re-probes and rewrites the contract for nothing. `$REPO` and `$PR_WORKTREE` are the literal values
-established in Step 0a above.
-
-```bash
-# >>> prepend THE RESOLVER (defined above) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-"$agentkit/.shared/scripts/agent-preflight.sh" \
-  --repo "$REPO" --worktree "$PR_WORKTREE"
-
-# Keep the untracked .agent/ directory out of any accidental `git add -A`.
-git_common_dir=$(git rev-parse --git-common-dir)
-mkdir -p "$git_common_dir/info"
-# `.agent/*`, never `.agent/`: excluding the directory stops git descending
-# into it and defeats the .gitignore allowlist that keeps config.env committable.
-grep -qxF '.agent/*' "$git_common_dir/info/exclude" 2>/dev/null ||
-  printf '%s\n' '.agent/*' >>"$git_common_dir/info/exclude"
-```
 
 Carry the 10-line block forward for the whole run and **paste it verbatim into every dispatched
 worker prompt**. Do not re-probe those facts later. Act on its decision lines immediately:

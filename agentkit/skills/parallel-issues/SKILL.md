@@ -189,6 +189,14 @@ re-probe the environment on every command — overwriting a good contract with w
 `gh`/network failure reports (the preflight reports rather than blocks, so that degradation is
 silent), and prefixing every later command's stdout with the contract block.
 
+**Precondition: the repository is already onboarded.** The resolver reads the skills path *from*
+`.agent/env-contract.txt`, so a repository that has never had one cannot start here — the resolver
+exits with *"skills path is absent … run agent-preflight.sh first"*, and locating that helper is
+exactly what it could not do. `onboard-repo` owns the sole contract-absent bootstrap in this tree
+(its `find` over the installed plugin caches, pinned by `test-skills-contract.sh`), so run
+`onboard-repo` first on a fresh repository. This block re-probes and refreshes an existing
+contract; it is not a bootstrap.
+
 ```bash
 set -euo pipefail
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
