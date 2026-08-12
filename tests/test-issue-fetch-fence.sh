@@ -56,6 +56,9 @@ large_input_file="$tmp_dir/large-input"
 printf '%s' "$large_input" >"$large_input_file"
 direct_err="$tmp_dir/direct.err"
 set +e
+# shellcheck disable=SC2002
+# Keep cat as the actual pipe writer: input redirection would remove the EPIPE
+# boundary this regression probe is required to exercise.
 { cat "$large_input_file" | "$early_exit" > /dev/null; } 2>"$direct_err"
 direct_rc=$?
 set -e
