@@ -72,6 +72,7 @@ repo_root=''
 config_file_opt=''
 canonical_keys_csv=''
 declare -a resolve_keys=()
+declare -A resolve_requested_keys=()
 
 while (($#)); do
     case $1 in
@@ -118,6 +119,12 @@ while (($#)); do
 done
 
 [[ -n $mode ]] || die_usage 'one of --export, --get, --list, --canonical-keys, or --resolve is required'
+
+if [[ $mode == resolve ]]; then
+    for key in "${resolve_keys[@]}"; do
+        resolve_requested_keys[$key]=yes
+    done
+fi
 
 if [[ -z $repo_root ]]; then
     repo_root=$(git rev-parse --show-toplevel 2> /dev/null || true)
@@ -387,6 +394,10 @@ shell_quote() {
 
 declare -a out_keys=() out_values=()
 declare -A value_by_key=() seen_by_key=()
+# Canonical comparison is strict for every parse error. Resolve mode keeps the
+# established warn/drop behavior, but records errors for requested keys so the
+# yolo gate can fail closed without treating unrelated config as invocation
+# input.
 parse_failed=0
 lineno=0
 
@@ -397,7 +408,9 @@ while IFS= read -r line || [[ -n $line ]]; do
 
     if [[ $line != *=* ]]; then
         warn "line $lineno has no equals sign, ignoring"
-        [[ $mode == canonical || $mode == resolve ]] && parse_failed=1
+        malformed_key=$(trim "$line")
+        [[ $mode == resolve && -n ${resolve_requested_keys[$malformed_key]+yes} ]] && parse_failed=1
+        [[ $mode == canonical ]] && parse_failed=1
         continue
     fi
 
@@ -413,7 +426,9 @@ while IFS= read -r line || [[ -n $line ]]; do
         else
             warn "unknown key on line $lineno, ignoring: $key"
         fi
-        [[ $mode == canonical || $mode == resolve ]] && parse_failed=1
+        # Unknown keys are deliberately dropped. In resolve mode they are not
+        # relevant to the requested declaration set.
+        [[ $mode == canonical ]] && parse_failed=1
         continue
     fi
 
@@ -428,7 +443,8 @@ while IFS= read -r line || [[ -n $line ]]; do
         else
             warn "invalid value for $key on line $lineno, ignoring"
         fi
-        [[ $mode == canonical || $mode == resolve ]] && parse_failed=1
+        [[ $mode == canonical ||
+            ( $mode == resolve && -n ${resolve_requested_keys[$key]+yes} ) ]] && parse_failed=1
         continue
     fi
 
@@ -442,7 +458,7 @@ while IFS= read -r line || [[ -n $line ]]; do
     out_values+=("$value")
 done < "$config_file"
 
-if [[ $mode == canonical || $mode == resolve ]] && ((parse_failed)); then
+if [[ $mode == canonical ]] && ((parse_failed)); then
     exit 1
 fi
 
@@ -510,6 +526,10 @@ case $mode in
                 printf '%s\0%s\0%s\0' "$local_key" "$value" 0
             fi
         done
+        # Resolution remains warn/drop/fall-through for ordinary callers. The
+        # invocation gate consumes this marker to fail closed under --yolo
+        # without turning unrelated config mistakes into usage errors.
+        printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
         ;;
 esac
 

@@ -88,6 +88,20 @@ assert_contains "$out" 'refusing unapproved repository command' \
 assert_eq 'no' "$([[ -e $tmp/changed-payload-ran ]] && echo yes || echo no)" \
     'a changed executable is not run under an old approval'
 
+# Ordinary resolution preserves repo-config's established warn/drop/fall-through
+# contract: unrelated malformed, unknown, and invalid declarations do not stop a
+# valid command from resolving and executing.
+repo=$(make_repo)
+cat >"$repo/.agent/config.env" <<'CFG'
+AGENT_CMD_TEST=echo survives-unrelated-config-errors
+AGENT_UNKNOWN=ignored
+malformed declaration
+AGENT_BASE_BRANCH=bad branch
+CFG
+out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+assert_contains "$out" 'survives-unrelated-config-errors' \
+    'a valid command executes despite unrelated malformed declarations'
+
 # Unrelated declarations are outside the invocation identity. They may change
 # on a checkout while the declared command remains yolo-safe and executable.
 repo=$tmp/unrelated-yolo
@@ -188,11 +202,11 @@ printf '#!/bin/sh\nexit 0\n' > "$repo/tools/payload"
 chmod +x "$repo/tools/payload"
 printf 'AGENT_CMD_TEST=tools/payload\n' > "$repo/.agent/config.env"
 commit_yolo_base "$repo"
-printf 'AGENT_CMD_TEST=tools/payload\nnot-a-declaration\n' > "$repo/.agent/config.env"
+printf 'AGENT_CMD_TEST=tools/payload\nAGENT_CMD_TEST\n' > "$repo/.agent/config.env"
 rc=0
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
 assert_eq '1' "$rc" 'malformed config refuses yolo'
-assert_contains "$out" 'cannot resolve repository declarations' 'malformed config names the resolver failure'
+assert_contains "$out" 'cannot be proven equal' 'malformed config names the yolo parse failure'
 
 repo=$tmp/missing-base-config
 make_yolo_repo "$repo"

@@ -450,6 +450,7 @@ declare -a relevant_config_keys=()
 declare -A resolved_config_values=() resolved_config_present=()
 declare -a resolved_command_argv=() resolved_focus_argv=()
 resolved_command_key=''
+resolved_parse_failed=no
 
 relevant_config_add() {
     local key=$1 existing
@@ -489,6 +490,20 @@ repo_config_resolve_keys() {
     exec 3<"$tmp" || { rm -f -- "$tmp"; return 1; }
     while IFS= read -r -d '' field <&3; do
         key=$field
+        if [[ $key == __AGENT_CONFIG_PARSE_STATUS__ ]]; then
+            IFS= read -r -d '' field <&3 || {
+                exec 3<&-
+                rm -f -- "$tmp"
+                return 1
+            }
+            [[ $field == 0 || $field == 1 ]] || {
+                exec 3<&-
+                rm -f -- "$tmp"
+                return 1
+            }
+            [[ $field == 1 ]] && resolved_parse_failed=yes
+            continue
+        fi
         IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
         resolved_config_values[$key]=$field
         resolved_config_present[$key]=yes
@@ -971,6 +986,11 @@ yolo_gate() {
     declare -A base_present=() base_values=() current_present=() current_values=()
     base=$(yolo_base_ref) \
         || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    if [[ $resolved_parse_failed == yes ]]; then
+        printf 'agent-run: refusing --yolo for %s: AGENT_CMD_%s cannot be proven equal after config parse errors\n' \
+            "$cmd_name" "$(printf '%s' "$cmd_name" | tr '[:lower:]-' '[:upper:]_')" >&2
+        exit 1
+    fi
     canonical_out=''
     rc=0
     canonical_out=$(yolo_base_declarations "$base") || rc=$?
