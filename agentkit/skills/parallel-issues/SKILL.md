@@ -92,6 +92,10 @@ authorised rather than leaving it to be reconstructed later.
 
 ## Runtime and provider neutrality
 
+Before any GitHub body mutation, read and follow the shared
+[GitHub body transport policy](../.shared/github-body-policy.md). It governs every `gh` body
+surface used by this skill, not only draft PR creation.
+
 Runtime facts come from the current session contract, not from this procedure. Read its
 `sandbox=`, `network=`, writable-root, and measured-by fields before choosing a path; if a fact is
 absent, say that it is unknown instead of inferring it. A denial or approval in one session does not
@@ -1106,7 +1110,11 @@ layers can preserve escape sequences literally and collapse the rendered body to
 ```bash
 pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
 chmod 600 -- "$pr_body_file" || exit 1
-cat >"$pr_body_file" <<'EOF'
+agent_identity=${agent_identity:?set the actual agent identity for PR attribution}
+pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}
+# This heredoc is intentionally unquoted: the required dynamic fields below
+# must expand. Keep all other body text literal and free of command substitutions.
+cat >"$pr_body_file" <<EOF
 ## Why
 
 <motivation>
@@ -1123,7 +1131,7 @@ cat >"$pr_body_file" <<'EOF'
 
 - [ ] <verification command and result>
 
-🤖 Co-authored by <actual agent identity>. Closes #NNN.
+🤖 Co-authored by $agent_identity. $pr_close_line
 EOF
 gh pr create --draft --body-file "$pr_body_file" \
   --title "$pr_title" --base "$base" --head "$branch"

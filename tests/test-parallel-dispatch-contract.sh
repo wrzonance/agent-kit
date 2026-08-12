@@ -11,6 +11,7 @@ source "$here/lib/assert.sh"
 
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -203,8 +204,38 @@ assert_contains "$publication_section" 'gh pr create --draft --body-file "$pr_bo
     'draft PR publication passes a newline-preserving body file to gh'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" "cat >\"\$pr_body_file\" <<'EOF'" \
-    'draft PR publication uses a quoted heredoc for literal body contents'
+assert_contains "$publication_section" 'cat >"$pr_body_file" <<EOF' \
+    'draft PR publication uses an interpolating heredoc for dynamic body fields'
+assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
+    'draft PR publication requires an agent identity before interpolation'
+assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \
+    'draft PR publication requires a close line before interpolation'
+assert_contains "$publication_section" '$agent_identity. $pr_close_line' \
+    'draft PR publication interpolates identity and issue closure text'
+
+assert_eq 'yes' "$([[ -f $github_body_policy ]] && printf yes || printf no)" \
+    'shared GitHub body policy exists'
+body_policy=''
+[[ ! -f $github_body_policy ]] || body_policy=$(<"$github_body_policy")
+assert_contains "$body_policy" 'ANY multiline body handed to `gh`' \
+    'shared policy covers the whole multiline GitHub body class'
+assert_contains "$body_policy" '`pr create`, `pr edit`, `issue create`, `issue edit`, and `api -f body=`' \
+    'shared policy names every supported GitHub body mutation surface'
+assert_contains "$body_policy" '`--body-file` or `--input`' \
+    'shared policy requires file-backed GitHub bodies'
+assert_contains "$body_policy" 'Comments already comply through `gh-comment.sh`.' \
+    'shared policy records the existing comment transport'
+assert_contains "$text" '../.shared/github-body-policy.md' \
+    'parallel-issues inherits the shared GitHub body policy'
+assert_contains "$(<"$review_skill")" '../.shared/github-body-policy.md' \
+    'review-remote-pr inherits the shared GitHub body policy'
+
+inline_body_recipes=$(sed -nE '/^[[:space:]]*gh[[:space:]]/ {
+    /(^|[[:space:]])--body([=[:space:]]|$)/p
+    /api.*(^|[[:space:]])(-f|--field)[[:space:]]+body=/p
+}' "$skill" "$review_skill")
+assert_eq '' "$inline_body_recipes" \
+    'skill recipes never pass multiline GitHub bodies inline'
 assert_not_contains "$text" '` --yolo`' \
     'parallel dispatch has no MD038-leading-space code span'
 

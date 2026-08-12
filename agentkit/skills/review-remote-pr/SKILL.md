@@ -60,6 +60,10 @@ require_repo_context() {
 
 ## Runtime and provider neutrality
 
+Before any GitHub body mutation, read and follow the shared
+[GitHub body transport policy](../.shared/github-body-policy.md). It governs PR, issue, API, and
+comment body transport used by this skill.
+
 Runtime facts come from the current session contract, not from this procedure. Read network state
 from the `sandbox=` record's `network=` attribute, writable status from the `git=` record's
 `writable=`/`worktree-writable=` attributes, and `measured-by=` only when present on hook-measured
