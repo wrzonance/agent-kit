@@ -311,6 +311,17 @@ out=$(run_bs --repo-root "$repo" --project 7 2>&1)
 assert_contains "$out" 'allowlist has no effect' 'a defeated allowlist is reported, not assumed to work'
 assert_contains "$out" '.git/info/exclude' 'and the file carrying the defeating rule is named'
 assert_contains "$out" '.agent/ -> .agent/*' 'and the narrowing that fixes it is given'
+assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
+    'a dead ignore failure installs no config.env before remediation'
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'a dead ignore failure installs no board.json before remediation'
+assert_eq 'no' "$([[ -e $repo/.gitignore ]] && echo yes || echo no)" \
+    'a dead ignore failure does not print partial success or create .gitignore'
+# The named repair is directly rerunnable: once the blocking rule is narrowed,
+# the same bootstrap command completes without --force.
+sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$repo/.git/info/exclude"
+assert_rc 0 'the remediation permits a direct bootstrap rerun' -- env \
+    PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7
 
 # The same repository once the broader rule is narrowed: silence.
 repo=$(make_repo)

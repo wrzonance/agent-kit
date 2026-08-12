@@ -146,11 +146,16 @@ EOF
 mapfile -t ci_runs < <(
     awk '
         function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        function indent(s, t) { t=s; sub(/[^[:space:]].*$/, "", t); return length(t) }
         /^[[:space:]]*run:[[:space:]]*[^|>[:space:]].*$/ {
             line=$0; sub(/^[[:space:]]*run:[[:space:]]*/, "", line); print trim(line); capture=0; next
         }
-        /^[[:space:]]*run:[[:space:]]*[|>][-+]?[[:space:]]*$/ { capture=1; next }
-        capture && /^[[:space:]]+/ { print trim($0); next }
+        /^[[:space:]]*run:[[:space:]]*[|>][-+]?[[:space:]]*$/ { run_indent=indent($0); capture=1; next }
+        capture {
+            line_indent=indent($0)
+            if ($0 !~ /^[[:space:]]*$/ && line_indent <= run_indent) { capture=0 }
+            else if ($0 !~ /^[[:space:]]*$/ && line_indent > run_indent) { print trim($0); next }
+        }
         capture { capture=0 }
     ' "${workflows[@]}" 2> /dev/null |
         sed -E 's/^["'"'']//; s/["'"'']$//' |

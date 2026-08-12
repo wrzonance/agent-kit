@@ -19,6 +19,7 @@
 #   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
 # Options:
 #   --repo-root DIR                  # skip git-toplevel detection
+#   --diagnose                       # report path roots/candidates without rejecting declarations
 #
 # Exit: 0 success (including no config found), 2 bad usage.
 set -euo pipefail
@@ -29,7 +30,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -78,6 +79,7 @@ while (($#)); do
     case $1 in
         --export) mode='export' ;;
         --list) mode='list' ;;
+        --diagnose) mode='diagnose' ;;
         --get)
             mode='get'
             shift
@@ -118,7 +120,7 @@ while (($#)); do
     shift
 done
 
-[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --canonical-keys, or --resolve is required'
+[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --diagnose, --canonical-keys, or --resolve is required'
 
 if [[ $mode == resolve ]]; then
     for key in "${resolve_keys[@]}"; do
@@ -202,7 +204,11 @@ resolve_contained() {
     local value=$1 resolved
     [[ $value != /* ]] || return 1
     [[ $value != *..* ]] || return 1
-    resolved=$(cd -- "$repo_root" 2> /dev/null && readlink -f -- "$value" 2> /dev/null) || return 1
+    # readlink -f needs the final executable to exist. readlink -m preserves
+    # the physical containment check for a not-yet-installed dependency while
+    # still resolving any existing symlinks in its parent directories.
+    resolved=$(cd -- "$repo_root" 2> /dev/null &&
+        (readlink -f -- "$value" 2> /dev/null || readlink -m -- "$value" 2> /dev/null)) || return 1
     [[ -n $resolved && $resolved == "$repo_root"/* ]] || return 1
     printf '%s' "$resolved"
 }
@@ -317,13 +323,13 @@ parse_argv() {
 }
 
 safe_argv() {
-    local argv0 resolved_candidate
+    local argv0
     parse_argv "$1" || return 1
     argv0=${PARSED_ARGV[0]}
-    if [[ $argv0 == */* ]]; then
-        resolved_candidate=$(resolve_contained "$argv0") || return 1
-        [[ -f $resolved_candidate && -x $resolved_candidate ]] || return 1
-    fi
+    # A declaration says where the command will live, not that dependencies
+    # have already been installed. Keep the boundary to containment only so a
+    # fresh clone can carry node_modules/.bin/* declarations through bootstrap.
+    [[ $argv0 != */* ]] || resolve_contained "$argv0" > /dev/null || return 1
     return 0
 }
 
@@ -498,6 +504,11 @@ while IFS= read -r line || [[ -n $line ]]; do
         continue
     fi
 
+    # Validity and diagnostics are intentionally separate. A missing or
+    # non-executable dependency is a truthful fresh-clone declaration, while
+    # --diagnose lets an operator audit the candidate against this root.
+    [[ $mode == diagnose ]] && path_validation_diagnostic "$key" "$value"
+
     # Existing readers resolve the first accepted occurrence. Preserve that
     # behavior while retaining a key-indexed view for canonical output.
     if [[ -z ${seen_by_key[$key]+yes} ]]; then
@@ -518,7 +529,7 @@ case $mode in
             printf 'export %s=%s\n' "${out_keys[$i]}" "$(shell_quote "${out_values[$i]}")"
         done
         ;;
-    list)
+    list | diagnose)
         for i in "${!out_keys[@]}"; do
             printf '%s=%s\n' "${out_keys[$i]}" "${out_values[$i]}"
         done

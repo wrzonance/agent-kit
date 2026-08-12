@@ -109,15 +109,13 @@ printf 'AGENT_CMD_VERIFY=/bin/sh -c true\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an absolute argv[0]'
 
-# Diagnostics must identify the physical root and resolved candidate. This is
-# the regression boundary for bootstrap's staged-config/real-root validation:
-# the same declaration is valid when checked against the checkout that owns it.
+# A command declaration is a containment contract, not a dependency-installation
+# contract. A fresh clone may not have its package manager artifacts yet, so a
+# path-shaped argv[0] remains valid when it resolves inside the repository.
 printf 'AGENT_CMD_VERIFY=tools/missing\n' > "$repo/.agent/config.env"
-err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
-assert_contains "$err" "resolution root: $repo" 'wrong-root diagnostics name the resolution root'
-assert_contains "$err" "resolved candidate: $repo/tools/missing" \
-    'wrong-root diagnostics name the resolved candidate'
-assert_contains "$err" 'failure: missing' 'wrong-root diagnostics classify missing candidates'
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_VERIFY=tools/missing' \
+    'accepts an in-repo command before its dependency is installed'
 
 printf 'AGENT_CMD_VERIFY=/bin/sh\n' > "$repo/.agent/config.env"
 err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
@@ -127,9 +125,40 @@ assert_contains "$err" 'failure: containment escape' \
 printf '#!/bin/sh\nexit 0\n' > "$repo/tools/not-executable"
 chmod 0644 "$repo/tools/not-executable"
 printf 'AGENT_CMD_VERIFY=tools/not-executable\n' > "$repo/.agent/config.env"
-err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
-assert_contains "$err" 'failure: non-executable' \
-    'present non-executable candidates are classified precisely'
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_VERIFY=tools/not-executable' \
+    'accepts an in-repo command before setup makes it executable'
+
+# Diagnostics are an explicit opt-in so normal list/bootstrap remains usable
+# before dependency installation, while operators can still audit a candidate
+# against the exact root they supplied.
+wrong_root=$(mktemp -d "$tmp/wrong-root.XXXXXX")
+diagnostic_err=$("$rc_sh" --repo-root "$wrong_root" \
+    --config-file "$repo/.agent/config.env" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $wrong_root" \
+    'diagnostics name the explicitly supplied resolution root'
+assert_contains "$diagnostic_err" "resolved candidate: $wrong_root/tools/not-executable" \
+    'diagnostics name the candidate under that root'
+assert_contains "$diagnostic_err" 'failure: missing' \
+    'wrong-root diagnostics classify the candidate as missing'
+
+diagnostic_err=$("$rc_sh" --repo-root "$repo" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $repo" \
+    'diagnostics name the real repository root'
+assert_contains "$diagnostic_err" "resolved candidate: $repo/tools/not-executable" \
+    'diagnostics name the existing candidate'
+assert_contains "$diagnostic_err" 'failure: non-executable' \
+    'diagnostics classify a present non-executable candidate'
+
+# Monorepo declarations retain their component working directory and remain
+# valid in a fresh clone where node_modules has not been installed yet.
+rm -rf -- "$repo/node_modules" "$repo/dashboard"
+printf 'AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest\nAGENT_RUNDIR_DASHBOARD_TEST=dashboard\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest' \
+    'preserves a missing dependency executable declaration'
+assert_contains "$out" 'AGENT_RUNDIR_DASHBOARD_TEST=dashboard' \
+    'preserves the monorepo command working directory'
 
 # Focus declarations use the same path-shaped argv[0] containment rule as
 # ordinary command declarations.

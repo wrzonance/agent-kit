@@ -363,6 +363,40 @@ jq -e '.schemaVersion and .project.id and .statusField.id and
     (.statusField.options | length > 0)' < "$staging/.agent/board.json" > /dev/null ||
     die 'the generated board.json is incomplete'
 
+# Check the target repository's ignore oracle before creating .agent or moving
+# either declaration file. A directory rule in .git/info/exclude defeats the
+# later allowlist, and discovering that after "wrote" left a partial install
+# which forced operators to add --force before they could rerun the repair.
+readonly IGNORE_MARKER='# agentkit: .agent/ is working state; these two files are the declaration'
+ignore_file="$repo_root/.gitignore"
+ignore_conflict_gate() {
+    local defeated details blocking_rule fix_file
+    git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
+    if defeated=$(git -C "$repo_root" check-ignore --no-index -- \
+        .agent/config.env .agent/board.json 2> /dev/null) && [[ -n $defeated ]]; then
+        details=$(git -C "$repo_root" check-ignore --no-index -v -- \
+            .agent/config.env 2> /dev/null || true)
+        blocking_rule=$(printf '%s\n' "$details" | awk -F '\t' 'NR == 1 { sub(/^.*:/, "", $1); print $1 }')
+        # A narrowed .agent/* rule is compatible with the allowlist this
+        # invocation will install. Only a directory rule is dead: git refuses
+        # to descend into .agent/ and therefore cannot reach the exceptions.
+        [[ $blocking_rule =~ ^[[:space:]]*\.agent/[[:space:]]*$ ]] || return 0
+        printf 'WARNING: the allowlist has no effect -- these files are still excluded:\n' >&2
+        git -C "$repo_root" check-ignore --no-index -v -- \
+            .agent/config.env .agent/board.json 2> /dev/null | sed 's/^/  /' >&2
+        printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
+        printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
+        printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
+        fix_file=$(git -C "$repo_root" check-ignore --no-index -v -- \
+            .agent/config.env 2> /dev/null | cut -d: -f1 | head -n 1 || true)
+        [[ -n $fix_file ]] || fix_file=$ignore_file
+        [[ $fix_file == /* ]] || fix_file=$repo_root/$fix_file
+        fix_file=$(readlink -f -- "$fix_file" 2> /dev/null || printf '%s' "$fix_file")
+        die "onboarding cannot complete while declaration files are ignored; repair the named rule, then rerun: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$fix_file'"
+    fi
+}
+ignore_conflict_gate
+
 # --- emit or install --------------------------------------------------------
 if ((dry_run)); then
     printf -- '--- %s/.agent/config.env ---\n' "$repo_root"
@@ -429,9 +463,6 @@ printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-
 # state except the two declared files. With it in place, a blanket `git add`
 # is simply correct, enforced by git for every tool and every human rather than
 # by a guard that has to recognise a command shape.
-readonly IGNORE_MARKER='# agentkit: .agent/ is working state; these two files are the declaration'
-ignore_file="$repo_root/.gitignore"
-
 if grep -qF "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
     printf 'ignore rules already present in .gitignore\n'
 elif grep -qE '^[[:space:]]*\.agent/[[:space:]]*$' "$ignore_file" 2> /dev/null; then
