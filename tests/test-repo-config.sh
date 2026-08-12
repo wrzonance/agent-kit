@@ -109,6 +109,28 @@ printf 'AGENT_CMD_VERIFY=/bin/sh -c true\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an absolute argv[0]'
 
+# Diagnostics must identify the physical root and resolved candidate. This is
+# the regression boundary for bootstrap's staged-config/real-root validation:
+# the same declaration is valid when checked against the checkout that owns it.
+printf 'AGENT_CMD_VERIFY=tools/missing\n' > "$repo/.agent/config.env"
+err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_contains "$err" "resolution root: $repo" 'wrong-root diagnostics name the resolution root'
+assert_contains "$err" "resolved candidate: $repo/tools/missing" \
+    'wrong-root diagnostics name the resolved candidate'
+assert_contains "$err" 'failure: missing' 'wrong-root diagnostics classify missing candidates'
+
+printf 'AGENT_CMD_VERIFY=/bin/sh\n' > "$repo/.agent/config.env"
+err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_contains "$err" 'failure: containment escape' \
+    'absolute candidates are identified as containment escapes'
+
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/not-executable"
+chmod 0644 "$repo/tools/not-executable"
+printf 'AGENT_CMD_VERIFY=tools/not-executable\n' > "$repo/.agent/config.env"
+err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_contains "$err" 'failure: non-executable' \
+    'present non-executable candidates are classified precisely'
+
 # Focus declarations use the same path-shaped argv[0] containment rule as
 # ordinary command declarations.
 printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"

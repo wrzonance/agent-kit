@@ -130,6 +130,7 @@ if [[ -z $repo_root ]]; then
     repo_root=$(git rev-parse --show-toplevel 2> /dev/null || true)
 fi
 [[ -n $repo_root ]] || exit 0
+repo_root=$(cd -- "$repo_root" 2> /dev/null && pwd -P) || exit 0
 
 config_file=${config_file_opt:-$repo_root/.agent/config.env}
 [[ -f $config_file ]] || exit 0
@@ -316,10 +317,13 @@ parse_argv() {
 }
 
 safe_argv() {
-    local argv0
+    local argv0 resolved_candidate
     parse_argv "$1" || return 1
     argv0=${PARSED_ARGV[0]}
-    [[ $argv0 != */* ]] || resolve_contained "$argv0" > /dev/null || return 1
+    if [[ $argv0 == */* ]]; then
+        resolved_candidate=$(resolve_contained "$argv0") || return 1
+        [[ -f $resolved_candidate && -x $resolved_candidate ]] || return 1
+    fi
     return 0
 }
 
@@ -328,6 +332,51 @@ safe_argv() {
 # inside this repository; bare names remain PATH lookups.
 command_value_valid() {
     safe_argv "$1"
+}
+
+# Explain path-shaped declaration failures at the boundary where they are
+# rejected. The root and candidate make staging mistakes distinguishable from
+# genuinely bad declarations, while the reason tells an operator the smallest
+# repair. Bare PATH commands deliberately have no candidate to report.
+path_validation_diagnostic() {
+    local key=$1 value=$2 argv0='' candidate='' reason=''
+    case $key in
+        AGENT_REPO_RUNNER) argv0=$value ;;
+        AGENT_CMD_*)
+            if parse_argv "$value" 2> /dev/null; then
+                argv0=${PARSED_ARGV[0]:-}
+            else
+                # Preserve a path-shaped first token even when the ordinary
+                # argv grammar rejects it (notably an absolute path), so the
+                # diagnostic can still explain the containment failure.
+                argv0=${value%%[[:space:]]*}
+                argv0=${argv0#\"}; argv0=${argv0%\"}
+                argv0=${argv0#\'}; argv0=${argv0%\'}
+            fi
+            ;;
+        *) return 0 ;;
+    esac
+    [[ $argv0 == */* || $argv0 == /* ]] || return 0
+
+    if [[ $argv0 == /* ]]; then
+        candidate=$(readlink -f -- "$argv0" 2> /dev/null ||
+            readlink -m -- "$argv0" 2> /dev/null || printf '%s' "$argv0")
+    else
+        candidate=$(cd -- "$repo_root" 2> /dev/null &&
+            (readlink -f -- "$argv0" 2> /dev/null || readlink -m -- "$argv0" 2> /dev/null) || true)
+    fi
+    [[ -n $candidate ]] || candidate="$repo_root/$argv0"
+
+    if [[ $candidate != "$repo_root"/* ]]; then
+        reason='containment escape'
+    elif [[ ! -e $candidate && ! -L $candidate ]]; then
+        reason='missing'
+    elif [[ ! -f $candidate || ! -x $candidate ]]; then
+        reason='non-executable'
+    else
+        return 0
+    fi
+    warn "path validation for $key: resolution root: $repo_root; resolved candidate: $candidate; failure: $reason"
 }
 
 validate() {
@@ -433,6 +482,7 @@ while IFS= read -r line || [[ -n $line ]]; do
     fi
 
     if ! validate "$key" "$value"; then
+        path_validation_diagnostic "$key" "$value"
         # An empty value is the one rejection that looks like a deliberate
         # statement rather than a mistake -- "this repository has no priority
         # labels" is a real thing to want to record. Saying only "invalid"

@@ -1247,6 +1247,22 @@ assert_contains "$reason" 'plugins/cache' 'the Stop reason spells the resolver o
 assert_contains "$reason" 'agentkit=$(find' 'and gives a runnable command, not an allusion'
 assert_contains "$reason" '/skills' 'including the /skills segment the agent guessed wrong'
 
+# A contract may point at a versioned cache, but emitted Stop text must resolve
+# through the contract rather than copying that volatile version directory.
+printf 'skills= path=/tmp/plugins/cache/agentkit/0.1.0/skills\n%s\n' \
+    "$HARNESS_LINE" > "$repo/.agent/env-contract.txt"
+out=$(printf '{"cwd":"%s","hook_event_name":"Stop","model":"m","session_id":"s","transcript_path":null}' \
+    "$repo" | "$hooks/stop.sh" 2>/dev/null)
+reason=$(jq -r '.reason' <<< "$out")
+assert_contains "$reason" 'Exact resolved command:' \
+    'Stop emits a direct contract-resolved remediation'
+assert_not_contains "$reason" 'plugins/cache/agentkit/0.1.0' \
+    'Stop never emits a versioned plugin-cache path'
+assert_contains "$reason" 'agentkit=' \
+    'the remediation resolves the stable entry point'
+assert_contains "$reason" 'sed -n' \
+    'the remediation is a copy-pasteable contract command'
+
 # .agent/ is the agent's own working state. agent-preflight.sh writes
 # env-contract.txt there, so counting it as unverified work made Stop block on
 # every single turn for the whole session.

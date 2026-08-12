@@ -12,7 +12,7 @@
 #
 # Usage:
 #   bootstrap-repo.sh [--repo-root DIR] [--project N] [--owner LOGIN]
-#                     [--dry-run] [--force]
+#                     [--dry-run] [--force] [--reset]
 #
 # Exit: 0 success, 1 discovery failed or would clobber, 2 bad usage,
 #       3 gh unavailable or unauthenticated (environment-blocked).
@@ -32,7 +32,7 @@ die_blocked() {
 }
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--project N] [--dry-run] [--force]\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--project N] [--dry-run] [--force] [--reset]\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -44,6 +44,7 @@ project_number=''
 board_owner=''
 dry_run=0
 force=0
+reset=0
 
 while (($#)); do
     case $1 in
@@ -64,6 +65,7 @@ while (($#)); do
             ;;
         --dry-run) dry_run=1 ;;
         --force) force=1 ;;
+        --reset) reset=1; force=1 ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
     esac
@@ -323,7 +325,7 @@ done
     #
     # So every declared key this generator does not own is carried across
     # verbatim, and reported.
-    if [[ -f $repo_root/.agent/config.env ]]; then
+    if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
         carried=$(grep -E '^[[:space:]]*AGENT_[A-Z0-9_]+=' "$repo_root/.agent/config.env" 2> /dev/null |
             grep -vE '^[[:space:]]*(AGENT_REPO_SLUG|AGENT_BASE_BRANCH|AGENT_PROJECT_OWNER|AGENT_PROJECT_NUMBER|AGENT_STATUS_VOCAB|AGENT_ADR_DIR|AGENT_WORKTREE_ROOT)=' || true)
         if [[ -n $carried ]]; then
@@ -345,7 +347,11 @@ fi
 
 # --- validate what we are about to write ------------------------------------
 if [[ -x $resolver ]]; then
-    if ! resolver_warnings=$("$resolver" --repo-root "$staging" --list 2>&1 > /dev/null); then
+    # The config is staged, but path-shaped declarations belong to the target
+    # checkout. Validating against the temporary directory mislabels a real
+    # executable as missing and made re-onboarding destroy useful declarations.
+    if ! resolver_warnings=$("$resolver" --repo-root "$repo_root" \
+        --config-file "$staging/.agent/config.env" --list 2>&1 > /dev/null); then
         die 'the resolver rejected the generated config.env'
     fi
     if [[ -n $resolver_warnings ]]; then
@@ -374,6 +380,29 @@ if ((!force)); then
     done
 fi
 
+if ((reset)); then
+    archive_dir=$repo_root/.agent/archive
+    archive_stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    mkdir -p -- "$archive_dir" || die "could not create archive directory: $archive_dir"
+    archived=0
+    for existing in config.env board.json; do
+        source_path=$repo_root/.agent/$existing
+        [[ -e $source_path ]] || continue
+        target_path=$archive_dir/${existing}.${archive_stamp}
+        # A timestamp collision is unlikely but must not overwrite an earlier
+        # reset when two invocations happen within one second.
+        suffix=0
+        while [[ -e $target_path ]]; do
+            suffix=$((suffix + 1))
+            target_path=$archive_dir/${existing}.${archive_stamp}.${suffix}
+        done
+        mv -- "$source_path" "$target_path" || die "could not archive $source_path"
+        archived=$((archived + 1))
+        printf 'reset: archived %s -> %s\n' "$source_path" "$target_path"
+    done
+    printf 'reset: archived %s existing declaration file(s); regenerated below\n' "$archived"
+fi
+
 mkdir -p -- "$repo_root/.agent"
 mv -- "$staging/.agent/config.env" "$repo_root/.agent/config.env"
 mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
@@ -383,6 +412,9 @@ printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
     "$repo_root" "$project_num" "$option_count"
 ((carried_count == 0)) ||
     printf 'carried forward %s existing declaration(s); nothing was discarded\n' "$carried_count"
+# shellcheck disable=SC2016  # emitted text is literal command syntax
+printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-contract.txt" | head -n 1); "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "%s" --report\n' \
+    "$repo_root" "$repo_root"
 
 # Ignore rules are WRITTEN, not suggested.
 #
@@ -402,6 +434,16 @@ ignore_file="$repo_root/.gitignore"
 
 if grep -qF "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
     printf 'ignore rules already present in .gitignore\n'
+elif grep -qE '^[[:space:]]*\.agent/[[:space:]]*$' "$ignore_file" 2> /dev/null; then
+    # A directory rule prevents git from descending far enough to reach the
+    # explicit exceptions. Repair the common dead exception in place, then add
+    # the marker and exceptions exactly once.
+    sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$ignore_file" ||
+        die "could not repair $ignore_file; run: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$ignore_file'"
+    printf 'repaired dead .agent/ ignore rule in %s\n' "$ignore_file"
+    {
+        printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
+    } >> "$ignore_file"
 elif {
     [[ ! -s $ignore_file ]] || printf '\n'
     printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
@@ -436,7 +478,18 @@ if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
         printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
         printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
+        fix_file=$(git -C "$repo_root" check-ignore --no-index -v -- \
+            .agent/config.env 2> /dev/null | cut -d: -f1 | head -n 1 || true)
+        [[ -n $fix_file ]] || fix_file=$ignore_file
+        [[ $fix_file == /* ]] || fix_file=$repo_root/$fix_file
+        fix_file=$(readlink -f -- "$fix_file" 2> /dev/null || printf '%s' "$fix_file")
+        die "onboarding cannot complete while declaration files are ignored; repair the named rule, then rerun: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$fix_file'"
     fi
+    for committed_path in .agent/config.env .agent/board.json; do
+        if git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1; then
+            die "onboarding cannot complete: git check-ignore still excludes $repo_root/$committed_path"
+        fi
+    done
 fi
 
 # Files already in the index are not affected by an ignore rule. Report them

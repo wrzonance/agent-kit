@@ -272,6 +272,31 @@ assert_eq '1' "$(grep -c '^AGENT_CMD_TEST=' "$repo/.agent/config.env")" \
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'the merged config parses cleanly'
 
+# A carried relative executable belongs to the real checkout, not bootstrap's
+# temporary staging directory. Validation must use the explicit config path
+# override while resolving candidates against the target repository root.
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/verify"
+chmod +x "$repo/tools/verify"
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+printf 'AGENT_CMD_TEST=tools/verify\n' >> "$repo/.agent/config.env"
+assert_rc 0 'bootstrap refresh validates carried commands against the real root' -- \
+    env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 --force
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_CMD_TEST=tools/verify' \
+    'refresh keeps the carried executable declaration'
+
+# Reset is the explicit archive-and-regenerate path; ordinary refresh must not
+# discard declaration work or create an archive.
+before_reset=$(find "$repo/.agent" -mindepth 2 -maxdepth 2 -type f -path '*/archive/*' | wc -l)
+assert_rc 0 'reset archives before regenerating' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 7 --reset
+after_reset=$(find "$repo/.agent" -mindepth 2 -maxdepth 2 -type f -path '*/archive/*' | wc -l)
+assert_eq '0' "$before_reset" 'refresh has no archive side effect'
+assert_eq '2' "$after_reset" 'reset archives config and board'
+assert_not_contains "$(cat "$repo/.agent/config.env")" 'AGENT_CMD_TEST=tools/verify' \
+    'reset does not carry declarations out of the archive'
+
 
 # --- the allowlist must WORK, not merely be present -------------------------
 # A repository carried the intended allowlist in .gitignore and a broader
