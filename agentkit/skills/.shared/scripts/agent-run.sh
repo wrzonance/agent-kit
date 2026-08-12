@@ -1028,11 +1028,30 @@ yolo_changed_input() {
     return 1
 }
 
+# A pinned base substitutes for the trunk anchor. Root-published only: the SHA
+# must sit behind some origin ref (workers cannot push, so only the root can
+# put a commit there) and be an ancestor of this worktree's HEAD. Same
+# defense-in-depth level as the rest of the gate, no stronger claim.
+yolo_pinned_base() {
+    local sha=$1
+    git -C "$git_top" cat-file -e "$sha^{commit}" 2> /dev/null ||
+        die "--yolo-base: no such commit in this repository: $sha"
+    [[ -n $(git -C "$git_top" branch -r --contains "$sha" 2> /dev/null) ]] ||
+        die "--yolo-base: $sha is not reachable from any origin ref; only root-published commits can anchor trust."
+    git -C "$git_top" merge-base --is-ancestor "$sha" HEAD 2> /dev/null ||
+        die "--yolo-base: $sha is not an ancestor of this worktree's HEAD."
+    printf '%s' "$sha"
+}
+
 yolo_gate() {
     local base changed canonical_out rc key current_value base_value
     declare -A base_present=() base_values=() current_present=() current_values=()
-    base=$(yolo_base_ref) \
-        || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    if [[ -n $yolo_base_opt ]]; then
+        base=$(yolo_pinned_base "$yolo_base_opt")
+    else
+        base=$(yolo_base_ref) \
+            || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    fi
     if [[ $resolved_parse_failed == yes ]]; then
         printf 'agent-run: refusing --yolo for %s: AGENT_CMD_%s cannot be proven equal after config parse errors\n' \
             "$cmd_name" "$(printf '%s' "$cmd_name" | tr '[:lower:]-' '[:upper:]_')" >&2

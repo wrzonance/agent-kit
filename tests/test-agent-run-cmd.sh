@@ -334,6 +334,43 @@ rc=0
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "refs/heads/main" 2>&1) || rc=$?
 assert_eq 1 "$rc" 'symbolic yolo-base ref exits 1'
 
+# --- --yolo-base pinned-base validation -------------------------------------
+# A local commit never pushed anywhere cannot anchor trust.
+repo=$tmp/yolo-base-unpushed
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'local-only\n' > "$repo/local.txt"
+git -C "$repo" add local.txt && git -C "$repo" commit -qm local-only
+unpushed_sha=$(git -C "$repo" rev-parse HEAD)
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$unpushed_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'unpushed pin exits 1'
+assert_contains "$out" 'not reachable from any origin ref' \
+    'unpushed pin refusal names reachability'
+assert_contains "$out" "$unpushed_sha" 'unpushed pin refusal names the sha'
+
+# An origin-published commit that is NOT an ancestor of HEAD cannot anchor trust.
+repo=$tmp/yolo-base-sideline
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+git -C "$repo" checkout -q -b sideline
+printf 'side\n' > "$repo/side.txt"
+git -C "$repo" add side.txt && git -C "$repo" commit -qm side
+git -C "$repo" push -q origin HEAD:sideline
+side_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout -q feature
+git -C "$repo" fetch -q origin
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$side_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'non-ancestor pin exits 1'
+assert_contains "$out" 'not an ancestor' 'non-ancestor pin refusal names ancestry'
+
 # Approval persistence must fail loudly rather than claiming success when the
 # temporary record cannot be written or atomically replaced. Both cases approve
 # through the terminal helper; the write case additionally has the helper create
