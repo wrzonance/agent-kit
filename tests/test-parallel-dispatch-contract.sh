@@ -25,6 +25,13 @@ assert_contains "$text" 'never an ordering input' \
     'issue-body prose is excluded from ordering'
 assert_contains "$text" 'chain depth cap: 4' 'chain depth cap is pinned'
 assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
+assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
+assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
+    'worktree recipe parameterizes its start point'
+assert_contains "$text" '--yolo --yolo-base $chain_base_sha' \
+    'chained WHEN-yolo threading pins the base'
+assert_contains "$text" 'only after the root has validated, committed, and pushed' \
+    'chain successors defer on root publication, not PR state'
 assert_contains "$text" 'A wait must never spend model turns.' \
     'parallel skill states the no-model-turn wait rule'
 assert_contains "$text" 'gh-pr-state.sh --wait-ci --rounds N --interval S' \

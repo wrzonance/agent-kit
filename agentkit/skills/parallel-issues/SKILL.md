@@ -677,7 +677,11 @@ if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     printf 'Remote branch origin/%s already exists; choose a different branch or resolve it before dispatching.\n' "$branch" >&2
     exit 1
 fi
-git worktree add "$worktree" -b "$branch" "origin/$base" || {
+# For a chained issue, chain_base_sha is the root-published commit of its
+# predecessor (worktree-commit.sh printed it); empty means an independent
+# issue starting from trunk.
+chain_base_sha="${chain_base_sha:-}"
+git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}" || {
     printf 'Could not create worktree %s.\n' "$worktree" >&2
     exit 1
 }
@@ -777,6 +781,12 @@ fi
 ```
 
 When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
+
+**Chained issues defer.** A chain successor's worktree is created and its lead dispatched
+only after the root has validated, committed, and pushed the predecessor's handback. Record
+`chain_base_sha` from the commit line `worktree-commit.sh` printed. A deferred issue holds no
+concurrency slot. If the predecessor's lead fails or is BLOCKED, its successors are never
+dispatched — park the chain and name it in the report.
 
 **Publishing is part of the dispatch.** Creating worktrees, pushing issue branches,
 and opening DRAFT PRs are the mechanical output this invocation asked for — the
@@ -1069,7 +1079,9 @@ shared=<PASTE the validated shared-scripts path from the contract>
 --no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
 "append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
-check)." Otherwise delete this placeholder. Either way, never dispatch with the
+check)." For a chained issue, append `--yolo --yolo-base $chain_base_sha` instead — the pin is
+the root-published predecessor commit this branch was created from. Otherwise delete this
+placeholder. Either way, never dispatch with the
 placeholder still in the prompt. A worker refused at the trust gate — as
 `unapproved repository command`, or by `--yolo` itself because an input differs
 from the trunk — reports BLOCKED with that reason. It never approves, drives a
@@ -1588,7 +1600,9 @@ as an unresolved placeholder. Its provider-neutral base comes from the contract'
 --no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
 "append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
-check)." Otherwise delete this placeholder. Either way, never dispatch with the
+check)." For a chained issue, append `--yolo --yolo-base $chain_base_sha` instead — the pin is
+the root-published predecessor commit this branch was created from. Otherwise delete this
+placeholder. Either way, never dispatch with the
 placeholder still in the prompt. A worker refused at the trust gate — as
 `unapproved repository command`, or by `--yolo` itself because an input differs
 from the trunk — reports BLOCKED with that reason. It never approves, drives a
