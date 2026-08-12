@@ -48,6 +48,10 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  skip is announced on stderr and stamped into the run log.
                  Mutually exclusive with --approve; inert for a literal
                  command, which the gate never covered.
+  --yolo-base SHA  With --yolo: validate command inputs against this pinned,
+                 origin-reachable ancestor commit instead of the remote trunk.
+                 For chained worktrees whose base is a root-published commit
+                 from an earlier issue in the same run.
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
@@ -110,6 +114,7 @@ focus_opt=''
 focus_requested=0
 approve_cmd=0
 yolo_cmd=0
+yolo_base_opt=''
 force_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
@@ -126,6 +131,11 @@ while (($#)); do
         --yolo)
             yolo_cmd=1
             shift
+            ;;
+        --yolo-base)
+            (($# >= 2)) || die '--yolo-base requires a commit SHA.'
+            yolo_base_opt=$2
+            shift 2
             ;;
         --force)
             force_cmd=1
@@ -183,6 +193,11 @@ if ((force_cmd)) && [[ -z $cmd_name ]]; then
 fi
 if ((approve_cmd && yolo_cmd)); then
     die '--approve and --yolo are mutually exclusive: one records trust, the other skips it.'
+fi
+if [[ -n $yolo_base_opt ]]; then
+    ((yolo_cmd)) || die '--yolo-base requires --yolo.'
+    [[ $yolo_base_opt =~ ^[0-9a-f]{40}$ ]] ||
+        die '--yolo-base requires a full 40-character lowercase commit SHA, not a ref or abbreviation.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -1013,11 +1028,57 @@ yolo_changed_input() {
     return 1
 }
 
+# A pinned base substitutes for the trunk anchor. Root-published only: the SHA
+# must sit behind some origin ref (workers cannot push, so only the root can
+# put a commit there) and be an ancestor of this worktree's HEAD. Same
+# defense-in-depth level as the rest of the gate, no stronger claim.
+yolo_pinned_base() {
+    local sha=$1
+    git -C "$git_top" cat-file -e "$sha^{commit}" 2> /dev/null ||
+        die "--yolo-base: no such commit in this repository: $sha"
+    # Remote-tracking refs are writable local files -- reachability from them
+    # proves nothing about what the server carries. Ask origin itself: a pin is
+    # trusted only when it IS a server-advertised head, or is an ancestor of one
+    # (ancestry against a server-advertised SHA is content-addressed, so a local
+    # forgery cannot satisfy it).
+    local advertised='' candidate='' pin_ok=''
+    advertised=$(git -C "$git_top" ls-remote --heads origin 2> /dev/null | awk '{print $1}') ||
+        die "--yolo-base: cannot query origin to validate pin $sha; refusing."
+    [[ -n $advertised ]] ||
+        die "--yolo-base: origin advertises no heads to validate pin $sha against; refusing."
+    while IFS= read -r candidate; do
+        [[ -n $candidate ]] || continue
+        if [[ $candidate == "$sha" ]]; then
+            pin_ok=yes
+            break
+        fi
+        if git -C "$git_top" cat-file -e "$candidate^{commit}" 2> /dev/null &&
+            git -C "$git_top" merge-base --is-ancestor "$sha" "$candidate" 2> /dev/null; then
+            pin_ok=yes
+            break
+        fi
+    done <<< "$advertised"
+    [[ -n $pin_ok ]] ||
+        die "--yolo-base: $sha is not reachable from any origin ref advertised by the server; only root-published commits can anchor trust."
+    git -C "$git_top" merge-base --is-ancestor "$sha" HEAD 2> /dev/null ||
+        die "--yolo-base: $sha is not an ancestor of this worktree's HEAD."
+    printf '%s' "$sha"
+}
+
 yolo_gate() {
-    local base changed canonical_out rc key current_value base_value
+    local base base_desc changed canonical_out rc key current_value base_value
     declare -A base_present=() base_values=() current_present=() current_values=()
-    base=$(yolo_base_ref) \
-        || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    if [[ -n $yolo_base_opt ]]; then
+        base=$(yolo_pinned_base "$yolo_base_opt")
+    else
+        base=$(yolo_base_ref) \
+            || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
+    fi
+    # Every skip/refusal message below names this description rather than the
+    # raw comparison target, so a chained worktree's operator sees which pin
+    # authorized (or refused) the run instead of an unlabeled commit/ref.
+    base_desc=$base
+    [[ -n $yolo_base_opt ]] && base_desc="pinned base $base"
     if [[ $resolved_parse_failed == yes ]]; then
         printf 'agent-run: refusing --yolo for %s: AGENT_CMD_%s cannot be proven equal after config parse errors\n' \
             "$cmd_name" "$(printf '%s' "$cmd_name" | tr '[:lower:]-' '[:upper:]_')" >&2
@@ -1032,7 +1093,7 @@ yolo_gate() {
         while IFS= read -r key; do
             [[ -n $key && -n ${resolved_config_present[$key]+yes} ]] || continue
             printf 'agent-run: refusing --yolo for %s: %s is declared on this checkout but missing from %s\n' \
-                "$cmd_name" "$key" "$base" >&2
+                "$cmd_name" "$key" "$base_desc" >&2
             exit 1
         done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
         canonical_out=''
@@ -1054,26 +1115,26 @@ yolo_gate() {
         if [[ -z ${current_present[$key]+yes} && -n ${base_present[$key]+yes} ||
             -n ${current_present[$key]+yes} && -z ${base_present[$key]+yes} ]]; then
             printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-                "$cmd_name" "$key" "$base" >&2
+                "$cmd_name" "$key" "$base_desc" >&2
             exit 1
         fi
         if [[ -n ${current_present[$key]+yes} && ${current_values[$key]} != "${base_values[$key]}" ]]; then
             printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-                "$cmd_name" "$key" "$base" >&2
+                "$cmd_name" "$key" "$base_desc" >&2
             exit 1
         fi
     done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
     if changed=$(yolo_changed_input "$base"); then
         printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-            "$cmd_name" "$changed" "$base" >&2
+            "$cmd_name" "$changed" "$base_desc" >&2
         printf '  --yolo trusts only command inputs the trunk already carries. This checkout\n' >&2
         printf '  changes one, so it is new code asking to run unattended -- review the\n' >&2
         printf '  change and approve it from your own terminal.\n' >&2
         exit 1
     fi
     printf 'agent-run: trust gate skipped (--yolo): %s inputs match %s; no approval record\n' \
-        "$cmd_name" "$base" >&2
-    add_note "trust gate skipped (--yolo): inputs match $base; no approval record"
+        "$cmd_name" "$base_desc" >&2
+    add_note "trust gate skipped (--yolo): inputs match $base_desc; no approval record"
 }
 
 # Reuse the exact trunk comparison for the interactive refusal teaching line,

@@ -314,7 +314,11 @@ repo=$(make_repo)
 bash_bin=$(command -v bash)
 for h in session-start subagent-start; do
     rc=0
-    out=$(session_input "$repo" | env PATH=/nonexistent "$bash_bin" "$hooks/$h.sh" 2>/dev/null) || rc=$?
+    # File-feed, never pipe: with a broken PATH the hook exits without draining
+    # stdin, the pipe writer takes SIGPIPE, and pipefail reports 141 even though
+    # the hook itself exited 0 (same producer race fixed in a35561c).
+    session_input "$repo" > "$tmp/no-env-input.json"
+    out=$(env PATH=/nonexistent "$bash_bin" "$hooks/$h.sh" < "$tmp/no-env-input.json" 2>/dev/null) || rc=$?
     assert_eq '0' "$rc" "$h exits 0 with no usable environment"
     assert_eq '{}' "$out" "and $h fails open with empty context"
 done

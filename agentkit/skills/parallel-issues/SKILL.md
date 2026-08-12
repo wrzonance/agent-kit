@@ -22,7 +22,7 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 
 ## Flags
 
-Four flags decide how much this skill stops to ask. They are read from the invocation
+Five flags decide how much this skill stops to ask. They are read from the invocation
 line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
@@ -31,6 +31,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. |
+| `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's root-published commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
 
@@ -590,6 +591,13 @@ the approval gate, not the reasoning that gate was there to check. Two workers e
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
 
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Build the
+dependency graph from file-conflict pairs and native blocked-by edges inside the selected set,
+decompose it into linear chains, and print the chain plan next to the conflict table
+(attended: get approval; `--fast-mode`: proceed). A cycle cannot be chained — report the cyclic
+members and fall back to drop/ask for exactly those. Chains respect a chain depth cap: 4; deeper
+tails are dropped with a named report. Chains gate on root-published commits, never on PR state.
+
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
 **Default:** brainstorm each issue with user before worktree creation.
@@ -669,7 +677,11 @@ if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     printf 'Remote branch origin/%s already exists; choose a different branch or resolve it before dispatching.\n' "$branch" >&2
     exit 1
 fi
-git worktree add "$worktree" -b "$branch" "origin/$base" || {
+# For a chained issue, chain_base_sha is the root-published commit of its
+# predecessor (worktree-commit.sh printed it); empty means an independent
+# issue starting from trunk.
+chain_base_sha="${chain_base_sha:-}"
+git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}" || {
     printf 'Could not create worktree %s.\n' "$worktree" >&2
     exit 1
 }
@@ -769,6 +781,12 @@ fi
 ```
 
 When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
+
+**Chained issues defer.** A chain successor's worktree is created and its lead dispatched
+only after the root has validated, committed, and pushed the predecessor's handback. Record
+`chain_base_sha` from the commit line `worktree-commit.sh` printed. A deferred issue holds no
+concurrency slot. If the predecessor's lead fails or is BLOCKED, its successors are never
+dispatched — park the chain and name it in the report.
 
 **Publishing is part of the dispatch.** Creating worktrees, pushing issue branches,
 and opening DRAFT PRs are the mechanical output this invocation asked for — the
@@ -1061,7 +1079,9 @@ shared=<PASTE the validated shared-scripts path from the contract>
 --no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
 "append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
-check)." Otherwise delete this placeholder. Either way, never dispatch with the
+check)." For a chained issue, append `--yolo --yolo-base $chain_base_sha` instead — the pin is
+the root-published predecessor commit this branch was created from. Otherwise delete this
+placeholder. Either way, never dispatch with the
 placeholder still in the prompt. A worker refused at the trust gate — as
 `unapproved repository command`, or by `--yolo` itself because an input differs
 from the trunk — reports BLOCKED with that reason. It never approves, drives a
@@ -1290,6 +1310,15 @@ rm -f -- "$pr_body_template"
 gh pr create --draft --body-file "$pr_body_file" \
   --title "$pr_title" --base "$base" --head "$branch"
 ```
+
+For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
+of `--base "$base"`) and append this line to the body, substituting the predecessor's PR number
+as a fixed literal:
+
+    Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
+    (`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
+    only retargets automatically when the base branch is deleted on merge, which not every
+    repository does.
 
 The worker leaves scoped changes unstaged and returns a publication handback; root alone must
 push the branch and open a DRAFT PR; root handles CI state/verification, forge conflicts,
@@ -1580,7 +1609,9 @@ as an unresolved placeholder. Its provider-neutral base comes from the contract'
 --no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
 "append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
 the lines below and any you compose yourself (typecheck, coverage, a repo-declared
-check)." Otherwise delete this placeholder. Either way, never dispatch with the
+check)." For a chained issue, append `--yolo --yolo-base $chain_base_sha` instead — the pin is
+the root-published predecessor commit this branch was created from. Otherwise delete this
+placeholder. Either way, never dispatch with the
 placeholder still in the prompt. A worker refused at the trust gate — as
 `unapproved repository command`, or by `--yolo` itself because an input differs
 from the trunk — reports BLOCKED with that reason. It never approves, drives a
@@ -1634,6 +1665,14 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 ```
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
+
+When the batch contains chains, the ready-flip handoff lists each chain's merge order
+explicitly (base PR first), and after each predecessor merges, the successor must be
+retargeted to the default branch (`gh pr edit <N> --base <default>`) — then verify the successor's baseRefName
+actually changed before it merges. Never rely on automatic retargeting: it only fires when
+the merged base branch is deleted. A stacked PR merged while still based on its
+predecessor's branch merges into that branch, not the trunk — its changes never reach the
+default branch, and nothing fails loudly. Say all of this in the handoff.
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
@@ -1746,6 +1785,7 @@ Cleanup runs only when user explicitly asks after merge.
 ## Limits
 
 - Max 10 issues. Issue concurrency is runtime-advertised. Include the root in the configured cap, queue overflow issues, and refill slots as they free; if the cap is unavailable, do not dispatch until the runtime owner supplies it.
+- Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
 - Invoking this skill is explicit multi-agent opt-in for the issue leads. Only this root orchestrator
   can spawn; issue leads cannot spawn helpers of their own.
 - Requires GitHub remote (`gh` CLI) with Projects v2 scope: reading needs `read:project`; moving items via the Bash Project helper needs write `project` (`gh auth refresh -s project` if missing — Step 0's `project-scope=` line tells you before a move fails)

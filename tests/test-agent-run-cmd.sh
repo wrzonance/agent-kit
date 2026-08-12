@@ -310,6 +310,139 @@ assert_contains "$out" 'refusing --yolo' \
 assert_eq 'no' "$([[ -e $tmp/deleted-config-ran ]] && echo yes || echo no)" \
     'a deleted declaration does not fall through to execution'
 
+# --- --yolo-base usage constraints -----------------------------------------
+repo=$tmp/yolo-base-usage
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+pin_sha=$(git -C "$repo" rev-parse HEAD)
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo-base "$pin_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'yolo-base without yolo exits 1'
+assert_contains "$out" '--yolo-base requires --yolo' \
+    'yolo-base without yolo names the dependency'
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "${pin_sha:0:12}" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'abbreviated yolo-base sha exits 1'
+assert_contains "$out" 'full 40-character' 'abbreviated sha refusal explains the format'
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "refs/heads/main" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'symbolic yolo-base ref exits 1'
+
+# --- --yolo-base pinned-base validation -------------------------------------
+# A local commit never pushed anywhere cannot anchor trust.
+repo=$tmp/yolo-base-unpushed
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'local-only\n' > "$repo/local.txt"
+git -C "$repo" add local.txt && git -C "$repo" commit -qm local-only
+unpushed_sha=$(git -C "$repo" rev-parse HEAD)
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$unpushed_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'unpushed pin exits 1'
+assert_contains "$out" 'not reachable from any origin ref' \
+    'unpushed pin refusal names reachability'
+assert_contains "$out" "$unpushed_sha" 'unpushed pin refusal names the sha'
+
+# An origin-published commit that is NOT an ancestor of HEAD cannot anchor trust.
+repo=$tmp/yolo-base-sideline
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+git -C "$repo" checkout -q -b sideline
+printf 'side\n' > "$repo/side.txt"
+git -C "$repo" add side.txt && git -C "$repo" commit -qm side
+git -C "$repo" push -q origin HEAD:sideline
+side_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout -q feature
+git -C "$repo" fetch -q origin
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$side_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'non-ancestor pin exits 1'
+assert_contains "$out" 'not an ancestor' 'non-ancestor pin refusal names ancestry'
+
+# A locally forged remote-tracking ref must never anchor trust: remote-tracking
+# refs are writable local files, so reachability from them proves nothing about
+# what the server carries. The pin must be validated against server-advertised
+# heads (adversarial-review P1 regression witness).
+repo=$tmp/yolo-base-forged
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'v1\n' > "$repo/payload.txt"
+printf 'AGENT_CMD_TEST=tools/runner --require=payload.txt\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'forged v2\n' > "$repo/payload.txt"
+git -C "$repo" add payload.txt && git -C "$repo" commit -qm forged
+forged_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" update-ref refs/remotes/origin/fake "$forged_sha"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$forged_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a locally forged remote-tracking ref cannot anchor trust'
+assert_contains "$out" 'advertised' 'forged-ref refusal cites server-advertised refs'
+
+# Every refusal path names the rejected pin, including the origin-query paths.
+repo=$tmp/yolo-base-empty-origin
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+git -C "$repo" add -- . && git -C "$repo" commit -qm base
+empty_sha=$(git -C "$repo" rev-parse HEAD)
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$empty_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'an origin with no advertised heads refuses the pin'
+assert_contains "$out" "$empty_sha" 'the no-heads refusal names the rejected pin'
+
+repo=$tmp/yolo-base-dead-origin
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+dead_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" remote set-url origin "$tmp/no-such-origin-$$"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$dead_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'an unreachable origin refuses the pin'
+assert_contains "$out" "$dead_sha" 'the origin-query failure names the rejected pin'
+
+# --- --yolo-base drives the gate; the verdict names the pin -----------------
+# Chain link: predecessor changed a declared input; the pin authorizes it.
+repo=$tmp/yolo-base-chain
+make_yolo_repo "$repo"
+printf '#!/bin/sh\ntouch "%s/chain-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'payload v1\n' > "$repo/payload.txt"
+printf 'AGENT_CMD_TEST=tools/runner --require=payload.txt\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'payload v2 from issue A\n' > "$repo/payload.txt"
+git -C "$repo" add payload.txt && git -C "$repo" commit -qm 'issue A'
+git -C "$repo" push -q origin HEAD:feat-issue-a
+git -C "$repo" fetch -q origin
+chain_sha=$(git -C "$repo" rev-parse HEAD)
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq 1 "$rc" 'plain yolo still refuses the chained input change'
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$chain_sha" 2>&1) || rc=$?
+assert_eq 0 "$rc" 'pinned yolo passes on the chain base'
+assert_eq yes "$([[ -e $tmp/chain-ran ]] && echo yes || echo no)" \
+    'the pinned run actually executes the command'
+assert_contains "$out" 'pinned base' 'skip message names the pinned anchor'
+
 # Approval persistence must fail loudly rather than claiming success when the
 # temporary record cannot be written or atomically replaced. Both cases approve
 # through the terminal helper; the write case additionally has the helper create
