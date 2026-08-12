@@ -14,7 +14,8 @@
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234
 #   ci=3/3 green pending=0 failing=0
-#   threads: coderabbit=0 unresolved  code-quality=0 open  human=0
+#   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
+#   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
 #   nitpicks: 0 unhandled
 #   alerts: code-scanning open=0
 #   saved: DIR/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
@@ -73,9 +74,12 @@ Options:
   -h, --help             Show this help.
 
 Counting rules:
-  coderabbit/code-quality  unresolved threads owned by that bot with no human comment.
+  coderabbit/code-quality  unresolved threads owned by that known provider with no
+                           human comment.
+  generic     unresolved threads from other authoritative automated accounts with
+              no human comment.
   human       unresolved threads carrying any comment that is neither a recognised
-              bot nor marked '$AGENT_MARKER...'; the authenticated
+              automated account nor marked '$AGENT_MARKER...'; the authenticated
               gh login counts as human.
   nitpicks    CodeRabbit review bodies and PR conversation comments matching
               /nitpick|broom-emoji/i (the body-only surfaces, which have no review
@@ -214,7 +218,7 @@ fetch_threads() {
           isResolved
           comments(first:100){
             pageInfo{hasNextPage}
-            nodes{ databaseId body author{login} }
+            nodes{ databaseId body author{login __typename} }
           }
         }
       }
@@ -272,11 +276,32 @@ ci_counts() {
         | @tsv' <"$WORK_DIR/pr.json"
 }
 
-# Emits: code-quality<TAB>coderabbit<TAB>human<TAB>truncated<TAB>agent-doc-threads.
+# Emits: code-quality<TAB>coderabbit<TAB>human<TAB>generic<TAB>known<TAB>type-bot
+#        <TAB>login-suffix<TAB>human-signal<TAB>truncated<TAB>agent-doc-threads.
 thread_counts() {
     jq -r --arg cr "$CR_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
-        def is_cr: (.author.login // "") | test($cr; "i");
-        def is_cq: (.author.login // "") | test($cq; "i");
+        def author_login: ((.author.login // "") | ascii_downcase);
+        def known_provider:
+          (author_login | test($cr; "i"))
+          or author_login == "github-code-quality"
+          or author_login == "github-code-quality[bot]";
+        def type_is_bot:
+          ((.author.type // "") == "Bot") or ((.author.__typename // "") == "Bot");
+        def login_suffix: (author_login | test("\\[bot\\]$"));
+        def classification:
+          if known_provider then
+            {lane:"known-provider", signal:"known-provider", provider:
+              (if (author_login | test($cr; "i")) then "coderabbit" else "github-code-quality" end)}
+          elif login_suffix then
+            {lane:"generic-automated", signal:"login-suffix", provider:null}
+          elif type_is_bot then
+            {lane:"generic-automated", signal:"type=Bot", provider:null}
+          else
+            {lane:"human", signal:"human", provider:null}
+          end;
+        def is_cr: (classification.provider == "coderabbit");
+        def is_cq: (classification.provider == "github-code-quality");
+        def has_signal($signal): [.comments.nodes[]? | select(classification.signal == $signal)] | length > 0;
         # Anchored to the start of a LINE, not merely present somewhere. This
         # marker decides whether a thread counts as human-touched, and therefore
         # whether it reaches the operator for confirmation -- so a comment
@@ -292,7 +317,7 @@ thread_counts() {
         # resolves toward "human": the cost is one extra item to confirm, versus
         # one lost silently.
         def is_agent: (.body // "") | test("(^|\r?\n)" + $mark);
-        def human_touched: [.comments.nodes[] | select(((is_cr) or (is_cq) or (is_agent)) | not)] | length > 0;
+        def human_touched: [.comments.nodes[] | select(((classification.lane == "human") and (is_agent | not)))] | length > 0;
         def has_cr: [.comments.nodes[] | select(is_cr)] | length > 0;
         def has_cq: [.comments.nodes[] | select(is_cq)] | length > 0;
         .data.repository.pullRequest.reviewThreads as $rt
@@ -302,6 +327,11 @@ thread_counts() {
         | [ ($bot | map(select(has_cq)) | length),
             ($bot | map(select((has_cr) and ((has_cq) | not))) | length),
             ($open | map(select(human_touched)) | length),
+            ($bot | map(select(has_signal("type=Bot") or has_signal("login-suffix"))) | length),
+            ($bot | map(select(has_signal("known-provider"))) | length),
+            ($bot | map(select(has_signal("type=Bot"))) | length),
+            ($bot | map(select(has_signal("login-suffix"))) | length),
+            ($open | map(select(has_signal("human"))) | length),
             (if (($rt.pageInfo.hasNextPage // false)
                  or ([$all[] | .comments.pageInfo.hasNextPage // false] | any)) then 1 else 0 end),
             ($all | map(select(((.comments.nodes[0].body) // "") | test("(^|\r?\n)" + $doc))) | length) ]
@@ -395,16 +425,18 @@ print_ci_line() {
 }
 
 print_thread_lines() {
-    local cq cr human trunc doc nits reviews_n issues_n unhandled
-    IFS=$'\t' read -r cq cr human trunc doc < <(thread_counts)
+    local cq cr human generic known type_bot suffix human_signal trunc doc nits reviews_n issues_n unhandled
+    IFS=$'\t' read -r cq cr human generic known type_bot suffix human_signal trunc doc < <(thread_counts)
     if ((trunc)); then
-        printf 'threads: coderabbit=%s unresolved  code-quality=%s open  human=%s  truncated=yes\n' \
-            "$cr" "$cq" "$human"
+        printf 'threads: coderabbit=%s unresolved  code-quality=%s open  human=%s  generic=%s  truncated=yes\n' \
+            "$cr" "$cq" "$human" "$generic"
         note "more than 100 review threads (or >100 comments in one thread): counts are lower bounds"
     else
-        printf 'threads: coderabbit=%s unresolved  code-quality=%s open  human=%s\n' \
-            "$cr" "$cq" "$human"
+        printf 'threads: coderabbit=%s unresolved  code-quality=%s open  human=%s  generic=%s\n' \
+            "$cr" "$cq" "$human" "$generic"
     fi
+    printf 'classification: known-provider=%s type=Bot=%s login-suffix=%s human=%s\n' \
+        "$known" "$type_bot" "$suffix" "$human_signal"
     reviews_n=$(nitpick_count "$WORK_DIR/reviews.json")
     issues_n=$(nitpick_count "$WORK_DIR/issue_comments.json")
     nits=$((reviews_n + issues_n))

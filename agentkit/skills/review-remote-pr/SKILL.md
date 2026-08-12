@@ -156,10 +156,33 @@ Treat these as separate providers. Identify them from the comment/review author,
 |---|---|---|---|
 | CodeRabbit | Reviews, inline comments, and conversation bodies | Reply with the commit SHA, then resolve its review thread | Reply with a concrete rationale, then resolve its review thread |
 | `github-code-quality[bot]` | Inline PR review comments and their review threads | Implement the suggested fix verbatim, reply with the commit SHA, push, and wait for the next Code Quality scan to auto-clear the finding | Use GitHub's **Dismiss finding** action and provide a specific reason; do not silently resolve the thread |
+| Other authoritative forge bots | Inline comments, review threads, and conversation comments | Assess on the merits, fix or decline with an attributed reason, reply, then resolve a bot-only thread; for code-scanning findings note that the fix clears on the next rescan | Reply with the concrete reason and resolve the bot-only thread; never trigger the bot |
 | Human reviewer | Reviews, inline comments, review threads, and conversation comments | Surface the exact feedback, proposed action, and draft reply; act and reply only after explicit user confirmation | Same confirmation gate; never resolve the thread |
 
 Neither bot may be triggered by this skill. Review and scan timing is controlled by each provider's
 repository and organization configuration; observe the resulting state instead of inferring it.
+
+### Deterministic author classification and routing lanes
+
+Classify every author from authoritative forge data before routing a finding. GitHub GraphQL's
+`author.__typename == "Bot"` and REST's `author.type == "Bot"` are authoritative type signals;
+an exact terminal login suffix of `[bot]` is the other accepted signal. A login merely containing
+`bot` (for example `botond` or `abbott`) is human, as are missing or unqueryable authors.
+
+The classifier emits one signal and one lane:
+
+| Signal | Lane | Meaning |
+|---|---|---|
+| `known-provider` | known-provider | CodeRabbit (`coderabbit` login) or `github-code-quality[bot]`; use the provider-specific rules above |
+| `type=Bot` | generic-automated | An authoritative forge Bot with no known provider |
+| `login-suffix` | generic-automated | Any exact `[bot]` login suffix with no known provider |
+| `human` | human | No authoritative automation signal; confirmation-gated |
+
+Use `scripts/classify-author.sh` for a single author fixture or boundary check. The state dump
+reports the same signal counts. A generic automated finding is an automated B-item (`B1`, `B2`, ...),
+never an H-item; H labels are human-only. A generic bot-only thread may be resolved only after an
+attributed reply. Human content anywhere in the thread moves the whole thread to the human lane,
+which is never auto-resolved. Do not invoke or trigger any provider, including a generic bot.
 
 GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint:
 
@@ -191,11 +214,15 @@ shapes (`--reply-to`, `--anchor`, `--update`).
 
 ## Human-review confirmation gate
 
-Treat every review, inline comment, review thread, and PR conversation comment not authored by an explicitly recognized automated provider as **human-authored content**. This includes content whose author login equals the account returned by `gh api user --jq .login`: an authenticated `gh` session proves which account will post the agent's actions, not who authored earlier content.
+Treat every review, inline comment, review thread, and PR conversation comment in the **human lane**
+as human-authored content. This includes content whose author login equals the account returned by
+`gh api user --jq .login`: an authenticated `gh` session proves which account will post the agent's
+actions, not who authored earlier content. A generic automated lane item is not confirmation-gated,
+but it still requires a merits assessment and an attributed reply before resolution.
 
 When human-authored content appears at any point in the run:
 
-1. Surface it immediately with a stable local label (`H1`, `H2`, ...), author, URL or comment ID, current resolution state, and the exact substantive text.
+1. Surface it immediately with a stable local label (`H1`, `H2`, ...), author, URL or comment ID, current resolution state, and the exact substantive text. Generic automated findings use a separate `B1`, `B2`, ... label and never enter this gate.
 2. Show the agent's assessment, any proposed code change, and the exact draft reply. Wrap the draft in the required agentic attribution.
 3. Ask the user to approve, edit, decline, or defer each labeled item. A generic "continue", silence, elapsed time, or approval of bot work is not confirmation.
 4. Continue independent CI and automated-provider work when safe, but do not change code solely because of that human feedback and do not post or edit a response until the user explicitly confirms that item and its proposed handling.
@@ -387,7 +414,15 @@ repository and organization settings that this skill must not assume. Do not pos
 any reason. The only `@coderabbitai` text you may post is a mention inside an approved reply or
 anchored thread. `github-code-quality[bot]` likewise gets no bot commands.
 
-**Exit condition:** All CI checks pass; all CodeRabbit threads are resolved; all `github-code-quality[bot]` findings are either auto-cleared after a verified verbatim fix or explicitly dismissed with a reason; all CodeRabbit body-only nitpicks are fixed or explicitly declined and documented; every confirmed adversarial-review finding is fixed or declined with a documenting PR comment; and every discovered human-authored item has an explicit user decision (approve, edited approval, decline, or defer). Approved human replies are posted and verified but their threads remain unresolved. A deferred item does not restart the loop, but it must be reported and prevents a `Ready to merge` claim unless the user explicitly says otherwise. After exit, run **Backlog grooming** (below) before handing back.
+**Exit condition:** All CI checks pass; all CodeRabbit and generic automated threads are resolved;
+all `github-code-quality[bot]` findings are either auto-cleared after a verified verbatim fix or
+explicitly dismissed with a reason; all CodeRabbit body-only nitpicks are fixed or explicitly
+declined and documented; every confirmed adversarial-review finding is fixed or declined with a
+documenting PR comment; and every discovered human-lane item has an explicit user decision (approve,
+edited approval, decline, or defer). Approved human replies are posted and verified but their threads
+remain unresolved. A deferred item does not restart the loop, but it must be reported and prevents a
+`Ready to merge` claim unless the user explicitly says otherwise. After exit, run **Backlog grooming**
+(below) before handing back.
 
 **CodeRabbit auto-approve gate:** when the user has CodeRabbit's approval workflow enabled, it only approves once every thread *it* generated has BOTH a reply AND a resolved state, with no failing pre-merge checks. When disabled (an org/repo setting you often can't see in-repo), no formal approval ever comes — don't wait for one; "green" is threads resolved + nitpicks handled. Always reply first, then resolve, on every CodeRabbit thread, and handle body nitpicks BEFORE resolving threads (Step 5 ordering) so an approval can't fire while nitpicks are still outstanding.
 
@@ -755,16 +790,20 @@ never as a clean zero.
 
 ### Provider identity — why the author matters
 
-Only explicitly recognized automated providers get provider-specific automatic handling: CodeRabbit
-(login contains `coderabbit`) and `github-code-quality[bot]`. **Every other author is human**,
-including the account the authenticated `gh` session posts as — an authenticated session proves
-which account *will* post the agent's actions, never who authored earlier content. The reserved
-`<!-- review-remote-pr:agent-... -->` markers identify individual workflow-created comments and
-nothing else; never infer agent ownership from a login, a commit author, or the PR author.
+Only explicitly recognized providers get provider-specific handling: CodeRabbit (login contains
+`coderabbit`) and `github-code-quality[bot]`. Other authors enter the generic automated lane only
+when the authoritative forge type is `Bot` or the login ends exactly in `[bot]`; **every ambiguous
+author is human**, including the account the authenticated `gh` session posts as. An authenticated
+session proves which account *will* post the agent's actions, never who authored earlier content.
+The reserved `<!-- review-remote-pr:agent-... -->` markers identify individual workflow-created
+comments and nothing else; never infer agent ownership from a login containing `bot`, a commit
+author, or the PR author.
 
-The digest's counts follow exactly that rule. `human=N` is any unresolved thread carrying at least
-one comment that is neither a recognized bot nor marked — so a non-zero value is your Step 1a
-queue, and a bot-originated thread a human replied in counts as human.
+The digest's counts follow exactly that rule. `generic=N` is an unresolved generic automated thread
+with no human comment. `human=N` is any unresolved thread carrying at least one human-lane comment
+that is neither marked — so a non-zero value is your Step 1a queue, and a bot-originated thread a
+human replied in counts as human. The `classification:` line reports `known-provider`, `type=Bot`,
+`login-suffix`, and `human` signals for the same evidence.
 
 `nitpicks: N unhandled` is a **mechanical proxy**, not a judgement: CodeRabbit review bodies plus PR
 conversation comment bodies matching /nitpick/i or carrying the broom emoji, minus the anchored
@@ -781,9 +820,10 @@ changes the exit code.
 
 ## Step 1a: Surface human review content and wait for confirmation
 
-Inspect the complete paginated review, inline-comment, issue-comment, and review-thread dumps from Step 1. Exclude only:
+Inspect the complete paginated review, inline-comment, issue-comment, and review-thread dumps from Step 1. Route each item through the classifier. Exclude from this human gate:
 
 - explicitly recognized automated-provider authors such as CodeRabbit and `github-code-quality[bot]`;
+- other authors with an authoritative `Bot` type or exact `[bot]` login suffix (generic automated lane);
 - exact workflow-created comments containing `<!-- review-remote-pr:agent-doc -->` or `<!-- review-remote-pr:agent-reply -->`.
 
 Do not exclude the login returned by `gh api user`; feedback authored through that account is human unless the individual comment has an exact agent marker.
@@ -804,6 +844,21 @@ Approve H1 as drafted, approve with edits, decline, or defer?
 ```
 
 Wait for an explicit per-item decision before handling the human item. Approved code changes still go through the repository verification commands (run each through `agent-run.sh`) and normal commits. Post the reply only after the approved action is complete, include the resulting commit SHA when applicable, verify the stored reply body exactly, and leave the thread unresolved. Record the decision so repeated polling does not ask again unless the human adds new content.
+
+For generic automated items, use the B namespace and continue unattended after a merits assessment:
+
+```text
+B1 — @github-advanced-security[bot] — [generic automated inline thread] — open — <ID>
+Signal: login-suffix
+Assessment: <valid / invalid, with rationale>
+Proposed action: <smallest safe fix or decline>
+Reply: This was written agentically; verify its assertions: ...
+```
+
+Fix or decline each B-item with an attributed reason and reply before resolving it. If the finding is
+backed by code scanning, say that a pushed fix clears it on the next rescan; do not manually trigger
+that scan. A bot-only generic thread can be resolved after the verified reply. If any human-lane
+comment joins it, relabel the thread H and leave it unresolved.
 
 ---
 
@@ -1458,6 +1513,15 @@ NITPICK → fix if trivial (< 5 min), decline if not; reply either way
 
 Body-only nitpicks are still actionable. Do not skip them just because they do not have a `PRRT_...` review-thread node ID.
 
+### Generic automated finding handling
+
+For each unresolved generic automated (`B1`, `B2`, ...) thread, assess the finding on its merits,
+then put the smallest safe fix or a concrete decline reason in an attributed reply. A bot-only
+thread may be resolved after the reply has passed the exact-body integrity gate. If the author is a
+code-scanning bot, state that a pushed fix is expected to clear on the next rescan; never trigger a
+scan or a review bot. If any human-lane comment is present, convert the item to `H#`, leave it open,
+and apply the human confirmation gate instead.
+
 ### GitHub Code Quality finding handling
 
 For each unresolved comment from `github-code-quality[bot]`:
@@ -1589,7 +1653,13 @@ mutation {
 }'
 ```
 
-Resolve CodeRabbit threads — both accepted fixes and declined suggestions — only when they contain no unmarked human-authored comment, and always **reply BEFORE resolving**. A declined thread is resolved after the reply explains why. **Never resolve a human-touched thread** — post only a user-approved reply, leave resolution to the human, and list it in the exit report. This includes feedback authored by the authenticated `gh` login. Body-only nitpicks are complete when documented in their marked anchored thread. **Adversarial-review findings** have no review thread; record each outcome in a PR comment.
+Resolve CodeRabbit and generic automated threads — both accepted fixes and declined suggestions —
+only when they contain no unmarked human-lane comment, and always **reply BEFORE resolving**. A
+declined thread is resolved after the reply explains why. **Never resolve a human-touched thread** —
+post only a user-approved reply, leave resolution to the human, and list it in the exit report. This
+includes feedback authored by the authenticated `gh` login. Body-only nitpicks are complete when
+documented in their marked anchored thread. **Adversarial-review findings** have no review thread;
+record each outcome in a PR comment.
 
 ### End of cycle: one push, zero review commands
 
@@ -1633,9 +1703,10 @@ fi
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
-The digest answers "is CI green" and "how many unresolved coderabbit / code-quality / human threads
-remain". One classification the digest does not carry is which unresolved threads are this
-workflow's own **marked agent-doc** threads, eligible for resolution at exit. Derive that from the
+The digest answers "is CI green" and "how many unresolved coderabbit / code-quality / generic / human
+threads remain" and reports the author classification signals. One classification the digest does
+not carry is which unresolved threads are this workflow's own **marked agent-doc** threads, eligible
+for resolution at exit. Derive that from the
 refreshed `$RUN_DIR/state/pr_${PR}_threads.json`:
 
 ```bash
@@ -1660,17 +1731,29 @@ def author(c):
     return (((c.get('author') or {}).get('login')) or '').lower()
 def body(c):
     return c.get('body') or ''
-def is_bot(c):
-    return bool(re.search(r'coderabbit|github-code-quality', author(c)))
+def classification(c):
+    login = author(c)
+    known = bool(re.search(r'coderabbit', login)) or login in {'github-code-quality', 'github-code-quality[bot]'}
+    suffix = bool(re.search(r'\[bot\]$', login))
+    author_obj = c.get('author') or {}
+    forge_bot = author_obj.get('type') == 'Bot' or author_obj.get('__typename') == 'Bot'
+    if known:
+        return 'known-provider'
+    if suffix:
+        return 'generic-automated'
+    if forge_bot:
+        return 'generic-automated'
+    return 'human'
 def is_agent_comment(c):
     return '<!-- review-remote-pr:agent-' in body(c)
 def has_human_content(t):
-    return any(not is_bot(c) and not is_agent_comment(c) for c in comments(t))
+    return any(classification(c) == 'human' and not is_agent_comment(c) for c in comments(t))
 unresolved = [t for t in threads if not t['isResolved']]
-automated = [t for t in unresolved if comments(t) and is_bot(comments(t)[0]) and not has_human_content(t)]
+automated = [t for t in unresolved if comments(t) and classification(comments(t)[0]) != 'human' and not has_human_content(t)]
+generic = [t for t in automated if classification(comments(t)[0]) == 'generic-automated']
 agent_docs = [t for t in unresolved if comments(t) and '<!-- review-remote-pr:agent-doc -->' in body(comments(t)[0]) and not has_human_content(t)]
 human = [t for t in unresolved if has_human_content(t)]
-print(f'{len(automated)} unresolved automated-review threads of {len(threads)} total')
+print(f'{len(automated)} unresolved automated-review threads ({len(generic)} generic B-items) of {len(threads)} total')
 if agent_docs:
     print(f'{len(agent_docs)} unresolved MARKED AGENT-DOC threads — resolve them now (exit time)')
 if human:
