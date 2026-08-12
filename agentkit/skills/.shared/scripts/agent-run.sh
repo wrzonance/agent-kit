@@ -1036,8 +1036,30 @@ yolo_pinned_base() {
     local sha=$1
     git -C "$git_top" cat-file -e "$sha^{commit}" 2> /dev/null ||
         die "--yolo-base: no such commit in this repository: $sha"
-    [[ -n $(git -C "$git_top" branch -r --contains "$sha" 2> /dev/null) ]] ||
-        die "--yolo-base: $sha is not reachable from any origin ref; only root-published commits can anchor trust."
+    # Remote-tracking refs are writable local files -- reachability from them
+    # proves nothing about what the server carries. Ask origin itself: a pin is
+    # trusted only when it IS a server-advertised head, or is an ancestor of one
+    # (ancestry against a server-advertised SHA is content-addressed, so a local
+    # forgery cannot satisfy it).
+    local advertised='' candidate='' pin_ok=''
+    advertised=$(git -C "$git_top" ls-remote --heads origin 2> /dev/null | awk '{print $1}') ||
+        die "--yolo-base: cannot query origin to validate the pin; refusing."
+    [[ -n $advertised ]] ||
+        die "--yolo-base: origin advertises no heads to validate the pin against; refusing."
+    while IFS= read -r candidate; do
+        [[ -n $candidate ]] || continue
+        if [[ $candidate == "$sha" ]]; then
+            pin_ok=yes
+            break
+        fi
+        if git -C "$git_top" cat-file -e "$candidate^{commit}" 2> /dev/null &&
+            git -C "$git_top" merge-base --is-ancestor "$sha" "$candidate" 2> /dev/null; then
+            pin_ok=yes
+            break
+        fi
+    done <<< "$advertised"
+    [[ -n $pin_ok ]] ||
+        die "--yolo-base: $sha is not reachable from any origin ref advertised by the server; only root-published commits can anchor trust."
     git -C "$git_top" merge-base --is-ancestor "$sha" HEAD 2> /dev/null ||
         die "--yolo-base: $sha is not an ancestor of this worktree's HEAD."
     printf '%s' "$sha"

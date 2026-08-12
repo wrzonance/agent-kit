@@ -371,6 +371,26 @@ out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$side_sha" 2>&
 assert_eq 1 "$rc" 'non-ancestor pin exits 1'
 assert_contains "$out" 'not an ancestor' 'non-ancestor pin refusal names ancestry'
 
+# A locally forged remote-tracking ref must never anchor trust: remote-tracking
+# refs are writable local files, so reachability from them proves nothing about
+# what the server carries. The pin must be validated against server-advertised
+# heads (adversarial-review P1 regression witness).
+repo=$tmp/yolo-base-forged
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'v1\n' > "$repo/payload.txt"
+printf 'AGENT_CMD_TEST=tools/runner --require=payload.txt\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'forged v2\n' > "$repo/payload.txt"
+git -C "$repo" add payload.txt && git -C "$repo" commit -qm forged
+forged_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" update-ref refs/remotes/origin/fake "$forged_sha"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$forged_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a locally forged remote-tracking ref cannot anchor trust'
+assert_contains "$out" 'advertised' 'forged-ref refusal cites server-advertised refs'
+
 # --- --yolo-base drives the gate; the verdict names the pin -----------------
 # Chain link: predecessor changed a declared input; the pin authorizes it.
 repo=$tmp/yolo-base-chain
