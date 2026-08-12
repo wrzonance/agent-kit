@@ -327,11 +327,86 @@ a `clean` issue needs none of it.
 | `in-flight` | an open PR references it | flag and ask — already being worked; do not double-dispatch |
 | `attempted` | a closed-unmerged PR references it | read that PR's review threads; they usually say why it died |
 | `active` | Status is In progress or In review | flag and ask before touching |
-| `unknown` | the query returned nothing usable | re-run; if it persists, `gh issue view` that one issue |
+| `unknown` | the query returned nothing usable | re-run; if it persists, fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` |
 
 An `adr=` path is a **candidate located by token overlap**, not a verdict. Read
 it and apply the ADR rules; a match is often coincidence, and a miss is not
 proof that no ADR applies.
+
+#### Bulk mutation discipline: ledger, chunks, and resource budget
+
+Any batch that creates or edits more than one forge object carries a resumable
+apply ledger. The planning ID is the stable key; a successful mutation is
+followed immediately by one `record` call containing the returned number and
+URL. The shared helper is deliberately a ledger, not an orchestrator:
+
+```bash
+ledger=.agent/apply-ledger.json
+plan=.agent/apply-plan.json
+apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
+"$apply_ledger" init --ledger "$ledger" --plan "$plan"
+```
+
+Before every mutation, consume only the IDs from `pending --ids`; never retry
+an ID present in `applied`. Keep chunks bounded (the default recipe is 20
+objects), and persist after every success:
+
+```bash
+report_batch_failure() {
+    local reason=$1 evidence
+    printf 'bulk batch stopped: %s\n' "$reason" >&2
+    if evidence=$("$apply_ledger" status --ledger "$ledger" --json); then
+        printf 'ledger evidence (applied/remaining): %s\n' "$evidence" >&2
+    else
+        printf 'ledger evidence unavailable: %s\n' "$ledger" >&2
+    fi
+    exit 1
+}
+
+while :; do
+    mapfile -t chunk < <("$apply_ledger" pending --ledger "$ledger" --ids | head -n 20)
+    ((${#chunk[@]})) || break
+    for planning_id in "${chunk[@]}"; do
+        # perform exactly one REST mutation for this ID and parse its number/URL
+        if ! mutation_json=$(perform_rest_mutation "$planning_id"); then
+            report_batch_failure "mutation failed for $planning_id"
+        fi
+        if ! created_number=$(jq -er '.number' <<<"$mutation_json"); then
+            report_batch_failure "mutation response omitted number for $planning_id"
+        fi
+        if ! created_url=$(jq -er '.html_url' <<<"$mutation_json"); then
+            report_batch_failure "mutation response omitted URL for $planning_id"
+        fi
+        if ! "$apply_ledger" record --ledger "$ledger" --id "$planning_id" \
+            --number "$created_number" --url "$created_url"; then
+            report_batch_failure "ledger record failed for $planning_id"
+        fi
+    done
+    # This is an explicit inspection point between bounded chunks.
+    if [[ -r .resources.graphql ]]; then
+        sed -n '1,120p' .resources.graphql
+        if grep -Eq 'remaining[^0-9]*0|exhausted[^a-z]*true' .resources.graphql; then
+            break
+        fi
+    fi
+done
+```
+
+Between chunks, explicitly inspect the current `.resources.graphql` budget
+artifact (when present) and stop before starting a chunk that has no remaining
+GraphQL budget. On exhaustion, retain the ledger and report its machine-readable
+`applied`/`remaining` split; do not retry an empty pending pool or claim that
+unrecorded mutations succeeded. A rerun starts from the same ledger and thus
+creates zero duplicates. The ledger's `idMap` is the follow-on input for a
+dependent batch.
+
+REST routing is equally strict: issue/PR bodies, labels, state, comments,
+reviews, sub-issues, dependencies, and cross-references use
+`gh api repos/<owner>/<repo>/...`; do not use `gh issue`/`gh pr` porcelain
+`--json` for those fields. The only GraphQL-only surfaces are Projects v2
+queries/mutations and PR review-thread resolution. Name the surface and reason
+at the call site when using GraphQL; a general-purpose GraphQL escape hatch is
+not an allowlist.
 
 #### Prior-art adjudication (only for merged-ref, in-flight, and attempted)
 
