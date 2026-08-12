@@ -57,12 +57,19 @@ frontmatter_end() {
     ' "$1"
 }
 
+# `wc -l` counts newline characters, so a file whose final line is unterminated
+# measures one line short -- exactly enough to sit on a boundary and pass. NR
+# counts logical lines, including that last one.
+count_lines() {
+    awk 'END { print NR }' "$1"
+}
+
 # Prints "LINES BYTES" for the body -- everything after the frontmatter's
 # closing `---` at line $2.
 body_stats() {
     local file=$1 fm_end=$2
     local total_lines body_lines body_bytes
-    total_lines=$(wc -l < "$file")
+    total_lines=$(count_lines "$file")
     body_lines=$((total_lines - fm_end))
     body_bytes=$(tail -n "+$((fm_end + 1))" "$file" | wc -c)
     printf '%s %s\n' "$body_lines" "$body_bytes"
@@ -79,14 +86,21 @@ check_size() {
     if [[ -v KNOWN_OVERSIZE[$name] ]]; then
         local entry=${KNOWN_OVERSIZE[$name]} line_ceiling token_ceiling target
         IFS=: read -r line_ceiling token_ceiling target <<< "$entry"
-        # An entry missing a field would otherwise reach the arithmetic below
-        # as an empty operand -- a bash syntax error that aborts the whole
-        # lint instead of naming the malformed line.
-        if [[ -z $line_ceiling || -z $token_ceiling || -z $target ]]; then
-            report "$file" \
-                "malformed KNOWN_OVERSIZE entry for '$name' ('$entry') -- expected LINES:TOKENS:TARGET"
-            return 0
-        fi
+        # Every field must be a plain decimal integer before it reaches the
+        # arithmetic below. Under `set -u` a non-numeric field is not a loud
+        # zero -- `(( x > foo ))` aborts the whole lint with "unbound
+        # variable". `08` dies as an invalid octal literal, and an expression
+        # like `1+1` is silently evaluated, quietly moving the ceiling.
+        # Leading zeros are rejected rather than normalized: a ceiling should
+        # read as the number it is.
+        local field
+        for field in "$line_ceiling" "$token_ceiling" "$target"; do
+            if [[ ! $field =~ ^(0|[1-9][0-9]*)$ ]]; then
+                report "$file" \
+                    "malformed KNOWN_OVERSIZE entry for '$name' ('$entry') -- expected LINES:TOKENS:TARGET, each a decimal integer without leading zeros"
+                return 0
+            fi
+        done
         if ((over == 0)); then
             report "$file" \
                 "allowlisted skill '$name' is now within budget ($body_lines lines, ~$est_tokens tokens) -- remove the stale KNOWN_OVERSIZE entry (target <=$target lines)"
@@ -131,7 +145,12 @@ extract_description() {
             # end of the value -- YAML keeps folding afterwards. Ending here
             # would leave everything past the blank line uncounted, which is a
             # free way to smuggle an over-long description past the limit.
-            if ($0 ~ /^[[:space:]]*$/) { next }
+            # The break itself folds to one newline character, so it counts as
+            # one character rather than nothing.
+            if ($0 ~ /^[[:space:]]*$/) {
+                if (desc != "") { desc = desc " " }
+                next
+            }
             if ($0 ~ /^[[:space:]]+/) {
                 val = $0
                 sub(/^[[:space:]]+/, "", val)
@@ -149,17 +168,30 @@ extract_description() {
 # of the value. Scoring it as part of the description rejects legal frontmatter
 # -- `description: "Use when ..." # note` was reported as not starting with
 # "Use when", which is both a false failure and a misleading message.
-# Deliberately simple: a quoted scalar ends at its first matching quote (a
-# description has no use for escaped quotes), and a plain scalar ends at the
-# first ` #', which is exactly where YAML ends it too.
+#
+# The cut must never land on a quote *inside* the value: `"... \"q\" ..."` and
+# `'... it''s ...'` both carry interior quotes, and cutting at the first one
+# truncates the description to a few characters, so an over-long one measures
+# short and passes. So a quoted scalar is closed by its LAST quote, and only
+# when what follows is actually a comment. Anything else is left whole and
+# measured in full -- this gate errs toward over-measuring, which fails loudly,
+# never toward under-measuring, which fails silently.
 strip_inline_comment() {
-    local value=$1 quote=${1:0:1} rest
+    local value=$1 quote=${1:0:1} head tail
     if [[ $quote == '"' || $quote == "'" ]]; then
-        rest=${value:1}
-        if [[ $rest == *"$quote"* ]]; then
-            printf '%s%s%s\n' "$quote" "${rest%%"$quote"*}" "$quote"
+        # Already a complete quoted scalar: no comment to remove.
+        if ((${#value} >= 2)) && [[ ${value: -1} == "$quote" ]]; then
+            printf '%s\n' "$value"
             return 0
         fi
+        head=${value%"$quote"*}   # everything before the LAST quote
+        tail=${value##*"$quote"}  # everything after it
+        if [[ -n $head && $tail =~ ^[[:space:]]*# ]]; then
+            printf '%s%s\n' "$head" "$quote"
+            return 0
+        fi
+        printf '%s\n' "$value"
+        return 0
     fi
     if [[ $value == *' #'* ]]; then
         value=${value%%' #'*}
@@ -202,7 +234,7 @@ check_references() {
 
     local doc lines has_toc
     while IFS= read -r doc; do
-        lines=$(wc -l < "$doc")
+        lines=$(count_lines "$doc")
         ((lines > MAX_REF_LINES_WITHOUT_TOC)) || continue
         has_toc=$(head -n "$TOC_SCAN_WINDOW" "$doc" |
             grep -ciE '^(## Contents|## Table of contents)' || true)
