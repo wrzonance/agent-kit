@@ -1,6 +1,6 @@
 ---
 name: review-remote-pr
-description: Use when asked to review, babysit, monitor, or clean up a remote PR, including PRs in git worktrees — triggered by "/review-remote-pr", "/review-pr", "review remote PR", "babysit PR". Draft-first flow — while the PR is a draft, get CI green, resolve conflicts, and run + address ONE materiality-gated end-of-draft Claude (Opus 5, high) adversarial cross-review (or a blind separate gpt-5.6-terra Codex agent when Claude is unavailable); mechanically verifiable trivial diffs may document a skip. Then wait for the USER to mark the PR ready; never trigger a provider review from this skill. Handles CodeRabbit threads/body nitpicks, github-code-quality[bot] findings, and confirmation-gated human feedback; then proposes vetted Backlog issues for Ready.
+description: Use when asked to review, babysit, monitor, or clean up a remote PR, including PRs in git worktrees — triggered by "/review-remote-pr", "/review-pr", "review remote PR", "babysit PR".
 ---
 
 # Review Remote PR
