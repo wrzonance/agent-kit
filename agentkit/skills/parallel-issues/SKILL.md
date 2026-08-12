@@ -1409,6 +1409,69 @@ worker cannot see the outer invocation, so adding the grant without it has manuf
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
 
+### Adversarial-review receipt:
+
+Every dispatched `review-remote-pr` loop must perform the spent-budget precheck before launching
+either reviewer. It reads the fetched PR conversation artifact
+`$RUN_DIR/state/pr_${PR}_issue_comments.json`; when the stable marker is present, report
+`adversarial review budget spent` and do not rerun. A missing/unreadable artifact is evidence
+unavailable, not an empty comment set. A completed review or verified skip without a receipt is a
+**no-silent-skip** failure and cannot be handed off as draft-phase-complete.
+
+After all confirmed findings are fixed or explicitly declined and those fixes are pushed, the loop
+publishes exactly one durable top-level PR receipt **after fixes are pushed** and **before
+draft-phase-complete handoff**. It must
+record reviewer provider/model/effort and mode (`cross-provider` or `blind fallback`, with reason),
+severity counts (`P1`, `P2`, total), one `confirmed finding` line per finding with short title,
+verdict, and fix commit SHA(s), or an explicit `decline rationale`; a trivial skip must carry its
+`verified-skip rationale` and mechanical oracle. The receipt includes the standard agentic banner,
+one stable spent marker, and the agentic footer. Use the existing `gh-comment.sh --body-file`
+exact-body helper for transport; never inline this multiline comment body.
+
+```bash
+# The loop runs this before reviewer launch, using the Step 1 artifact.
+receipt_marker='<!-- adversarial-review:spent -->'
+receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+if ! command -v jq >/dev/null 2>&1 || [[ ! -r $receipt_comments ]]; then
+    printf '%s\n' 'receipt precheck evidence unavailable' >&2
+    exit 1
+fi
+if jq -e --arg marker "$receipt_marker" \
+    'any(.[]?; ((.body // "") | contains($marker)))' <"$receipt_comments" >/dev/null; then
+    printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'
+    exit 0
+else
+    jq_status=$?
+    if ((jq_status != 1)); then
+        printf '%s\n' 'PR comment artifact is invalid; evidence unavailable' >&2
+        exit 1
+    fi
+fi
+
+# After the finding-fix push, render this body to a private file and call the
+# exact-body helper. Keep exactly one marker in the resulting receipt.
+receipt_body=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-receipt.XXXXXXXXXX")
+chmod 600 -- "$receipt_body"
+trap 'rm -f -- "$receipt_body"' EXIT
+cat >"$receipt_body" <<'EOF'
+This was written agentically; verify its assertions:
+<!-- review-remote-pr:agent-doc -->
+## Adversarial review receipt
+- Reviewer: provider=__PROVIDER__; model=__MODEL__; effort=__EFFORT__; mode=__MODE__ (reason: __MODE_REASON__)
+- Counts: P1=__P1__; P2=__P2__; total=__TOTAL__
+- Confirmed finding: __SHORT_TITLE__ — verdict=__FIXED_OR_DECLINED__; fix commit SHA(s)=__SHAS__; decline rationale=__RATIONALE__
+- Verified-skip rationale: __SKIP_RATIONALE__; mechanical oracle=__ORACLE__
+<!-- adversarial-review:spent -->
+🤖 Co-authored by __AGENT_IDENTITY__.
+EOF
+"$agentkit/review-remote-pr/scripts/gh-comment.sh" \
+    --pr "$PR" --repo "$REPO" --body-file "$receipt_body"
+```
+
+The finding line is repeated once per confirmed finding; use `none confirmed` for a clean review.
+The receipt is the only durable evidence that spends the one-review budget, and no later step may
+post a second receipt or silently skip the receipt.
+
 Dispatch at most two PR-loop agents concurrently. **Do not reserve a slot for a nested worker: a
 spawned PR-loop agent cannot spawn one.** It runs `review-remote-pr`'s documented
 spawn-unavailable path and does the implementation itself under the same six-step gate, labelling

@@ -886,6 +886,44 @@ Size alone never decides: a two-line behavioral authorization change is material
 verified immutable SHA refresh can be trivial; a broad refactor is material even when each edit is
 small.
 
+### Spent-budget precheck (must precede launch)
+
+Before starting either reviewer, inspect the complete PR conversation artifact from Step 1 for the
+stable spent marker. If it is present, report `adversarial review budget spent` and do not launch or
+rerun a reviewer. This check is the gate for both directions: a prior receipt prevents a double
+spend, while a completed review or verified skip without a receipt is a **no-silent-skip** failure
+that must be repaired before draft handoff.
+
+```bash
+# Step 1 already fetched this file; do not make a second comments query here.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
+receipt_marker='<!-- adversarial-review:spent -->'
+receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+if [[ ! -r $receipt_comments ]]; then
+    printf '%s\n' 'PR comment artifact is missing or unreadable; evidence unavailable' >&2
+    exit 1
+fi
+if jq -e --arg marker "$receipt_marker" \
+    'any(.[]?; ((.body // "") | contains($marker)))' <"$receipt_comments" >/dev/null; then
+    printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'
+    exit 0
+else
+    jq_status=$?
+    if ((jq_status != 1)); then
+        printf '%s\n' 'PR comment artifact is invalid; evidence unavailable' >&2
+        exit 1
+    fi
+fi
+```
+
+Do not treat a missing or unreadable artifact as an empty comment set. If this precheck cannot
+prove its input, stop with evidence unavailable. A receipt marker is authoritative from the PR
+alone and never requires provider state or model context.
+
 **Run the adversarial review** when the diff changes runtime behavior, API/schema/migration
 contracts, authorization/security boundaries, persistence/concurrency, dependency behavior,
 workflow logic, or user-visible accessibility/reliability. Also run it whenever the user asks.
@@ -1468,6 +1506,48 @@ bounded blocking re-check rounds (~10 minutes each, up to ~90 minutes total). Us
 rate-limited. Never trigger a review.
 
 ---
+
+### Adversarial-review receipt:
+
+After all confirmed adversarial findings have been fixed or explicitly declined, push those fixes;
+the receipt is published **after fixes are pushed** and then exactly one durable top-level PR
+comment **before draft-phase-complete handoff**. This
+receipt is the spent-budget marker and is required for both a material review and a verified trivial-
+diff skip; a review or skip without it is never complete. The receipt records provider, reviewer
+model, effort, and mode (`cross-provider` or `blind fallback`, including the fallback reason),
+severity counts (`P1`, `P2`, and total), and one `confirmed finding` line per finding with a short
+title, verdict, and fix commit SHA(s), or an explicit `decline rationale`. A trivial skip records
+the exact `verified-skip rationale` and its mechanical oracle. Include the standard agentic
+attribution banner and footer exactly as shown. The body is rendered to a private file and sent
+through `gh-comment.sh --body-file`; never put this multiline body in `gh pr comment --body`.
+
+```bash
+# Run only after the finding-fix push; this is the final Phase A action.
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+receipt_body=$(mktemp "${TMPDIR:-/tmp}/review-remote-pr-receipt.XXXXXXXXXX")
+chmod 600 -- "$receipt_body"
+trap 'rm -f -- "$receipt_body"' EXIT
+cat >"$receipt_body" <<'EOF'
+This was written agentically; verify its assertions:
+<!-- review-remote-pr:agent-doc -->
+## Adversarial review receipt
+- Reviewer: provider=__PROVIDER__; model=__MODEL__; effort=__EFFORT__; mode=__MODE__ (reason: __MODE_REASON__)
+- Counts: P1=__P1__; P2=__P2__; total=__TOTAL__
+- Confirmed finding: __SHORT_TITLE__ — verdict=__FIXED_OR_DECLINED__; fix commit SHA(s)=__SHAS__; decline rationale=__RATIONALE__
+- Verified-skip rationale: __SKIP_RATIONALE__; mechanical oracle=__ORACLE__
+<!-- adversarial-review:spent -->
+🤖 Co-authored by __AGENT_IDENTITY__.
+EOF
+# Render every placeholder into the same file using the quoted, byte-safe
+# substitution pattern from the GitHub body policy. Keep one marker line.
+"$agentkit/review-remote-pr/scripts/gh-comment.sh" \
+    --pr "$PR" --repo "$REPO" --body-file "$receipt_body"
+```
+
+The finding line is repeated once per confirmed finding; for a no-finding review use the explicit
+`none confirmed` line, and for a skip leave no finding line while retaining the verified-skip
+rationale. The helper's exact-body verification is part of receipt completion. Exactly one marker
+belongs in the receipt body, and no later step may post a second receipt or rerun the reviewer.
 
 ## Step 4: Wait for CI
 
