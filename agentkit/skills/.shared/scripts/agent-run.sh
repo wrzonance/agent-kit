@@ -48,6 +48,10 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  skip is announced on stderr and stamped into the run log.
                  Mutually exclusive with --approve; inert for a literal
                  command, which the gate never covered.
+  --yolo-base SHA  With --yolo: validate command inputs against this pinned,
+                 origin-reachable ancestor commit instead of the remote trunk.
+                 For chained worktrees whose base is a root-published commit
+                 from an earlier issue in the same run.
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
@@ -110,6 +114,7 @@ focus_opt=''
 focus_requested=0
 approve_cmd=0
 yolo_cmd=0
+yolo_base_opt=''
 force_cmd=0
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
@@ -126,6 +131,11 @@ while (($#)); do
         --yolo)
             yolo_cmd=1
             shift
+            ;;
+        --yolo-base)
+            (($# >= 2)) || die '--yolo-base requires a commit SHA.'
+            yolo_base_opt=$2
+            shift 2
             ;;
         --force)
             force_cmd=1
@@ -183,6 +193,11 @@ if ((force_cmd)) && [[ -z $cmd_name ]]; then
 fi
 if ((approve_cmd && yolo_cmd)); then
     die '--approve and --yolo are mutually exclusive: one records trust, the other skips it.'
+fi
+if [[ -n $yolo_base_opt ]]; then
+    ((yolo_cmd)) || die '--yolo-base requires --yolo.'
+    [[ $yolo_base_opt =~ ^[0-9a-f]{40}$ ]] ||
+        die '--yolo-base requires a full 40-character lowercase commit SHA, not a ref or abbreviation.'
 fi
 
 run_dir=${dir_opt:-$PWD}

@@ -310,6 +310,30 @@ assert_contains "$out" 'refusing --yolo' \
 assert_eq 'no' "$([[ -e $tmp/deleted-config-ran ]] && echo yes || echo no)" \
     'a deleted declaration does not fall through to execution'
 
+# --- --yolo-base usage constraints -----------------------------------------
+repo=$tmp/yolo-base-usage
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+pin_sha=$(git -C "$repo" rev-parse HEAD)
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo-base "$pin_sha" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'yolo-base without yolo exits 1'
+assert_contains "$out" '--yolo-base requires --yolo' \
+    'yolo-base without yolo names the dependency'
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "${pin_sha:0:12}" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'abbreviated yolo-base sha exits 1'
+assert_contains "$out" 'full 40-character' 'abbreviated sha refusal explains the format'
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "refs/heads/main" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'symbolic yolo-base ref exits 1'
+
 # Approval persistence must fail loudly rather than claiming success when the
 # temporary record cannot be written or atomically replaced. Both cases approve
 # through the terminal helper; the write case additionally has the helper create
