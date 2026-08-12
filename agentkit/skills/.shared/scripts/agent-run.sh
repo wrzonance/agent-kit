@@ -25,7 +25,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] [--force] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -49,6 +49,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  Mutually exclusive with --approve; inert for a literal
                  command, which the gate never covered.
   --force        Execute a named command even when green evidence is current.
+  --only NAME[,NAME...]  For --cmd test, use the repository's
+                 AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --cmd NAME     Run the command this repository declares under that name, instead
@@ -104,6 +106,7 @@ dir_opt=
 label=
 cmd_name=
 cmd=()
+focus_opt=''
 approve_cmd=0
 yolo_cmd=0
 force_cmd=0
@@ -126,6 +129,11 @@ while (($#)); do
         --force)
             force_cmd=1
             shift
+            ;;
+        --only)
+            (($# >= 2)) || die 'Missing value for --only.'
+            focus_opt=$2
+            shift 2
             ;;
         --dir|--label|--cmd)
             (($# >= 2)) || die "Missing value for $1."
@@ -547,6 +555,29 @@ resolve_named_command() {
         exit 0
     fi
     die "no command named '$name': declare $key in .agent/config.env, or add .agent/runner"
+}
+
+apply_test_focus() {
+    local key='AGENT_CMD_TEST_FOCUS' declared token without replaced=0 occurrences i
+    local -a focus_cmd=()
+    [[ -n $focus_opt ]] || return 0
+    [[ $cmd_name == test ]] || die '--only is supported only with --cmd test.'
+
+    declared=$(repo_config_get "$key" || true)
+    [[ -n $declared ]] || die "--only requires $key in .agent/config.env."
+    mapfile -d '' -t focus_cmd < <(repo_config_argv "$key")
+    ((${#focus_cmd[@]})) || die "invalid argv for $key"
+    for i in "${!focus_cmd[@]}"; do
+        token=${focus_cmd[i]}
+        without=${token//%s/}
+        [[ $without == "$token" ]] && { focus_cmd[i]=$token; continue; }
+        occurrences=$(((${#token} - ${#without}) / 2))
+        replaced=$((replaced + occurrences))
+        token=${token//%s/$focus_opt}
+        focus_cmd[i]=$token
+    done
+    ((replaced == 1)) || die "$key must contain exactly one %s placeholder."
+    cmd=("${focus_cmd[@]}")
 }
 
 # ----------------------------------------------------------- command trust ---
@@ -1034,6 +1065,7 @@ compute_tree_hash() {
     if ! : >"$hash_input" ||
         ! git -C "$git_top" rev-parse HEAD >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
+        ! printf 'command\0%s\0focus\0%s\0' "$cmd_name" "$focus_opt" >>"$hash_input" ||
         ! git -C "$git_top" diff HEAD >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
         ! git -C "$git_top" status --porcelain=v2 -z --untracked-files=all >>"$hash_input" ||
@@ -1066,7 +1098,8 @@ verification_cache_hit() {
     cache=$(verification_cache_path 2>/dev/null || true)
     [[ -n $cache && -r $cache ]] || return 1
     while IFS= read -r line; do
-        [[ $line == "$tree_hash cmd=$cmd_name log="*' at='* ]] || continue
+        [[ $line == "$tree_hash cmd=$cmd_name log="* ]] || continue
+        [[ $line == *" focus="* ]] || continue
         log=${line#* log=}
         log=${log% at=*}
         [[ -f $log ]] || continue
@@ -1088,8 +1121,8 @@ record_verification() {
     temp=$cache.$$
     {
         [[ ! -e $cache ]] || cat -- "$cache"
-        printf '%s cmd=%s log=%s at=%s\n' \
-            "$tree_hash" "$cmd_name" "$log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '%s cmd=%s log=%s at=%s focus=%s\n' \
+            "$tree_hash" "$cmd_name" "$log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$focus_opt"
     } > "$temp" 2>/dev/null || {
         rm -f -- "$temp" 2>/dev/null || true
         return 0
@@ -1101,6 +1134,7 @@ record_verification() {
 # --------------------------------------------------------------------- main ---
 if [[ -n $cmd_name ]]; then
     resolve_named_command "$cmd_name"
+    apply_test_focus
 fi
 finalise_label
 refresh_cmd_str

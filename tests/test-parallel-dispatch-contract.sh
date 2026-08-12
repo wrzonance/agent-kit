@@ -64,6 +64,16 @@ assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
 assert_contains "$text" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
+assert_contains "$text" '--only NAME[,NAME...]' \
+    'red/green iteration documents the focused suite selector'
+assert_contains "$text" 'AGENT_CMD_TEST_FOCUS' \
+    'focused iteration is gated by the repository declaration'
+assert_contains "$text" 'once against the final tree state' \
+    'the final tree receives one unfocused full-suite run'
+assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
+    'review workflow documents the focused suite selector'
+assert_contains "$(<"$review_skill")" 'full-suite verdict' \
+    'review workflow requires a final full-suite verdict'
 assert_contains "$text" 'that issue/status/phase is complete' \
     'a moved output line is terminal for its issue phase'
 assert_not_contains "$text" 'target="$PWD/fenced-spec.txt"' \

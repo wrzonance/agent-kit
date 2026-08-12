@@ -931,6 +931,12 @@ pseudo-terminal, or writes a trust record.>
 "$shared/agent-run.sh" --dir "$worktree" --cmd lint --if-declared
 "$shared/agent-run.sh" --dir "$worktree" --cmd build --if-declared
 
+During red/green iteration, use the repository-declared focused selector for the changed suites:
+`"$shared/agent-run.sh" --dir "$worktree" --cmd test --only NAME[,NAME...]`. This requires
+`AGENT_CMD_TEST_FOCUS` and captures evidence only for the named suites; it never claims that
+skipped suites passed. Run the unfocused `"$shared/agent-run.sh" --dir "$worktree" --cmd test`
+once against the final tree state before handback.
+
 ```bash
 git branch --show-current
 ```
