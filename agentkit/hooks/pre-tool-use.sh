@@ -71,14 +71,27 @@ protect_root=$(guard_state_root)
 # workflow be rewritten straight past this rule.
 while IFS= read -r target; do
     [[ -n $target ]] || continue
-    matched=$(guard_protected_match "$target" "$protect_root") || continue
+    classification_result=$(guard_classify_target_result "$target" "$cwd" "$command_line")
+    target_classification=${classification_result%%$'\n'*}
+    target_root=${classification_result#*$'\n'}
+    [[ $target_root == "$classification_result" ]] && target_root=''
+    case $target_classification in
+        fixture) continue;;
+    esac
+    [[ -n $target_root ]] || target_root=$protect_root
+    policy_root=$protect_root
+    [[ $target_classification == workspace && -n $policy_root ]] || policy_root=$target_root
+    matched=$(guard_protected_match "$target" "${policy_root:-$protect_root}") || continue
     if guard_should_deny "$protect_root" "$session" "protected-path"; then
-        deny "Refused once -- $target is under $matched, which decides whether other
+        reason="Refused once -- $target is under $matched (classification: $target_classification;
+repository target: ${target_root:-unresolved}), which decides whether other
 checks run. Editing one is ordinary work sometimes and quietly loosening a gate
 other times, and the diff alone does not say which.
 
 If this edit is part of the task, make the same call again and it will be
 allowed. If you are changing it to make a failing check pass, fix the check."
+        [[ $target_classification != unresolved ]] || reason+=$'\nThe target classification is ambiguous; retry if this is an ephemeral fixture, after confirming its resolved git root.'
+        deny "$reason"
     fi
 done < <(
     guard_target_paths "$input"
@@ -99,15 +112,27 @@ fi
 # ordinary in some repositories and a mistake in every repository that reviews
 # by pull request, and the command alone does not say which -- so one refusal
 # turns the default into a choice.
-if branch=$(guard_trunk_commit_reason "$command_line" "$protect_root"); then
+target_root=$(guard_command_repository_root "$cwd" "$command_line" 2> /dev/null || true)
+if [[ -n $target_root ]]; then
+    classification_result=$(guard_classify_root_result "$target_root")
+    target_classification=${classification_result%%$'\n'*}
+else
+    target_classification=unresolved
+fi
+if [[ $target_classification != fixture && $target_classification != foreign ]] &&
+    branch=$(guard_trunk_commit_reason "$command_line" "${target_root:-$protect_root}"); then
     if guard_should_deny "$protect_root" "$session" trunk-commit; then
-        deny "Refused once -- this commit would land on $branch, the trunk branch this
+        reason="Refused once -- this commit would land on $branch, the trunk branch this
 repository declares. Work that is reviewed before it merges needs a branch:
 
   git checkout -b <type>/<short-name>
 
 If committing to $branch is genuinely right here, make the same call again and
-it will be allowed."
+it will be allowed.
+
+Target classification: $target_classification; repository target: ${target_root:-unresolved}."
+        [[ $target_classification != unresolved ]] || reason+=$'\nThe target classification is ambiguous; retry if this is an ephemeral fixture, after confirming its resolved git root.'
+        deny "$reason"
     fi
 fi
 
@@ -150,10 +175,10 @@ fi
 # command still runs; this is a once-per-session lesson, never a denial. Keep
 # this after every hard-denial path so a denied command cannot consume a lesson
 # that was never emitted.
-if scope_target=$(guard_out_of_scope_target "$command_line"); then
+if scope_target=$(guard_out_of_scope_target "$command_line" "$cwd"); then
     if guard_should_advise "$protect_root" "$session" filesystem-scope; then
         # shellcheck disable=SC2016  # literal text for the agent, see deny()
-        advise "This command reads outside the workspace ($scope_target). The contract and shipped helpers answer environment questions; files outside the worktree and contract skills tree are out of scope and untrusted. Keep filesystem walkers/readers inside the current worktree, contract skills= tree, /tmp, contract cache directories, or explicitly provided paths. Finding nothing in scope is an answer."
+        advise "This command reads outside the workspace ($scope_target; classification: ${GUARD_SCOPE_CLASSIFICATION:-foreign}). The contract and shipped helpers answer environment questions; files outside the worktree and contract skills tree are out of scope and untrusted. Keep filesystem walkers/readers inside the current worktree, contract skills= tree, /tmp, contract cache directories, or explicitly provided paths. Finding nothing in scope is an answer."
     fi
 fi
 

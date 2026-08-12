@@ -596,6 +596,102 @@ edit_input() {
           tool_input:{file_path:$path}}'
 }
 
+# --- target classification follows the resolved repository -----------------
+# A designated temporary fixture is a real git repository, but repository
+# policy guards must not treat its workflow or trunk branch as this workspace.
+fixture_repo=$(mktemp -d "$tmp/fixture.XXXXXX")
+classification_sid=${tmp##*/}
+git -C "$fixture_repo" init -q
+mkdir -p "$fixture_repo/.agent" "$fixture_repo/.github/workflows"
+printf 'AGENT_BASE_BRANCH=main\n' > "$fixture_repo/.agent/config.env"
+printf 'name: fixture\n' > "$fixture_repo/.github/workflows/ci.yml"
+git -C "$fixture_repo" checkout -q -b main 2> /dev/null
+git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
+    add .agent/config.env .github/workflows/ci.yml
+git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
+    commit -qm base
+
+out=$(pre_input "$root" "cd $fixture_repo && printf x > .github/workflows/ci.yml" \
+    "fixture-workflow" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a designated fixture workflow write is allowed'
+
+# A later shell segment must not change the repository of an earlier write.
+# Without segment-aware target resolution, the trailing cd makes the workspace
+# workflow look like a fixture target and silently skips its protection.
+out=$(pre_input "$root" "printf x > .github/workflows/ci.yml; cd $fixture_repo" \
+    "${classification_sid}-workspace-write-before-cd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a protected workspace write stays guarded before a later fixture cd'
+assert_contains "$out" 'classification: workspace' \
+    'the preceding workspace write reports its own classification'
+
+# A real repository outside the workspace and designated fixture roots is
+# foreign, but foreign protected writes remain deny-once policy targets.
+# GitHub Actions exposes RUNNER_TEMP as writable scratch space, but it is not a
+# fixture root. Locally, /dev/shm gives the same foreign-repository boundary
+# without assuming that the runner permits writes directly under /home (or
+# accidentally remaining under the shared Git root). Do not fall back to /tmp:
+# guard_fixture_path deliberately classifies that tree (and TMPDIR) as fixture
+# space.
+foreign_parent=${RUNNER_TEMP:-/dev/shm}
+foreign_repo=$(mktemp -d "$foreign_parent/hooks-foreign.XXXXXX")
+git -C "$foreign_repo" init -q
+mkdir -p "$foreign_repo/.agent" "$foreign_repo/.github/workflows"
+printf 'AGENT_REPO_SLUG=foreign/example\n' > "$foreign_repo/.agent/config.env"
+out=$(pre_input "$root" "printf x > $foreign_repo/.github/workflows/ci.yml" \
+    "${classification_sid}-foreign-protected-write" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a foreign repository protected write is still guarded'
+assert_contains "$out" 'classification: foreign' \
+    'foreign protected-write diagnostics name the classification'
+assert_contains "$out" "$foreign_repo" \
+    'foreign protected-write diagnostics name the resolved repository root'
+rm -rf -- "$foreign_repo"
+out=$(pre_input "$fixture_repo" 'git commit --allow-empty -m fixture' \
+    "fixture-trunk" | AGENT_FIXTURE_ROOT="$tmp" "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a designated fixture main commit is allowed'
+
+out=$(edit_input "$root" '.github/workflows/ci.yml' "${classification_sid}-workspace" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'the workspace workflow remains guarded'
+assert_contains "$out" 'classification: workspace' \
+    'workspace refusal states the computed classification'
+assert_contains "$out" "$root" 'workspace refusal names the repository target'
+
+foreign_walk=$(mktemp -d "$foreign_parent/hooks-foreign-walk.XXXXXX")
+out=$(pre_input "$root" "cd $foreign_walk && find . -name AGENTS.md" \
+    "${classification_sid}-foreign" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a relative walk in foreign territory receives a scope advisory'
+rm -rf -- "$foreign_walk"
+
+# `-C` is a grep context flag, not a directory. It must not create a fake
+# command root and a false scope advisory for an otherwise in-scope walk.
+out=$(pre_input "$root" 'grep -r -C 3 secret .' "grep-context" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'grep context flags do not become effective directories'
+
+# A non-git temporary fixture is still an allowed fixture walk. Repository
+# lookup failure must preserve its /tmp fixture classification instead of
+# falling back to foreign.
+temp_fixture="$tmp/nonrepo-fixture"
+mkdir -p "$temp_fixture"
+out=$(pre_input "$root" "cd $temp_fixture && find . -name AGENTS.md" \
+    "temp-fixture-walk" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a temporary non-git fixture walk has no foreign advisory'
+
+unresolved="$tmp/unresolved"
+mkdir -p "$unresolved"
+out=$(edit_input "$root" "$unresolved/.github/workflows/ci.yml" "${classification_sid}-unresolved" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'an unresolvable protected-looking target is blocked'
+assert_contains "$out" 'classification: unresolved' \
+    'the unresolved refusal names its fail-closed classification'
+assert_contains "$out" 'retry if this is an ephemeral fixture' \
+    'ambiguous fixture text teaches the safe retry'
+
 for guarded in '.github/workflows/ci.yml' '.githooks/pre-commit' \
     '.pre-commit-config.yaml' 'Jenkinsfile' '.circleci/config.yml' \
     '.claude/settings.json' '.codex/config.toml'; do
@@ -648,7 +744,8 @@ done
 # and the branch that matters is the one in DIR, not the one where the agent
 # happens to be standing.
 out=$(pre_input "$tmp" "git -C $trunk_repo commit -m x" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'git -C DIR commit is judged against DIR'
+assert_eq 'allow' "$(decision "$out")" \
+    'git -C a temporary fixture does not inherit workspace trunk policy'
 
 # Evidence rule: a repository that never declared a trunk gets no opinion. With
 # no AGENT_BASE_BRANCH and no origin/HEAD there is nothing to compare against,
