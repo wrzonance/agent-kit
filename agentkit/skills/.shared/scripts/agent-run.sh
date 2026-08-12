@@ -424,6 +424,29 @@ canonicalise_work_dir() {
     work_dir=$resolved
 }
 
+# A literal executable path is an ad-hoc command, not a repository declaration.
+# Resolve its relative form from the repository toplevel so `--dir nested --
+# ./tools/check` has the same meaning as the same command from the root. Plain
+# names deliberately fall through to PATH lookup. When the token cannot be
+# proven to name a contained executable, leave it untouched so the wrapped
+# command supplies its normal failure status while the diagnostic records both
+# the execution cwd and the toplevel-resolution result.
+resolve_literal_executable() {
+    local token=${cmd[0]} candidate resolved
+    [[ $cmd_declared == no && $token == */* ]] || return 0
+    [[ $token != /* && -n $git_top ]] || return 0
+
+    candidate=$git_top/$token
+    resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
+    if [[ -n $resolved && $resolved == "$git_top"/* && -x $resolved && ! -d $resolved ]]; then
+        cmd[0]=$resolved
+        add_note "ad-hoc argv[0] '$token' resolved at toplevel: yes ($resolved); execution cwd: $work_dir"
+    else
+        add_note "ad-hoc argv[0] '$token' resolved at toplevel: no; execution cwd: $work_dir"
+    fi
+    refresh_cmd_str
+}
+
 # ------------------------------------------------- repository declarations ---
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
@@ -1327,6 +1350,7 @@ refresh_cmd_str
 # scoped to the exact directory where the command will execute.
 maybe_use_package_dir
 canonicalise_work_dir
+resolve_literal_executable
 
 # --yolo skips the approval record for this one invocation -- when the trunk
 # already carries the command's inputs (see yolo_gate). Measured in a live

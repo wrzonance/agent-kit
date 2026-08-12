@@ -75,6 +75,12 @@ scan_skill_recipes() {
                     print recipe ":" number ": gh pr ready command"
                 if (command == "gh" && segment ~ /@coderabbitai[[:space:]]+(review|full[[:space:]]+review|pause|resume|resolve)([^[:alnum:]_]|$)/)
                     print recipe ":" number ": provider review trigger"
+                if (segment ~ /(^|[[:space:]])--no-[[:space:]]*verify([[:space:]]|$)/)
+                    print recipe ":" number ": hook bypass"
+                if (segment ~ /(^|[[:space:]])git([[:space:]]|$)/ && segment ~ /core\.hooksPath/)
+                    print recipe ":" number ": hook execution config bypass"
+                if (segment ~ /(^|[[:space:]])git([[:space:]]|$)/ && segment ~ /config[[:space:]]+alias\./)
+                    print recipe ":" number ": git alias bypass"
             }
             function scan_line(line, number, segments, count, position) {
                 count = split(line, segments, /[;&|]+/)

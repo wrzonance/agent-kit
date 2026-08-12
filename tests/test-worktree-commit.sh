@@ -177,4 +177,53 @@ assert_eq 'whitespace.txt' "$(git -C "$worktree_a" diff --cached --name-only)" \
 assert_eq 'feat: commit a' "$(git -C "$worktree_a" log -1 --format=%s)" \
     'whitespace rejection does not create a commit'
 
+# A merge may carry protected content that belongs to the named base, not the
+# worker. Attended mode parks that content without dropping it from the index;
+# only explicit --yolo authorization may commit it after byte verification.
+merge_repo="$tmp/merge-repo"
+git init -q -b main "$merge_repo"
+git -C "$merge_repo" config user.name test
+git -C "$merge_repo" config user.email test@example.invalid
+mkdir -p "$merge_repo/.agent" "$merge_repo/.github/workflows"
+printf 'AGENT_BASE_BRANCH=main\nAGENT_PROTECTED_PATHS=.github/workflows/\n' > "$merge_repo/.agent/config.env"
+printf 'workflow-base\n' > "$merge_repo/.github/workflows/ci.yml"
+printf 'base\n' > "$merge_repo/base.txt"
+git -C "$merge_repo" add -- .
+git -C "$merge_repo" commit -qm base
+git -C "$merge_repo" checkout -qb feature
+printf 'feature\n' > "$merge_repo/feature.txt"
+git -C "$merge_repo" add -- feature.txt
+git -C "$merge_repo" commit -qm feature
+git -C "$merge_repo" checkout -q main
+printf 'workflow-base-v2\n' > "$merge_repo/.github/workflows/ci.yml"
+git -C "$merge_repo" add -- .github/workflows/ci.yml
+git -C "$merge_repo" commit -qm 'base workflow update'
+merged_base=$(git -C "$merge_repo" rev-parse HEAD)
+git -C "$merge_repo" checkout -q feature
+git -C "$merge_repo" merge --no-commit --no-ff -q main
+printf 'change\n' > "$merge_repo/change.txt"
+park_rc=0
+park_out=$(cd "$merge_repo" && "$script" --message 'fix: park merge content' \
+    --allow-base-inherited "$merged_base" -- change.txt 2>&1) || park_rc=$?
+assert_eq '2' "$park_rc" 'attended inherited protected content parks before commit'
+assert_contains "$park_out" '.github/workflows/ci.yml' 'park output names the inherited protected path'
+assert_eq '.github/workflows/ci.yml' "$(git -C "$merge_repo" diff --cached --name-only | grep '^\.github/workflows/' || true)" \
+    'parking preserves inherited protected content in the index'
+
+git -C "$merge_repo" diff --cached --quiet -- change.txt || true
+before_yolo=$(git -C "$merge_repo" diff --cached --name-only)
+assert_contains "$before_yolo" '.github/workflows/ci.yml' \
+    'the parked protected path remains staged before authorization'
+yolo_rc=0
+yolo_out=$(cd "$merge_repo" && "$script" --yolo --message 'fix: carry base merge' \
+    --allow-base-inherited "$merged_base" -- change.txt 2>&1) || yolo_rc=$?
+assert_eq '0' "$yolo_rc" 'yolo named-base authorization permits verified inherited content'
+assert_contains "$yolo_out" 'committed' 'the authorized helper reports its commit'
+assert_eq 'fix: carry base merge' "$(git -C "$merge_repo" log -1 --format=%s)" \
+    'the authorized commit is created'
+assert_eq 'workflow-base-v2' "$(git -C "$merge_repo" show HEAD:.github/workflows/ci.yml)" \
+    'the authorized commit carries the inherited protected bytes'
+assert_eq 'change' "$(git -C "$merge_repo" show HEAD:change.txt)" \
+    'the authorized commit carries the explicit path'
+
 finish

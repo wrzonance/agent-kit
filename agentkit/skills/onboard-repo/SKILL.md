@@ -226,6 +226,16 @@ Anything still commented is a blank the script would not guess. In practice:
   (migrations, a decisions log). CI definitions, git hooks and harness config are
   already covered; this is for what only this repository knows.
 
+Protected paths are a handoff boundary, not a suggestion to disable a guard.
+When a base merge carries one of these paths, retain its staged bytes and use
+the shared commit helper's explicit named-base affordance; attended work parks
+and hands off the path, while unattended work may proceed only after the base
+identity and byte equality are verified. Report this churn as
+`merge-inherited paths parked/handed off`. Never bypass hooks or guards with
+the hook-suppression flag (`--no-verify`), `core.hooksPath`,
+aliases, or configuration that changes hook execution. A refusal is one bounded
+named park, never a bypass investigation.
+
 ## Step 4 — work out the commands
 
 This is the part worth thinking about. Look at what the repository actually runs:
