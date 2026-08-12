@@ -21,6 +21,7 @@ case " $* " in
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"advanced security","author":{"login":"github-advanced-security[bot]","__typename":"Bot"}}]}},
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"scanner","author":{"login":"security-scanner","__typename":"Bot"}}]}},
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"known provider","author":{"login":"coderabbitai[bot]","__typename":"Bot"}}]}},
+          {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"<!-- review-remote-pr:agent-reply -->\nagent bookkeeping","author":{"login":"agent-account","__typename":"User"}}]}},
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"human quoted <!-- review-remote-pr:agent-doc --> marker","author":{"login":"botond","__typename":"User"}}]}},
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"human missing author","author":null}]}}
         ]}}}}}'
@@ -40,7 +41,7 @@ assert_contains "$output" 'ci=1/3 failing pending=1 failing=1' \
 assert_contains "$output" 'threads: coderabbit=1 unresolved  code-quality=0 open  human=2  generic=2' \
     'known and generic bot lanes stay separate from human threads'
 assert_contains "$output" 'classification: known-provider=1 type=Bot=1 login-suffix=1 human=2' \
-    'state dump reports the authoritative classification signal'
+    'state dump excludes agent-marked-only replies from the human signal'
 assert_not_contains "$output" '{"number"' 'digest does not leak raw API JSON'
 
 # A missing parser is a blocked evidence check, never an empty digest.

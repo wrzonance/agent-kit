@@ -55,6 +55,10 @@ parse_args() {
 parse_args "$@"
 command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
 
+if [[ $INPUT_FILE != '-' ]]; then
+    [[ -r $INPUT_FILE ]] || die "cannot read input file: $INPUT_FILE"
+fi
+
 jq -c '
   def login: ((.login // "") | ascii_downcase);
   def known_provider:
@@ -64,7 +68,9 @@ jq -c '
   def type_is_bot:
     ((.type // "") == "Bot") or ((.__typename // "") == "Bot");
   def login_suffix: (login | test("\\[bot\\]$"));
-  if known_provider then
+  . as $author
+  | ($author.login // "") as $original_login
+  | if known_provider then
     {lane:"known-provider", signal:"known-provider", automated:true,
      provider:(if (login | test("coderabbit"; "i")) then "coderabbit"
                else "github-code-quality" end)}
@@ -75,5 +81,5 @@ jq -c '
   else
     {lane:"human", signal:"human", automated:false, provider:null}
   end
-  | .login = (if (login == "") then null else .login end)
-' <(if [[ $INPUT_FILE == '-' ]]; then cat; else cat -- "$INPUT_FILE"; fi)
+  | .login = (if ($original_login == "") then null else $original_login end)
+' -- "$INPUT_FILE"

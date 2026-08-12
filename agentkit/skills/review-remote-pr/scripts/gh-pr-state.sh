@@ -318,6 +318,7 @@ thread_counts() {
         # one lost silently.
         def is_agent: (.body // "") | test("(^|\r?\n)" + $mark);
         def human_touched: [.comments.nodes[] | select(((classification.lane == "human") and (is_agent | not)))] | length > 0;
+        def has_human_signal: [.comments.nodes[] | select((classification.signal == "human") and (is_agent | not))] | length > 0;
         def has_cr: [.comments.nodes[] | select(is_cr)] | length > 0;
         def has_cq: [.comments.nodes[] | select(is_cq)] | length > 0;
         .data.repository.pullRequest.reviewThreads as $rt
@@ -331,7 +332,7 @@ thread_counts() {
             ($bot | map(select(has_signal("known-provider"))) | length),
             ($bot | map(select(has_signal("type=Bot"))) | length),
             ($bot | map(select(has_signal("login-suffix"))) | length),
-            ($open | map(select(has_signal("human"))) | length),
+            ($open | map(select(has_human_signal)) | length),
             (if (($rt.pageInfo.hasNextPage // false)
                  or ([$all[] | .comments.pageInfo.hasNextPage // false] | any)) then 1 else 0 end),
             ($all | map(select(((.comments.nodes[0].body) // "") | test("(^|\r?\n)" + $doc))) | length) ]
