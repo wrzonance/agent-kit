@@ -371,6 +371,32 @@ out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$side_sha" 2>&
 assert_eq 1 "$rc" 'non-ancestor pin exits 1'
 assert_contains "$out" 'not an ancestor' 'non-ancestor pin refusal names ancestry'
 
+# --- --yolo-base drives the gate; the verdict names the pin -----------------
+# Chain link: predecessor changed a declared input; the pin authorizes it.
+repo=$tmp/yolo-base-chain
+make_yolo_repo "$repo"
+printf '#!/bin/sh\ntouch "%s/chain-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'payload v1\n' > "$repo/payload.txt"
+printf 'AGENT_CMD_TEST=tools/runner --require=payload.txt\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'payload v2 from issue A\n' > "$repo/payload.txt"
+git -C "$repo" add payload.txt && git -C "$repo" commit -qm 'issue A'
+git -C "$repo" push -q origin HEAD:feat-issue-a
+git -C "$repo" fetch -q origin
+chain_sha=$(git -C "$repo" rev-parse HEAD)
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq 1 "$rc" 'plain yolo still refuses the chained input change'
+
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo --yolo-base "$chain_sha" 2>&1) || rc=$?
+assert_eq 0 "$rc" 'pinned yolo passes on the chain base'
+assert_eq yes "$([[ -e $tmp/chain-ran ]] && echo yes || echo no)" \
+    'the pinned run actually executes the command'
+assert_contains "$out" 'pinned base' 'skip message names the pinned anchor'
+
 # Approval persistence must fail loudly rather than claiming success when the
 # temporary record cannot be written or atomically replaced. Both cases approve
 # through the terminal helper; the write case additionally has the helper create

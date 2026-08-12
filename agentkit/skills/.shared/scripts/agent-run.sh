@@ -1044,7 +1044,7 @@ yolo_pinned_base() {
 }
 
 yolo_gate() {
-    local base changed canonical_out rc key current_value base_value
+    local base base_desc changed canonical_out rc key current_value base_value
     declare -A base_present=() base_values=() current_present=() current_values=()
     if [[ -n $yolo_base_opt ]]; then
         base=$(yolo_pinned_base "$yolo_base_opt")
@@ -1052,6 +1052,11 @@ yolo_gate() {
         base=$(yolo_base_ref) \
             || die '--yolo: no remote trunk ref to validate command inputs against; review the declaration and approve it from your own terminal instead.'
     fi
+    # Every skip/refusal message below names this description rather than the
+    # raw comparison target, so a chained worktree's operator sees which pin
+    # authorized (or refused) the run instead of an unlabeled commit/ref.
+    base_desc=$base
+    [[ -n $yolo_base_opt ]] && base_desc="pinned base $base"
     if [[ $resolved_parse_failed == yes ]]; then
         printf 'agent-run: refusing --yolo for %s: AGENT_CMD_%s cannot be proven equal after config parse errors\n' \
             "$cmd_name" "$(printf '%s' "$cmd_name" | tr '[:lower:]-' '[:upper:]_')" >&2
@@ -1066,7 +1071,7 @@ yolo_gate() {
         while IFS= read -r key; do
             [[ -n $key && -n ${resolved_config_present[$key]+yes} ]] || continue
             printf 'agent-run: refusing --yolo for %s: %s is declared on this checkout but missing from %s\n' \
-                "$cmd_name" "$key" "$base" >&2
+                "$cmd_name" "$key" "$base_desc" >&2
             exit 1
         done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
         canonical_out=''
@@ -1088,26 +1093,26 @@ yolo_gate() {
         if [[ -z ${current_present[$key]+yes} && -n ${base_present[$key]+yes} ||
             -n ${current_present[$key]+yes} && -z ${base_present[$key]+yes} ]]; then
             printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-                "$cmd_name" "$key" "$base" >&2
+                "$cmd_name" "$key" "$base_desc" >&2
             exit 1
         fi
         if [[ -n ${current_present[$key]+yes} && ${current_values[$key]} != "${base_values[$key]}" ]]; then
             printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-                "$cmd_name" "$key" "$base" >&2
+                "$cmd_name" "$key" "$base_desc" >&2
             exit 1
         fi
     done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
     if changed=$(yolo_changed_input "$base"); then
         printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-            "$cmd_name" "$changed" "$base" >&2
+            "$cmd_name" "$changed" "$base_desc" >&2
         printf '  --yolo trusts only command inputs the trunk already carries. This checkout\n' >&2
         printf '  changes one, so it is new code asking to run unattended -- review the\n' >&2
         printf '  change and approve it from your own terminal.\n' >&2
         exit 1
     fi
     printf 'agent-run: trust gate skipped (--yolo): %s inputs match %s; no approval record\n' \
-        "$cmd_name" "$base" >&2
-    add_note "trust gate skipped (--yolo): inputs match $base; no approval record"
+        "$cmd_name" "$base_desc" >&2
+    add_note "trust gate skipped (--yolo): inputs match $base_desc; no approval record"
 }
 
 # Reuse the exact trunk comparison for the interactive refusal teaching line,
