@@ -321,6 +321,12 @@ assert_contains "$ci_text" '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65
     'CI verifies the documented ShellCheck checksum'
 assert_contains "$ci_text" 'shellcheck --version' \
     'CI logs the pinned ShellCheck version'
+assert_contains "$ci_text" 'install_dir="${RUNNER_TEMP}/shellcheck-v${version}/bin"' \
+    'CI installs ShellCheck into a persistent versioned runner-temp directory'
+assert_contains "$ci_text" 'printf '\''%s\n'\'' "$install_dir" >>"$GITHUB_PATH"' \
+    'CI exports the persistent ShellCheck directory across workflow steps'
+assert_not_contains "$ci_text" 'printf '\''%s\n'\'' "$download_dir" >>"$GITHUB_PATH"' \
+    'CI never exports the cleaned download scratch directory'
 assert_not_contains "$ci_text" 'apt-get install -y -qq shellcheck' \
     'CI has no unpinned apt ShellCheck install path'
 

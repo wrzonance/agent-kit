@@ -35,13 +35,15 @@ jobs:
           url="https://github.com/koalaman/shellcheck/releases/download/v${version}/${archive}"
           expected_sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
           download_dir=$(mktemp -d)
+          install_dir="${RUNNER_TEMP}/shellcheck-v${version}/bin"
           trap 'rm -rf -- "$download_dir"' EXIT
           curl --fail --location --silent --show-error "$url" --output "$download_dir/$archive"
           printf '%s  %s\n' "$expected_sha256" "$download_dir/$archive" |
             sha256sum --check --status -
           tar -xJf "$download_dir/$archive" -C "$download_dir"
-          install -m 0755 "$download_dir/shellcheck-v${version}/shellcheck" "$download_dir/shellcheck"
-          printf '%s\n' "$download_dir" >>"$GITHUB_PATH"
+          mkdir -p -- "$install_dir"
+          install -m 0755 "$download_dir/shellcheck-v${version}/shellcheck" "$install_dir/shellcheck"
+          printf '%s\n' "$install_dir" >>"$GITHUB_PATH"
 
       - name: Report the interpreter
         # The tree targets bash 5.2 and one gate checks for constructs that need
