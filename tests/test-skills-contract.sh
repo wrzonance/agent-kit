@@ -115,4 +115,17 @@ assert_line_order 'Conflicting is classified before Duplicated' \
 assert_line_order 'Duplicated is classified before Repo-specific' \
     "$duplicated_line" "$repo_specific_line"
 
+review_skill="$skills/review-remote-pr/SKILL.md"
+parallel_skill="$skills/parallel-issues/SKILL.md"
+assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
+    'review recipes name jq parser failures as unavailable evidence'
+assert_contains "$(<"$review_skill")" 'python3 is not installed; evidence unavailable' \
+    'review recipes name python3 parser failures as unavailable evidence'
+assert_contains "$(<"$parallel_skill")" 'jq is not installed; evidence unavailable' \
+    'parallel recipes name jq parser failures as unavailable evidence'
+assert_contains "$(<"$parallel_skill")" 'issue_payload_file="$worktree/.agent/fetched-issue.json"' \
+    'parallel fetch persists raw issue bytes before parsing'
+assert_contains "$(<"$review_skill")" 'blocked check and must never be summarized as “no findings.”' \
+    'review Step 5 treats missing parsers as blocked checks'
+
 finish

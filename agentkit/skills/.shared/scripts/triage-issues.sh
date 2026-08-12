@@ -81,7 +81,9 @@ done
 [[ -z $fuzzy || $fuzzy =~ ^[0-9]+$ ]] || die_usage "--fuzzy must be an issue number, got: $fuzzy"
 
 # Preflight before ANY external command, so a stripped PATH reports the honest
-# reason rather than dying at 127 inside a coreutil.
+# reason rather than dying at 127 inside a coreutil. jq is the evidence parser:
+# its absence is blocked evidence, never an empty digest.
+command -v jq > /dev/null 2>&1 || die_blocked 'jq is not installed; evidence unavailable'
 for tool in gh jq dirname readlink mktemp; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
 done
@@ -183,20 +185,30 @@ build_explicit_query() {
     printf '%s\n' "$EXPLICIT_TAIL"
 }
 
-response=''
+raw_response_file="$repo_root/.agent/cache/triage-response.json"
+mkdir -p -- "${raw_response_file%/*}" || die 'could not create the raw triage response directory'
+[[ ! -L $raw_response_file ]] || die 'refusing to overwrite a symlink at the raw triage response path'
+raw_response_tmp=$(mktemp "${raw_response_file%/*}/.triage-response.XXXXXX") ||
+    die 'could not create a file for the raw triage response'
+chmod 600 -- "$raw_response_tmp" || die 'could not secure the raw triage response file'
 if [[ -n $issues ]]; then
     query=$(build_explicit_query "$issues")
-    response=$(gh api graphql -F "owner=$owner" -F "name=$name" -f "query=$query" 2> /dev/null || true)
+    gh api graphql -F "owner=$owner" -F "name=$name" -f "query=$query" \
+        >"$raw_response_tmp" 2> /dev/null || true
 else
     query=$(build_auto_query)
-    response=$(gh api graphql -F "owner=$owner" -F "name=$name" -F "first=$limit" \
-        -f "query=$query" 2> /dev/null || true)
+    gh api graphql -F "owner=$owner" -F "name=$name" -F "first=$limit" \
+        -f "query=$query" >"$raw_response_tmp" 2> /dev/null || true
 fi
-[[ -n $response ]] || classify_failure 'the GraphQL query returned nothing'
-jq -e . <<< "$response" > /dev/null 2>&1 ||
+mv -- "$raw_response_tmp" "$raw_response_file" ||
+    die 'could not publish the raw triage response'
+[[ -s $raw_response_file ]] || classify_failure 'the GraphQL query returned nothing'
+# Keep the fetched bytes on disk before the first parser invocation. If jq
+# rejects malformed evidence, the raw response remains available for diagnosis.
+jq -e . <"$raw_response_file" > /dev/null 2>&1 ||
     classify_failure 'the GraphQL response was not valid JSON'
 
-if jq -e '.errors' <<< "$response" > /dev/null 2>&1; then
+if jq -e '.errors' <"$raw_response_file" > /dev/null 2>&1; then
     warn "the query reported errors; affected issues are classified 'unknown'"
 fi
 
@@ -205,7 +217,7 @@ nodes=$(jq -c '
     if (.data.repository.issues.nodes? != null)
     then .data.repository.issues.nodes
     else [ (.data.repository // {}) | to_entries[] | .value | select(type == "object") ]
-    end' <<< "$response")
+    end' <"$raw_response_file")
 
 # ---------------------------------------------------------- classification ---
 # Precedence, highest first: unknown, done, active, in-flight, attempted,

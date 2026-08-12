@@ -43,6 +43,10 @@ repo=$(make_repo)
 out=$(run_triage "$repo" triage-mixed.json 2> /dev/null)
 assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'the whole triage costs one gh call'
 assert_contains "$(cat "$tmp/gh.log")" 'graphql' 'the one call is graphql'
+assert_eq 'yes' "$([[ -f "$repo/.agent/cache/triage-response.json" ]] && echo yes || echo no)" \
+    'raw triage response is persisted before parsing'
+assert_contains "$(cat "$repo/.agent/cache/triage-response.json")" '"data"' \
+    'persisted triage response retains fetched evidence'
 
 # --- verdicts --------------------------------------------------------------
 assert_contains "$(line_for 57)" 'clean' '#57 with no referencing PR is clean'
@@ -114,6 +118,24 @@ assert_rc 0 'a partial response still exits 0' -- env \
 repo=$(make_repo)
 mkdir -p "$tmp/emptybin"
 assert_rc 3 'no gh on PATH exits 3' -- env PATH="$tmp/emptybin" /bin/bash "$tr_sh" --repo-root "$repo"
+
+# A missing parser blocks the triage evidence check rather than yielding an
+# empty issue set. Keep gh available in the stripped path so jq is the failure.
+mkdir -p "$tmp/no-jq"
+cp "$tmp/stub/gh" "$tmp/no-jq/gh"
+chmod +x "$tmp/no-jq/gh"
+repo=$(make_repo)
+set +e
+missing_parser_output=$(GH_STUB_LOG="$tmp/gh-missing-parser.log" \
+    GH_STUB_RESPONSE="$here/fixtures/triage-mixed.json" PATH="$tmp/no-jq" \
+    /bin/bash "$tr_sh" --repo-root "$repo" 2>"$tmp/triage-parser.err")
+missing_parser_rc=$?
+set -e
+assert_eq '3' "$missing_parser_rc" 'missing jq blocks triage evidence parsing'
+assert_eq '' "$missing_parser_output" 'missing jq emits no empty triage digest'
+assert_contains "$(cat "$tmp/triage-parser.err")" 'jq' 'missing triage parser error names jq'
+assert_contains "$(cat "$tmp/triage-parser.err")" 'evidence unavailable' \
+    'missing triage parser error says evidence is unavailable'
 
 # --- fuzzy is opt-in -------------------------------------------------------
 repo=$(make_repo)

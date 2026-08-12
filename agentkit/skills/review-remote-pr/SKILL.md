@@ -43,6 +43,10 @@ comment and thread surface in one call (Step 1), and Step 0a is the canonical wo
 ```bash
 require_repo_context() {
     local repository_root repository
+    command -v jq >/dev/null 2>&1 || {
+        printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+        return 1
+    }
     repository_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
         printf '%s\n' 'Run this skill from a GitHub repository. Change to the repository root or an existing worktree, then try again.' >&2
         return 1
@@ -59,6 +63,11 @@ require_repo_context() {
 ```
 
 ## Runtime and provider neutrality
+
+Evidence parsing is a blocking check. Empty evidence output is acceptable only when the parser
+command was proven to run successfully; a missing parser is never “no findings.” Every recipe that
+uses `jq` or `python3` guards that parser first, names the missing tool on stderr, and says that
+evidence is unavailable.
 
 Before any GitHub body mutation, read and follow the shared
 [GitHub body transport policy](../.shared/github-body-policy.md). It governs PR, issue, API, and
@@ -156,6 +165,10 @@ GitHub's public Code Quality REST API currently exposes finding retrieval, not a
 
 ```bash
 # Inspect Code Quality findings available through the public API (read-only).
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 gh api "repos/$REPO/code-quality/findings?state=open&per_page=100" \
   -H "X-GitHub-Api-Version: 2026-03-10"
 # The PR finding comments and their IDs come from the Step 1 artifact — no re-query.
@@ -391,6 +404,10 @@ anchored thread. `github-code-quality[bot]` likewise gets no bot commands.
 Get the PR's head branch name and move into the worktree dedicated to that branch. If another worktree already has the branch checked out, use it. Otherwise create a sibling worktree for this PR. This avoids switching branches in a worktree that may belong to another issue/PR.
 
 ```bash
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 HEAD_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq '.headRefName')
 CROSS_REPO=$(gh pr view "$PR" --repo "$REPO" --json isCrossRepository --jq '.isCrossRepository')
@@ -499,6 +516,10 @@ retry, not a code problem).
 ### 0b — Check for merge conflicts
 
 ```bash
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 MERGEABLE=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable')
 echo "Mergeable: $MERGEABLE"
 ```
@@ -506,6 +527,10 @@ echo "Mergeable: $MERGEABLE"
 If `MERGEABLE` is `CONFLICTING`, merge the base branch before doing anything else. The PR branch is already published; preserving its history avoids a permission-gated force-push:
 
 ```bash
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
 git fetch origin "$BASE_BRANCH"
 
@@ -661,6 +686,11 @@ every surface once, writes the durable artifacts the later steps read, and print
 instead of dumping JSON into your context:
 
 ```bash
+# The reviewer result is evidence; jq must be available before reading it.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 # Resolve the skill tree from the environment contract at the repository
 # root; trust it only when it is an untracked regular file owned by this
 # user -- a tracked, symlinked, or foreign-owned contract could redirect
@@ -936,6 +966,11 @@ structured output, verified isolation, the initialized model in non-empty `model
 `--max-budget-usd 0.25` is ample.
 
 ```bash
+# The probe result is evidence; jq must be available before any JSON parse.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 # Resolve the skill tree from the environment contract at the repository
 # root; trust it only when it is an untracked regular file owned by this
 # user -- a tracked, symlinked, or foreign-owned contract could redirect
@@ -1128,6 +1163,11 @@ servers or settings), `--ignore-rules` (no `AGENTS.md` discovery), and a throwaw
 directory, with the verdict constrained by `--output-schema`.
 
 ```bash
+# The reviewer result is evidence; jq must be available before any JSON parse.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 # Resolve the skill tree from the environment contract at the repository
 # root; trust it only when it is an untracked regular file owned by this
 # user -- a tracked, symlinked, or foreign-owned contract could redirect
@@ -1212,6 +1252,11 @@ A green "CodeRabbit" status check is NOT proof a review happened. Detect the rea
 ```bash
 # Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+# Evidence is unavailable unless jq is present; never treat a parser failure as no findings.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 # Reads the Step 1 artifact; no extra API call. Comments arrive oldest-first, so
 # the LAST signal wins — a stale walkthrough from an earlier cycle must not mask
 # a rate-limit on the CURRENT trigger.
@@ -1242,6 +1287,11 @@ verdict payload is **nested**: `.verdict.verdict` is the `findings`/`no_findings
 ```bash
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 verdict_path="$RUN_DIR/adversarial.result.json"
+
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 
 # Success path (rc 0) only. rc 3 -> read .blockedReason and take the blind Codex
 # fallback; rc 1 -> stdout is empty and the reason is on stderr. See the table above.
@@ -1321,6 +1371,11 @@ When Phase A is done — CI green, conflicts resolved, every confirmed adversari
 
 ```bash
 # Long-interval poll; run as a background task so the wait survives turns.
+# A missing jq parser blocks the state check; it is never a ready/no-findings result.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 # NEVER gh pr ready "$PR" — the flip is the user's call, always.
 # A failed status query must never read as a ready transition: tolerate a few
 # transient failures, then stop with an error instead of inferring the flip.
@@ -1386,6 +1441,10 @@ the fixes are pushed, and let the user decide whether any additional trigger is 
 ---
 
 ## Step 5: Assess Automated-Review & Adversarial-Review Findings
+
+Before assessing any saved review artifact, prove the parser used by the recipe is available.
+An empty artifact is acceptable only after that parser ran successfully; a missing parser is a
+blocked check and must never be summarized as “no findings.”
 
 **Order matters: apply explicitly approved human-review actions without resolving their threads; triage body nitpicks and GitHub Code Quality findings FIRST; reply-and-resolve CodeRabbit's threads LAST.** Resolving CodeRabbit's threads can arm its auto-approve, while Code Quality findings need a fresh scan to establish their state. Work the cycle in this order:
 
@@ -1589,6 +1648,11 @@ refreshed `$RUN_DIR/state/pr_${PR}_threads.json`:
 ```bash
 # Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+# Evidence is unavailable unless python3 is present; never treat a parser failure as no findings.
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' 'python3 is not installed; evidence unavailable' >&2
+    exit 1
+fi
 # Path passed as argv, not via the environment — nothing is exported across calls.
 python3 - "$RUN_DIR/state/pr_${PR}_threads.json" << 'EOF'
 import json, re, sys
@@ -1761,6 +1825,10 @@ Finishing this PR drains the Ready / In-progress queue. Before handing back, fan
 Find the board this repo's issues live on, then list its Backlog issues:
 
 ```bash
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 IFS='/' read -r OWNER _ <<< "$REPO"
 gh project list --owner "$OWNER" --format json   # pick the board whose items are this repo's issues
 PROJECT=3                                        # replace with that board's number
