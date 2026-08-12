@@ -1099,6 +1099,36 @@ and opens a DRAFT PR containing Why, What, Design decisions, tickable Testing, a
 Closes #NNN. PR URL feeds Collect and Step 3a; the URL moves the issue to `In review` and starts
 the root-owned draft phase.
 
+Write every multiline PR body to a private temporary file with a quoted heredoc, then pass that
+file to GitHub. Never pass a multiline PR body through inline `--body`: shell and orchestration
+layers can preserve escape sequences literally and collapse the rendered body to one line.
+
+```bash
+pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
+chmod 600 -- "$pr_body_file" || exit 1
+cat >"$pr_body_file" <<'EOF'
+## Why
+
+<motivation>
+
+## What
+
+<high-level outcome>
+
+## Design decisions
+
+<decisions>
+
+## Testing
+
+- [ ] <verification command and result>
+
+🤖 Co-authored by <actual agent identity>. Closes #NNN.
+EOF
+gh pr create --draft --body-file "$pr_body_file" \
+  --title "$pr_title" --base "$base" --head "$branch"
+```
+
 The worker leaves scoped changes unstaged and returns a publication handback; root alone must
 push the branch and open a DRAFT PR; root handles CI state/verification, forge conflicts,
 adversarial review, consent, replies, and publication.

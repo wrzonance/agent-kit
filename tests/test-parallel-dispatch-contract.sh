@@ -196,6 +196,15 @@ assert_contains "$normalized_text" 'git diff -- <explicit handback paths>' \
     'parallel dispatch inspects unstaged explicit paths before commit'
 assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
     'parallel dispatch defers base diff inspection until publication'
+publication_section=$(
+    sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
+)
+assert_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
+    'draft PR publication passes a newline-preserving body file to gh'
+assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
+    'draft PR publication forbids inline multiline body strings'
+assert_contains "$publication_section" "cat >\"\$pr_body_file\" <<'EOF'" \
+    'draft PR publication uses a quoted heredoc for literal body contents'
 assert_not_contains "$text" '` --yolo`' \
     'parallel dispatch has no MD038-leading-space code span'
 
