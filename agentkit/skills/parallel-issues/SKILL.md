@@ -264,6 +264,12 @@ make later board moves single-call.
 ```bash
 set -euo pipefail
 
+# Triage output is evidence. A missing parser is blocked, never an empty issue set.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
+
 # Resolve the skill tree from the environment contract at the repository
 # root; trust it only when it is an untracked regular file owned by this
 # user -- a tracked, symlinked, or foreign-owned contract could redirect
@@ -791,11 +797,22 @@ printf 'boundary mode: %s\n' "$boundary_mode"
 
 ```bash
 # shellcheck disable=SC2034
+# Preserve the raw fetched bytes before any evidence parser runs.
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+    exit 1
+fi
 issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1
+issue_payload_file="$worktree/.agent/fetched-issue.json"
+mkdir -p -- "${issue_payload_file%/*}" || exit 1
+printf '%s\n' "$issue_payload" >"$issue_payload_file" || exit 1
 issue_has_content=$(jq -r '
   ((.title // "") != "") or ((.body // "") != "")
     or (((.labels // []) | length) > 0) or (((.comments // []) | length) > 0)
 ' <<<"$issue_payload")
+
+# Empty evidence is acceptable only after jq has run successfully and proved
+# the payload fields are empty; a missing parser is a blocked check.
 [[ $issue_has_content == true ]] || exit 1
 issue_contents=$(jq -r '
   [

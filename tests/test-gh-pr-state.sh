@@ -35,4 +35,20 @@ assert_contains "$output" 'threads: coderabbit=0 unresolved  code-quality=0 open
     'a marker mentioned mid-body remains human-visible'
 assert_not_contains "$output" '{"number"' 'digest does not leak raw API JSON'
 
+# A missing parser is a blocked evidence check, never an empty digest.
+mkdir -p "$tmp/no-jq"
+cp "$tmp/gh" "$tmp/no-jq/gh"
+chmod +x "$tmp/no-jq/gh"
+set +e
+missing_parser_output=$(PATH="$tmp/no-jq" /bin/bash \
+    "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo 2>"$tmp/missing-parser.err")
+missing_parser_rc=$?
+set -e
+assert_eq '1' "$missing_parser_rc" 'missing jq blocks PR evidence parsing'
+assert_eq '' "$missing_parser_output" 'missing jq emits no empty digest'
+assert_contains "$(cat "$tmp/missing-parser.err")" 'jq' 'missing parser error names jq'
+assert_contains "$(cat "$tmp/missing-parser.err")" 'evidence unavailable' \
+    'missing parser error says evidence is unavailable'
+
 finish

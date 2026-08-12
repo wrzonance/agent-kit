@@ -100,6 +100,24 @@ run_mv() {
         "$mv_sh" --repo-root "$repo" --repository example-org/example-repo "$@"
 }
 
+# The board helper parses live evidence with jq; a stripped parser must block
+# before it can print a no-op or move result.
+mkdir -p "$tmp/no-jq"
+cp "$tmp/stub/gh" "$tmp/no-jq/gh"
+chmod +x "$tmp/no-jq/gh"
+repo=$(bare_repo)
+set +e
+missing_parser_output=$(PATH="$tmp/no-jq" /bin/bash "$mv_sh" \
+    --repo-root "$repo" --repository example-org/example-repo \
+    --issue-number 57 --status 'In progress' 2>"$tmp/move-parser.err")
+missing_parser_rc=$?
+set -e
+assert_eq '1' "$missing_parser_rc" 'missing jq blocks board evidence parsing'
+assert_eq '' "$missing_parser_output" 'missing jq emits no board move result'
+assert_contains "$(cat "$tmp/move-parser.err")" 'jq' 'missing board parser error names jq'
+assert_contains "$(cat "$tmp/move-parser.err")" 'evidence unavailable' \
+    'missing board parser error says evidence is unavailable'
+
 # --- committed IDs are rebound against live board data ---------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"

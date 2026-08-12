@@ -43,6 +43,7 @@ INTERVAL=60
 WANT_FULL=0
 WANT_WAIT=0
 SAW_DIGEST=0
+PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
 
@@ -93,8 +94,17 @@ note() {
 }
 
 cleanup() {
+    if ((PRESERVE_WORK_DIR)); then
+        note "raw evidence preserved in $WORK_DIR"
+        return 0
+    fi
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
     return 0
+}
+
+preserve_raw_and_die() {
+    PRESERVE_WORK_DIR=1
+    die "$1; raw evidence preserved in $WORK_DIR"
 }
 
 ensure_private_output_dir() {
@@ -150,7 +160,7 @@ validate_args() {
         die "--interval must be an integer 1-3600, got: $INTERVAL"
     fi
     command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
-    command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
+    command -v jq >/dev/null 2>&1 || die "jq not found on PATH; evidence unavailable"
     return 0
 }
 
@@ -184,8 +194,9 @@ fetch_list() {
     local endpoint=$1 out=$2
     gh api "$endpoint" --paginate >"$WORK_DIR/raw" 2>"$WORK_DIR/err" ||
         die "gh api $endpoint failed: $(first_error)"
-    jq -s 'add // []' <"$WORK_DIR/raw" >"$out" ||
-        die "could not parse the response from $endpoint"
+    if ! jq -s 'add // []' <"$WORK_DIR/raw" >"$out"; then
+        preserve_raw_and_die "could not parse the response from $endpoint"
+    fi
     return 0
 }
 
@@ -213,8 +224,10 @@ fetch_threads() {
     gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query="$query" \
         >"$WORK_DIR/threads.json" 2>"$WORK_DIR/err" ||
         die "GraphQL reviewThreads query failed for $REPO#$PR: $(first_error)"
-    jq -e '.data.repository.pullRequest.reviewThreads' <"$WORK_DIR/threads.json" >/dev/null ||
-        die "GraphQL returned no reviewThreads for $REPO#$PR (check the PR number and gh auth)"
+    if ! jq -e '.data.repository.pullRequest.reviewThreads' <"$WORK_DIR/threads.json" >/dev/null; then
+        preserve_raw_and_die \
+            "GraphQL returned no reviewThreads for $REPO#$PR (check the PR number and gh auth)"
+    fi
     return 0
 }
 
@@ -223,8 +236,10 @@ fetch_all() {
     fetch_list "repos/$REPO/pulls/$PR/comments" "$WORK_DIR/comments.json"
     fetch_list "repos/$REPO/issues/$PR/comments" "$WORK_DIR/issue_comments.json"
     # Derived locally from the inline comments — no extra API round trip.
-    jq --arg re "$CQ_RE" 'map(select(((.user.login // "") | test($re; "i"))))' \
-        <"$WORK_DIR/comments.json" >"$WORK_DIR/code_quality_comments.json"
+    if ! jq --arg re "$CQ_RE" 'map(select(((.user.login // "") | test($re; "i"))))' \
+        <"$WORK_DIR/comments.json" >"$WORK_DIR/code_quality_comments.json"; then
+        preserve_raw_and_die 'could not parse inline review comments for code-quality evidence'
+    fi
     fetch_threads
     return 0
 }

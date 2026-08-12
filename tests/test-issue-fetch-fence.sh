@@ -148,6 +148,8 @@ assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
 recipe_text=$(<"$skill")
 assert_contains "$recipe_text" 'issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1' \
     'the canonical recipe exits when GitHub issue fetch fails'
+assert_contains "$recipe_text" 'mkdir -p -- "${issue_payload_file%/*}" || exit 1' \
+    'the canonical recipe creates the raw payload directory'
 assert_contains "$recipe_text" '[[ $issue_has_content == true ]] || exit 1' \
     'the canonical recipe rejects an empty issue payload before rendering'
 assert_contains "$recipe_text" 'target="$worktree/.agent/fenced-spec.txt"' \

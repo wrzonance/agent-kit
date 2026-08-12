@@ -92,4 +92,22 @@ assert_eq '1' "$rc" 'a stored-body mismatch fails the command'
 assert_contains "$(cat "$tmp/mismatch.err")" 'stored body does not match' \
     'mismatch output explains that nothing was resolved'
 
+# jq is the comment-body evidence parser; its absence must not look like a
+# successful post/update with no visible result.
+mkdir -p "$tmp/no-jq"
+cp "$tmp/gh" "$tmp/no-jq/gh"
+chmod +x "$tmp/no-jq/gh"
+set +e
+missing_parser_output=$(GH_COMMENT_GH="$tmp/no-jq/gh" GH_LOG="$tmp/no-jq.log" \
+    GH_PAYLOAD="$tmp/no-jq-payload.json" PATH="$tmp/no-jq" /bin/bash \
+    "$root/agentkit/skills/review-remote-pr/scripts/gh-comment.sh" \
+    --pr 14 --repo owner/repo --body-file "$body" 2>"$tmp/comment-parser.err")
+missing_parser_rc=$?
+set -e
+assert_eq '1' "$missing_parser_rc" 'missing jq blocks comment evidence parsing'
+assert_eq '' "$missing_parser_output" 'missing jq emits no comment result'
+assert_contains "$(cat "$tmp/comment-parser.err")" 'jq' 'missing comment parser error names jq'
+assert_contains "$(cat "$tmp/comment-parser.err")" 'evidence unavailable' \
+    'missing comment parser error says evidence is unavailable'
+
 finish

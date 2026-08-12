@@ -178,6 +178,7 @@ status_is_valid() {
     esac
     [[ -n $(board_option_id "$status" || true) ]]
 }
+command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
 status_is_valid || die \
     "Status must be 'Backlog', 'Ready', 'In progress', 'In review', 'Done', or a column declared in .agent/board.json."
 
