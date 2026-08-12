@@ -30,6 +30,17 @@ run_ledger() {
     "$ledger_sh" "$@"
 }
 
+invalid_plan="$tmp/invalid-plan.json"
+for invalid_id in 'slash/id' 'space id' $'line\nbreak'; do
+    jq -n --arg id "$invalid_id" \
+        '{planId: "invalid-id-fixture", entries: [{id: $id}]}' >"$invalid_plan"
+    invalid_ledger="$tmp/invalid-$(printf '%s' "$invalid_id" | tr '/ ' '__' | tr '\n' '_').json"
+    assert_rc 1 "init rejects line-unsafe plan id $(printf '%q' "$invalid_id")" -- \
+        run_ledger init --ledger "$invalid_ledger" --plan "$invalid_plan"
+    assert_eq 'no' "$([[ -e $invalid_ledger ]] && printf yes || printf no)" \
+        'rejected plan does not create a ledger'
+done
+
 assert_rc 0 'init creates a ledger' -- run_ledger init --ledger "$ledger" --plan "$plan"
 assert_eq '1' "$(jq -r '.schemaVersion' <"$ledger")" 'ledger schema is version 1'
 assert_eq 'fixture-batch-v1' "$(jq -r '.planId' <"$ledger")" 'ledger retains the planning id'
@@ -79,5 +90,41 @@ assert_eq 'bravo' "$(sed -n '2p' "$mutations")" 'resume starts at bravo'
 assert_eq 'charlie' "$(sed -n '3p' "$mutations")" 'resume finishes at charlie'
 assert_eq '0' "$(jq '.remaining | length' <"$batch_ledger")" 'completed rerun leaves no remaining ids'
 assert_eq '3' "$(jq '.idMap | length' <"$batch_ledger")" 'completed rerun has a complete follow-on id map'
+
+# Concurrent post-mutation records must serialize the read-modify-write. The
+# jq shim makes each writer pause after reading the current ledger so an
+# unlocked implementation deterministically loses all but one update.
+concurrent_ledger="$tmp/concurrent-ledger.json"
+concurrent_jq="$tmp/jq"
+real_jq=$(command -v jq)
+cat >"$concurrent_jq" <<EOF
+#!/usr/bin/env bash
+case \$* in
+    *'.applied += '* ) sleep 0.1 ;;
+esac
+exec "$real_jq" "\$@"
+EOF
+chmod 700 -- "$concurrent_jq"
+run_ledger init --ledger "$concurrent_ledger" --plan "$plan" >/dev/null
+concurrent_pids=()
+concurrent_failures=0
+for concurrent_id in alpha bravo charlie; do
+    concurrent_number=$((200 + ${#concurrent_pids[@]}))
+    PATH="$tmp:$PATH" run_ledger record --ledger "$concurrent_ledger" \
+        --id "$concurrent_id" --number "$concurrent_number" \
+        --url "https://github.com/example/repo/issues/$concurrent_number" \
+        >"$tmp/concurrent-$concurrent_id.log" 2>&1 &
+    concurrent_pids+=("$!")
+done
+for concurrent_pid in "${concurrent_pids[@]}"; do
+    wait "$concurrent_pid" || concurrent_failures=$((concurrent_failures + 1))
+done
+assert_eq '0' "$concurrent_failures" 'parallel records all complete successfully'
+assert_eq '3' "$(jq '.applied | length' <"$concurrent_ledger")" \
+    'parallel records preserve every applied entry'
+assert_eq '0' "$(jq '.remaining | length' <"$concurrent_ledger")" \
+    'parallel records remove every pending entry'
+assert_eq '600' "$(stat -c '%a' "$concurrent_ledger.lock")" \
+    'ledger lock is owner-private'
 
 finish

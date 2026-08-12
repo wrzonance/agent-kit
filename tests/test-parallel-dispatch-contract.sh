@@ -58,6 +58,15 @@ assert_contains "$text" 'target="$worktree/.agent/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
 assert_contains "$text" 'target="$worktree/.agent/fenced-prior-art.txt"' \
     'issue preparation persists prior-art fence bytes'
+bulk_section=$(sed -n '/^#### Bulk mutation discipline:/,/^#### Prior-art adjudication/p' "$skill")
+assert_contains "$bulk_section" 'if ! mutation_json=$(perform_rest_mutation "$planning_id"); then' \
+    'bulk recipe stops on a mutation failure'
+assert_contains "$bulk_section" 'if ! "$apply_ledger" record --ledger "$ledger"' \
+    'bulk recipe stops on a record failure'
+assert_contains "$bulk_section" 'applied/remaining' \
+    'bulk recipe reports applied and remaining ledger evidence on failure'
+assert_contains "$bulk_section" 'if grep -Eq' \
+    'bulk recipe guards a nonmatching budget marker explicitly'
 root_fence_section=$(sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill")
 assert_contains "$root_fence_section" 'if [[ $yolo_invocation == true ]]; then' \
     'root derives boundary mode from the explicit invocation'

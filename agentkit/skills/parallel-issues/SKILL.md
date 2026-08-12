@@ -352,21 +352,42 @@ an ID present in `applied`. Keep chunks bounded (the default recipe is 20
 objects), and persist after every success:
 
 ```bash
+report_batch_failure() {
+    local reason=$1 evidence
+    printf 'bulk batch stopped: %s\n' "$reason" >&2
+    if evidence=$("$apply_ledger" status --ledger "$ledger" --json); then
+        printf 'ledger evidence (applied/remaining): %s\n' "$evidence" >&2
+    else
+        printf 'ledger evidence unavailable: %s\n' "$ledger" >&2
+    fi
+    exit 1
+}
+
 while :; do
     mapfile -t chunk < <("$apply_ledger" pending --ledger "$ledger" --ids | head -n 20)
     ((${#chunk[@]})) || break
     for planning_id in "${chunk[@]}"; do
         # perform exactly one REST mutation for this ID and parse its number/URL
-        mutation_json=$(perform_rest_mutation "$planning_id")
-        created_number=$(jq -er '.number' <<<"$mutation_json")
-        created_url=$(jq -er '.html_url' <<<"$mutation_json")
-        "$apply_ledger" record --ledger "$ledger" --id "$planning_id" \
-            --number "$created_number" --url "$created_url"
+        if ! mutation_json=$(perform_rest_mutation "$planning_id"); then
+            report_batch_failure "mutation failed for $planning_id"
+        fi
+        if ! created_number=$(jq -er '.number' <<<"$mutation_json"); then
+            report_batch_failure "mutation response omitted number for $planning_id"
+        fi
+        if ! created_url=$(jq -er '.html_url' <<<"$mutation_json"); then
+            report_batch_failure "mutation response omitted URL for $planning_id"
+        fi
+        if ! "$apply_ledger" record --ledger "$ledger" --id "$planning_id" \
+            --number "$created_number" --url "$created_url"; then
+            report_batch_failure "ledger record failed for $planning_id"
+        fi
     done
     # This is an explicit inspection point between bounded chunks.
     if [[ -r .resources.graphql ]]; then
         sed -n '1,120p' .resources.graphql
-        grep -Eq 'remaining[^0-9]*0|exhausted[^a-z]*true' .resources.graphql && break
+        if grep -Eq 'remaining[^0-9]*0|exhausted[^a-z]*true' .resources.graphql; then
+            break
+        fi
     fi
 done
 ```

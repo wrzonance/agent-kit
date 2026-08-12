@@ -11,7 +11,7 @@ scanner="$here/lint-rest-routing.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-mkdir -p "$tmp/compliant" "$tmp/violating"
+mkdir -p "$tmp/compliant" "$tmp/violating" "$tmp/broad-marker"
 cat >"$tmp/compliant/routes.sh" <<'EOF'
 #!/usr/bin/env bash
 gh api "repos/$REPO/issues/$NUMBER"
@@ -39,13 +39,13 @@ assert_contains "$violations" 'REST-able data must use gh api repos/...' \
 assert_contains "$violations" 'routing-allow: projects-v2' \
     'scan names the only accepted GraphQL reasons'
 
-cat >"$tmp/violating/too-broad.sh" <<'EOF'
+cat >"$tmp/broad-marker/too-broad.sh" <<'EOF'
 #!/usr/bin/env bash
 # routing-allow: graphql -- this broad marker is not accepted
 gh api graphql -f query="$QUERY"
 EOF
 set +e
-"$scanner" "$tmp/violating" >/dev/null 2>&1
+"$scanner" "$tmp/broad-marker" >/dev/null 2>&1
 broad_rc=$?
 set -e
 assert_eq '1' "$broad_rc" 'a broad GraphQL allowlist marker is rejected'

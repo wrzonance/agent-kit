@@ -32,6 +32,7 @@ EOF
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
 command -v mktemp >/dev/null 2>&1 || die 'mktemp is not installed'
+command -v flock >/dev/null 2>&1 || die 'flock is not installed; ledger mutations cannot be serialized'
 
 subcommand=$1
 shift
@@ -94,6 +95,28 @@ done
 ledger_dir=${ledger%/*}
 [[ $ledger_dir != "$ledger" ]] || ledger_dir=.
 mkdir -p -- "$ledger_dir"
+ledger_lock_fd=
+
+acquire_ledger_lock() {
+    local lock_file="$ledger.lock"
+    [[ ! -L $lock_file ]] || die "refusing a ledger lock symlink: $lock_file"
+    exec {ledger_lock_fd}>"$lock_file" || die "could not open ledger lock: $lock_file"
+    chmod 600 -- "$lock_file" || {
+        exec {ledger_lock_fd}>&-
+        die "could not secure ledger lock: $lock_file"
+    }
+    flock "$ledger_lock_fd" || {
+        exec {ledger_lock_fd}>&-
+        die "could not acquire ledger lock: $lock_file"
+    }
+}
+
+release_ledger_lock() {
+    [[ -n $ledger_lock_fd ]] || return 0
+    flock -u "$ledger_lock_fd" || true
+    exec {ledger_lock_fd}>&-
+    ledger_lock_fd=
+}
 
 validate_ledger() {
     [[ -f $ledger && ! -L $ledger ]] || die "ledger is not a regular file: $ledger"
@@ -133,13 +156,16 @@ init_ledger() {
       and (.entries | type) == "array" and (.entries | length) > 0
       and all(.entries[]; (.id | type) == "string" and (.id | length) > 0)
       and ([.entries[].id] | length == (unique | length))
+      and all(.entries[]; .id | test("^[A-Za-z0-9._:-]+$"))
     ' "$plan" >/dev/null 2>&1 || die 'plan must have a non-empty unique planId and entries[].id values'
+    acquire_ledger_lock
     if [[ -e $ledger ]]; then
         validate_ledger
         jq -e --slurpfile source "$plan" \
             '(.planId == $source[0].planId) and (.plan == $source[0].entries)' "$ledger" \
             >/dev/null 2>&1 || die 'existing ledger does not match the supplied plan'
         printf 'ledger already initialized: %s\n' "$ledger"
+        release_ledger_lock
         return 0
     fi
     local content
@@ -149,9 +175,11 @@ init_ledger() {
     ' "$plan") || die 'could not create ledger from plan'
     atomic_write "$content"
     printf 'ledger initialized: %s\n' "$ledger"
+    release_ledger_lock
 }
 
 record_entry() {
+    acquire_ledger_lock
     validate_ledger
     [[ $entry_id =~ ^[A-Za-z0-9._:-]+$ ]] || die '--id must contain only letters, numbers, ., _, :, or -'
     [[ $number =~ ^[1-9][0-9]*$ ]] || die '--number must be a positive integer'
@@ -165,6 +193,7 @@ record_entry() {
             'any(.applied[]; .id == $id and .number == $n and .url == $u)' "$ledger" \
             >/dev/null 2>&1 || die "planning id already has a conflicting result: $entry_id"
         printf 'already applied: %s\n' "$entry_id"
+        release_ledger_lock
         return 0
     fi
 
@@ -176,6 +205,7 @@ record_entry() {
     ' "$ledger") || die 'could not update apply ledger'
     atomic_write "$content"
     printf 'recorded: %s -> #%s %s\n' "$entry_id" "$number" "$url"
+    release_ledger_lock
 }
 
 case $subcommand in
