@@ -1315,8 +1315,10 @@ For a chained issue, pass the predecessor branch as the PR base (`--base feat/is
 of `--base "$base"`) and append this line to the body, substituting the predecessor's PR number
 as a fixed literal:
 
-    Stacked on #__BASE_PR__ — merge that PR first; GitHub retargets this one to the default
-    branch automatically when its base branch is deleted on merge.
+    Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
+    (`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
+    only retargets automatically when the base branch is deleted on merge, which not every
+    repository does.
 
 The worker leaves scoped changes unstaged and returns a publication handback; root alone must
 push the branch and open a DRAFT PR; root handles CI state/verification, forge conflicts,
@@ -1665,8 +1667,12 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
 When the batch contains chains, the ready-flip handoff lists each chain's merge order
-explicitly (base PR first). A stacked PR merged out of order merges into its base branch,
-not the trunk — say so in the handoff.
+explicitly (base PR first), and after each predecessor merges, the successor must be
+retargeted to the default branch (`gh pr edit <N> --base <default>`) — then verify the successor's baseRefName
+actually changed before it merges. Never rely on automatic retargeting: it only fires when
+the merged base branch is deleted. A stacked PR merged while still based on its
+predecessor's branch merges into that branch, not the trunk — its changes never reach the
+default branch, and nothing fails loudly. Say all of this in the handoff.
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
