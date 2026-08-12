@@ -348,6 +348,7 @@ guard_curriculum() {
         ".shared/scripts/worktree-commit.sh|stage and commit without sweeping working state"
         "review-remote-pr/scripts/gh-pr-state.sh|CI and review state for a pull request"
         ".shared/scripts/bootstrap-repo.sh|re-declare this repo facts; see the onboard-repo skill"
+        ".shared/scripts/onboard-state.sh|report the next resumable onboarding stage and environment preflight"
     )
 
     [[ -d $skills ]] || return 1

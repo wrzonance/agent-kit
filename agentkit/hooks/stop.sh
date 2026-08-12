@@ -91,6 +91,22 @@ changes are correct, or that CI will agree. Run:
 $RESOLVE_HINT
   \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name
 then finish."
+# The resolver snippet above remains useful when the contract is absent, but a
+# Stop remediation must also be directly pasteable when this hook knows its own
+# installed tree. Keep both: the absolute line is the actionable command.
+contract_skills=''
+contract_file=$root/.agent/env-contract.txt
+if [[ -r $contract_file && ! -L $contract_file && -O $contract_file ]]; then
+    contract_skills=$(sed -n 's/^skills= path=//p' "$contract_file" 2> /dev/null | head -n 1 || true)
+fi
+if [[ -n $contract_skills ]]; then
+    # Resolve through the session contract instead of printing the physical
+    # plugin-cache version directory. The one line remains copy-pasteable and
+    # follows whichever stable skills entry point the current session owns.
+    remediation=$(printf '%s\n' 'Exact resolved command:' \
+        "  agentkit=\$(sed -n \"s/^skills= path=//p\" \"$contract_file\" | head -n 1); \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name")
+    reason+=$'\n\n'"$remediation"
+fi
 
 path_newer_than_stamp() {
     local rel=$1 candidate parent

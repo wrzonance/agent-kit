@@ -18,6 +18,38 @@ Filling those blanks is a judgement task, which is why it is a skill and not mor
 script. The cost is one upfront conversation; every later session reads the
 result instead of rediscovering it.
 
+## Resumable stage contract
+
+Onboarding is resumable and advances only the next incomplete stage. Report the
+current stage before acting: `not onboarded` (no declaration), `discovered`
+(bootstrap facts gathered), `declared` (config and board written), `verified`
+(declared commands and CI comparison passed), `committed` (the three committed
+artifacts are ready for review), or `armed` (the merged contract is active).
+Rerunning a stage is a refresh/no-op; archive-and-regenerate is only available
+with the explicit `--reset` flag and must be reported.
+
+Before `verified`, run the environment preflight and print its exact findings:
+the venv/install command for a missing runtime, `npm ci` (ecosystem-allow:
+detected setup command, not prescribed) or equivalent when a lockfile requires
+it, and any pinned-toolchain mismatch. Do not propose a
+command until the CI workflow has been read. If CI invokes a different entry
+point or arguments (for example `verify.sh --full` versus raw `pytest`), report
+both, read the entry point or `--help` to confirm defaults, and prefer CI as the
+canonical `TEST` command.
+
+Every operator approval, Stop remediation, and report next step must render the
+resolved absolute helper path from the environment contract. A bare
+`agent-run.sh`, a guessed cache path, or a versioned plugin-cache literal is not
+an actionable instruction. When the contract is absent, resolve the tree first
+and print the resulting absolute command as one copy-pasteable line.
+
+Completion reports include this four-step go-live checklist:
+
+1. Open a PR that commits `.agent/config.env`, `.agent/board.json`, and `.gitignore`.
+2. Until that PR merges, approvals remain per-machine and are not repository trust.
+3. After merge, run the resolved absolute `agent-run.sh --cmd verify --yolo` command.
+4. Explain that the trust scope covers the declared command inputs for this repository only.
+
 **Finish the job.** A repository left with `config.env` but no declared command
 is barely better off than an un-onboarded one: the `Stop` verification check has
 nothing to enforce and `--cmd` resolves nothing.
@@ -54,6 +86,24 @@ if [[ -z $contract_path ]]; then
 fi
 ```
 
+With the tree resolved, ask the executable onboarding boundary what is next
+and report its stage before doing any work:
+
+```bash
+"$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
+```
+
+Perform only the reported `next` stage. Before the first verification, also run
+the same boundary's environment preflight and include its component, package,
+runtime-pin, and setup lines in the handoff:
+
+```bash
+"$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --preflight
+```
+
+Rerunning the report is safe and returns the same stage until its evidence is
+present; it never silently skips a stage.
+
 ## Step 1 — look before writing
 
 ```bash
@@ -65,7 +115,9 @@ branch, and whether a Project board was found. **Stop and ask** if any of it is
 wrong — a wrong board number is written into a committed file and every later
 session trusts it.
 
-If the repo is already onboarded and you are here to fix it, add `--force`.
+If the repo is already onboarded and you are here to refresh it, add `--force`.
+Use `--reset` only when the user explicitly requests archive-and-regenerate; the
+helper reports each archived file and the new declaration paths.
 
 ### If there is no board, or the columns are wrong
 
@@ -238,9 +290,9 @@ record directly.
 
 ```bash
 # A human, in an interactive terminal:
-"$shared/agent-run.sh" --approve --cmd verify
+"$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify
 # Any session, once approval exists:
-"$shared/agent-run.sh" --cmd verify
+"$agentkit/.shared/scripts/agent-run.sh" --cmd verify
 ```
 
 Approval lives outside the checkout and fingerprints the declaration plus
@@ -312,10 +364,10 @@ Then prove it parses. Approval and the first run are a human step (above),
 so hand them off rather than running `--approve` yourself:
 
 ```bash
-"$shared/repo-config.sh" --list
+"$agentkit/.shared/scripts/repo-config.sh" --list
 # ...then, once per name you declared, a human approves and runs it:
-"$shared/agent-run.sh" --approve --cmd verify   # human, interactive terminal
-"$shared/agent-run.sh" --cmd verify
+"$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify   # human, interactive terminal
+"$agentkit/.shared/scripts/agent-run.sh" --cmd verify
 ```
 
 `--list` prints warnings for values the resolver rejects. A declared command that

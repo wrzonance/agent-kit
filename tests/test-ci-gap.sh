@@ -41,6 +41,31 @@ assert_not_contains "$covered_output" 'Setup runtime' \
 assert_contains "$covered_output" 'Plausibly covered' \
     'mixed workflow reports the covered gate section'
 
+divergent_repo="$tmp/divergent"
+make_repo "$divergent_repo" $'AGENT_CMD_TEST=pytest -q' \
+    $'name: CI\non:\n  pull_request:\njobs:\n  checks:\n    steps:\n      - name: Run verifier\n        run: "verify.sh --full"'
+divergent_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$divergent_repo")
+assert_contains "$divergent_output" 'CI verifier: verify.sh --full' \
+    'CI divergence names the workflow verifier entry point and mode'
+assert_contains "$divergent_output" 'Declared TEST proposal: pytest -q' \
+    'CI divergence names the raw local proposal'
+assert_contains "$divergent_output" 'prefer CI as canonical TEST' \
+    'CI divergence prefers the workflow verifier as canonical TEST'
+
+# A block scalar belongs only to its run key. A following step at the parent
+# indentation must not be swallowed and reported as a verifier command.
+multiline_repo="$tmp/multiline"
+make_repo "$multiline_repo" $'AGENT_CMD_TEST=tests/run-tests.sh' $'name: CI\non:\n  pull_request:\njobs:\n  checks:\n    steps:\n      - name: Build package\n        run: |\n          make build\n          echo build complete\n      - name: Run tests\n        run: tests/run-tests.sh'
+multiline_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$multiline_repo")
+assert_contains "$multiline_output" 'CI verifier: tests/run-tests.sh' \
+    'reports the actual verifier after a multiline build step'
+assert_not_contains "$multiline_output" 'CI verifier: -' \
+    'does not turn a following named step into a verifier command'
+assert_not_contains "$multiline_output" 'inspect - --help' \
+    'does not propose help for a swallowed YAML step'
+
 no_contract="$tmp/no-contract"
 make_repo "$no_contract" '' \
     'name: CI

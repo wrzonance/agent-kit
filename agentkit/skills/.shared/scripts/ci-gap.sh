@@ -139,3 +139,38 @@ verdict: closing this gap is usually the wrong move, because a local gate that
 equalled CI would be too slow to run at the end of every turn. Knowing which
 gates only CI enforces is the point.
 EOF
+
+# Name command-level divergence separately from approximate gate matching. A
+# workflow may require a verifier mode while the local declaration calls a raw
+# component tool; prefer CI as the canonical TEST proposal.
+mapfile -t ci_runs < <(
+    awk '
+        function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        function indent(s, t) { t=s; sub(/[^[:space:]].*$/, "", t); return length(t) }
+        /^[[:space:]]*run:[[:space:]]*[^|>[:space:]].*$/ {
+            line=$0; sub(/^[[:space:]]*run:[[:space:]]*/, "", line); print trim(line); capture=0; next
+        }
+        /^[[:space:]]*run:[[:space:]]*[|>][-+]?[[:space:]]*$/ { run_indent=indent($0); capture=1; next }
+        capture {
+            line_indent=indent($0)
+            if ($0 !~ /^[[:space:]]*$/ && line_indent <= run_indent) { capture=0 }
+            else if ($0 !~ /^[[:space:]]*$/ && line_indent > run_indent) { print trim($0); next }
+        }
+        capture { capture=0 }
+    ' "${workflows[@]}" 2> /dev/null |
+        sed -E 's/^["'"'']//; s/["'"'']$//' |
+        sed 's/[[:space:]]+#.*$//' | sed '/^[[:space:]]*$/d'
+)
+test_decl=$(printf '%s\n' "$declared" | sed -n 's/^AGENT_CMD_TEST=//p' | head -n 1)
+for ci_run in "${ci_runs[@]}"; do
+    case "$(tr '[:upper:]' '[:lower:]' <<< "$ci_run")" in
+        *test*|*verify*)
+            printf 'CI verifier: %s\n' "$ci_run"
+            printf 'CI entry point/defaults: inspect %s --help before proposing flags.\n' "${ci_run%% *}"
+            if [[ -n $test_decl && $test_decl != "$ci_run" ]]; then
+                printf 'Declared TEST proposal: %s\n' "$test_decl"
+                printf 'CI divergence: prefer CI as canonical TEST; raw component proposal differs from the CI verifier above.\n'
+            fi
+            ;;
+    esac
+done

@@ -272,6 +272,31 @@ assert_eq '1' "$(grep -c '^AGENT_CMD_TEST=' "$repo/.agent/config.env")" \
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'the merged config parses cleanly'
 
+# A carried relative executable belongs to the real checkout, not bootstrap's
+# temporary staging directory. Validation must use the explicit config path
+# override while resolving candidates against the target repository root.
+repo=$(make_repo)
+mkdir -p "$repo/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/verify"
+chmod +x "$repo/tools/verify"
+run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
+printf 'AGENT_CMD_TEST=tools/verify\n' >> "$repo/.agent/config.env"
+assert_rc 0 'bootstrap refresh validates carried commands against the real root' -- \
+    env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 --force
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_CMD_TEST=tools/verify' \
+    'refresh keeps the carried executable declaration'
+
+# Reset is the explicit archive-and-regenerate path; ordinary refresh must not
+# discard declaration work or create an archive.
+before_reset=$(find "$repo/.agent" -mindepth 2 -maxdepth 2 -type f -path '*/archive/*' | wc -l)
+assert_rc 0 'reset archives before regenerating' -- env PATH="$tmp/stub:$PATH" \
+    "$bs_sh" --repo-root "$repo" --project 7 --reset
+after_reset=$(find "$repo/.agent" -mindepth 2 -maxdepth 2 -type f -path '*/archive/*' | wc -l)
+assert_eq '0' "$before_reset" 'refresh has no archive side effect'
+assert_eq '2' "$after_reset" 'reset archives config and board'
+assert_not_contains "$(cat "$repo/.agent/config.env")" 'AGENT_CMD_TEST=tools/verify' \
+    'reset does not carry declarations out of the archive'
+
 
 # --- the allowlist must WORK, not merely be present -------------------------
 # A repository carried the intended allowlist in .gitignore and a broader
@@ -286,6 +311,17 @@ out=$(run_bs --repo-root "$repo" --project 7 2>&1)
 assert_contains "$out" 'allowlist has no effect' 'a defeated allowlist is reported, not assumed to work'
 assert_contains "$out" '.git/info/exclude' 'and the file carrying the defeating rule is named'
 assert_contains "$out" '.agent/ -> .agent/*' 'and the narrowing that fixes it is given'
+assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
+    'a dead ignore failure installs no config.env before remediation'
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'a dead ignore failure installs no board.json before remediation'
+assert_eq 'no' "$([[ -e $repo/.gitignore ]] && echo yes || echo no)" \
+    'a dead ignore failure does not print partial success or create .gitignore'
+# The named repair is directly rerunnable: once the blocking rule is narrowed,
+# the same bootstrap command completes without --force.
+sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$repo/.git/info/exclude"
+assert_rc 0 'the remediation permits a direct bootstrap rerun' -- env \
+    PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7
 
 # The same repository once the broader rule is narrowed: silence.
 repo=$(make_repo)
