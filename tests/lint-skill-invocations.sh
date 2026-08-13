@@ -36,12 +36,19 @@ trap 'rm -rf -- "$work"' EXIT
 
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues|post-receipt|prepare-issue-artifacts|board-list'
 readonly FULL_RESOLVER_MARK='agentkit=\$(sed -n "s/\^skills= path='
-readonly GUARD_MARK='${agentkit:-}/.shared/scripts'
+# Both halves of the guard are matched as complete TEST EXPRESSIONS on a single
+# non-comment line, never as loose substrings. Substring matching is not enough:
+# `${agentkit:-}/.shared/scripts` also appears inside a helper invocation path,
+# and `${agentkit_provenance:-}` can appear in a comment, so a fence carrying a
+# bare invocation plus a comment mentioning the sentinel would satisfy both
+# marks while executing no guard at all -- the exact bypass this rule exists to
+# close.
+readonly GUARD_EXPR_DIR='[ -d "${agentkit:-}/.shared/scripts" ]'
 # The directory check alone is satisfied by any stale or profile-inherited
 # $agentkit that happens to point at a real tree, which is exactly the case the
 # sentinel exists to reject. Requiring both is what makes the provenance
 # boundary enforced rather than decorative.
-readonly SENTINEL_MARK='${agentkit_provenance:-}'
+readonly GUARD_EXPR_SENTINEL='[ "${agentkit_provenance:-}" = ok ]'
 # Skills whose earliest setup step keeps the single boxed resolver definition;
 # every other bash block in these two files must carry the guard instead.
 readonly SINGLE_SOURCE_SKILLS='review-remote-pr parallel-issues'
@@ -160,15 +167,30 @@ while IFS= read -r skill_file; do
                 continue
             fi
             grep -qE "($HELPERS)\.sh" "$fence" || continue
-            if grep -qF "$GUARD_MARK" "$fence"; then
-                grep -qF "$SENTINEL_MARK" "$fence" && continue
+            # Executed guard only: comment lines are skipped, and both halves
+            # must appear as test expressions on the SAME line, which is how the
+            # guard is actually written. A mention in prose or a comment proves
+            # nothing about what runs.
+            guard_dir=0
+            guard_both=0
+            while IFS= read -r line; do
+                [[ $line =~ ^[[:space:]]*# ]] && continue
+                [[ $line == *"$GUARD_EXPR_DIR"* ]] || continue
+                guard_dir=1
+                if [[ $line == *"$GUARD_EXPR_SENTINEL"* ]]; then
+                    guard_both=1
+                    break
+                fi
+            done < "$fence"
+            ((guard_both)) && continue
+            if ((guard_dir)); then
                 sentinel_gaps=$((sentinel_gaps + 1))
-                printf 'GUARD WITHOUT SENTINEL in %s (fence %s): a directory-only guard is satisfied by a stale inherited agentkit; require [ "${agentkit_provenance:-}" = ok ] too\n' \
-                    "$skill_file" "$fence_name" >&2
+                printf 'GUARD WITHOUT SENTINEL in %s (fence %s): a directory-only guard is satisfied by a stale inherited agentkit; require %s on the same line\n' \
+                    "$skill_file" "$fence_name" "$GUARD_EXPR_SENTINEL" >&2
                 continue
             fi
             no_resolver=$((no_resolver + 1))
-            printf 'MISSING RESOLVER in %s (fence %s): a helper is invoked with neither the full resolver nor the guard\n' \
+            printf 'MISSING RESOLVER in %s (fence %s): a helper is invoked with neither the full resolver nor an executed guard\n' \
                 "$skill_file" "$fence_name" >&2
         done
     fi

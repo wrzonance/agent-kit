@@ -9,6 +9,10 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
+# The complete executed guard: matching its halves separately would accept a
+# fence whose only mention of them is a helper path plus a comment.
+FULL_GUARD='[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]'
+
 for skill in "$root"/agentkit/skills/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
     text=$(<"$skill")
@@ -43,12 +47,12 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
     # pattern) must still carry the full provenance checks even when the
     # guard-message string is also present, or a fresh unvalidated read could
     # hide behind a guard that validates a different variable.
-    unguarded=$(awk '
+    unguarded=$(awk -v GUARD="$FULL_GUARD" '
         function flush() {
             full_checks = (block ~ /! -L \$contract/ && block ~ /-O \$contract/ &&
                 block ~ /git -C "\$contract_root" ls-files --error-unmatch -- \.agent\/env-contract\.txt/)
             guard_only = (block ~ /agentkit unresolved: prepend the Step 0 resolver block/ &&
-                block ~ /agentkit_provenance/)
+                index(block, GUARD) > 0)
             local_redefine = (block ~ /(^|[^[:alnum:]_])contract(_root)?=[^=]/)
             if (has_read && !full_checks && (!guard_only || local_redefine))
                 printf "unguarded contract read in block ending line %d\n", FNR
