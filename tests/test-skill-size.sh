@@ -195,9 +195,9 @@ assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows past its line ceiling 
 assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 516 lines' 'the line ratchet names its ceiling'
 
 root=$tmp/stale
-make_skill "$root" onboard-repo <<'EOF'
+make_skill "$root" review-remote-pr <<'EOF'
 ---
-name: onboard-repo
+name: review-remote-pr
 description: Use when an allowlisted skill has shrunk back under the budget.
 ---
 Now small.
@@ -210,9 +210,16 @@ assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale e
 # do not degrade to a loud zero: a non-numeric field aborts the whole lint with
 # "unbound variable", `08` dies as an invalid octal literal, and an expression
 # is silently evaluated into a different ceiling.
-with_entry() { # prints the path to a lint copy whose onboard-repo entry is $1
-    local replacement=$1 copy=$tmp/lint-${2}.sh
-    sed "s|\[onboard-repo\]=\"464:5476:350\"|[onboard-repo]=\"$replacement\"|" "$lint" > "$copy"
+with_entry() { # prints the path to a lint copy whose review-remote-pr entry is $1
+    local replacement=$1 copy=$tmp/lint-${2}.sh escaped
+    # Match the entry by KEY, not by its current value. Pinning the literal
+    # numbers meant every ratchet silently invalidated these fixtures: the
+    # substitution matched nothing, the copy equalled the original, and the
+    # malformed-entry cases stopped testing anything. The cmp guard below still
+    # fails loudly if the entry is renamed or its shape changes.
+    escaped=${replacement//\\/\\\\}
+    escaped=${escaped//&/\\&}
+    sed -E "s|\[review-remote-pr\]=\"[^\"]*\"|[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
     chmod +x "$copy"
     if cmp -s "$lint" "$copy"; then
         _fail "the '$replacement' fixture actually edits the allowlist" \
@@ -221,7 +228,7 @@ with_entry() { # prints the path to a lint copy whose onboard-repo entry is $1
     printf '%s\n' "$copy"
 }
 
-for bad in '464:350' 'foo:5476:350' '464:08:350' '464:1+1:350' '464:5476:'; do
+for bad in '497:450' 'foo:7503:450' '497:08:450' '497:1+1:450' '497:7503:'; do
     label=$(printf '%s' "$bad" | tr -c 'a-zA-Z0-9' '-')
     run_lint "$tmp/stale" "$(with_entry "$bad" "$label")"
     assert_eq '1' "$LINT_RC" "a malformed allowlist entry ('$bad') fails"
