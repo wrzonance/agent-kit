@@ -9,6 +9,10 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
+# The complete executed guard: matching its halves separately would accept a
+# fence whose only mention of them is a helper path plus a comment.
+FULL_GUARD='[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]'
+
 for skill in "$root"/agentkit/skills/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
     text=$(<"$skill")
@@ -31,13 +35,26 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
     # Every sed/grep line that touches the validated $contract path -- the
     # skills-path resolver, the onboarding contract probe, and AGENT_TRAILER
     # assignments, quoted or not, in command substitution or not -- must sit
-    # in a fenced block that also carries the symlink, ownership, and
-    # tracked-file guards, so no read is reachable without provenance
-    # validation.
-    unguarded=$(awk '
+    # in a fenced block that either carries the symlink, ownership, and
+    # tracked-file guards itself, or carries the resolver-guard line proving
+    # it depends on the single Step 0 resolver definition (pinned separately,
+    # once per skill, by the assertions above) having been prepended first.
+    # This is the single-source convention: the provenance checks live once,
+    # every other consuming block just guards that they already ran.
+    # The guard-message exemption below proves only that $agentkit resolved --
+    # it says nothing about a $contract this block re-derives for itself. A
+    # block that locally assigns contract=/contract_root= (the AGENT_TRAILER
+    # pattern) must still carry the full provenance checks even when the
+    # guard-message string is also present, or a fresh unvalidated read could
+    # hide behind a guard that validates a different variable.
+    unguarded=$(awk -v GUARD="$FULL_GUARD" '
         function flush() {
-            if (has_read && (block !~ /! -L \$contract/ || block !~ /-O \$contract/ ||
-                 block !~ /git -C "\$contract_root" ls-files --error-unmatch -- \.agent\/env-contract\.txt/))
+            full_checks = (block ~ /! -L \$contract/ && block ~ /-O \$contract/ &&
+                block ~ /git -C "\$contract_root" ls-files --error-unmatch -- \.agent\/env-contract\.txt/)
+            guard_only = (block ~ /agentkit unresolved: prepend the Step 0 resolver block/ &&
+                index(block, GUARD) > 0)
+            local_redefine = (block ~ /(^|[^[:alnum:]_])contract(_root)?=[^=]/)
+            if (has_read && !full_checks && (!guard_only || local_redefine))
                 printf "unguarded contract read in block ending line %d\n", FNR
             block = ""; has_read = 0
         }

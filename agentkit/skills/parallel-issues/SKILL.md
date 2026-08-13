@@ -142,13 +142,13 @@ digraph process {
 
 Run `agent-preflight.sh` once, in the repository you are about to work in, before any other command in this skill. Its stdout block is **the environment contract for the whole run**: resolved skills path, repo slug, branch, base, whether the repository declared its own facts in `.agent/config.env`, git writability, `gh` auth + scopes, sandbox state, CA bundle, cache directories, repo command runner, and adversarial-reviewer availability. Establish these facts once, here — never re-probe them later, and never let a dispatched agent discover them by failing.
 
-```bash
-set -euo pipefail
+#### The resolver (prepend to EVERY shell call)
 
-if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
-    printf '%s\n' 'Run this skill from a Git repository.' >&2
-    exit 1
-fi
+Resolution only, and deliberately so: this is the block prepended to every later shell call, so it
+must stay free of anything that is supposed to happen once. Running the preflight lives in its own
+block below.
+
+```bash
 # The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
 # Resolve the skill tree from the environment contract at the repository
 # root; trust it only when it is an untracked regular file owned by this
@@ -166,6 +166,46 @@ if [[ -z $agentkit ]]; then
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# Set only after the provenance checks above pass, so a guard below cannot
+# be satisfied by a stale or inherited $agentkit that merely happens to look
+# like a valid tree -- the sentinel proves THIS resolver ran, not just that
+# some directory exists. (Read only by the guard in a later block.)
+# shellcheck disable=SC2034
+agentkit_provenance=ok
+```
+
+Shell state does not persist between an agent's tool calls, so every command block below that
+touches `$agentkit` assumes this resolver was prepended immediately before it ran. A block executed
+without it fails loudly on its own guard line — `agentkit unresolved: prepend the Step 0 resolver
+block` — instead of silently operating on an empty variable.
+
+The guard also checks `agentkit_provenance=ok`, a sentinel the resolver sets only after its provenance checks pass — a stale or profile-inherited `agentkit` shell variable that merely resolves to a real directory does not carry that sentinel and still fails the guard.
+
+#### Run the preflight — ONCE, and only here
+
+This block is **not** part of the resolver above and must never be folded back into it. It writes
+`.agent/env-contract.txt` and prints the whole contract, so running it per shell call would
+re-probe the environment on every command — overwriting a good contract with whatever a transient
+`gh`/network failure reports (the preflight reports rather than blocks, so that degradation is
+silent), and prefixing every later command's stdout with the contract block.
+
+**Precondition: the repository is already onboarded.** The resolver reads the skills path *from*
+`.agent/env-contract.txt`, so a repository that has never had one cannot start here — the resolver
+exits with *"skills path is absent … run agent-preflight.sh first"*, and locating that helper is
+exactly what it could not do. `onboard-repo` owns the sole contract-absent bootstrap in this tree
+(its `find` over the installed plugin caches, pinned by `test-skills-contract.sh`), so run
+`onboard-repo` first on a fresh repository. This block re-probes and refreshes an existing
+contract; it is not a bootstrap.
+
+```bash
+set -euo pipefail
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+
+if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
+    printf '%s\n' 'Run this skill from a Git repository.' >&2
+    exit 1
+fi
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
     printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
@@ -212,22 +252,8 @@ fi
 # here; anything it omits falls through to the live discovery below. Report a
 # missing resolver rather than swallowing it: silently skipping the config means
 # silently paying for every discovery call it would have saved.
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 if [[ -x $resolver ]]; then
     eval "$("$resolver" --export)"
@@ -277,22 +303,8 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 
 # Auto mode: the open backlog, most recently updated first.
 "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
@@ -348,6 +360,8 @@ followed immediately by one `record` call containing the returned number and
 URL. The shared helper is deliberately a ledger, not an orchestrator:
 
 ```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 ledger=.agent/apply-ledger.json
 plan=.agent/apply-plan.json
 apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
@@ -482,22 +496,8 @@ cannot see them. That search is the lowest-yield call in the set, so it is
 opt-in per issue rather than automatic:
 
 ```bash
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 "$agentkit/.shared/scripts/triage-issues.sh" --issues 57 --fuzzy 57
 ```
 
@@ -510,22 +510,8 @@ cannot argue its way into a dispatch.
 ```bash
 set -euo pipefail
 
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 
 # Ready first. Add --include-backlog to groom unblocked Backlog work in as well.
 "$agentkit/.shared/scripts/pick-issues.sh" --include-backlog
@@ -648,22 +634,8 @@ fi
 issue_number=123 # Replace with the approved issue number.
 branch="feat/issue-$issue_number"
 worktree="$repository_root/.worktrees/feat/issue-$issue_number"
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 shared_scripts="$agentkit/.shared/scripts"
 exclude_path="$(git rev-parse --git-path info/exclude)"
 if ! grep -Fxq '.worktrees/' "$exclude_path" 2>/dev/null; then
@@ -838,22 +810,8 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-numbers "$issue_numbers_csv" --status 'In progress' --repository "$repository"
 ```
@@ -895,6 +853,8 @@ printf 'boundary mode: %s\n' "$boundary_mode"
 ```
 
 ```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 # shellcheck disable=SC2034
 # Preserve the raw fetched bytes before any evidence parser runs.
 if ! command -v jq >/dev/null 2>&1; then
@@ -967,11 +927,11 @@ if ! printf '%s' "$issue_contents" >"$spec_payload" ||
 fi
 # Named producer shapes remain here so the canonical recipe is executable and
 # testable without ever moving issue-derived data into a worker prompt.
-# spec_fence=$("$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload")
-# prior_art_fence=$("$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload")
+# spec_fence=$("$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload")
+# prior_art_fence=$("$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload")
 if [[ $boundary_mode == public-fenced ]]; then
-    if "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload" >"$tmp" &&
-        "$agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload" >"$prior_tmp"; then
+    if "$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload" >"$tmp" &&
+        "$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload" >"$prior_tmp"; then
         :
     else
         rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp" "$spec_payload" "$prior_payload"
@@ -1357,22 +1317,8 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 if [[ -d $worktree ]]; then
     git -C "$worktree" status --short
@@ -1407,22 +1353,8 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In review' --repository "$repository"
 ```
@@ -1488,21 +1420,8 @@ the precheck must not fall through to a placeholder receipt.
 # Run only after the finding-fix push; keep exactly one marker in the receipt.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt >/dev/null 2>&1; then
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || {
-    printf 'agentkit: invalid skills path: %s\n' "$agentkit" >&2
-    exit 1
-}
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 receipt_body=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-receipt.XXXXXXXXXX")
 chmod 600 -- "$receipt_body"
 trap 'rm -f -- "$receipt_body"' EXIT
