@@ -160,6 +160,96 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'a guard that omits the provenance sentinel fails'
 assert_contains "$LINT_OUT" 'GUARD WITHOUT SENTINEL' 'the sentinel-less guard is named'
 
+# --- a guard must protect EVERY path to the helper, not just one --------
+# Presence is not reachability. review-remote-pr's Step 0a once carried the
+# guard inside the worktree-CREATION branch and then called agent-preflight.sh
+# after the `fi`, so the worktree-REUSE path -- the ordinary resume case --
+# reached the helper with $agentkit never validated. Every presence-based rule
+# above passed that fence, which is why this one measures block depth.
+root=$tmp/guard-one-path
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when the guard sits on only one branch of the fence.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+
+## Later step
+
+\`\`\`bash
+if [ -n "\$EXISTING_WORKTREE" ]; then
+  PR_WORKTREE="\$EXISTING_WORKTREE"
+else
+  [ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+  git worktree add "\$PR_WORKTREE"
+fi
+"\$agentkit/.shared/scripts/agent-preflight.sh" --repo "\$REPO"
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'a guard reachable on only one branch fails'
+assert_contains "$LINT_OUT" 'GUARD NOT ON EVERY PATH' 'the one-path guard is named'
+
+# The same fence passes once the guard is hoisted above the branch -- proving
+# the rule keys on reachability and not on the mere presence of an `if`.
+root=$tmp/guard-hoisted
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when the guard is hoisted above the branch.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+
+## Later step
+
+\`\`\`bash
+[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+if [ -n "\$EXISTING_WORKTREE" ]; then
+  PR_WORKTREE="\$EXISTING_WORKTREE"
+else
+  git worktree add "\$PR_WORKTREE"
+fi
+"\$agentkit/.shared/scripts/agent-preflight.sh" --repo "\$REPO"
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '0' "$LINT_RC" 'the same fence passes with the guard hoisted above the branch'
+
+# Depth alone is not reachability: a helper on the first statement and the guard
+# on the second are BOTH at depth 0, so a depth-only comparison reads them as
+# equal and passes -- while the helper has already run unguarded. The guard has
+# to precede every invocation it protects, which is what "prepend" means.
+root=$tmp/guard-after-helper
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when the guard trails the helper it must protect.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+
+## Later step
+
+\`\`\`bash
+"\$agentkit/.shared/scripts/agent-run.sh" --cmd test
+[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'a guard at the same depth but after the helper fails'
+assert_contains "$LINT_OUT" 'GUARD AFTER HELPER' 'the trailing guard is named'
+
 # --- a guard has to RUN, not merely be mentioned ------------------------
 # Both halves of the guard are matchable as loose substrings: the directory
 # fragment also occurs inside any resolved helper path, and the sentinel can sit

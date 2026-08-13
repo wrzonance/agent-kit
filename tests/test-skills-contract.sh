@@ -117,6 +117,7 @@ assert_line_order 'Duplicated is classified before Repo-specific' \
 
 review_skill="$skills/review-remote-pr/SKILL.md"
 parallel_skill="$skills/parallel-issues/SKILL.md"
+review_refs=("$skills"/review-remote-pr/references/*.md)
 gh_pr_state_script="$skills/review-remote-pr/scripts/gh-pr-state.sh"
 prepare_issue_script="$skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
@@ -147,7 +148,7 @@ assert_contains "$review_wait_contract" 'runner completion marker' \
     'review wait rule names the runner completion bound'
 assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'review wait rule rejects sleep and re-check tool churn'
-assert_eq '' "$(scan_skill_recipes "$review_skill" | grep 'sleep command' || true)" \
+assert_eq '' "$(scan_skill_recipes "$review_skill" "${review_refs[@]}" | grep 'sleep command' || true)" \
     'review skill has no sleep polling recipe'
 
 scanner_fixture="$tmp/recipe.md"
@@ -194,7 +195,7 @@ assert_eq '1' "$(grep -c 'provider review trigger' <<<"$ban_findings" || true)" 
 assert_not_contains "$ban_findings" 'Never run' \
     'recipe scanner ignores prose command prohibitions'
 
-assert_eq '' "$(scan_skill_recipes "$review_skill" "$parallel_skill" | grep -E 'gh pr ready|provider review trigger' || true)" \
+assert_eq '' "$(scan_skill_recipes "$review_skill" "$parallel_skill" "${review_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
     'review skill recipes contain no ready or provider trigger commands'
 step3=$(sed -n '/^## Step 3 (Phase B)/,/^## Step 4:/p' "$review_skill")
 assert_contains "$step3" 'Never run `gh pr ready`' \
@@ -213,5 +214,43 @@ assert_not_contains "$step3" 'stop and escalate to the user rather than spending
     'Step 3 does not escalate immediately on a rate limit'
 assert_contains "$(<"$review_skill")" 'blocked check and must never be summarized as “no findings.”' \
     'review Step 5 treats missing parsers as blocked checks'
+
+# --- a split skill's references/*.md stay discoverable and flat -------------
+# review-remote-pr (and any future skill split the same way) delegates detail
+# out of its dispatcher body into references/*.md. Two structural guarantees
+# keep that delegation navigable rather than a place things get lost:
+#   (a) every reference file is named in the body, with a cue for WHEN to
+#       read it (not just a bare link an agent has no reason to follow), and
+#   (b) references/ stays one level deep -- no nested subdirectories to lose
+#       a file in.
+# references/*.md getting a TOC once it passes 100 lines is already enforced
+# generically by lint-skill-size.sh; not duplicated here.
+for ref_dir in "$skills"/*/references; do
+    [[ -d $ref_dir ]] || continue
+    split_skill_name=$(basename "$(dirname "$ref_dir")")
+    split_skill_body="$(dirname "$ref_dir")/SKILL.md"
+
+    while IFS= read -r -d '' ref_file; do
+        ref_rel="references/$(basename "$ref_file")"
+        line_no=$(grep -n -F -- "$ref_rel" "$split_skill_body" | head -1 | cut -d: -f1)
+        if [[ -n $line_no ]]; then
+            _pass "$split_skill_name names $ref_rel in the body"
+            cue_line=$(sed -n "${line_no}p" "$split_skill_body")
+            if grep -qE '(Read |read ).*in full|(See |see ).*for ' <<< "$cue_line"; then
+                _pass "$split_skill_name gives a when-to-read cue for $ref_rel"
+            else
+                _fail "$split_skill_name gives a when-to-read cue for $ref_rel" \
+                    "no 'Read … in full' / 'See … for' cue on $split_skill_body:$line_no"
+            fi
+        else
+            _fail "$split_skill_name names $ref_rel in the body" \
+                "not found in $split_skill_body"
+        fi
+    done < <(find "$ref_dir" -maxdepth 1 -name '*.md' -print0)
+done
+
+nested_references=$(find "$skills" -mindepth 3 -path '*/references/*' -type d)
+assert_eq '' "$nested_references" \
+    'references/ directories stay one level deep, no nested subdirectories'
 
 finish

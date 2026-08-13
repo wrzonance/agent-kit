@@ -28,6 +28,12 @@
 # onboard-repo keeps its own bootstrap resolver (with the `find` fallback)
 # as the sole contract-absent case and is not held to the single-definition
 # rule below -- it never had a second copy to begin with.
+#
+# A skill split into a dispatcher body plus references/*.md carries the
+# definition in the body only -- reference bash fences apply the identical
+# guard convention, never a second full-resolver definition. Both are scanned
+# below so a helper invocation moved into a reference file keeps the same
+# provenance bar it had in the body.
 set -euo pipefail
 
 skills_dir=${1:?usage: lint-skill-invocations.sh SKILLS_DIR}
@@ -63,8 +69,16 @@ no_resolver=0
 def_count_violations=0
 resolver_side_effects=0
 sentinel_gaps=0
+unreachable_guards=0
 
-fallback_matches=$(grep -R -n --include='SKILL.md' '^[[:space:]]*agentkit=\$(find ' "$skills_dir" || true)
+# Every SKILL.md and every references/*.md beneath it -- a split skill's
+# reference files carry bash fences too, and they inherit the same
+# resolver/guard obligations as the body they were extracted from.
+mapfile -t md_files < <(find "$skills_dir" -maxdepth 3 \
+    \( -name SKILL.md -o -path '*/references/*.md' \) \
+    -not -path '*/.system/*' | sort)
+
+fallback_matches=$(grep -Hn '^[[:space:]]*agentkit=\$(find ' "${md_files[@]}" 2>/dev/null || true)
 fallbacks=$(printf '%s\n' "$fallback_matches" | grep -c . || true)
 if [[ $fallbacks -ne 1 ]]; then
     printf 'EXPECTED exactly one contract-absent fallback resolver, found %s\n' "$fallbacks" >&2
@@ -75,8 +89,8 @@ if [[ $fallbacks -eq 1 ]] && ! grep -q '/onboard-repo/SKILL\.md:' <<< "$fallback
     unguarded=$((unguarded + 1))
 fi
 
-pinned_paths=$(grep -R -nE --include='SKILL.md' \
-    'plugins/cache/[^[:space:]"`$}]*/agentkit/[0-9]+(\.[0-9]+)*' "$skills_dir" || true)
+pinned_paths=$(grep -HnE \
+    'plugins/cache/[^[:space:]"`$}]*/agentkit/[0-9]+(\.[0-9]+)*' "${md_files[@]}" 2>/dev/null || true)
 if [[ -n $pinned_paths ]]; then
     printf 'PINNED plugin-cache path in skill text:\n%s\n' "$pinned_paths" >&2
     unguarded=$((unguarded + 1))
@@ -105,9 +119,19 @@ strip_shell_comment() {
     printf '%s' "$out"
 }
 
-while IFS= read -r skill_file; do
-    name=$(basename "$(dirname "$skill_file")")
-    block="$work/$name.sh"
+for skill_file in "${md_files[@]}"; do
+    # references/*.md belongs to the skill directory one level above
+    # "references"; SKILL.md belongs to its own parent directory.
+    parent_dir=$(dirname "$skill_file")
+    if [[ $(basename "$parent_dir") == references ]]; then
+        name=$(basename "$(dirname "$parent_dir")")
+        is_reference=1
+    else
+        name=$(basename "$parent_dir")
+        is_reference=0
+    fi
+    rel=${skill_file#"$skills_dir"/}
+    block="$work/${rel//\//__}.sh"
     awk -v out="$block" '
         /^```bash$/ { inblock = 1; next }
         /^```$/     { inblock = 0; next }
@@ -116,12 +140,18 @@ while IFS= read -r skill_file; do
     [[ -f $block ]] || continue
 
     # Single-source convention: the full resolver definition appears exactly
-    # once in each of these two skills, and only there.
+    # once, in the body, and never again in a reference file split out of it.
     if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* ]]; then
         def_count=$(grep -c "$FULL_RESOLVER_MARK" "$block" || true)
-        if [[ $def_count -ne 1 ]]; then
+        if [[ $is_reference -eq 0 ]]; then
+            if [[ $def_count -ne 1 ]]; then
+                def_count_violations=$((def_count_violations + 1))
+                printf 'EXPECTED exactly one full resolver definition in %s, found %s\n' \
+                    "$skill_file" "$def_count" >&2
+            fi
+        elif [[ $def_count -ne 0 ]]; then
             def_count_violations=$((def_count_violations + 1))
-            printf 'EXPECTED exactly one full resolver definition in %s, found %s\n' \
+            printf 'EXPECTED zero full resolver definitions in reference file %s, found %s -- the definition belongs in the body only\n' \
                 "$skill_file" "$def_count" >&2
         fi
     fi
@@ -159,7 +189,7 @@ while IFS= read -r skill_file; do
     # its later fences are documented as running in the same continued
     # session, so it was never a copy-per-block skill to begin with.
     if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* ]]; then
-        fence_dir="$work/$name-fences"
+        fence_dir="$work/${rel//\//__}-fences"
         mkdir -p "$fence_dir"
         awk -v dir="$fence_dir" '
             /^```bash$/ { inblock = 1; n++; file = dir "/" n; next }
@@ -196,15 +226,67 @@ while IFS= read -r skill_file; do
             # nothing about what runs.
             guard_dir=0
             guard_both=0
+            # Reachability, not mere presence. A guard nested inside an if/else
+            # protects only the path it sits on: review-remote-pr's Step 0a once
+            # carried the guard inside the worktree-CREATION branch while calling
+            # agent-preflight.sh after the `fi`, so the worktree-REUSE path -- the
+            # common resume case -- reached the helper with $agentkit never
+            # validated. Presence-only matching passed that fence. Track the
+            # position of the guard, not just its depth. DEPTH ALONE IS NOT
+            # ENOUGH: a helper on line 1 and the guard on line 2, both at depth
+            # 0, compares equal and passes while the helper has already run
+            # unguarded. The convention is "prepend the guard", so enforce
+            # exactly that -- an effective guard sits at depth 0 AND ahead of
+            # the first helper invocation in the fence.
+            depth=0
+            pos=0
+            guard_pos=-1
+            guard_depth=-1
+            invoke_pos=-1
+            invoke_depth=-1
             while IFS= read -r line; do
-                [[ $line =~ ^[[:space:]]*# ]] && continue
-                [[ $line == *"$GUARD_EXPR_DIR"* ]] || continue
-                guard_dir=1
-                if [[ $line == *"$GUARD_EXPR_SENTINEL"* ]]; then
-                    guard_both=1
-                    break
+                stripped=$(strip_shell_comment "$line")
+                trimmed=${stripped#"${stripped%%[![:space:]]*}"}
+                [[ -z $trimmed ]] && continue
+                pos=$((pos + 1))
+                # Close before recording: `fi` belongs to the enclosing level.
+                [[ $trimmed =~ ^(fi|done|esac)([[:space:]]|;|$) ]] && ((depth > 0)) && depth=$((depth - 1))
+                if [[ $trimmed == *"$GUARD_EXPR_DIR"* ]]; then
+                    guard_dir=1
+                    # Record the first guard that is BOTH complete and at depth
+                    # 0; a deeper or later one cannot retroactively protect an
+                    # earlier call.
+                    if [[ $trimmed == *"$GUARD_EXPR_SENTINEL"* ]]; then
+                        guard_both=1
+                        if [[ $guard_pos -lt 0 && $depth -eq 0 ]]; then
+                            guard_pos=$pos
+                            guard_depth=$depth
+                        fi
+                        [[ $guard_depth -lt 0 ]] && guard_depth=$depth
+                    fi
+                elif grep -qE "\"\\\$agentkit/[^\"]*($HELPERS)\.sh\"" <<< "$trimmed"; then
+                    if [[ $invoke_pos -lt 0 ]]; then
+                        invoke_pos=$pos
+                        invoke_depth=$depth
+                    fi
+                fi
+                if [[ $trimmed =~ ^(if|for|while|case)([[:space:]]|$) ]] ||
+                   [[ $trimmed =~ \;[[:space:]]*(then|do)$ ]]; then
+                    depth=$((depth + 1))
                 fi
             done < "$fence"
+            if ((guard_both)) && [[ $invoke_pos -ge 0 ]] &&
+               [[ $guard_pos -lt 0 || $guard_pos -gt $invoke_pos ]]; then
+                unreachable_guards=$((unreachable_guards + 1))
+                if [[ $guard_pos -lt 0 ]]; then
+                    printf 'GUARD NOT ON EVERY PATH in %s (fence %s): the only guard sits at block depth %s, inside a branch, while a helper runs at depth %s; hoist it to the top of the fence\n' \
+                        "$skill_file" "$fence_name" "$guard_depth" "$invoke_depth" >&2
+                else
+                    printf 'GUARD AFTER HELPER in %s (fence %s): the guard is statement %s but a helper already ran at statement %s; the guard must precede every invocation it protects\n' \
+                        "$skill_file" "$fence_name" "$guard_pos" "$invoke_pos" >&2
+                fi
+                continue
+            fi
             ((guard_both)) && continue
             if ((guard_dir)); then
                 sentinel_gaps=$((sentinel_gaps + 1))
@@ -217,10 +299,10 @@ while IFS= read -r skill_file; do
                 "$skill_file" "$fence_name" >&2
         done
     fi
-done < <(find "$skills_dir" -maxdepth 2 -name SKILL.md -not -path '*/.system/*' | sort)
+done
 
-printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps\n' \
-    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps"
+printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps, %d unreachable guards\n' \
+    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps" "$unreachable_guards"
 [[ $bare -eq 0 && $unguarded -eq 0 && $missing_contract_reads -eq 0 && $fallbacks -eq 1 &&
    $no_resolver -eq 0 && $def_count_violations -eq 0 && $resolver_side_effects -eq 0 &&
-   $sentinel_gaps -eq 0 ]]
+   $sentinel_gaps -eq 0 && $unreachable_guards -eq 0 ]]

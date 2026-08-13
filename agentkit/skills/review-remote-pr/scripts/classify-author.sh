@@ -61,8 +61,15 @@ fi
 
 jq -c '
   def login: ((.login // "") | ascii_downcase);
+  # Exact accounts, never a substring. The known-provider lane is what allows a
+  # thread to be replied to and resolved WITHOUT the human confirmation gate, so
+  # an unanchored "coderabbit" test handed that lane to any human who registers
+  # a login like "mycoderabbit". An account that merely resembles a provider is
+  # ambiguous, and every ambiguous author is human.
+  def is_coderabbit:
+    (login == "coderabbitai") or (login == "coderabbitai[bot]");
   def known_provider:
-    (login | test("coderabbit"; "i"))
+    is_coderabbit
     or login == "github-code-quality"
     or login == "github-code-quality[bot]";
   def type_is_bot:
@@ -72,7 +79,7 @@ jq -c '
   | ($author.login // "") as $original_login
   | if known_provider then
     {lane:"known-provider", signal:"known-provider", automated:true,
-     provider:(if (login | test("coderabbit"; "i")) then "coderabbit"
+     provider:(if is_coderabbit then "coderabbit"
                else "github-code-quality" end)}
   elif login_suffix then
     {lane:"generic-automated", signal:"login-suffix", automated:true, provider:null}
