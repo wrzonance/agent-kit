@@ -42,7 +42,7 @@ implementation begins only at Stage 6.
 Report the checklist and its status; do not collapse the first five steps into "design" or
 describe the loop only as "design → invariants → TDD." Name every step:
 
-```
+```text
 Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Revert ✅ ·
 5 Invariants ✅ · 6 Implementation (TDD) in progress
 ```

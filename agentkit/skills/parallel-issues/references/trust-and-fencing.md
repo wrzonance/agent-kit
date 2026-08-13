@@ -35,6 +35,14 @@ piping `y` into `--approve`, or writing a trust record directly is manufacturing
 consent, and a green log obtained that way is not verification evidence — no flag or mode
 changes that.
 
+**Be precise about what the terminal check is.** `--approve`'s interactive confirmation is
+**defense in depth, not proof of operator presence**: any process running as the same user
+can allocate a pseudo-terminal or write the trust record itself, so it is not a human-only
+or cryptographic boundary. That is exactly why the no-forgery rule above is stated as a rule
+the agent must keep rather than a control that stops it — the gate raises the cost of an
+accident, and the agent's own discipline is what makes it mean anything. Treating it as an
+unforgeable proof of a human would make a forged approval look like evidence.
+
 ## Verification cache and suite cadence
 
 On a green completion for an eligible verification name (`test`, `lint`, `typecheck`,

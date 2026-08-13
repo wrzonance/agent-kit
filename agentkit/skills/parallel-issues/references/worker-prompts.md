@@ -282,16 +282,18 @@ For a chained issue, pass the predecessor branch as the PR base (`--base feat/is
 of `--base "$base"`) and append this line to the body, substituting the predecessor's PR number
 as a fixed literal:
 
-    Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
-    (`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
-    only retargets automatically when the base branch is deleted on merge, which not every
-    repository does.
+```text
+Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
+(`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
+only retargets automatically when the base branch is deleted on merge, which not every
+repository does.
+```
 
 ## Fix-batch worker prompt
 
 **Per-agent prompt template:**
 
-```
+```text
 You are the mechanical fix-batch worker for the root session's PR #NNN.
 Assess only the accepted findings, edit the assigned worktree, verify locally, and return a
 publication handback. The root retains all forge, board, consent, and review orchestration.

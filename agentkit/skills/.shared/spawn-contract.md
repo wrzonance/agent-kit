@@ -71,8 +71,12 @@ spawns.
 
 ## Degraded path — `spawn_agent` unavailable (`multi_agent = false`)
 
-When the runtime advertises no spawn capability at all, attempt the spawn first and record
-why it failed, then do the implementation **yourself**, under the identical contract: the
+Record the reason before falling back, but do not manufacture a call to prove a known
+absence: when the runtime **advertises** no spawn capability (`multi_agent = false`), that
+advertised state IS the recorded reason — calling a tool the harness does not offer can
+error or stall the run, which is the opposite of the degradation this path exists to
+provide. Attempt the spawn first only when the capability appears present and might still
+fail. Then do the implementation **yourself**, under the identical contract: the
 same six-step loop, the same Review and Finish gates, and the same `agent-run.sh` /
 `worktree-commit.sh` command lines the prompt would have carried. For a batch of independent
 units of work, carry one to completion before starting the next — a single writer has no
