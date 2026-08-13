@@ -69,6 +69,7 @@ no_resolver=0
 def_count_violations=0
 resolver_side_effects=0
 sentinel_gaps=0
+unreachable_guards=0
 
 # Every SKILL.md and every references/*.md beneath it -- a split skill's
 # reference files carry bash fences too, and they inherit the same
@@ -225,15 +226,43 @@ for skill_file in "${md_files[@]}"; do
             # nothing about what runs.
             guard_dir=0
             guard_both=0
+            # Reachability, not mere presence. A guard nested inside an if/else
+            # protects only the path it sits on: review-remote-pr's Step 0a once
+            # carried the guard inside the worktree-CREATION branch while calling
+            # agent-preflight.sh after the `fi`, so the worktree-REUSE path -- the
+            # common resume case -- reached the helper with $agentkit never
+            # validated. Presence-only matching passed that fence. Track the
+            # block depth of the guard against the shallowest helper invocation:
+            # a guard deeper than the call it claims to protect is not a guard.
+            depth=0
+            guard_depth=-1
+            invoke_depth=-1
             while IFS= read -r line; do
-                [[ $line =~ ^[[:space:]]*# ]] && continue
-                [[ $line == *"$GUARD_EXPR_DIR"* ]] || continue
-                guard_dir=1
-                if [[ $line == *"$GUARD_EXPR_SENTINEL"* ]]; then
-                    guard_both=1
-                    break
+                stripped=$(strip_shell_comment "$line")
+                trimmed=${stripped#"${stripped%%[![:space:]]*}"}
+                [[ -z $trimmed ]] && continue
+                # Close before recording: `fi` belongs to the enclosing level.
+                [[ $trimmed =~ ^(fi|done|esac)([[:space:]]|;|$) ]] && ((depth > 0)) && depth=$((depth - 1))
+                if [[ $trimmed == *"$GUARD_EXPR_DIR"* ]]; then
+                    guard_dir=1
+                    if [[ $trimmed == *"$GUARD_EXPR_SENTINEL"* ]]; then
+                        guard_both=1
+                        [[ $guard_depth -lt 0 || $depth -lt $guard_depth ]] && guard_depth=$depth
+                    fi
+                elif grep -qE "\"\\\$agentkit/[^\"]*($HELPERS)\.sh\"" <<< "$trimmed"; then
+                    [[ $invoke_depth -lt 0 || $depth -lt $invoke_depth ]] && invoke_depth=$depth
+                fi
+                if [[ $trimmed =~ ^(if|for|while|case)([[:space:]]|$) ]] ||
+                   [[ $trimmed =~ \;[[:space:]]*(then|do)$ ]]; then
+                    depth=$((depth + 1))
                 fi
             done < "$fence"
+            if ((guard_both)) && [[ $invoke_depth -ge 0 && $guard_depth -gt $invoke_depth ]]; then
+                unreachable_guards=$((unreachable_guards + 1))
+                printf 'GUARD NOT ON EVERY PATH in %s (fence %s): guard sits at block depth %s but a helper runs at depth %s; hoist it to the top of the fence\n' \
+                    "$skill_file" "$fence_name" "$guard_depth" "$invoke_depth" >&2
+                continue
+            fi
             ((guard_both)) && continue
             if ((guard_dir)); then
                 sentinel_gaps=$((sentinel_gaps + 1))
@@ -248,8 +277,8 @@ for skill_file in "${md_files[@]}"; do
     fi
 done
 
-printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps\n' \
-    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps"
+printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps, %d unreachable guards\n' \
+    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps" "$unreachable_guards"
 [[ $bare -eq 0 && $unguarded -eq 0 && $missing_contract_reads -eq 0 && $fallbacks -eq 1 &&
    $no_resolver -eq 0 && $def_count_violations -eq 0 && $resolver_side_effects -eq 0 &&
-   $sentinel_gaps -eq 0 ]]
+   $sentinel_gaps -eq 0 && $unreachable_guards -eq 0 ]]

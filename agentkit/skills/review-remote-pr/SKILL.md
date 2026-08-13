@@ -244,6 +244,10 @@ Reuse the worktree already checked out for the PR's head branch; otherwise creat
 Never switch branches in a worktree that may belong to another issue/PR.
 
 ```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+# At the TOP of the fence, not inside the create branch below: the reuse path
+# skips that branch and still runs agent-preflight.sh out of "$agentkit".
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 HEAD_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq '.headRefName')
@@ -259,8 +263,6 @@ else
   # Load that configuration FIRST: reading AGENT_WORKTREE_ROOT before the export
   # writes the exclude entry for the default while the worktree is created under
   # the configured root, leaving the real worktree untracked in the main repo.
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
   resolver="$agentkit/.shared/scripts/repo-config.sh"
   [ -x "$resolver" ] && eval "$("$resolver" --export)"
 
@@ -335,10 +337,12 @@ AGENT_TRAILER=$([[ -f $contract && ! -L $contract && -O $contract ]] && \
   ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1 && \
   sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
+# Chained: no `set -e` here, so unchained these would push even after the commit
+# helper or a verification failed -- what the rule below forbids.
 "$agentkit/.shared/scripts/worktree-commit.sh" --message 'fix(example): resolve merge conflicts with the base branch' \
-  --trailer "Co-Authored-By: $AGENT_TRAILER" -- "$resolved"
-"$agentkit/.shared/scripts/agent-run.sh" --cmd lint --if-declared
-"$agentkit/.shared/scripts/agent-run.sh" --cmd test
+  --trailer "Co-Authored-By: $AGENT_TRAILER" -- "$resolved" &&
+"$agentkit/.shared/scripts/agent-run.sh" --cmd lint --if-declared &&
+"$agentkit/.shared/scripts/agent-run.sh" --cmd test &&
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
