@@ -13,14 +13,23 @@ List the Backlog column of the board this repo's issues live on:
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-"$agentkit/.shared/scripts/board-list.sh" --status Backlog
 # board-list.sh deliberately reports every item type (draft items, PRs, issues
-# alike) rather than filtering -- see its own comment. The table above renders
-# a PR/draft row indistinguishably from an issue ("#N  title"), so derive the
-# actual vetting worklist from --json instead of the table: only Issue-typed
-# rows are in scope for the Ready-bar fan-out below.
-"$agentkit/.shared/scripts/board-list.sh" --status Backlog --json \
-    | jq -r '.[] | select(.type == "Issue") | .number'
+# alike) rather than filtering -- see its own comment. A PR/draft row renders
+# indistinguishably from an issue ("#N  title"), so the vetting worklist comes
+# from --json, not the table.
+#
+# Queried ONCE and captured, for two reasons: the previous shape called the same
+# column twice for nothing, and piping straight into jq replaces board-list.sh's
+# exit status with jq's -- so a failed query produced an empty list that read as
+# "no Issue-typed rows" and silently skipped grooming instead of reporting it.
+# Exit 3 is the documented "environment cannot support the query": no-op.
+backlog_rc=0
+backlog_json=$("$agentkit/.shared/scripts/board-list.sh" --status Backlog --json) || backlog_rc=$?
+case "$backlog_rc" in
+    0) printf '%s\n' "$backlog_json" | jq -r '.[] | select(.type == "Issue") | .number' ;;
+    3) printf 'board query unsupported here (no gh, or no board declared); skipping Backlog grooming\n' >&2 ;;
+    *) printf 'board-list.sh failed (exit %s); Backlog grooming not attempted\n' "$backlog_rc" >&2; exit 1 ;;
+esac
 ```
 
 It reads the project number and owner from `.agent/board.json`, so there is no separate

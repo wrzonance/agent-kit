@@ -22,7 +22,11 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # rubber stamp.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [review-remote-pr]="584:8931:450"    # target <=450 lines, tracked in issue #107 (the .shared extraction wave owns the shrink)
+    # Raised 584->599 / 8931->9103 when feat/issue-105 (PR #116) merged in: its
+    # worktree-root ordering fix and the RUN_DIR/REPO re-set guards are 15 net
+    # lines of correctness this dispatcher must carry. A conscious ratchet step,
+    # not drift -- the target below is unchanged.
+    [review-remote-pr]="599:9103:450"    # target <=450 lines, tracked in issue #107 (the .shared extraction wave owns the shrink)
     [parallel-issues]="1783:29014:450"   # target <=450 lines, tracked in issue #107
     [onboard-repo]="464:5476:350"        # target <=350 lines, tracked in issue #108
 )

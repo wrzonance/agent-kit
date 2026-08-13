@@ -105,8 +105,11 @@ prior_art_contents=
 if [[ -n $prior_art_file ]]; then
     [[ -f $prior_art_file && ! -L $prior_art_file && -r $prior_art_file ]] ||
         die "Prior-art file is missing, unreadable, or a symlink: $prior_art_file"
-    prior_art_contents=$(cat -- "$prior_art_file") ||
-        die "Could not read prior-art file: $prior_art_file"
+    # Deliberately NOT read into a variable here. Command substitution strips
+    # every trailing newline, so a digest ending in the blank line that
+    # terminates a Markdown block would be published without it -- a silent
+    # edit to content the trusted boundary modes promise to copy verbatim. The
+    # file is staged byte-for-byte further down instead.
 fi
 
 command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
@@ -130,6 +133,17 @@ prior_target="$agent_dir/fenced-prior-art.txt"
 ready_marker="$agent_dir/fenced-ready"
 tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"
+
+# Refused BEFORE the fetch. A complete, ready-marked set is deliberate state,
+# and fetched-issue.json is part of that set -- checking only after the fetch
+# meant a run that was about to refuse had already overwritten the published
+# raw payload the previous run left behind, and had spent two gh calls doing
+# it. The stale-debris cleanup stays below, where the run actually continues,
+# so a failed fetch still leaves the previous artifacts untouched.
+if [[ -d $ready_marker && -f $target && -f $prior_target &&
+    ! -e $tmp && ! -e $prior_tmp ]]; then
+    die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
+fi
 
 # Every temp file this run might create, so a normal exit or a signal cleans
 # up exactly what it left behind and nothing else. The EXIT trap always runs;
@@ -200,14 +214,10 @@ issue_contents=$(jq -r '
 
 : "${prior_art_contents:="(no prior art selected by triage digest)"}"
 
-# A complete, ready-marked pair is deliberate existing state and must not be
-# silently clobbered. Anything else present is stale debris from an
-# interrupted run and is cleared before this run republishes both members.
+# The complete, ready-marked case was already refused before the fetch, so
+# anything still present here is stale debris from an interrupted run and is
+# cleared before this run republishes both members.
 if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
-    if [[ -d $ready_marker && -f $target && -f $prior_target &&
-        ! -e $tmp && ! -e $prior_tmp ]]; then
-        die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
-    fi
     printf 'incomplete stale fence artifacts; removing them before retry\n' >&2
     rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
     rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
@@ -225,8 +235,15 @@ chmod 600 -- "$spec_payload" "$prior_payload" ||
 
 printf '%s' "$issue_contents" >"$spec_payload" ||
     die 'Could not stage the spec payload.'
-printf '%s' "$prior_art_contents" >"$prior_payload" ||
-    die 'Could not stage the prior-art payload.'
+if [[ -n $prior_art_file ]]; then
+    cp -- "$prior_art_file" "$prior_payload" ||
+        die 'Could not stage the prior-art payload.'
+    chmod 600 -- "$prior_payload" ||
+        die 'Could not set permissions on the prior-art payload.'
+else
+    printf '%s' "$prior_art_contents" >"$prior_payload" ||
+        die 'Could not stage the prior-art payload.'
+fi
 
 if [[ $boundary_mode == public-fenced ]]; then
     if "$fence_script" <"$spec_payload" >"$tmp" &&
@@ -245,13 +262,27 @@ else
     fi
 fi
 
-if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target" &&
-    mkdir -- "$ready_marker"; then
-    :
-else
-    mv_rc=$?
+# Published one step at a time so the failure can name WHICH member did not
+# land. The trio is not atomic: fenced-spec.txt can be published without its
+# prior-art pair and without the readiness marker, and "mv/mkdir failed" would
+# leave the caller to work out which of the three that was.
+publish_rc=0
+publish_step=''
+mv -f -- "$tmp" "$target" ||
+    { publish_rc=$?; publish_step="publish $target"; }
+if ((publish_rc == 0)); then
+    mv -f -- "$prior_tmp" "$prior_target" ||
+        { publish_rc=$?; publish_step="publish $prior_target"; }
+fi
+if ((publish_rc == 0)); then
+    mkdir -- "$ready_marker" ||
+        { publish_rc=$?; publish_step="create the readiness marker $ready_marker"; }
+fi
+if ((publish_rc != 0)); then
     rm -f -- "$tmp" "$prior_tmp"
-    exit "$mv_rc"
+    printf 'Could not %s (exit %s); the fenced artifact set is incomplete.\n' \
+        "$publish_step" "$publish_rc" >&2
+    exit "$publish_rc"
 fi
 
 rm -f -- "$spec_payload" "$prior_payload" || die 'Could not remove the temporary payload files.'

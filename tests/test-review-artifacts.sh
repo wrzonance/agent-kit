@@ -114,6 +114,48 @@ output_run="$tmp/output.run"
 mkdir -- "$output_run"
 chmod 700 -- "$output_run"
 
+# --output is documented as ADDITIVE, so it must not be allowed to name another
+# artifact. prepare_output runs after prepare_transcript and clears a
+# pre-existing target, so aliasing the transcript deleted the raw audit trail
+# the verdict is meant to be checkable against -- silently, before the reviewer
+# had even run. Both helpers reject it, and the check is canonical so a
+# relative spelling of the same file cannot slip past.
+for alias_helper in "$claude" "$codex"; do
+    alias_name=$(basename "$alias_helper" | cut -d- -f1)
+    alias_transcript="$output_run/$alias_name-alias.transcript"
+    alias_rc=0
+    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        --transcript "$alias_transcript" --output "$alias_transcript" \
+        > "$tmp/$alias_name-alias.out" 2> "$tmp/$alias_name-alias.err" || alias_rc=$?
+    assert_eq 1 "$alias_rc" "--output: $alias_name rejects an --output that aliases --transcript"
+    assert_contains "$(cat "$tmp/$alias_name-alias.err")" 'must not alias another artifact' \
+        "--output: $alias_name says the paths alias"
+
+    alias_rel_rc=0
+    ( cd "$output_run" && bash "$alias_helper" --mode review --model m \
+        --diff "$output_diff" --transcript "$alias_name-rel.transcript" \
+        --output "./$alias_name-rel.transcript" ) \
+        > /dev/null 2> "$tmp/$alias_name-rel.err" || alias_rel_rc=$?
+    assert_eq 1 "$alias_rel_rc" "--output: $alias_name rejects a relative alias of the transcript"
+
+    for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
+        status_rc=0
+        bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+            --transcript "$alias_transcript" --output "$status_alias" \
+            > /dev/null 2> "$tmp/$alias_name-status.err" || status_rc=$?
+        assert_eq 1 "$status_rc" \
+            "--output: $alias_name rejects an --output aliasing $(basename "$status_alias")"
+    done
+
+    alias_diff_rc=0
+    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        --transcript "$output_run/$alias_name-diffalias.transcript" \
+        --output "$output_diff" > /dev/null 2> "$tmp/$alias_name-diffalias.err" || alias_diff_rc=$?
+    assert_eq 1 "$alias_diff_rc" "--output: $alias_name rejects an --output that aliases --diff"
+    assert_eq yes "$( [[ -s $output_diff ]] && printf yes || printf no )" \
+        "--output: $alias_name leaves the diff intact after refusing"
+done
+
 # rc 0: the completed verdict is published atomically beside the transcript.
 success_output="$output_run/success.result.json"
 success_stdout="$tmp/output-success.stdout"
@@ -265,11 +307,22 @@ for helper in "$claude" "$codex"; do
         "$helper_name stages its --output artifact beside the final path"
     assert_contains "$helper_text" 'mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH"' \
         "$helper_name publishes its --output artifact atomically"
+    # Ordering, not adjacency. publish_output must run BEFORE the object is
+    # emitted on stdout: it can die, and a caller that already read a "blocked"
+    # object would act on a verdict that was never durably published. This
+    # previously pinned publish_output as the line immediately preceding
+    # `exit 3`, which is a proxy the correct order necessarily breaks -- the
+    # publish now happens earlier still, with the stdout emission between it
+    # and the exit.
     exit3_line=$(grep -n 'exit 3$' "$helper" | tail -n 1 | cut -d: -f1)
-    publish_before_exit3=$([[ -n $exit3_line ]] &&
-        sed -n "$((exit3_line - 1))p" "$helper" | grep -c 'publish_output "\$json"' || printf 0)
-    assert_eq 1 "$publish_before_exit3" \
-        "$helper_name publishes its rc=3 blocked artifact immediately before exiting 3"
+    publish_line=$(awk -v stop="${exit3_line:-0}" \
+        'NR < stop && /publish_output "\$json"/ {n = NR} END {print n + 0}' "$helper")
+    emit_line=$(awk -v stop="${exit3_line:-0}" \
+        'NR < stop && /printf/ && /\$json/ && !/publish_output/ {n = NR} END {print n + 0}' "$helper")
+    blocked_order=$([[ $publish_line -gt 0 && $emit_line -gt 0 &&
+        $publish_line -lt $emit_line && $emit_line -lt ${exit3_line:-0} ]] && printf 1 || printf 0)
+    assert_eq 1 "$blocked_order" \
+        "$helper_name publishes the rc=3 blocked artifact before emitting it on stdout"
 done
 
 assert_contains "$state_text" "[[ ! -L \$target ]]" \

@@ -106,6 +106,22 @@ require_uint() {
     [[ $value =~ $UINT_RE ]] || die_usage "$flag expects a non-negative integer, got: $value"
 }
 
+# Caller text lands verbatim in a durable audit comment, so it must not be able
+# to forge that comment's structure. A field carrying a newline writes extra
+# receipt lines of its own; a field carrying a reserved marker writes a second
+# spend record, and the marker is the only durable evidence that the one-time
+# review budget was consumed. Both are rejected loudly rather than escaped:
+# a newline in a finding title is a caller bug, not content worth preserving.
+reject_unsafe_field() {
+    local flag=$1 value=$2
+    [[ $value != *$'\n'* && $value != *$'\r'* ]] ||
+        die_usage "$flag must not contain a line break"
+    [[ $value != *"$RECEIPT_MARKER"* ]] ||
+        die_usage "$flag must not contain the receipt marker $RECEIPT_MARKER"
+    [[ $value != *"$DOC_MARKER"* ]] ||
+        die_usage "$flag must not contain the agent-doc marker $DOC_MARKER"
+}
+
 # check_receipt_spent FILE
 # Prints 'spent' and returns 0, prints 'not-spent' and returns 10, or prints
 # nothing and returns 1 (message already sent to stderr by the caller's
@@ -244,6 +260,15 @@ validate_publish_args() {
         [[ -n $SKIP_RATIONALE && -n $ORACLE ]] ||
             die_usage '--skip-rationale and --oracle must be given together'
     fi
+    # Every free-text field that reaches the rendered body. --finding is
+    # checked per-field in render_finding_line, after it is split.
+    reject_unsafe_field '--provider' "$PROVIDER"
+    reject_unsafe_field '--model' "$MODEL"
+    reject_unsafe_field '--effort' "$EFFORT"
+    reject_unsafe_field '--mode-reason' "$MODE_REASON"
+    reject_unsafe_field '--agent-identity' "$AGENT_IDENTITY"
+    reject_unsafe_field '--skip-rationale' "$SKIP_RATIONALE"
+    reject_unsafe_field '--oracle' "$ORACLE"
 }
 
 # Resolved lazily (publish only) so precheck never depends on dirname/pwd
@@ -272,13 +297,13 @@ render_finding_line() {
         declined) rationale=$detail ;;
         *) die_usage "--finding VERDICT must be fixed or declined, got: $verdict ($raw)" ;;
     esac
-    local line='- Confirmed finding: __TITLE__ __DASH__ verdict=__VERDICT__; fix commit SHA(s)=__SHAS__; decline rationale=__RATIONALE__'
-    line=${line//__TITLE__/$title}
-    line=${line//__DASH__/$EM_DASH}
-    line=${line//__VERDICT__/$verdict}
-    line=${line//__SHAS__/$shas}
-    line=${line//__RATIONALE__/$rationale}
-    printf '%s\n' "$line"
+    reject_unsafe_field '--finding TITLE' "$title"
+    reject_unsafe_field '--finding DETAIL' "$detail"
+    # printf arguments, never pattern substitution: in bash 5.2 an unquoted `&`
+    # in a ${var//pat/repl} replacement expands to the matched text, so a title
+    # like "R&D failure" rendered as "R__TITLE__D failure".
+    printf -- '- Confirmed finding: %s %s verdict=%s; fix commit SHA(s)=%s; decline rationale=%s\n' \
+        "$title" "$EM_DASH" "$verdict" "$shas" "$rationale"
 }
 
 render_findings_block() {
@@ -294,38 +319,22 @@ render_findings_block() {
 
 render_skip_line() {
     [[ -n $SKIP_RATIONALE ]] || return 0
-    local line='- Verified-skip rationale: __RATIONALE__; mechanical oracle=__ORACLE__'
-    line=${line//__RATIONALE__/$SKIP_RATIONALE}
-    line=${line//__ORACLE__/$ORACLE}
-    printf '%s\n' "$line"
+    printf -- '- Verified-skip rationale: %s; mechanical oracle=%s\n' \
+        "$SKIP_RATIONALE" "$ORACLE"
 }
 
 render_body() {
     local total=$((P1 + P2))
-    local reviewer_line='- Reviewer: provider=__PROVIDER__; model=__MODEL__; effort=__EFFORT__; mode=__MODE__ (reason: __MODE_REASON__)'
-    reviewer_line=${reviewer_line//__PROVIDER__/$PROVIDER}
-    reviewer_line=${reviewer_line//__MODEL__/$MODEL}
-    reviewer_line=${reviewer_line//__EFFORT__/$EFFORT}
-    reviewer_line=${reviewer_line//__MODE__/$MODE}
-    reviewer_line=${reviewer_line//__MODE_REASON__/$MODE_REASON}
-
-    local counts_line='- Counts: P1=__P1__; P2=__P2__; total=__TOTAL__'
-    counts_line=${counts_line//__P1__/$P1}
-    counts_line=${counts_line//__P2__/$P2}
-    counts_line=${counts_line//__TOTAL__/$total}
-
-    local footer_line="$ROBOT Co-authored by __AGENT_IDENTITY__."
-    footer_line=${footer_line//__AGENT_IDENTITY__/$AGENT_IDENTITY}
-
     printf 'This was written agentically; verify its assertions:\n'
     printf '%s\n' "$DOC_MARKER"
     printf '## Adversarial review receipt\n'
-    printf '%s\n' "$reviewer_line"
-    printf '%s\n' "$counts_line"
+    printf -- '- Reviewer: provider=%s; model=%s; effort=%s; mode=%s (reason: %s)\n' \
+        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$MODE_REASON"
+    printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
     render_findings_block
     render_skip_line
     printf '%s\n' "$RECEIPT_MARKER"
-    printf '%s\n' "$footer_line"
+    printf '%s Co-authored by %s.\n' "$ROBOT" "$AGENT_IDENTITY"
 }
 
 cmd_publish() {
@@ -349,6 +358,51 @@ cmd_publish() {
     render_body >"$RECEIPT_BODY_FILE"
 
     "$GH_COMMENT_SCRIPT" --pr "$PR" --repo "$REPO" --body-file "$RECEIPT_BODY_FILE"
+    record_spend
+}
+
+# The precheck above reads a snapshot fetched before this post existed, and
+# nothing writes the result back. Without this, publishing twice against the
+# same artifact -- the ordinary shape of a retry -- passes the guard both times
+# and posts two durable receipts, so the advertised exit-11 exactly-once holds
+# only against comments someone else re-fetched. Recording the posted body makes
+# the guard true for the artifact this invocation was given.
+#
+# Not a substitute for ordering between concurrent publishers: two processes
+# racing on the same PR can still interleave between the precheck and the post.
+# The skills run this serially, and the durable marker means a later precheck
+# against freshly fetched comments still refuses.
+# Deliberately BEST-EFFORT, and deliberately never fatal. By the time this runs
+# the receipt is already posted and byte-verified on the PR. Exit 1 is defined
+# above as "nothing durable landed", and SKILL.md routes anything other than 0
+# and 11 to "receipt publication failed" -- so failing here would tell the agent
+# to re-run publish, whose precheck would read the unmodified artifact, report
+# not-spent, and post a SECOND durable receipt. That is precisely the duplicate
+# this local record exists to prevent, so an unwritable artifact directory or a
+# full filesystem degrades to a warning and exit 0: the receipt landed, and the
+# durable marker on the PR still stops any later precheck.
+record_spend() {
+    local tmp
+    if ! tmp=$(mktemp "$COMMENTS.XXXXXXXXXX" 2> /dev/null); then
+        warn_spend_unrecorded 'could not stage a temporary file beside it'
+        return 0
+    fi
+    if jq --rawfile body "$RECEIPT_BODY_FILE" '. + [{id: null, body: $body}]' \
+        "$COMMENTS" > "$tmp" 2> /dev/null &&
+        chmod 600 -- "$tmp" 2> /dev/null &&
+        mv -f -- "$tmp" "$COMMENTS" 2> /dev/null; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    warn_spend_unrecorded 'the rewrite failed'
+    return 0
+}
+
+warn_spend_unrecorded() {
+    printf '%s: receipt POSTED and verified, but the local spend record in %s was not updated (%s).\n' \
+        "$PROGNAME" "$COMMENTS" "$1" >&2
+    printf '%s: do NOT re-run publish -- re-fetch the PR comments instead; the durable marker is on the PR.\n' \
+        "$PROGNAME" >&2
 }
 
 main() {

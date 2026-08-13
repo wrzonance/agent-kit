@@ -255,15 +255,28 @@ EXISTING_WORKTREE=$(git worktree list --porcelain | awk -v b="refs/heads/$HEAD_B
 if [ -n "$EXISTING_WORKTREE" ]; then
   PR_WORKTREE="$EXISTING_WORKTREE"
 else
-  # writable-root contract: in-repo sibling only, ../<repo>-pr-N disallowed
-  exclude_path="$(git rev-parse --git-path info/exclude)"
-  worktree_root="${AGENT_WORKTREE_ROOT:-.worktrees}"
-  grep -Fxq "$worktree_root/" "$exclude_path" 2>/dev/null || printf '%s\n' "$worktree_root/" >> "$exclude_path"
+  # A repository may name its own worktree root; .worktrees/ is the default.
+  # Load that configuration FIRST: reading AGENT_WORKTREE_ROOT before the export
+  # writes the exclude entry for the default while the worktree is created under
+  # the configured root, leaving the real worktree untracked in the main repo.
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
   resolver="$agentkit/.shared/scripts/repo-config.sh"
   [ -x "$resolver" ] && eval "$("$resolver" --export)"
-  PR_WORKTREE="${PR_WORKTREE:-$REPO_ROOT/${AGENT_WORKTREE_ROOT:-.worktrees}/pr-$PR}"
-  [ -e "$PR_WORKTREE" ] && { echo "Worktree path exists: $PR_WORKTREE — set PR_WORKTREE to an unused path"; exit 1; }
+
+  # In-repo, not a sibling: follow the current contract's writable-root guidance,
+  # so ../<repo>-pr-N cannot be created. The root is resolved once, here, and
+  # reused for both the exclude entry and the worktree path so they cannot drift.
+  exclude_path="$(git rev-parse --git-path info/exclude)"
+  worktree_root="${AGENT_WORKTREE_ROOT:-.worktrees}"
+  grep -Fxq "$worktree_root/" "$exclude_path" 2>/dev/null ||
+    printf '%s\n' "$worktree_root/" >> "$exclude_path"
+  PR_WORKTREE="${PR_WORKTREE:-$REPO_ROOT/$worktree_root/pr-$PR}"
+  if [ -e "$PR_WORKTREE" ]; then
+    echo "Worktree path exists: $PR_WORKTREE"
+    echo "Set PR_WORKTREE to an unused path, then rerun setup."
+    exit 1
+  fi
   if [ "$CROSS_REPO" = "true" ]; then
     # fork PR: head branch absent on origin -- gh wires the fork remote/push
     git worktree add --detach "$PR_WORKTREE" && ( cd "$PR_WORKTREE" && gh pr checkout "$PR" --repo "$REPO" )
@@ -472,6 +485,8 @@ finding-fix push — this is the final Phase A action):
 ```bash
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
+: "${REPO:?re-set REPO to OWNER/REPO; shell state does not persist}"
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 publish_rc=0
