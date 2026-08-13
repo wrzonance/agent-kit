@@ -160,6 +160,33 @@ assert_contains "$out" 'AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest' \
 assert_contains "$out" 'AGENT_RUNDIR_DASHBOARD_TEST=dashboard' \
     'preserves the monorepo command working directory'
 
+# A path-shaped argv[0] is resolved from the command's declared rundir, not
+# merely from the repository root. Otherwise this declaration passes bootstrap
+# and only fails with rc=127 after a human approves it.
+mkdir -p "$repo/dashboard" "$repo/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/root-only"
+chmod +x "$repo/tools/root-only"
+printf 'AGENT_CMD_DASH=tools/root-only\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_contains "$err" 'AGENT_CMD_DASH' \
+    'names a command whose executable is based at the wrong root'
+assert_contains "$err" "repository root '$repo'" \
+    'names the repository-root resolution base'
+assert_contains "$err" "declared rundir '$repo/dashboard'" \
+    'names the declared rundir resolution base'
+assert_contains "$err" 'fix AGENT_CMD_DASH' \
+    'names the declaration as the likely fix'
+assert_contains "$err" 'do not add a literal twin' \
+    'warns against routing around approval with a literal twin'
+
+# A command that is already relative to its declared rundir remains valid.
+printf '#!/bin/sh\nexit 0\n' > "$repo/dashboard/root-only"
+chmod +x "$repo/dashboard/root-only"
+printf 'AGENT_CMD_DASH=root-only\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_DASH=root-only' \
+    'accepts an executable found relative to the declared rundir'
+
 # Focus declarations use the same path-shaped argv[0] containment rule as
 # ordinary command declarations.
 printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"

@@ -24,6 +24,12 @@
 # Exit: 0 success (including no config found), 2 bad usage.
 set -euo pipefail
 
+if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
+    printf '%s: requires Bash >= 4 (invoked interpreter: %s); run this helper with bash, not zsh\n' \
+        "${0##*/}" "${SHELL:-unknown}" >&2
+    exit 2
+fi
+
 readonly PROGRAM=${0##*/}
 
 warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
@@ -385,6 +391,33 @@ path_validation_diagnostic() {
     warn "path validation for $key: resolution root: $repo_root; resolved candidate: $candidate; failure: $reason"
 }
 
+# A path-shaped command token is interpreted by exec from the command's
+# working directory. Checking only from the repository root lets
+# `tools/check` pass while `AGENT_RUNDIR_COMPONENT=component` later executes
+# `component/tools/check` and fails with rc=127 after approval. A missing
+# dependency is still allowed on a fresh clone; warn only when the root-based
+# candidate exists and the rundir-based candidate does not.
+rundir_path_diagnostic() {
+    local key=$1 value=$2 rundir_key rundir argv0 root_candidate rundir_candidate
+    [[ $key =~ ^AGENT_CMD_ ]] || return 0
+    rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
+    [[ -n ${value_by_key[$rundir_key]+yes} ]] || return 0
+    rundir=${value_by_key[$rundir_key]}
+    [[ -d $repo_root/$rundir ]] || return 0
+    parse_argv "$value" 2> /dev/null || return 0
+    argv0=${PARSED_ARGV[0]:-}
+    [[ $argv0 == */* ]] || return 0
+    root_candidate=$(cd -- "$repo_root" 2> /dev/null &&
+        (readlink -f -- "$argv0" 2> /dev/null || readlink -m -- "$argv0" 2> /dev/null) || true)
+    rundir_candidate=$(cd -- "$repo_root/$rundir" 2> /dev/null &&
+        (readlink -f -- "$argv0" 2> /dev/null || readlink -m -- "$argv0" 2> /dev/null) || true)
+    [[ -n $root_candidate && -n $rundir_candidate ]] || return 0
+    [[ -e $root_candidate || -L $root_candidate ]] || return 0
+    [[ ! -e $rundir_candidate && ! -L $rundir_candidate ]] || return 0
+    rundir_mismatch=1
+    warn "rundir-relative argv[0] mismatch for $key: '$argv0' resolves from repository root '$repo_root' to '$root_candidate', but from declared rundir '$repo_root/$rundir' to missing '$rundir_candidate'; fix $key to use a path relative to '$repo_root/$rundir' (or move the executable); do not add a literal twin to route around approval"
+}
+
 validate() {
     local key=$1 value=$2
     case $key in
@@ -454,6 +487,7 @@ declare -A value_by_key=() seen_by_key=()
 # yolo gate can fail closed without treating unrelated config as invocation
 # input.
 parse_failed=0
+rundir_mismatch=0
 lineno=0
 
 while IFS= read -r line || [[ -n $line ]]; do
@@ -518,6 +552,15 @@ while IFS= read -r line || [[ -n $line ]]; do
     out_keys+=("$key")
     out_values+=("$value")
 done < "$config_file"
+
+# Run after the whole file is parsed so command/rundir declarations may appear
+# in either order. Bootstrap treats this warning as a write-time validation
+# failure; ordinary listing still shows the declarations and the precise fix.
+for key in "${out_keys[@]}"; do
+    if [[ $key =~ ^AGENT_CMD_ ]]; then
+        rundir_path_diagnostic "$key" "${value_by_key[$key]}"
+    fi
+done
 
 if [[ $mode == canonical ]] && ((parse_failed)); then
     exit 1
@@ -591,6 +634,7 @@ case $mode in
         # invocation gate consumes this marker to fail closed under --yolo
         # without turning unrelated config mistakes into usage errors.
         printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
+        ((rundir_mismatch)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
         ;;
 esac
 

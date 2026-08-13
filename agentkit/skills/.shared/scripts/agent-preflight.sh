@@ -27,6 +27,12 @@
 #
 set -euo pipefail
 
+if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
+    printf '%s: requires Bash >= 4 (invoked interpreter: %s); run this helper with bash, not zsh\n' \
+        "${0##*/}" "${SHELL:-unknown}" >&2
+    exit 2
+fi
+
 ARG_WORKTREE=""
 ARG_REPO=""
 ARG_WRITE=""

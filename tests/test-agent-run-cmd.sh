@@ -688,6 +688,24 @@ printf 'AGENT_CMD_ESC=pwd\nAGENT_RUNDIR_ESC=../../etc\n' > "$repo/.agent/config.
 out=$( (cd "$repo" && "$run_sh" --cmd esc 2>&1) || true)
 assert_not_contains "$out" '/etc' 'a rundir cannot escape the repository'
 
+# If an ad-hoc path-shaped argv[0] only exists at the repository root, but the
+# command runs from a different base and exits 127, the failure must name both
+# bases and say to repair the declaration rather than route around approval.
+repo=$(make_repo)
+mkdir -p "$repo/dashboard" "$repo/tools"
+printf '#!/bin/sh\nexit 127\n' > "$repo/tools/root-only"
+chmod +x "$repo/tools/root-only"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --dir "$repo/dashboard" -- ./tools/root-only 2>&1) || rc=$?
+assert_eq '127' "$rc" 'a missing interpreter produces the rc=127 mismatch case'
+assert_contains "$out" 'rc=127' 'reports the command failure status'
+assert_contains "$out" 'execution cwd' 'rc=127 mismatch names the execution base'
+assert_contains "$out" 'repository root' 'rc=127 mismatch names the repository-root base'
+assert_contains "$out" 'fix the declaration' \
+    'rc=127 mismatch says to fix the declaration'
+assert_contains "$out" 'literal twin' \
+    'rc=127 mismatch rejects a literal twin workaround'
+
 # --- option and module payloads invalidate approval when they change --------
 repo=$(make_repo)
 mkdir -p "$repo/tools"
