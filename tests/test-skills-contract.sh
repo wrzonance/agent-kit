@@ -118,6 +118,8 @@ assert_line_order 'Duplicated is classified before Repo-specific' \
 review_skill="$skills/review-remote-pr/SKILL.md"
 parallel_skill="$skills/parallel-issues/SKILL.md"
 review_refs=("$skills"/review-remote-pr/references/*.md)
+parallel_refs=("$skills"/parallel-issues/references/*.md)
+shared_refs=("$skills"/.shared/*.md)
 gh_pr_state_script="$skills/review-remote-pr/scripts/gh-pr-state.sh"
 prepare_issue_script="$skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
@@ -131,7 +133,13 @@ assert_contains "$(<"$parallel_skill")" 'jq is not installed; evidence unavailab
     'parallel recipes name jq parser failures as unavailable evidence'
 assert_contains "$(<"$prepare_issue_script")" 'issue_payload_file="$agent_dir/fetched-issue.json"' \
     'parallel fetch persists raw issue bytes before parsing'
-review_wait_contract=$(<"$review_skill")
+# The wait-contract rule sentences are single-sourced in .shared/wait-discipline.md;
+# review-remote-pr's body keeps only a pointer to it (see Step 2's "Wait contract"
+# subsection), so the pinned wait-rule content is asserted against the shared file.
+shared_wait_discipline="$skills/.shared/wait-discipline.md"
+review_wait_contract=$(<"$shared_wait_discipline")
+assert_contains "$(<"$review_skill")" '.shared/wait-discipline.md' \
+    'review skill points at the shared wait-discipline contract'
 assert_contains "$review_wait_contract" 'A wait must never spend model turns.' \
     'review skill states the no-model-turn wait rule'
 assert_contains "$review_wait_contract" 'claude-adversarial-review.sh … > verdict.json' \
@@ -148,7 +156,7 @@ assert_contains "$review_wait_contract" 'runner completion marker' \
     'review wait rule names the runner completion bound'
 assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'review wait rule rejects sleep and re-check tool churn'
-assert_eq '' "$(scan_skill_recipes "$review_skill" "${review_refs[@]}" | grep 'sleep command' || true)" \
+assert_eq '' "$(scan_skill_recipes "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'review skill has no sleep polling recipe'
 
 scanner_fixture="$tmp/recipe.md"
@@ -195,7 +203,7 @@ assert_eq '1' "$(grep -c 'provider review trigger' <<<"$ban_findings" || true)" 
 assert_not_contains "$ban_findings" 'Never run' \
     'recipe scanner ignores prose command prohibitions'
 
-assert_eq '' "$(scan_skill_recipes "$review_skill" "$parallel_skill" "${review_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
+assert_eq '' "$(scan_skill_recipes "$review_skill" "$parallel_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
     'review skill recipes contain no ready or provider trigger commands'
 step3=$(sed -n '/^## Step 3 (Phase B)/,/^## Step 4:/p' "$review_skill")
 assert_contains "$step3" 'Never run `gh pr ready`' \
@@ -252,5 +260,56 @@ done
 nested_references=$(find "$skills" -mindepth 3 -path '*/references/*' -type d)
 assert_eq '' "$nested_references" \
     'references/ directories stay one level deep, no nested subdirectories'
+
+# --- .shared/*.md policy files stay pointed-at by every consuming skill -----
+# .shared/*.md is not a skill's own references/ split -- it is policy content
+# shared ACROSS skills (parallel-issues and review-remote-pr both dispatch
+# implementation workers and both wait on external state), so each file there
+# must be named in every consuming skill's body, not just one of them. Unlike
+# a plain references/*.md pointer, these files are pasted into worker prompts
+# verbatim in more than one place, so a single first-occurrence "Read … in
+# full" cue is not required here -- only that both bodies name the file.
+shared_dir="$skills/.shared"
+consuming_skills=(parallel-issues review-remote-pr)
+while IFS= read -r -d '' shared_file; do
+    shared_name=$(basename "$shared_file")
+    shared_pointer="../.shared/$shared_name"
+    for consumer in "${consuming_skills[@]}"; do
+        consumer_body="$skills/$consumer/SKILL.md"
+        if grep -qF -- "$shared_pointer" "$consumer_body"; then
+            _pass "$consumer points at .shared/$shared_name"
+        else
+            _fail "$consumer points at .shared/$shared_name" \
+                "'$shared_pointer' not found in $consumer_body"
+        fi
+    done
+done < <(find "$shared_dir" -maxdepth 1 -name '*.md' -print0)
+
+# --- no skill re-details a .shared policy ------------------------------------
+# A pointer is worthless if the pointed-to skill also keeps its own competing
+# explanation. The mechanical bullets a dispatched worker needs (STRUCTS,
+# INTERFACES, ... the spawn_agent call shape) are deliberately duplicated
+# verbatim inside worker-prompt text, per .shared/six-step-loop.md and
+# .shared/spawn-contract.md themselves ("fork_context: false" leaves a worker
+# no other way to see them) -- so counting the enumeration keywords would
+# fail on that legitimate, load-bearing duplication. Instead this checks
+# phrases that belong to the CANONICAL RATIONALE only -- prose a worker
+# prompt has no reason to carry -- and confirms each survives in exactly one
+# file repo-wide: its own .shared home.
+declare -A shared_canonical_phrase=(
+    [six-step-loop.md]='Worker prompts render this content verbatim, not as a pointer'
+    [spawn-contract.md]='multi_agent_v1__spawn_agent('
+    [wait-discipline.md]='empty wait cycles'
+)
+for shared_name in "${!shared_canonical_phrase[@]}"; do
+    phrase=${shared_canonical_phrase[$shared_name]}
+    hits=$(grep -rlF -- "$phrase" "$skills" | sort -u)
+    hit_count=$(grep -c . <<< "$hits" || true)
+    [[ -z $hits ]] && hit_count=0
+    assert_eq '1' "$hit_count" \
+        ".shared/$shared_name's canonical rationale is not re-detailed elsewhere"
+    assert_eq "$shared_dir/$shared_name" "$hits" \
+        ".shared/$shared_name's canonical rationale lives only in its own file"
+done
 
 finish

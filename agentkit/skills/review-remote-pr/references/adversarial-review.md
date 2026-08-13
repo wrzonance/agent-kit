@@ -2,6 +2,7 @@
 
 ## Contents
 
+- Materiality — run vs. document a skip
 - Attribution across the review boundary
 - External-service authorization
 - Cross-provider consent — first send per session
@@ -16,6 +17,18 @@
 
 This is the detail behind the SKILL.md body's Step 1b gate (materiality, precheck, receipt). Read
 this file in full before running or skipping an adversarial review.
+
+## Materiality — run vs. document a skip
+
+Size alone never decides materiality: a two-line authorization change is material; a mechanically
+verified immutable SHA refresh can be trivial. **Run the review** when the diff changes runtime
+behavior, API/schema/migration contracts, authorization/security boundaries,
+persistence/concurrency, dependency behavior, workflow logic, or user-visible
+accessibility/reliability, or whenever the user asks. **Document a skip** only when every changed
+line is mechanically verifiable and low-judgment (comments/formatting, generated output with its
+parity check, a verified immutable refresh); record the exact oracle — a line-count threshold is
+never one. Preferred reviewer: the peer CLI named by `peer-cli=`, strongest reasoning model, one
+high-effort pass, never re-run after pushing fixes.
 
 ## Attribution across the review boundary
 

@@ -37,38 +37,13 @@ per-item confirmation those still require.
 
 ## Runtime and provider neutrality
 
-Evidence parsing is a blocking check: empty output is acceptable only when the parser proved it
-ran; missing parser ≠ "no findings." Guard every `jq`/`python3` recipe:
+A missing `jq`/`python3` is a blocking check, never a silent "no findings":
 `command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }`
 Before any GitHub body mutation, follow the shared
 [GitHub body transport policy](../.shared/github-body-policy.md).
-
-Runtime facts come from the session contract's `sandbox=`/`git=`/`measured-by=` records, never
-inferred; absent = "unknown." A denial or approval in one session does not establish the same
-result in another: when a write, forge call, or worktree operation is denied, report the contract
-state and the exact operation that needs the harness's approval, and do not generalize that denial
-to another session. **Shell state does NOT persist between tool calls** — re-derive
-`REPO`/`PR` at the top of every block; run project/test/lint through `.shared/scripts/agent-run.sh`,
-never hand-export cache/CA/`PYTHONPATH`. **A spawned agent cannot spawn another** — only the root
-orchestrator dispatches. Review-provider behavior is repo/org configuration: never claim
-automatic/incremental/manual-only without current state, and never post a trigger command. Never
-disable TLS verification to work around a failure; `agent-run.sh` relocates a read-only `$HOME`
-cache and reports the substitution as a `note:` line.
-
-### The environment contract
-
-Run `.shared/scripts/agent-preflight.sh` exactly ONCE, in Step 0a, and treat its printed block
-(`skills=`/`repo`/`branch`/`worktree`/`base`/`config`/`git`/`gh`/`sandbox`/`tls`/`caches`/`runners`/
-`harness`/`peer-cli`) as the contract for the whole run — never re-probe. **Paste it verbatim into
-every dispatched worker prompt.** Decision lines: `gh= … project-scope=no` → grooming needs
-`gh auth refresh -s project` up front; `peer-cli= <name> absent` → skip the Step 1b peer probe
-entirely, go straight to the blind same-harness fallback; `config= present=no` → facts come from
-discovery instead of `.agent/config.env`.
-
-A repo opts into its own command runner via exactly two mechanisms, in order: `AGENT_REPO_RUNNER`
-env var, then a committed `.agent/runner`. `.agent/` is untracked; Step 0a adds it to local
-excludes; `worktree-commit.sh` stages only the FILE arguments given to it, so a careless
-`git add -A` is not safe.
+Read [references/environment-contract.md](references/environment-contract.md) in full before Step 0a — it carries the full runtime-neutrality contract (session-contract facts, no cross-session
+inference, no TLS bypass) and the environment-contract mechanics (the preflight block, its
+decision lines, and the repo-runner opt-in) behind the rules above.
 
 ## Automated review provider rules
 
@@ -127,69 +102,21 @@ only after provenance passes, so a stale or profile-inherited `agentkit` still f
 
 ## Implementation-worker gate (MANDATORY for every code change)
 
-The PR-loop agent orchestrates — inspects state, evaluates findings, owns human-confirmation
-gates — and does **not** generate a fix batch on its own model. Whenever CI, conflicts,
-adversarial findings, CodeRabbit, Code Quality, or approved human feedback requires a code change,
-dispatch one real worker as the sole writer for that batch.
-
-**Model/spawn contract:** preferred `gpt-5.6-luna`, automatic fallback `gpt-5.6-terra`, both
-`reasoning_effort: "high"`; required `agent_type: "worker"`, `fork_context: false`. Paste the
-worktree, branch rules, accepted findings, and the Step 0a contract block verbatim into the worker
-message. Never omit `model`/`reasoning_effort` (else it inherits the orchestrator); Luna→Terra
-needs no user authorization, any other model does. The Step 1b reviewer (read-only) **never**
-satisfies this gate.
-
-```text
-multi_agent_v1__spawn_agent({
-  agent_type: "worker", fork_context: false,
-  model: "<gpt-5.6-luna or gpt-5.6-terra>", reasoning_effort: "high",
-  message: "<complete fix-batch prompt, incl. Step 0a contract block>"
-})  // returns { agent_id, nickname }
-```
-
-Parameter names are exact — no `task_name`/`fork_turns`; `fork_context: false` is the only thing
-that makes a worker blind. **Degraded path** (`spawn_agent` genuinely unavailable, or
-`multi_agent = false`): attempt the spawn first and record why it failed; run the same six-step
-gate on yourself, verified to the same standard; label the exit report `worker=self (spawn
-unavailable)` — never report self-work as dispatched. Per-batch, not a permanent downgrade.
-
-**Required six-step ultracode loop**, in order (Stage 4 is the sole temporary-edit exception, fully
-reverted before Stage 5; production implementation begins only at Stage 6): STRUCTS → INTERFACES →
-TODOS → SPIKE + REVERT (`N/A` only for a no-code-change action) → INVARIANTS → IMPLEMENTATION
-(TDD: red → verify failure → minimal green → refactor; scoped + full suite through `agent-run.sh`).
-
-### Root-owned publication handback
-
-Workers are turn-and-burn: edit only the assigned worktree, leave progress unstaged, and finish
-with a handback naming the dirty files, the green log, and one exact `worktree-commit.sh`
-invocation with the worker trailer and explicit files. Workers never invoke that helper, stage,
-commit, stash, push, call forge/board helpers, create PRs, launch reviews, or request escalation.
-Before execution, the root preserves the raw handback command text for audit, then parses it into
-validated argv without `eval`, verifies the expected helper/trailer/paths, and inspects
-`git status --short` + `git diff -- <paths>` (incl. unstaged) before publication. It invokes the
-command as argv exactly once, and only afterward inspects `base...HEAD`; it then republishes the
-handback command verbatim once before the single cycle push and any forge replies. It then pushes
-and opens a DRAFT PR (Why/What/Design decisions/tickable Testing/agent credit/Closes #NNN). A dirty
-tree not authored by the worker is surfaced before validation and never adopted.
-
-For a correction cycle, resume the same worker with `followup_task` when possible rather than
-spawning a new one; never create concurrent writers in one PR worktree.
-
-Every worker file operation uses an absolute path rooted in its worktree — cwd is not an ownership
-boundary; a discovered write outside it is restored (`git diff --binary | git apply -R`) and
-reported in the handback. **Tier mapping:** root = trust/judgment; Luna = mechanical execution;
-Terra `xhigh` is reserved for the context-free blind fallback; a clean single PR is handled by
-root without a phase lead.
-
-```bash
-# Re-derive at the top of EVERY shell call: env does NOT persist between tool calls.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-resolver="$agentkit/.shared/scripts/repo-config.sh"
-[ -x "$resolver" ] && eval "$("$resolver" --export)"
-REPO=${AGENT_REPO_SLUG:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
-PR=42                                                        # replace with the PR number under review
-export REPO PR
-```
+The PR-loop agent orchestrates and does **not** generate a fix batch on its own model: whenever CI,
+conflicts, adversarial findings, CodeRabbit, Code Quality, or approved human feedback requires a
+code change, dispatch one real worker as the sole writer for that batch — the Step 1b reviewer
+(read-only) never satisfies this gate. Before dispatching, read
+[../.shared/spawn-contract.md](../.shared/spawn-contract.md) for model/effort selection — this
+file is dispatcher-side guidance, never pasted into a worker prompt — and
+[../.shared/six-step-loop.md](../.shared/six-step-loop.md) for the required loop. Paste the
+six-step contract verbatim into the worker's prompt, alongside the accepted findings and
+worktree/branch rules, never as a pointer; `fork_context: false` leaves it no other way to see
+them.
+Read [references/worker-gate.md](references/worker-gate.md) in full before dispatching any worker
+— it carries the orchestrator/worker split and the full root-owned publication handback mechanics
+(validation, argv parsing, the REPO/PR setup recipe), pointing onward to
+[../.shared/spawn-contract.md](../.shared/spawn-contract.md) for the exact spawn call shape and
+degraded no-spawn path.
 
 ## The Loop
 
@@ -403,8 +330,11 @@ wait for an explicit per-item decision before acting.
 ## Step 1b (runs as 2b): Adversarial Review — ONCE, at the end of the draft phase
 
 Apply this gate once as the LAST step of Phase A, after CI is green and conflicts are resolved.
-Size alone never decides materiality: a two-line authorization change is material; a mechanically
-verified immutable SHA refresh can be trivial.
+Read [references/adversarial-review.md](references/adversarial-review.md) in full before running
+or skipping this gate — it carries the materiality criteria (run vs. document-a-skip), attribution,
+external-service authorization and cross-provider consent (including `--auto-review`), the
+exit-code table, the tested invocation/monitoring/completion contract, and the blind same-harness
+fallback.
 
 **Spent-budget precheck (must precede launch).** Before starting any reviewer, run
 `post-receipt.sh precheck` against the Step 1 PR-conversation artifact:
@@ -425,21 +355,6 @@ esac
 
 Do not treat a missing/unreadable artifact as an empty comment set — that is a **no-silent-skip**
 failure; stop with evidence unavailable. A receipt marker is authoritative from the PR alone.
-
-**Run the review** when the diff changes runtime behavior, API/schema/migration contracts,
-authorization/security boundaries, persistence/concurrency, dependency behavior, workflow logic, or
-user-visible accessibility/reliability, or whenever the user asks. **Document a skip** only when
-every changed line is mechanically verifiable and low-judgment (comments/formatting, generated
-output with its parity check, a verified immutable refresh); record the exact oracle — a line-count
-threshold is never one. Preferred reviewer: the peer CLI named by `peer-cli=`, strongest reasoning
-model, one high-effort pass, never re-run after pushing fixes.
-
-Read [references/adversarial-review.md](references/adversarial-review.md) in full before running
-or skipping this gate — it carries attribution, external-service authorization and cross-provider
-consent (including `--auto-review`), the exit-code table, the tested invocation/monitoring/
-completion contract, and the blind same-harness fallback.
-
----
 
 ---
 
@@ -467,13 +382,11 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 
 ### Wait contract: one turn-free wait
 
-**A wait must never spend model turns.** Wait either by invoking a bounded helper blocking in a
-single cell — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`,
-or `agent-run.sh --cmd test` — or by one harness-level wait on a background terminal.
-A `sleep N` + re-check issued as its own tool call is churn: the helper's internal poll loop already does that for free.
-Every wait names an explicit bound (adversarial max-duration-seconds, the CI round cap, the worker completion marker/contract,
-or the runner completion marker/contract). Background a producer only while useful work continues;
-rejoin once with a harness-level wait when it is the last task standing.
+Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before issuing any wait in
+this loop — it is the single detailed home for the no-model-turn wait rule, every named bound
+(adversarial max-duration-seconds, the CI round cap, the worker/runner completion marker), and the
+durable-state recipe. Step 4 below adds this loop's own CI round-cap specifics (bounds, settlement
+rules); it does not restate the general rule.
 
 ### Adversarial-review receipt:
 
@@ -515,10 +428,10 @@ esac
 
 When Phase A is done — CI green, conflicts resolved, every adversarial finding fixed or
 declined-with-comment, every human item decided — report the draft-phase summary (Exit Report) and
-**wait at the harness level**; do not spend model turns on a `gh pr view` plus sleep/re-check loop.
-Then observe a real CodeRabbit review landing (actionable-comments/walkthrough body, not just an
-ack). If none arrives, report it — do not infer configuration or trigger one. If rate-limited,
-perform **bounded blocking re-check rounds** (~10 minutes each, up to ~90 minutes total): use
+wait per [../.shared/wait-discipline.md](../.shared/wait-discipline.md) instead of spending model
+turns on a `gh pr view` plus sleep/re-check loop. Then observe a real CodeRabbit review landing
+(actionable-comments/walkthrough body, not just an ack). If none arrives, report it — do not infer
+configuration or trigger one. If rate-limited, perform **bounded blocking re-check rounds** (~10 minutes each, up to ~90 minutes total): use
 one blocking helper/harness wait to own the rounds, then escalate to the user. **Never trigger a review.**
 
 ---

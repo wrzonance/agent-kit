@@ -30,6 +30,26 @@ flatten() { tr '\n' ' ' < "$1"; }
 parallel=$(flatten "$skills/parallel-issues/SKILL.md")
 review=$(flatten "$skills/review-remote-pr/SKILL.md")
 review_adversarial=$(flatten "$skills/review-remote-pr/references/adversarial-review.md")
+# The board-adjudication `--fast-mode` decision rule and the Step 2b
+# set-selection procedure are single-sourced in
+# references/triage-and-selection.md (issue #107 phase 3's split);
+# SKILL.md's body keeps only STOP-and-ask one-liners + a pointer. Assertions
+# below that pin content from either location check this concatenation.
+parallel_with_refs=$(flatten "$skills/parallel-issues/SKILL.md"; flatten "$skills/parallel-issues/references/triage-and-selection.md")
+
+# --- the flags table rows themselves ----------------------------------------
+# The prose paragraphs below the table restate the fast-mode/auto-review rules
+# in their own words, but nothing previously pinned the TABLE ROWS -- so the
+# rows could be deleted outright and every other assertion in this file would
+# stay green. Pin each row's Effect text and every declared alias directly.
+assert_contains "$parallel" 'without the Step 3 approval gate' \
+    'the --fast-mode row states what it removes'
+assert_contains "$parallel" 'promote unblocked Backlog issues' \
+    'the --fast-mode row states its board-promotion effect'
+assert_contains "$parallel" 'Standing consent' \
+    'the --auto-review row states what it grants'
+assert_contains "$parallel" '--auto-approve' \
+    'the --auto-review row documents its --auto-approve alias'
 
 # --- the dependency between the flags ---------------------------------------
 # The one rule that cannot be softened: --fast-mode without --yolo is a request
@@ -51,17 +71,17 @@ assert_contains "$parallel" 'With `--fast-mode`, do not ask' \
     'fast mode drops the approval gate'
 assert_contains "$parallel" 'removes the approval gate, not the reasoning' \
     'and keeps the conflict analysis that gate was checking'
-assert_contains "$parallel" 'removes the approval gate, not the disclosure' \
+assert_contains "$parallel_with_refs" 'removes the approval gate, not the disclosure' \
     'and still announces what it chose'
 
 # --- --fast-mode resolves board adjudication itself -------------------------
 # Unattended runs on a single-board repo hit the same-board STOP every time;
 # fast mode answers it from the conflict analysis and discloses, never asks.
-assert_contains "$parallel" 'With `--fast-mode`, do not stop for board adjudication' \
+assert_contains "$parallel_with_refs" 'With `--fast-mode`, do not stop for board adjudication' \
     'fast mode does not block on the same-board question'
-assert_contains "$parallel" 'print the shared-board finding' \
+assert_contains "$parallel_with_refs" 'print the shared-board finding' \
     'the shared-board disclosure survives the flag'
-assert_contains "$parallel" 'dropped with a printed reason, not asked about' \
+assert_contains "$parallel_with_refs" 'dropped with a printed reason, not asked about' \
     'a Blocked-column candidate is excluded, not a question'
 
 # --- publishing is the invocation's own output -------------------------------
@@ -78,9 +98,9 @@ assert_contains "$parallel" 'ready-flips, merges' \
 
 # --- selection is mechanical where it can be --------------------------------
 assert_contains "$parallel" 'pick-issues.sh' 'fast mode selects through the helper'
-assert_contains "$parallel" 'Only `selectable` lines are eligible' \
+assert_contains "$parallel_with_refs" 'Only `selectable` lines are eligible' \
     'and a SKIP line is a decision, not a suggestion'
-assert_contains "$parallel" 'Ready before Backlog' \
+assert_contains "$parallel_with_refs" 'Ready before Backlog' \
     'vetted work is exhausted before unvetted work is promoted'
 assert_contains "$parallel" 'An empty selection is an answer' \
     'nothing eligible is a stop, not a reason to widen the query'

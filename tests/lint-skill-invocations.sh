@@ -34,6 +34,13 @@
 # guard convention, never a second full-resolver definition. Both are scanned
 # below so a helper invocation moved into a reference file keeps the same
 # provenance bar it had in the body.
+#
+# .shared/*.md policy files (six-step-loop.md, spawn-contract.md,
+# wait-discipline.md, github-body-policy.md, ...) are pasted verbatim into
+# worker prompts by both split skills -- they are never an entry point of
+# their own, so they hold the same bar as a reference file: any bash fence
+# that invokes a helper carries the two-line guard, and the full resolver
+# definition never appears there.
 set -euo pipefail
 
 skills_dir=${1:?usage: lint-skill-invocations.sh SKILLS_DIR}
@@ -71,11 +78,12 @@ resolver_side_effects=0
 sentinel_gaps=0
 unreachable_guards=0
 
-# Every SKILL.md and every references/*.md beneath it -- a split skill's
-# reference files carry bash fences too, and they inherit the same
-# resolver/guard obligations as the body they were extracted from.
+# Every SKILL.md, every references/*.md beneath it, and every .shared/*.md
+# policy file -- a split skill's reference files and the shared policy files
+# both carry bash fences too, and they inherit the same resolver/guard
+# obligations as the body they were extracted from.
 mapfile -t md_files < <(find "$skills_dir" -maxdepth 3 \
-    \( -name SKILL.md -o -path '*/references/*.md' \) \
+    \( -name SKILL.md -o -path '*/references/*.md' -o -path '*/.shared/*.md' \) \
     -not -path '*/.system/*' | sort)
 
 fallback_matches=$(grep -Hn '^[[:space:]]*agentkit=\$(find ' "${md_files[@]}" 2>/dev/null || true)
@@ -121,11 +129,18 @@ strip_shell_comment() {
 
 for skill_file in "${md_files[@]}"; do
     # references/*.md belongs to the skill directory one level above
-    # "references"; SKILL.md belongs to its own parent directory.
+    # "references"; SKILL.md belongs to its own parent directory; .shared/*.md
+    # belongs to no skill at all -- it is shared policy content pasted into
+    # more than one skill's worker prompts, held to the reference-file bar.
     parent_dir=$(dirname "$skill_file")
+    is_shared=0
     if [[ $(basename "$parent_dir") == references ]]; then
         name=$(basename "$(dirname "$parent_dir")")
         is_reference=1
+    elif [[ $(basename "$parent_dir") == .shared ]]; then
+        name=.shared
+        is_reference=1
+        is_shared=1
     else
         name=$(basename "$parent_dir")
         is_reference=0
@@ -140,8 +155,9 @@ for skill_file in "${md_files[@]}"; do
     [[ -f $block ]] || continue
 
     # Single-source convention: the full resolver definition appears exactly
-    # once, in the body, and never again in a reference file split out of it.
-    if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* ]]; then
+    # once, in the body, and never again in a reference file split out of it
+    # or in a .shared policy file pasted into more than one skill's prompts.
+    if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* || $is_shared -eq 1 ]]; then
         def_count=$(grep -c "$FULL_RESOLVER_MARK" "$block" || true)
         if [[ $is_reference -eq 0 ]]; then
             if [[ $def_count -ne 1 ]]; then
@@ -184,11 +200,12 @@ for skill_file in "${md_files[@]}"; do
     # Every INDIVIDUAL fence that invokes a helper must carry either the full
     # resolver definition or the two-line guard -- not just the file as a
     # whole. Split back into per-fence files to check at that granularity.
-    # Scoped to the two skills that adopted the single-source convention;
-    # onboard-repo's bootstrap block resolves `$agentkit`/`$shared` once and
-    # its later fences are documented as running in the same continued
-    # session, so it was never a copy-per-block skill to begin with.
-    if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* ]]; then
+    # Scoped to the two skills that adopted the single-source convention, and
+    # to .shared/*.md (pasted into both skills' prompts under that same
+    # convention); onboard-repo's bootstrap block resolves `$agentkit`/`$shared`
+    # once and its later fences are documented as running in the same
+    # continued session, so it was never a copy-per-block skill to begin with.
+    if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* || $is_shared -eq 1 ]]; then
         fence_dir="$work/${rel//\//__}-fences"
         mkdir -p "$fence_dir"
         awk -v dir="$fence_dir" '

@@ -189,4 +189,51 @@ assert_eq '2' "$(count "$build_counter")" 'the unchanged build executes twice'
 build_cache=$(cat -- "$build_repo/.agent/verification-cache" 2>/dev/null || true)
 assert_not_contains "$build_cache" 'cmd=build ' 'a build command is never recorded in verification cache'
 
+# --- the focus selector is part of the cache key --------------------------
+# Green evidence for `--only ALPHA` must never satisfy `--only BETA` or a full
+# unfocused run: they verify different things on identical bytes. The selector
+# is folded into compute_tree_hash, so the cache key differs; this pins that,
+# because nothing else in the suite exercised --only at all.
+focus_repo=$(make_repo)
+printf 'AGENT_CMD_TEST=tools/run\nAGENT_CMD_TEST_FOCUS=tools/run %%s\n' \
+    > "$focus_repo/.agent/config.env"
+git -C "$focus_repo" add -- .agent/config.env
+git -C "$focus_repo" commit -qm 'declare focused test command'
+focus_counter="$tmp/focus-count"
+focus_trust="$tmp/focus-trust"
+approve_focus() { # $1 = --only value, or empty for the unfocused command
+    if [[ -n $1 ]]; then
+        (cd "$focus_repo" && AGENT_TRUST_ROOT="$focus_trust" \
+            "$tty_approve" y -- "$real_run_sh" --approve --cmd test --only "$1") > /dev/null 2>&1
+    else
+        (cd "$focus_repo" && AGENT_TRUST_ROOT="$focus_trust" \
+            "$tty_approve" y -- "$real_run_sh" --approve --cmd test) > /dev/null 2>&1
+    fi
+}
+run_focus() { # $1 = --only value, or empty
+    if [[ -n $1 ]]; then
+        (cd "$focus_repo" && COUNT_FILE="$focus_counter" AGENT_TRUST_ROOT="$focus_trust" \
+            "$real_run_sh" --cmd test --only "$1" 2>&1)
+    else
+        (cd "$focus_repo" && COUNT_FILE="$focus_counter" AGENT_TRUST_ROOT="$focus_trust" \
+            "$real_run_sh" --cmd test 2>&1)
+    fi
+}
+
+approve_focus ALPHA
+out=$(run_focus ALPHA)
+assert_not_contains "$out" 'verification current:' 'the first focused run executes'
+out=$(run_focus ALPHA)
+assert_contains "$out" 'verification current:' 'the same selector on unchanged bytes hits the cache'
+
+approve_focus BETA
+out=$(run_focus BETA)
+assert_not_contains "$out" 'verification current:' \
+    'a different selector does not reuse the first selector evidence'
+
+approve_focus ''
+out=$(run_focus '')
+assert_not_contains "$out" 'verification current:' \
+    'the unfocused full run does not reuse focused evidence'
+
 finish

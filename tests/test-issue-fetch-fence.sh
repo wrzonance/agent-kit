@@ -261,14 +261,16 @@ assert_eq no "$( [[ ! -e "$target" ]] && printf no || printf yes )" \
 assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
     'an empty issue payload leaves no temporary fence'
 
-recipe_text=$(<"$skill")
-script_text=$(<"$script")
 # The script is the single source of truth for the executable recipe (see the
 # header comment above); SKILL.md only documents invocation and embeds the
 # script's persisted output. Behavioral/structural invariants below are
 # therefore checked against the script, while the two worker-side embedding
-# checks and the deliberate-deletion doc check remain against SKILL.md, which
-# still carries that prose verbatim.
+# checks and the deliberate-deletion doc check remain against the recipe prose
+# -- which now lives in references/worker-prompts.md (issue #107's split) for
+# the two embedding checks, and in SKILL.md itself for the deletion doc check,
+# so recipe_text concatenates both rather than picking one.
+recipe_text=$(cat "$skill" "$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
+script_text=$(<"$script")
 assert_contains "$script_text" 'issue_payload=$(gh issue view "$issue_number" --repo "$repo_slug" --json title,body,labels,comments) || exit 1' \
     'the canonical recipe exits when GitHub issue fetch fails'
 assert_contains "$script_text" 'repo_slug=$(cd -- "$worktree" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)' \

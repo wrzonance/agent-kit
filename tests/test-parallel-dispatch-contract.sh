@@ -11,8 +11,12 @@ source "$here/lib/assert.sh"
 
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+worker_gate="$root/agentkit/skills/review-remote-pr/references/worker-gate.md"
 review_refs=("$root/agentkit/skills/review-remote-pr/references"/*.md)
+parallel_refs=("$root/agentkit/skills/parallel-issues/references"/*.md)
+shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
+shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -23,6 +27,39 @@ normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
 # source of truth); assertions about its internals below check this script
 # text rather than SKILL.md, which only documents invocation.
 prepare_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh")
+# Both dispatch prompt templates are single-sourced in
+# references/worker-prompts.md (issue #107's split); SKILL.md's body keeps
+# only a gate statement + pointer at each binding step. Template-content
+# assertions below therefore check the reference file, never the body.
+worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+worker_prompts_text=$(<"$worker_prompts")
+# The bulk-mutation ledger recipe and the triage/prior-art/board adjudication
+# detail are single-sourced in references/triage-and-selection.md (issue
+# #107 phase 3's split); SKILL.md's body keeps only the one-line verdict
+# table, the ledger/REST-first mandate, and pointers.
+triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
+triage_and_selection_text=$(<"$triage_and_selection")
+wait_discipline_text=$(<"$shared_wait_discipline")
+worker_gate_text=$(<"$worker_gate")
+issue_lead_prompt=$(awk '
+    /^Per-issue prompt:/ { capture=1; next }
+    capture && /^````$/ { exit }
+    capture { print }
+' "$worker_prompts")
+# The opening fence may carry a language tag (markdownlint MD040 requires one);
+# only the CLOSING fence is bare. Matching `^```$` for the opener silently
+# extracted nothing the moment the tag was added, and an empty haystack fails
+# every positive assertion at once rather than pointing at the real cause.
+draft_loop_prompt=$(awk '
+    /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
+    capture == 1 && /^```/ { capture=2; next }
+    capture == 2 && /^```$/ { exit }
+    capture == 2 { print }
+' "$worker_prompts")
+[[ -n $draft_loop_prompt ]] || {
+    printf 'could not extract the draft-loop prompt block from %s\n' "$worker_prompts" >&2
+    exit 1
+}
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
 assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
     'chain ordering sources are exactly the two mechanical ones'
@@ -33,39 +70,60 @@ assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
 assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
     'worktree recipe parameterizes its start point'
-assert_contains "$text" '--yolo --yolo-base $chain_base_sha' \
+assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
     'chained WHEN-yolo threading pins the base'
 assert_contains "$text" 'only after the root has validated, committed, and pushed' \
     'chain successors defer on root publication, not PR state'
-assert_contains "$text" 'A wait must never spend model turns.' \
+# The wait-contract rule sentences are single-sourced in
+# .shared/wait-discipline.md; the body keeps only a pointer (see the "###
+# Polling discipline" subsection), so the pinned wait-rule content is
+# asserted against the shared file, same as test-skills-contract.sh does for
+# review-remote-pr's identical pointer.
+assert_contains "$text" '.shared/wait-discipline.md' \
+    'parallel skill points at the shared wait-discipline contract'
+assert_contains "$wait_discipline_text" 'A wait must never spend model turns.' \
     'parallel skill states the no-model-turn wait rule'
-assert_contains "$text" 'gh-pr-state.sh --wait-ci --rounds N --interval S' \
+assert_contains "$wait_discipline_text" 'gh-pr-state.sh --wait-ci --rounds N --interval S' \
     'parallel wait rule names the blocking CI exemplar'
-assert_contains "$text" 'claude-adversarial-review.sh … > verdict.json' \
+assert_contains "$wait_discipline_text" 'claude-adversarial-review.sh … > verdict.json' \
     'parallel wait rule names the blocking adversarial helper'
-assert_contains "$text" 'agent-run.sh --cmd test' \
+assert_contains "$wait_discipline_text" 'agent-run.sh --cmd test' \
     'parallel wait rule names the blocking test runner'
-assert_contains "$text" 'adversarial max-duration-seconds' \
+assert_contains "$wait_discipline_text" 'adversarial max-duration-seconds' \
     'parallel wait rule names the adversarial duration bound'
-assert_contains "$text" 'CI round cap' \
+assert_contains "$wait_discipline_text" 'CI round cap' \
     'parallel wait rule names the CI round bound'
-assert_contains "$text" 'worker completion marker' \
+assert_contains "$wait_discipline_text" 'worker completion marker' \
     'parallel wait rule names the worker completion bound'
-assert_contains "$text" 'runner completion marker' \
+assert_contains "$wait_discipline_text" 'runner completion marker' \
     'parallel wait rule names the runner completion bound'
-assert_contains "$text" 'test-runner logs' \
+assert_contains "$wait_discipline_text" 'test-runner logs' \
     'parallel wait rule covers test-runner logs'
-assert_contains "$text" 'A `sleep N` + re-check issued as its own tool call is churn' \
+# The triage/prior-art/board adjudication detail and the fast-mode Step 2b
+# procedure moved to references/triage-and-selection.md, and both dispatch
+# prompt templates moved to references/worker-prompts.md (issue #107 phase
+# 3's split); pin the body's pointer to each, same as the wait-discipline
+# pointer above -- content coverage of what those files carry is already
+# proven by the assertions against $triage_and_selection_text and
+# $worker_prompts_text throughout this suite, but nothing previously pinned
+# that SKILL.md's body actually points a cold reader at either file.
+assert_contains "$text" 'references/triage-and-selection.md' \
+    'parallel skill points at the triage-and-selection reference'
+assert_contains "$text" 'references/worker-prompts.md' \
+    'parallel skill points at the worker-prompts reference'
+assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
-assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" | grep 'sleep command' || true)" \
+assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'parallel skill has no sleep polling recipe'
-assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
+assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
     'parallel skill recipes contain no ready or provider trigger commands'
-assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
+assert_not_contains "$wait_discipline_text" 'Between waits, read durable state instead of waiting again' \
     'polling does not inspect durable state between empty waits'
-assert_contains "$text" 'Between waits, wait again; read durable state only when a wait reports an actual completion.' \
+assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
+    'parallel body does not reintroduce the rejected wait phrasing'
+assert_contains "$wait_discipline_text" 'Between waits, wait again; read durable state only when a wait reports an actual completion.' \
     'polling reads durable state only after completion'
-assert_contains "$text" 'do not load `review-remote-pr/SKILL.md`' \
+assert_contains "$draft_loop_prompt" 'do not load `review-remote-pr/SKILL.md`' \
     'dispatch is self-contained without loading the worker skill'
 assert_not_contains "$text" 'Four total slots including the root' \
     'dispatch does not hardcode the old slot count'
@@ -77,7 +135,7 @@ assert_contains "$prepare_script_text" 'target="$agent_dir/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
 assert_contains "$prepare_script_text" 'prior_target="$agent_dir/fenced-prior-art.txt"' \
     'issue preparation persists prior-art fence bytes'
-bulk_section=$(sed -n '/^#### Bulk mutation discipline:/,/^#### Prior-art adjudication/p' "$skill")
+bulk_section=$(sed -n '/^## Bulk mutation discipline:/,/^## Prior-art adjudication/p' "$triage_and_selection")
 assert_contains "$bulk_section" 'if ! mutation_json=$(perform_rest_mutation "$planning_id"); then' \
     'bulk recipe stops on a mutation failure'
 assert_contains "$bulk_section" 'if ! "$apply_ledger" record --ledger "$ledger"' \
@@ -118,11 +176,11 @@ assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
 assert_contains "$text" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
-assert_contains "$text" '--only NAME[,NAME...]' \
+assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
-assert_contains "$text" 'AGENT_CMD_TEST_FOCUS' \
+assert_contains "$issue_lead_prompt" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
-assert_contains "$text" 'once against the final tree state' \
+assert_contains "$issue_lead_prompt" 'once against the final tree state' \
     'the final tree receives one unfocused full-suite run'
 assert_contains "$text" '`--trust-trunk`' \
     'dispatch contract documents the standalone trunk-trust flag'
@@ -145,25 +203,10 @@ assert_contains "$review_verification_section" 'AGENT_CMD_TEST_FOCUS' \
     'review workflow pins the focused declaration gate'
 assert_contains "$review_verification_section" 'run the unfocused `"$agent_run" --cmd test` once' \
     'review workflow pins the final unfocused full-suite sequencing'
-assert_contains "$text" 'that issue/status/phase is complete' \
+assert_contains "$text $triage_and_selection_text" 'that issue/status/phase is complete' \
     'a moved output line is terminal for its issue phase'
 assert_not_contains "$text" 'target="$PWD/fenced-spec.txt"' \
     'issue fencing never writes untrusted bytes to the worktree root'
-issue_lead_prompt=$(awk '
-    /^Per-issue prompt:/ { capture=1; next }
-    capture && /^````$/ { exit }
-    capture { print }
-' "$skill")
-draft_loop_prompt=$(awk '
-    /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
-    capture == 1 && /^```$/ { capture=2; next }
-    capture == 2 && /^### Step 3c:/ { exit }
-    capture == 2 {
-        if (previous != "") print previous
-        previous=$0
-    }
-' "$skill")
-
 assert_prompt_instruction_contract() {
     local prompt="$1" label="$2" scope="$3" normalized_prompt
     normalized_prompt=$(tr '\n' ' ' <<< "$prompt" | tr -s '[:space:]' ' ')
@@ -219,6 +262,10 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_not_contains "$prompt_text" 'git add -A' "$prompt_label has no broad staging instruction"
     assert_not_contains "$prompt_text" 'peer-cli=' "$prompt_label has no reviewer provider selection"
     assert_not_contains "$prompt_text" 'gpt-5.6-terra' "$prompt_label has no blind reviewer fallback"
+    assert_contains "$prompt_text" '<PASTE, verbatim, the agent-preflight.sh contract' \
+        "$prompt_label carries the environment-contract paste placeholder"
+    assert_contains "$prompt_text" '<WHEN this parallel-issues invocation carried --yolo' \
+        "$prompt_label carries the --yolo WHEN placeholder"
 done
 assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'publication handback' 'issue lead returns a publication handback'
@@ -232,6 +279,8 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_contains "$prompt_text" 'expanded literal value' "$prompt_label expands the attribution before handback"
     assert_contains "$prompt_text" '!= '\''<worker model id selected by the root dispatch>'\''' \
         "$prompt_label rejects the literal worker model placeholder"
+    assert_contains "$prompt_text" "worker_model='<worker model id selected by the root dispatch>'" \
+        "$prompt_label carries the worker-model placeholder assignment"
 done
 assert_not_contains "$issue_lead_prompt" 'issue_contents' 'issue lead does not produce fence content'
 assert_not_contains "$issue_lead_prompt" 'prior_art_contents' 'issue lead does not produce prior-art fence content'
@@ -267,8 +316,13 @@ assert_contains "$normalized_text" 'git diff -- <explicit handback paths>' \
     'parallel dispatch inspects unstaged explicit paths before commit'
 assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
     'parallel dispatch defers base diff inspection until publication'
+# The draft-PR body template heredoc recipe is single-sourced in
+# references/worker-prompts.md (issue #107 phase 3's split) -- it is
+# dispatch-output content read at publication time, not a worker prompt, but
+# it lives beside the worker prompts it is read alongside. SKILL.md's body
+# keeps only a gate statement + pointer at the binding step.
 publication_section=$(
-    sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
+    sed -n '/^## Draft PR body template$/,/^## Fix-batch worker prompt$/p' "$worker_prompts"
 )
 assert_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication passes a newline-preserving body file to gh'
@@ -401,33 +455,49 @@ root_sections=$(
     sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill"
     sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
     sed -n '/^## Runtime and provider neutrality$/,/^## Automated review provider rules/p' "$review_skill"
-    sed -n '/^### Implementation-worker gate (MANDATORY for every code change)$/,/^## Step 0: Setup/p' "$review_skill"
-    sed -n '/^### Root-owned publication handback$/,/^Tier mapping:/p' "$review_skill"
+    sed -n '/^## Implementation-worker gate$/,/^## Root-owned publication handback$/p' "$worker_gate"
+    sed -n '/^## Root-owned publication handback$/,$p' "$worker_gate"
     sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill"
 )
 assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
 assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
 assert_contains "$root_sections" 'peer-cli= <name> absent' 'root-facing prose owns peer availability'
 assert_contains "$root_sections" 'blind same-harness fallback' 'root-facing prose owns blind fallback'
+assert_contains "$worker_gate_text" 'Workers are turn-and-burn' \
+    'worker-gate.md pins the turn-and-burn handback contract'
+assert_contains "$worker_gate_text" 'preserves the raw handback command text for audit' \
+    'worker-gate.md pins the raw-command-text audit guard'
+assert_contains "$worker_gate_text" 'validated argv without `eval`' \
+    'worker-gate.md pins argv-without-eval parsing'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \
     'draft-loop workers use the bounded instruction contract'
 
-outer_open_count=$(awk '$0 == "````text" { count++ } END { print count + 0 }' "$skill")
-outer_close_count=$(awk '$0 == "````" { count++ } END { print count + 0 }' "$skill")
+# The outer four-backtick fence lives in references/worker-prompts.md now
+# (issue #107's split); SKILL.md's body carries a pointer, never the fence.
+outer_open_count=$(awk '$0 == "````text" { count++ } END { print count + 0 }' "$worker_prompts")
+outer_close_count=$(awk '$0 == "````" { count++ } END { print count + 0 }' "$worker_prompts")
 assert_eq '1' "$outer_open_count" \
     'the per-issue prompt has one four-backtick opening fence'
 assert_eq '1' "$outer_close_count" \
     'the per-issue prompt has one four-backtick closing fence'
+assert_eq '0' "$(awk '$0 == "````text" { count++ } END { print count + 0 }' "$skill")" \
+    'SKILL.md carries no outer four-backtick fence of its own'
 
 prompt_body=$(awk '
     $0 == "````text" { capture=1; next }
     capture && $0 == "````" { exit }
     capture { print }
-' "$skill")
+' "$worker_prompts")
 assert_contains "$prompt_body" '<PASTE the complete output selected by the boundary mode' \
     'the prompt placeholders remain inside the outer fence'
+assert_contains "$issue_lead_prompt" \
+    '<PASTE the complete output selected by the boundary mode for the approved design-doc contents or full issue body>' \
+    'the issue-lead prompt carries the Spec placeholder individually'
+assert_contains "$issue_lead_prompt" \
+    '<PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>' \
+    'the issue-lead prompt carries the Prior art placeholder individually'
 inner_open_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```bash" { count++ } END { print count + 0 }')
 inner_close_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```" { count++ } END { print count + 0 }')
 assert_eq '2' "$inner_open_count" \
