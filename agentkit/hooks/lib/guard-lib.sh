@@ -792,6 +792,46 @@ guard_worktree_count() {
     printf '%s' "$count"
 }
 
+# A `-C` before the git subcommand pins the command's execution worktree. A
+# `-C` after `commit` is git's message-file option and must not resolve cwd
+# provenance. Parse shell segments the same way as guard_command_target_dir so
+# a later command cannot lend an earlier commit its pin.
+guard_commit_has_explicit_worktree() {
+    local cmd=$1 segment trimmed pin word
+    local -a words
+    local segments=${cmd//[;&|]/$'\n'}
+
+    while IFS= read -r segment; do
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        read -r -a words <<< "$trimmed"
+        ((${#words[@]})) || continue
+        [[ ${words[0]} == git ]] || continue
+
+        pin=0
+        local i
+        for ((i = 1; i < ${#words[@]}; i++)); do
+            word=${words[i]}
+            case $word in
+                --) break;;
+                -C)
+                    ((i + 1 < ${#words[@]})) || break
+                    pin=1
+                    ((i++))
+                    ;;
+                -C*) pin=1;;
+                -*) ;;
+                commit)
+                    ((pin)) && return 0
+                    break
+                    ;;
+                *) break;;
+            esac
+        done
+    done <<< "$segments"
+    return 1
+}
+
 guard_trunk_commit_reason() {
     local cmd=$1 root=$2 current trunk worktrees
     [[ -n $root ]] || return 1
@@ -812,7 +852,9 @@ guard_trunk_commit_reason() {
     # actually receive the commit. Refusing would spend the deny-once choice
     # on an inferred landing branch that the hook cannot establish.
     worktrees=$(guard_worktree_count "$root")
-    [[ $worktrees == 1 ]] || return 1
+    if [[ $worktrees != 1 ]] && ! guard_commit_has_explicit_worktree "$cmd"; then
+        return 1
+    fi
 
     trunk=$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH[[:space:]]*=[[:space:]]*//p' \
         "$root/.agent/config.env" 2> /dev/null | tail -1)

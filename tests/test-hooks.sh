@@ -752,6 +752,26 @@ out=$(cd "$linked_feature" &&
 assert_eq 'allow' "$(decision "$out")" \
     'an ambiguous linked-worktree commit is not refused as trunk work'
 
+# An explicit git -C pins the command to the inspected main worktree, so the
+# same stale session cwd must still receive the true-positive trunk refusal.
+out=$(cd "$linked_feature" &&
+    pre_input "$linked_main" "git -C $linked_main commit -m \"pinned trunk\"" \
+        "linked-worktree-explicit" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'an explicit git -C trunk commit is refused despite stale cwd ambiguity'
+assert_contains "$out" "$linked_main" \
+    'the explicit git -C refusal names the inspected root'
+assert_contains "$out" 'explicit git -C worktree pin' \
+    'the explicit refusal explains why the landing inference is reliable'
+
+out=$(cd "$linked_feature" &&
+    pre_input "$linked_main" 'git commit -C message-file' \
+        "linked-worktree-message-file" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a post-subcommand git -C message-file is not mistaken for a worktree pin'
+
 out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'and the retry is allowed -- this is deny-once'
 
