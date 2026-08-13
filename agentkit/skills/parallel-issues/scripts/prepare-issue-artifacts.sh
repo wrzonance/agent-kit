@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# Fetches a GitHub issue exactly once, fails closed unless it carries real
+# evidence, renders it into the canonical Title/Body/Labels/Comments spec
+# text, fences (or copies) it alongside a prior-art digest per the caller's
+# trust boundary, and publishes both plus a readiness marker atomically into
+# the target worktree's excluded .agent/ state.
+#
+# This is the single source of truth for the "Root canonical issue fetch and
+# fence preparation" recipe in parallel-issues/SKILL.md. Boundary-mode
+# SELECTION (public-fenced vs private-trusted vs yolo-trusted) happens
+# upstream of this script -- it only consumes the mode it is given.
+set -euo pipefail
+# fetched-issue.json is explicitly chmod'd 0600, but fenced-spec.txt and
+# fenced-prior-art.txt are created by plain redirection (fence-untrusted-data.sh
+# output, or a straight cp) and then mv'd into place -- without this, they land
+# world-readable under the default umask while the byte-equivalent raw payload
+# next to them does not. All three carry the same issue text.
+umask 077
+
+usage() {
+    printf 'Usage: %s --worktree PATH --issue N --boundary MODE [--prior-art FILE]\n' "${0##*/}"
+    cat <<'EOF'
+
+Options:
+  --worktree PATH   Git worktree root; artifacts are written under its
+                    .agent/ directory.
+  --issue N         Issue number to fetch (positive integer).
+  --boundary MODE   One of:
+                      public-fenced    - wrap both artifacts in nonce-bound
+                                          untrusted-data markers.
+                      private-trusted  - copy bytes verbatim (no fencing).
+                      yolo-trusted     - copy bytes verbatim (no fencing).
+  --prior-art FILE  File holding prior-art digest text. Defaults to the
+                    literal "(no prior art selected by triage digest)".
+  -h, --help        Print this help and exit 0.
+
+Published on success (stdout, one line per artifact):
+  published: <worktree>/.agent/fetched-issue.json
+  published: <worktree>/.agent/fenced-spec.txt
+  published: <worktree>/.agent/fenced-prior-art.txt
+  published: <worktree>/.agent/fenced-ready
+
+Exit status:
+  0   success
+  12  a complete fenced artifact set already exists; delete it deliberately
+      before re-fencing
+  1   bad arguments, missing evidence, or any other failure
+EOF
+}
+
+die() {
+    printf 'prepare-issue-artifacts: %s\n' "$1" >&2
+    exit "${2:-1}"
+}
+
+worktree=
+issue_number=
+boundary_mode=
+prior_art_file=
+
+while (($#)); do
+    case $1 in
+        --worktree)
+            (($# >= 2)) || die "Missing value for $1."
+            worktree=$2
+            shift 2
+            ;;
+        --issue)
+            (($# >= 2)) || die "Missing value for $1."
+            issue_number=$2
+            shift 2
+            ;;
+        --boundary)
+            (($# >= 2)) || die "Missing value for $1."
+            boundary_mode=$2
+            shift 2
+            ;;
+        --prior-art)
+            (($# >= 2)) || die "Missing value for $1."
+            prior_art_file=$2
+            shift 2
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            die "Unknown argument: $1."
+            ;;
+    esac
+done
+
+[[ -n $worktree ]] || die 'Missing required --worktree.'
+[[ -d $worktree ]] || die "Worktree is not a directory: $worktree"
+[[ $issue_number =~ ^[1-9][0-9]*$ ]] || die 'Issue number must be a positive integer (--issue N).'
+case $boundary_mode in
+    public-fenced | private-trusted | yolo-trusted) ;;
+    *)
+        die "Boundary mode must be one of: public-fenced, private-trusted, yolo-trusted (got: '${boundary_mode:-}')."
+        ;;
+esac
+
+prior_art_contents=
+if [[ -n $prior_art_file ]]; then
+    [[ -f $prior_art_file && ! -L $prior_art_file && -r $prior_art_file ]] ||
+        die "Prior-art file is missing, unreadable, or a symlink: $prior_art_file"
+    # Deliberately NOT read into a variable here. Command substitution strips
+    # every trailing newline, so a digest ending in the blank line that
+    # terminates a Markdown block would be published without it -- a silent
+    # edit to content the trusted boundary modes promise to copy verbatim. The
+    # file is staged byte-for-byte further down instead.
+fi
+
+command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) ||
+    die "Could not resolve this script's directory."
+fence_script="$script_dir/fence-untrusted-data.sh"
+[[ -x $fence_script ]] || die "fence-untrusted-data.sh is missing or not executable: $fence_script"
+
+# A symlinked or non-directory .agent would let mkdir -p silently succeed
+# while every later write lands somewhere outside the worktree.
+agent_dir="$worktree/.agent"
+if [[ -e $agent_dir ]] && { [[ -L $agent_dir ]] || [[ ! -d $agent_dir ]]; }; then
+    die "$agent_dir exists and is not a plain directory"
+fi
+mkdir -p -- "$agent_dir" || die "Could not create $agent_dir"
+
+issue_payload_file="$agent_dir/fetched-issue.json"
+target="$agent_dir/fenced-spec.txt"
+prior_target="$agent_dir/fenced-prior-art.txt"
+ready_marker="$agent_dir/fenced-ready"
+tmp="$target.tmp"
+prior_tmp="$prior_target.tmp"
+
+# Refused BEFORE the fetch. A complete, ready-marked set is deliberate state,
+# and fetched-issue.json is part of that set -- checking only after the fetch
+# meant a run that was about to refuse had already overwritten the published
+# raw payload the previous run left behind, and had spent two gh calls doing
+# it. The stale-debris cleanup stays below, where the run actually continues,
+# so a failed fetch still leaves the previous artifacts untouched.
+if [[ -d $ready_marker && -f $target && -f $prior_target &&
+    ! -e $tmp && ! -e $prior_tmp ]]; then
+    die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
+fi
+
+# Every temp file this run might create, so a normal exit or a signal cleans
+# up exactly what it left behind and nothing else. The EXIT trap always runs;
+# the signal traps additionally force a nonzero exit rather than letting the
+# script resume past a HUP/INT/TERM.
+issue_payload_tmp=
+spec_payload=
+prior_payload=
+
+cleanup_temp_files() {
+    [[ -z $issue_payload_tmp ]] || rm -f -- "$issue_payload_tmp"
+    rm -f -- "$tmp" "$prior_tmp"
+    [[ -z $spec_payload ]] || rm -f -- "$spec_payload"
+    [[ -z $prior_payload ]] || rm -f -- "$prior_payload"
+}
+temp_signal_handler() {
+    cleanup_temp_files
+    trap - EXIT HUP INT TERM
+    exit 1
+}
+trap cleanup_temp_files EXIT
+trap temp_signal_handler HUP INT TERM
+
+# Resolved from the target worktree, never from the caller's cwd -- otherwise
+# invoking this from a different repository's directory would silently fetch
+# issue $issue_number from that OTHER repository and publish it as this
+# worktree's spec.
+repo_slug=$(cd -- "$worktree" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
+    die "Could not resolve the repository from gh in $worktree"
+
+issue_payload=$(gh issue view "$issue_number" --repo "$repo_slug" --json title,body,labels,comments) || exit 1
+
+# Persist the raw fetched bytes before any evidence parser runs, atomically:
+# a temp file in the same directory, chmod'd private, then moved into place.
+issue_payload_tmp=$(mktemp "$agent_dir/.fetched-issue.XXXXXX") ||
+    die 'Could not create a temporary file for the raw issue payload.'
+chmod 600 -- "$issue_payload_tmp" ||
+    die 'Could not set permissions on the raw issue payload temp file.'
+printf '%s\n' "$issue_payload" >"$issue_payload_tmp" ||
+    die 'Could not write the raw issue payload.'
+mv -f -- "$issue_payload_tmp" "$issue_payload_file" ||
+    die "Could not publish $issue_payload_file"
+issue_payload_tmp=
+
+issue_has_content=$(jq -r '
+  ((.title // "") != "") or ((.body // "") != "")
+    or (((.labels // []) | length) > 0) or (((.comments // []) | length) > 0)
+' <<<"$issue_payload")
+
+# Empty evidence is acceptable only after jq has run successfully and proved
+# the payload fields are empty; a missing parser is a blocked check.
+if [[ $issue_has_content != true ]]; then
+    printf 'prepare-issue-artifacts: issue #%s has no title, body, labels, or comments; evidence unavailable\n' \
+        "$issue_number" >&2
+    exit 1
+fi
+
+issue_contents=$(jq -r '
+  [
+    ("Title: " + (.title // "")),
+    ("Body:\n" + (.body // "")),
+    ("Labels:\n" + ((.labels // []) | map(.name) | join(", "))),
+    ("Comments:\n" + ((.comments // [])
+      | map("- " + ((.author.login // "unknown") | tostring) + ": " + (.body // ""))
+      | join("\n")))
+  ] | join("\n\n")
+' <<<"$issue_payload")
+
+: "${prior_art_contents:="(no prior art selected by triage digest)"}"
+
+# The complete, ready-marked case was already refused before the fetch, so
+# anything still present here is stale debris from an interrupted run and is
+# cleared before this run republishes both members.
+if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
+    printf 'incomplete stale fence artifacts; removing them before retry\n' >&2
+    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+    rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
+fi
+
+# Staged outside the worktree so a fence producer is always fed by stdin
+# redirection, never a pipe: a pipe writer that outlives an early-exiting
+# reader hits SIGPIPE, which this recipe must survive deterministically.
+spec_payload=$(mktemp "${TMPDIR:-/tmp}/prepare-issue-artifacts-spec.XXXXXXXXXX") ||
+    die 'Could not create a temporary spec payload file.'
+prior_payload=$(mktemp "${TMPDIR:-/tmp}/prepare-issue-artifacts-prior.XXXXXXXXXX") ||
+    die 'Could not create a temporary prior-art payload file.'
+chmod 600 -- "$spec_payload" "$prior_payload" ||
+    die 'Could not set permissions on the temporary payload files.'
+
+printf '%s' "$issue_contents" >"$spec_payload" ||
+    die 'Could not stage the spec payload.'
+if [[ -n $prior_art_file ]]; then
+    cp -- "$prior_art_file" "$prior_payload" ||
+        die 'Could not stage the prior-art payload.'
+    chmod 600 -- "$prior_payload" ||
+        die 'Could not set permissions on the prior-art payload.'
+else
+    printf '%s' "$prior_art_contents" >"$prior_payload" ||
+        die 'Could not stage the prior-art payload.'
+fi
+
+if [[ $boundary_mode == public-fenced ]]; then
+    if "$fence_script" <"$spec_payload" >"$tmp" &&
+        "$fence_script" <"$prior_payload" >"$prior_tmp"; then
+        :
+    else
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        die 'Could not fence the issue-derived artifacts.'
+    fi
+else
+    if cp -- "$spec_payload" "$tmp" && cp -- "$prior_payload" "$prior_tmp"; then
+        :
+    else
+        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+        die 'Could not copy the issue-derived artifacts.'
+    fi
+fi
+
+# Published one step at a time so the failure can name WHICH member did not
+# land. The trio is not atomic: fenced-spec.txt can be published without its
+# prior-art pair and without the readiness marker, and "mv/mkdir failed" would
+# leave the caller to work out which of the three that was.
+publish_rc=0
+publish_step=''
+mv -f -- "$tmp" "$target" ||
+    { publish_rc=$?; publish_step="publish $target"; }
+if ((publish_rc == 0)); then
+    mv -f -- "$prior_tmp" "$prior_target" ||
+        { publish_rc=$?; publish_step="publish $prior_target"; }
+fi
+if ((publish_rc == 0)); then
+    mkdir -- "$ready_marker" ||
+        { publish_rc=$?; publish_step="create the readiness marker $ready_marker"; }
+fi
+if ((publish_rc != 0)); then
+    rm -f -- "$tmp" "$prior_tmp"
+    printf 'Could not %s (exit %s); the fenced artifact set is incomplete.\n' \
+        "$publish_step" "$publish_rc" >&2
+    exit "$publish_rc"
+fi
+
+rm -f -- "$spec_payload" "$prior_payload" || die 'Could not remove the temporary payload files.'
+spec_payload=
+prior_payload=
+
+trap - EXIT HUP INT TERM
+
+printf 'published: %s\n' "$issue_payload_file"
+printf 'published: %s\n' "$target"
+printf 'published: %s\n' "$prior_target"
+printf 'published: %s\n' "$ready_marker"

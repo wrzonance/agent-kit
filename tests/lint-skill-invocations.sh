@@ -34,7 +34,7 @@ skills_dir=${1:?usage: lint-skill-invocations.sh SKILLS_DIR}
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues'
+readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues|post-receipt|prepare-issue-artifacts|board-list'
 readonly FULL_RESOLVER_MARK='agentkit=\$(sed -n "s/\^skills= path='
 # Both halves of the guard are matched as complete TEST EXPRESSIONS on a single
 # non-comment line, never as loose substrings. Substring matching is not enough:
@@ -82,6 +82,29 @@ if [[ -n $pinned_paths ]]; then
     unguarded=$((unguarded + 1))
 fi
 
+# Prints the code portion of a shell line, dropping a trailing comment.
+# `${line%%#*}` is not good enough: bash only starts a comment at an UNQUOTED
+# `#` that begins a word, so `: '#'; agent-run.sh` really does run the helper
+# while a naive cut hides it -- a lint bypass for exactly the bare invocation
+# this gate exists to catch. Tracks quote state and requires the `#` to start a
+# word, which is bash's own rule.
+strip_shell_comment() {
+    local line=$1 out='' quote='' char prev='' i
+    for ((i = 0; i < ${#line}; i++)); do
+        char=${line:i:1}
+        if [[ -n $quote ]]; then
+            [[ $char == "$quote" ]] && quote=''
+        elif [[ $char == "'" || $char == '"' ]]; then
+            quote=$char
+        elif [[ $char == '#' && ( -z $prev || $prev == [[:space:]] || $prev == ';' ) ]]; then
+            break
+        fi
+        out+=$char
+        prev=$char
+    done
+    printf '%s' "$out"
+}
+
 while IFS= read -r skill_file; do
     name=$(basename "$(dirname "$skill_file")")
     block="$work/$name.sh"
@@ -116,7 +139,12 @@ while IFS= read -r skill_file; do
     while IFS= read -r line; do
         grep -qE "($HELPERS)\.sh" <<< "$line" || continue
         checked=$((checked + 1))
-        [[ $line =~ ^[[:space:]]*# ]] && continue
+        # Exempt when the reference sits entirely inside a comment -- not just
+        # a LEADING comment (`^#`), but also a trailing one on an otherwise
+        # code-bearing line (e.g. a `case` arm's `# helper.sh did X` note).
+        # Only the text before the comment counts as code for this check.
+        code_part=$(strip_shell_comment "$line")
+        grep -qE "($HELPERS)\.sh" <<< "$code_part" || continue
         grep -qE "(printf|echo)" <<< "$line" && continue
         grep -qE "/($HELPERS)\.sh" <<< "$line" && continue
         bare=$((bare + 1))

@@ -855,109 +855,41 @@ printf 'boundary mode: %s\n' "$boundary_mode"
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-# shellcheck disable=SC2034
-# Preserve the raw fetched bytes before any evidence parser runs.
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
-    exit 1
-fi
-issue_payload=$(gh issue view "$issue_number" --json title,body,labels,comments) || exit 1
-issue_payload_file="$worktree/.agent/fetched-issue.json"
-mkdir -p -- "${issue_payload_file%/*}" || exit 1
-printf '%s\n' "$issue_payload" >"$issue_payload_file" || exit 1
-issue_has_content=$(jq -r '
-  ((.title // "") != "") or ((.body // "") != "")
-    or (((.labels // []) | length) > 0) or (((.comments // []) | length) > 0)
-' <<<"$issue_payload")
+script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
 
-# Empty evidence is acceptable only after jq has run successfully and proved
-# the payload fields are empty; a missing parser is a blocked check.
-[[ $issue_has_content == true ]] || exit 1
-issue_contents=$(jq -r '
-  [
-    ("Title: " + (.title // "")),
-    ("Body:\n" + (.body // "")),
-    ("Labels:\n" + ((.labels // []) | map(.name) | join(", "))),
-    ("Comments:\n" + ((.comments // [])
-      | map("- " + ((.author.login // "unknown") | tostring) + ": " + (.body // ""))
-      | join("\n")))
-  ] | join("\n\n")
-' <<<"$issue_payload")
+# --prior-art is optional: pass it only when Step 2's prior-art adjudication
+# produced a digest to carry forward; omitted, the script's own sentinel
+# ("(no prior art selected by triage digest)") applies.
+prior_art_file=''
+if [[ -n ${prior_art_contents:-} ]]; then
+    prior_art_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-prior-art.XXXXXXXXXX") || exit 1
+    chmod 600 -- "$prior_art_file" || exit 1
+    printf '%s' "$prior_art_contents" >"$prior_art_file" || exit 1
+fi
 
-# The root is the sole issue-artifact producer. Publish both generated blocks
-# atomically into excluded per-worktree state before constructing any prompt.
-: "${prior_art_contents:="(no prior art selected by triage digest)"}"
-target="$worktree/.agent/fenced-spec.txt"
-prior_target="$worktree/.agent/fenced-prior-art.txt"
-ready_marker="$worktree/.agent/fenced-ready"
-tmp="$target.tmp"
-prior_tmp="$prior_target.tmp"
-mkdir -p -- "${target%/*}" || exit 1
-if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
-    if [[ -d $ready_marker && -f $target && -f $prior_target &&
-        ! -e $tmp && ! -e $prior_tmp ]]; then
-        printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2
-        exit 1
-    fi
-    printf '%s\n' 'incomplete stale fence artifacts; removing them before retry' >&2
-    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
-    rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
-fi
-set -o pipefail
-spec_payload=''
-prior_payload=''
-cleanup_fence() {
-    rm -f -- "$tmp" "$prior_tmp"
-    [[ -z $spec_payload ]] || rm -f -- "$spec_payload"
-    [[ -z $prior_payload ]] || rm -f -- "$prior_payload"
-}
-fence_signal_handler() {
-    cleanup_fence
-    trap - EXIT HUP INT TERM
-    exit 1
-}
-trap cleanup_fence EXIT
-trap fence_signal_handler HUP INT TERM
-spec_payload=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-fence-spec.XXXXXXXXXX") || exit 1
-prior_payload=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-fence-prior.XXXXXXXXXX") || exit 1
-chmod 600 -- "$spec_payload" "$prior_payload" || exit 1
-if ! printf '%s' "$issue_contents" >"$spec_payload" ||
-    ! printf '%s' "$prior_art_contents" >"$prior_payload"; then
-    exit 1
-fi
-# Named producer shapes remain here so the canonical recipe is executable and
-# testable without ever moving issue-derived data into a worker prompt.
-# spec_fence=$("$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload")
-# prior_art_fence=$("$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload")
-if [[ $boundary_mode == public-fenced ]]; then
-    if "$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$spec_payload" >"$tmp" &&
-        "$agentkit/parallel-issues/scripts/fence-untrusted-data.sh" <"$prior_payload" >"$prior_tmp"; then
-        :
-    else
-        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp" "$spec_payload" "$prior_payload"
-        exit 1
-    fi
+fetch_rc=0
+if [[ -n $prior_art_file ]]; then
+    "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" \
+        --prior-art "$prior_art_file" || fetch_rc=$?
 else
-    if cp -- "$spec_payload" "$tmp" && cp -- "$prior_payload" "$prior_tmp"; then
-        :
-    else
-        rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp" "$spec_payload" "$prior_payload"
-        exit 1
-    fi
+    "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" || fetch_rc=$?
 fi
-if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target" &&
-    mkdir -- "$ready_marker"; then
-    :
-else
-    mv_rc=$?
-    rm -f -- "$tmp" "$prior_tmp"
-    exit "$mv_rc"
-fi
-rm -f -- "$spec_payload" "$prior_payload" || exit 1
-trap - EXIT HUP INT TERM
+[[ -z $prior_art_file ]] || rm -f -- "$prior_art_file"
+
+case "$fetch_rc" in
+    0)  : ;; # published fetched-issue.json, fenced-spec.txt, fenced-prior-art.txt, fenced-ready
+    12) printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2; exit 1 ;;
+    *)  exit 1 ;; # bad args, missing evidence, or any staging/fence/publish failure
+esac
 ```
 
-The root now embeds `cat -- "$worktree/.agent/fenced-spec.txt"` and `cat -- "$worktree/.agent/fenced-prior-art.txt"` bytes verbatim into the worker prompt. Re-running the fence helper for an existing block is churn; delete the affected file deliberately before deliberate re-fencing. The selected mode is disclosed immediately above those persisted bytes.
+The root is the sole issue-artifact producer; the script fetches, validates, and atomically
+publishes both fenced files plus the raw payload and ready marker into the worktree's excluded
+`.agent/` state before any prompt is constructed. The root now embeds `cat --
+"$worktree/.agent/fenced-spec.txt"` and `cat -- "$worktree/.agent/fenced-prior-art.txt"` bytes
+verbatim into the worker prompt. Re-running the script for an existing complete set is churn (it
+refuses with exit `12`); delete the affected file deliberately before deliberate re-fencing. The
+selected mode is disclosed immediately above those persisted bytes.
 
 ### Attended command-approval handoff
 
@@ -1372,7 +1304,7 @@ worker cannot see the outer invocation, so adding the grant without it has manuf
 
 ### Adversarial-review receipt:
 
-Every dispatched `review-remote-pr` loop must perform the spent-budget precheck before launching
+Every dispatched `review-remote-pr` loop must run `post-receipt.sh precheck` before launching
 either reviewer. It reads the fetched PR conversation artifact
 `$RUN_DIR/state/pr_${PR}_issue_comments.json`; when the stable marker is present, report
 `adversarial review budget spent` and do not rerun. A missing/unreadable artifact is evidence
@@ -1380,36 +1312,29 @@ unavailable, not an empty comment set. A completed review or verified skip witho
 **no-silent-skip** failure and cannot be handed off as draft-phase-complete.
 
 After all confirmed findings are fixed or explicitly declined and those fixes are pushed, the loop
-publishes exactly one durable top-level PR receipt **after fixes are pushed** and **before
-draft-phase-complete handoff**. It must
-record reviewer provider/model/effort and mode (`cross-provider` or `blind fallback`, with reason),
-severity counts (`P1`, `P2`, total), one `confirmed finding` line per finding with short title,
-verdict, and fix commit SHA(s), or an explicit `decline rationale`; a trivial skip must carry its
-`verified-skip rationale` and mechanical oracle. The receipt includes the standard agentic banner,
-one stable spent marker, and the agentic footer. Use the existing `gh-comment.sh --body-file`
-exact-body helper for transport; never inline this multiline comment body.
+runs `post-receipt.sh publish` to record exactly one durable top-level PR receipt **after fixes are
+pushed** and **before draft-phase-complete handoff**. It must record reviewer provider/model/effort
+and mode (`cross-provider` or `blind fallback`, with reason), severity counts (`P1`, `P2`, total),
+one `confirmed finding` line per finding with short title, verdict, and fix commit SHA(s), or an
+explicit `decline rationale`; a trivial skip must carry its `verified-skip rationale` and mechanical
+oracle. The receipt includes the standard agentic banner, one stable spent marker, and the agentic
+footer, sent through the sibling `gh-comment.sh --body-file` exact-body transport; never inline this
+multiline comment body.
 
 ```bash
 # The loop runs this before reviewer launch, using the Step 1 artifact.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
-receipt_marker='<!-- adversarial-review:spent -->'
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
-if ! command -v jq >/dev/null 2>&1 || [[ ! -r $receipt_comments ]]; then
-    printf '%s\n' 'receipt precheck evidence unavailable' >&2
-    exit 1
-fi
-if jq -e --arg marker "$receipt_marker" \
-    'any(.[]?; ((.body // "") | contains($marker)))' <"$receipt_comments" >/dev/null; then
-    printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'
-    exit 0
-else
-    jq_status=$?
-    if ((jq_status != 1)); then
-        printf '%s\n' 'PR comment artifact is invalid; evidence unavailable' >&2
-        exit 1
-    fi
-fi
+precheck_rc=0
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
+case "$precheck_rc" in
+    0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
+    10) printf '%s\n' 'not spent — proceed to the adversarial review gate' ;;
+    *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
+esac
 ```
 
 After all confirmed findings are fixed or explicitly declined and those fixes are pushed, publish
@@ -1417,32 +1342,34 @@ the receipt in a fresh shell. This publication block is separate from the pre-la
 the precheck must not fall through to a placeholder receipt.
 
 ```bash
-# Run only after the finding-fix push; keep exactly one marker in the receipt.
+# Run only after the finding-fix push; this is the final draft-phase action.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-receipt_body=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-receipt.XXXXXXXXXX")
-chmod 600 -- "$receipt_body"
-trap 'rm -f -- "$receipt_body"' EXIT
-cat >"$receipt_body" <<'EOF'
-This was written agentically; verify its assertions:
-<!-- review-remote-pr:agent-doc -->
-## Adversarial review receipt
-- Reviewer: provider=__PROVIDER__; model=__MODEL__; effort=__EFFORT__; mode=__MODE__ (reason: __MODE_REASON__)
-- Counts: P1=__P1__; P2=__P2__; total=__TOTAL__
-- Confirmed finding: __SHORT_TITLE__ — verdict=__FIXED_OR_DECLINED__; fix commit SHA(s)=__SHAS__; decline rationale=__RATIONALE__
-- Verified-skip rationale: __SKIP_RATIONALE__; mechanical oracle=__ORACLE__
-<!-- adversarial-review:spent -->
-🤖 Co-authored by __AGENT_IDENTITY__.
-EOF
-"$agentkit/review-remote-pr/scripts/gh-comment.sh" \
-    --pr "$PR" --repo "$REPO" --body-file "$receipt_body"
+receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+publish_rc=0
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
+    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" \
+    --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
+    --mode "$MODE" --mode-reason "$MODE_REASON" \
+    --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
+    --finding 'SHORT_TITLE|fixed|SHA1,SHA2' \
+    --finding 'OTHER_TITLE|declined|RATIONALE' \
+    --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
+case "$publish_rc" in
+    0)  : ;; # post-receipt.sh posted and byte-verified the receipt
+    11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
+    *)  printf '%s\n' 'receipt publication failed (evidence unavailable, bad flags, or gh-comment.sh post/verify failed)' >&2; exit 1 ;;
+esac
 ```
 
-The finding line is repeated once per confirmed finding; use `none confirmed` for a clean review.
-The receipt is the only durable evidence that spends the one-review budget, and no later step may
-post a second receipt or silently skip the receipt.
+Repeat `--finding` once per confirmed finding (fixed + commit SHA(s), or declined + decline
+rationale); omit every `--finding` for a clean review (the receipt then records `none confirmed`),
+or pass `--skip-rationale S --oracle S` instead for a verified trivial-diff skip. The receipt is the
+only durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
+rather than double-posting when the marker is already present, so no later step may post a second
+receipt or silently skip the receipt.
 
 Dispatch at most two PR-loop agents concurrently. **Do not reserve a slot for a nested worker: a
 spawned PR-loop agent cannot spawn one.** It runs `review-remote-pr`'s documented

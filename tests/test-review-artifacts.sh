@@ -66,6 +66,265 @@ for helper in "$claude" "$codex"; do
 
 done
 
+# --output: the helper's own atomic-publish flag. Covers the Claude helper's
+# fixture path (rc 0 publish, rc 3 publish, rc 1 leaves no file, unsafe
+# directory refusal), reusing the same fake-CLI fixture technique the bounds
+# suite already established rather than inventing a new one.
+output_diff="$tmp/output.diff"
+printf '%s\n' 'diff --git a/example.txt b/example.txt' '+safe' >"$output_diff"
+
+cat >"$tmp/fake-claude-output-success" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == --version ]]; then
+    printf '%s\n' 'claude 2.1.0'
+    exit 0
+fi
+if [[ ${1:-} == --help ]]; then
+    printf '%s\n' '--print --model --effort --system-prompt --tools --permission-mode'
+    printf '%s\n' '--no-session-persistence --safe-mode --disable-slash-commands'
+    printf '%s\n' '--strict-mcp-config --mcp-config --output-format'
+    printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
+    exit 0
+fi
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-test","tools":["StructuredOutput"],"mcp_servers":[]}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[]},"modelUsage":{"claude-test":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
+EOF
+chmod +x "$tmp/fake-claude-output-success"
+
+cat >"$tmp/fake-claude-output-hang" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == --version ]]; then
+    printf '%s\n' 'claude 2.1.0'
+    exit 0
+fi
+if [[ ${1:-} == --help ]]; then
+    printf '%s\n' '--print --model --effort --system-prompt --tools --permission-mode'
+    printf '%s\n' '--no-session-persistence --safe-mode --disable-slash-commands'
+    printf '%s\n' '--strict-mcp-config --mcp-config --output-format'
+    printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
+    exit 0
+fi
+sleep 5
+EOF
+chmod +x "$tmp/fake-claude-output-hang"
+
+output_run="$tmp/output.run"
+mkdir -- "$output_run"
+chmod 700 -- "$output_run"
+
+# --output is documented as ADDITIVE, so it must not be allowed to name another
+# artifact. prepare_output runs after prepare_transcript and clears a
+# pre-existing target, so aliasing the transcript deleted the raw audit trail
+# the verdict is meant to be checkable against -- silently, before the reviewer
+# had even run. Both helpers reject it, and the check is canonical so a
+# relative spelling of the same file cannot slip past.
+for alias_helper in "$claude" "$codex"; do
+    alias_name=$(basename "$alias_helper" | cut -d- -f1)
+    alias_transcript="$output_run/$alias_name-alias.transcript"
+    alias_rc=0
+    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        --transcript "$alias_transcript" --output "$alias_transcript" \
+        > "$tmp/$alias_name-alias.out" 2> "$tmp/$alias_name-alias.err" || alias_rc=$?
+    assert_eq 1 "$alias_rc" "--output: $alias_name rejects an --output that aliases --transcript"
+    assert_contains "$(cat "$tmp/$alias_name-alias.err")" 'must not alias another artifact' \
+        "--output: $alias_name says the paths alias"
+
+    alias_rel_rc=0
+    ( cd "$output_run" && bash "$alias_helper" --mode review --model m \
+        --diff "$output_diff" --transcript "$alias_name-rel.transcript" \
+        --output "./$alias_name-rel.transcript" ) \
+        > /dev/null 2> "$tmp/$alias_name-rel.err" || alias_rel_rc=$?
+    assert_eq 1 "$alias_rel_rc" "--output: $alias_name rejects a relative alias of the transcript"
+
+    for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
+        status_rc=0
+        bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+            --transcript "$alias_transcript" --output "$status_alias" \
+            > /dev/null 2> "$tmp/$alias_name-status.err" || status_rc=$?
+        assert_eq 1 "$status_rc" \
+            "--output: $alias_name rejects an --output aliasing $(basename "$status_alias")"
+    done
+
+    alias_diff_rc=0
+    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        --transcript "$output_run/$alias_name-diffalias.transcript" \
+        --output "$output_diff" > /dev/null 2> "$tmp/$alias_name-diffalias.err" || alias_diff_rc=$?
+    assert_eq 1 "$alias_diff_rc" "--output: $alias_name rejects an --output that aliases --diff"
+    assert_eq yes "$( [[ -s $output_diff ]] && printf yes || printf no )" \
+        "--output: $alias_name leaves the diff intact after refusing"
+done
+
+# rc 0: the completed verdict is published atomically beside the transcript.
+success_output="$output_run/success.result.json"
+success_stdout="$tmp/output-success.stdout"
+success_rc=0
+CLAUDE_EXECUTABLE="$tmp/fake-claude-output-success" bash "$claude" \
+    --mode review --model claude-test --diff "$output_diff" \
+    --transcript "$output_run/success.transcript" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-budget-usd 0.25 \
+    --output "$success_output" >"$success_stdout" || success_rc=$?
+assert_eq 0 "$success_rc" '--output: a completed review still exits 0'
+assert_eq no "$( [[ ! -e "$success_output.tmp" ]] && printf no || printf yes )" \
+    '--output: a completed review leaves no temporary artifact'
+assert_eq yes "$( [[ -f $success_output ]] && printf yes || printf no )" \
+    '--output: a completed review publishes the output artifact'
+assert_eq 600 "$(stat -c %a -- "$success_output")" \
+    '--output: the published completed artifact is mode 0600'
+assert_eq "$(<"$success_stdout")" "$(<"$success_output")" \
+    '--output: the published completed artifact matches stdout exactly'
+assert_contains "$(<"$success_output")" '"status": "completed"' \
+    '--output: the published artifact carries the completed status'
+
+# rc 3: environment-blocked still publishes its JSON, same as stdout.
+blocked_output="$output_run/blocked.result.json"
+blocked_stdout="$tmp/output-blocked.stdout"
+blocked_rc=0
+CLAUDE_EXECUTABLE=/definitely/missing/claude bash "$claude" \
+    --mode probe --model claude-test \
+    --transcript "$output_run/blocked.transcript" \
+    --output "$blocked_output" >"$blocked_stdout" 2>/dev/null || blocked_rc=$?
+assert_eq 3 "$blocked_rc" '--output: an environment-blocked review still exits 3'
+assert_eq no "$( [[ ! -e "$blocked_output.tmp" ]] && printf no || printf yes )" \
+    '--output: a blocked review leaves no temporary artifact'
+assert_eq "$(<"$blocked_stdout")" "$(<"$blocked_output")" \
+    '--output: the published blocked artifact matches stdout exactly'
+assert_contains "$(<"$blocked_output")" '"status":"blocked"' \
+    '--output: the published artifact carries the blocked status'
+
+# rc 1: a real failure (duration ceiling) publishes nothing at all.
+failure_output="$output_run/failure.result.json"
+failure_err="$tmp/output-failure.err"
+failure_rc=0
+CLAUDE_EXECUTABLE="$tmp/fake-claude-output-hang" bash "$claude" \
+    --mode probe --model claude-test \
+    --transcript "$output_run/failure.transcript" --poll-seconds 1 \
+    --max-duration-seconds 1 --output "$failure_output" \
+    >/dev/null 2>"$failure_err" || failure_rc=$?
+assert_eq 1 "$failure_rc" '--output: a real review failure still exits 1'
+assert_eq no "$( [[ ! -e "$failure_output" ]] && printf no || printf yes )" \
+    '--output: a real review failure leaves no output artifact'
+assert_eq no "$( [[ ! -e "$failure_output.tmp" ]] && printf no || printf yes )" \
+    '--output: a real review failure leaves no temporary artifact'
+
+# Unsafe output directory: refused before the CLI is ever invoked (mode 0755,
+# not 0700 -- the same bar prepare_transcript already enforces on its own
+# directory), regardless of whether the reviewer binary exists.
+unsafe_dir="$tmp/output-unsafe-dir"
+mkdir -- "$unsafe_dir"
+chmod 755 -- "$unsafe_dir"
+unsafe_output="$unsafe_dir/result.json"
+unsafe_err="$tmp/output-unsafe.err"
+unsafe_rc=0
+CLAUDE_EXECUTABLE=/definitely/missing/claude bash "$claude" \
+    --mode probe --model claude-test \
+    --transcript "$output_run/unsafe.transcript" \
+    --output "$unsafe_output" >/dev/null 2>"$unsafe_err" || unsafe_rc=$?
+assert_eq 1 "$unsafe_rc" '--output: an unsafe output directory is refused'
+assert_contains "$(<"$unsafe_err")" '0700' \
+    '--output: the refusal names the private-directory requirement'
+assert_not_contains "$(<"$unsafe_err")" 'BLOCKED' \
+    '--output: the unsafe directory is refused before invoking the CLI'
+assert_eq no "$( [[ ! -e "$unsafe_output" ]] && printf no || printf yes )" \
+    '--output: an unsafe output directory never receives an artifact'
+
+# Codex --output behavioral coverage: same rc-0/rc-3 fixture technique as the
+# Claude helper above, reusing the fake-codex-success fixture from
+# test-adversarial-review-bounds.sh. publish_output()/prepare_output() are
+# independently maintained copies in each script, so Claude fixture coverage
+# alone does not exercise a codex-only regression (wrong variable, corrupted
+# body, chmod-after-mv).
+cat >"$tmp/fake-codex-output-success" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == exec && ${2:-} == --help ]]; then
+    printf '%s\n' '--model --config --sandbox --ephemeral --ignore-user-config'
+    printf '%s\n' '--ignore-rules --skip-git-repo-check --output-schema'
+    printf '%s\n' '--output-last-message --json'
+    exit 0
+fi
+last_file=''
+while (($#)); do
+    if [[ $1 == --output-last-message ]]; then
+        last_file=$2
+        shift 2
+    else
+        shift
+    fi
+done
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":20}}'
+printf '%s\n' '{"verdict":"no_findings","findings":[]}' >"$last_file"
+EOF
+chmod +x "$tmp/fake-codex-output-success"
+
+codex_success_output="$output_run/codex-success.result.json"
+codex_success_stdout="$tmp/codex-output-success.stdout"
+codex_success_rc=0
+CODEX_EXECUTABLE="$tmp/fake-codex-output-success" bash "$codex" \
+    --mode review --model gpt-test --diff "$output_diff" \
+    --transcript "$output_run/codex-success.jsonl" --poll-seconds 1 \
+    --max-duration-seconds 30 --max-tokens 1024 \
+    --output "$codex_success_output" >"$codex_success_stdout" || codex_success_rc=$?
+assert_eq 0 "$codex_success_rc" 'Codex --output: a completed review still exits 0'
+assert_eq no "$( [[ ! -e "$codex_success_output.tmp" ]] && printf no || printf yes )" \
+    'Codex --output: a completed review leaves no temporary artifact'
+assert_eq yes "$( [[ -f $codex_success_output ]] && printf yes || printf no )" \
+    'Codex --output: a completed review publishes the output artifact'
+assert_eq 600 "$(stat -c %a -- "$codex_success_output")" \
+    'Codex --output: the published completed artifact is mode 0600'
+assert_eq "$(<"$codex_success_stdout")" "$(<"$codex_success_output")" \
+    'Codex --output: the published completed artifact matches stdout exactly'
+assert_contains "$(<"$codex_success_output")" '"status": "completed"' \
+    'Codex --output: the published artifact carries the completed status'
+
+# rc 3: environment-blocked (missing codex binary) still publishes its JSON.
+codex_blocked_output="$output_run/codex-blocked.result.json"
+codex_blocked_stdout="$tmp/codex-output-blocked.stdout"
+codex_blocked_rc=0
+CODEX_EXECUTABLE=/definitely/missing/codex bash "$codex" \
+    --mode probe --model gpt-test \
+    --transcript "$output_run/codex-blocked.jsonl" \
+    --output "$codex_blocked_output" >"$codex_blocked_stdout" 2>/dev/null || codex_blocked_rc=$?
+assert_eq 3 "$codex_blocked_rc" 'Codex --output: an environment-blocked review still exits 3'
+assert_eq no "$( [[ ! -e "$codex_blocked_output.tmp" ]] && printf no || printf yes )" \
+    'Codex --output: a blocked review leaves no temporary artifact'
+assert_eq "$(<"$codex_blocked_stdout")" "$(<"$codex_blocked_output")" \
+    'Codex --output: the published blocked artifact matches stdout exactly'
+assert_contains "$(<"$codex_blocked_output")" '"status":"blocked"' \
+    'Codex --output: the published artifact carries the blocked status'
+
+for helper in "$claude" "$codex"; do
+    helper_text=$(<"$helper")
+    helper_name=${helper##*/}
+    assert_contains "$helper_text" '--output) require_value' \
+        "$helper_name accepts an --output flag"
+    assert_contains "$helper_text" 'publish_output "$json"' \
+        "$helper_name publishes its blocked object through publish_output"
+    assert_contains "$helper_text" 'publish_output "$final_json"' \
+        "$helper_name publishes its completed result through publish_output"
+    assert_contains "$helper_text" 'OUTPUT_TMP="$OUTPUT_PATH.tmp"' \
+        "$helper_name stages its --output artifact beside the final path"
+    assert_contains "$helper_text" 'mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH"' \
+        "$helper_name publishes its --output artifact atomically"
+    # Ordering, not adjacency. publish_output must run BEFORE the object is
+    # emitted on stdout: it can die, and a caller that already read a "blocked"
+    # object would act on a verdict that was never durably published. This
+    # previously pinned publish_output as the line immediately preceding
+    # `exit 3`, which is a proxy the correct order necessarily breaks -- the
+    # publish now happens earlier still, with the stdout emission between it
+    # and the exit.
+    exit3_line=$(grep -n 'exit 3$' "$helper" | tail -n 1 | cut -d: -f1)
+    publish_line=$(awk -v stop="${exit3_line:-0}" \
+        'NR < stop && /publish_output "\$json"/ {n = NR} END {print n + 0}' "$helper")
+    emit_line=$(awk -v stop="${exit3_line:-0}" \
+        'NR < stop && /printf/ && /\$json/ && !/publish_output/ {n = NR} END {print n + 0}' "$helper")
+    blocked_order=$([[ $publish_line -gt 0 && $emit_line -gt 0 &&
+        $publish_line -lt $emit_line && $emit_line -lt ${exit3_line:-0} ]] && printf 1 || printf 0)
+    assert_eq 1 "$blocked_order" \
+        "$helper_name publishes the rc=3 blocked artifact before emitting it on stdout"
+done
+
 assert_contains "$state_text" "[[ ! -L \$target ]]" \
     'gh-pr-state refuses artifact symlinks before refresh'
 assert_contains "$state_text" "[[ ! -e \$target || ( -f \$target && -O \$target) ]]" \
@@ -165,11 +424,14 @@ assert_contains "$skill_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
     'the skill names one shared adversarial diff artifact'
 assert_contains "$skill_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
     'the skill names one neutral adversarial verdict artifact'
-assert_contains "$skill_text" 'verdict_tmp="$verdict_path.tmp"' \
-    'the skill stages adversarial verdicts beside the final artifact'
-assert_contains "$skill_text" 'mv -f -- "$verdict_tmp" "$verdict_path"' \
-    'the skill publishes verdicts atomically after producer success'
-assert_eq 2 "$(grep -Fc 'if ((review_rc == 3)); then' "$skill")" \
+# Verdict staging/atomic publication is delegated to each wrapper's --output
+# flag (see the helper loop above, which checks OUTPUT_TMP staging and the
+# rc=3 publish-before-exit ordering in both scripts directly), not
+# reimplemented in SKILL.md; SKILL.md only documents that delegation at each
+# call site.
+assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$skill")" \
+    'the skill documents atomic verdict staging at both call sites'
+assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$skill")" \
     'both adversarial wrappers publish their rc=3 blocked artifacts'
 assert_contains "$skill_text" 'A final file' \
     'the skill defines completion by terminal producer events'

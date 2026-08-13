@@ -14,11 +14,20 @@
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234
 #   ci=3/3 green pending=0 failing=0
+#   provider: coderabbit=reviewed
 #   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
 #   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
 #   nitpicks: 0 unhandled
+#   agent-docs: 0 eligible
+#   next: human=2 -> per-item confirmation gate (Step 1a)
 #   alerts: code-scanning open=0
 #   saved: DIR/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
+#
+# 'provider', 'agent-docs' and 'next' print in every mode (--digest, --full,
+# --wait-ci): the queries they read (issue comments, review threads) already
+# run before any digest is printed, so nothing about them costs an extra API
+# call in --digest mode. Only 'saved' is --full-only, because writing the
+# artifact files themselves is the thing --digest skips.
 #
 # Exit status: 0 = digest printed; 1 = usage error or API failure.
 #
@@ -85,6 +94,17 @@ Counting rules:
               /nitpick|broom-emoji/i (the body-only surfaces, which have no review
               thread), minus the threads this workflow already opened to document
               them ('$AGENT_DOC_MARKER').
+  provider    last-signal-wins scan of the PR's issue comments (oldest first, so a
+              later comment overrides an earlier one): a CodeRabbit body matching
+              /actionable comments posted|<summary>walkthrough/i means 'reviewed',
+              /review limit reached|rate limit/i means 'rate-limited', otherwise
+              'none'. Informational only -- never a trigger decision.
+  agent-docs  unresolved threads whose FIRST comment is marked
+              '$AGENT_DOC_MARKER' and which carry no unmarked human-lane
+              comment; eligible for this workflow to resolve at exit (Step 6).
+  next        one fixed-vocabulary hint per lane above (coderabbit, code-quality,
+              human, generic, nitpicks, agent-docs) that is currently non-zero;
+              omitted entirely when every lane is zero.
 EOF
 }
 
@@ -284,7 +304,16 @@ ci_counts() {
 }
 
 # Emits: code-quality<TAB>coderabbit<TAB>human<TAB>generic<TAB>known<TAB>type-bot
-#        <TAB>login-suffix<TAB>human-signal<TAB>truncated<TAB>agent-doc-threads.
+#        <TAB>login-suffix<TAB>human-signal<TAB>truncated<TAB>agent-doc-threads
+#        <TAB>agent-docs-eligible.
+# 'agent-doc-threads' (field 10) counts ALL threads (any resolution state)
+# whose first comment carries the marker -- it feeds the nitpick 'unhandled'
+# subtraction below, where a resolved documentation thread still proves the
+# nitpick was handled. 'agent-docs-eligible' (field 11) is the stricter,
+# reader-facing count: unresolved, first-comment-marked, and untouched by any
+# unmarked human comment -- ports the Step 6 python classifier's 'agent_docs'
+# list exactly, so this workflow only offers to auto-resolve threads it fully
+# owns.
 thread_counts() {
     jq -r --arg cr "$CR_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
         def author_login: ((.author.login // "") | ascii_downcase);
@@ -342,7 +371,9 @@ thread_counts() {
             ($open | map(select(has_human_signal)) | length),
             (if (($rt.pageInfo.hasNextPage // false)
                  or ([$all[] | .comments.pageInfo.hasNextPage // false] | any)) then 1 else 0 end),
-            ($all | map(select(((.comments.nodes[0].body) // "") | test("(^|\r?\n)" + $doc))) | length) ]
+            ($all | map(select(((.comments.nodes[0].body) // "") | test("(^|\r?\n)" + $doc))) | length),
+            ($open | map(select((((.comments.nodes[0].body) // "") | test("(^|\r?\n)" + $doc))
+                                 and ((human_touched) | not))) | length) ]
         | @tsv' <"$WORK_DIR/threads.json"
 }
 
@@ -356,6 +387,21 @@ nitpick_count() {
         | map(select((((.user.login // "") | test($re; "i")))
               and (((.body // "") | test("nitpick"; "i")) or ((.body // "") | contains($b)))))
         | length' <"$file"
+}
+
+# CodeRabbit's own check can sit green on a bare "finished" ack or a rate-limit
+# warning, so the real signal lives in the issue-comment bodies, not the check
+# conclusion. Comments arrive oldest-first from the REST endpoint, so the LAST
+# matching signal wins: a stale walkthrough from an earlier cycle must never
+# mask a rate-limit on the current trigger. Informational only -- this never
+# decides whether to trigger, retry, or wait for a review.
+provider_state() {
+    jq -r --arg re "$CR_RE" '
+        map(select((.user.login // "") | test($re; "i")) | (.body // ""))
+        | reduce .[] as $b ("none";
+            if   ($b | test("actionable comments posted|<summary>walkthrough"; "i")) then "reviewed"
+            elif ($b | test("review limit reached|rate limit"; "i"))                 then "rate-limited"
+            else . end)' <"$WORK_DIR/issue_comments.json"
 }
 
 # Code scanning is optional per repository: the endpoint 403s or 404s where it is
@@ -433,8 +479,10 @@ print_ci_line() {
 }
 
 print_thread_lines() {
-    local cq cr human generic known type_bot suffix human_signal trunc doc nits reviews_n issues_n unhandled
-    IFS=$'\t' read -r cq cr human generic known type_bot suffix human_signal trunc doc < <(thread_counts)
+    local cq cr human generic known type_bot suffix human_signal trunc doc eligible
+    local nits reviews_n issues_n unhandled
+    IFS=$'\t' read -r cq cr human generic known type_bot suffix human_signal trunc doc eligible \
+        < <(thread_counts)
     if ((trunc)); then
         printf 'threads: coderabbit=%s unresolved  code-quality=%s open  human=%s  generic=%s  truncated=yes\n' \
             "$cr" "$cq" "$human" "$generic"
@@ -451,16 +499,34 @@ print_thread_lines() {
     unhandled=$((nits - doc))
     ((unhandled < 0)) && unhandled=0
     printf 'nitpicks: %s unhandled\n' "$unhandled"
+    printf 'agent-docs: %s eligible\n' "$eligible"
+    print_next_lines "$cr" "$cq" "$human" "$generic" "$unhandled" "$eligible"
+}
+
+# One fixed-vocabulary routing hint per lane that is currently non-zero, in
+# the same order the lanes were reported above. A lane sitting at zero prints
+# no line at all -- silence, not a "next: none", is the "nothing to do" signal.
+print_next_lines() {
+    local cr=$1 cq=$2 human=$3 generic=$4 nits=$5 eligible=$6
+    ((cr)) && printf 'next: coderabbit=%s -> reply then resolve last (Step 5)\n' "$cr"
+    ((cq)) && printf 'next: code-quality=%s -> verbatim fix or reasoned dismiss (Step 5)\n' "$cq"
+    ((human)) && printf 'next: human=%s -> per-item confirmation gate (Step 1a)\n' "$human"
+    ((generic)) && printf 'next: generic=%s -> smallest fix or decline reply (Step 5)\n' "$generic"
+    ((nits)) && printf 'next: nitpicks=%s -> fix if trivial or decline (Step 5)\n' "$nits"
+    ((eligible)) && printf 'next: agent-docs=%s -> resolve at exit if still bot-only\n' "$eligible"
+    return 0
 }
 
 print_digest() {
-    local alerts
+    local alerts provider
     jq -r '"pr=" + (.number | tostring)
            + " draft=" + (.isDraft | tostring)
            + " mergeable=" + (.mergeable // "UNKNOWN")
            + " head=" + (.headRefName // "?")
            + " sha=" + ((.headRefOid // "") | .[0:7])' <"$WORK_DIR/pr.json"
     print_ci_line
+    provider=$(provider_state)
+    printf 'provider: coderabbit=%s\n' "$provider"
     print_thread_lines
     alerts=$(alert_count)
     if [[ $alerts == "n/a" ]]; then
