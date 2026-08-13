@@ -198,6 +198,13 @@ printed by the Step 1/Step 6 `--full` call.
   required to request another pass. Observe bounded rounds and report the state; leave any retry
   decision to the user. Never advise buying credits.
 
+### Stale approval residue
+
+When `gh-pr-state.sh` reports a stale base after a parent merge, a CodeRabbit approval earned
+before retargeting is residue from the old merge state, not approval of the revalidated PR. State
+that residue as a knowing acceptance in the handoff. The one-review/one-ping rule forbids silently
+inheriting it or triggering a second provider pass merely to make the approval look fresh.
+
 ## Step 5: assess findings
 
 Before assessing any saved review artifact, prove the parser used by the recipe is available.

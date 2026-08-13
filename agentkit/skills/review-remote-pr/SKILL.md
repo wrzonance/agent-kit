@@ -155,7 +155,7 @@ PHASE C — REVIEW (runs when relevant provider findings land)
 auto-cleared/dismissed; all body nitpicks fixed or declined+documented; every confirmed adversarial
 finding fixed or declined with a PR comment; every human-lane item has an explicit user decision
 (replies posted+verified, threads left unresolved). A deferred item blocks `Ready to merge` unless
-the user says otherwise. After exit, run **Backlog grooming** before handing back.
+the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base line means checks are not green, and any pre-retarget provider approval must be surfaced as knowing acceptance rather than silently inherited or refreshed with another ping.
 
 CodeRabbit's auto-approve (when enabled) needs a reply AND a resolve on every thread it opened, no
 failing checks — reply first, then resolve, nitpicks before threads (Step 5 ordering). Disabled →

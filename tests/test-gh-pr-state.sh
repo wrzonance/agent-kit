@@ -60,6 +60,74 @@ assert_not_contains "$output" 'next: nitpicks' \
 assert_not_contains "$output" 'next: agent-docs' \
     'a zero agent-docs lane prints no next hint'
 
+# --- a child whose base advanced after its checks completed -----------------
+
+mkdir -p "$tmp/case-stale-base"
+cat >"$tmp/case-stale-base/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":77,"isDraft":false,"mergeable":"MERGEABLE","headRefName":"feat/child","headRefOid":"childsha","baseRefName":"main","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+        ;;
+    *"compare/main...feat/child"*)
+        printf '%s\n' '{"status":"behind","ahead_by":1,"behind_by":1,"total_commits":2,"commits":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-stale-base/gh"
+stale_base_output=$(PATH="$tmp/case-stale-base:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 77 --repo owner/repo)
+assert_contains "$stale_base_output" 'ci=1/1 stale pending=0 failing=0' \
+    'passing checks predating a base advance are reported stale, not green'
+assert_contains "$stale_base_output" 'base: ref=main behind=1 stale=yes' \
+    'digest identifies stale ancestry evidence'
+
+# A stale ancestry signal must not mask a pending check.
+mkdir -p "$tmp/case-stale-pending"
+cp "$tmp/case-stale-base/gh" "$tmp/case-stale-pending/gh"
+sed -i 's/"status":"COMPLETED","conclusion":"SUCCESS"/"status":"IN_PROGRESS"/' "$tmp/case-stale-pending/gh"
+stale_pending_output=$(PATH="$tmp/case-stale-pending:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 77 --repo owner/repo)
+assert_contains "$stale_pending_output" 'ci=0/1 pending pending=1 failing=0' \
+    'pending checks take precedence over stale ancestry'
+
+# A deleted/unavailable base leaves evidence unknown but still prints the digest.
+mkdir -p "$tmp/case-base-unavailable"
+cat >"$tmp/case-base-unavailable/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":78,"isDraft":false,"mergeable":"UNKNOWN","headRefName":"feat/child","headRefOid":"childsha","baseRefName":"deleted-parent","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+        ;;
+    *"compare/deleted-parent...feat/child"*)
+        printf '%s\n' 'base branch not found' >&2
+        exit 1
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-base-unavailable/gh"
+base_unavailable_err="$tmp/base-unavailable.err"
+base_unavailable_output=$(PATH="$tmp/case-base-unavailable:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 78 --repo owner/repo 2>"$base_unavailable_err")
+assert_contains "$base_unavailable_output" 'ci=1/1 green pending=0 failing=0' \
+    'unknown ancestry does not relabel otherwise green checks'
+assert_contains "$base_unavailable_output" 'base: ref=deleted-parent behind=unknown stale=unknown' \
+    'base lookup failure keeps base evidence explicitly unknown'
+assert_contains "$(cat "$base_unavailable_err")" 'base comparison unavailable' \
+    'base lookup failure emits a diagnostic without aborting the digest'
+
 # --- provider state: last-signal-wins over the issue comments --------------
 
 mkdir -p "$tmp/case-reviewed"
