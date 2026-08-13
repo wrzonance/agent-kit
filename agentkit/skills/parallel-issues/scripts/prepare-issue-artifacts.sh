@@ -105,8 +105,11 @@ prior_art_contents=
 if [[ -n $prior_art_file ]]; then
     [[ -f $prior_art_file && ! -L $prior_art_file && -r $prior_art_file ]] ||
         die "Prior-art file is missing, unreadable, or a symlink: $prior_art_file"
-    prior_art_contents=$(cat -- "$prior_art_file") ||
-        die "Could not read prior-art file: $prior_art_file"
+    # Deliberately NOT read into a variable here. Command substitution strips
+    # every trailing newline, so a digest ending in the blank line that
+    # terminates a Markdown block would be published without it -- a silent
+    # edit to content the trusted boundary modes promise to copy verbatim. The
+    # file is staged byte-for-byte further down instead.
 fi
 
 command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
@@ -225,8 +228,15 @@ chmod 600 -- "$spec_payload" "$prior_payload" ||
 
 printf '%s' "$issue_contents" >"$spec_payload" ||
     die 'Could not stage the spec payload.'
-printf '%s' "$prior_art_contents" >"$prior_payload" ||
-    die 'Could not stage the prior-art payload.'
+if [[ -n $prior_art_file ]]; then
+    cp -- "$prior_art_file" "$prior_payload" ||
+        die 'Could not stage the prior-art payload.'
+    chmod 600 -- "$prior_payload" ||
+        die 'Could not set permissions on the prior-art payload.'
+else
+    printf '%s' "$prior_art_contents" >"$prior_payload" ||
+        die 'Could not stage the prior-art payload.'
+fi
 
 if [[ $boundary_mode == public-fenced ]]; then
     if "$fence_script" <"$spec_payload" >"$tmp" &&

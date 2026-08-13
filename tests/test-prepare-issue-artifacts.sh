@@ -101,12 +101,26 @@ assert_eq yes "$([[ -n $nonce_a && -n $nonce_b && $nonce_a != "$nonce_b" ]] && p
 
 # A supplied --prior-art file publishes byte-identical content (not the
 # default sentinel) in a verbatim-copy boundary mode.
+#
+# Compared with cmp, and with a fixture that ends in a blank line. The previous
+# comparison was $(cat -- file) against $(<file): command substitution strips
+# every trailing newline from BOTH sides, so it could not fail for the defect it
+# existed to catch -- the file was round-tripped through a shell variable and
+# published without the blank line that terminates a Markdown block, silently
+# editing content these boundary modes promise to copy verbatim.
 worktree=$(new_worktree)
 prior_file="$tmp_dir/prior-art.txt"
-printf 'triage found related PR #9\n' >"$prior_file"
+printf 'triage found related PR #9\n\n' >"$prior_file"
 GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 yolo-trusted "$prior_file" >/dev/null 2>&1
-assert_eq "$(cat -- "$prior_file")" "$(<"$worktree/.agent/fenced-prior-art.txt")" \
-    'a supplied prior-art file publishes byte-identical content in yolo-trusted mode'
+published_prior="$worktree/.agent/fenced-prior-art.txt"
+if cmp -s "$prior_file" "$published_prior"; then
+    _pass 'a supplied prior-art file publishes byte-identical content in yolo-trusted mode'
+else
+    _fail 'a supplied prior-art file publishes byte-identical content in yolo-trusted mode' \
+        "source $(wc -c <"$prior_file") bytes, published $(wc -c <"$published_prior") bytes"
+fi
+assert_eq "$(wc -c <"$prior_file")" "$(wc -c <"$published_prior")" \
+    'the published prior-art keeps its trailing blank line'
 
 # ------------------------------------------------------------ empty issue
 worktree=$(new_worktree)

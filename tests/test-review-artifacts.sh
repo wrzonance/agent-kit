@@ -114,6 +114,39 @@ output_run="$tmp/output.run"
 mkdir -- "$output_run"
 chmod 700 -- "$output_run"
 
+# --output is documented as ADDITIVE, so it must not be allowed to name another
+# artifact. prepare_output runs after prepare_transcript and clears a
+# pre-existing target, so aliasing the transcript deleted the raw audit trail
+# the verdict is meant to be checkable against -- silently, before the reviewer
+# had even run. Both helpers reject it, and the check is canonical so a
+# relative spelling of the same file cannot slip past.
+for alias_helper in "$claude" "$codex"; do
+    alias_name=$(basename "$alias_helper" | cut -d- -f1)
+    alias_transcript="$output_run/$alias_name-alias.transcript"
+    alias_rc=0
+    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        --transcript "$alias_transcript" --output "$alias_transcript" \
+        > "$tmp/$alias_name-alias.out" 2> "$tmp/$alias_name-alias.err" || alias_rc=$?
+    assert_eq 1 "$alias_rc" "--output: $alias_name rejects an --output that aliases --transcript"
+    assert_contains "$(cat "$tmp/$alias_name-alias.err")" 'must not alias another artifact' \
+        "--output: $alias_name says the paths alias"
+
+    alias_rel_rc=0
+    ( cd "$output_run" && bash "$alias_helper" --mode review --model m \
+        --diff "$output_diff" --transcript "$alias_name-rel.transcript" \
+        --output "./$alias_name-rel.transcript" ) \
+        > /dev/null 2> "$tmp/$alias_name-rel.err" || alias_rel_rc=$?
+    assert_eq 1 "$alias_rel_rc" "--output: $alias_name rejects a relative alias of the transcript"
+
+    alias_diff_rc=0
+    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        --transcript "$output_run/$alias_name-diffalias.transcript" \
+        --output "$output_diff" > /dev/null 2> "$tmp/$alias_name-diffalias.err" || alias_diff_rc=$?
+    assert_eq 1 "$alias_diff_rc" "--output: $alias_name rejects an --output that aliases --diff"
+    assert_eq yes "$( [[ -s $output_diff ]] && printf yes || printf no )" \
+        "--output: $alias_name leaves the diff intact after refusing"
+done
+
 # rc 0: the completed verdict is published atomically beside the transcript.
 success_output="$output_run/success.result.json"
 success_stdout="$tmp/output-success.stdout"

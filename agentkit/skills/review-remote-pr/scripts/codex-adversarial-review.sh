@@ -229,7 +229,7 @@ heartbeat_failure_detail() {
 # in a shared temporary directory. The caller creates one 0700 run directory and
 # passes a fresh path inside it. Refuse anything weaker before invoking Codex.
 prepare_transcript() {
-    local parent mode artifact
+    local parent mode artifact canonical_output canonical_output_tmp canonical_other
     parent=$(dirname -- "$TRANSCRIPT_PATH")
     [[ -d $parent && ! -L $parent ]] ||
         die "Transcript parent must be an existing private directory: $parent"
@@ -267,6 +267,15 @@ prepare_transcript() {
 # as prepare_transcript, checked before any CLI work starts so a bad --output
 # path fails before spending budget. A pre-existing valid target is cleared here
 # (not left for the final mv) so a run that later dies for real leaves nothing.
+# Canonical absolute path for comparison. The target may not exist yet, so
+# the parent is resolved and the basename re-attached, rather than resolving
+# a path that is not there.
+canonical_path() {
+    local path=$1 parent base
+    base=$(basename -- "$path")
+    parent=$(cd -- "$(dirname -- "$path")" 2> /dev/null && pwd -P) || parent=$(dirname -- "$path")
+    printf '%s/%s\n' "$parent" "$base"
+}
 prepare_output() {
     [[ -n $OUTPUT_PATH ]] || return 0
     local parent mode artifact
@@ -277,6 +286,22 @@ prepare_output() {
     [[ $mode == 700 ]] || die "Output parent must have mode 0700: $parent"
     [[ -O $parent ]] || die "Output parent is not owned by this user: $parent"
     OUTPUT_TMP="$OUTPUT_PATH.tmp"
+    # --output is documented as ADDITIVE, so it must never name another
+    # artifact. prepare_output runs after prepare_transcript and clears a
+    # pre-existing target, so pointing --output at --transcript deletes the raw
+    # audit trail the verdict is meant to be checkable against -- silently, and
+    # before the reviewer has even run. Compared canonically: two different
+    # strings can name the same file.
+    canonical_output=$(canonical_path "$OUTPUT_PATH")
+    canonical_output_tmp=$(canonical_path "$OUTPUT_TMP")
+    for artifact in "$TRANSCRIPT_PATH" "$DIFF_PATH"; do
+        [[ -n $artifact ]] || continue
+        canonical_other=$(canonical_path "$artifact")
+        [[ $canonical_output != "$canonical_other" ]] ||
+            die "--output must not alias another artifact: $OUTPUT_PATH"
+        [[ $canonical_output_tmp != "$canonical_other" ]] ||
+            die "--output temp sibling must not alias another artifact: $OUTPUT_TMP"
+    done
     for artifact in "$OUTPUT_PATH" "$OUTPUT_TMP"; do
         [[ ! -L $artifact ]] || die "Refusing to write through an output-artifact symlink: $artifact"
         if [[ -e $artifact ]]; then
