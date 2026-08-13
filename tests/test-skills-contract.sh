@@ -80,6 +80,10 @@ assert_contains "$onboard_text" 'must not delete, rewrite' \
     'onboarding prohibits deleting or rewriting instruction files'
 assert_contains "$onboard_text" 'explicitly retained' \
     'onboarding retains repository-specific guidance'
+assert_contains "$onboard_text" 'Do not do this by hand' \
+    'onboarding warns against hand-rolling the Status-column mutation'
+assert_contains "$onboard_text" 'singleSelectOptions' \
+    'onboarding names the board-wiping mutation the warning is about'
 
 assert_line_order() {
     local label=$1 first=$2 second=$3
