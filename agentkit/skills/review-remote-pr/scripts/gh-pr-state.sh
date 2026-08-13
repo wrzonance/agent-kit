@@ -13,6 +13,7 @@
 #
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234
+#   base: ref=main behind=1 stale=yes
 #   ci=3/3 green pending=0 failing=0
 #   provider: coderabbit=reviewed
 #   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
@@ -22,6 +23,7 @@
 #   next: human=2 -> per-item confirmation gate (Step 1a)
 #   alerts: code-scanning open=0
 #   saved: DIR/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
+# A stale base makes passing checks report 'stale', never 'green'.
 #
 # 'provider', 'agent-docs' and 'next' print in every mode (--digest, --full,
 # --wait-ci): the queries they read (issue comments, review threads) already
@@ -37,6 +39,10 @@ set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/provider-identity.sh"
 # CHECK NAMES only. Deliberately a substring: the rollup entry is named
 # "CodeRabbit" in some repos and "coderabbitai" in others, and a check name is a
 # display/CI concern, not an identity boundary.
@@ -64,6 +70,9 @@ SAW_DIGEST=0
 PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
+BASE_REF=""
+BASE_BEHIND=""
+BASE_STATUS=unknown
 
 usage() {
     cat <<EOF
@@ -221,9 +230,44 @@ first_error() {
 # message bodies on every poll and nothing downstream consumes them.
 fetch_meta() {
     gh pr view "$PR" --repo "$REPO" \
-        --json number,isDraft,mergeable,headRefName,headRefOid,statusCheckRollup \
+        --json number,isDraft,mergeable,headRefName,headRefOid,baseRefName,statusCheckRollup \
         >"$WORK_DIR/pr.json" 2>"$WORK_DIR/err" ||
         die "gh pr view failed for $REPO#$PR: $(first_error)"
+    return 0
+}
+
+# Compare the live base and head ancestry: after parent-merge retargeting, a
+# child can be behind its new base while its old checks remain attached. The
+# PR's baseRefOid is live metadata and cannot identify what an earlier check
+# tested, so it is deliberately not used as evidence. Missing or unavailable
+# comparison data is unknown, never silently current.
+fetch_base_state() {
+    BASE_REF=$(jq -r '.baseRefName // ""' <"$WORK_DIR/pr.json")
+    local head_ref
+    head_ref=$(jq -r '.headRefName // ""' <"$WORK_DIR/pr.json")
+    BASE_BEHIND=""
+    BASE_STATUS=unknown
+    [[ -n $BASE_REF && -n $head_ref ]] || return 0
+    if ! gh api "repos/$REPO/compare/$BASE_REF...$head_ref" \
+        >"$WORK_DIR/base.json" 2>"$WORK_DIR/err"; then
+        note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): $(first_error)"
+        return 0
+    fi
+    BASE_BEHIND=$(jq -r '.behind_by // empty' <"$WORK_DIR/base.json") || {
+        note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): invalid JSON"
+        BASE_BEHIND=""
+        return 0
+    }
+    if [[ ! $BASE_BEHIND =~ ^[0-9]+$ ]]; then
+        note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): missing behind_by"
+        BASE_BEHIND=""
+        return 0
+    fi
+    if ((BASE_BEHIND > 0)); then
+        BASE_STATUS=stale
+    else
+        BASE_STATUS=current
+    fi
     return 0
 }
 
@@ -323,19 +367,17 @@ ci_counts() {
 # list exactly, so this workflow only offers to auto-resolve threads it fully
 # owns.
 thread_counts() {
-    jq -r --arg cr "$CR_LOGIN_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
+    jq -r --arg cr "$CR_LOGIN_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" "$PROVIDER_IDENTITY_JQ"'
         def author_login: ((.author.login // "") | ascii_downcase);
         def known_provider:
-          (author_login | test($cr; "i"))
-          or author_login == "github-code-quality"
-          or author_login == "github-code-quality[bot]";
+          (author_login | known_provider_login);
         def type_is_bot:
           ((.author.type // "") == "Bot") or ((.author.__typename // "") == "Bot");
         def login_suffix: (author_login | test("\\[bot\\]$"));
         def classification:
           if known_provider then
             {lane:"known-provider", signal:"known-provider", provider:
-              (if (author_login | test($cr; "i")) then "coderabbit" else "github-code-quality" end)}
+              (if (author_login | is_coderabbit_login) then "coderabbit" else "github-code-quality" end)}
           elif login_suffix then
             {lane:"generic-automated", signal:"login-suffix", provider:null}
           elif type_is_bot then
@@ -435,6 +477,7 @@ wait_for_ci() {
     local round total pass pending fail pending_nb
     for ((round = 1; round <= ROUNDS; round++)); do
         fetch_meta
+        fetch_base_state
         IFS=$'\t' read -r total pass pending fail pending_nb < <(ci_counts)
         if ((pending_nb == 0)); then
             note "round=$round/$ROUNDS settled checks=$total pass=$pass failing=$fail"
@@ -480,10 +523,22 @@ print_ci_line() {
         word=failing
     elif ((pending > 0)); then
         word=pending
+    elif [[ $BASE_STATUS == stale && $pass -gt 0 ]]; then
+        word=stale
     else
         word=green
     fi
     printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
+}
+
+print_base_line() {
+    [[ -n $BASE_REF ]] || return 0
+    if [[ $BASE_STATUS == unknown ]]; then
+        printf 'base: ref=%s behind=unknown stale=unknown\n' "$BASE_REF"
+    else
+        printf 'base: ref=%s behind=%s stale=%s\n' \
+            "$BASE_REF" "$BASE_BEHIND" "$([[ $BASE_STATUS == stale ]] && printf yes || printf no)"
+    fi
 }
 
 print_thread_lines() {
@@ -532,6 +587,7 @@ print_digest() {
            + " mergeable=" + (.mergeable // "UNKNOWN")
            + " head=" + (.headRefName // "?")
            + " sha=" + ((.headRefOid // "") | .[0:7])' <"$WORK_DIR/pr.json"
+    print_base_line
     print_ci_line
     provider=$(provider_state)
     printf 'provider: coderabbit=%s\n' "$provider"
@@ -559,6 +615,7 @@ main() {
         wait_for_ci
     else
         fetch_meta
+        fetch_base_state
     fi
     HEAD_REF=$(jq -r '.headRefName // ""' <"$WORK_DIR/pr.json")
     fetch_all
