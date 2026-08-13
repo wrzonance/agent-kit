@@ -160,6 +160,34 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'a guard that omits the provenance sentinel fails'
 assert_contains "$LINT_OUT" 'GUARD WITHOUT SENTINEL' 'the sentinel-less guard is named'
 
+# --- a guard has to RUN, not merely be mentioned ------------------------
+# Both halves of the guard are matchable as loose substrings: the directory
+# fragment also occurs inside any resolved helper path, and the sentinel can sit
+# in a comment. A fence built from only those two mentions executes no guard at
+# all, so substring matching would bless a bare invocation.
+root=$tmp/guard-text-only
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when the guard exists only as comment text.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+
+## Later step
+
+\`\`\`bash
+# NOTE: relies on \${agentkit_provenance:-} having been set by the Step 0 resolver
+"\${agentkit:-}/.shared/scripts/agent-run.sh" --help
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'a guard that exists only as comment text fails'
+assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unexecuted guard is named'
+
 # --- the resolver must be defined exactly once --------------------------
 root=$tmp/duplicate
 new_tree "$root"

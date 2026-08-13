@@ -48,11 +48,12 @@ assert_receipt_contract() {
     # read) is single-sourced in Step 0 under the new convention -- this
     # publication block instead carries the two-line guard that fails loudly
     # unless the Step 0 resolver was prepended first.
-    assert_contains "$section" '${agentkit:-}/.shared/scripts' "$label publication guards against a missing resolver"
+    # The COMPLETE guard expression, not its halves as separate substrings:
+    # the directory fragment also occurs inside a helper invocation path and the
+    # sentinel can occur in a comment, so matching them independently would
+    # accept a block that executes no guard at all.
+    assert_contains "$section" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' "$label publication executes the full provenance guard"
     assert_contains "$section" 'agentkit unresolved: prepend the Step 0 resolver block' "$label publication fails loudly without the resolver"
-    # The directory check alone passes on a stale inherited value; the sentinel
-    # is what proves the Step 0 resolver actually ran.
-    assert_contains "$section" '${agentkit_provenance:-}' "$label publication requires the provenance sentinel"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'
@@ -92,12 +93,10 @@ assert_not_contains "$precheck_block" 'gh-comment.sh' \
 publication_block=$(awk '/^```bash$/{block++; next} block == 2 && /^```$/{exit} block == 2{print}' <<<"$parallel_section")
 assert_contains "$publication_block" 'gh-comment.sh' \
     'parallel-issues publication block posts the receipt'
-assert_contains "$publication_block" '${agentkit:-}/.shared/scripts' \
-    'parallel-issues publication block guards a missing resolver'
+assert_contains "$publication_block" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
+    'parallel-issues publication block executes the full provenance guard'
 assert_contains "$publication_block" 'agentkit unresolved: prepend the Step 0 resolver block' \
     'parallel-issues publication block fails loudly without the resolver'
-assert_contains "$publication_block" '${agentkit_provenance:-}' \
-    'parallel-issues publication block requires the provenance sentinel'
 
 review_section=$(awk '
     /^### Adversarial-review receipt:/{capture=1; next}
@@ -106,12 +105,10 @@ review_section=$(awk '
     capture{print}
 ' <<<"$review_text")
 review_publication_block=$(awk '/^```bash$/{block++; next} block == 1 && /^```$/{exit} block == 1{print}' <<<"$review_section")
-assert_contains "$review_publication_block" '${agentkit:-}/.shared/scripts' \
-    'review-remote-pr publication block guards a missing resolver'
+assert_contains "$review_publication_block" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
+    'review-remote-pr publication block executes the full provenance guard'
 assert_contains "$review_publication_block" 'agentkit unresolved: prepend the Step 0 resolver block' \
     'review-remote-pr publication block fails loudly without the resolver'
-assert_contains "$review_publication_block" '${agentkit_provenance:-}' \
-    'review-remote-pr publication block requires the provenance sentinel'
 
 receipt_line=$(grep -n '^### Adversarial-review receipt:' "$review" | cut -d: -f1)
 phase_b_line=$(grep -n '^## Step 3 (Phase B):' "$review" | cut -d: -f1)
