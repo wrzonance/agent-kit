@@ -11,6 +11,7 @@ source "$here/lib/assert.sh"
 
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+review_refs=("$root/agentkit/skills/review-remote-pr/references"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
@@ -56,9 +57,9 @@ assert_contains "$text" 'test-runner logs' \
     'parallel wait rule covers test-runner logs'
 assert_contains "$text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
-assert_eq '' "$(scan_skill_recipes "$skill" | grep 'sleep command' || true)" \
+assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" | grep 'sleep command' || true)" \
     'parallel skill has no sleep polling recipe'
-assert_eq '' "$(scan_skill_recipes "$skill" | grep -E 'gh pr ready|provider review trigger' || true)" \
+assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
     'parallel skill recipes contain no ready or provider trigger commands'
 assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
     'polling does not inspect durable state between empty waits'

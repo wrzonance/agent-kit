@@ -22,7 +22,7 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # rubber stamp.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [review-remote-pr]="584:8931:450"    # target <=450 lines, tracked in issue #117 (adversarial-review fix-up re-grew the split dispatcher)
+    [review-remote-pr]="584:8931:450"    # target <=450 lines, tracked in issue #107 (the .shared extraction wave owns the shrink)
     [parallel-issues]="1783:29014:450"   # target <=450 lines, tracked in issue #107
     [onboard-repo]="464:5476:350"        # target <=350 lines, tracked in issue #108
 )
