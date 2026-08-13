@@ -348,9 +348,13 @@ assert_contains "$out" 'AGENT_WORKER_MODEL=gpt-5.6-luna' 'accepts the preferred 
 assert_contains "$out" 'AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra' 'accepts the fallback worker model declaration'
 assert_contains "$out" 'AGENT_WORKER_EFFORT=low' 'accepts a supported worker effort declaration'
 
-printf 'AGENT_WORKER_EFFORT=minimal\n' > "$repo/.agent/config.env"
+printf 'AGENT_WORKER_EFFORT=max\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
-assert_contains "$out" 'AGENT_WORKER_EFFORT=minimal' 'accepts the minimum worker effort declaration'
+assert_contains "$out" 'AGENT_WORKER_EFFORT=max' 'accepts the maximum worker effort declaration'
+
+printf 'AGENT_WORKER_EFFORT=ultra\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_EFFORT=ultra' 'accepts the ultra worker effort declaration'
 
 printf 'AGENT_WORKER_MODEL=gpt-9-custom\nAGENT_WORKER_MODEL_FALLBACK=provider/model-v1\n' \
     > "$repo/.agent/config.env"
@@ -368,11 +372,11 @@ for bad_worker_value in "${bad_worker_values[@]}"; do
         "rejects an unsafe or empty worker model: ${bad_worker_value:-empty}"
 done
 
-printf 'AGENT_WORKER_EFFORT=extreme\n' > "$repo/.agent/config.env"
+printf 'AGENT_WORKER_EFFORT=minimal\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
-assert_not_contains "$out" 'AGENT_WORKER_EFFORT=' 'rejects an unsupported worker effort'
+assert_not_contains "$out" 'AGENT_WORKER_EFFORT=' 'rejects a non-spawn-enum worker effort'
 assert_contains "$out" 'invalid value for AGENT_WORKER_EFFORT' \
-    'warns when a worker effort declaration is rejected'
+    'warns when a non-spawn-enum worker effort declaration is rejected'
 
 
 # --- an empty value is a statement, not a typo ------------------------------

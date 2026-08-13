@@ -75,6 +75,17 @@ assert_contains "$spawn_contract_text" 'gpt-5.6-terra' \
     'spawn contract documents the preserved fallback default'
 assert_contains "$spawn_contract_text" 'using built-in default' \
     'spawn contract explains invalid or empty config fallback'
+assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' \
+    'spawn contract treats empty resolver output as absent'
+resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
+worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
+if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
+    $resolver_guard_line -lt $worker_config_function_line ]]; then
+    printf '%s\n' 'ok - spawn contract validates the resolver before command substitution'
+else
+    printf '%s\n' 'not ok - spawn contract validates the resolver before command substitution' >&2
+    exit 1
+fi
 assert_contains "$spawn_contract_text" 'explicit user authorization' \
     'spawn contract keeps unsupported-model authorization explicit'
 assert_contains "$spawn_contract_text" 'reasoning_effort: "$worker_effort"' \

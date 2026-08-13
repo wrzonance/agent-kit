@@ -449,8 +449,8 @@ validate() {
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
         AGENT_WORKER_EFFORT)
-            [[ $value == minimal || $value == low || $value == medium ||
-                $value == high || $value == xhigh ]]
+            [[ $value == low || $value == medium || $value == high ||
+                $value == xhigh || $value == max || $value == ultra ]]
             ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)

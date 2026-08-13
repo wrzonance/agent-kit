@@ -19,16 +19,16 @@ worker_model_default='gpt-5.6-luna'
 worker_model_fallback_default='gpt-5.6-terra'
 worker_effort_default='high'
 
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+    printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2
+    exit 1
+}
+
 worker_config_value() {
     # shellcheck disable=SC2034  # values are consumed by the dispatch block below
     local key=$1 default=$2 value
-    # >>> prepend THE RESOLVER (defined once in the dispatching skill) <<<
-    [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-        printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2
-        exit 1
-    }
     if value=$("$agentkit/.shared/scripts/repo-config.sh" \
-        --repo-root "$repository_root" --get "$key"); then
+        --repo-root "$repository_root" --get "$key") && [[ -n $value ]]; then
         printf '%s\n' "$value"
     else
         printf 'worker config: %s is absent or invalid; using built-in default %s\n' \
