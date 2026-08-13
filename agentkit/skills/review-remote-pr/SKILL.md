@@ -818,16 +818,16 @@ author, or the PR author.
 
 The digest's counts follow exactly that rule. `generic=N` is an unresolved generic automated thread
 with no human comment. `human=N` is any unresolved thread carrying at least one human-lane comment
-that is neither marked — so a non-zero value is your Step 1a queue, and a bot-originated thread a
-human replied in counts as human. The `classification:` line reports `known-provider`, `type=Bot`,
-`login-suffix`, and `human` signals for the same evidence.
+that is neither marked, and a bot-originated thread a human replied in counts as human. The
+`classification:` line reports `known-provider`, `type=Bot`, `login-suffix`, and `human` signals for
+the same evidence. The digest's `next:` lines already point each non-zero lane at its step — see
+those instead of re-deriving where to go from a raw count.
 
 `nitpicks: N unhandled` is a **mechanical proxy**, not a judgement: CodeRabbit review bodies plus PR
 conversation comment bodies matching /nitpick/i or carrying the broom emoji, minus the anchored
 threads this workflow already opened to document them (`<!-- review-remote-pr:agent-doc -->`).
 Inline review comments are deliberately excluded — they live in review threads and are already
-counted on the `threads:` line, so counting them here would make the number unreachable. Working
-Step 5 properly drives it to `0`.
+counted on the `threads:` line, so counting them here would make the number unreachable.
 
 `alerts: code-scanning n/a` means the endpoint returned 403/404 — typically code scanning is not
 enabled on the repository, or the token lacks `security_events`. It is not a failure and never
@@ -888,36 +888,25 @@ small.
 
 ### Spent-budget precheck (must precede launch)
 
-Before starting either reviewer, inspect the complete PR conversation artifact from Step 1 for the
-stable spent marker. If it is present, report `adversarial review budget spent` and do not launch or
-rerun a reviewer. This check is the gate for both directions: a prior receipt prevents a double
-spend, while a completed review or verified skip without a receipt is a **no-silent-skip** failure
-that must be repaired before draft handoff.
+Before starting either reviewer, run `post-receipt.sh precheck` against the complete PR conversation
+artifact from Step 1 to check for the stable spent marker. If it is present, report `adversarial
+review budget spent` and do not launch or rerun a reviewer. This check is the gate for both
+directions: a prior receipt prevents a double spend, while a completed review or verified skip
+without a receipt is a **no-silent-skip** failure that must be repaired before draft handoff.
 
 ```bash
 # Step 1 already fetched this file; do not make a second comments query here.
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
-    exit 1
-fi
-receipt_marker='<!-- adversarial-review:spent -->'
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
-if [[ ! -r $receipt_comments ]]; then
-    printf '%s\n' 'PR comment artifact is missing or unreadable; evidence unavailable' >&2
-    exit 1
-fi
-if jq -e --arg marker "$receipt_marker" \
-    'any(.[]?; ((.body // "") | contains($marker)))' <"$receipt_comments" >/dev/null; then
-    printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'
-    exit 0
-else
-    jq_status=$?
-    if ((jq_status != 1)); then
-        printf '%s\n' 'PR comment artifact is invalid; evidence unavailable' >&2
-        exit 1
-    fi
-fi
+precheck_rc=0
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
+case "$precheck_rc" in
+    0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
+    10) printf '%s\n' 'not spent — proceed to the adversarial review gate below' ;;
+    *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
+esac
 ```
 
 Do not treat a missing or unreadable artifact as an empty comment set. If this precheck cannot
@@ -1134,37 +1123,20 @@ reviewer_effort='high'
 
 transcript="$RUN_DIR/claude.ndjson"
 verdict_path="$RUN_DIR/adversarial.result.json"
+# Clear any prior verdict before launch -- prepare_output() only clears it once
+# parse_args/prepare_transcript succeed, so a helper that dies before that
+# point (bad transcript dir, usage error, spawn failure) would otherwise leave
+# a stale object on disk for a poller to consume as this launch's result.
+rm -f -- "$verdict_path"
 
 # stdout = one JSON object (verdict, or the blocked object on rc 3).
 # stderr = one progress object per --poll-seconds.  --transcript = raw NDJSON for auditing.
+# --output atomically publishes the same object to verdict_path -- written on
+# rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.
 review_rc=0
-verdict_tmp="$verdict_path.tmp"
-cleanup_verdict() { rm -f -- "$verdict_tmp"; }
-trap cleanup_verdict EXIT HUP INT TERM
-rm -f -- "$verdict_path" "$verdict_tmp"
-if "$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort" \
-    --diff "$diff_path" --transcript "$transcript" \
-    --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 5.00 >"$verdict_tmp"; then
-    if mv -f -- "$verdict_tmp" "$verdict_path"; then
-        :
-    else
-        review_rc=$?
-        rm -f -- "$verdict_path" "$verdict_tmp"
-    fi
-else
-    review_rc=$?
-    if ((review_rc == 3)); then
-        if mv -f -- "$verdict_tmp" "$verdict_path"; then
-            :
-        else
-            review_rc=$?
-            rm -f -- "$verdict_path" "$verdict_tmp"
-        fi
-    else
-        rm -f -- "$verdict_path" "$verdict_tmp"
-    fi
-fi
-trap - EXIT HUP INT TERM
+"$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort" \
+    --diff "$diff_path" --transcript "$transcript" --output "$verdict_path" \
+    --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 5.00 >/dev/null || review_rc=$?
 printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
     "$review_rc" "$verdict_path" "$transcript"
 ```
@@ -1210,8 +1182,10 @@ launcher state is preferred; status freshness plus transcript growth is the cros
 Completion is the producer's successful exit together with its terminal stream result event (for
 Claude, `result/success` with `is_error == false` and a valid structured verdict; for Codex, a
 successful exit plus its terminal result message). A final file's existence or size, or the tail of
-a live log, is never completion. The wrappers below remove both final and temporary verdict
-artifacts on failure and only make the final artifact canonical after `mv`.
+a live log, is never completion. Each launch block above clears any stale `verdict_path` before
+starting the helper; the helper's own `prepare_output()`/`publish_output()` then stage the verdict to
+a temporary sibling and only make it canonical via same-directory `mv`, never leaving a partial or
+temporary artifact behind on failure.
 
 Do not accept plain prose or exit `0` alone. Completion requires all of: verified `system/init`, a
 final `result/success` event, `is_error == false`, a valid `structured_output` verdict, and process
@@ -1256,34 +1230,15 @@ fi
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 diff_path="$RUN_DIR/adversarial.diff"
 verdict_path="$RUN_DIR/adversarial.result.json"
-verdict_tmp="$verdict_path.tmp"
-cleanup_verdict() { rm -f -- "$verdict_tmp"; }
-trap cleanup_verdict EXIT HUP INT TERM
-rm -f -- "$verdict_path" "$verdict_tmp"
+# Clear any prior verdict before launch -- see the Claude launch block above
+# for why this must happen before prepare_output() would otherwise do it.
+rm -f -- "$verdict_path"
+# --output atomically publishes stdout's JSON object to verdict_path -- written
+# on rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.
 review_rc=0
-if "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
-    --diff "$diff_path" \
-    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >"$verdict_tmp"; then
-    if mv -f -- "$verdict_tmp" "$verdict_path"; then
-        :
-    else
-        review_rc=$?
-        rm -f -- "$verdict_path" "$verdict_tmp"
-    fi
-else
-    review_rc=$?
-    if ((review_rc == 3)); then
-        if mv -f -- "$verdict_tmp" "$verdict_path"; then
-            :
-        else
-            review_rc=$?
-            rm -f -- "$verdict_path" "$verdict_tmp"
-        fi
-    else
-        rm -f -- "$verdict_path" "$verdict_tmp"
-    fi
-fi
-trap - EXIT HUP INT TERM
+"$helper" --mode review --model gpt-5.6-terra --effort xhigh \
+    --diff "$diff_path" --output "$verdict_path" \
+    --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >/dev/null || review_rc=$?
 if ((review_rc != 0)); then
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1
@@ -1315,28 +1270,12 @@ adversarial review as blocked; do not substitute the parent agent's contextual s
 
 ### CodeRabbit state check (informational — never a trigger decision)
 
-A green "CodeRabbit" status check is NOT proof a review happened. Detect the real signal in the comment **body** (rate-limit warnings and bare "✅ finished" acks both leave the check green):
-
-```bash
-# Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-# Evidence is unavailable unless jq is present; never treat a parser failure as no findings.
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
-    exit 1
-fi
-# Reads the Step 1 artifact; no extra API call. Comments arrive oldest-first, so
-# the LAST signal wins — a stale walkthrough from an earlier cycle must not mask
-# a rate-limit on the CURRENT trigger.
-jq -r '
-  map(select((.user.login // "") | test("coderabbit"; "i")) | (.body // ""))
-  | reduce .[] as $b ("none";
-      if   ($b | test("actionable comments posted|<summary>walkthrough"; "i")) then "reviewed"
-      elif ($b | test("review limit reached|rate limit"; "i"))                 then "rate-limited"
-      else . end)
-  | "CodeRabbit state: " + .
-' <"$RUN_DIR/state/pr_${PR}_issue_comments.json"
-```
+A green "CodeRabbit" status check is NOT proof a review happened. Detect the real signal in the
+comment **body** (rate-limit warnings and bare "✅ finished" acks both leave the check green):
+`gh-pr-state.sh`'s digest carries this as its `provider: coderabbit=…` line, computed from the same
+Step 1 artifact with last-signal-wins ordering — a stale walkthrough from an earlier cycle never
+masks a rate-limit on the current trigger. No separate query is needed; read the value already
+printed by the Step 1/Step 6 `--full` call.
 
 - `reviewed` → a review posted real findings; work its items (Phase C Step 5).
 - `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
@@ -1442,9 +1381,9 @@ never complete. The receipt records provider, reviewer model, effort, and mode (
 `blind fallback`, including the fallback reason), severity counts (`P1`, `P2`, and total), and one
 `confirmed finding` line per finding with a short title, verdict, and fix commit SHA(s), or an
 explicit `decline rationale`. A trivial skip records the exact `verified-skip rationale` and its
-mechanical oracle. Include the standard agentic attribution banner and footer exactly as shown. The
-body is rendered to a private file and sent through `gh-comment.sh --body-file`; never put this
-multiline body in `gh pr comment --body`.
+mechanical oracle. Run `post-receipt.sh publish`, which renders the standard agentic attribution
+banner and footer, sends the body through the sibling `gh-comment.sh --body-file` transport, and
+byte-verifies what landed; never put this multiline body in `gh pr comment --body`.
 
 ```bash
 # Run only after the finding-fix push; this is the final Phase A action.
@@ -1452,30 +1391,29 @@ multiline body in `gh pr comment --body`.
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-receipt_body=$(mktemp "${TMPDIR:-/tmp}/review-remote-pr-receipt.XXXXXXXXXX")
-chmod 600 -- "$receipt_body"
-trap 'rm -f -- "$receipt_body"' EXIT
-cat >"$receipt_body" <<'EOF'
-This was written agentically; verify its assertions:
-<!-- review-remote-pr:agent-doc -->
-## Adversarial review receipt
-- Reviewer: provider=__PROVIDER__; model=__MODEL__; effort=__EFFORT__; mode=__MODE__ (reason: __MODE_REASON__)
-- Counts: P1=__P1__; P2=__P2__; total=__TOTAL__
-- Confirmed finding: __SHORT_TITLE__ — verdict=__FIXED_OR_DECLINED__; fix commit SHA(s)=__SHAS__; decline rationale=__RATIONALE__
-- Verified-skip rationale: __SKIP_RATIONALE__; mechanical oracle=__ORACLE__
-<!-- adversarial-review:spent -->
-🤖 Co-authored by __AGENT_IDENTITY__.
-EOF
-# Render every placeholder into the same file using the quoted, byte-safe
-# substitution pattern from the GitHub body policy. Keep one marker line.
-"$agentkit/review-remote-pr/scripts/gh-comment.sh" \
-    --pr "$PR" --repo "$REPO" --body-file "$receipt_body"
+receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+publish_rc=0
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
+    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" \
+    --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
+    --mode "$MODE" --mode-reason "$MODE_REASON" \
+    --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
+    --finding 'SHORT_TITLE|fixed|SHA1,SHA2' \
+    --finding 'OTHER_TITLE|declined|RATIONALE' \
+    --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
+# Repeat --finding once per confirmed finding (fixed + commit SHA(s), or
+# declined + decline rationale); omit every --finding for a clean review (the
+# receipt then records "none confirmed"), or pass --skip-rationale S --oracle S
+# instead for a verified trivial-diff skip. post-receipt.sh renders the body
+# (agentic banner, agent-doc marker, exactly one spent marker, agentic
+# footer), byte-verifies it through the sibling gh-comment.sh, and refuses
+# (exit 11) rather than double-posting when the marker is already present.
+case "$publish_rc" in
+    0)  : ;; # post-receipt.sh posted and byte-verified the receipt
+    11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
+    *)  printf '%s\n' 'receipt publication failed (evidence unavailable, bad flags, or gh-comment.sh post/verify failed)' >&2; exit 1 ;;
+esac
 ```
-
-The finding line is repeated once per confirmed finding; for a no-finding review use the explicit
-`none confirmed` line, and for a skip leave no finding line while retaining the verified-skip
-rationale. The helper's exact-body verification is part of receipt completion. Exactly one marker
-belongs in the receipt body, and no later step may post a second receipt or rerun the reviewer.
 
 ## Step 3 (Phase B): Wait for the user to decide the ready transition
 
@@ -1691,65 +1629,19 @@ hand-rolled GraphQL re-query here:
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
-The digest answers "is CI green" and "how many unresolved coderabbit / code-quality / generic / human
-threads remain" and reports the author classification signals. One classification the digest does
-not carry is which unresolved threads are this workflow's own **marked agent-doc** threads, eligible
-for resolution at exit. Derive that from the
-refreshed `$RUN_DIR/state/pr_${PR}_threads.json`:
+The digest answers "is CI green", "how many unresolved coderabbit / code-quality / generic / human
+threads remain", and reports the author classification signals via its `classification:` line
+(`known-provider`/`type=Bot`/`login-suffix`/`human` counts). It also carries which unresolved
+threads are this workflow's own **marked agent-doc** threads, eligible for resolution at exit, as
+its `agent-docs: N eligible` line — computed inside `gh-pr-state.sh` (bash + jq, no `python3`
+dependency) with the identical unresolved + first-comment-marked + no-unmarked-human-content rule
+this recipe used to run by hand against a re-fetched `pr_${PR}_threads.json`. No separate parser
+call is needed; read the value already printed by the Step 1/Step 6 `--full` call.
 
-```bash
-# Re-set RUN_DIR as shown in Step 0c when this is a separate shell call.
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-# Evidence is unavailable unless python3 is present; never treat a parser failure as no findings.
-if ! command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' 'python3 is not installed; evidence unavailable' >&2
-    exit 1
-fi
-# Path passed as argv, not via the environment — nothing is exported across calls.
-python3 - "$RUN_DIR/state/pr_${PR}_threads.json" << 'EOF'
-import json, re, sys
-d = json.load(open(sys.argv[1]))
-rt = d['data']['repository']['pullRequest']['reviewThreads']
-if rt['pageInfo']['hasNextPage']:
-    print('WARNING: >100 threads — page with an after: cursor before trusting counts')
-threads = rt['nodes']
-def comments(t):
-    return t['comments']['nodes']
-def author(c):
-    return (((c.get('author') or {}).get('login')) or '').lower()
-def body(c):
-    return c.get('body') or ''
-def classification(c):
-    login = author(c)
-    known = bool(re.search(r'coderabbit', login)) or login in {'github-code-quality', 'github-code-quality[bot]'}
-    suffix = bool(re.search(r'\[bot\]$', login))
-    author_obj = c.get('author') or {}
-    forge_bot = author_obj.get('type') == 'Bot' or author_obj.get('__typename') == 'Bot'
-    if known:
-        return 'known-provider'
-    if suffix:
-        return 'generic-automated'
-    if forge_bot:
-        return 'generic-automated'
-    return 'human'
-def is_agent_comment(c):
-    return '<!-- review-remote-pr:agent-' in body(c)
-def has_human_content(t):
-    return any(classification(c) == 'human' and not is_agent_comment(c) for c in comments(t))
-unresolved = [t for t in threads if not t['isResolved']]
-automated = [t for t in unresolved if comments(t) and classification(comments(t)[0]) != 'human' and not has_human_content(t)]
-generic = [t for t in automated if classification(comments(t)[0]) == 'generic-automated']
-agent_docs = [t for t in unresolved if comments(t) and '<!-- review-remote-pr:agent-doc -->' in body(comments(t)[0]) and not has_human_content(t)]
-human = [t for t in unresolved if has_human_content(t)]
-print(f'{len(automated)} unresolved automated-review threads ({len(generic)} generic B-items) of {len(threads)} total')
-if agent_docs:
-    print(f'{len(agent_docs)} unresolved MARKED AGENT-DOC threads — resolve them now (exit time)')
-if human:
-    print(f'{len(human)} unresolved HUMAN threads — confirmation-gated; NEVER auto-resolve these')
-EOF
-```
-
-Marked agent-documentation threads may be resolved at exit only when every non-bot comment has an agent marker. An unmarked human reply converts the whole thread to confirmation-gated and leaves it open. Never substitute `author == gh api user` for a marker. Do not apply this rule to an original `github-code-quality[bot]` finding: it must auto-clear or be dismissed with a reason.
+Marked agent-documentation threads may be resolved at exit only when every non-bot comment has an
+agent marker. An unmarked human reply converts the whole thread to confirmation-gated and leaves it
+open. Never substitute `author == gh api user` for a marker. Do not apply this rule to an original
+`github-code-quality[bot]` finding: it must auto-clear or be dismissed with a reason.
 
 Also re-open `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, `$RUN_DIR/state/pr_${PR}_issue_comments.json`, and `$RUN_DIR/state/pr_${PR}_code_quality_comments.json`. Confirm every automated-review body nitpick has a matching anchored thread (or fallback comment) recording its fix/decline, and every Code Quality comment is either gone/auto-cleared after the pushed fix or explicitly dismissed with a reason. Confirm every confirmed adversarial-review `[P1]/[P2]` finding has a matching fix/decline PR comment.
 
@@ -1886,25 +1778,33 @@ Finishing this PR drains the Ready / In-progress queue. Before handing back, fan
 
 ### Pull the Backlog
 
-Find the board this repo's issues live on, then list its Backlog issues:
+List the Backlog column of the board this repo's issues live on:
 
 ```bash
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
-    exit 1
-fi
-IFS='/' read -r OWNER _ <<< "$REPO"
-gh project list --owner "$OWNER" --format json   # pick the board whose items are this repo's issues
-PROJECT=3                                        # replace with that board's number
-gh project item-list "$PROJECT" --owner "$OWNER" --format json --limit 200 \
-  | jq -r '.items[]
-           | select(.status=="Backlog" and .content.type=="Issue")
-           | "#\(.content.number)\t\(.content.title)"'
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/.shared/scripts/board-list.sh" --status Backlog
+# board-list.sh deliberately reports every item type (draft items, PRs, issues
+# alike) rather than filtering -- see its own comment. The table above renders
+# a PR/draft row indistinguishably from an issue ("#N  title"), so derive the
+# actual vetting worklist from --json instead of the table: only Issue-typed
+# rows are in scope for the Ready-bar fan-out below.
+"$agentkit/.shared/scripts/board-list.sh" --status Backlog --json \
+    | jq -r '.[] | select(.type == "Issue") | .number'
 ```
 
-If Ready already holds enough queued work (≈3+ items), say so and stop — a full queue does not need topping up.
+It reads the project number and owner from `.agent/board.json`, so there is no separate
+`gh project list` discovery call. Exit `0` is the table; exit `3` means the environment cannot
+support the query (no `gh`, no board declared) — no-op silently per the rule above; exit `1` is a
+failed call.
+
+If Ready already holds enough queued work (≈3+ items) — `"$agentkit/.shared/scripts/board-list.sh"
+--status Ready` — say so and stop; a full queue does not need topping up.
 
 ### Vet each issue against the Ready bar (fan out)
+
+Fan out only over the Issue numbers from the `--json` list above — draft items and PRs on the
+Backlog column are out of scope for this vetting pass.
 
 Read each Backlog issue's body and judge it against the bar below. Where your runtime supports parallel agents, fan out one **read-only** assessor per issue (reads the body, greps the code); otherwise assess sequentially.
 

@@ -117,13 +117,18 @@ assert_line_order 'Duplicated is classified before Repo-specific' \
 
 review_skill="$skills/review-remote-pr/SKILL.md"
 parallel_skill="$skills/parallel-issues/SKILL.md"
+gh_pr_state_script="$skills/review-remote-pr/scripts/gh-pr-state.sh"
+prepare_issue_script="$skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
     'review recipes name jq parser failures as unavailable evidence'
-assert_contains "$(<"$review_skill")" 'python3 is not installed; evidence unavailable' \
-    'review recipes name python3 parser failures as unavailable evidence'
+# The former inline python3 thread-classification recipe was absorbed into
+# gh-pr-state.sh (bash + jq, no python3 -- see the "no python3" doc line in
+# SKILL.md itself); its own jq guard is the evidence-unavailable failure mode now.
+assert_contains "$(<"$gh_pr_state_script")" 'jq not found on PATH; evidence unavailable' \
+    'the absorbed classification recipe names jq parser failures as unavailable evidence'
 assert_contains "$(<"$parallel_skill")" 'jq is not installed; evidence unavailable' \
     'parallel recipes name jq parser failures as unavailable evidence'
-assert_contains "$(<"$parallel_skill")" 'issue_payload_file="$worktree/.agent/fetched-issue.json"' \
+assert_contains "$(<"$prepare_issue_script")" 'issue_payload_file="$agent_dir/fetched-issue.json"' \
     'parallel fetch persists raw issue bytes before parsing'
 review_wait_contract=$(<"$review_skill")
 assert_contains "$review_wait_contract" 'A wait must never spend model turns.' \

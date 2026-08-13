@@ -63,6 +63,8 @@ MODEL=""
 EFFORT="xhigh"
 DIFF_PATH=""
 TRANSCRIPT_PATH=""
+OUTPUT_PATH=""
+OUTPUT_TMP=""
 POLL_SECONDS=120
 MAX_DIFF_BYTES=1048576            # 1 MiB — a runaway-diff backstop, not a protocol limit
 MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
@@ -106,6 +108,14 @@ Options:
                              Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
   --max-tokens <1024-1000000>
                              Hard observed token ceiling (default: $MAX_TOKENS).
+  --output <path>            Additionally publish the single stdout JSON object to
+                             this path, atomically (temp sibling in the same
+                             directory, chmod 600, then rename). Written on exit 0
+                             (the completed verdict) and exit 3 (the blocked
+                             object); never created or left behind on exit 1. The
+                             path's directory must already exist, be owned by this
+                             user, non-symlink, and mode 0700 -- the same bar as
+                             the transcript directory above.
   -h, --help                 Show this help.
 
 Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
@@ -120,16 +130,31 @@ die() {
 # Environment-blocked: Codex cannot run here at all, so no verdict is obtainable.
 # The caller must switch to the other harness rather than treat this as a finding.
 die_blocked() {
-    local reason=$1 detail=$2
+    local reason=$1 detail=$2 json
     printf '%s: BLOCKED (%s): %s\n' "$PROGNAME" "$reason" "$detail" >&2
     printf '%s: take the cross-harness adversarial reviewer instead; do not retry.\n' "$PROGNAME" >&2
-    jq -cn \
+    json=$(jq -cn \
         --arg blockedReason "$reason" \
         --arg detail "$detail" \
         --arg transcript "$TRANSCRIPT_PATH" \
         '{status: "blocked", blockedReason: $blockedReason, detail: $detail,
-          transcript: $transcript, fallback: "cross-harness-reviewer"}'
+          transcript: $transcript, fallback: "cross-harness-reviewer"}')
+    printf '%s\n' "$json"
+    publish_output "$json"
     exit 3
+}
+
+# Publishes the given JSON object atomically to --output, when set: a temp file
+# beside PATH, secured to 0600, renamed into place only once the object is
+# complete. A publish failure is treated as a real failure (exit 1) even when
+# called from the blocked (exit 3) path -- the caller can no longer trust the
+# artifact, so fail closed rather than claim a status that was never written.
+publish_output() {
+    local json=$1
+    [[ -n $OUTPUT_PATH ]] || return 0
+    printf '%s\n' "$json" >"$OUTPUT_TMP" || die "Cannot write output artifact: $OUTPUT_TMP"
+    chmod 600 -- "$OUTPUT_TMP" || die "Cannot secure output artifact: $OUTPUT_TMP"
+    mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH" || die "Cannot publish output artifact: $OUTPUT_PATH"
 }
 
 cleanup() {
@@ -160,6 +185,9 @@ cleanup() {
         rm -f -- "$STATUS_TMP"
         STATUS_TMP=""
     fi
+    # Only the temp sibling: a successfully published OUTPUT_PATH is the durable
+    # artifact and must survive cleanup; a never-published one was never created.
+    [[ -n $OUTPUT_TMP ]] && rm -f -- "$OUTPUT_TMP"
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
     return 0
 }
@@ -234,6 +262,31 @@ prepare_transcript() {
     done
 }
 
+# --output is optional. When set, the completed or blocked verdict is published
+# there atomically in addition to stdout. Applies the same private-directory bar
+# as prepare_transcript, checked before any CLI work starts so a bad --output
+# path fails before spending budget. A pre-existing valid target is cleared here
+# (not left for the final mv) so a run that later dies for real leaves nothing.
+prepare_output() {
+    [[ -n $OUTPUT_PATH ]] || return 0
+    local parent mode artifact
+    parent=$(dirname -- "$OUTPUT_PATH")
+    [[ -d $parent && ! -L $parent ]] ||
+        die "Output parent must be an existing private directory: $parent"
+    mode=$(stat -c %a -- "$parent") || die "Cannot inspect output parent: $parent"
+    [[ $mode == 700 ]] || die "Output parent must have mode 0700: $parent"
+    [[ -O $parent ]] || die "Output parent is not owned by this user: $parent"
+    OUTPUT_TMP="$OUTPUT_PATH.tmp"
+    for artifact in "$OUTPUT_PATH" "$OUTPUT_TMP"; do
+        [[ ! -L $artifact ]] || die "Refusing to write through an output-artifact symlink: $artifact"
+        if [[ -e $artifact ]]; then
+            [[ -f $artifact && -O $artifact ]] ||
+                die "Refusing to overwrite output artifact not owned by this user: $artifact"
+            rm -f -- "$artifact" || die "Cannot remove previous output artifact: $artifact"
+        fi
+    done
+}
+
 require_value() {
     [[ -n ${2:-} ]] || die "option $1 requires a value"
 }
@@ -261,6 +314,8 @@ parse_args() {
         --max-duration-seconds=*) MAX_DURATION_SECONDS=${1#*=} && shift ;;
         --max-tokens) require_value "$1" "${2:-}" && MAX_TOKENS=$2 && shift 2 ;;
         --max-tokens=*) MAX_TOKENS=${1#*=} && shift ;;
+        --output) require_value "$1" "${2:-}" && OUTPUT_PATH=$2 && shift 2 ;;
+        --output=*) OUTPUT_PATH=${1#*=} && shift ;;
         -h | --help) usage && exit 0 ;;
         *) usage >&2 && die "unknown argument: $1" ;;
         esac
@@ -614,6 +669,7 @@ main() {
     mkdir -p -- "$isolation_dir"
 
     prepare_transcript
+    prepare_output
     record_helper_pid
     preflight
 
@@ -662,7 +718,8 @@ main() {
         budget_ceiling=token-limit
     fi
 
-    jq -n \
+    local final_json
+    final_json=$(jq -n \
         --argjson exitCode "$exit_code" \
         --arg harness codex \
         --arg requestedModel "$MODEL" \
@@ -682,7 +739,9 @@ main() {
           effort: $effort, eventCount: $eventCount, transcript: $transcript,
           budgetCeiling: $budgetCeiling, maxTokens: $maxTokens, usedTokens: $usedTokens,
           tokenUsage: $tokenUsage,
-          verdict: $verdict}'
+          verdict: $verdict}')
+    printf '%s\n' "$final_json"
+    publish_output "$final_json"
 }
 
 main "$@"

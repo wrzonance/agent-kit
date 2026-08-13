@@ -34,7 +34,7 @@ skills_dir=${1:?usage: lint-skill-invocations.sh SKILLS_DIR}
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues'
+readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues|post-receipt|prepare-issue-artifacts|board-list'
 readonly FULL_RESOLVER_MARK='agentkit=\$(sed -n "s/\^skills= path='
 readonly GUARD_MARK='${agentkit:-}/.shared/scripts'
 # The directory check alone is satisfied by any stale or profile-inherited
@@ -109,7 +109,12 @@ while IFS= read -r skill_file; do
     while IFS= read -r line; do
         grep -qE "($HELPERS)\.sh" <<< "$line" || continue
         checked=$((checked + 1))
-        [[ $line =~ ^[[:space:]]*# ]] && continue
+        # Exempt when the reference sits entirely inside a comment -- not just
+        # a LEADING comment (`^#`), but also a trailing one on an otherwise
+        # code-bearing line (e.g. a `case` arm's `# helper.sh did X` note).
+        # Only the text before the first `#` counts as code for this check.
+        code_part=${line%%#*}
+        grep -qE "($HELPERS)\.sh" <<< "$code_part" || continue
         grep -qE "(printf|echo)" <<< "$line" && continue
         grep -qE "/($HELPERS)\.sh" <<< "$line" && continue
         bare=$((bare + 1))

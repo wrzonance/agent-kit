@@ -18,6 +18,10 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+# The fetch/fence recipe is absorbed into prepare-issue-artifacts.sh (single
+# source of truth); assertions about its internals below check this script
+# text rather than SKILL.md, which only documents invocation.
+prepare_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh")
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
 assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
     'chain ordering sources are exactly the two mechanical ones'
@@ -68,9 +72,9 @@ assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
 assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
-assert_contains "$text" 'target="$worktree/.agent/fenced-spec.txt"' \
+assert_contains "$prepare_script_text" 'target="$agent_dir/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
-assert_contains "$text" 'target="$worktree/.agent/fenced-prior-art.txt"' \
+assert_contains "$prepare_script_text" 'prior_target="$agent_dir/fenced-prior-art.txt"' \
     'issue preparation persists prior-art fence bytes'
 bulk_section=$(sed -n '/^#### Bulk mutation discipline:/,/^#### Prior-art adjudication/p' "$skill")
 assert_contains "$bulk_section" 'if ! mutation_json=$(perform_rest_mutation "$planning_id"); then' \
@@ -88,7 +92,7 @@ assert_contains "$root_fence_section" 'boundary_mode=private-trusted' \
     'private visibility selects the trusted boundary'
 assert_contains "$root_fence_section" 'boundary_mode=public-fenced' \
     'unknown visibility has a public fenced fallback'
-assert_contains "$root_fence_section" 'if [[ $boundary_mode == public-fenced ]]; then' \
+assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]; then' \
     'trusted modes persist exact bytes without invoking the fence helper'
 assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
     'root prints the selected boundary mode'
@@ -234,10 +238,10 @@ assert_not_contains "$issue_lead_prompt" 'fence-untrusted-data.sh' 'issue lead d
 assert_not_contains "$draft_loop_prompt" 'issue_contents' 'phase lead does not produce fence content'
 assert_not_contains "$draft_loop_prompt" 'prior_art_contents' 'phase lead does not produce prior-art fence content'
 assert_not_contains "$draft_loop_prompt" 'fence-untrusted-data.sh' 'phase lead does not invoke the fence helper'
-assert_contains "$root_fence_section" 'issue_contents=$(jq -r' 'root owns issue rendering'
-assert_contains "$root_fence_section" 'fence-untrusted-data.sh' 'root owns fence helper invocation'
-assert_contains "$root_fence_section" 'mv -f -- "$tmp" "$target"' 'root atomically publishes the spec fence'
-assert_contains "$root_fence_section" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
+assert_contains "$prepare_script_text" 'issue_contents=$(jq -r' 'root owns issue rendering'
+assert_contains "$prepare_script_text" 'fence-untrusted-data.sh' 'root owns fence helper invocation'
+assert_contains "$prepare_script_text" 'mv -f -- "$tmp" "$target"' 'root atomically publishes the spec fence'
+assert_contains "$prepare_script_text" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
 assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
 assert_contains "$normalized_text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
