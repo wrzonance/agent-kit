@@ -372,19 +372,37 @@ cmd_publish() {
 # racing on the same PR can still interleave between the precheck and the post.
 # The skills run this serially, and the durable marker means a later precheck
 # against freshly fetched comments still refuses.
+# Deliberately BEST-EFFORT, and deliberately never fatal. By the time this runs
+# the receipt is already posted and byte-verified on the PR. Exit 1 is defined
+# above as "nothing durable landed", and SKILL.md routes anything other than 0
+# and 11 to "receipt publication failed" -- so failing here would tell the agent
+# to re-run publish, whose precheck would read the unmodified artifact, report
+# not-spent, and post a SECOND durable receipt. That is precisely the duplicate
+# this local record exists to prevent, so an unwritable artifact directory or a
+# full filesystem degrades to a warning and exit 0: the receipt landed, and the
+# durable marker on the PR still stops any later precheck.
 record_spend() {
     local tmp
-    tmp=$(mktemp "$COMMENTS.XXXXXXXXXX") ||
-        evidence_unavailable "cannot stage the spend record beside $COMMENTS"
-    if jq --rawfile body "$RECEIPT_BODY_FILE" '. + [{id: null, body: $body}]' \
-        "$COMMENTS" >"$tmp"; then
-        chmod 600 -- "$tmp"
-        mv -f -- "$tmp" "$COMMENTS" ||
-            { rm -f -- "$tmp"; evidence_unavailable "cannot record the spend in $COMMENTS"; }
-    else
-        rm -f -- "$tmp"
-        evidence_unavailable "cannot record the spend in $COMMENTS"
+    if ! tmp=$(mktemp "$COMMENTS.XXXXXXXXXX" 2> /dev/null); then
+        warn_spend_unrecorded 'could not stage a temporary file beside it'
+        return 0
     fi
+    if jq --rawfile body "$RECEIPT_BODY_FILE" '. + [{id: null, body: $body}]' \
+        "$COMMENTS" > "$tmp" 2> /dev/null &&
+        chmod 600 -- "$tmp" 2> /dev/null &&
+        mv -f -- "$tmp" "$COMMENTS" 2> /dev/null; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    warn_spend_unrecorded 'the rewrite failed'
+    return 0
+}
+
+warn_spend_unrecorded() {
+    printf '%s: receipt POSTED and verified, but the local spend record in %s was not updated (%s).\n' \
+        "$PROGNAME" "$COMMENTS" "$1" >&2
+    printf '%s: do NOT re-run publish -- re-fetch the PR comments instead; the durable marker is on the PR.\n' \
+        "$PROGNAME" >&2
 }
 
 main() {

@@ -139,8 +139,10 @@ die_blocked() {
         --arg transcript "$TRANSCRIPT_PATH" \
         '{status: "blocked", blockedReason: $blockedReason, detail: $detail,
           transcript: $transcript, fallback: "cross-harness-reviewer"}')
-    printf '%s\n' "$json"
+    # Durable first: publish_output can die, and emitting stdout before it
+    # would hand the caller a verdict that was never published.
     publish_output "$json"
+    printf '%s\n' "$json"
     exit 3
 }
 
@@ -294,7 +296,10 @@ prepare_output() {
     # strings can name the same file.
     canonical_output=$(canonical_path "$OUTPUT_PATH")
     canonical_output_tmp=$(canonical_path "$OUTPUT_TMP")
-    for artifact in "$TRANSCRIPT_PATH" "$DIFF_PATH"; do
+    # STATUS_FILE/STATUS_TMP derive from TRANSCRIPT_PATH and are covered too:
+    # cleanup removes the status file, and the heartbeat rewrites its temp
+    # sibling, so an --output aliasing either is deleted or raced mid-run.
+    for artifact in "$TRANSCRIPT_PATH" "$DIFF_PATH" "$STATUS_FILE" "$STATUS_TMP"; do
         [[ -n $artifact ]] || continue
         canonical_other=$(canonical_path "$artifact")
         [[ $canonical_output != "$canonical_other" ]] ||
@@ -765,8 +770,10 @@ main() {
           budgetCeiling: $budgetCeiling, maxTokens: $maxTokens, usedTokens: $usedTokens,
           tokenUsage: $tokenUsage,
           verdict: $verdict}')
-    printf '%s\n' "$final_json"
+    # Durable first: publish_output can die, and emitting stdout before it
+    # would hand the caller a verdict that was never published.
     publish_output "$final_json"
+    printf '%s\n' "$final_json"
 }
 
 main "$@"

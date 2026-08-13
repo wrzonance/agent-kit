@@ -287,6 +287,36 @@ assert_eq '11' "$second_rc" 'a second publish against the same artifact refuses 
 assert_eq '1' "$(grep -c 'issues/22/comments' "$tmp/gh.log")" \
     'the refused re-publish never reaches the transport'
 
+# -- publish: a failed local spend record must not read as "nothing landed" ---
+#
+# record_spend runs AFTER the receipt is posted and byte-verified. Exit 1 is
+# defined as "nothing durable landed on the PR", and SKILL.md routes anything
+# other than 0 and 11 to "receipt publication failed" -- so failing here told
+# the agent to re-run publish, whose precheck would read the unmodified artifact
+# and post a SECOND durable receipt. Exactly the duplicate this record prevents.
+
+reset_not_spent
+unwritable_dir="$tmp/unwritable"
+mkdir -p "$unwritable_dir"
+cp "$not_spent_comments" "$unwritable_dir/comments.json"
+chmod 500 "$unwritable_dir"
+: >"$tmp/gh.log"
+spendfail_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --pr 23 --repo owner/repo --comments "$unwritable_dir/comments.json" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+spendfail_rc=$?
+chmod 700 "$unwritable_dir"
+assert_eq '0' "$spendfail_rc" \
+    'an unrecordable spend still exits 0, because the receipt did land'
+assert_eq '1' "$(grep -c 'issues/23/comments' "$tmp/gh.log")" \
+    'the receipt was posted exactly once before the record failed'
+assert_contains "$spendfail_out" 'receipt POSTED and verified' \
+    'the warning states the receipt landed'
+assert_contains "$spendfail_out" 'do NOT re-run publish' \
+    'the warning steers away from the duplicate-producing retry'
+
 # -- publish: usage errors --------------------------------------------------
 
 reset_not_spent

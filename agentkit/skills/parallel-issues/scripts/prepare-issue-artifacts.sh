@@ -134,6 +134,17 @@ ready_marker="$agent_dir/fenced-ready"
 tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"
 
+# Refused BEFORE the fetch. A complete, ready-marked set is deliberate state,
+# and fetched-issue.json is part of that set -- checking only after the fetch
+# meant a run that was about to refuse had already overwritten the published
+# raw payload the previous run left behind, and had spent two gh calls doing
+# it. The stale-debris cleanup stays below, where the run actually continues,
+# so a failed fetch still leaves the previous artifacts untouched.
+if [[ -d $ready_marker && -f $target && -f $prior_target &&
+    ! -e $tmp && ! -e $prior_tmp ]]; then
+    die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
+fi
+
 # Every temp file this run might create, so a normal exit or a signal cleans
 # up exactly what it left behind and nothing else. The EXIT trap always runs;
 # the signal traps additionally force a nonzero exit rather than letting the
@@ -203,14 +214,10 @@ issue_contents=$(jq -r '
 
 : "${prior_art_contents:="(no prior art selected by triage digest)"}"
 
-# A complete, ready-marked pair is deliberate existing state and must not be
-# silently clobbered. Anything else present is stale debris from an
-# interrupted run and is cleared before this run republishes both members.
+# The complete, ready-marked case was already refused before the fetch, so
+# anything still present here is stale debris from an interrupted run and is
+# cleared before this run republishes both members.
 if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
-    if [[ -d $ready_marker && -f $target && -f $prior_target &&
-        ! -e $tmp && ! -e $prior_tmp ]]; then
-        die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
-    fi
     printf 'incomplete stale fence artifacts; removing them before retry\n' >&2
     rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
     rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
@@ -261,6 +268,12 @@ if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target" &&
 else
     mv_rc=$?
     rm -f -- "$tmp" "$prior_tmp"
+    # Every other failure here names its reason. This one can leave
+    # fenced-spec.txt published without its prior-art pair and without the
+    # readiness marker, so silence would hand the caller a half-published set
+    # and no idea which step produced it.
+    printf 'Could not publish the fenced artifacts (mv/mkdir failed at %s); the artifact set is incomplete.\n' \
+        "$agent_dir" >&2
     exit "$mv_rc"
 fi
 

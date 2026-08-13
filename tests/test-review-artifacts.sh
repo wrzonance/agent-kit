@@ -138,6 +138,15 @@ for alias_helper in "$claude" "$codex"; do
         > /dev/null 2> "$tmp/$alias_name-rel.err" || alias_rel_rc=$?
     assert_eq 1 "$alias_rel_rc" "--output: $alias_name rejects a relative alias of the transcript"
 
+    for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
+        status_rc=0
+        bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+            --transcript "$alias_transcript" --output "$status_alias" \
+            > /dev/null 2> "$tmp/$alias_name-status.err" || status_rc=$?
+        assert_eq 1 "$status_rc" \
+            "--output: $alias_name rejects an --output aliasing $(basename "$status_alias")"
+    done
+
     alias_diff_rc=0
     bash "$alias_helper" --mode review --model m --diff "$output_diff" \
         --transcript "$output_run/$alias_name-diffalias.transcript" \
@@ -298,11 +307,22 @@ for helper in "$claude" "$codex"; do
         "$helper_name stages its --output artifact beside the final path"
     assert_contains "$helper_text" 'mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH"' \
         "$helper_name publishes its --output artifact atomically"
+    # Ordering, not adjacency. publish_output must run BEFORE the object is
+    # emitted on stdout: it can die, and a caller that already read a "blocked"
+    # object would act on a verdict that was never durably published. This
+    # previously pinned publish_output as the line immediately preceding
+    # `exit 3`, which is a proxy the correct order necessarily breaks -- the
+    # publish now happens earlier still, with the stdout emission between it
+    # and the exit.
     exit3_line=$(grep -n 'exit 3$' "$helper" | tail -n 1 | cut -d: -f1)
-    publish_before_exit3=$([[ -n $exit3_line ]] &&
-        sed -n "$((exit3_line - 1))p" "$helper" | grep -c 'publish_output "\$json"' || printf 0)
-    assert_eq 1 "$publish_before_exit3" \
-        "$helper_name publishes its rc=3 blocked artifact immediately before exiting 3"
+    publish_line=$(awk -v stop="${exit3_line:-0}" \
+        'NR < stop && /publish_output "\$json"/ {n = NR} END {print n + 0}' "$helper")
+    emit_line=$(awk -v stop="${exit3_line:-0}" \
+        'NR < stop && /printf/ && /\$json/ && !/publish_output/ {n = NR} END {print n + 0}' "$helper")
+    blocked_order=$([[ $publish_line -gt 0 && $emit_line -gt 0 &&
+        $publish_line -lt $emit_line && $emit_line -lt ${exit3_line:-0} ]] && printf 1 || printf 0)
+    assert_eq 1 "$blocked_order" \
+        "$helper_name publishes the rc=3 blocked artifact before emitting it on stdout"
 done
 
 assert_contains "$state_text" "[[ ! -L \$target ]]" \
