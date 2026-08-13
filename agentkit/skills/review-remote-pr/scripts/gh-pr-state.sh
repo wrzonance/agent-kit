@@ -13,7 +13,7 @@
 #
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234
-#   base: recorded=abc1234 current=def5678 stale=yes
+#   base: ref=main behind=1 stale=yes
 #   ci=3/3 green pending=0 failing=0
 #   provider: coderabbit=reviewed
 #   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
@@ -71,8 +71,7 @@ PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
 BASE_REF=""
-BASE_RECORDED=""
-BASE_CURRENT=""
+BASE_BEHIND=""
 BASE_STATUS=unknown
 
 usage() {
@@ -231,31 +230,43 @@ first_error() {
 # message bodies on every poll and nothing downstream consumes them.
 fetch_meta() {
     gh pr view "$PR" --repo "$REPO" \
-        --json number,isDraft,mergeable,headRefName,headRefOid,baseRefName,baseRefOid,statusCheckRollup \
+        --json number,isDraft,mergeable,headRefName,headRefOid,baseRefName,statusCheckRollup \
         >"$WORK_DIR/pr.json" 2>"$WORK_DIR/err" ||
         die "gh pr view failed for $REPO#$PR: $(first_error)"
     return 0
 }
 
-# A PR's baseRefOid is the base state against which its current checks were
-# earned. Compare it with the live branch tip: parent-merge retargeting can
-# leave an otherwise green rollup describing a base commit that no longer
-# exists. Missing metadata is deliberately unknown, never silently current.
+# Compare the live base and head ancestry: after parent-merge retargeting, a
+# child can be behind its new base while its old checks remain attached. The
+# PR's baseRefOid is live metadata and cannot identify what an earlier check
+# tested, so it is deliberately not used as evidence. Missing or unavailable
+# comparison data is unknown, never silently current.
 fetch_base_state() {
     BASE_REF=$(jq -r '.baseRefName // ""' <"$WORK_DIR/pr.json")
-    BASE_RECORDED=$(jq -r '.baseRefOid // ""' <"$WORK_DIR/pr.json")
-    BASE_CURRENT=""
+    local head_ref
+    head_ref=$(jq -r '.headRefName // ""' <"$WORK_DIR/pr.json")
+    BASE_BEHIND=""
     BASE_STATUS=unknown
-    [[ -n $BASE_REF && -n $BASE_RECORDED ]] || return 0
-    gh api "repos/$REPO/branches/$BASE_REF" >"$WORK_DIR/base.json" 2>"$WORK_DIR/err" ||
-        die "gh api base branch failed for $REPO/$BASE_REF: $(first_error)"
-    BASE_CURRENT=$(jq -r '.commit.sha // empty' <"$WORK_DIR/base.json") ||
-        preserve_raw_and_die "could not parse base branch response for $REPO/$BASE_REF"
-    [[ -n $BASE_CURRENT ]] || return 0
-    if [[ $BASE_RECORDED == "$BASE_CURRENT" ]]; then
-        BASE_STATUS=current
-    else
+    [[ -n $BASE_REF && -n $head_ref ]] || return 0
+    if ! gh api "repos/$REPO/compare/$BASE_REF...$head_ref" \
+        >"$WORK_DIR/base.json" 2>"$WORK_DIR/err"; then
+        note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): $(first_error)"
+        return 0
+    fi
+    BASE_BEHIND=$(jq -r '.behind_by // empty' <"$WORK_DIR/base.json") || {
+        note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): invalid JSON"
+        BASE_BEHIND=""
+        return 0
+    }
+    if [[ ! $BASE_BEHIND =~ ^[0-9]+$ ]]; then
+        note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): missing behind_by"
+        BASE_BEHIND=""
+        return 0
+    fi
+    if ((BASE_BEHIND > 0)); then
         BASE_STATUS=stale
+    else
+        BASE_STATUS=current
     fi
     return 0
 }
@@ -510,10 +521,10 @@ print_ci_line() {
         word=none
     elif ((fail > 0)); then
         word=failing
-    elif [[ $BASE_STATUS == stale && $pass -gt 0 ]]; then
-        word=stale
     elif ((pending > 0)); then
         word=pending
+    elif [[ $BASE_STATUS == stale && $pass -gt 0 ]]; then
+        word=stale
     else
         word=green
     fi
@@ -521,12 +532,12 @@ print_ci_line() {
 }
 
 print_base_line() {
-    [[ -n $BASE_RECORDED ]] || return 0
+    [[ -n $BASE_REF ]] || return 0
     if [[ $BASE_STATUS == unknown ]]; then
-        printf 'base: recorded=%s current=unknown stale=unknown\n' "$BASE_RECORDED"
+        printf 'base: ref=%s behind=unknown stale=unknown\n' "$BASE_REF"
     else
-        printf 'base: recorded=%s current=%s stale=%s\n' \
-            "$BASE_RECORDED" "$BASE_CURRENT" "$([[ $BASE_STATUS == stale ]] && printf yes || printf no)"
+        printf 'base: ref=%s behind=%s stale=%s\n' \
+            "$BASE_REF" "$BASE_BEHIND" "$([[ $BASE_STATUS == stale ]] && printf yes || printf no)"
     fi
 }
 
