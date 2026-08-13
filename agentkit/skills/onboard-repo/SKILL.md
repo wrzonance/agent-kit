@@ -42,7 +42,7 @@ Completion reports include this four-step go-live checklist:
 
 1. Open a PR that commits `.agent/config.env`, `.agent/board.json`, and `.gitignore`.
 2. Until that PR merges, approvals remain per-machine and are not repository trust.
-3. After merge, run the resolved absolute `agent-run.sh --cmd verify --yolo` command.
+3. After merge, run the resolved absolute `agent-run.sh --cmd <declared name> --yolo` command.
 4. Explain that the trust scope covers the declared command inputs for this repository only.
 
 **Finish the job.** A repository left with `config.env` but no declared command is barely better off than an
@@ -66,8 +66,9 @@ if [[ -z $agentkit ]]; then
     [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-# shellcheck disable=SC2034  # used by every later block; env does not
-# persist between tool calls, so each block re-derives it.
+# shellcheck disable=SC2034  # used by later blocks. Env does NOT persist between
+# tool calls: a block run on its own must re-run this one first, and guards on
+# $shared rather than silently building an empty path.
 shared="$agentkit/.shared/scripts"
 
 contract_path=''
@@ -84,6 +85,7 @@ With the tree resolved, ask the executable onboarding boundary what is next and 
 doing any work:
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
 ```
 
@@ -91,6 +93,7 @@ Perform only the reported `next` stage. Before the first verification, also run 
 environment preflight and include its component, package, runtime-pin, and setup lines in the handoff:
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --preflight
 ```
 
@@ -100,6 +103,7 @@ skips a stage.
 ## Step 1 — look before writing
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/bootstrap-repo.sh" --dry-run
 ```
 
@@ -114,6 +118,7 @@ helper reports each archived file and the new paths.
 guess — ask the user which they want, then:
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/board-setup.sh" --dry-run          # creates a board, canonical columns, links it
 "$shared/board-setup.sh"                    # or --project N to re-column an existing one
 ```
@@ -157,6 +162,7 @@ On a subsequent pass, after the user has reviewed the instruction audit and appr
 run:
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/bootstrap-repo.sh"
 ```
 
@@ -167,6 +173,7 @@ decision for the user.
 ## Step 3 — find what it left blank
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/repo-config.sh" --list
 grep -n '^# AGENT_' .agent/config.env
 "$shared/detect-toolchains.sh" --format gaps
@@ -202,6 +209,7 @@ pre-commit hook, a `Makefile`, `package.json` scripts, a `tools/` directory, `CO
 the detector rather than hand-guessing:
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/detect-toolchains.sh" --format suggestions
 ```
 
@@ -237,6 +245,7 @@ cannot answer the prompt, but a same-user process could still drive a pseudo-ter
 record directly.
 
 ```bash
+: "${agentkit:?re-run Step 0}"
 # A human, in an interactive terminal:
 "$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify
 # Any session, once approval exists:
@@ -279,6 +288,7 @@ exactly as you'd type it, unquoted, arguments and all. Then prove it parses. App
 a human step (above), so hand them off rather than running `--approve` yourself:
 
 ```bash
+: "${agentkit:?re-run Step 0}"
 "$agentkit/.shared/scripts/repo-config.sh" --list
 # ...then, once per name you declared, a human approves and runs it:
 "$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify   # human, interactive terminal
@@ -311,6 +321,7 @@ meant to be committed; everything else under `.agent/` is working state the new 
 ## Step 8 — check the harness itself
 
 ```bash
+: "${shared:?re-run Step 0}"
 "$shared/harness-advice.sh"
 ```
 
@@ -350,7 +361,8 @@ state outside the checkout, intentionally not a committed key a pull request cou
 with `--if-declared`, so declaring none of them isn't broken, it just skips those steps. `AGENT_CMD_VERIFY`
 (or, failing that, `AGENT_CMD_TEST`) is what opts the repository into the `Stop` check at the end of every
 turn, so which one you declare decides what every trivial edit costs; declaring neither is legitimate, but
-make it a stated choice, not an accident.
+make it a stated choice, not an accident. Only `Stop` falls back like that: `agent-run.sh --cmd verify`
+resolves nothing in a TEST-only repo, so substitute the name you declared in every `--cmd` example here.
 
 **Nothing secret belongs in `config.env`.** Tokens, proxies, and CA paths are refused by the resolver: the
 file is committed, and anyone who can open a pull request can influence it.
