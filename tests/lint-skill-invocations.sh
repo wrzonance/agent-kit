@@ -232,35 +232,59 @@ for skill_file in "${md_files[@]}"; do
             # agent-preflight.sh after the `fi`, so the worktree-REUSE path -- the
             # common resume case -- reached the helper with $agentkit never
             # validated. Presence-only matching passed that fence. Track the
-            # block depth of the guard against the shallowest helper invocation:
-            # a guard deeper than the call it claims to protect is not a guard.
+            # position of the guard, not just its depth. DEPTH ALONE IS NOT
+            # ENOUGH: a helper on line 1 and the guard on line 2, both at depth
+            # 0, compares equal and passes while the helper has already run
+            # unguarded. The convention is "prepend the guard", so enforce
+            # exactly that -- an effective guard sits at depth 0 AND ahead of
+            # the first helper invocation in the fence.
             depth=0
+            pos=0
+            guard_pos=-1
             guard_depth=-1
+            invoke_pos=-1
             invoke_depth=-1
             while IFS= read -r line; do
                 stripped=$(strip_shell_comment "$line")
                 trimmed=${stripped#"${stripped%%[![:space:]]*}"}
                 [[ -z $trimmed ]] && continue
+                pos=$((pos + 1))
                 # Close before recording: `fi` belongs to the enclosing level.
                 [[ $trimmed =~ ^(fi|done|esac)([[:space:]]|;|$) ]] && ((depth > 0)) && depth=$((depth - 1))
                 if [[ $trimmed == *"$GUARD_EXPR_DIR"* ]]; then
                     guard_dir=1
+                    # Record the first guard that is BOTH complete and at depth
+                    # 0; a deeper or later one cannot retroactively protect an
+                    # earlier call.
                     if [[ $trimmed == *"$GUARD_EXPR_SENTINEL"* ]]; then
                         guard_both=1
-                        [[ $guard_depth -lt 0 || $depth -lt $guard_depth ]] && guard_depth=$depth
+                        if [[ $guard_pos -lt 0 && $depth -eq 0 ]]; then
+                            guard_pos=$pos
+                            guard_depth=$depth
+                        fi
+                        [[ $guard_depth -lt 0 ]] && guard_depth=$depth
                     fi
                 elif grep -qE "\"\\\$agentkit/[^\"]*($HELPERS)\.sh\"" <<< "$trimmed"; then
-                    [[ $invoke_depth -lt 0 || $depth -lt $invoke_depth ]] && invoke_depth=$depth
+                    if [[ $invoke_pos -lt 0 ]]; then
+                        invoke_pos=$pos
+                        invoke_depth=$depth
+                    fi
                 fi
                 if [[ $trimmed =~ ^(if|for|while|case)([[:space:]]|$) ]] ||
                    [[ $trimmed =~ \;[[:space:]]*(then|do)$ ]]; then
                     depth=$((depth + 1))
                 fi
             done < "$fence"
-            if ((guard_both)) && [[ $invoke_depth -ge 0 && $guard_depth -gt $invoke_depth ]]; then
+            if ((guard_both)) && [[ $invoke_pos -ge 0 ]] &&
+               [[ $guard_pos -lt 0 || $guard_pos -gt $invoke_pos ]]; then
                 unreachable_guards=$((unreachable_guards + 1))
-                printf 'GUARD NOT ON EVERY PATH in %s (fence %s): guard sits at block depth %s but a helper runs at depth %s; hoist it to the top of the fence\n' \
-                    "$skill_file" "$fence_name" "$guard_depth" "$invoke_depth" >&2
+                if [[ $guard_pos -lt 0 ]]; then
+                    printf 'GUARD NOT ON EVERY PATH in %s (fence %s): the only guard sits at block depth %s, inside a branch, while a helper runs at depth %s; hoist it to the top of the fence\n' \
+                        "$skill_file" "$fence_name" "$guard_depth" "$invoke_depth" >&2
+                else
+                    printf 'GUARD AFTER HELPER in %s (fence %s): the guard is statement %s but a helper already ran at statement %s; the guard must precede every invocation it protects\n' \
+                        "$skill_file" "$fence_name" "$guard_pos" "$invoke_pos" >&2
+                fi
                 continue
             fi
             ((guard_both)) && continue

@@ -223,6 +223,33 @@ EOF
 run_lint "$root"
 assert_eq '0' "$LINT_RC" 'the same fence passes with the guard hoisted above the branch'
 
+# Depth alone is not reachability: a helper on the first statement and the guard
+# on the second are BOTH at depth 0, so a depth-only comparison reads them as
+# equal and passes -- while the helper has already run unguarded. The guard has
+# to precede every invocation it protects, which is what "prepend" means.
+root=$tmp/guard-after-helper
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when the guard trails the helper it must protect.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+
+## Later step
+
+\`\`\`bash
+"\$agentkit/.shared/scripts/agent-run.sh" --cmd test
+[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'a guard at the same depth but after the helper fails'
+assert_contains "$LINT_OUT" 'GUARD AFTER HELPER' 'the trailing guard is named'
+
 # --- a guard has to RUN, not merely be mentioned ------------------------
 # Both halves of the guard are matchable as loose substrings: the directory
 # fragment also occurs inside any resolved helper path, and the sentinel can sit

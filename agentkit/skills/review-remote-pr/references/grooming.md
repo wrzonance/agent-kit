@@ -61,7 +61,7 @@ Read each Backlog issue's body and judge it against the bar below. Where your ru
 
 Print the proposal — move nothing yet:
 
-```
+```text
 Backlog → Ready candidates (after PR #N):
   PROMOTE
     #62  Logging cleanup        ✅ specified · isolated (src/logger.ts) · ~80 LOC
@@ -86,7 +86,7 @@ for issue_number in 62 71; do   # only the numbers the user approved
 done
 ```
 
-A leading `moved ` is the evidence the promotion happened; an already-target line such as
+A line whose first word is `moved` is the evidence the promotion happened; an already-target line such as
 `no-op: issue #123 already "Ready"` is the terminal redundant no-op evidence. Both exit
 `0`, so never treat the exit status alone as proof.
 

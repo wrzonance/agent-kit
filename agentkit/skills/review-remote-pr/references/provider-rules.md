@@ -44,7 +44,7 @@ The classifier emits one signal and one lane:
 
 | Signal | Lane | Meaning |
 |---|---|---|
-| `known-provider` | known-provider | CodeRabbit (`coderabbit` login) or `github-code-quality[bot]`; use the provider-specific rules above |
+| `known-provider` | known-provider | CodeRabbit (login exactly `coderabbitai[bot]` or `coderabbitai`) or `github-code-quality[bot]`; use the provider-specific rules above |
 | `type=Bot` | generic-automated | An authoritative forge Bot with no known provider |
 | `login-suffix` | generic-automated | Any exact `[bot]` login suffix with no known provider |
 | `human` | human | No authoritative automation signal; confirmation-gated |
@@ -109,8 +109,12 @@ Use `<!-- review-remote-pr:agent-doc -->` only on workflow-created bookkeeping t
 
 ## Provider identity — why the author matters
 
-Only explicitly recognized providers get provider-specific handling: CodeRabbit (login contains
-`coderabbit`) and `github-code-quality[bot]`. Other authors enter the generic automated lane only
+Only explicitly recognized providers get provider-specific handling: CodeRabbit and
+`github-code-quality[bot]`. Match CodeRabbit against the exact configured accounts —
+`coderabbitai[bot]` and `coderabbitai` — never a substring of the login. A substring test hands the
+known-provider lane to any human who registers `mycoderabbit`, and that lane is what makes a thread
+replyable and resolvable *without* the human confirmation gate. An account that merely looks like a
+provider is ambiguous, and every ambiguous author is human. Other authors enter the generic automated lane only
 when the authoritative forge type is `Bot` or the login ends exactly in `[bot]`; **every ambiguous
 author is human**, including the account the authenticated `gh` session posts as. An authenticated
 session proves which account *will* post the agent's actions, never who authored earlier content.
@@ -210,7 +214,7 @@ blocked check and must never be summarized as "no findings."
 
 For each unresolved **CodeRabbit** thread, each CodeRabbit body nitpick surfaced from `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, or `$RUN_DIR/state/pr_${PR}_issue_comments.json`, AND each confirmed adversarial-review finding from `$RUN_DIR/adversarial.result.json` (Step 1b):
 
-```
+```text
 VALID   → fix the code, commit; reply explaining what was fixed + commit SHA
 INVALID → write decline rationale (cross-module consistency, deliberate design choice, etc.)
           reply with rationale
@@ -234,10 +238,13 @@ For each unresolved comment from `github-code-quality[bot]`:
 
 ```text
 VALID → apply the suggested autofix verbatim (or the smallest equivalent only when
-        the suggestion cannot be applied mechanically), run the repository checks
-        through `agent-run.sh`,
-        commit and push; reply to the original comment with the short commit SHA;
-        wait for the next Code Quality scan and verify that the finding auto-clears.
+        the suggestion cannot be applied mechanically) and run the repository
+        checks through `agent-run.sh`. Fixes accumulate into the cycle's ONE
+        batch: commit with the rest of it and let the single end-of-cycle push
+        carry them -- a push per finding triggers a scan while later findings
+        are still unhandled, and contradicts the single-push contract below.
+        Reply to the original comment with the short commit SHA, then wait for
+        the next Code Quality scan and verify that the finding auto-clears.
 
 INVALID → do not resolve the thread as a shortcut. Reply to the original comment
           with a specific dismissal reason (false positive, intentional pattern,
@@ -361,7 +368,7 @@ Re-open `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comment
 
 ## Decline Rationale Templates
 
-```
+```text
 "Declining — [existing module X] uses the same pattern without [Y];
 introducing [Y] here alone creates inconsistency before a cross-module
 refactor is planned."
