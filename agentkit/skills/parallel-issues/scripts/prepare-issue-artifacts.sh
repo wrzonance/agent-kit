@@ -262,19 +262,27 @@ else
     fi
 fi
 
-if mv -f -- "$tmp" "$target" && mv -f -- "$prior_tmp" "$prior_target" &&
-    mkdir -- "$ready_marker"; then
-    :
-else
-    mv_rc=$?
+# Published one step at a time so the failure can name WHICH member did not
+# land. The trio is not atomic: fenced-spec.txt can be published without its
+# prior-art pair and without the readiness marker, and "mv/mkdir failed" would
+# leave the caller to work out which of the three that was.
+publish_rc=0
+publish_step=''
+mv -f -- "$tmp" "$target" ||
+    { publish_rc=$?; publish_step="publish $target"; }
+if ((publish_rc == 0)); then
+    mv -f -- "$prior_tmp" "$prior_target" ||
+        { publish_rc=$?; publish_step="publish $prior_target"; }
+fi
+if ((publish_rc == 0)); then
+    mkdir -- "$ready_marker" ||
+        { publish_rc=$?; publish_step="create the readiness marker $ready_marker"; }
+fi
+if ((publish_rc != 0)); then
     rm -f -- "$tmp" "$prior_tmp"
-    # Every other failure here names its reason. This one can leave
-    # fenced-spec.txt published without its prior-art pair and without the
-    # readiness marker, so silence would hand the caller a half-published set
-    # and no idea which step produced it.
-    printf 'Could not publish the fenced artifacts (mv/mkdir failed at %s); the artifact set is incomplete.\n' \
-        "$agent_dir" >&2
-    exit "$mv_rc"
+    printf 'Could not %s (exit %s); the fenced artifact set is incomplete.\n' \
+        "$publish_step" "$publish_rc" >&2
+    exit "$publish_rc"
 fi
 
 rm -f -- "$spec_payload" "$prior_payload" || die 'Could not remove the temporary payload files.'
