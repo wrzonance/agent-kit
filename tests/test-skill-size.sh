@@ -211,8 +211,15 @@ assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale e
 # "unbound variable", `08` dies as an invalid octal literal, and an expression
 # is silently evaluated into a different ceiling.
 with_entry() { # prints the path to a lint copy whose review-remote-pr entry is $1
-    local replacement=$1 copy=$tmp/lint-${2}.sh
-    sed "s|\[review-remote-pr\]=\"497:7503:450\"|[review-remote-pr]=\"$replacement\"|" "$lint" > "$copy"
+    local replacement=$1 copy=$tmp/lint-${2}.sh escaped
+    # Match the entry by KEY, not by its current value. Pinning the literal
+    # numbers meant every ratchet silently invalidated these fixtures: the
+    # substitution matched nothing, the copy equalled the original, and the
+    # malformed-entry cases stopped testing anything. The cmp guard below still
+    # fails loudly if the entry is renamed or its shape changes.
+    escaped=${replacement//\\/\\\\}
+    escaped=${escaped//&/\\&}
+    sed -E "s|\[review-remote-pr\]=\"[^\"]*\"|[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
     chmod +x "$copy"
     if cmp -s "$lint" "$copy"; then
         _fail "the '$replacement' fixture actually edits the allowlist" \
