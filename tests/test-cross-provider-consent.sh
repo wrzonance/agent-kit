@@ -8,12 +8,18 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
-skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+skill="$root/agentkit/skills/review-remote-pr/references/adversarial-review.md"
+skill_body="$root/agentkit/skills/review-remote-pr/SKILL.md"
+review_refs_dir="$root/agentkit/skills/review-remote-pr/references"
 readme="$root/README.md"
 skill_text=$(cat -- "$skill")
 readme_text=$(cat -- "$readme")
+# Negative pins must cover the whole split skill (body + all references), not
+# just this one reference file -- a banned phrase planted in SKILL.md or a
+# sibling reference is just as much a regression as one in this file.
+skill_union_text=$(cat -- "$skill_body" "$review_refs_dir"/*.md)
 
-assert_not_contains "$skill_text" 'standing authorization for this cross-model review' \
+assert_not_contains "$skill_union_text" 'standing authorization for this cross-model review' \
     'repository ownership is not standing authorization'
 assert_contains "$skill_text" 'Cross-provider consent — first send per session' \
     'the skill has a dedicated cross-provider consent gate'

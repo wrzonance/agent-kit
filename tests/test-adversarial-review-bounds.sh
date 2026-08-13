@@ -259,7 +259,7 @@ assert_contains "$codex_text" "sleep \"\$POLL_SECONDS\" &" \
 assert_contains "$codex_text" 'DEFAULT_MAX_TOKENS=400000' \
     'Codex default token ceiling covers the maximum diff budget'
 
-skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
+skill="$root/agentkit/skills/review-remote-pr/references/adversarial-review.md"
 skill_text=$(<"$skill")
 assert_contains "$skill_text" '--max-duration-seconds' \
     'the review skill passes an explicit duration ceiling'

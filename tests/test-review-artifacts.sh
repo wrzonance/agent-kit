@@ -313,6 +313,12 @@ assert_eq 'keep this directory' "$(<"$owned_dir_run/pr_1_reviews.json/sentinel")
     'gh-pr-state rejects the directory before publication'
 
 skill_text=$(<"$skill")
+adversarial_ref="$root/agentkit/skills/review-remote-pr/references/adversarial-review.md"
+adversarial_text=$(<"$adversarial_ref")
+review_refs_dir="$root/agentkit/skills/review-remote-pr/references"
+# Negative pins must cover the whole split skill (body + all references) --
+# a banned pattern planted in either half is an equally real regression.
+skill_union_text=$(cat -- "$skill" "$review_refs_dir"/*.md)
 
 # The skill's wrappers stage a verdict before publication. Environment-blocked
 # rc=3 is special: its JSON tells the caller whether to fall back or retry, so
@@ -361,48 +367,51 @@ assert_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
     'the skill creates a random per-run artifact directory'
 assert_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
     'the skill explicitly secures the run directory'
-assert_not_contains "$skill_text" "claude_pr_\${PR}" \
+assert_not_contains "$skill_union_text" "claude_pr_\${PR}" \
     'the skill no longer uses PR-number-only Claude artifact paths'
-assert_not_contains "$skill_text" "/tmp/pr_\${PR}_" \
+assert_not_contains "$skill_union_text" "/tmp/pr_\${PR}_" \
     'the skill no longer uses shared PR-number-only state paths'
 assert_contains "$skill_text" 're-set RUN_DIR to the Step 0c output; shell state does not persist' \
     'the skill guards per-shell review-artifact directory reuse'
-assert_contains "$skill_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
+# The diff/verdict recipe itself now lives in references/adversarial-review.md
+# (SKILL.md only names when to read it); the Step 0c artifact-directory pins
+# checked above stay targeted at SKILL.md, since that's where they still live.
+assert_contains "$adversarial_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
     'the skill names one shared adversarial diff artifact'
-assert_contains "$skill_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
+assert_contains "$adversarial_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
     'the skill names one neutral adversarial verdict artifact'
 # Verdict staging/atomic publication is delegated to each wrapper's --output
 # flag (see the helper loop above, which checks OUTPUT_TMP staging and the
 # rc=3 publish-before-exit ordering in both scripts directly), not
-# reimplemented in SKILL.md; SKILL.md only documents that delegation at each
-# call site.
-assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$skill")" \
+# reimplemented in the reference doc; it only documents that delegation at
+# each call site.
+assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$adversarial_ref")" \
     'the skill documents atomic verdict staging at both call sites'
-assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$skill")" \
+assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$adversarial_ref")" \
     'both adversarial wrappers publish their rc=3 blocked artifacts'
-assert_contains "$skill_text" 'A final file' \
+assert_contains "$adversarial_text" 'A final file' \
     'the skill defines completion by terminal producer events'
-assert_contains "$skill_text" 'cross-cell heartbeat fallback' \
+assert_contains "$adversarial_text" 'cross-cell heartbeat fallback' \
     'the skill documents the cross-cell heartbeat fallback'
-assert_contains "$skill_text" '2 * --poll-seconds' \
+assert_contains "$adversarial_text" '2 * --poll-seconds' \
     'the skill pins the heartbeat freshness window'
-assert_contains "$skill_text" 'zero transcript growth across' \
+assert_contains "$adversarial_text" 'zero transcript growth across' \
     'the skill requires two unchanged byte samples before declaring death'
-assert_contains "$skill_text" 'relaunch exactly once' \
+assert_contains "$adversarial_text" 'relaunch exactly once' \
     'the skill bounds relaunches to one after the death predicate'
-assert_contains "$skill_text" 'launcher reports a terminal child' \
+assert_contains "$adversarial_text" 'launcher reports a terminal child' \
     'the skill prefers native launcher terminal state'
-assert_contains "$skill_text" 'Without native launcher state, a validated canonical verdict is Completed' \
+assert_contains "$adversarial_text" 'Without native launcher state, a validated canonical verdict is Completed' \
     'the skill permits detached canonical-verdict completion'
-assert_not_contains "$skill_text" 'kill -0' \
+assert_not_contains "$skill_union_text" 'kill -0' \
     'the skill never recommends cross-cell PID probes'
-assert_contains "$skill_text" 'bounded in both directions' \
+assert_contains "$adversarial_text" 'bounded in both directions' \
     'the skill bounds the wait against both stalls and premature verdicts'
-assert_not_contains "$skill_text" '>"$verdict_path"' \
+assert_not_contains "$skill_union_text" '>"$verdict_path"' \
     'the skill never streams directly into the final verdict path'
-assert_not_contains "$skill_text" 'claude.result.json' \
+assert_not_contains "$skill_union_text" 'claude.result.json' \
     'the skill has no Claude-specific verdict path'
-assert_not_contains "$skill_text" 'codex.result.json' \
+assert_not_contains "$skill_union_text" 'codex.result.json' \
     'the skill has no Codex-specific verdict path'
 
 for helper in "$claude" "$codex"; do
@@ -418,8 +427,8 @@ for helper in "$claude" "$codex"; do
         "$helper_name removes status during cleanup"
 done
 diff_pattern="git --no-pager diff.*\"\\\$diff_path\""
-diff_line=$(grep -n "$diff_pattern" "$skill" | head -1 | cut -d: -f1)
-probe_line=$(grep -n '^probe_rc=0$' "$skill" | head -1 | cut -d: -f1)
+diff_line=$(grep -n "$diff_pattern" "$adversarial_ref" | head -1 | cut -d: -f1)
+probe_line=$(grep -n '^probe_rc=0$' "$adversarial_ref" | head -1 | cut -d: -f1)
 if ((diff_line < probe_line)); then
     _pass 'the shared diff is created before probe branching'
 else

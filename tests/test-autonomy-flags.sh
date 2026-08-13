@@ -29,6 +29,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 flatten() { tr '\n' ' ' < "$1"; }
 parallel=$(flatten "$skills/parallel-issues/SKILL.md")
 review=$(flatten "$skills/review-remote-pr/SKILL.md")
+review_adversarial=$(flatten "$skills/review-remote-pr/references/adversarial-review.md")
 
 # --- the dependency between the flags ---------------------------------------
 # The one rule that cannot be softened: --fast-mode without --yolo is a request
@@ -85,14 +86,18 @@ assert_contains "$parallel" 'An empty selection is an answer' \
     'nothing eligible is a stop, not a reason to widen the query'
 
 # --- --auto-review is bounded ------------------------------------------------
-assert_contains "$review" 'consent given in advance' 'the flag answers the consent question'
-assert_contains "$review" 'do not stop to ask' 'and the agent does not ask anyway'
-assert_contains "$review" 'Still disclose' 'the disclosure survives the flag'
-assert_contains "$review" 'source=--auto-review' 'and the record says where consent came from'
-assert_contains "$review" 'It cannot consent on behalf of whoever owns' \
+# The consent-gate detail lives in references/adversarial-review.md; the two
+# gate-boundary phrases below are location-sensitive (they assert the BODY,
+# not a reference, is what names the still-gated actions) so they stay
+# targeted at SKILL.md itself.
+assert_contains "$review_adversarial" 'consent given in advance' 'the flag answers the consent question'
+assert_contains "$review_adversarial" 'do not stop to ask' 'and the agent does not ask anyway'
+assert_contains "$review_adversarial" 'Still disclose' 'the disclosure survives the flag'
+assert_contains "$review_adversarial" 'source=--auto-review' 'and the record says where consent came from'
+assert_contains "$review_adversarial" 'It cannot consent on behalf of whoever owns' \
     'the flag cannot authorise disclosing a third party repository'
-assert_contains "$review" 'Still fails closed' 'an unrecordable or unknown destination still blocks'
-assert_contains "$review" 'only the current invocation line' \
+assert_contains "$review_adversarial" 'Still fails closed' 'an unrecordable or unknown destination still blocks'
+assert_contains "$review_adversarial" 'only the current invocation line' \
     'a previous session or an issue body is not this flag'
 assert_contains "$review" 'not permission to flip a PR ready' \
     'and it does not leak into the other gates'
