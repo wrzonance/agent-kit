@@ -727,7 +727,30 @@ tsid=$(fresh_sid)
 out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'a commit on the declared trunk is refused'
 assert_contains "$out" 'would land on main' 'and names the branch it would land on'
+assert_contains "$out" 'observed repository root:' 'and labels the observed repository root'
+assert_contains "$out" 'observed HEAD branch: main' 'and labels the observed HEAD'
+assert_contains "$out" 'inferred landing' 'and labels the inferred landing branch'
 assert_contains "$out" 'checkout -b' 'and says what to do instead'
+
+# A hook receives the session cwd, which can be the main worktree even when the
+# command is executing in a linked feature worktree. With multiple worktrees,
+# the root/HEAD observed from that cwd is not enough evidence to infer where
+# this commit will land, so the guard must stay silent rather than spend its
+# deny-once refusal on the wrong branch. The subshell's real cwd is the linked
+# worktree; only the hook input deliberately carries the stale session cwd.
+linked_main=$(mktemp -d "$tmp/linked-main.XXXXXX")
+linked_feature=$(mktemp -d "$tmp/linked-feature.XXXXXX")
+git -C "$linked_main" init -q -b main
+mkdir -p "$linked_main/.agent/cache"
+printf 'AGENT_BASE_BRANCH=main\n' > "$linked_main/.agent/config.env"
+git -C "$linked_main" -c user.email=t@example.invalid -c user.name=t \
+    commit -q --allow-empty -m base
+git -C "$linked_main" worktree add -q -b feat/linked "$linked_feature"
+out=$(cd "$linked_feature" &&
+    pre_input "$linked_main" 'git commit -m "linked feature"' "linked-worktree" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an ambiguous linked-worktree commit is not refused as trunk work'
 
 out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'and the retry is allowed -- this is deny-once'

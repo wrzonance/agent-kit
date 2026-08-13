@@ -783,8 +783,17 @@ guard_destructive_reason() {
 # Evidence rule: a repository that has not declared a trunk gets no opinion.
 # AGENT_BASE_BRANCH is what onboarding writes; origin/HEAD is the fallback, and
 # when neither answers, this stays silent rather than guessing at "main".
+guard_worktree_count() {
+    local root=$1 count=0 line
+    while IFS= read -r line; do
+        [[ $line == 'worktree '* ]] || continue
+        count=$((count + 1))
+    done < <(git -C "$root" worktree list --porcelain 2> /dev/null)
+    printf '%s' "$count"
+}
+
 guard_trunk_commit_reason() {
-    local cmd=$1 root=$2 current trunk
+    local cmd=$1 root=$2 current trunk worktrees
     [[ -n $root ]] || return 1
 
     # Command position, so `git commit` in a message body or a grep pattern is
@@ -796,6 +805,14 @@ guard_trunk_commit_reason() {
 
     current=$(git -C "$root" symbolic-ref --quiet --short HEAD 2> /dev/null) || return 1
     [[ -n $current ]] || return 1
+
+    # The hook's cwd is session provenance, not proof of the shell process's
+    # execution cwd. Once this repository has linked worktrees, the observed
+    # root/HEAD pair may describe a different worktree from the one that will
+    # actually receive the commit. Refusing would spend the deny-once choice
+    # on an inferred landing branch that the hook cannot establish.
+    worktrees=$(guard_worktree_count "$root")
+    [[ $worktrees == 1 ]] || return 1
 
     trunk=$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH[[:space:]]*=[[:space:]]*//p' \
         "$root/.agent/config.env" 2> /dev/null | tail -1)
