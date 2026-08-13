@@ -645,6 +645,8 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"
-die_blocked() { review_die_blocked "$1" "$2" "blind-Codex adversarial-reviewer fallback"; }
+die_blocked() {
+	review_die_blocked "$1" "$2" "blind-codex-agent" "blind-Codex adversarial-reviewer fallback"
+}
 
 main "$@"

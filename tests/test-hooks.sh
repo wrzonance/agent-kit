@@ -1421,4 +1421,30 @@ out=$(printf '{"cwd":"%s","hook_event_name":"Stop","model":"m","session_id":"s",
 assert_eq 'allow' "$(jq -r '.decision // "allow"' <<< "$out")" \
     'a change confined to .agent/ never blocks'
 
+# A guard library invoked by basename must resolve its sibling library from
+# the current directory and fail loudly if that relative installation is absent.
+guard_probe="$tmp/guard-lib.sh"
+cp "$hooks/lib/guard-lib.sh" "$guard_probe"
+guard_err="$tmp/guard-relative.err"
+guard_rc=0
+# shellcheck disable=SC1091  # intentionally tests basename resolution failure
+(cd "$tmp" && source guard-lib.sh) 2>"$guard_err" || guard_rc=$?
+assert_eq 2 "$guard_rc" 'guard-lib basename invocation fails closed when shared library is unavailable'
+assert_contains "$(<"$guard_err")" 'shared script library is unavailable' \
+    'guard-lib basename failure names the missing shared library'
+
+# PreToolUse must turn that source failure into a deny. Returning another
+# nonzero status here is not enough: the hook protocol treats anything other
+# than its explicit deny response as an allow.
+broken_hooks="$tmp/broken-hooks"
+mkdir -p "$broken_hooks/lib"
+cp "$hooks/pre-tool-use.sh" "$broken_hooks/pre-tool-use.sh"
+cp "$hooks/lib/guard-lib.sh" "$broken_hooks/lib/guard-lib.sh"
+broken_out=$(pre_input "$missing_repo" 'git status' 'broken-guard' |
+    "$broken_hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$broken_out")" \
+    'PreToolUse denies when its shared guard library cannot load'
+assert_contains "$broken_out" 'load status 2' \
+    'the missing guard-library denial preserves the failure status'
+
 finish

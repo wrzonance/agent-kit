@@ -7,8 +7,9 @@
 
 review_die_blocked() {
     local reason=$1 detail=$2 fallback=$3 json
+    local fallback_message=${4:-$fallback}
     printf '%s: BLOCKED (%s): %s\n' "$PROGNAME" "$reason" "$detail" >&2
-    printf '%s: take the %s; do not retry.\n' "$PROGNAME" "$fallback" >&2
+    printf '%s: take the %s; do not retry.\n' "$PROGNAME" "$fallback_message" >&2
     json=$(jq -cn --arg blockedReason "$reason" --arg detail "$detail" \
         --arg transcript "$TRANSCRIPT_PATH" --arg fallback "$fallback" \
         '{status:"blocked", blockedReason:$blockedReason, detail:$detail,
@@ -123,8 +124,8 @@ review_classify_blocked_reason() {
     local text=${1,,} reason=${2:-}
     case $text in
         *"credit balance"*|*"insufficient credit"*|*"budget exceeded"*|*"quota exceeded"*) reason=budget-exhausted;;
-        *unauthenticated*|*"invalid api key"*|*"invalid x-api-key"*|*oauth*|*authentication_error*|*"not logged in"*) reason=unauthenticated;;
-        *getaddrinfo*|*enotfound*|*econnrefused*|*"connection refused"*|*eai_again*|*"network is unreachable"*|*"unable to connect"*) reason=network-unreachable;;
+        *unauthenticated*|*"invalid api key"*|*"invalid x-api-key"*|*oauth*|*authentication_error*|*"not logged in"*|*401*|*unauthorized*|*authentication*) reason=unauthenticated;;
+        *getaddrinfo*|*enotfound*|*econnrefused*|*"connection refused"*|*eai_again*|*"network is unreachable"*|*"unable to connect"*|*"dns error"*|*"failed to lookup"*|*network*) reason=network-unreachable;;
         *enotimp*|*eperm*|*eacces*|*"not permitted"*|*"permission denied"*|*"cannot execute"*|*"exec format error"*) reason=exec-denied;;
     esac
     printf '%s' "$reason"
