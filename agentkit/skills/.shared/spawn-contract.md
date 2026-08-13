@@ -96,5 +96,10 @@ Root = trust/judgment and every privileged or forge-facing action. Luna = mechan
 execution, the default worker tier; Terra `high` is its automatic fallback (see Model/effort
 selection above) — a Luna-unavailable worker is still a dispatched worker, not a blind
 fallback. Terra `xhigh` is reserved for the context-free blind same-harness adversarial-review
-fallback only. A single clean unit of work may be handled by the root directly without a
-dispatched lead.
+fallback only. A single clean unit of work may be handled by the root without a dispatched
+**lead** — that is, without an intermediate orchestration tier. It is not permission to skip the
+**implementation worker**: any code change still goes through one dispatched worker as its sole
+writer, and the only exception is a genuinely unavailable spawn (each consuming skill's degraded
+path, which must be labelled `worker=self` with the reason). Root omitting a lead is an
+org-chart shortcut; root writing the code itself bypasses the isolated model, the six-step gate,
+and the audited handback.
