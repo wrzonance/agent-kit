@@ -46,12 +46,20 @@ issue_lead_prompt=$(awk '
     capture && /^````$/ { exit }
     capture { print }
 ' "$worker_prompts")
+# The opening fence may carry a language tag (markdownlint MD040 requires one);
+# only the CLOSING fence is bare. Matching `^```$` for the opener silently
+# extracted nothing the moment the tag was added, and an empty haystack fails
+# every positive assertion at once rather than pointing at the real cause.
 draft_loop_prompt=$(awk '
     /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
-    capture == 1 && /^```$/ { capture=2; next }
+    capture == 1 && /^```/ { capture=2; next }
     capture == 2 && /^```$/ { exit }
     capture == 2 { print }
 ' "$worker_prompts")
+[[ -n $draft_loop_prompt ]] || {
+    printf 'could not extract the draft-loop prompt block from %s\n' "$worker_prompts" >&2
+    exit 1
+}
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
 assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
     'chain ordering sources are exactly the two mechanical ones'

@@ -37,7 +37,15 @@ set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
+# CHECK NAMES only. Deliberately a substring: the rollup entry is named
+# "CodeRabbit" in some repos and "coderabbitai" in others, and a check name is a
+# display/CI concern, not an identity boundary.
 readonly CR_RE='coderabbit'
+# AUTHOR LOGINS. Anchored, like CQ_RE below, because this one decides the
+# known-provider lane -- and that lane is what lets a thread be replied to and
+# resolved WITHOUT the human confirmation gate. An unanchored `coderabbit`
+# handed that lane to any human who registers `mycoderabbit`.
+readonly CR_LOGIN_RE='^coderabbitai(\[bot\])?$'
 readonly CQ_RE='^github-code-quality(\[bot\])?$'
 readonly AGENT_MARKER='<!-- review-remote-pr:agent-'
 readonly AGENT_DOC_MARKER='<!-- review-remote-pr:agent-doc -->'
@@ -315,7 +323,7 @@ ci_counts() {
 # list exactly, so this workflow only offers to auto-resolve threads it fully
 # owns.
 thread_counts() {
-    jq -r --arg cr "$CR_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
+    jq -r --arg cr "$CR_LOGIN_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
         def author_login: ((.author.login // "") | ascii_downcase);
         def known_provider:
           (author_login | test($cr; "i"))
@@ -382,7 +390,7 @@ thread_counts() {
 # and are already counted on the 'threads:' line.
 nitpick_count() {
     local file=$1
-    jq --arg re "$CR_RE" --argjson broom "$BROOM_CP" '
+    jq --arg re "$CR_LOGIN_RE" --argjson broom "$BROOM_CP" '
         ([$broom] | implode) as $b
         | map(select((((.user.login // "") | test($re; "i")))
               and (((.body // "") | test("nitpick"; "i")) or ((.body // "") | contains($b)))))
@@ -396,7 +404,7 @@ nitpick_count() {
 # mask a rate-limit on the current trigger. Informational only -- this never
 # decides whether to trigger, retry, or wait for a review.
 provider_state() {
-    jq -r --arg re "$CR_RE" '
+    jq -r --arg re "$CR_LOGIN_RE" '
         map(select((.user.login // "") | test($re; "i")) | (.body // ""))
         | reduce .[] as $b ("none";
             if   ($b | test("actionable comments posted|<summary>walkthrough"; "i")) then "reviewed"

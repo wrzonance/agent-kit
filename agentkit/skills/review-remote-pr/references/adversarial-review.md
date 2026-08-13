@@ -305,6 +305,11 @@ Take this path when the Step 0a contract said `peer-cli= <name> absent`,
 when the helper exited `3` (any `blockedReason`), or when external-service authorization is absent.
 There are two ways to run it; prefer the first.
 
+**Only the first sub-path is available when consent is absent.** The in-harness agent keeps the
+diff inside the CLI already running it; `codex-adversarial-review.sh` is a cross-provider send like
+any other. Entering this fallback *because* external-service authorization is absent and then
+reaching for the CLI would route around the very gate that sent you here.
+
 **Preferred — a separate in-harness agent.** Start a **separate agent in the CLI you are
 already running** on
 `gpt-5.6-terra` at `xhigh` with no inherited turn history or project context (`fork_context=false`).
@@ -316,7 +321,11 @@ whole base instruction set (measured at ~43k input tokens for even a one-word re
 
 **When in-harness spawn is unavailable** — the same condition as SKILL.md's Implementation-worker
 gate's degraded path (`spawn_agent` genuinely unavailable, or `multi_agent = false`) — use
-`scripts/codex-adversarial-review.sh`, the Codex twin of the Claude helper. Same `--mode`,
+`scripts/codex-adversarial-review.sh`, the Codex twin of the Claude helper. **This sends the diff
+to OpenAI, so the cross-provider consent gate above applies in full**: current-session consent must
+name Codex as the destination provider and CLI. If in-harness spawn is unavailable *and* that
+consent is absent, report the gate as blocked and stop — never substitute this helper for the
+reviewer consent was withheld from. Same `--mode`,
 `--model`, `--effort`, `--diff`, `--transcript` flags; same `0` / `1` / `3` exit codes; same split
 of progress-on-stderr and one result object on stdout. It enforces blindness mechanically rather
 than by instruction: `--sandbox read-only`, `--ephemeral`, `--ignore-user-config` (no user MCP
@@ -344,6 +353,15 @@ review_rc=0
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
     --diff "$diff_path" --output "$verdict_path" \
     --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >/dev/null || review_rc=$?
+# rc 3 is the helper's STRUCTURED environment-blocked result, not a failure: the
+# verdict object exists and carries blockedReason. Collapsing it into the generic
+# rc 1 path discards the one field that says why, and reports "review failed"
+# for an environment that simply cannot run one.
+if ((review_rc == 3)); then
+    printf 'Blind same-harness review environment-blocked: %s\n' \
+        "$(jq -r '.blockedReason // "unspecified"' <"$verdict_path")" >&2
+    exit 3
+fi
 if ((review_rc != 0)); then
     printf '%s\n' 'Blind same-harness review did not complete; report the gate as blocked.' >&2
     exit 1

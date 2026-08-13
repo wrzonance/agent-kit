@@ -9,14 +9,28 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
-# Both dispatch prompt templates -- where most of this boundary-policy prose
-# lives -- are single-sourced in references/worker-prompts.md (issue #107's
-# split); SKILL.md's body keeps only a gate statement + pointer. Concatenate
-# both so every assertion below keeps checking for the content regardless of
-# which file currently carries it.
-skill=$(cat "$root/agentkit/skills/parallel-issues/SKILL.md" \
-    "$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
+# The boundary rules must live in the PASTED Issue-lead prompt, because a
+# worker starts with fork_context:false and reads nothing but that text. So
+# assert against the prompt fence itself, not against a concatenation of
+# SKILL.md + worker-prompts.md: a location-insensitive haystack still passes
+# when the prompt loses a rule and the dispatcher happens to carry similar
+# wording elsewhere -- which is precisely the regression the split can cause.
+prompt_file="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+skill=$(awk '
+    /^## Issue-lead prompt$/ { seeking = 1; next }
+    seeking && /^````/       { seeking = 0; inblock = 1; next }
+    inblock && /^````/       { exit }
+    inblock                  { print }
+' "$prompt_file")
+[[ -n $skill ]] || { printf 'could not extract the Issue-lead prompt block from %s\n' "$prompt_file" >&2; exit 1; }
 skill=${skill//$'\n'/ }
+
+# SKILL.md's own obligation is separate and narrower: keep the gate statement
+# and the pointer to the single-sourced prompt.
+dispatcher=$(<"$root/agentkit/skills/parallel-issues/SKILL.md")
+dispatcher=${dispatcher//$'\n'/ }
+assert_contains "$dispatcher" 'references/worker-prompts.md' \
+    'the dispatcher points at the single-sourced worker prompts'
 script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh")
 script_text=${script_text//$'\n'/ }
 
@@ -57,11 +71,11 @@ assert_not_contains "$skill" 'agent reads the issue body as the spec and proceed
     'skip guidance no longer describes raw issue text as a specification'
 
 # --- visibility and explicit invocation exceptions -------------------------
-assert_contains "$skill" 'repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=' \
+assert_contains "$dispatcher" 'repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=' \
     'the visibility selector resolves its repository in-block'
-assert_contains "$skill" 'gh repo view "$repository" --json isPrivate' \
+assert_contains "$dispatcher" 'gh repo view "$repository" --json isPrivate' \
     'visibility comes from the repository, not issue-derived text'
-assert_contains "$skill" ': "${yolo_invocation:?set from the invocation line}"' \
+assert_contains "$dispatcher" ': "${yolo_invocation:?set from the invocation line}"' \
     'the selector requires invocation policy instead of silently defaulting it'
 assert_contains "$skill" 'public-fenced' \
     'public repositories select the fenced boundary mode'

@@ -71,8 +71,12 @@ spawns.
 
 ## Degraded path — `spawn_agent` unavailable (`multi_agent = false`)
 
-When the runtime advertises no spawn capability at all, attempt the spawn first and record
-why it failed, then do the implementation **yourself**, under the identical contract: the
+Record the reason before falling back, but do not manufacture a call to prove a known
+absence: when the runtime **advertises** no spawn capability (`multi_agent = false`), that
+advertised state IS the recorded reason — calling a tool the harness does not offer can
+error or stall the run, which is the opposite of the degradation this path exists to
+provide. Attempt the spawn first only when the capability appears present and might still
+fail. Then do the implementation **yourself**, under the identical contract: the
 same six-step loop, the same Review and Finish gates, and the same `agent-run.sh` /
 `worktree-commit.sh` command lines the prompt would have carried. For a batch of independent
 units of work, carry one to completion before starting the next — a single writer has no
@@ -96,5 +100,10 @@ Root = trust/judgment and every privileged or forge-facing action. Luna = mechan
 execution, the default worker tier; Terra `high` is its automatic fallback (see Model/effort
 selection above) — a Luna-unavailable worker is still a dispatched worker, not a blind
 fallback. Terra `xhigh` is reserved for the context-free blind same-harness adversarial-review
-fallback only. A single clean unit of work may be handled by the root directly without a
-dispatched lead.
+fallback only. A single clean unit of work may be handled by the root without a dispatched
+**lead** — that is, without an intermediate orchestration tier. It is not permission to skip the
+**implementation worker**: any code change still goes through one dispatched worker as its sole
+writer, and the only exception is a genuinely unavailable spawn (each consuming skill's degraded
+path, which must be labelled `worker=self` with the reason). Root omitting a lead is an
+org-chart shortcut; root writing the code itself bypasses the isolated model, the six-step gate,
+and the audited handback.

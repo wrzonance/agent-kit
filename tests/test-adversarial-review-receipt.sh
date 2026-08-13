@@ -44,15 +44,20 @@ assert_receipt_contract() {
     assert_contains "$normalized" 'after fixes are pushed' "$label orders receipt after fixes"
     assert_contains "$normalized" 'before draft-phase-complete handoff' "$label orders receipt before handoff"
 
+    # The receipt template itself no longer lives here -- post-receipt.sh
+    # renders it, and "exactly one spent marker" is pinned against the rendered
+    # body in test-post-receipt.sh ("publish body carries exactly one spent
+    # marker") rather than against a heredoc in the prose.
+    #
     # Every other script invocation in this tree is gated by the identical
-    # two-line guard (see e.g. every gh-pr-state.sh call site) -- expect
-    # post-receipt.sh's invocation to follow the same house convention rather
-    # than re-deriving the full resolver inline.
-    assert_contains "$section" '${agentkit:-}/.shared/scripts' "$label publication guards against a missing resolver"
+    # two-line guard (see e.g. every gh-pr-state.sh call site), and
+    # post-receipt.sh's invocation follows that same house convention rather
+    # than re-deriving the full resolver inline. Matched as the COMPLETE guard
+    # expression, never as its halves: the directory fragment also occurs inside
+    # a helper invocation path and the sentinel can occur in a comment, so
+    # matching them independently would accept a block that executes no guard.
+    assert_contains "$section" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' "$label publication executes the full provenance guard"
     assert_contains "$section" 'agentkit unresolved: prepend the Step 0 resolver block' "$label publication fails loudly without the resolver"
-    # The directory check alone passes on a stale inherited value; the sentinel
-    # is what proves the Step 0 resolver actually ran.
-    assert_contains "$section" '${agentkit_provenance:-}' "$label publication requires the provenance sentinel"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'

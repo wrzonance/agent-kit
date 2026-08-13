@@ -101,12 +101,26 @@ assert_eq yes "$([[ -n $nonce_a && -n $nonce_b && $nonce_a != "$nonce_b" ]] && p
 
 # A supplied --prior-art file publishes byte-identical content (not the
 # default sentinel) in a verbatim-copy boundary mode.
+#
+# Compared with cmp, and with a fixture that ends in a blank line. The previous
+# comparison was $(cat -- file) against $(<file): command substitution strips
+# every trailing newline from BOTH sides, so it could not fail for the defect it
+# existed to catch -- the file was round-tripped through a shell variable and
+# published without the blank line that terminates a Markdown block, silently
+# editing content these boundary modes promise to copy verbatim.
 worktree=$(new_worktree)
 prior_file="$tmp_dir/prior-art.txt"
-printf 'triage found related PR #9\n' >"$prior_file"
+printf 'triage found related PR #9\n\n' >"$prior_file"
 GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 yolo-trusted "$prior_file" >/dev/null 2>&1
-assert_eq "$(cat -- "$prior_file")" "$(<"$worktree/.agent/fenced-prior-art.txt")" \
-    'a supplied prior-art file publishes byte-identical content in yolo-trusted mode'
+published_prior="$worktree/.agent/fenced-prior-art.txt"
+if cmp -s "$prior_file" "$published_prior"; then
+    _pass 'a supplied prior-art file publishes byte-identical content in yolo-trusted mode'
+else
+    _fail 'a supplied prior-art file publishes byte-identical content in yolo-trusted mode' \
+        "source $(wc -c <"$prior_file") bytes, published $(wc -c <"$published_prior") bytes"
+fi
+assert_eq "$(wc -c <"$prior_file")" "$(wc -c <"$published_prior")" \
+    'the published prior-art keeps its trailing blank line'
 
 # ------------------------------------------------------------ empty issue
 worktree=$(new_worktree)
@@ -149,9 +163,17 @@ worktree=$(new_worktree)
 GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted >/dev/null 2>&1
 spec_before=$(<"$worktree/.agent/fenced-spec.txt")
 prior_before=$(<"$worktree/.agent/fenced-prior-art.txt")
+fetched_before="$tmp_dir/fetched-before.json"
+cp -- "$worktree/.agent/fetched-issue.json" "$fetched_before"
+# The refused run is fed a DIFFERENT payload on purpose. With the same fixture
+# both times, a re-fetch rewrites byte-identical content and the comparison
+# below cannot detect the clobber it exists to catch -- it would pass whether or
+# not the refusal happens before the fetch.
+refuse_fixture="$tmp_dir/issue-fetch-changed.json"
+jq '.title = "CHANGED AFTER THE FIRST RUN"' "$fixture" >"$refuse_fixture"
 err="$tmp_dir/refuse.err"
 rc=0
-GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted \
+GH_STUB_RESPONSE="$refuse_fixture" run_prepare "$worktree" 42 private-trusted \
     >/dev/null 2>"$err" || rc=$?
 assert_eq 12 "$rc" 'a complete fenced artifact set refuses re-fencing with exit 12'
 assert_contains "$(<"$err")" 'delete the affected file deliberately before re-fencing' \
@@ -160,6 +182,49 @@ assert_eq "$spec_before" "$(<"$worktree/.agent/fenced-spec.txt")" \
     'the refusal leaves the existing spec artifact untouched'
 assert_eq "$prior_before" "$(<"$worktree/.agent/fenced-prior-art.txt")" \
     'the refusal leaves the existing prior-art artifact untouched'
+# fetched-issue.json is part of the same deliberate set. The refusal used to run
+# after the fetch had already replaced it, so this compares bytes (cmp, not a
+# command substitution that would strip trailing newlines) to prove the refusal
+# now happens before any network call or publish.
+if cmp -s "$fetched_before" "$worktree/.agent/fetched-issue.json"; then
+    _pass 'the refusal leaves fetched-issue.json byte-identical'
+else
+    _fail 'the refusal leaves fetched-issue.json byte-identical' \
+        "before $(wc -c <"$fetched_before") bytes, after $(wc -c <"$worktree/.agent/fetched-issue.json") bytes"
+fi
+
+# ------------------------------------------------- step-named publish failure
+# The trio is published one member at a time and is not atomic, so a failure
+# must name WHICH member did not land -- "mv/mkdir failed" leaves the caller to
+# work out whether the spec, the prior-art pair, or the readiness marker is
+# missing. Injected with a mv stub that fails only for the prior-art move.
+fail_mv_dir="$tmp_dir/fail-mv-bin"
+mkdir -p "$fail_mv_dir"
+real_mv=$(command -v mv)
+cat >"$fail_mv_dir/mv" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+    case \$arg in
+        *fenced-prior-art.txt) printf 'mv: injected failure\\n' >&2; exit 1 ;;
+    esac
+done
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$fail_mv_dir/mv"
+ln -sf "$stub_gh" "$fail_mv_dir/gh"
+worktree=$(new_worktree)
+err="$tmp_dir/publish-step.err"
+rc=0
+GH_STUB_RESPONSE="$fixture" PATH="$fail_mv_dir:$stub_path:$PATH" "$bash_bin" "$script" \
+    --worktree "$worktree" --issue 42 --boundary private-trusted \
+    >/dev/null 2>"$err" || rc=$?
+assert_eq 1 "$rc" 'a failed publication step exits with that step'"'"'s status'
+assert_contains "$(<"$err")" 'fenced-prior-art.txt' \
+    'the publication failure names the member that did not land'
+assert_contains "$(<"$err")" 'the fenced artifact set is incomplete' \
+    'the publication failure says the set is incomplete'
+assert_eq no "$([[ -d "$worktree/.agent/fenced-ready" ]] && printf yes || printf no)" \
+    'a failed publication step leaves no readiness marker'
 
 # --------------------------------------------------------------- incomplete
 worktree=$(new_worktree)

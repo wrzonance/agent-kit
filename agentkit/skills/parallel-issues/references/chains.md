@@ -22,7 +22,15 @@ table (attended runs get approval on it; `--fast-mode` proceeds and discloses).
 
 A cycle cannot be linearized into a chain. When the graph contains one, report the cyclic
 members by issue number and fall back to the ordinary drop/ask handling for exactly those
-issues — the rest of the chain plan is unaffected. Chains respect a hard depth cap of 4;
+issues — the rest of the chain plan is unaffected.
+
+**A join is not linearizable either, and is handled the same way.** If an issue has more
+than one predecessor in the graph (C blocked by both A and B), there is no single
+`chain_base_sha` for it: dispatching C from either predecessor alone silently builds it on
+a base missing the other's published commits. Report the joining issue and its predecessors
+by number and drop exactly that issue from the chain plan, leaving its predecessors to run
+as ordinary chain members. Do not pick one predecessor, and do not invent a merge base —
+combining two published commits is a real integration decision, not a dispatch detail. Chains respect a hard depth cap of 4;
 an issue that would extend a chain past that depth is dropped from the chain with a named
 report rather than silently truncated or silently included.
 

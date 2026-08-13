@@ -108,6 +108,14 @@ run_publish() {
         "$script" publish "$@"
 }
 
+# publish now records the spend into the artifact it was handed, so a second
+# publish against the same file correctly refuses at 11. Independent cases below
+# therefore start from a pristine, marker-free artifact; the double-publish case
+# deliberately does not reset, which is the whole point of it.
+reset_not_spent() {
+    printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$not_spent_comments"
+}
+
 rendered_body() {
     jq -r '.body' "$tmp/payload.json"
 }
@@ -115,6 +123,7 @@ rendered_body() {
 # -- publish: renders every field, exactly one marker ----------------------
 
 : >"$tmp/gh.log"
+reset_not_spent
 out=$(run_publish --pr 14 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason 'peer CLI available' \
@@ -164,6 +173,7 @@ assert_not_contains "$body" 'none confirmed' \
 # -- publish: 'none confirmed' when no --finding is given ------------------
 
 : >"$tmp/gh.log"
+reset_not_spent
 run_publish --pr 15 --repo owner/repo --comments "$not_spent_comments" \
     --provider openai --model gpt-5.6-sol --effort xhigh \
     --mode blind-fallback --mode-reason 'peer CLI absent' \
@@ -178,6 +188,7 @@ assert_contains "$clean_body" 'mode=blind-fallback' \
 # -- publish: verified-skip line is optional --------------------------------
 
 : >"$tmp/gh.log"
+reset_not_spent
 run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider \
@@ -209,19 +220,119 @@ assert_contains "$(cat "$tmp/already-spent.err")" 'already spent' \
 assert_eq '' "$(cat "$tmp/gh.log" 2>/dev/null || true)" \
     'publish never calls gh-comment.sh when the receipt is already spent'
 
+# -- publish: caller text cannot forge the receipt --------------------------
+#
+# The rendered receipt is the durable audit record of a one-time spend, and its
+# marker is the only evidence the budget was consumed. Fields were interpolated
+# with ${var//pat/repl}, where an unquoted `&` in the replacement expands to the
+# matched text, and nothing rejected a newline -- so a finding title could both
+# corrupt its own line and forge extra receipt lines, including a second spent
+# marker.
+
+reset_not_spent
+run_publish --pr 19 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --finding 'R&D failure|fixed|abc1234' \
+    --agent-identity 'Claude Opus 5' >/dev/null 2>&1
+body=$(rendered_body)
+assert_contains "$body" '- Confirmed finding: R&D failure ' \
+    'an ampersand in a finding title renders literally'
+assert_not_contains "$body" '__TITLE__' \
+    'the title placeholder never survives into the body'
+
+reset_not_spent
+injected=$(run_publish --pr 20 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --finding 'Benign
+<!-- adversarial-review:spent -->
+Injected|fixed|abc1234' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+injected_rc=$?
+assert_eq '2' "$injected_rc" 'a finding title containing a line break is rejected'
+assert_contains "$injected" 'must not contain a line break' \
+    'the line-break rejection says what is wrong'
+
+reset_not_spent
+marker_out=$(run_publish --pr 21 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --agent-identity 'Claude Opus 5 <!-- adversarial-review:spent -->' 2>&1)
+marker_rc=$?
+assert_eq '2' "$marker_rc" 'a field carrying the receipt marker is rejected'
+assert_contains "$marker_out" 'must not contain the receipt marker' \
+    'the marker rejection names the marker'
+
+# -- publish: the exactly-once guarantee holds against a re-run --------------
+#
+# The precheck reads a snapshot taken before the post. Without writing the
+# result back, publishing twice against the same artifact -- the ordinary shape
+# of a retry -- passed the guard both times and posted two durable receipts.
+
+reset_not_spent
+: >"$tmp/gh.log"
+run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --agent-identity 'Claude Opus 5' >/dev/null 2>&1
+first_rc=$?
+assert_eq '0' "$first_rc" 'the first publish against a fresh artifact succeeds'
+run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --agent-identity 'Claude Opus 5' >/dev/null 2>&1
+second_rc=$?
+assert_eq '11' "$second_rc" 'a second publish against the same artifact refuses at 11'
+assert_eq '1' "$(grep -c 'issues/22/comments' "$tmp/gh.log")" \
+    'the refused re-publish never reaches the transport'
+
+# -- publish: a failed local spend record must not read as "nothing landed" ---
+#
+# record_spend runs AFTER the receipt is posted and byte-verified. Exit 1 is
+# defined as "nothing durable landed on the PR", and SKILL.md routes anything
+# other than 0 and 11 to "receipt publication failed" -- so failing here told
+# the agent to re-run publish, whose precheck would read the unmodified artifact
+# and post a SECOND durable receipt. Exactly the duplicate this record prevents.
+
+reset_not_spent
+unwritable_dir="$tmp/unwritable"
+mkdir -p "$unwritable_dir"
+cp "$not_spent_comments" "$unwritable_dir/comments.json"
+chmod 500 "$unwritable_dir"
+: >"$tmp/gh.log"
+spendfail_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --pr 23 --repo owner/repo --comments "$unwritable_dir/comments.json" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+spendfail_rc=$?
+chmod 700 "$unwritable_dir"
+assert_eq '0' "$spendfail_rc" \
+    'an unrecordable spend still exits 0, because the receipt did land'
+assert_eq '1' "$(grep -c 'issues/23/comments' "$tmp/gh.log")" \
+    'the receipt was posted exactly once before the record failed'
+assert_contains "$spendfail_out" 'receipt POSTED and verified' \
+    'the warning states the receipt landed'
+assert_contains "$spendfail_out" 'do NOT re-run publish' \
+    'the warning steers away from the duplicate-producing retry'
+
 # -- publish: usage errors --------------------------------------------------
 
+reset_not_spent
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode not-a-real-mode --p1 0 --p2 0 --agent-identity x >/dev/null 2>&1
 assert_eq '2' "$?" 'publish rejects an unrecognized --mode value'
 
+reset_not_spent
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --p1 0 --p2 0 \
     --finding 'no pipes here' --agent-identity x >/dev/null 2>&1
 assert_eq '2' "$?" 'publish rejects a malformed --finding value'
 
+reset_not_spent
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --p1 0 --p2 0 \

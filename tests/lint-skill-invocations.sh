@@ -49,12 +49,19 @@ trap 'rm -rf -- "$work"' EXIT
 
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues|post-receipt|prepare-issue-artifacts|board-list'
 readonly FULL_RESOLVER_MARK='agentkit=\$(sed -n "s/\^skills= path='
-readonly GUARD_MARK='${agentkit:-}/.shared/scripts'
+# Both halves of the guard are matched as complete TEST EXPRESSIONS on a single
+# non-comment line, never as loose substrings. Substring matching is not enough:
+# `${agentkit:-}/.shared/scripts` also appears inside a helper invocation path,
+# and `${agentkit_provenance:-}` can appear in a comment, so a fence carrying a
+# bare invocation plus a comment mentioning the sentinel would satisfy both
+# marks while executing no guard at all -- the exact bypass this rule exists to
+# close.
+readonly GUARD_EXPR_DIR='[ -d "${agentkit:-}/.shared/scripts" ]'
 # The directory check alone is satisfied by any stale or profile-inherited
 # $agentkit that happens to point at a real tree, which is exactly the case the
 # sentinel exists to reject. Requiring both is what makes the provenance
 # boundary enforced rather than decorative.
-readonly SENTINEL_MARK='${agentkit_provenance:-}'
+readonly GUARD_EXPR_SENTINEL='[ "${agentkit_provenance:-}" = ok ]'
 # Skills whose earliest setup step keeps the single boxed resolver definition;
 # every other bash block in these two files must carry the guard instead.
 readonly SINGLE_SOURCE_SKILLS='review-remote-pr parallel-issues'
@@ -69,6 +76,7 @@ no_resolver=0
 def_count_violations=0
 resolver_side_effects=0
 sentinel_gaps=0
+unreachable_guards=0
 
 # Every SKILL.md, every references/*.md beneath it, and every .shared/*.md
 # policy file -- a split skill's reference files and the shared policy files
@@ -95,6 +103,29 @@ if [[ -n $pinned_paths ]]; then
     printf 'PINNED plugin-cache path in skill text:\n%s\n' "$pinned_paths" >&2
     unguarded=$((unguarded + 1))
 fi
+
+# Prints the code portion of a shell line, dropping a trailing comment.
+# `${line%%#*}` is not good enough: bash only starts a comment at an UNQUOTED
+# `#` that begins a word, so `: '#'; agent-run.sh` really does run the helper
+# while a naive cut hides it -- a lint bypass for exactly the bare invocation
+# this gate exists to catch. Tracks quote state and requires the `#` to start a
+# word, which is bash's own rule.
+strip_shell_comment() {
+    local line=$1 out='' quote='' char prev='' i
+    for ((i = 0; i < ${#line}; i++)); do
+        char=${line:i:1}
+        if [[ -n $quote ]]; then
+            [[ $char == "$quote" ]] && quote=''
+        elif [[ $char == "'" || $char == '"' ]]; then
+            quote=$char
+        elif [[ $char == '#' && ( -z $prev || $prev == [[:space:]] || $prev == ';' ) ]]; then
+            break
+        fi
+        out+=$char
+        prev=$char
+    done
+    printf '%s' "$out"
+}
 
 for skill_file in "${md_files[@]}"; do
     # references/*.md belongs to the skill directory one level above
@@ -157,8 +188,8 @@ for skill_file in "${md_files[@]}"; do
         # Exempt when the reference sits entirely inside a comment -- not just
         # a LEADING comment (`^#`), but also a trailing one on an otherwise
         # code-bearing line (e.g. a `case` arm's `# helper.sh did X` note).
-        # Only the text before the first `#` counts as code for this check.
-        code_part=${line%%#*}
+        # Only the text before the comment counts as code for this check.
+        code_part=$(strip_shell_comment "$line")
         grep -qE "($HELPERS)\.sh" <<< "$code_part" || continue
         grep -qE "(printf|echo)" <<< "$line" && continue
         grep -qE "/($HELPERS)\.sh" <<< "$line" && continue
@@ -206,22 +237,89 @@ for skill_file in "${md_files[@]}"; do
                 continue
             fi
             grep -qE "($HELPERS)\.sh" "$fence" || continue
-            if grep -qF "$GUARD_MARK" "$fence"; then
-                grep -qF "$SENTINEL_MARK" "$fence" && continue
+            # Executed guard only: comment lines are skipped, and both halves
+            # must appear as test expressions on the SAME line, which is how the
+            # guard is actually written. A mention in prose or a comment proves
+            # nothing about what runs.
+            guard_dir=0
+            guard_both=0
+            # Reachability, not mere presence. A guard nested inside an if/else
+            # protects only the path it sits on: review-remote-pr's Step 0a once
+            # carried the guard inside the worktree-CREATION branch while calling
+            # agent-preflight.sh after the `fi`, so the worktree-REUSE path -- the
+            # common resume case -- reached the helper with $agentkit never
+            # validated. Presence-only matching passed that fence. Track the
+            # position of the guard, not just its depth. DEPTH ALONE IS NOT
+            # ENOUGH: a helper on line 1 and the guard on line 2, both at depth
+            # 0, compares equal and passes while the helper has already run
+            # unguarded. The convention is "prepend the guard", so enforce
+            # exactly that -- an effective guard sits at depth 0 AND ahead of
+            # the first helper invocation in the fence.
+            depth=0
+            pos=0
+            guard_pos=-1
+            guard_depth=-1
+            invoke_pos=-1
+            invoke_depth=-1
+            while IFS= read -r line; do
+                stripped=$(strip_shell_comment "$line")
+                trimmed=${stripped#"${stripped%%[![:space:]]*}"}
+                [[ -z $trimmed ]] && continue
+                pos=$((pos + 1))
+                # Close before recording: `fi` belongs to the enclosing level.
+                [[ $trimmed =~ ^(fi|done|esac)([[:space:]]|;|$) ]] && ((depth > 0)) && depth=$((depth - 1))
+                if [[ $trimmed == *"$GUARD_EXPR_DIR"* ]]; then
+                    guard_dir=1
+                    # Record the first guard that is BOTH complete and at depth
+                    # 0; a deeper or later one cannot retroactively protect an
+                    # earlier call.
+                    if [[ $trimmed == *"$GUARD_EXPR_SENTINEL"* ]]; then
+                        guard_both=1
+                        if [[ $guard_pos -lt 0 && $depth -eq 0 ]]; then
+                            guard_pos=$pos
+                            guard_depth=$depth
+                        fi
+                        [[ $guard_depth -lt 0 ]] && guard_depth=$depth
+                    fi
+                elif grep -qE "\"\\\$agentkit/[^\"]*($HELPERS)\.sh\"" <<< "$trimmed"; then
+                    if [[ $invoke_pos -lt 0 ]]; then
+                        invoke_pos=$pos
+                        invoke_depth=$depth
+                    fi
+                fi
+                if [[ $trimmed =~ ^(if|for|while|case)([[:space:]]|$) ]] ||
+                   [[ $trimmed =~ \;[[:space:]]*(then|do)$ ]]; then
+                    depth=$((depth + 1))
+                fi
+            done < "$fence"
+            if ((guard_both)) && [[ $invoke_pos -ge 0 ]] &&
+               [[ $guard_pos -lt 0 || $guard_pos -gt $invoke_pos ]]; then
+                unreachable_guards=$((unreachable_guards + 1))
+                if [[ $guard_pos -lt 0 ]]; then
+                    printf 'GUARD NOT ON EVERY PATH in %s (fence %s): the only guard sits at block depth %s, inside a branch, while a helper runs at depth %s; hoist it to the top of the fence\n' \
+                        "$skill_file" "$fence_name" "$guard_depth" "$invoke_depth" >&2
+                else
+                    printf 'GUARD AFTER HELPER in %s (fence %s): the guard is statement %s but a helper already ran at statement %s; the guard must precede every invocation it protects\n' \
+                        "$skill_file" "$fence_name" "$guard_pos" "$invoke_pos" >&2
+                fi
+                continue
+            fi
+            ((guard_both)) && continue
+            if ((guard_dir)); then
                 sentinel_gaps=$((sentinel_gaps + 1))
-                printf 'GUARD WITHOUT SENTINEL in %s (fence %s): a directory-only guard is satisfied by a stale inherited agentkit; require [ "${agentkit_provenance:-}" = ok ] too\n' \
-                    "$skill_file" "$fence_name" >&2
+                printf 'GUARD WITHOUT SENTINEL in %s (fence %s): a directory-only guard is satisfied by a stale inherited agentkit; require %s on the same line\n' \
+                    "$skill_file" "$fence_name" "$GUARD_EXPR_SENTINEL" >&2
                 continue
             fi
             no_resolver=$((no_resolver + 1))
-            printf 'MISSING RESOLVER in %s (fence %s): a helper is invoked with neither the full resolver nor the guard\n' \
+            printf 'MISSING RESOLVER in %s (fence %s): a helper is invoked with neither the full resolver nor an executed guard\n' \
                 "$skill_file" "$fence_name" >&2
         done
     fi
 done
 
-printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps\n' \
-    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps"
+printf 'skill invocations: %d references, %d bare; %d contract reads, %d unguarded, %d fallback, %d missing-resolver, %d definition-count violations, %d resolver side effects, %d sentinel gaps, %d unreachable guards\n' \
+    "$checked" "$bare" "$contract_reads" "$missing_contract_reads" "$fallbacks" "$no_resolver" "$def_count_violations" "$resolver_side_effects" "$sentinel_gaps" "$unreachable_guards"
 [[ $bare -eq 0 && $unguarded -eq 0 && $missing_contract_reads -eq 0 && $fallbacks -eq 1 &&
    $no_resolver -eq 0 && $def_count_violations -eq 0 && $resolver_side_effects -eq 0 &&
-   $sentinel_gaps -eq 0 ]]
+   $sentinel_gaps -eq 0 && $unreachable_guards -eq 0 ]]

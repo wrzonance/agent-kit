@@ -42,7 +42,7 @@ implementation begins only at Stage 6.
 Report the checklist and its status; do not collapse the first five steps into "design" or
 describe the loop only as "design → invariants → TDD." Name every step:
 
-```
+```text
 Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Revert ✅ ·
 5 Invariants ✅ · 6 Implementation (TDD) in progress
 ```
@@ -69,6 +69,6 @@ Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Rev
 | 3. Todos | **Design** — map every affected file, call site, import, wiring point, and verification command; synthesize the design and decide `needsSpike` |
 | 4. Spike + revert | **Spike** — rough-implement one bounded vertical slice only far enough to expose design mistakes, record learnings, then revert every spike change |
 | 5. Invariants | **Invariants** — fold spike learnings back, state boundary pre/postconditions, and cut the ordered task list |
-| 6. Implementation (TDD) | **Implement** — red → green → refactor per task; scoped checks per commit and the full suite at the final task, all through `agent-run.sh`; commits through `worktree-commit.sh` |
+| 6. Implementation (TDD) | **Implement** — red → green → refactor per task; scoped checks per task and the full suite at the final task, all through `agent-run.sh`. Leave the scoped changes **unstaged**: a worker never runs `worktree-commit.sh` itself, it returns the exact invocation in its handback and the root runs it (see the `verify + ship` row) |
 | review gate | **Review** — correctness, house-rules, and test lenses; adversarially verify before fixing; max 2 rounds |
 | verify + ship | **Finish** — worker leaves scoped changes unstaged and returns a publication handback; the root alone verifies, commits, pushes, and publishes |
