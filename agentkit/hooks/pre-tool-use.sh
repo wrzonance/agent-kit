@@ -122,18 +122,22 @@ fi
 if [[ $target_classification != fixture && $target_classification != foreign ]] &&
     branch=$(guard_trunk_commit_reason "$command_line" "${target_root:-$protect_root}"); then
     if guard_should_deny "$protect_root" "$session" trunk-commit; then
+        if guard_commit_has_explicit_worktree "$command_line"; then
+            provenance="An explicit git -C worktree pin identifies the landing worktree."
+        else
+            provenance="Because this repository has one worktree, those observations identify the inferred landing branch."
+        fi
         reason="Refused once -- this commit would land on $branch, the inferred landing
-branch. The hook observed repository root: ${target_root:-unresolved}
-and observed HEAD branch: $branch. Because this repository has one worktree,
-those observations identify the inferred landing branch, which is the trunk
-branch this repository declares. Work that is reviewed before it merges needs a branch:
+branch. The hook observed repository root: ${target_root:-$protect_root}
+and observed HEAD branch: $branch. $provenance This is the trunk branch this
+repository declares. Work that is reviewed before it merges needs a branch:
 
   git checkout -b <type>/<short-name>
 
 If committing to $branch is genuinely right here, make the same call again and
 it will be allowed.
 
-Target classification: $target_classification; repository target: ${target_root:-unresolved}."
+Target classification: $target_classification; repository target: ${target_root:-$protect_root}."
         [[ $target_classification != unresolved ]] || reason+=$'\nThe target classification is ambiguous; retry if this is an ephemeral fixture, after confirming its resolved git root.'
         deny "$reason"
     fi
