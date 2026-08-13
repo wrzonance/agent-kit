@@ -247,6 +247,11 @@ repo=$(mktemp -d "$tmp/repo.XXXXXX")
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_eq '' "$out" 'absent config produces no output'
 assert_rc 0 'absent config exits 0' -- "$rc_sh" --repo-root "$repo" --export
+mkdir -p "$repo/.agent"
+: > "$repo/.agent/config.env"
+resolve_out=$("$rc_sh" --repo-root "$repo" --resolve AGENT_CMD_TEST 2> /dev/null)
+assert_contains "$resolve_out" '__AGENT_CONFIG_PARSE_STATUS__' \
+    'an empty config still emits a resolve status under Bash nounset'
 
 # --- usage -----------------------------------------------------------------
 assert_rc 2 'no mode argument is a usage error' -- "$rc_sh" --repo-root "$repo"

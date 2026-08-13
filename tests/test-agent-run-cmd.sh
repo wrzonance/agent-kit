@@ -102,6 +102,23 @@ out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
 assert_contains "$out" 'survives-unrelated-config-errors' \
     'a valid command executes despite unrelated malformed declarations'
 
+# A misbased command that is not the requested command may warn during the
+# resolver's whole-file audit, but it must not make the valid requested command
+# fatal. The refusal must remain scoped to the key being run.
+repo=$(make_repo)
+mkdir -p "$repo/dashboard" "$repo/tools"
+printf '#!/bin/sh\nprintf valid-requested\n' > "$repo/tools/requested"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/root-only"
+chmod +x "$repo/tools/requested" "$repo/tools/root-only"
+printf 'AGENT_CMD_TEST=tools/requested\nAGENT_CMD_BAD=tools/root-only\nAGENT_RUNDIR_BAD=dashboard\n' \
+    > "$repo/.agent/config.env"
+out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+requested_log=$(find "$repo/.agent/logs" -name '*-test.log' -type f -print -quit)
+assert_contains "$(cat "$requested_log")" 'valid-requested' \
+    'a valid requested command runs despite an unrelated misbased declaration'
+assert_not_contains "$out" 'cannot run AGENT_CMD_TEST' \
+    'an unrelated misbased declaration does not refuse the requested key'
+
 # Unrelated declarations are outside the invocation identity. They may change
 # on a checkout while the declared command remains yolo-safe and executable.
 repo=$tmp/unrelated-yolo

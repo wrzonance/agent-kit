@@ -560,12 +560,12 @@ repo_config_resolve_keys() {
         if [[ $key == __AGENT_CONFIG_PARSE_STATUS__ ]]; then
             IFS= read -r -d '' field <&3 || {
                 exec 3<&-
-                rm -f -- "$tmp"
+                rm -f -- "$tmp" "$diagnostics"
                 return 1
             }
             [[ $field == 0 || $field == 1 ]] || {
                 exec 3<&-
-                rm -f -- "$tmp"
+                rm -f -- "$tmp" "$diagnostics"
                 return 1
             }
             [[ $field == 1 ]] && resolved_parse_failed=yes

@@ -414,7 +414,9 @@ rundir_path_diagnostic() {
     [[ -n $root_candidate && -n $rundir_candidate ]] || return 0
     [[ -e $root_candidate || -L $root_candidate ]] || return 0
     [[ ! -e $rundir_candidate && ! -L $rundir_candidate ]] || return 0
-    rundir_mismatch=1
+    if [[ $mode != resolve || -n ${resolve_requested_keys[$key]+yes} ]]; then
+        rundir_mismatch_requested=1
+    fi
     warn "rundir-relative argv[0] mismatch for $key: '$argv0' resolves from repository root '$repo_root' to '$root_candidate', but from declared rundir '$repo_root/$rundir' to missing '$rundir_candidate'; fix $key to use a path relative to '$repo_root/$rundir' (or move the executable); do not add a literal twin to route around approval"
 }
 
@@ -487,7 +489,7 @@ declare -A value_by_key=() seen_by_key=()
 # yolo gate can fail closed without treating unrelated config as invocation
 # input.
 parse_failed=0
-rundir_mismatch=0
+rundir_mismatch_requested=0
 lineno=0
 
 while IFS= read -r line || [[ -n $line ]]; do
@@ -556,11 +558,13 @@ done < "$config_file"
 # Run after the whole file is parsed so command/rundir declarations may appear
 # in either order. Bootstrap treats this warning as a write-time validation
 # failure; ordinary listing still shows the declarations and the precise fix.
-for key in "${out_keys[@]}"; do
-    if [[ $key =~ ^AGENT_CMD_ ]]; then
-        rundir_path_diagnostic "$key" "${value_by_key[$key]}"
-    fi
-done
+if ((${#out_keys[@]})); then
+    for key in "${out_keys[@]}"; do
+        if [[ $key =~ ^AGENT_CMD_ ]]; then
+            rundir_path_diagnostic "$key" "${value_by_key[$key]}"
+        fi
+    done
+fi
 
 if [[ $mode == canonical ]] && ((parse_failed)); then
     exit 1
@@ -634,7 +638,7 @@ case $mode in
         # invocation gate consumes this marker to fail closed under --yolo
         # without turning unrelated config mistakes into usage errors.
         printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
-        ((rundir_mismatch)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
+        ((rundir_mismatch_requested)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
         ;;
 esac
 
