@@ -189,6 +189,14 @@ if scope_target=$(guard_out_of_scope_target "$command_line" "$cwd"); then
     fi
 fi
 
+# Inline gh mutation bodies are advisory only. The command still runs, while
+# the exact file-backed policy arrives before the next tool call.
+if gh_body_reason=$(guard_gh_inline_body_reason "$command_line"); then
+    if guard_should_advise "$protect_root" "$session" gh-inline-body; then
+        advise "$gh_body_reason"
+    fi
+fi
+
 if [[ -n $ADVISORY_CONTEXT ]]; then
     jq -nc --arg ctx "$ADVISORY_CONTEXT" \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$ctx}}'
