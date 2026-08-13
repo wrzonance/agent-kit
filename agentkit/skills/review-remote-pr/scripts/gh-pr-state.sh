@@ -37,6 +37,10 @@ set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/provider-identity.sh"
 # CHECK NAMES only. Deliberately a substring: the rollup entry is named
 # "CodeRabbit" in some repos and "coderabbitai" in others, and a check name is a
 # display/CI concern, not an identity boundary.
@@ -323,19 +327,17 @@ ci_counts() {
 # list exactly, so this workflow only offers to auto-resolve threads it fully
 # owns.
 thread_counts() {
-    jq -r --arg cr "$CR_LOGIN_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" '
+    jq -r --arg cr "$CR_LOGIN_RE" --arg cq "$CQ_RE" --arg mark "$AGENT_MARKER" --arg doc "$AGENT_DOC_MARKER" "$PROVIDER_IDENTITY_JQ"'
         def author_login: ((.author.login // "") | ascii_downcase);
         def known_provider:
-          (author_login | test($cr; "i"))
-          or author_login == "github-code-quality"
-          or author_login == "github-code-quality[bot]";
+          (author_login | known_provider_login);
         def type_is_bot:
           ((.author.type // "") == "Bot") or ((.author.__typename // "") == "Bot");
         def login_suffix: (author_login | test("\\[bot\\]$"));
         def classification:
           if known_provider then
             {lane:"known-provider", signal:"known-provider", provider:
-              (if (author_login | test($cr; "i")) then "coderabbit" else "github-code-quality" end)}
+              (if (author_login | is_coderabbit_login) then "coderabbit" else "github-code-quality" end)}
           elif login_suffix then
             {lane:"generic-automated", signal:"login-suffix", provider:null}
           elif type_is_bot then

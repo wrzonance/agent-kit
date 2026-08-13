@@ -7,6 +7,11 @@
 # forge signal. Everything else remains human.
 set -euo pipefail
 
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/provider-identity.sh"
+
 readonly PROGNAME=${0##*/}
 INPUT_FILE='-'
 
@@ -59,19 +64,15 @@ if [[ $INPUT_FILE != '-' ]]; then
     [[ -r $INPUT_FILE ]] || die "cannot read input file: $INPUT_FILE"
 fi
 
-jq -c '
+jq -c "$PROVIDER_IDENTITY_JQ"'
   def login: ((.login // "") | ascii_downcase);
   # Exact accounts, never a substring. The known-provider lane is what allows a
   # thread to be replied to and resolved WITHOUT the human confirmation gate, so
   # an unanchored "coderabbit" test handed that lane to any human who registers
   # a login like "mycoderabbit". An account that merely resembles a provider is
   # ambiguous, and every ambiguous author is human.
-  def is_coderabbit:
-    (login == "coderabbitai") or (login == "coderabbitai[bot]");
   def known_provider:
-    is_coderabbit
-    or login == "github-code-quality"
-    or login == "github-code-quality[bot]";
+    (login | known_provider_login);
   def type_is_bot:
     ((.type // "") == "Bot") or ((.__typename // "") == "Bot");
   def login_suffix: (login | test("\\[bot\\]$"));
@@ -79,7 +80,7 @@ jq -c '
   | ($author.login // "") as $original_login
   | if known_provider then
     {lane:"known-provider", signal:"known-provider", automated:true,
-     provider:(if is_coderabbit then "coderabbit"
+     provider:(if (login | is_coderabbit_login) then "coderabbit"
                else "github-code-quality" end)}
   elif login_suffix then
     {lane:"generic-automated", signal:"login-suffix", automated:true, provider:null}

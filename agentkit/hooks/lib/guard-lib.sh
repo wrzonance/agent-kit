@@ -36,6 +36,12 @@ readonly RESOLVE_HINT='  agentkit=
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment'
 
+SHARED_SCRIPT_LIB=$(cd -- "${BASH_SOURCE[0]%/*}/../../skills/.shared/scripts/lib" 2>/dev/null && pwd -P) || return 0
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SHARED_SCRIPT_LIB/protected-paths.sh"
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SHARED_SCRIPT_LIB/trunk-policy.sh"
+
 # Populated by guard_resolve_roots.
 roots=()
 
@@ -900,7 +906,7 @@ guard_worktree_count() {
 }
 
 guard_trunk_commit_reason() {
-    local cmd=$1 root=$2 current trunk worktrees
+    local cmd=$1 root=$2 current worktrees
     [[ -n $root ]] || return 1
 
     # Command position, so `git commit` in a message body or a grep pattern is
@@ -921,14 +927,7 @@ guard_trunk_commit_reason() {
     worktrees=$(guard_worktree_count "$root")
     [[ $worktrees == 1 ]] || return 1
 
-    trunk=$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH[[:space:]]*=[[:space:]]*//p' \
-        "$root/.agent/config.env" 2> /dev/null | tail -1)
-    trunk=${trunk%%[[:space:]]*}
-    if [[ -z $trunk ]]; then
-        trunk=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2> /dev/null) || true
-        trunk=${trunk#origin/}
-    fi
-    [[ -n $trunk && $current == "$trunk" ]] || return 1
+    shared_is_trunk_branch "$current" "$root" || return 1
 
     printf '%s' "$current"
 }
@@ -958,31 +957,11 @@ guard_log_error() {
 # repository. Anything repo-specific -- migrations, generated files, a vendored
 # tree -- belongs in AGENT_PROTECTED_PATHS, because guessing at it here would be
 # wrong somewhere else.
-readonly -a GUARD_PROTECTED_DEFAULTS=(
-    '.github/workflows/'
-    '.gitlab-ci.yml'
-    '.circleci/'
-    'azure-pipelines.yml'
-    'Jenkinsfile'
-    '.githooks/'
-    '.git/hooks/'
-    '.git/config'
-    '.pre-commit-config.yaml'
-    # The harness CONFIG decides what runs; the installed plugin tree does not.
-    # A blanket '.codex/' refused an agent READING the very skill it had been
-    # asked to follow -- the guard fired on the plugin's own instructions.
-    '.codex/config.toml'
-    '.claude/settings.json'
-    '.claude/settings.local.json'
-)
-
 # Prints the matched pattern when a path is protected. Repository-declared
 # entries are additive: a repo can extend the list, never shrink it, so a
 # committed file cannot switch its own guard off.
 guard_protected_match() {
-    local candidate=$1 root=$2 pattern
-    local -a patterns=("${GUARD_PROTECTED_DEFAULTS[@]}")
-
+    local candidate=$1 root=$2
     candidate=${candidate//\\//}
     candidate=${candidate#./}
     # An absolute path inside the repository is compared repo-relative, so the
@@ -996,22 +975,10 @@ guard_protected_match() {
         if [[ -n $declared ]]; then
             local IFS=,
             read -r -a extra <<< "$declared"
-            patterns+=("${extra[@]}")
+            declared=$(IFS=,; printf '%s' "${extra[*]}")
         fi
     fi
-
-    for pattern in "${patterns[@]}"; do
-        [[ -n $pattern ]] || continue
-        pattern=${pattern#./}
-        if [[ $pattern == */ ]]; then
-            [[ $candidate == "$pattern"* || $candidate == *"/$pattern"* ]] || continue
-        else
-            [[ $candidate == "$pattern" || $candidate == *"/$pattern" ]] || continue
-        fi
-        printf '%s' "$pattern"
-        return 0
-    done
-    return 1
+    shared_protected_pattern "$candidate" "$root" "$declared"
 }
 
 # Paths a SHELL command is about to write. The edit-tool guard never sees these:

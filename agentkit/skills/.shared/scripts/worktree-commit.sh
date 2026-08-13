@@ -33,6 +33,10 @@ set -euo pipefail
 readonly PROGNAME="${0##*/}"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly SCRIPT_DIR
+# shellcheck disable=SC1091  # sibling library is resolved at runtime
+source "$SCRIPT_DIR/lib/protected-paths.sh"
+# shellcheck disable=SC1091  # sibling library is resolved at runtime
+source "$SCRIPT_DIR/lib/trunk-policy.sh"
 
 SUBJECT=""
 BODY=""
@@ -150,47 +154,15 @@ parse_args() {
 # Keep this list aligned with the hook's protected-path defaults. Repository
 # declarations are additive, so an agent cannot edit config.env to make an
 # inherited gate disappear.
-readonly -a PROTECTED_DEFAULTS=(
-    '.github/workflows/'
-    '.gitlab-ci.yml'
-    '.circleci/'
-    'azure-pipelines.yml'
-    'Jenkinsfile'
-    '.githooks/'
-    '.git/hooks/'
-    '.git/config'
-    '.pre-commit-config.yaml'
-    '.codex/config.toml'
-    '.claude/settings.json'
-    '.claude/settings.local.json'
-)
-
 protected_pattern() {
-    local candidate=$1 pattern declared root
+    local candidate=$1 declared root
     candidate=${candidate#./}
-    local -a patterns=("${PROTECTED_DEFAULTS[@]}")
     root=$(git rev-parse --show-toplevel 2>/dev/null || true)
     if [[ -n $root && -x $SCRIPT_DIR/repo-config.sh ]]; then
         declared=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$root" \
             --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
     fi
-    if [[ -n $declared ]]; then
-        local IFS=,
-        read -r -a extra <<< "$declared"
-        patterns+=("${extra[@]}")
-    fi
-    for pattern in "${patterns[@]}"; do
-        pattern=${pattern#./}
-        [[ -n $pattern ]] || continue
-        if [[ $pattern == */ ]]; then
-            [[ $candidate == "$pattern"* ]] || continue
-        else
-            [[ $candidate == "$pattern" ]] || continue
-        fi
-        printf '%s' "$pattern"
-        return 0
-    done
-    return 1
+    shared_protected_pattern "$candidate" "$root" "$declared" 0
 }
 
 staged_protected_paths() {
@@ -344,13 +316,14 @@ refuse_trunk() {
     # makes sed exit on SIGPIPE, and under `set -o pipefail` that becomes this
     # script's exit status.
     root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
-    declared="$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH=[[:space:]]*//p
-                        /^[[:space:]]*AGENT_BASE_BRANCH=/q' \
-        "$root/.agent/config.env" 2>/dev/null | tr -d '\r')"
+    declared="$(shared_declared_trunk_branch "$root" 2>/dev/null || true)"
     if [[ -n "$declared" && "$branch" == "$declared" ]]; then
         die 1 "refusing to commit to '$branch', this repository's declared base branch -- create a feature branch first"
     fi
 
+    if ! shared_is_trunk_branch "$branch" "$root"; then
+        case "$branch" in main|master|trunk) ;; *) return 0;; esac
+    fi
     case "$branch" in
         main|master|trunk)
             die 1 "refusing to commit to trunk branch '$branch' -- create a feature branch first"

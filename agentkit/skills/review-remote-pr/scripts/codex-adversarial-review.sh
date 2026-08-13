@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 #
 # codex-adversarial-review.sh — one-shot, tool-isolated adversarial diff review
 # driven through the Codex CLI's non-interactive `codex exec` interface.
@@ -64,6 +65,7 @@ EFFORT="xhigh"
 DIFF_PATH=""
 TRANSCRIPT_PATH=""
 OUTPUT_PATH=""
+# shellcheck disable=SC2034
 OUTPUT_TMP=""
 POLL_SECONDS=120
 MAX_DIFF_BYTES=1048576            # 1 MiB — a runaway-diff backstop, not a protocol limit
@@ -129,74 +131,6 @@ die() {
 
 # Environment-blocked: Codex cannot run here at all, so no verdict is obtainable.
 # The caller must switch to the other harness rather than treat this as a finding.
-die_blocked() {
-    local reason=$1 detail=$2 json
-    printf '%s: BLOCKED (%s): %s\n' "$PROGNAME" "$reason" "$detail" >&2
-    printf '%s: take the cross-harness adversarial reviewer instead; do not retry.\n' "$PROGNAME" >&2
-    json=$(jq -cn \
-        --arg blockedReason "$reason" \
-        --arg detail "$detail" \
-        --arg transcript "$TRANSCRIPT_PATH" \
-        '{status: "blocked", blockedReason: $blockedReason, detail: $detail,
-          transcript: $transcript, fallback: "cross-harness-reviewer"}')
-    # Durable first: publish_output can die, and emitting stdout before it
-    # would hand the caller a verdict that was never published.
-    publish_output "$json"
-    printf '%s\n' "$json"
-    exit 3
-}
-
-# Publishes the given JSON object atomically to --output, when set: a temp file
-# beside PATH, secured to 0600, renamed into place only once the object is
-# complete. A publish failure is treated as a real failure (exit 1) even when
-# called from the blocked (exit 3) path -- the caller can no longer trust the
-# artifact, so fail closed rather than claim a status that was never written.
-publish_output() {
-    local json=$1
-    [[ -n $OUTPUT_PATH ]] || return 0
-    printf '%s\n' "$json" >"$OUTPUT_TMP" || die "Cannot write output artifact: $OUTPUT_TMP"
-    chmod 600 -- "$OUTPUT_TMP" || die "Cannot secure output artifact: $OUTPUT_TMP"
-    mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH" || die "Cannot publish output artifact: $OUTPUT_PATH"
-}
-
-cleanup() {
-    if [[ -n $POLLER_PID ]]; then
-        kill "$POLLER_PID" 2>/dev/null || true
-        wait "$POLLER_PID" 2>/dev/null || true
-        POLLER_PID=""
-    fi
-    if [[ -n $LIMIT_PID ]]; then
-        kill "$LIMIT_PID" 2>/dev/null || true
-        wait "$LIMIT_PID" 2>/dev/null || true
-        LIMIT_PID=""
-    fi
-    if [[ -n $CODEX_PID ]]; then
-        kill "$CODEX_PID" 2>/dev/null || true
-        wait "$CODEX_PID" 2>/dev/null || true
-        CODEX_PID=""
-    fi
-    if [[ -n $PID_FILE ]]; then
-        rm -f -- "$PID_FILE"
-        PID_FILE=""
-    fi
-    if [[ -n $STATUS_FILE ]]; then
-        rm -f -- "$STATUS_FILE"
-        STATUS_FILE=""
-    fi
-    if [[ -n $STATUS_TMP ]]; then
-        rm -f -- "$STATUS_TMP"
-        STATUS_TMP=""
-    fi
-    # Only the temp sibling: a successfully published OUTPUT_PATH is the durable
-    # artifact and must survive cleanup; a never-published one was never created.
-    [[ -n $OUTPUT_TMP ]] && rm -f -- "$OUTPUT_TMP"
-    [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
-    return 0
-}
-
-# The PID sidecar is retained for same-process helper bookkeeping and
-# corroboration only. Cross-cell pollers use the status heartbeat and transcript
-# byte growth; they must not infer producer liveness from this PID.
 record_helper_pid() {
     PID_FILE="$TRANSCRIPT_PATH.pid"
     [[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
@@ -230,93 +164,6 @@ heartbeat_failure_detail() {
 # Review transcripts contain the complete private diff and must never be placed
 # in a shared temporary directory. The caller creates one 0700 run directory and
 # passes a fresh path inside it. Refuse anything weaker before invoking Codex.
-prepare_transcript() {
-    local parent mode artifact canonical_output canonical_output_tmp canonical_other
-    parent=$(dirname -- "$TRANSCRIPT_PATH")
-    [[ -d $parent && ! -L $parent ]] ||
-        die "Transcript parent must be an existing private directory: $parent"
-    mode=$(stat -c %a -- "$parent") || die "Cannot inspect transcript parent: $parent"
-    [[ $mode == 700 ]] || die "Transcript parent must have mode 0700: $parent"
-    [[ -O $parent ]] || die "Transcript parent is not owned by this user: $parent"
-    [[ ! -L $TRANSCRIPT_PATH ]] ||
-        die "Refusing to write through a transcript symlink: $TRANSCRIPT_PATH"
-    if [[ -e $TRANSCRIPT_PATH ]]; then
-        [[ -f $TRANSCRIPT_PATH && -O $TRANSCRIPT_PATH ]] ||
-            die "Refusing to overwrite transcript not owned by this user: $TRANSCRIPT_PATH"
-        rm -f -- "$TRANSCRIPT_PATH" ||
-            die "Cannot remove previous transcript: $TRANSCRIPT_PATH"
-    fi
-    # Bash noclobber maps this create to an exclusive open, so a pre-existing
-    # symlink cannot redirect the write. The private parent removes the remaining
-    # same-directory race from untrusted local users.
-    (set -o noclobber; : >"$TRANSCRIPT_PATH") ||
-        die "Cannot create transcript exclusively: $TRANSCRIPT_PATH"
-    chmod 600 -- "$TRANSCRIPT_PATH" || die "Cannot secure transcript: $TRANSCRIPT_PATH"
-    STATUS_FILE="$TRANSCRIPT_PATH.status"
-    STATUS_TMP="$STATUS_FILE.tmp"
-    for artifact in "$STATUS_FILE" "$STATUS_TMP"; do
-        [[ ! -L $artifact ]] || die "Refusing to write through a status-artifact symlink: $artifact"
-        if [[ -e $artifact ]]; then
-            [[ -f $artifact && -O $artifact ]] ||
-                die "Refusing to overwrite status artifact that is not an owned regular file: $artifact"
-            rm -f -- "$artifact" || die "Cannot remove previous status artifact: $artifact"
-        fi
-    done
-}
-
-# --output is optional. When set, the completed or blocked verdict is published
-# there atomically in addition to stdout. Applies the same private-directory bar
-# as prepare_transcript, checked before any CLI work starts so a bad --output
-# path fails before spending budget. A pre-existing valid target is cleared here
-# (not left for the final mv) so a run that later dies for real leaves nothing.
-# Canonical absolute path for comparison. The target may not exist yet, so
-# the parent is resolved and the basename re-attached, rather than resolving
-# a path that is not there.
-canonical_path() {
-    local path=$1 parent base
-    base=$(basename -- "$path")
-    parent=$(cd -- "$(dirname -- "$path")" 2> /dev/null && pwd -P) || parent=$(dirname -- "$path")
-    printf '%s/%s\n' "$parent" "$base"
-}
-prepare_output() {
-    [[ -n $OUTPUT_PATH ]] || return 0
-    local parent mode artifact
-    parent=$(dirname -- "$OUTPUT_PATH")
-    [[ -d $parent && ! -L $parent ]] ||
-        die "Output parent must be an existing private directory: $parent"
-    mode=$(stat -c %a -- "$parent") || die "Cannot inspect output parent: $parent"
-    [[ $mode == 700 ]] || die "Output parent must have mode 0700: $parent"
-    [[ -O $parent ]] || die "Output parent is not owned by this user: $parent"
-    OUTPUT_TMP="$OUTPUT_PATH.tmp"
-    # --output is documented as ADDITIVE, so it must never name another
-    # artifact. prepare_output runs after prepare_transcript and clears a
-    # pre-existing target, so pointing --output at --transcript deletes the raw
-    # audit trail the verdict is meant to be checkable against -- silently, and
-    # before the reviewer has even run. Compared canonically: two different
-    # strings can name the same file.
-    canonical_output=$(canonical_path "$OUTPUT_PATH")
-    canonical_output_tmp=$(canonical_path "$OUTPUT_TMP")
-    # STATUS_FILE/STATUS_TMP derive from TRANSCRIPT_PATH and are covered too:
-    # cleanup removes the status file, and the heartbeat rewrites its temp
-    # sibling, so an --output aliasing either is deleted or raced mid-run.
-    for artifact in "$TRANSCRIPT_PATH" "$DIFF_PATH" "$STATUS_FILE" "$STATUS_TMP"; do
-        [[ -n $artifact ]] || continue
-        canonical_other=$(canonical_path "$artifact")
-        [[ $canonical_output != "$canonical_other" ]] ||
-            die "--output must not alias another artifact: $OUTPUT_PATH"
-        [[ $canonical_output_tmp != "$canonical_other" ]] ||
-            die "--output temp sibling must not alias another artifact: $OUTPUT_TMP"
-    done
-    for artifact in "$OUTPUT_PATH" "$OUTPUT_TMP"; do
-        [[ ! -L $artifact ]] || die "Refusing to write through an output-artifact symlink: $artifact"
-        if [[ -e $artifact ]]; then
-            [[ -f $artifact && -O $artifact ]] ||
-                die "Refusing to overwrite output artifact not owned by this user: $artifact"
-            rm -f -- "$artifact" || die "Cannot remove previous output artifact: $artifact"
-        fi
-    done
-}
-
 require_value() {
     [[ -n ${2:-} ]] || die "option $1 requires a value"
 }
@@ -517,33 +364,6 @@ emit_progress() {
           eventCount: $eventCount, transcriptBytes: $transcriptBytes}' >&2
 }
 
-poll_progress() {
-    local started=$1 sleep_pid=""
-    trap 'if [[ -n $sleep_pid ]]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM
-    while :; do
-        emit_progress "$started"
-        sleep "$POLL_SECONDS" &
-        sleep_pid=$!
-        wait "$sleep_pid" 2>/dev/null || true
-        sleep_pid=""
-    done
-}
-
-classify_blocked_reason() {
-    local text=$1
-    case $text in
-    *ENOTIMP* | *"Operation not permitted"* | *"Permission denied"* | *EPERM* | *EACCES*)
-        printf 'exec-denied' ;;
-    *"not logged in"* | *"Not logged in"* | *401* | *[Uu]nauthorized* | *"authentication"*)
-        printf 'unauthenticated' ;;
-    *"Connection refused"* | *getaddrinfo* | *"dns error"* | *"failed to lookup"* | *"network"*)
-        printf 'network-unreachable' ;;
-    *) printf '' ;;
-    esac
-}
-
-# Runs Codex with user config, rules files, session persistence and repo context
-# all disabled, in a throwaway non-repo directory, with the verdict schema enforced.
 run_codex() {
     local input_file=$1 stderr_file=$2 isolation_dir=$3 schema_file=$4 final_file=$5
     local seconds
@@ -608,30 +428,6 @@ verify_token_budget() {
     printf '%s' "$usage"
 }
 
-verify_verdict() {
-    local verdict=$1 kind findings_count p1_count
-    kind=$(jq -r '.verdict // ""' <<<"$verdict")
-    [[ $kind == findings || $kind == no_findings ]] || die "Codex returned an invalid verdict value."
-    findings_count=$(jq -r '(.findings // []) | length' <<<"$verdict")
-    [[ $kind == no_findings && $findings_count -ne 0 ]] &&
-        die "Codex returned findings with a no_findings verdict."
-    [[ $kind == findings && $findings_count -eq 0 ]] &&
-        die "Codex returned a findings verdict with an empty findings array."
-
-    if [[ $MODE == probe ]]; then
-        p1_count=$(jq -r '[(.findings // [])[] | select(.priority == "P1")] | length' <<<"$verdict")
-        [[ $kind == findings && $p1_count -gt 0 ]] ||
-            die "Codex probe did not return the deliberate P1 finding."
-    fi
-    return 0
-}
-
-# Best-effort model identity from the JSONL event stream. Measured against
-# codex-cli 0.147.0 the stream carries thread.started / turn.started /
-# item.completed / turn.completed and NO model field, so this normally yields
-# nothing. Claude Code's system/init does report the initialized model, so model
-# identity is verifiable there and merely advisory here -- the result object says
-# so explicitly rather than leaving a silent null.
 observed_model() {
     jq -r -s '[.[] | (.model? // .msg?.model? // .payload?.model? // empty)] | last // ""' \
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf ''
@@ -687,7 +483,7 @@ main() {
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-adversarial-XXXXXXXXXX")
     chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
     HEARTBEAT_FAILURE_FILE="$WORK_DIR/heartbeat.failure"
-    trap cleanup EXIT
+    trap review_cleanup EXIT
     trap 'exit 130' INT TERM
     local isolation_dir=$WORK_DIR/cwd
     local input_file=$WORK_DIR/input.txt
@@ -698,15 +494,15 @@ main() {
     : >"$LIMIT_REASON_FILE"
     mkdir -p -- "$isolation_dir"
 
-    prepare_transcript
-    prepare_output
+    review_prepare_transcript
+    review_prepare_output
     record_helper_pid
     preflight
 
     write_review_input "$input_file"
     verdict_schema >"$schema_file"
 
-    poll_progress "$started" &
+    review_poll_progress "$started" &
     POLLER_PID=$!
 
     run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
@@ -729,7 +525,7 @@ main() {
         if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
             die_duration
         fi
-        reason=$(classify_blocked_reason "$stderr_text")
+        reason=$(review_classify_blocked_reason "$stderr_text")
         [[ -n $reason ]] && die_blocked "$reason" "codex exec exited $exit_code: $stderr_text"
         die "Codex exited $exit_code: ${stderr_text:-no diagnostic emitted} (transcript: $TRANSCRIPT_PATH)"
     fi
@@ -740,7 +536,7 @@ main() {
     local verdict used_tokens budget_ceiling
     verdict=$(jq -c . <"$final_file" 2>/dev/null) ||
         die "Codex final message is not valid JSON; see $TRANSCRIPT_PATH"
-    verify_verdict "$verdict"
+    review_verify_verdict "$verdict" Codex
     used_tokens=$(verify_token_budget)
     if [[ $used_tokens == null ]]; then
         budget_ceiling=unverified
@@ -772,8 +568,14 @@ main() {
           verdict: $verdict}')
     # Durable first: publish_output can die, and emitting stdout before it
     # would hand the caller a verdict that was never published.
-    publish_output "$final_json"
+    review_publish_output "$final_json"
     printf '%s\n' "$final_json"
 }
+
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"
+die_blocked() { review_die_blocked "$1" "$2" "cross-harness adversarial reviewer"; }
 
 main "$@"
