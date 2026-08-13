@@ -102,6 +102,23 @@ out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
 assert_contains "$out" 'survives-unrelated-config-errors' \
     'a valid command executes despite unrelated malformed declarations'
 
+# A misbased command that is not the requested command may warn during the
+# resolver's whole-file audit, but it must not make the valid requested command
+# fatal. The refusal must remain scoped to the key being run.
+repo=$(make_repo)
+mkdir -p "$repo/dashboard" "$repo/tools"
+printf '#!/bin/sh\nprintf valid-requested\n' > "$repo/tools/requested"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/root-only"
+chmod +x "$repo/tools/requested" "$repo/tools/root-only"
+printf 'AGENT_CMD_TEST=tools/requested\nAGENT_CMD_BAD=tools/root-only\nAGENT_RUNDIR_BAD=dashboard\n' \
+    > "$repo/.agent/config.env"
+out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+requested_log=$(find "$repo/.agent/logs" -name '*-test.log' -type f -print -quit)
+assert_contains "$(cat "$requested_log")" 'valid-requested' \
+    'a valid requested command runs despite an unrelated misbased declaration'
+assert_not_contains "$out" 'cannot run AGENT_CMD_TEST' \
+    'an unrelated misbased declaration does not refuse the requested key'
+
 # Unrelated declarations are outside the invocation identity. They may change
 # on a checkout while the declared command remains yolo-safe and executable.
 repo=$tmp/unrelated-yolo
@@ -687,6 +704,24 @@ assert_contains "$out" 'missing directory' 'a rundir that does not exist is refu
 printf 'AGENT_CMD_ESC=pwd\nAGENT_RUNDIR_ESC=../../etc\n' > "$repo/.agent/config.env"
 out=$( (cd "$repo" && "$run_sh" --cmd esc 2>&1) || true)
 assert_not_contains "$out" '/etc' 'a rundir cannot escape the repository'
+
+# If an ad-hoc path-shaped argv[0] only exists at the repository root, but the
+# command runs from a different base and exits 127, the failure must name both
+# bases and say to repair the declaration rather than route around approval.
+repo=$(make_repo)
+mkdir -p "$repo/dashboard" "$repo/tools"
+printf '#!/bin/sh\nexit 127\n' > "$repo/tools/root-only"
+chmod +x "$repo/tools/root-only"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --dir "$repo/dashboard" -- ./tools/root-only 2>&1) || rc=$?
+assert_eq '127' "$rc" 'a missing interpreter produces the rc=127 mismatch case'
+assert_contains "$out" 'rc=127' 'reports the command failure status'
+assert_contains "$out" 'execution cwd' 'rc=127 mismatch names the execution base'
+assert_contains "$out" 'repository root' 'rc=127 mismatch names the repository-root base'
+assert_contains "$out" 'fix the declaration' \
+    'rc=127 mismatch says to fix the declaration'
+assert_contains "$out" 'literal twin' \
+    'rc=127 mismatch rejects a literal twin workaround'
 
 # --- option and module payloads invalidate approval when they change --------
 repo=$(make_repo)

@@ -172,4 +172,22 @@ fi
 assert_rc 2 'an unknown provenance is a usage error, not a silent default' -- \
     "$script" --worktree "$repo" --measured-from somewhere
 
+# Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
+# with a named requirement before doing any work instead of exposing a cryptic
+# `declare: -A: invalid option` error. Running the file through zsh reproduces
+# the harness boundary that caused a Bash-oriented sed recipe to fail.
+if command -v zsh > /dev/null 2>&1; then
+    for shared_script in "$script" "$root/agentkit/skills/.shared/scripts/repo-config.sh"; do
+        rc=0
+        err=$(zsh "$shared_script" --help 2>&1 > /dev/null) || rc=$?
+        assert_eq '2' "$rc" "$(basename "$shared_script") rejects a non-Bash interpreter"
+        assert_contains "$err" 'requires Bash >= 4' \
+            "$(basename "$shared_script") names the Bash requirement"
+        assert_contains "$err" 'run this helper with bash, not zsh' \
+            "$(basename "$shared_script") names the correct interpreter"
+    done
+else
+    printf '  skip zsh interpreter-boundary checks: zsh not installed\n'
+fi
+
 finish

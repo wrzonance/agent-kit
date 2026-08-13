@@ -23,6 +23,12 @@
 
 set -euo pipefail
 
+if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
+    printf '%s: requires Bash >= 4 (invoked interpreter: %s); run this helper with bash, not zsh\n' \
+        "${0##*/}" "${SHELL:-unknown}" >&2
+    exit 2
+fi
+
 usage() {
     cat <<'EOF'
 Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
@@ -116,6 +122,10 @@ approve_cmd=0
 yolo_cmd=0
 yolo_base_opt=''
 force_cmd=0
+literal_root_fallback=no
+literal_token=''
+literal_execution_base=''
+literal_repository_base=''
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -464,6 +474,10 @@ resolve_literal_executable() {
     resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
     if [[ -n $resolved && $resolved == "$git_top"/* && -x $resolved && ! -d $resolved ]]; then
         cmd[0]=$resolved
+        literal_root_fallback=yes
+        literal_token=$token
+        literal_execution_base=$work_dir
+        literal_repository_base=$git_top
         add_note "ad-hoc argv[0] '$token' resolved at toplevel fallback: yes ($resolved); execution cwd: $work_dir"
     else
         add_note "ad-hoc argv[0] '$token' resolved at toplevel: no; execution cwd: $work_dir"
@@ -521,45 +535,60 @@ relevant_config_remove() {
 # argv-count, and parsed argv. Keeping those parsed values in memory means the
 # gate and execution cannot disagree after a second config read.
 repo_config_resolve_keys() {
-    local resolver=$self_dir/repo-config.sh key tmp field argc i
+    local resolver=$self_dir/repo-config.sh key tmp diagnostics field argc i
     local -a keys=("$@")
     local -a resolve_args=(--repo-root "${git_top:-$run_dir}")
     tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-config.XXXXXX") || return 1
+    diagnostics=$(mktemp "${TMPDIR:-/tmp}/agent-run-config-err.XXXXXX") || {
+        rm -f -- "$tmp"
+        return 1
+    }
     for key in "${keys[@]}"; do
         [[ -n $key ]] || continue
         relevant_config_add "$key"
         resolve_args+=(--resolve "$key")
     done
-    if ! "$resolver" "${resolve_args[@]}" >"$tmp" 2>/dev/null; then
-        rm -f -- "$tmp"
+    if ! "$resolver" "${resolve_args[@]}" >"$tmp" 2>"$diagnostics"; then
+        cat -- "$diagnostics" >&2
+        rm -f -- "$tmp" "$diagnostics"
         return 1
     fi
-    exec 3<"$tmp" || { rm -f -- "$tmp"; return 1; }
+    resolved_rundir_mismatch=no
+    exec 3<"$tmp" || { rm -f -- "$tmp" "$diagnostics"; return 1; }
     while IFS= read -r -d '' field <&3; do
         key=$field
         if [[ $key == __AGENT_CONFIG_PARSE_STATUS__ ]]; then
             IFS= read -r -d '' field <&3 || {
                 exec 3<&-
-                rm -f -- "$tmp"
+                rm -f -- "$tmp" "$diagnostics"
                 return 1
             }
             [[ $field == 0 || $field == 1 ]] || {
                 exec 3<&-
-                rm -f -- "$tmp"
+                rm -f -- "$tmp" "$diagnostics"
                 return 1
             }
             [[ $field == 1 ]] && resolved_parse_failed=yes
             continue
         fi
-        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+        if [[ $key == __AGENT_CONFIG_RUNDIR_MISMATCH__ ]]; then
+            IFS= read -r -d '' field <&3 || {
+                exec 3<&-
+                rm -f -- "$tmp" "$diagnostics"
+                return 1
+            }
+            resolved_rundir_mismatch=yes
+            continue
+        fi
+        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
         resolved_config_values[$key]=$field
         resolved_config_present[$key]=yes
-        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
-        [[ $field =~ ^[0-9]+$ ]] || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
+        [[ $field =~ ^[0-9]+$ ]] || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
         argc=$field
         local -a parsed=()
         for ((i = 0; i < argc; i++)); do
-            IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp"; return 1; }
+            IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
             parsed+=("$field")
         done
         if [[ $key == "$resolved_command_key" ]]; then
@@ -569,7 +598,12 @@ repo_config_resolve_keys() {
         fi
     done
     exec 3<&-
-    rm -f -- "$tmp"
+    if [[ $resolved_rundir_mismatch == yes ]]; then
+        cat -- "$diagnostics" >&2
+        rm -f -- "$tmp" "$diagnostics"
+        die "cannot run $resolved_command_key: fix the rundir-relative declaration before approval"
+    fi
+    rm -f -- "$tmp" "$diagnostics"
 }
 
 # Sets runner_path/runner_src from an explicit declaration: $AGENT_REPO_RUNNER,
@@ -1245,6 +1279,10 @@ report_failure() {
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
     printf '  cwd=%s runner=none\n' "$work_dir"
     print_notes '  '
+    if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
+        printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around approval.\n' \
+            "$literal_token" "$literal_repository_base" "$literal_execution_base"
+    fi
     excerpt=$(grep -iE 'error|fail|traceback|assert|refused|denied' "$log" 2>/dev/null | head -n 20 || true)
     [[ -n $excerpt ]] || excerpt=$(tail -n 20 "$log" 2>/dev/null || true)
     if [[ -n $excerpt ]]; then
