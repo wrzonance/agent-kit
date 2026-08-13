@@ -60,6 +60,34 @@ assert_not_contains "$output" 'next: nitpicks' \
 assert_not_contains "$output" 'next: agent-docs' \
     'a zero agent-docs lane prints no next hint'
 
+# --- a child whose base advanced after its checks completed -----------------
+
+mkdir -p "$tmp/case-stale-base"
+cat >"$tmp/case-stale-base/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":77,"isDraft":false,"mergeable":"MERGEABLE","headRefName":"feat/child","headRefOid":"childsha","baseRefName":"feat/parent","baseRefOid":"oldbase","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+        ;;
+    *"branches/feat/parent"*)
+        printf '%s\n' '{"commit":{"sha":"newbase"}}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-stale-base/gh"
+stale_base_output=$(PATH="$tmp/case-stale-base:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 77 --repo owner/repo)
+assert_contains "$stale_base_output" 'ci=1/1 stale pending=0 failing=0' \
+    'passing checks predating a base advance are reported stale, not green'
+assert_contains "$stale_base_output" 'base: recorded=oldbase current=newbase stale=yes' \
+    'digest identifies the recorded and current base state'
+
 # --- provider state: last-signal-wins over the issue comments --------------
 
 mkdir -p "$tmp/case-reviewed"

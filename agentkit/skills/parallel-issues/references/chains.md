@@ -63,3 +63,13 @@ does that. A stacked PR merged while still based on its predecessor's (now-merge
 merges into that branch, not into the trunk — its changes never reach the default branch,
 and nothing fails loudly to say so. State all of this explicitly in the handoff; a reader
 who only sees "merge order: #67, #68" will not reconstruct the retarget step on their own.
+
+The retarget also invalidates the successor's evidence. GitHub can move the child to the
+default branch when the parent branch is deleted, while leaving successful checks and a
+provider approval from the old base attached to the child. After every parent merge, pause
+the chain and revalidate each open successor: compare its recorded `baseRefOid` with the
+current tip of `baseRefName`, refresh the successor's state, and require CI to run against
+the new base before treating it as green. A stale digest is a stop signal, not a green
+result. If the provider's approval is stale too, record that residue explicitly in the
+handoff; the one-review/one-ping rule does not permit silently inheriting it or spending a
+second provider trigger to make the history look fresh.
