@@ -10,26 +10,73 @@ mandatory and names this file for the detail.
 ## Model/effort selection (MANDATORY before dispatch)
 
 Bulk implementation belongs on the low-complexity worker tier, never on the orchestrator's
-own model. Inspect the current `collaboration.spawn_agent` capability before dispatch:
+own model. Resolve the repository's worker declarations before inspecting the current
+`collaboration.spawn_agent` capability. The resolver reads `.agent/config.env` line-wise and
+never sources it:
 
-- Preferred model: **`gpt-5.6-luna`**, with automatic fallback to **`gpt-5.6-terra`**; both
-  at `reasoning_effort: "high"`.
+```bash
+worker_model_default='gpt-5.6-luna'
+worker_model_fallback_default='gpt-5.6-terra'
+worker_effort_default='high'
+
+worker_config_value() {
+    # shellcheck disable=SC2034  # values are consumed by the dispatch block below
+    local key=$1 default=$2 value
+    # >>> prepend THE RESOLVER (defined once in the dispatching skill) <<<
+    [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+        printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2
+        exit 1
+    }
+    if value=$("$agentkit/.shared/scripts/repo-config.sh" \
+        --repo-root "$repository_root" --get "$key"); then
+        printf '%s\n' "$value"
+    else
+        printf 'worker config: %s is absent or invalid; using built-in default %s\n' \
+            "$key" "$default" >&2
+        printf '%s\n' "$default"
+    fi
+}
+
+# shellcheck disable=SC2034  # values are consumed by the spawn shape below
+worker_model=$(worker_config_value AGENT_WORKER_MODEL "$worker_model_default")
+# shellcheck disable=SC2034  # values are consumed by the spawn shape below
+worker_model_fallback=$(worker_config_value AGENT_WORKER_MODEL_FALLBACK \
+    "$worker_model_fallback_default")
+# shellcheck disable=SC2034  # values are consumed by the spawn shape below
+worker_effort=$(worker_config_value AGENT_WORKER_EFFORT "$worker_effort_default")
+```
+
+The sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
+**`gpt-5.6-terra`**. Validate both resolved `worker_model` and `worker_model_fallback` against
+that set before dispatch. Any other syntactically safe configured preferred or fallback model
+must stop for explicit user authorization; never silently substitute a sanctioned model.
+The built-in defaults preserve existing behavior when a repository declares nothing. An empty,
+malformed, or otherwise rejected declaration is reported and falls back to its built-in value;
+the fallback model declaration is not optional just because the preferred model declaration is
+present. A syntactically safe but unsupported model therefore remains visible to the explicit user
+authorization gate. The configured effort is carried through unchanged after resolver validation.
+
+Inspect the current `collaboration.spawn_agent` capability before dispatch:
+
+- Preferred model: the resolved `worker_model`, with automatic fallback to the resolved
+  `worker_model_fallback`; the resolved `worker_effort` applies to either.
+- During capability selection, set `selected_worker_model` to `worker_model` when the preferred
+  model is advertised, otherwise to `worker_model_fallback` after that fallback passes the same
+  sanctioned-model gate.
 - Required context isolation: **`fork_context: false`**. Paste the complete issue/spec,
   prior art, branch rules, and the six-step contract into the prompt — do not rely on
   inherited history.
 - Required role: **`agent_type: "worker"`**.
-- Never omit `model` or `reasoning_effort`; omission can silently inherit an expensive
-  parent (e.g. `gpt-5.6-sol medium`).
-- Select `gpt-5.6-luna` when advertised; otherwise select `gpt-5.6-terra` automatically,
-  always at high reasoning — this fallback needs no user authorization. If neither model is
-  advertised, **STOP before creating worktrees, moving Project items, or editing code** and
-  report the capability block.
-- A model other than `gpt-5.6-luna` or `gpt-5.6-terra` is allowed only after the user
-  explicitly approves that fallback for the run.
-- Record the selected model and effort beside every dispatched unit of work. The spawn
-  request itself is the model-selection evidence — the completion table must carry a
-  `worker model` (or `worker=self (spawn unavailable)`) column so a Luna claim is never
-  inferred from prompt text alone.
+- Never omit `model` or `reasoning_effort`; omission can silently inherit an expensive parent.
+
+- Select the resolved preferred model when advertised; otherwise select the resolved fallback
+  automatically. This fallback needs no user authorization when both resolved values pass the
+  supported-model gate. If neither model is advertised, **STOP before creating worktrees,
+  moving Project items, or editing code** and report the capability block.
+- Record the selected model and effort beside every dispatched unit of work. The spawn request
+  itself is the model-and-effort evidence — the completion table must carry the actual
+  `worker model` and `worker effort` (or `worker=self (spawn unavailable)`) so a tier or effort
+  claim is never inferred from prompt text alone.
 - This gate applies only when `collaboration.spawn_agent` exists. If the runtime advertises
   **no** spawn capability (`multi_agent = false`), there is no worker to configure and no
   model to select — take the degraded path below instead of blocking the run.
@@ -46,8 +93,8 @@ field is unavailable.
 multi_agent_v1__spawn_agent({
   agent_type: "worker",                                  // default | explorer | worker | report-synthesizer
   fork_context: false,                                   // false = initial prompt only; true = forks this thread
-  model: "<selected gpt-5.6-luna or gpt-5.6-terra>",     // sol | terra | luna | gpt-5.5 | gpt-5.4
-  reasoning_effort: "high",                              // low | medium | high | xhigh | max | ultra
+  model: "$selected_worker_model",
+  reasoning_effort: "$worker_effort",
   message: "<complete prompt>"
 })
 // returns { agent_id, nickname }
