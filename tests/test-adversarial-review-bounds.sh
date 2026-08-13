@@ -256,6 +256,11 @@ assert_contains "$(<"$codex_duration_err")" 'duration' \
 review_lib_text=$(<"$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh")
 assert_contains "$review_lib_text" "sleep \"\$POLL_SECONDS\" &" \
     'Codex progress sleep is interruptible during cleanup'
+source "$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh"
+assert_eq unauthenticated "$(review_classify_blocked_reason 'HTTP 401 unauthorized authentication failed')" \
+    'Codex blocked classifier preserves 401/unauthorized authentication patterns'
+assert_eq network-unreachable "$(review_classify_blocked_reason 'dns error: failed to lookup host; network unavailable')" \
+    'Codex blocked classifier preserves DNS/lookup/network patterns'
 codex_text=$(<"$codex")
 assert_contains "$codex_text" 'DEFAULT_MAX_TOKENS=400000' \
     'Codex default token ceiling covers the maximum diff budget'

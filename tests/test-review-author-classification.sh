@@ -23,6 +23,16 @@ assert_contains "$skill_text" 'H labels are human-only' \
 assert_contains "$skill_text" 'author.__typename == "Bot"' \
     'routing requires an authoritative forge type signal'
 
+source "$root/agentkit/skills/.shared/scripts/lib/provider-identity.sh"
+assert_eq yes "$(is_coderabbit_login 'coderabbitai[bot]' && printf yes || printf no)" \
+    'literal CodeRabbit bot login is recognized'
+assert_eq no "$(is_coderabbit_login 'coderabbitaiXbot' && printf yes || printf no)" \
+    'attacker-like CodeRabbit login is not recognized'
+assert_eq yes "$(is_code_quality_login 'github-code-quality[bot]' && printf yes || printf no)" \
+    'literal Code Quality bot login is recognized'
+assert_eq no "$(is_code_quality_login 'github-code-qualityXbot' && printf yes || printf no)" \
+    'attacker-like Code Quality login is not recognized'
+
 while IFS=$'\t' read -r name author; do
     expected=$(jq -c --arg n "$name" '.[] | select(.name == $n) | .want' "$fixture")
     got=$(printf '%s\n' "$author" | "$helper")

@@ -36,7 +36,13 @@ readonly RESOLVE_HINT='  agentkit=
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment'
 
-SHARED_SCRIPT_LIB=$(cd -- "${BASH_SOURCE[0]%/*}/../../skills/.shared/scripts/lib" 2>/dev/null && pwd -P) || return 0
+GUARD_LIB_DIR=${BASH_SOURCE[0]%/*}
+[[ $GUARD_LIB_DIR != "${BASH_SOURCE[0]}" ]] || GUARD_LIB_DIR=.
+SHARED_SCRIPT_LIB=$(cd -- "$GUARD_LIB_DIR/../../skills/.shared/scripts/lib" 2>/dev/null && pwd -P) || {
+    printf 'guard-lib.sh: shared script library is unavailable relative to %s\n' \
+        "${BASH_SOURCE[0]}" >&2
+    return 2
+}
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SHARED_SCRIPT_LIB/protected-paths.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime

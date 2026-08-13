@@ -13,14 +13,14 @@ readonly PROVIDER_IDENTITY_JQ='
 
 is_coderabbit_login() {
     case ${1,,} in
-        coderabbitai|coderabbitai[bot]) return 0;;
+        coderabbitai|coderabbitai\[bot\]) return 0;;
         *) return 1;;
     esac
 }
 
 is_code_quality_login() {
     case ${1,,} in
-        github-code-quality|github-code-quality[bot]) return 0;;
+        github-code-quality|github-code-quality\[bot\]) return 0;;
         *) return 1;;
     esac
 }
