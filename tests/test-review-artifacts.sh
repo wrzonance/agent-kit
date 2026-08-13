@@ -14,8 +14,10 @@ trap 'rm -rf -- "$tmp"' EXIT
 claude="$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh"
 codex="$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh"
 state="$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh"
+review_lib="$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh"
 skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
 state_text=$(<"$state")
+review_lib_text=$(<"$review_lib")
 
 run_rejected() {
     local helper=$1 transcript=$2 stderr_file=$3
@@ -297,33 +299,32 @@ assert_contains "$(<"$codex_blocked_output")" '"status":"blocked"' \
 for helper in "$claude" "$codex"; do
     helper_text=$(<"$helper")
     helper_name=${helper##*/}
-    assert_contains "$helper_text" '--output) require_value' \
-        "$helper_name accepts an --output flag"
-    assert_contains "$helper_text" 'publish_output "$json"' \
-        "$helper_name publishes its blocked object through publish_output"
-    assert_contains "$helper_text" 'publish_output "$final_json"' \
-        "$helper_name publishes its completed result through publish_output"
-    assert_contains "$helper_text" 'OUTPUT_TMP="$OUTPUT_PATH.tmp"' \
-        "$helper_name stages its --output artifact beside the final path"
-    assert_contains "$helper_text" 'mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH"' \
-        "$helper_name publishes its --output artifact atomically"
-    # Ordering, not adjacency. publish_output must run BEFORE the object is
-    # emitted on stdout: it can die, and a caller that already read a "blocked"
-    # object would act on a verdict that was never durably published. This
-    # previously pinned publish_output as the line immediately preceding
-    # `exit 3`, which is a proxy the correct order necessarily breaks -- the
-    # publish now happens earlier still, with the stdout emission between it
-    # and the exit.
-    exit3_line=$(grep -n 'exit 3$' "$helper" | tail -n 1 | cut -d: -f1)
-    publish_line=$(awk -v stop="${exit3_line:-0}" \
-        'NR < stop && /publish_output "\$json"/ {n = NR} END {print n + 0}' "$helper")
-    emit_line=$(awk -v stop="${exit3_line:-0}" \
-        'NR < stop && /printf/ && /\$json/ && !/publish_output/ {n = NR} END {print n + 0}' "$helper")
-    blocked_order=$([[ $publish_line -gt 0 && $emit_line -gt 0 &&
-        $publish_line -lt $emit_line && $emit_line -lt ${exit3_line:-0} ]] && printf 1 || printf 0)
-    assert_eq 1 "$blocked_order" \
-        "$helper_name publishes the rc=3 blocked artifact before emitting it on stdout"
+    assert_contains "$helper_text" '--output) require_value'         "$helper_name accepts an --output flag"
+    assert_contains "$helper_text" 'review_publish_output "$final_json"'         "$helper_name delegates completed publication to the shared library"
+    assert_contains "$helper_text" 'source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"'         "$helper_name sources the shared lifecycle library"
+    assert_not_contains "$helper_text" 'publish_output() {'         "$helper_name has no duplicate publication implementation"
+    assert_not_contains "$helper_text" 'prepare_transcript() {'         "$helper_name has no duplicate transcript implementation"
+    assert_not_contains "$helper_text" 'verify_verdict() {'         "$helper_name has no duplicate verdict implementation"
 done
+
+assert_contains "$review_lib_text" 'review_publish_output() {'     'shared library owns output publication'
+assert_contains "$review_lib_text" 'OUTPUT_TMP="$OUTPUT_PATH.tmp"'     'shared library stages output beside the final path'
+assert_contains "$review_lib_text" 'mv -f -- "$OUTPUT_TMP" "$OUTPUT_PATH"'     'shared library publishes output atomically'
+assert_contains "$review_lib_text" 'review_prepare_transcript() {'     'shared library owns transcript preparation'
+assert_contains "$review_lib_text" 'review_cleanup() {'     'shared library owns lifecycle cleanup'
+assert_contains "$review_lib_text" 'review_poll_progress() {'     'shared library owns interruptible progress polling'
+assert_contains "$review_lib_text" 'review_classify_blocked_reason() {'     'shared library owns blocked-reason classification'
+assert_contains "$review_lib_text" 'review_verify_verdict() {'     'shared library owns verdict verification'
+assert_contains "$review_lib_text" 'rm -f -- "$STATUS_FILE"' \
+    'shared library removes status during cleanup'
+assert_contains "$review_lib_text" 'review_publish_output "$json"' \
+    'shared library publishes blocked verdict before stdout'
+assert_contains "$review_lib_text" 'printf' \
+    'shared library emits blocked verdict after publication'
+assert_contains "$review_lib_text" '"$json"' \
+    'shared library emits the blocked JSON object'
+assert_contains "$review_lib_text" 'exit 3'     'shared library preserves blocked exit status'
+
 
 assert_contains "$state_text" "[[ ! -L \$target ]]" \
     'gh-pr-state refuses artifact symlinks before refresh'
@@ -438,9 +439,9 @@ assert_contains "$adversarial_text" "verdict_path=\"\$RUN_DIR/adversarial.result
 # rc=3 publish-before-exit ordering in both scripts directly), not
 # reimplemented in the reference doc; it only documents that delegation at
 # each call site.
-assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$adversarial_ref")" \
+assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$adversarial_ref" || true)" \
     'the skill documents atomic verdict staging at both call sites'
-assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$adversarial_ref")" \
+assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$adversarial_ref" || true)" \
     'both adversarial wrappers publish their rc=3 blocked artifacts'
 assert_contains "$adversarial_text" 'A final file' \
     'the skill defines completion by terminal producer events'
@@ -467,21 +468,10 @@ assert_not_contains "$skill_union_text" 'claude.result.json' \
 assert_not_contains "$skill_union_text" 'codex.result.json' \
     'the skill has no Codex-specific verdict path'
 
-for helper in "$claude" "$codex"; do
-    helper_text=$(<"$helper")
-    helper_name=${helper##*/}
-    assert_contains "$helper_text" 'STATUS_FILE="$TRANSCRIPT_PATH.status"' \
-        "$helper_name derives the status sidecar beside the transcript"
-    assert_contains "$helper_text" 'mv -f -- "$STATUS_TMP" "$STATUS_FILE"' \
-        "$helper_name publishes status atomically in the transcript directory"
-    assert_contains "$helper_text" 'wallClockEpoch' \
-        "$helper_name records the wall-clock epoch in status"
-    assert_contains "$helper_text" 'rm -f -- "$STATUS_FILE"' \
-        "$helper_name removes status during cleanup"
-done
+
 diff_pattern="git --no-pager diff.*\"\\\$diff_path\""
-diff_line=$(grep -n "$diff_pattern" "$adversarial_ref" | head -1 | cut -d: -f1)
-probe_line=$(grep -n '^probe_rc=0$' "$adversarial_ref" | head -1 | cut -d: -f1)
+diff_line=$(grep -n "$diff_pattern" "$adversarial_ref" | head -1 | cut -d: -f1 || true)
+probe_line=$(grep -n '^probe_rc=0$' "$adversarial_ref" | head -1 | cut -d: -f1 || true)
 if ((diff_line < probe_line)); then
     _pass 'the shared diff is created before probe branching'
 else

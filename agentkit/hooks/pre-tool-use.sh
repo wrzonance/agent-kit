@@ -34,18 +34,22 @@ trap 'guard_log_error $? 2>/dev/null || true; allow' ERR
 
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
-# shellcheck source=lib/guard-lib.sh
-source "$self_dir/lib/guard-lib.sh" 2> /dev/null || allow
 
-# The reason is single-quoted deliberately. The "$agentkit/..." form inside is
-# literal text for the agent to read and type; expanding it here would resolve it
-# against the hook's own environment and hand back a path instead of the lesson.
+# Loading the guard library is part of the security boundary. A partial
+# installation must not turn every guard into an implicit allow.
 deny() {
     jq -nc --arg r "$1" \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",
           permissionDecisionReason:$r}}'
     exit 0
 }
+
+# shellcheck source=lib/guard-lib.sh
+guard_lib_status=0
+source "$self_dir/lib/guard-lib.sh" 2> /dev/null || guard_lib_status=$?
+if (( guard_lib_status != 0 )); then
+    deny "PreToolUse guard library is unavailable (load status $guard_lib_status); refusing this tool call."
+fi
 
 # Advisory only: this deliberately emits no permission decision, so a worker
 # can always continue after learning that a command reads outside its scope.
