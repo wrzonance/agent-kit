@@ -45,6 +45,7 @@ readonly ACCEPTED_KEYS=(
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
     AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
+    AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
 )
 
 # AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
@@ -200,6 +201,14 @@ providers_valid() {
         esac
     done
     return 0
+}
+
+# Worker model IDs are policy input for the spawn contract. Keep the resolver
+# responsible for a safe, single-token value without hardcoding today's
+# supported model names here: an unsupported value must remain visible to the
+# explicit-authorization gate instead of silently becoming the default.
+worker_model_valid() {
+    [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
 }
 
 # Resolve a repository-relative path against the repository root and prove the
@@ -438,6 +447,11 @@ validate() {
             safe_list "$value" && [[ $value != *..* && $value != /* && $value != *,/* ]]
             ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
+        AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
+        AGENT_WORKER_EFFORT)
+            [[ $value == low || $value == medium || $value == high ||
+                $value == xhigh || $value == max || $value == ultra ]]
+            ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)
             command_value_valid "$value" || return 1

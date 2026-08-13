@@ -23,6 +23,10 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+assert_contains "$normalized_text" 'worker=<model> <effort>' \
+    'completion table records the selected worker model and effort'
+assert_not_contains "$normalized_text" 'worker=gpt-5.6-luna high' \
+    'completion table does not hardcode the worker tier'
 # The fetch/fence recipe is absorbed into prepare-issue-artifacts.sh (single
 # source of truth); assertions about its internals below check this script
 # text rather than SKILL.md, which only documents invocation.

@@ -336,6 +336,48 @@ printf 'AGENT_LABEL_AREAS=ok,$(id)\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
 assert_contains "$out" 'invalid value' 'a substitution in a label is still refused'
 
+# --- worker selection declarations ----------------------------------------
+# Worker model IDs are data for the spawn policy gate. Keep the resolver's
+# boundary lexical and safe without silently narrowing the policy to today's
+# two supported models; unsupported IDs must remain visible for explicit user
+# authorization rather than being dropped as if absent.
+printf 'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra\nAGENT_WORKER_EFFORT=low\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_MODEL=gpt-5.6-luna' 'accepts the preferred worker model declaration'
+assert_contains "$out" 'AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra' 'accepts the fallback worker model declaration'
+assert_contains "$out" 'AGENT_WORKER_EFFORT=low' 'accepts a supported worker effort declaration'
+
+printf 'AGENT_WORKER_EFFORT=max\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_EFFORT=max' 'accepts the maximum worker effort declaration'
+
+printf 'AGENT_WORKER_EFFORT=ultra\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_EFFORT=ultra' 'accepts the ultra worker effort declaration'
+
+printf 'AGENT_WORKER_MODEL=gpt-9-custom\nAGENT_WORKER_MODEL_FALLBACK=provider/model-v1\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_MODEL=gpt-9-custom' \
+    'keeps a syntactically safe unsupported model for the authorization gate'
+assert_contains "$out" 'AGENT_WORKER_MODEL_FALLBACK=provider/model-v1' \
+    'keeps a syntactically safe unsupported fallback for the authorization gate'
+
+bad_worker_values=('gpt 5.6' "\$(touch PWNED)" '')
+for bad_worker_value in "${bad_worker_values[@]}"; do
+    printf 'AGENT_WORKER_MODEL=%s\n' "$bad_worker_value" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+    assert_not_contains "$out" 'AGENT_WORKER_MODEL=' \
+        "rejects an unsafe or empty worker model: ${bad_worker_value:-empty}"
+done
+
+printf 'AGENT_WORKER_EFFORT=minimal\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_WORKER_EFFORT=' 'rejects a non-spawn-enum worker effort'
+assert_contains "$out" 'invalid value for AGENT_WORKER_EFFORT' \
+    'warns when a non-spawn-enum worker effort declaration is rejected'
+
 
 # --- an empty value is a statement, not a typo ------------------------------
 # "This repository has no priority labels" is a real thing to want to record.

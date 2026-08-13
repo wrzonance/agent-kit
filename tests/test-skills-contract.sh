@@ -60,6 +60,52 @@ done
 
 onboard="$skills/onboard-repo/SKILL.md"
 onboard_text=$(<"$onboard")
+worker_tier_text=$(<"$skills/.shared/schema/config.env.example")
+spawn_contract="$skills/.shared/spawn-contract.md"
+spawn_contract_text=$(<"$spawn_contract")
+assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL' \
+    'spawn contract reads the configured worker model key'
+assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL_FALLBACK' \
+    'spawn contract reads the configured worker fallback key'
+assert_contains "$spawn_contract_text" 'AGENT_WORKER_EFFORT' \
+    'spawn contract reads the configured worker effort key'
+assert_contains "$spawn_contract_text" 'gpt-5.6-luna' \
+    'spawn contract documents the preserved preferred default'
+assert_contains "$spawn_contract_text" 'gpt-5.6-terra' \
+    'spawn contract documents the preserved fallback default'
+assert_contains "$spawn_contract_text" 'using built-in default' \
+    'spawn contract explains invalid or empty config fallback'
+assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' \
+    'spawn contract treats empty resolver output as absent'
+resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
+worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
+if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
+    $resolver_guard_line -lt $worker_config_function_line ]]; then
+    printf '%s\n' 'ok - spawn contract validates the resolver before command substitution'
+else
+    printf '%s\n' 'not ok - spawn contract validates the resolver before command substitution' >&2
+    exit 1
+fi
+assert_contains "$spawn_contract_text" 'explicit user authorization' \
+    'spawn contract keeps unsupported-model authorization explicit'
+assert_contains "$spawn_contract_text" 'reasoning_effort: "$worker_effort"' \
+    'spawn shape carries the resolved effort'
+assert_not_contains "$spawn_contract_text" 'reasoning_effort: "high"' \
+    'spawn shape does not hardcode high effort'
+assert_contains "$spawn_contract_text" 'model: "$selected_worker_model"' \
+    'spawn shape carries the selected model'
+assert_contains "$spawn_contract_text" 'set `selected_worker_model` to `worker_model`' \
+    'spawn contract establishes selected preferred model'
+assert_contains "$spawn_contract_text" '"$agentkit/.shared/scripts/repo-config.sh"' \
+    'spawn contract resolves config through the validated agentkit root'
+assert_not_contains "$spawn_contract_text" '"$shared/repo-config.sh"' \
+    'spawn contract does not rely on an undefined shared variable'
+assert_contains "$spawn_contract_text" 'sanctioned no-extra-authorization model set is exactly' \
+    'spawn contract defines the sanctioned model gate'
+assert_contains "$spawn_contract_text" 'Validate both resolved `worker_model` and `worker_model_fallback`' \
+    'spawn contract validates preferred and fallback models'
+assert_contains "$spawn_contract_text" 'Any other syntactically safe configured preferred or fallback model' \
+    'spawn contract gates every unsupported configured model'
 assert_contains "$onboard_text" 'AGENTS.md' \
     'onboarding reviews the repository instruction files'
 assert_contains "$onboard_text" 'CLAUDE.md' \
@@ -84,6 +130,12 @@ assert_contains "$onboard_text" 'Do not do this by hand' \
     'onboarding warns against hand-rolling the Status-column mutation'
 assert_contains "$onboard_text" 'singleSelectOptions' \
     'onboarding names the board-wiping mutation the warning is about'
+assert_contains "$worker_tier_text" 'AGENT_WORKER_MODEL=gpt-5.6-luna' \
+    'onboarding approval surfaces the preferred worker model default'
+assert_contains "$worker_tier_text" 'AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra' \
+    'onboarding approval surfaces the fallback worker model default'
+assert_contains "$worker_tier_text" 'AGENT_WORKER_EFFORT=high' \
+    'onboarding approval surfaces the worker effort default'
 
 assert_line_order() {
     local label=$1 first=$2 second=$3

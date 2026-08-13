@@ -862,9 +862,9 @@ travel in the dispatch, not a pointer to it.
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
 
 ```
-#57 Parser resilience  → ✅ PR #67 draft-ready (CI green, adversarial review 3/3 handled)  worker=gpt-5.6-luna high
-#54 Rate limiting      → ✅ PR #68 draft-ready (CI green, adversarial review 0 findings)   worker=gpt-5.6-terra high
-#62 Logging cleanup    → ⚠️  PR #69 BLOCKED — coverage 78% < 80% gate; needs more tests    worker=gpt-5.6-luna high
+#57 Parser resilience  → ✅ PR #67 draft-ready (CI green, adversarial review 3/3 handled)  worker=<model> <effort>
+#54 Rate limiting      → ✅ PR #68 draft-ready (CI green, adversarial review 0 findings)   worker=<model> <effort>
+#62 Logging cleanup    → ⚠️  PR #69 BLOCKED — coverage 78% < 80% gate; needs more tests    worker=<model> <effort>
 
 Mark the ✅ PRs ready when you want to review them — provider review behavior is repository-configured;
 I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.

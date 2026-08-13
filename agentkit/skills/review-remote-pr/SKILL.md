@@ -497,7 +497,7 @@ decision, surface the gate and wait; do not post, resolve, or claim readiness.
 ```text
 PR #N: draft phase complete — CI green, conflicts none,
 Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent)]: M findings, M handled.
-Implementation worker: [gpt-5.6-luna high | terra high fallback | worker=self — reason: <why>], six-step gate complete.
+Implementation worker: [<model> <effort> | worker=self — reason: <why>], six-step gate complete.
 Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
 Waiting for you to mark it ready — this skill will not trigger a review.
 ```
@@ -508,7 +508,7 @@ PR #N: all CI green, N/N CodeRabbit threads handled, all body nitpicks handled,
 GitHub Code Quality: [no findings | auto-cleared | dismissed with reasons | blocked],
 CodeRabbit approval: [approved | not observable | no provider review observed],
 Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent)]: M findings, M handled.
-Implementation worker: [gpt-5.6-luna high | gpt-5.6-terra high | worker=self — reason: <why>].
+Implementation worker: [<model> <effort> | worker=self — reason: <why>].
 Human review: [none | H1 approved/replied/open, H2 declined/open | H3 awaiting confirmation].
 [Ready to merge | Awaiting user confirmation; not claiming readiness].
 ```
