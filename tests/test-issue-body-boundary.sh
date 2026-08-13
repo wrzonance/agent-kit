@@ -9,7 +9,13 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
-skill=$(<"$root/agentkit/skills/parallel-issues/SKILL.md")
+# Both dispatch prompt templates -- where most of this boundary-policy prose
+# lives -- are single-sourced in references/worker-prompts.md (issue #107's
+# split); SKILL.md's body keeps only a gate statement + pointer. Concatenate
+# both so every assertion below keeps checking for the content regardless of
+# which file currently carries it.
+skill=$(cat "$root/agentkit/skills/parallel-issues/SKILL.md" \
+    "$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
 skill=${skill//$'\n'/ }
 script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh")
 script_text=${script_text//$'\n'/ }

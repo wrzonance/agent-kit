@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Extract every ```bash fenced block from the SKILL.md files -- and from every
-# references/*.md a skill splits out of its body -- and shellcheck it.
+# Extract every ```bash fenced block from the SKILL.md files -- from every
+# references/*.md a skill splits out of its body, and from every .shared/*.md
+# policy file both split skills paste into worker prompts -- and shellcheck it.
 #
 # Blocks are fragments: they routinely reference variables established in a
 # neighbouring block, so SC2154 is excluded. Every other check stays on, and
@@ -38,7 +39,7 @@ while IFS= read -r skill_file; do
         fi
     done
 done < <(find "$skills_dir" -maxdepth 3 \
-    \( -name SKILL.md -o -path '*/references/*.md' \) \
+    \( -name SKILL.md -o -path '*/references/*.md' -o -path '*/.shared/*.md' \) \
     -not -path '*/.system/*' | sort)
 
 printf 'markdown blocks: %d checked, %d failed\n' "$total" "$failed"

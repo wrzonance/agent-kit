@@ -236,4 +236,59 @@ assert_contains "$LINT_OUT" 'RUN-ONCE WORK IN RESOLVER' 'the run-once work in th
 assert_contains "$(cat "$tmp/compliant/parallel-issues/SKILL.md")" 'agentkit: invalid skills path' \
     'the compliant fixture keeps a printf failure message in the resolver'
 
+# --- .shared/*.md policy files are held to the reference-file bar -------
+# .shared/*.md is pasted into more than one skill's worker prompts and is
+# never an entry point of its own, so a helper fence there must carry the
+# two-line guard (never a bare invocation, never a second full resolver
+# definition) exactly like a references/*.md file split out of a skill body.
+
+# (a) an unguarded helper fence in a .shared file fails the same as one in
+# a references/*.md file would.
+root=$tmp/shared-unguarded
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when .shared carries an unguarded helper fence.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+EOF
+mkdir -p "$root/.shared"
+cat > "$root/.shared/six-step-loop.md" <<EOF
+## Reporting format
+
+\`\`\`bash
+"\$agentkit/.shared/scripts/agent-run.sh" --help
+\`\`\`
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'an unguarded helper fence in .shared fails'
+assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unguarded .shared fence is named'
+
+# (b) a full resolver definition inside a .shared file fails -- the
+# definition belongs in a skill body only, never in shared policy content.
+root=$tmp/shared-full-resolver
+new_tree "$root"
+make_skill "$root" parallel-issues <<EOF
+---
+name: parallel-issues
+description: Use when .shared carries a full resolver definition.
+---
+
+## The resolver (prepend to EVERY shell call)
+
+$RESOLVER_FENCE
+EOF
+mkdir -p "$root/.shared"
+cat > "$root/.shared/spawn-contract.md" <<EOF
+$RESOLVER_FENCE
+EOF
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'a full resolver definition inside .shared fails'
+assert_contains "$LINT_OUT" 'EXPECTED zero full resolver definitions in reference file' \
+    'the .shared resolver copy is named'
+
 finish
