@@ -767,6 +767,212 @@ guard_destructive_reason() {
     return 1
 }
 
+# Split shell command text at unquoted separators while dropping heredoc bodies.
+# This is intentionally a small lexer, not a shell evaluator: the hook only
+# needs command-position boundaries. Keeping quote and heredoc state prevents
+# prose such as `echo "step 1; gh ..."` and body lines such as `gh ...` from
+# becoming executable-looking segments.
+guard_gh_command_segments() {
+    local input=$1 line segment='' quote='' escaped=0 heredoc=''
+    local i length char next third rest k delimiter delimiter_quote
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ -n $heredoc ]]; then
+            [[ $line == "$heredoc" ]] && heredoc=''
+            continue
+        fi
+
+        i=0
+        length=${#line}
+        while ((i < length)); do
+            char=${line:i:1}
+            next=${line:i+1:1}
+            third=${line:i+2:1}
+
+            if [[ $quote == "'" ]]; then
+                segment+=$char
+                [[ $char == "'" ]] && quote=''
+                ((i++))
+                continue
+            fi
+            if ((escaped)); then
+                segment+=$char
+                escaped=0
+                ((i++))
+                continue
+            fi
+            if [[ $char == \\ ]]; then
+                segment+=$char
+                escaped=1
+                ((i++))
+                continue
+            fi
+            if [[ $quote == '"' ]]; then
+                segment+=$char
+                [[ $char == '"' ]] && quote=''
+                ((i++))
+                continue
+            fi
+
+            case $char in
+                "'"|'"')
+                    quote=$char
+                    segment+=$char
+                    ((i++))
+                    ;;
+                ';'|'|'|'&')
+                    printf '%s\n' "$segment"
+                    segment=''
+                    ((i++))
+                    ;;
+                '<')
+                    if [[ $next == '<' && $third != '<' ]]; then
+                        segment+='<<'
+                        i=$((i + 2))
+                        rest=${line:i}
+                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; }
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        delimiter_quote=${rest:0:1}
+                        if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
+                            rest=${rest:1}
+                            k=0
+                            while ((k < ${#rest})) && [[ ${rest:k:1} != "$delimiter_quote" ]]; do
+                                ((k++))
+                            done
+                            delimiter=${rest:0:k}
+                        else
+                            delimiter=${rest%%[[:space:];|&]*}
+                        fi
+                        [[ -n $delimiter ]] && heredoc=$delimiter
+                    else
+                        segment+=$char
+                        ((i++))
+                    fi
+                    ;;
+                *)
+                    segment+=$char
+                    ((i++))
+                    ;;
+            esac
+        done
+
+        if [[ -z $heredoc && -z $quote ]]; then
+            printf '%s\n' "$segment"
+            segment=''
+        else
+            segment+=$'\n'
+        fi
+    done <<< "$input"
+}
+
+# Classify one gh body option. Output is `inline|VALUE`; file-backed and
+# unrelated options return status 1. The caller owns advancing over a separate
+# option value because it is also tokenising the command segment.
+guard_gh_body_option() {
+    local token=$1 value=${2-}
+    case $token in
+        --body|-b) printf 'inline|%s' "$value"; return 0;;
+        -b?*) printf 'inline|%s' "${token#-b}"; return 0;;
+        --body=*) printf 'inline|%s' "${token#--body=}"; return 0;;
+        -f|--raw-field|--field)
+            [[ $value == body=* ]] || return 1
+            printf 'inline|%s' "${value#body=}"; return 0;;
+        -fbody=*|--raw-field=body=*|--field=body=*)
+            printf 'inline|%s' "${token#*=}"; return 0;;
+        -F)
+            [[ $value == body=* ]] || return 1
+            value=${value#body=}
+            [[ $value != @* ]] || return 1
+            printf 'inline|%s' "$value"; return 0;;
+        -Fbody=*)
+            value=${token#*=}
+            [[ $value != @* ]] || return 1
+            printf 'inline|%s' "$value"; return 0;;
+    esac
+    return 1
+}
+
+# Inline bodies are easy to corrupt before gh receives them: shell quoting,
+# command substitution, and a literal backslash-n all change the bytes the
+# forge stores. Advise only the body-taking mutations, and only when gh is the
+# command at the start of a shell segment. Text mentioning gh in grep, printf,
+# or another quoted argument is data, not a command to inspect.
+guard_gh_inline_body_reason() {
+    local command_line=$1 segment trimmed token value operation comment=0
+    local inline=0 literal_backslash_n=0 i j start option advice
+    local -a words
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
+
+    while IFS= read -r segment; do
+        comment=0
+        inline=0
+        literal_backslash_n=0
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        read -r -a words <<< "$trimmed"
+        ((${#words[@]})) || continue
+
+        start=0
+        while ((start < ${#words[@]})) &&
+            [[ ${words[start]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
+            ((start++))
+        done
+        if [[ ${words[start]-} == env ]]; then
+            ((start++))
+            while ((start < ${#words[@]})); do
+                if [[ ${words[start]} == -i || ${words[start]} == --ignore-environment ]] ||
+                    [[ ${words[start]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+                    ((start++))
+                else
+                    break
+                fi
+            done
+        fi
+        [[ ${words[start]-} == gh ]] || continue
+
+        operation=''
+        for ((i = start + 1; i < ${#words[@]}; i++)); do
+            case ${words[i]} in
+                pr|issue)
+                    case ${words[i + 1]-} in
+                        create|edit) operation=${words[i]};;
+                        comment) operation=${words[i]}-comment; comment=1;;
+                    esac
+                    ;;
+                api) operation=api;;
+            esac
+            [[ -n $operation ]] && break
+        done
+        [[ -n $operation ]] || continue
+
+        for ((j = i + 1; j < ${#words[@]}; j++)); do
+            token=${words[j]}
+            value=${words[j + 1]-}
+            case $token in
+                --body|-b|-f|--raw-field|--field|-F) ((j++));;
+            esac
+            if option=$(guard_gh_body_option "$token" "$value"); then
+                inline=1
+                value=${option#*|}
+                [[ $value == *'\n'* ]] && literal_backslash_n=1
+            fi
+        done
+
+        ((inline)) || continue
+        advice='Policy: keep gh mutation bodies file-backed. Use --body-file or --input; for gh api, use -F body=@file.'
+        if ((comment)); then
+            advice+=' For comments, use gh-comment.sh --body-file so the helper preserves and verifies the exact bytes.'
+        fi
+        if ((literal_backslash_n)); then
+            advice+=' A literal \n renders as backslash-n in the posted body; write the intended newline to a file instead.'
+        fi
+        printf '%s' "$advice"
+        return 0
+    done <<< "$segments"
+    return 1
+}
+
 # Committing straight onto the trunk branch.
 #
 # Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
@@ -783,8 +989,57 @@ guard_destructive_reason() {
 # Evidence rule: a repository that has not declared a trunk gets no opinion.
 # AGENT_BASE_BRANCH is what onboarding writes; origin/HEAD is the fallback, and
 # when neither answers, this stays silent rather than guessing at "main".
+guard_worktree_count() {
+    local root=$1 count=0 line
+    while IFS= read -r line; do
+        [[ $line == 'worktree '* ]] || continue
+        count=$((count + 1))
+    done < <(git -C "$root" worktree list --porcelain 2> /dev/null)
+    printf '%s' "$count"
+}
+
+# A `-C` before the git subcommand pins the command's execution worktree. A
+# `-C` after `commit` is git's message-file option and must not resolve cwd
+# provenance. Parse shell segments the same way as guard_command_target_dir so
+# a later command cannot lend an earlier commit its pin.
+guard_commit_has_explicit_worktree() {
+    local cmd=$1 segment trimmed pin word
+    local -a words
+    local segments=${cmd//[;&|]/$'\n'}
+
+    while IFS= read -r segment; do
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        read -r -a words <<< "$trimmed"
+        ((${#words[@]})) || continue
+        [[ ${words[0]} == git ]] || continue
+
+        pin=0
+        local i
+        for ((i = 1; i < ${#words[@]}; i++)); do
+            word=${words[i]}
+            case $word in
+                --) break;;
+                -C)
+                    ((i + 1 < ${#words[@]})) || break
+                    pin=1
+                    ((i++))
+                    ;;
+                -C*) pin=1;;
+                -*) ;;
+                commit)
+                    ((pin)) && return 0
+                    break
+                    ;;
+                *) break;;
+            esac
+        done
+    done <<< "$segments"
+    return 1
+}
+
 guard_trunk_commit_reason() {
-    local cmd=$1 root=$2 current trunk
+    local cmd=$1 root=$2 current trunk worktrees
     [[ -n $root ]] || return 1
 
     # Command position, so `git commit` in a message body or a grep pattern is
@@ -796,6 +1051,16 @@ guard_trunk_commit_reason() {
 
     current=$(git -C "$root" symbolic-ref --quiet --short HEAD 2> /dev/null) || return 1
     [[ -n $current ]] || return 1
+
+    # The hook's cwd is session provenance, not proof of the shell process's
+    # execution cwd. Once this repository has linked worktrees, the observed
+    # root/HEAD pair may describe a different worktree from the one that will
+    # actually receive the commit. Refusing would spend the deny-once choice
+    # on an inferred landing branch that the hook cannot establish.
+    worktrees=$(guard_worktree_count "$root")
+    if [[ $worktrees != 1 ]] && ! guard_commit_has_explicit_worktree "$cmd"; then
+        return 1
+    fi
 
     trunk=$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH[[:space:]]*=[[:space:]]*//p' \
         "$root/.agent/config.env" 2> /dev/null | tail -1)

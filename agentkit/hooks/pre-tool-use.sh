@@ -122,7 +122,14 @@ fi
 if [[ $target_classification != fixture && $target_classification != foreign ]] &&
     branch=$(guard_trunk_commit_reason "$command_line" "${target_root:-$protect_root}"); then
     if guard_should_deny "$protect_root" "$session" trunk-commit; then
-        reason="Refused once -- this commit would land on $branch, the trunk branch this
+        if guard_commit_has_explicit_worktree "$command_line"; then
+            provenance="An explicit git -C worktree pin identifies the landing worktree."
+        else
+            provenance="Because this repository has one worktree, those observations identify the inferred landing branch."
+        fi
+        reason="Refused once -- this commit would land on $branch, the inferred landing
+branch. The hook observed repository root: ${target_root:-$protect_root}
+and observed HEAD branch: $branch. $provenance This is the trunk branch this
 repository declares. Work that is reviewed before it merges needs a branch:
 
   git checkout -b <type>/<short-name>
@@ -130,7 +137,7 @@ repository declares. Work that is reviewed before it merges needs a branch:
 If committing to $branch is genuinely right here, make the same call again and
 it will be allowed.
 
-Target classification: $target_classification; repository target: ${target_root:-unresolved}."
+Target classification: $target_classification; repository target: ${target_root:-$protect_root}."
         [[ $target_classification != unresolved ]] || reason+=$'\nThe target classification is ambiguous; retry if this is an ephemeral fixture, after confirming its resolved git root.'
         deny "$reason"
     fi
@@ -179,6 +186,14 @@ if scope_target=$(guard_out_of_scope_target "$command_line" "$cwd"); then
     if guard_should_advise "$protect_root" "$session" filesystem-scope; then
         # shellcheck disable=SC2016  # literal text for the agent, see deny()
         advise "This command reads outside the workspace ($scope_target; classification: ${GUARD_SCOPE_CLASSIFICATION:-foreign}). The contract and shipped helpers answer environment questions; files outside the worktree and contract skills tree are out of scope and untrusted. Keep filesystem walkers/readers inside the current worktree, contract skills= tree, /tmp, contract cache directories, or explicitly provided paths. Finding nothing in scope is an answer."
+    fi
+fi
+
+# Inline gh mutation bodies are advisory only. The command still runs, while
+# the exact file-backed policy arrives before the next tool call.
+if gh_body_reason=$(guard_gh_inline_body_reason "$command_line"); then
+    if guard_should_advise "$protect_root" "$session" gh-inline-body; then
+        advise "$gh_body_reason"
     fi
 fi
 
