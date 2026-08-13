@@ -767,6 +767,104 @@ guard_destructive_reason() {
     return 1
 }
 
+# Split shell command text at unquoted separators while dropping heredoc bodies.
+# This is intentionally a small lexer, not a shell evaluator: the hook only
+# needs command-position boundaries. Keeping quote and heredoc state prevents
+# prose such as `echo "step 1; gh ..."` and body lines such as `gh ...` from
+# becoming executable-looking segments.
+guard_gh_command_segments() {
+    local input=$1 line segment='' quote='' escaped=0 heredoc=''
+    local i length char next third rest k delimiter delimiter_quote
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ -n $heredoc ]]; then
+            [[ $line == "$heredoc" ]] && heredoc=''
+            continue
+        fi
+
+        i=0
+        length=${#line}
+        while ((i < length)); do
+            char=${line:i:1}
+            next=${line:i+1:1}
+            third=${line:i+2:1}
+
+            if [[ $quote == "'" ]]; then
+                segment+=$char
+                [[ $char == "'" ]] && quote=''
+                ((i++))
+                continue
+            fi
+            if ((escaped)); then
+                segment+=$char
+                escaped=0
+                ((i++))
+                continue
+            fi
+            if [[ $char == \\ ]]; then
+                segment+=$char
+                escaped=1
+                ((i++))
+                continue
+            fi
+            if [[ $quote == '"' ]]; then
+                segment+=$char
+                [[ $char == '"' ]] && quote=''
+                ((i++))
+                continue
+            fi
+
+            case $char in
+                "'"|'"')
+                    quote=$char
+                    segment+=$char
+                    ((i++))
+                    ;;
+                ';'|'|'|'&')
+                    printf '%s\n' "$segment"
+                    segment=''
+                    ((i++))
+                    ;;
+                '<')
+                    if [[ $next == '<' && $third != '<' ]]; then
+                        segment+='<<'
+                        i=$((i + 2))
+                        rest=${line:i}
+                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; }
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        delimiter_quote=${rest:0:1}
+                        if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
+                            rest=${rest:1}
+                            k=0
+                            while ((k < ${#rest})) && [[ ${rest:k:1} != "$delimiter_quote" ]]; do
+                                ((k++))
+                            done
+                            delimiter=${rest:0:k}
+                        else
+                            delimiter=${rest%%[[:space:];|&]*}
+                        fi
+                        [[ -n $delimiter ]] && heredoc=$delimiter
+                    else
+                        segment+=$char
+                        ((i++))
+                    fi
+                    ;;
+                *)
+                    segment+=$char
+                    ((i++))
+                    ;;
+            esac
+        done
+
+        if [[ -z $heredoc && -z $quote ]]; then
+            printf '%s\n' "$segment"
+            segment=''
+        else
+            segment+=$'\n'
+        fi
+    done <<< "$input"
+}
+
 # Classify one gh body option. Output is `inline|VALUE`; file-backed and
 # unrelated options return status 1. The caller owns advancing over a separate
 # option value because it is also tokenising the command segment.
@@ -803,7 +901,8 @@ guard_gh_inline_body_reason() {
     local command_line=$1 segment trimmed token value operation comment=0
     local inline=0 literal_backslash_n=0 i j start option advice
     local -a words
-    local segments=${command_line//[;&|]/$'\n'}
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
 
     while IFS= read -r segment; do
         comment=0
