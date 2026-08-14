@@ -312,12 +312,27 @@ assert_contains "$normalized_text" 'preserves the raw command text for audit' \
     'parallel dispatch preserves worker handback command text'
 assert_contains "$text" 'parse into validated arguments without eval' \
     'parallel dispatch parses handback arguments without eval'
+assert_contains "$text" 'validate-handback.sh' \
+    'parallel dispatch invokes the publication handback validator'
+assert_contains "$text" 'if ! "$agentkit/.shared/scripts/validate-handback.sh"' \
+    'parallel dispatch checks the validator status before publication'
+assert_contains "$text" 'mapfile -d' \
+    'parallel dispatch consumes validated handback argv without re-parsing shell text'
+assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \
+    'parallel dispatch rejects empty validated argv'
+assert_contains "$text" 'cd -- "$worktree"' \
+    'parallel dispatch executes the validated argv in the worktree'
 assert_contains "$text" 'expected worktree-commit.sh helper' \
     'parallel dispatch validates the expected commit helper'
-assert_contains "$normalized_text" 'every explicit path is inside the worktree and allowed handback set' \
+assert_contains "$normalized_text" 'every explicit path inside the worktree and allowed' \
     'parallel dispatch validates handback path containment'
-assert_contains "$normalized_text" 'git diff -- <explicit handback paths>' \
-    'parallel dispatch inspects unstaged explicit paths before commit'
+# The contract used to pin a `git diff -- <explicit handback paths>` inspection
+# that the validator never performed. What it actually enforces -- and what root
+# depends on -- is that every staged path is declared and unprotected, because
+# worktree-commit.sh commits the whole index and its own staged-protected guard
+# only fires during an active merge.
+assert_contains "$normalized_text" 'every staged path declared and unprotected' \
+    'parallel dispatch reconciles staged paths against the declared operands'
 assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
     'parallel dispatch defers base diff inspection until publication'
 # The draft-PR body template heredoc recipe is single-sourced in

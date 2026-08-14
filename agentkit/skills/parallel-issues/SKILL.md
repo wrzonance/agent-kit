@@ -700,19 +700,16 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
-Before reviewing or executing a worker handback, the root preserves the raw command text for audit
-verbatim in the worktree's excluded audit file (for example `.agent/handback.raw`). It parses that text into
-an argv array with a non-evaluating parser (such as `shlex.split`), never eval or a shell string;
-parse into validated arguments without eval, then validate the expected worktree-commit.sh helper,
-the Conventional Commit message/body,
-the required worker trailer, and that every explicit path is inside the worktree and allowed
-handback set. The root compares `git status --short`, `git diff -- <explicit handback paths>`,
-and any staged state against those validated paths, including unstaged changes, before invoking
-the helper as argv exactly once. Only after publication does the root inspect `base...HEAD`; a
-worker handback is never validated from a pre-existing base diff. The root then pushes the branch
-and opens a DRAFT PR containing Why, What, Design decisions, tickable Testing, agent credit, and
-Closes #NNN. PR URL feeds Collect and Step 3a; the URL moves the issue to `In review` and starts
-the root-owned draft phase.
+Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN; PR URL feeds Collect and Step 3a.
+
+```bash
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
+if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" >"$validated_argv_file"; then exit 1; fi
+mapfile -d '' -t validated_argv <"$validated_argv_file"
+((${#validated_argv[@]})) || exit 1
+(cd -- "$worktree" && "${validated_argv[@]}")
+```
 
 Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full
 for the draft-PR body template recipe (quoted heredoc, placeholder substitution without Bash
