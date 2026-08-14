@@ -290,8 +290,10 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_contains "$prompt_text" '[ -n "$AGENT_TRAILER" ] ||' "$prompt_label guards an empty harness trailer"
     assert_contains "$prompt_text" 'worker_attribution=' "$prompt_label appends the worker model id"
     assert_contains "$prompt_text" 'expanded literal value' "$prompt_label expands the attribution before handback"
-    assert_contains "$prompt_text" '!= '\''<worker model id selected by the root dispatch>'\''' \
-        "$prompt_label rejects the literal worker model placeholder"
+    assert_contains "$prompt_text" "[ -n \"\$worker_model\" ] ||" \
+        "$prompt_label keeps the non-empty worker-model guard"
+    assert_not_contains "$prompt_text" "[ \"\$worker_model\" != " \
+        "$prompt_label drops the self-comparison guard"
     assert_contains "$prompt_text" "worker_model='<worker model id selected by the root dispatch>'" \
         "$prompt_label carries the worker-model placeholder assignment"
 done

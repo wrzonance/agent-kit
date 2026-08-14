@@ -118,10 +118,6 @@ AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
-[ "$worker_model" != '<worker model id selected by the root dispatch>' ] || {
-    printf 'root did not supply a worker model id; report BLOCKED\n' >&2
-    exit 1
-}
 worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
 [ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
 
@@ -361,10 +357,6 @@ AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
 [ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
-[ "$worker_model" != '<worker model id selected by the root dispatch>' ] || {
-    printf 'root did not supply a worker model id; report BLOCKED\n' >&2
-    exit 1
-}
 worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
 [ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
 
