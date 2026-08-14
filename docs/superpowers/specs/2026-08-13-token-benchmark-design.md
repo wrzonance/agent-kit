@@ -56,6 +56,10 @@ exactly at the documented ceiling on both.
 
 Arm SHAs are pinned. Re-pinning `new` invalidates every prior trial.
 
+These two are the *first two points*, not the design's limit: an arm is any
+plugin SHA, and the harness is built to accumulate them. See
+[Longitudinal operation](#longitudinal-operation).
+
 ---
 
 # Tier 0 — static accounting
@@ -288,7 +292,9 @@ winning. This is what makes the cost number meaningful.
 `bench/parse-rollout.py` reads `~/.codex/sessions/*.jsonl` and emits one JSON
 record per trial:
 
-- arm SHA, effort tier assigned **and realised**, model id, trial index
+- `plugin_sha`, `fixture_version`, `model`, `effort` — the ledger key
+- effort tier assigned **and realised**, resolved model id, trial index, `run_id`
+- `is_drift_control` — true when this trial is the frozen-SHA reference for its round
 - **four token classes separately** — input, cache-write, cache-read, output —
   split orchestrator vs each worker
 - blended USD
@@ -316,10 +322,69 @@ data is what makes the conclusion honest.
   with no token comparison at all, and both are deterministic given the logs.
 - **Void trials** — realised tier ≠ assigned tier, or model id drift mid-study.
   Void, never adjusted.
+- **Fixture fork** — any change under `bench/fixtures/`, `bench/issues/`, or
+  `bench/accept/` increments `fixture_version`. Points from different fixture
+  versions are never plotted on one line.
+- **Drift normalisation** — a measurement round without a drift-control trial is
+  uninterpretable, and its points are excluded from any trend claim.
 
 The reference-siting rule doubles as evidence for a claim currently asserted in
 `lint-skill-size.sh`: that `parallel-issues`' 900-line target is "a design floor,
 not an interrupted ratchet."
+
+## Longitudinal operation
+
+The benchmark is intended as standing infrastructure, not a one-shot study: arms
+generalise to any plugin SHA, and results accumulate into a series showing how
+agent-kit fares across releases, models, and effort tiers.
+
+### The results ledger
+
+`bench/results/*.jsonl` — append-only, committed, one record per trial, keyed by
+`(plugin_sha, fixture_version, model, effort)`. Records are never rewritten or
+deleted, so every chart is a pure function of the ledger: a plot can always be
+regenerated and can never disagree with its source.
+
+### Fixture freezing
+
+A series is meaningful only while the task holds still. Improving an issue body,
+repairing a flaky oracle case, or tidying the Tally skeleton silently makes every
+earlier point incomparable — and the graph will bend rather than warn.
+
+Therefore any change under `bench/fixtures/`, `bench/issues/`, or `bench/accept/`
+**increments `fixture_version` and forks a new series.** Points from different
+fixture versions are never plotted on one line. This is deliberately painful; the
+alternative is a chart that quietly mixes two different measurements.
+
+### Drift control arm
+
+`gpt-5.6-luna` in six months is not `gpt-5.6-luna` today. Provider-side change
+moves the numbers with no plugin change at all, and an uncontrolled series cannot
+distinguish *"agent-kit regressed"* from *"the model changed underneath us."*
+
+Every measurement round therefore re-runs a **frozen** plugin SHA — `06d18cf`,
+which will never move again — alongside whatever is being measured. The delta
+between that frozen arm's original result and its result today **is** the drift
+correction, and every other point in the round is normalised against it. Without
+it the series is decorative; with it, it is evidence.
+
+### Cadence
+
+The two tiers want opposite rhythms, and together they make the chart:
+
+- **Tier 0 — every merge to `main`.** A script over the repo, so it costs nothing.
+  `lint-skill-size.sh` already computes these numbers in order to gate on them; a
+  CI step appends them to the ledger instead of discarding them, turning a yes/no
+  gate into a dense, free trace of resident and reachable surface over time.
+- **Tier 1 — rare and deliberate.** Sparse anchors on the same axis, each with its
+  drift-control companion.
+
+### Sampling, not a grid
+
+Models × efforts × SHAs grows multiplicatively and is not affordable as a full
+matrix. Default round: the drift control, plus current `main` at each effort tier.
+A new model enters by running the **frozen** arm on it first — establishing that
+model's own baseline — before any agent-kit claim is made on that model.
 
 ## Threats to validity
 
@@ -336,7 +401,8 @@ not an interrupted ratchet."
 - **Board contention.** Trials burn GraphQL against the same account as ordinary
   work. Serial execution plus the rate-limit gate bounds it; it does not eliminate it.
 - **Provider drift.** Model id is asserted per trial; drift mid-study voids
-  affected trials.
+  affected trials. Across a *series*, drift is the dominant threat and is handled
+  structurally by the drift control arm rather than by assertion — see below.
 
 ## Layout
 
@@ -347,11 +413,18 @@ bench/
   issues/*.md             the ten bodies
   accept/                 hidden oracle + DOM stub (never pushed)
   gold/                   reference tree + build-gold.sh
+  results/*.jsonl         append-only ledger, never rewritten
   parse-rollout.py        token + reference-hit meter
   run-trial.sh            container lifecycle, repo reset, invocation, scoring
-  tier0.sh                static accounting, both SHAs
+  tier0.sh                static accounting at any SHA; appends to the ledger
+  plot.py                 charts, a pure function of results/
 ```
+
+`bench/fixtures/`, `bench/issues/`, and `bench/accept/` are the frozen set: edits
+there fork `fixture_version`.
 
 ## Status
 
-Design approved 2026-08-13. Implementation not started.
+Design approved 2026-08-13; amended the same day for longitudinal operation
+(results ledger, fixture freezing, drift control arm, per-merge Tier 0).
+Implementation not started.
