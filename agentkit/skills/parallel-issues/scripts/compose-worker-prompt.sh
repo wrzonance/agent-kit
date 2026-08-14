@@ -116,7 +116,7 @@ query_test_resolution() {
     local resolution='' query_rc=0
     resolution=$("$shared_path/agent-run.sh" --dir "$worktree" --resolve test 2>/dev/null) || query_rc=$?
     case "$query_rc:$resolution" in
-        0:declared|2:runner) return 0 ;;
+        0:declared|4:runner) return 0 ;;
         3:unresolved) return 1 ;;
         *)
             die "agent-run resolution query failed for test (exit $query_rc, output: ${resolution:-none})"

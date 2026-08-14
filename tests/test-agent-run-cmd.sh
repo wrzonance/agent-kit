@@ -589,12 +589,26 @@ printf 'AGENT_REPO_RUNNER=tools/verify\n' > "$repo/.agent/config.env"
 query_out=''
 query_rc=0
 query_out=$(cd "$repo" && "$real_run_sh" --resolve test 2>&1) || query_rc=$?
-assert_eq '2' "$query_rc" 'the query returns the repository-runner status'
+assert_eq '4' "$query_rc" 'the query returns the repository-runner status'
 assert_eq 'runner' "$query_out" 'the query reports a repository runner'
 out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
 # shellcheck disable=SC2016  # backticks inside an assertion MESSAGE, quoting the
 # `runner <name>` convention for a human reader.
 assert_contains "$out" 'runner-got:test' 'falls back to the runner as `runner <name>`'
+
+# Exit 2 belongs to the fatal interpreter guard, not to a successful runner
+# resolution. Invoke the helper explicitly with zsh so the guard is exercised
+# before any repository resolution can emit its normal stdout status.
+if command -v zsh >/dev/null 2>&1; then
+    guard_out=''
+    guard_rc=0
+    guard_out=$(cd "$repo" && zsh "$real_run_sh" --resolve test 2>&1) || guard_rc=$?
+    assert_eq '2' "$guard_rc" 'the unsupported interpreter guard keeps exit 2'
+    assert_contains "$guard_out" 'requires Bash >= 4' \
+        'the exit-2 guard explains the unsupported interpreter'
+else
+    printf '  skip unsupported-interpreter guard (zsh is not installed)\n'
+fi
 
 repo=$(make_repo)
 : > "$repo/.agent/config.env"
@@ -620,7 +634,7 @@ printf '%s/tools/verify\n' "$repo" > "$repo/.agent/runner"
 query_out=''
 query_rc=0
 query_out=$(cd "$repo" && "$real_run_sh" --resolve lint 2>&1) || query_rc=$?
-assert_eq '2' "$query_rc" 'the query recognizes the .agent/runner convention'
+assert_eq '4' "$query_rc" 'the query recognizes the .agent/runner convention'
 assert_eq 'runner' "$query_out" 'the query reports the .agent/runner as a repository runner'
 out=$(cd "$repo" && "$run_sh" --cmd lint 2>&1)
 assert_contains "$out" 'runner-got:lint' 'the .agent/runner convention still works'

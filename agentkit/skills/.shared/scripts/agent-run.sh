@@ -64,7 +64,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --resolve NAME Query a named command without executing it. Prints declared,
-                 runner, or unresolved and exits 0, 2, or 3 respectively.
+                 runner, or unresolved and exits 0, 4, or 3 respectively; exit 2
+                 is reserved for a fatal unsupported-interpreter guard.
   --cmd NAME     Run the command this repository declares under that name, instead
                  of spelling one out. Mutually exclusive with a literal command.
   --             End of options; everything after it is the command.
@@ -1484,7 +1485,7 @@ elif [[ -n $resolve_name ]]; then
     printf '%s\n' "$resolution_kind"
     case $resolution_kind in
         declared) exit 0 ;;
-        runner) exit 2 ;;
+        runner) exit 4 ;;
         *) die "unknown resolution kind: $resolution_kind" ;;
     esac
 fi
