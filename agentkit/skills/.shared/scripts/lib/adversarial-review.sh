@@ -4,6 +4,15 @@
 # The caller supplies its `die` and `emit_progress` functions and harness name;
 # all artifact, cleanup, polling, classification, and verdict invariants live
 # here so the two entry points cannot drift.
+# Reviewer-process PID slots. Initialized HERE, at source time, so values can
+# never be inherited from the caller's environment: Claude Code exports
+# CLAUDE_PID (the interactive session's own PID) into Bash tool shells, and an
+# env-inherited value would make review_cleanup kill the host session.
+CLAUDE_PID=""
+CODEX_PID=""
+LIMIT_PID=""
+POLLER_PID=""
+
 
 review_die_blocked() {
     local reason=$1 detail=$2 fallback=$3 json
