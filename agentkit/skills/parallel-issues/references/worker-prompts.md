@@ -112,10 +112,6 @@ contract_root="$worktree"
 }
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
-[ "$worker_model" != '<worker model id selected by the root dispatch>' ] || {
-    printf 'root did not supply a worker model id; report BLOCKED\n' >&2
-    exit 1
-}
 worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
     --get harness.trailer --worker-model "$worker_model") || {
     printf 'no harness= trailer; report BLOCKED\n' >&2
@@ -353,10 +349,6 @@ contract_root="$worktree"
 }
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
-[ "$worker_model" != '<worker model id selected by the root dispatch>' ] || {
-    printf 'root did not supply a worker model id; report BLOCKED\n' >&2
-    exit 1
-}
 worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
     --get harness.trailer --worker-model "$worker_model") || {
     printf 'no harness= trailer; report BLOCKED\n' >&2
