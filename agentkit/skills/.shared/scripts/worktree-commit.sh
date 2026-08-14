@@ -83,7 +83,7 @@ Behaviour:
   * Anything already staged in the index is included in the commit.
 
 Output (stdout, on success -- one line):
-  committed abc1234 feat(example): add widget (3 files)
+  committed 0123456789abcdef0123456789abcdef01234567 feat(example): add widget (3 files)
 
 Examples:
   $PROGNAME --message 'feat(example): add widget' src/example.ts docs/example.md
@@ -406,7 +406,7 @@ do_commit() {
 
 report_commit() {
     local sha count
-    sha="$(git rev-parse --short HEAD)"
+    sha="$(git rev-parse HEAD)"
     count="$(git show --pretty=format: --name-only --no-renames HEAD |
         awk 'NF { n++ } END { print n + 0 }')"
     printf 'committed %s %s (%s files)\n' "$sha" "$SUBJECT" "$count"
