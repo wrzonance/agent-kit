@@ -45,6 +45,7 @@ readonly ACCEPTED_KEYS=(
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
     AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
+    AGENT_GENERATED_PATHS
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
 )
 
@@ -187,6 +188,20 @@ safe_ref() {
 # metacharacters: these values are interpolated into forge queries.
 safe_list() {
     [[ $1 =~ ^[A-Za-z0-9\ ._:/-]+(,[A-Za-z0-9\ ._:/-]+)*$ ]]
+}
+
+# Repository-relative path prefixes used to identify generated artifacts. The
+# values are data, never shell patterns: a trailing slash is documentation for
+# a directory prefix, and each item must remain inside the repository.
+generated_paths_valid() {
+    local item
+    [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
+    local -a items=()
+    IFS=, read -ra items <<< "$1"
+    ((${#items[@]})) || return 1
+    for item in "${items[@]}"; do
+        safe_relpath "$item" || return 1
+    done
 }
 
 providers_valid() {
@@ -446,6 +461,7 @@ validate() {
         AGENT_PROTECTED_PATHS)
             safe_list "$value" && [[ $value != *..* && $value != /* && $value != *,/* ]]
             ;;
+        AGENT_GENERATED_PATHS) generated_paths_valid "$value" ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
         AGENT_WORKER_EFFORT)

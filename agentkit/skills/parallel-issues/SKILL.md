@@ -67,6 +67,14 @@ grants nothing beyond the cross-provider send described in `review-remote-pr`. I
 not skip brainstorm, does not skip approval, and does not extend to a repository the
 user does not own.
 
+### Diff-size facts
+
+When a chunk-size discussion needs evidence, use the shared `diff-facts.sh` helper with
+the relevant base ref. Its `operational.lines` fact reports the operational lines in the
+diff; generated, lockfile, fixture, and aggregate facts remain visible alongside it.
+These are facts only, not a triviality or size verdict, so they never authorize skipping
+review or chunking.
+
 Announce which flags are active in the opening line, so the transcript records what was
 authorised rather than leaving it to be reconstructed later.
 
