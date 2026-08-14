@@ -34,7 +34,7 @@ readonly RESOLVE_HINT='  agentkit=
   fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
-readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment'
+readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|gh-body'
 
 GUARD_LIB_DIR=${BASH_SOURCE[0]%/*}
 [[ $GUARD_LIB_DIR != "${BASH_SOURCE[0]}" ]] || GUARD_LIB_DIR=.
@@ -973,6 +973,7 @@ guard_gh_inline_body_reason() {
 
         ((inline)) || continue
         advice='Policy: keep gh mutation bodies file-backed. Use --body-file or --input; for gh api, use -F body=@file.'
+        advice+=' For PR/issue create and edit, use the resolved gh-body.sh transport so the stored body is re-fetched and byte-verified.'
         if ((comment)); then
             advice+=' For comments, use gh-comment.sh --body-file so the helper preserves and verifies the exact bytes.'
         fi

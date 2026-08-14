@@ -95,7 +95,8 @@ Required:
                              starting with "claude-" is asserted against the
                              model the session actually initialized with.
   --transcript <path>        Where to write the raw stream-json transcript.
-                             Must be a fresh path in an existing 0700 directory;
+                             Must be a fresh path in a private directory;
+                             missing parent directories are created as 0700;
                              created exclusively with mode 0600.
 
 Conditionally required:
@@ -118,9 +119,9 @@ Options:
                              directory, chmod 600, then rename). Written on exit 0
                              (the completed verdict) and exit 3 (the blocked
                              object); never created or left behind on exit 1. The
-                             path's directory must already exist, be owned by this
-                             user, non-symlink, and mode 0700 -- the same bar as
-                             the transcript directory above.
+                             path's directory must be owned by this
+                             user, non-symlink, and mode 0700; missing parent
+                             directories are created as 0700.
   -h, --help                 Show this help.
 
 Output:
@@ -520,17 +521,20 @@ run_claude() {
 	(cd "$isolation_dir" && exec timeout --signal=KILL "$seconds" "$CLAUDE_RESOLVED" "${args[@]}") \
 		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
+	review_register_pid "$CLAUDE_PID"
 	while kill -0 "$CLAUDE_PID" 2>/dev/null; do
 		if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
 			kill -TERM -- -"$CLAUDE_PID" 2>/dev/null ||
 				kill "$CLAUDE_PID" 2>/dev/null || true
 			wait "$CLAUDE_PID" 2>/dev/null || true
+			review_forget_pid "$CLAUDE_PID"
 			CLAUDE_PID=""
 			return 125
 		fi
 		sleep 0.1
 	done
 	wait "$CLAUDE_PID" || status=$?
+	review_forget_pid "$CLAUDE_PID"
 	CLAUDE_PID=""
 	[[ -s $HEARTBEAT_FAILURE_FILE ]] && return 125
 	return "$status"
@@ -621,11 +625,13 @@ main() {
 
 	review_poll_progress "$started" &
 	POLLER_PID=$!
+	review_register_pid "$POLLER_PID"
 
 	run_claude "$input_file" "$stderr_file" "$isolation_dir" "$schema" "$prompt" || exit_code=$?
 
 	kill "$POLLER_PID" 2>/dev/null || true
 	wait "$POLLER_PID" 2>/dev/null || true
+	review_forget_pid "$POLLER_PID"
 	POLLER_PID=""
 	if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
 		die "heartbeat publication failed: $(heartbeat_failure_detail)"

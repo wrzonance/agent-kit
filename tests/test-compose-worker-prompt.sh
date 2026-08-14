@@ -46,6 +46,20 @@ contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer=
 repo="$tmp/repo with spaces"
 make_repo "$repo" "$contract"
 
+assert_rendered_guard_passes() {
+    local rendered_prompt=$1 label=$2 guard_block
+    guard_block=$(printf '%s\n' "$rendered_prompt" | awk '
+        /^worker_model=/ { capture=1 }
+        capture && /^worker_attribution=/ { exit }
+        capture { print }
+    ')
+    assert_contains "$guard_block" "[ -n \"\$worker_model\" ]" \
+        "$label keeps the non-empty worker-model guard"
+    assert_not_contains "$guard_block" "[ \"\$worker_model\" != " \
+        "$label drops the self-comparison guard"
+    assert_rc 0 "$label rendered worker-model guard passes" -- bash -c "$guard_block"
+}
+
 chain_base=30c38b2c1fa35c6cecc5946aaa7c41e7c132885c
 prompt=$(bash "$compose" --template issue-lead --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
@@ -74,6 +88,7 @@ assert_contains "$prompt" '--cmd backend-test --yolo --yolo-base ' 'multi-word d
 assert_contains "$prompt" '--cmd test --yolo --yolo-base ' 'test receives chained yolo flags'
 assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base $chain_base" \
     'focused test selector receives chained yolo flags'
+assert_rendered_guard_passes "$prompt" 'issue-lead'
 
 command_lines=$(printf '%s\n' "$prompt" | rg 'agent-run\.sh.*--cmd' || true)
 assert_not_contains "$command_lines" "\$(" 'generated command lines have no command substitutions'
@@ -93,6 +108,14 @@ assert_contains "$fix_prompt" 'Worker effort: high' 'fix-batch receives the requ
 assert_contains "$fix_prompt" '--cmd verify' 'fix-batch receives declared commands'
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
+assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
+
+assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$compose" \
+    --template issue-lead --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --worker-effort high
+assert_rc 1 'an empty worker model is rejected by the composer' -- bash "$compose" \
+    --template issue-lead --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --worker-model '' --worker-effort high
 
 assert_rc 1 'a non-40-character chain base is rejected' -- bash "$compose" \
     --template issue-lead --worktree "$repo" --issue 136 --branch feat/issue-136 \

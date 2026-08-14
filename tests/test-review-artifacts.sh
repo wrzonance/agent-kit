@@ -22,7 +22,10 @@ review_lib_text=$(<"$review_lib")
 run_rejected() {
     local helper=$1 transcript=$2 stderr_file=$3
     local rc=0
-    if [[ $helper == *claude* ]]; then
+    # Match the basename, never the whole path: a checkout under a directory
+    # containing "claude" would otherwise route the codex helper down the claude
+    # branch, leaving CODEX_EXECUTABLE unstubbed and invoking the real CLI.
+    if [[ ${helper##*/} == *claude* ]]; then
         CLAUDE_EXECUTABLE=/definitely/missing/claude \
             bash "$helper" --mode probe --model claude-opus-5 \
             --transcript "$transcript" > /dev/null 2>"$stderr_file" || rc=$?
@@ -66,6 +69,52 @@ for helper in "$claude" "$codex"; do
     rc=$(run_rejected "$helper" "$transcript" "$err")
     assert_eq 3 "$rc" "$name safely refreshes an owned regular transcript"
 
+    nested_root="$tmp/${name}.nested.run"
+    mkdir -- "$nested_root"
+    chmod 700 -- "$nested_root"
+    nested_transcript="$nested_root/prN/state/transcript"
+    nested_err="$tmp/${name}.nested.err"
+    old_umask=$(umask)
+    umask 022
+    rc=$(run_rejected "$helper" "$nested_transcript" "$nested_err")
+    umask "$old_umask"
+    assert_eq 3 "$rc" "$name creates missing transcript parents before CLI preflight"
+    assert_eq 700 "$(stat -c %a -- "$nested_root/prN")" \
+        "$name secures the first missing transcript parent despite umask"
+    assert_eq 700 "$(stat -c %a -- "$nested_root/prN/state")" \
+        "$name secures the nested transcript parent despite umask"
+
+    untrusted_root="$tmp/${name}.untrusted.run"
+    mkdir -- "$untrusted_root"
+    chmod 700 -- "$untrusted_root"
+    untrusted_ancestor="$untrusted_root/existing"
+    mkdir -- "$untrusted_ancestor"
+    chmod 755 -- "$untrusted_ancestor"
+    untrusted_transcript="$untrusted_ancestor/child/state/transcript"
+    untrusted_err="$tmp/${name}.untrusted.err"
+    rc=$(run_rejected "$helper" "$untrusted_transcript" "$untrusted_err")
+    assert_eq 1 "$rc" "$name rejects an existing non-private transcript ancestor"
+    assert_contains "$(cat -- "$untrusted_err")" '0700' \
+        "$name explains the existing ancestor private-directory requirement"
+    assert_eq no "$( [[ ! -e "$untrusted_ancestor/child" ]] && printf no || printf yes )" \
+        "$name does not create descendants beneath an untrusted ancestor"
+
+done
+
+for helper in "$claude" "$codex"; do
+    name=${helper##*/}
+    symlink_target="$tmp/${name}.symlink-target"
+    mkdir -- "$symlink_target" "$symlink_target/child"
+    chmod 700 -- "$symlink_target" "$symlink_target/child"
+    symlink_root="$tmp/${name}.symlink-root"
+    mkdir -- "$symlink_root"
+    chmod 700 -- "$symlink_root"
+    ln -s -- "$symlink_target" "$symlink_root/link"
+    symlink_err="$tmp/${name}.symlink.err"
+    rc=$(run_rejected "$helper" "$symlink_root/link/child/transcript" "$symlink_err")
+    assert_eq 1 "$rc" "$name rejects a symlinked transcript-parent component"
+    assert_eq no "$( [[ ! -e "$symlink_target/child/transcript" ]] && printf no || printf yes )" \
+        "$name does not write through a symlinked transcript-parent component"
 done
 
 # --output: the helper's own atomic-publish flag. Covers the Claude helper's
@@ -369,6 +418,22 @@ gh() {
 }
 export -f gh
 
+state_nested_root="$tmp/state-nested.run"
+mkdir -- "$state_nested_root"
+chmod 700 -- "$state_nested_root"
+state_nested_err="$tmp/state-nested.err"
+state_nested_rc=0
+old_umask=$(umask)
+umask 022
+bash "$state" --pr 1 --repo owner/repo --full --tmpdir "$state_nested_root/prN/state" \
+    > /dev/null 2>"$state_nested_err" || state_nested_rc=$?
+umask "$old_umask"
+assert_eq 0 "$state_nested_rc" 'gh-pr-state creates missing nested artifact directories'
+assert_eq 700 "$(stat -c %a -- "$state_nested_root/prN")" \
+    'gh-pr-state secures the first missing artifact directory despite umask'
+assert_eq 700 "$(stat -c %a -- "$state_nested_root/prN/state")" \
+    'gh-pr-state secures the nested artifact directory despite umask'
+
 owned_dir_run="$tmp/owned-dir.run"
 mkdir -- "$owned_dir_run"
 chmod 700 -- "$owned_dir_run"
@@ -437,8 +502,8 @@ assert_eq no "$( [[ ! -e "$failed_verdict.tmp" ]] && printf no || printf yes )" 
 
 assert_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
     'the skill creates a random per-run artifact directory'
-assert_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
-    'the skill explicitly secures the run directory'
+assert_not_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
+    'the skill leaves descendant directory security to the helpers'
 assert_not_contains "$skill_union_text" "claude_pr_\${PR}" \
     'the skill no longer uses PR-number-only Claude artifact paths'
 assert_not_contains "$skill_union_text" "/tmp/pr_\${PR}_" \

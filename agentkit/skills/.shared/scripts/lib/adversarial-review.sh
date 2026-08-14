@@ -8,11 +8,37 @@
 # never be inherited from the caller's environment: Claude Code exports
 # CLAUDE_PID (the interactive session's own PID) into Bash tool shells, and an
 # env-inherited value would make review_cleanup kill the host session.
+# shellcheck disable=SC2034  # operational slots are assigned by the wrappers
 CLAUDE_PID=""
 CODEX_PID=""
 LIMIT_PID=""
 POLLER_PID=""
+REVIEW_CHILD_PIDS=()
 
+review_register_pid() {
+    local pid=${1:-}
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || die "Cannot register invalid child PID: $pid"
+    REVIEW_CHILD_PIDS+=("$pid")
+}
+
+review_forget_pid() {
+    local pid=${1:-} registered
+    local -a remaining=()
+    if ((${#REVIEW_CHILD_PIDS[@]})); then
+        for registered in "${REVIEW_CHILD_PIDS[@]}"; do
+            [[ $registered == "$pid" ]] || remaining+=("$registered")
+        done
+    fi
+    if ((${#remaining[@]})); then
+        REVIEW_CHILD_PIDS=("${remaining[@]}")
+    else
+        REVIEW_CHILD_PIDS=()
+    fi
+}
+
+
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "${BASH_SOURCE[0]%/*}/private-dir.sh"
 
 review_die_blocked() {
     local reason=$1 detail=$2 fallback=$3 json
@@ -38,16 +64,15 @@ review_publish_output() {
 
 review_cleanup() {
     local pid
-    if [[ -n ${POLLER_PID:-} ]]; then
-        kill "$POLLER_PID" 2>/dev/null || true
-        wait "$POLLER_PID" 2>/dev/null || true
-        POLLER_PID=""
+    if ((${#REVIEW_CHILD_PIDS[@]})); then
+        for pid in "${REVIEW_CHILD_PIDS[@]}"; do
+            [[ -n $pid ]] || continue
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        done
     fi
-    for pid in ${CLAUDE_PID:-} ${CODEX_PID:-} ${LIMIT_PID:-}; do
-        [[ -n $pid ]] || continue
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    done
+    REVIEW_CHILD_PIDS=()
+    POLLER_PID=""
     CLAUDE_PID=""
     CODEX_PID=""
     LIMIT_PID=""
@@ -60,12 +85,9 @@ review_cleanup() {
 }
 
 review_prepare_transcript() {
-    local parent mode artifact
+    local parent artifact
     parent=$(dirname -- "$TRANSCRIPT_PATH")
-    [[ -d $parent && ! -L $parent ]] || die "Transcript parent must be an existing private directory: $parent"
-    mode=$(stat -c %a -- "$parent") || die "Cannot inspect transcript parent: $parent"
-    [[ $mode == 700 ]] || die "Transcript parent must have mode 0700: $parent"
-    [[ -O $parent ]] || die "Transcript parent is not owned by this user: $parent"
+    private_dir_ensure "$parent" "Transcript parent"
     [[ ! -L $TRANSCRIPT_PATH ]] || die "Refusing to write through a transcript symlink: $TRANSCRIPT_PATH"
     if [[ -e $TRANSCRIPT_PATH ]]; then
         [[ -f $TRANSCRIPT_PATH && -O $TRANSCRIPT_PATH ]] || die "Refusing to overwrite transcript not owned by this user: $TRANSCRIPT_PATH"
@@ -93,12 +115,9 @@ review_canonical_path() {
 
 review_prepare_output() {
     [[ -n ${OUTPUT_PATH:-} ]] || return 0
-    local parent mode artifact canonical_output canonical_output_tmp canonical_other
+    local parent artifact canonical_output canonical_output_tmp canonical_other
     parent=$(dirname -- "$OUTPUT_PATH")
-    [[ -d $parent && ! -L $parent ]] || die "Output parent must be an existing private directory: $parent"
-    mode=$(stat -c %a -- "$parent") || die "Cannot inspect output parent: $parent"
-    [[ $mode == 700 ]] || die "Output parent must have mode 0700: $parent"
-    [[ -O $parent ]] || die "Output parent is not owned by this user: $parent"
+    private_dir_ensure "$parent" "Output parent"
     OUTPUT_TMP="$OUTPUT_PATH.tmp"
     canonical_output=$(review_canonical_path "$OUTPUT_PATH")
     canonical_output_tmp=$(review_canonical_path "$OUTPUT_TMP")

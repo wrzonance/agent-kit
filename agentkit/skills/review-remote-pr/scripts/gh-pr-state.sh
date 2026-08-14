@@ -43,6 +43,8 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/provider-identity.sh"
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # CHECK NAMES only. Deliberately a substring: the rollup entry is named
 # "CodeRabbit" in some repos and "coderabbitai" in others, and a check name is a
 # display/CI concern, not an identity boundary.
@@ -149,15 +151,7 @@ preserve_raw_and_die() {
 }
 
 ensure_private_output_dir() {
-    if [[ ! -e $OUT_DIR && ! -L $OUT_DIR ]]; then
-        mkdir -m 700 -- "$OUT_DIR" || die "could not create private --tmpdir: $OUT_DIR"
-    fi
-    [[ -d $OUT_DIR && ! -L $OUT_DIR ]] ||
-        die "--tmpdir must be an existing directory, not a symlink: $OUT_DIR"
-    local mode
-    mode=$(stat -c %a -- "$OUT_DIR") || die "could not inspect --tmpdir: $OUT_DIR"
-    [[ $mode == 700 ]] || die "--tmpdir must have mode 0700: $OUT_DIR"
-    [[ -O $OUT_DIR ]] || die "--tmpdir is not owned by this user: $OUT_DIR"
+    private_dir_ensure "$OUT_DIR" "--tmpdir"
 }
 
 require_value() {
