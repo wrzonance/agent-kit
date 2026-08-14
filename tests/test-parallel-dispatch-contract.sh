@@ -411,6 +411,14 @@ assert_contains "$publication_section" '__PR_CLOSE_LINE__' \
     'draft PR publication keeps the close placeholder literal in the template'
 assert_contains "$publication_section" 'Stacked on #' \
     'stacked PRs declare their base PR in the body'
+stacked_line=$(awk '/^Stacked on #/{print NR; exit}' <<<"$publication_section")
+attribution_line=$(awk '/^🤖 Co-authored by __AGENT_IDENTITY__/{print NR; exit}' <<<"$publication_section")
+if [[ -n $stacked_line && -n $attribution_line && $stacked_line -lt $attribution_line ]]; then
+    _pass 'stacked body block precedes the final attribution'
+else
+    _fail 'stacked body block precedes the final attribution' \
+        "stacked line: ${stacked_line:-missing}" "attribution line: ${attribution_line:-missing}"
+fi
 assert_contains "$publication_section" 'retarget this PR to the default branch' \
     'stacked body instructs an explicit retarget, never reliance on branch deletion'
 assert_contains "$text" 'verify the successor'"'"'s baseRefName' \

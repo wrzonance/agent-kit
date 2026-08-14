@@ -293,7 +293,6 @@ PR-number-only path, or non-`0700` permissions:
 
 ```bash
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/review-remote-pr.XXXXXXXXXX") || exit 1
-chmod 700 -- "$RUN_DIR" || { printf 'cannot secure %s\n' "$RUN_DIR" >&2; exit 1; }
 printf 'Review artifacts: %s\n' "$RUN_DIR"
 ```
 

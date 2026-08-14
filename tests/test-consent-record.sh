@@ -96,12 +96,27 @@ assert_rc 2 'grant rejects a --yes shortcut' -- \
     --payload "$payload_one" --yes
 
 # State failures fail closed and never become a valid check.
-missing_state="$state_dir/missing/record"
+missing_state="$state_dir/missing/prN/state/record"
 assert_rc 10 'check fails closed when state is unavailable' -- \
     /bin/bash "$script" check --state "$missing_state" --provider openai --payload "$payload_two"
-assert_rc 1 'grant fails closed when state cannot be written' -- \
-    /bin/bash "$script" grant --state "$missing_state" --provider openai \
-    --payload "$payload_two" --source interactive
+missing_grant=''
+missing_grant_rc=0
+old_umask=$(umask)
+umask 022
+missing_grant=$(/bin/bash "$script" grant --state "$missing_state" --provider openai \
+    --payload "$payload_two" --source interactive) || missing_grant_rc=$?
+umask "$old_umask"
+assert_eq 0 "$missing_grant_rc" 'grant creates missing nested private state parents'
+assert_contains "$missing_grant" 'source=interactive' \
+    'grant reports the newly persisted nested state record'
+assert_eq 700 "$(stat -c %a -- "$state_dir/missing")" \
+    'grant secures the first missing state parent despite umask'
+assert_eq 700 "$(stat -c %a -- "$state_dir/missing/prN")" \
+    'grant secures the second missing state parent despite umask'
+assert_eq 700 "$(stat -c %a -- "$state_dir/missing/prN/state")" \
+    'grant secures the nested state parent despite umask'
+assert_eq 600 "$(stat -c %a -- "$missing_state")" \
+    'grant secures the consent record after creating its parent'
 
 symlink_state="$state_dir/symlink-record"
 ln -s -- "$state" "$symlink_state"

@@ -18,6 +18,13 @@ contract_read_pattern='grep -Eq.*\$contract'
 contract_read_line=$(grep -m1 -n "$contract_read_pattern" "$compose" | cut -d: -f1)
 assert_eq yes "$([[ -n $trust_line && -n $contract_read_line && trust_line -lt contract_read_line ]] && printf yes || printf no)" \
     'composer validates the contract before reading its content'
+compose_source=$(<"$compose")
+assert_contains "$compose_source" '--resolve test' \
+    'composer asks agent-run for focus-command resolution'
+assert_not_contains "$compose_source" 'runner_resolves' \
+    'composer has no mirrored runner resolution function'
+assert_not_contains "$compose_source" 'declared_runner_resolves' \
+    'composer has no mirrored declared-runner resolution function'
 
 make_repo() {
     local dir=$1 contract=$2

@@ -20,6 +20,8 @@ REPO=''
 GH_ARGS=()
 WORK_DIR=''
 VERIFY_ENDPOINT=''
+VERIFY_HOST=''
+MUTATION_COMPLETED=0
 
 usage() {
     cat <<EOF
@@ -124,6 +126,11 @@ validate_body() {
 }
 
 cleanup() {
+    local exit_status=$?
+    if ((exit_status != 0)) && [[ $ACTION == create && $MUTATION_COMPLETED == 1 &&
+        -s $WORK_DIR/mutation.out ]]; then
+        cat "$WORK_DIR/mutation.out"
+    fi
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
 }
 
@@ -136,20 +143,22 @@ run_mutation() {
         [[ ! -s $WORK_DIR/mutation.err ]] || cat "$WORK_DIR/mutation.err" >&2
         die "gh $RESOURCE $ACTION failed (rc=$rc); body was not verified"
     fi
+    MUTATION_COMPLETED=1
 }
 
 endpoint_from_url() {
     local line
     while IFS= read -r line; do
-        if [[ $line =~ ^https://[^/]+/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(pull|issues)/([1-9][0-9]*)/?$ ]]; then
-            [[ ${BASH_REMATCH[3]} == pull && $RESOURCE == pr ||
-                ${BASH_REMATCH[3]} == issues && $RESOURCE == issue ]] ||
+        if [[ $line =~ ^https://([A-Za-z0-9.:-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(pull|issues)/([1-9][0-9]*)/?$ ]]; then
+            [[ ${BASH_REMATCH[4]} == pull && $RESOURCE == pr ||
+                ${BASH_REMATCH[4]} == issues && $RESOURCE == issue ]] ||
                 die "gh returned a URL for the wrong resource type: $line"
-            VERIFY_ENDPOINT="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-            if [[ ${BASH_REMATCH[3]} == pull ]]; then
-                VERIFY_ENDPOINT+="/pulls/${BASH_REMATCH[4]}"
+            VERIFY_HOST=${BASH_REMATCH[1]}
+            VERIFY_ENDPOINT="repos/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}"
+            if [[ ${BASH_REMATCH[4]} == pull ]]; then
+                VERIFY_ENDPOINT+="/pulls/${BASH_REMATCH[5]}"
             else
-                VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[4]}"
+                VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[5]}"
             fi
             return 0
         fi
@@ -158,9 +167,11 @@ endpoint_from_url() {
 }
 
 endpoint_from_target() {
+    local repo_path
     if [[ $TARGET =~ $UINT_RE ]]; then
         TARGET_NUMBER=$TARGET
-        VERIFY_ENDPOINT='repos/{owner}/{repo}'
+        repo_path=${REPO:-'{owner}/{repo}'}
+        VERIFY_ENDPOINT="repos/$repo_path"
         if [[ $RESOURCE == pr ]]; then
             VERIFY_ENDPOINT+="/pulls/$TARGET"
         else
@@ -168,16 +179,17 @@ endpoint_from_target() {
         fi
         return 0
     fi
-    if [[ $TARGET =~ ^https://[^/]+/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(pull|issues)/([1-9][0-9]*)/?$ ]]; then
-        [[ ${BASH_REMATCH[3]} == pull && $RESOURCE == pr ||
-            ${BASH_REMATCH[3]} == issues && $RESOURCE == issue ]] ||
+    if [[ $TARGET =~ ^https://([A-Za-z0-9.:-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(pull|issues)/([1-9][0-9]*)/?$ ]]; then
+        [[ ${BASH_REMATCH[4]} == pull && $RESOURCE == pr ||
+            ${BASH_REMATCH[4]} == issues && $RESOURCE == issue ]] ||
             die "edit target is for the wrong resource type: $TARGET"
-        TARGET_NUMBER=${BASH_REMATCH[4]}
-        VERIFY_ENDPOINT="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-        if [[ ${BASH_REMATCH[3]} == pull ]]; then
-            VERIFY_ENDPOINT+="/pulls/${BASH_REMATCH[4]}"
+        TARGET_NUMBER=${BASH_REMATCH[5]}
+        VERIFY_HOST=${BASH_REMATCH[1]}
+        VERIFY_ENDPOINT="repos/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}"
+        if [[ ${BASH_REMATCH[4]} == pull ]]; then
+            VERIFY_ENDPOINT+="/pulls/${BASH_REMATCH[5]}"
         else
-            VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[4]}"
+            VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[5]}"
         fi
         return 0
     fi
@@ -186,8 +198,16 @@ endpoint_from_target() {
 
 fetch_stored_body() {
     local rc=0
-    local -a api_args=("$VERIFY_ENDPOINT")
-    [[ -z $REPO ]] || api_args+=(--repo "$REPO")
+    # Verify against the host the mutation actually landed on. Without this,
+    # gh api falls back to the ambient host (repo context, GH_HOST, else
+    # github.com), so an Enterprise URL would be checked against the wrong
+    # server. A numeric edit target carries no host and keeps that ambient
+    # resolution, which is what gh itself used for the mutation.
+    # The endpoint is appended last so the array is never empty: expanding an
+    # empty array under nounset is unsafe on Bash 4.2.
+    local -a api_args=()
+    [[ -z $VERIFY_HOST ]] || api_args+=(--hostname "$VERIFY_HOST")
+    api_args+=("$VERIFY_ENDPOINT")
     "$GH_BIN" api "${api_args[@]}" \
         >"$WORK_DIR/stored.json" 2>"$WORK_DIR/verify.err" || rc=$?
     if ((rc != 0)); then

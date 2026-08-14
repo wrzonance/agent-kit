@@ -95,7 +95,8 @@ Required:
                              review: review the diff at --diff.
   --model <model>            Model for the review (e.g. gpt-5.6-terra).
   --transcript <path>        Where to write the raw JSONL event stream.
-                             Must be a fresh path in an existing 0700 directory;
+                             Must be a fresh path in a private directory;
+                             missing parent directories are created as 0700;
                              created exclusively with mode 0600.
 
 Conditionally required:
@@ -123,9 +124,9 @@ Options:
                              directory, chmod 600, then rename). Written on exit 0
                              (the completed verdict) and exit 3 (the blocked
                              object); never created or left behind on exit 1. The
-                             path's directory must already exist, be owned by this
-                             user, non-symlink, and mode 0700 -- the same bar as
-                             the transcript directory above.
+                             path's directory must be owned by this
+                             user, non-symlink, and mode 0700; missing parent
+                             directories are created as 0700.
   -h, --help                 Show this help.
 
 Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
@@ -424,8 +425,10 @@ run_codex() {
     timeout --signal=KILL "$seconds" "$CODEX_RESOLVED" "${args[@]}" \
         <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
+    review_register_pid "$CODEX_PID"
     monitor_token_limit &
     LIMIT_PID=$!
+    review_register_pid "$LIMIT_PID"
     local heartbeat_failed=0
     while kill -0 "$CODEX_PID" 2>/dev/null; do
         if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
@@ -440,9 +443,11 @@ run_codex() {
     if ((heartbeat_failed == 0)); then
         wait "$CODEX_PID" || status=$?
     fi
+    review_forget_pid "$CODEX_PID"
     CODEX_PID=""
     kill "$LIMIT_PID" 2>/dev/null || true
     wait "$LIMIT_PID" 2>/dev/null || true
+    review_forget_pid "$LIMIT_PID"
     LIMIT_PID=""
     [[ $(<"$LIMIT_REASON_FILE") == token-budget ]] && return 125
     ((heartbeat_failed == 1)) && return 125
@@ -541,12 +546,14 @@ main() {
 
     review_poll_progress "$started" &
     POLLER_PID=$!
+    review_register_pid "$POLLER_PID"
 
     run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
         exit_code=$?
 
     kill "$POLLER_PID" 2>/dev/null || true
     wait "$POLLER_PID" 2>/dev/null || true
+    review_forget_pid "$POLLER_PID"
     POLLER_PID=""
 
     if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
