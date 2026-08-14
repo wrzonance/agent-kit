@@ -82,6 +82,7 @@ declare -a command_names=()
 focus_declared=0
 test_declared=0
 runner_declared=0
+runner_value=
 is_verification_key() {
     case $1 in
         AGENT_CMD_TEST|AGENT_CMD_*_TEST|AGENT_CMD_LINT|AGENT_CMD_*_LINT|AGENT_CMD_BUILD|AGENT_CMD_*_BUILD|AGENT_CMD_TYPECHECK|AGENT_CMD_*_TYPECHECK|AGENT_CMD_TYPE_CHECK|AGENT_CMD_*_TYPE_CHECK|AGENT_CMD_VERIFY|AGENT_CMD_*_VERIFY|AGENT_CMD_CHECK|AGENT_CMD_*_CHECK|AGENT_CMD_COVERAGE|AGENT_CMD_*_COVERAGE)
@@ -101,6 +102,7 @@ while IFS='=' read -r key value; do
     # `runner test` when AGENT_CMD_TEST is absent.
     if [[ $key == AGENT_REPO_RUNNER && -n $value ]]; then
         runner_declared=1
+        runner_value=$value
     fi
     [[ $key =~ ^AGENT_CMD_[A-Z][A-Z0-9_]*$ ]] || continue
     if [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
@@ -118,13 +120,36 @@ while IFS='=' read -r key value; do
 done <<< "$command_list"
 ((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
 
+# Mirrors agent-run.sh's resolve_runner: $AGENT_REPO_RUNNER, else the same key in
+# .agent/config.env, else the first non-blank non-comment line of .agent/runner --
+# each resolved against the repository root and each required to be EXECUTABLE.
+# A declaration that merely exists is not a runner; agent-run.sh rejects a
+# non-executable one, so accepting it here would pass the check and still fail
+# in the worker's hands.
+runner_resolves() {
+    local path first
+    if [[ -n ${AGENT_REPO_RUNNER:-} ]]; then
+        path=$AGENT_REPO_RUNNER
+    elif ((runner_declared)); then
+        path=$runner_value
+    elif [[ -f $worktree/.agent/runner ]]; then
+        first=$(sed -n '/^[[:space:]]*[^#[:space:]]/{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' \
+            "$worktree/.agent/runner" 2>/dev/null || true)
+        [[ -n $first ]] || return 1
+        path=$first
+    else
+        return 1
+    fi
+    [[ $path == /* ]] || path=$worktree/$path
+    [[ -x $path ]]
+}
+
 # AGENT_CMD_TEST_FOCUS does not imply AGENT_CMD_TEST, because agent-run.sh falls
 # back to `runner test`. With neither, the emitted `--cmd test --only` selector
 # cannot resolve and would fail in the worker's hands. Refuse at compose time on
 # root instead of shipping an instruction that is guaranteed to break.
-if ((focus_declared)) && ((test_declared == 0)) && ((runner_declared == 0)) &&
-    [[ -z ${AGENT_REPO_RUNNER:-} && ! -f $worktree/.agent/runner ]]; then
-    die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or a repository runner'
+if ((focus_declared)) && ((test_declared == 0)) && ! runner_resolves; then
+    die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
 command_flags=
