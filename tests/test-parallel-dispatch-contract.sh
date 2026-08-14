@@ -159,6 +159,15 @@ assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]
     'trusted modes persist exact bytes without invoking the fence helper'
 assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
     'root prints the selected boundary mode'
+dispatch_handoff=$(sed -n '/^Per-issue prompt:/,/^### Collect (per-completion/p' <<< "$text")
+assert_contains "$dispatch_handoff" 'trap cleanup_prompt_file EXIT HUP INT TERM' \
+    'dispatch handoff cleans its private prompt file on every exit path'
+assert_contains "$dispatch_handoff" 'if ! "$compose_script" "${compose_args[@]}"; then' \
+    'dispatch handoff stops when prompt composition fails'
+assert_contains "$dispatch_handoff" 'cat -- "$prompt_file"' \
+    'dispatch handoff emits the composed prompt bytes'
+assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
+    'dispatch handoff does not discard the composed prompt'
 boundary_snippet=$(awk '
     /^if \[\[ \$yolo_invocation == true \]\]; then$/ { capture=1 }
     capture { print }

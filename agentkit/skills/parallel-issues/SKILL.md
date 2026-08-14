@@ -681,10 +681,16 @@ Per-issue prompt: compose through the repository-local helper; it fills the cont
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
-prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX") || exit 1; chmod 600 -- "$prompt_file" || exit 1
+prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX") || exit 1
+cleanup_prompt_file() { rm -f -- "$prompt_file"; }
+trap cleanup_prompt_file EXIT HUP INT TERM
+chmod 600 -- "$prompt_file" || exit 1
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
 if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
-"$compose_script" "${compose_args[@]}"; worker_prompt=$(<"$prompt_file"); : "$worker_prompt"; rm -f -- "$prompt_file"
+if ! "$compose_script" "${compose_args[@]}"; then
+    exit 1
+fi
+cat -- "$prompt_file"
 ```
 ### Collect (per-completion — never wait for the slowest issue)
 
