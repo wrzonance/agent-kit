@@ -10,9 +10,25 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 skills="$root/agentkit/skills"
+security_posture="$root/docs/security-posture.md"
 preflight="$skills/.shared/scripts/agent-preflight.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# --- standing security posture contract ------------------------------------
+# This is intentionally structural: the document's prose and evidence links
+# remain reviewable, while deletion or removal of a rationale class fails the
+# repository contract immediately.
+assert_eq 'yes' "$([[ -f $security_posture && ! -L $security_posture ]] && printf yes || printf no)" \
+    'the standing security-posture document exists as a regular file'
+for heading in \
+    '## Autonomy flags are per-invocation operator grants' \
+    '## .agent/config.env is a secrets-free facts file' \
+    '## The command trust gate is defense-in-depth, not a human-only guarantee' \
+    '## Untrusted content is fenced and never shell-expanded'; do
+    heading_count=$(grep -Fxc -- "$heading" "$security_posture" 2>/dev/null || printf '0')
+    assert_eq '1' "$heading_count" "security-posture keeps heading: $heading"
+done
 
 repo="$tmp/repo"
 mkdir -p "$repo"
