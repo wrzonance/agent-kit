@@ -223,4 +223,20 @@ AGENT_REPO_RUNNER="$focus_nonexec_env/tools/run" bash "$compose" --template issu
 assert_eq 1 "$nonexec_env_rc" \
     'a non-executable AGENT_REPO_RUNNER does not satisfy the focus selector'
 
+# agent-run.sh uses an ENVIRONMENT AGENT_REPO_RUNNER verbatim and never resolves
+# a relative one against the repository root, so what it names depends on that
+# process's cwd. Resolving it against the worktree here would accept a runner
+# agent-run.sh could reject -- even with $worktree/tools/run executable.
+focus_rel_env="$tmp/focus-rel-env"
+compose_focus_repo "$focus_rel_env"
+mkdir -p "$focus_rel_env/tools"
+printf '#!/usr/bin/env bash\n' > "$focus_rel_env/tools/run"
+chmod +x "$focus_rel_env/tools/run"
+rel_env_rc=0
+AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead \
+    --worktree "$focus_rel_env" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || rel_env_rc=$?
+assert_eq 1 "$rel_env_rc" \
+    'a relative AGENT_REPO_RUNNER does not satisfy the focus selector even when the worktree copy is executable'
+
 finish
