@@ -78,6 +78,10 @@ assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
     'chained WHEN-yolo threading pins the base'
 assert_contains "$text" 'only after the root has validated, committed, and pushed' \
     'chain successors defer on root publication, not PR state'
+assert_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
+    'parallel preflight passes its owned repository_root to contract-read.sh'
+assert_not_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get skills.path' \
+    'parallel preflight does not use the undefined contract_root'
 # The wait-contract rule sentences are single-sourced in
 # .shared/wait-discipline.md; the body keeps only a pointer (see the "###
 # Polling discipline" subsection), so the pinned wait-rule content is

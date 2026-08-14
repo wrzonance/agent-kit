@@ -26,13 +26,13 @@ root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || true)
 
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+self_dir=$(cd -- "$self_dir" 2> /dev/null && pwd -P) || allow
 # shellcheck source=lib/guard-lib.sh
 source "$self_dir/lib/guard-lib.sh" 2> /dev/null || allow
 
 resolver="$self_dir/../skills/.shared/scripts/repo-config.sh"
 [[ -x $resolver ]] || allow
 contract_reader="$self_dir/../skills/.shared/scripts/contract-read.sh"
-[[ -x $contract_reader ]] || allow
 
 # 1. Opt-in check.
 verify_name=''
@@ -97,7 +97,9 @@ then finish."
 # Stop remediation must also be directly pasteable when this hook knows its own
 # installed tree. Keep both: the absolute line is the actionable command.
 contract_skills=''
-contract_skills=$("$contract_reader" --repo-root "$root" --get skills.path 2> /dev/null || true)
+if [[ -x $contract_reader ]]; then
+    contract_skills=$("$contract_reader" --repo-root "$root" --get skills.path 2> /dev/null || true)
+fi
 if [[ -n $contract_skills ]]; then
     # Resolve through the session contract instead of printing the physical
     # plugin-cache version directory. The one line remains copy-pasteable and

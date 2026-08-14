@@ -1407,6 +1407,48 @@ assert_contains "$reason" 'agentkit=' \
 assert_contains "$reason" 'sed -n' \
     'the remediation is a copy-pasteable contract command'
 
+# A partial plugin may lack contract-read.sh, but that optional remediation
+# helper must not disable the declared verification gate itself.
+partial_plugin="$tmp/partial-plugin/agentkit"
+mkdir -p "$partial_plugin/hooks/lib" "$partial_plugin/skills/.shared/scripts"
+cp -- "$hooks/stop.sh" "$partial_plugin/hooks/stop.sh"
+cp -- "$hooks/lib/guard-lib.sh" "$partial_plugin/hooks/lib/guard-lib.sh"
+cp -- "$skills_root/.shared/scripts/repo-config.sh" \
+    "$partial_plugin/skills/.shared/scripts/repo-config.sh"
+cp -a -- "$skills_root/.shared/scripts/lib" \
+    "$partial_plugin/skills/.shared/scripts/"
+partial_repo=$(make_repo)
+printf 'AGENT_CMD_VERIFY=echo ok\n' > "$partial_repo/.agent/config.env"
+printf 'partial\n' > "$partial_repo/changed.txt"
+partial_out=$(stop_input "$partial_repo" | \
+    "$partial_plugin/hooks/stop.sh" 2>/dev/null)
+assert_eq 'block' "$(verdict "$partial_out")" \
+    'a missing contract reader does not disable Stop enforcement'
+assert_not_contains "$partial_out" 'Exact resolved command:' \
+    'a missing contract reader omits only contract remediation'
+
+# The real dispatch command can invoke a hook through a relative plugin root.
+# Stop must still render an absolute remediation path when the process cwd is
+# unrelated to the plugin and repository.
+relative_dispatch_cwd="$tmp/relative-dispatch-cwd"
+mkdir -p "$relative_dispatch_cwd"
+relative_plugin_root="../${plugin_root#"$tmp"/}"
+stop_command=$(jq -r '.hooks.Stop[0].hooks[0].command' \
+    < "$plugin_root/hooks/hooks.json")
+dispatch_input=$(jq -nc --arg cwd "$repo" \
+    '{cwd:$cwd,hook_event_name:"Stop",model:"m",session_id:"s",transcript_path:null}')
+relative_out=$(cd "$relative_dispatch_cwd" && \
+    printf '%s' "$dispatch_input" | \
+    env CLAUDE_PLUGIN_ROOT="$relative_plugin_root" PATH="$stub_path" \
+    sh -c "$stop_command" 2>/dev/null)
+assert_eq 'block' "$(verdict "$relative_out")" \
+    'relative Stop dispatch still enforces the verification gate'
+relative_reason=$(jq -r '.reason' <<< "$relative_out")
+assert_contains "$relative_reason" "$plugin_root" \
+    'relative Stop dispatch emits an absolute helper path'
+assert_not_contains "$relative_reason" "$relative_plugin_root" \
+    'relative Stop dispatch does not emit its cwd-relative helper path'
+
 # .agent/ is the agent's own working state. agent-preflight.sh writes
 # env-contract.txt there, so counting it as unverified work made Stop block on
 # every single turn for the whole session.

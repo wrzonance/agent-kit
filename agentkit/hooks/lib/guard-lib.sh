@@ -36,7 +36,7 @@ readonly RESOLVE_HINT='  agentkit=
         -x "$agentkit/.shared/scripts/contract-read.sh" ]]; then
       contract_skills=$("$agentkit/.shared/scripts/contract-read.sh" \
           --repo-root "$contract_root" --get skills.path 2>/dev/null)
-      [[ "$contract_skills" == "$agentkit" ]] || agentkit=
+      [[ -z "$contract_skills" || "$contract_skills" == "$agentkit" ]] || agentkit=
   fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
