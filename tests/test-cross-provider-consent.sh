@@ -44,9 +44,8 @@ assert_contains "$readme_text" 'Repository ownership is not' \
     'README warns that ownership does not authorize transfer'
 
 # --- executable consent protocol -------------------------------------------
-# The repository documents this protocol rather than shipping a consent
-# implementation. These test doubles model the process boundary: a sender,
-# its session state, and the exact record that authorizes one payload.
+# These test doubles preserve the original sender-level protocol assertions:
+# a sender, its session state, and the exact record that authorizes one payload.
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 diff_one="$tmp/diff-one"

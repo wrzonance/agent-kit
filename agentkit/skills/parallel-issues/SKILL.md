@@ -702,7 +702,7 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
-Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path is inside the worktree and allowed handback set; emit NUL argv. Compare `git status --short`, `git diff -- <explicit handback paths>`, and staged; invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN; PR URL feeds Collect and Step 3a.
+Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN; PR URL feeds Collect and Step 3a.
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }

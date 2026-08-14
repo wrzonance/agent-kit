@@ -93,6 +93,46 @@ missing_rc=0
 "$script" --worktree "$tmp/missing" --handback-file "$valid_handback" >"$tmp/missing.out" 2>"$tmp/missing.err" || missing_rc=$?
 assert_eq '2' "$missing_rc" 'missing worktree reports unavailable evidence'
 
+# argv[0] is emitted as the canonical shipped helper, never as the spelling the
+# worker submitted. Resolving the submitted path only proves what it pointed at
+# during validation; a symlink retargeted before root executes would otherwise
+# hand root a worker-controlled program.
+helper_symlink="$tmp/attacker/worktree-commit.sh"
+ln -sf "$helper" "$helper_symlink"
+symlink_handback="$tmp/symlink.handback"
+cat >"$symlink_handback" <<EOF
+"$helper_symlink" --message 'feat(skills): symlink helper' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- src/tracked.txt
+EOF
+symlink_output="$tmp/symlink.argv"
+symlink_rc=0
+"$script" --worktree "$repo" --handback-file "$symlink_handback" >"$symlink_output" 2>"$tmp/symlink.err" || symlink_rc=$?
+assert_eq '0' "$symlink_rc" 'a symlink that resolves to the shipped helper is accepted'
+assert_eq "$helper" "$(tr '\0' '\n' <"$symlink_output" | head -1)" \
+    'the emitted argv names the canonical helper, not the submitted symlink'
+
+# worktree-commit.sh commits the whole index, and its own staged-protected guard
+# only fires during an active merge. A path staged but left out of the operands
+# would otherwise be published without ever reaching the protected check.
+git -C "$repo" add -- secrets/config.txt
+staged_protected_rc=0
+"$script" --worktree "$repo" --handback-file "$valid_handback" \
+    >"$tmp/staged-protected.out" 2>"$tmp/staged-protected.err" || staged_protected_rc=$?
+assert_eq '1' "$staged_protected_rc" 'a staged protected path is refused even when undeclared'
+assert_contains "$(cat -- "$tmp/staged-protected.err")" 'secrets/config.txt' \
+    'the refusal names the staged protected path'
+git -C "$repo" reset -q -- secrets/config.txt
+
+printf 'plain\n' >"$repo/src/staged-only.txt"
+git -C "$repo" add -- src/staged-only.txt
+staged_undeclared_rc=0
+"$script" --worktree "$repo" --handback-file "$valid_handback" \
+    >"$tmp/staged-undeclared.out" 2>"$tmp/staged-undeclared.err" || staged_undeclared_rc=$?
+assert_eq '1' "$staged_undeclared_rc" 'a staged but undeclared path is refused'
+assert_contains "$(cat -- "$tmp/staged-undeclared.err")" 'staged path is not declared' \
+    'the refusal names the undeclared staged path'
+git -C "$repo" reset -q -- src/staged-only.txt
+rm -f -- "$repo/src/staged-only.txt"
+
 printf 'AGENT_WORKER_MODEL= \t  \nAGENT_PROTECTED_PATHS=secrets/\n' >"$repo/.agent/config.env"
 blank_model_rc=0
 "$script" --worktree "$repo" --handback-file "$valid_handback" >"$tmp/blank-model.out" 2>"$tmp/blank-model.err" || blank_model_rc=$?

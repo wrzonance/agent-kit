@@ -162,6 +162,8 @@ in a session, the agent must name the payload, the destination, and the purpose,
 for an explicit yes or no. A decline sends nothing and leaves the review gate blocked. An
 affirmative answer covers that session and provider; a changed destination or payload
 requires fresh confirmation.
+The executable `consent-record.sh` stores that decision against the exact PR/diff identity, and
+the adversarial launchers refuse to send a diff without a matching record.
 
 ## Verify your changes
 
