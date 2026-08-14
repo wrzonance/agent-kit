@@ -97,6 +97,9 @@ directory outside the checkout, it makes approval an explicit logged step, and i
 fingerprints the declaration, the runner, repository-backed argv paths, and nearby build
 manifests, so a changed command or input cannot inherit an old approval.
 
+The rationale for these controls and their deliberately limited exceptions is in the
+[security posture](docs/security-posture.md).
+
 Runs you launch unattended are the one exception. `agent-run.sh --yolo --cmd NAME` skips
 the terminal confirmation for that single invocation, announces the skip on stderr and in
 the run log, and records no trust. It applies only when the command's repository-controlled
