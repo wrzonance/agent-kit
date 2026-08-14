@@ -258,16 +258,18 @@ git fetch origin "$BASE_BRANCH" && git merge "origin/$BASE_BRANCH"
 git diff --name-only --diff-filter=U   # resolve each listed file, then:
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
-# Trailer from harness=; a fresh read, so it reruns the full provenance checks.
-contract_root="$(git rev-parse --show-toplevel)"; contract="$contract_root/.agent/env-contract.txt"
-AGENT_TRAILER=$([[ -f $contract && ! -L $contract && -O $contract ]] && \
-  ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1 && \
-  sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
-[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
+# Trailer from harness=; contract-read.sh performs provenance checks and model substitution.
+contract_root="$(git rev-parse --show-toplevel)"
+worker_model=$("$agentkit/.shared/scripts/repo-config.sh" --repo-root "$contract_root" \
+  --get AGENT_WORKER_MODEL 2>/dev/null || true)
+[ -n "$worker_model" ] || { printf 'no worker model; re-run agent-preflight.sh\n' >&2; exit 1; }
+worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
+  --repo-root "$contract_root" --get harness.trailer --worker-model "$worker_model" 2>/dev/null || true)
+[ -n "$worker_attribution" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
 # Chained: no `set -e` here, so unchained these would push even after the commit
 # helper or a verification failed -- what the rule below forbids.
 "$agentkit/.shared/scripts/worktree-commit.sh" --message 'fix(example): resolve merge conflicts with the base branch' \
-  --trailer "Co-Authored-By: $AGENT_TRAILER" -- "$resolved" &&
+  --trailer "Co-Authored-By: $worker_attribution" -- "$resolved" &&
 "$agentkit/.shared/scripts/agent-run.sh" --cmd lint --if-declared &&
 "$agentkit/.shared/scripts/agent-run.sh" --cmd test &&
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config

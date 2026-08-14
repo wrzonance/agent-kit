@@ -13,6 +13,9 @@ source "$here/lib/assert.sh"
 # fence whose only mention of them is a helper path plus a comment.
 FULL_GUARD='[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]'
 
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
 for skill in "$root"/agentkit/skills/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
     text=$(<"$skill")
@@ -78,5 +81,100 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
         assert_eq 'some' 'none' "$name has no validated contract reads at all"
     fi
 done
+
+reader="$root/agentkit/skills/.shared/scripts/contract-read.sh"
+assert_eq yes "$([[ -x $reader ]] && printf yes || printf no)" \
+    'contract-read.sh is an executable shared helper'
+
+for consumer in \
+    "$root/agentkit/skills/onboard-repo/SKILL.md" \
+    "$root/agentkit/skills/review-remote-pr/SKILL.md" \
+    "$root/agentkit/skills/parallel-issues/SKILL.md" \
+    "$root/agentkit/skills/parallel-issues/references/worker-prompts.md" \
+    "$root/agentkit/hooks/stop.sh" \
+    "$root/agentkit/hooks/lib/guard-lib.sh"; do
+    assert_contains "$(<"$consumer")" 'contract-read.sh' \
+        "$(basename "$consumer") consumes contract-read.sh"
+done
+
+guard_text=$(<"$root/agentkit/hooks/lib/guard-lib.sh")
+assert_contains "$guard_text" '-r $file' \
+    'the hook predicate requires a readable contract'
+
+valid_repo="$tmp/valid"
+mkdir -p "$valid_repo/.agent"
+git -C "$valid_repo" init -q
+printf '%s\n' \
+    'skills= path=/tmp/installed/agentkit/skills' \
+    'repo=example-org/example-repo' \
+    'base=develop source=refs/remotes/origin/HEAD' \
+    'harness= name=codex trailer="Codex <noreply@openai.com>" other=claude' \
+    > "$valid_repo/.agent/env-contract.txt"
+
+value=''
+rc=0
+value=$("$reader" --repo-root "$valid_repo" --get skills.path) || rc=$?
+assert_eq 0 "$rc" 'trusted contract allows skills.path reads'
+assert_eq '/tmp/installed/agentkit/skills' "$value" 'skills.path is read from the contract'
+value=$("$reader" --repo-root "$valid_repo" --get harness.trailer)
+assert_eq 'Codex <noreply@openai.com>' "$value" 'harness.trailer is read from the contract'
+value=$("$reader" --repo-root "$valid_repo" --get harness.trailer --worker-model gpt-5.6-luna)
+assert_eq 'Codex gpt-5.6-luna <noreply@openai.com>' "$value" \
+    'worker-model substitution is performed by the helper'
+value=$("$reader" --repo-root "$valid_repo" --get harness.name)
+assert_eq codex "$value" 'harness.name is read from the contract'
+value=$("$reader" --repo-root "$valid_repo" --get repo.slug)
+assert_eq 'example-org/example-repo' "$value" 'repo.slug is read from the contract'
+value=$("$reader" --repo-root "$valid_repo" --get base.branch)
+assert_eq develop "$value" 'base.branch is read from the contract'
+assert_rc 2 'an unknown contract key is a usage error' -- \
+    "$reader" --repo-root "$valid_repo" --get missing.key
+assert_rc 2 'an unsafe worker model is rejected' -- \
+    "$reader" --repo-root "$valid_repo" --get harness.trailer --worker-model 'bad model'
+
+missing_repo="$tmp/missing"
+mkdir -p "$missing_repo"
+git -C "$missing_repo" init -q
+assert_rc 3 'an absent contract is distinguished from an untrusted one' -- \
+    "$reader" --repo-root "$missing_repo" --get repo.slug
+
+tracked_repo="$tmp/tracked"
+mkdir -p "$tracked_repo/.agent"
+git -C "$tracked_repo" init -q
+cp -- "$valid_repo/.agent/env-contract.txt" "$tracked_repo/.agent/env-contract.txt"
+git -C "$tracked_repo" add -- .agent/env-contract.txt
+assert_rc 4 'a tracked contract is untrusted' -- \
+    "$reader" --repo-root "$tracked_repo" --get repo.slug
+
+symlink_repo="$tmp/symlink"
+mkdir -p "$symlink_repo/.agent"
+git -C "$symlink_repo" init -q
+ln -s -- "$valid_repo/.agent/env-contract.txt" "$symlink_repo/.agent/env-contract.txt"
+assert_rc 4 'a symlinked contract is untrusted' -- \
+    "$reader" --repo-root "$symlink_repo" --get repo.slug
+
+# The hook and helper must return the same trust decision for the same file.
+# Source the hook library after its structural assertions so this remains a
+# boundary test, not a test of a copied predicate in the suite itself.
+# shellcheck source=../agentkit/hooks/lib/guard-lib.sh
+source "$root/agentkit/hooks/lib/guard-lib.sh"
+if guard_contract_is_ours "$valid_repo/.agent/env-contract.txt" "$valid_repo"; then
+    guard_valid=yes
+else
+    guard_valid=no
+fi
+if guard_contract_is_ours "$tracked_repo/.agent/env-contract.txt" "$tracked_repo"; then
+    guard_tracked=yes
+else
+    guard_tracked=no
+fi
+if guard_contract_is_ours "$symlink_repo/.agent/env-contract.txt" "$symlink_repo"; then
+    guard_symlink=yes
+else
+    guard_symlink=no
+fi
+assert_eq yes "$guard_valid" 'hook predicate accepts the same trusted contract'
+assert_eq no "$guard_tracked" 'hook predicate rejects the same tracked contract'
+assert_eq no "$guard_symlink" 'hook predicate rejects the same symlinked contract'
 
 finish
