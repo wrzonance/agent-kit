@@ -81,6 +81,21 @@ for helper in "$claude" "$codex"; do
     assert_eq 700 "$(stat -c %a -- "$nested_root/prN/state")" \
         "$name secures the nested transcript parent despite umask"
 
+    untrusted_root="$tmp/${name}.untrusted.run"
+    mkdir -- "$untrusted_root"
+    chmod 700 -- "$untrusted_root"
+    untrusted_ancestor="$untrusted_root/existing"
+    mkdir -- "$untrusted_ancestor"
+    chmod 755 -- "$untrusted_ancestor"
+    untrusted_transcript="$untrusted_ancestor/child/state/transcript"
+    untrusted_err="$tmp/${name}.untrusted.err"
+    rc=$(run_rejected "$helper" "$untrusted_transcript" "$untrusted_err")
+    assert_eq 1 "$rc" "$name rejects an existing non-private transcript ancestor"
+    assert_contains "$(cat -- "$untrusted_err")" '0700' \
+        "$name explains the existing ancestor private-directory requirement"
+    assert_eq no "$( [[ ! -e "$untrusted_ancestor/child" ]] && printf no || printf yes )" \
+        "$name does not create descendants beneath an untrusted ancestor"
+
 done
 
 for helper in "$claude" "$codex"; do
