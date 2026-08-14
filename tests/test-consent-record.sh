@@ -22,14 +22,34 @@ diff_two="$tmp/diff-two"
 printf '%s\n' 'exact diff bytes one' >"$diff_one"
 printf '%s\n' 'exact diff bytes two' >"$diff_two"
 
-payload_one="24:$(sha256sum -- "$diff_one" | awk '{print $1}')"
-payload_two="24:$(sha256sum -- "$diff_two" | awk '{print $1}')"
+payload_one="acme/widget:24:$(sha256sum -- "$diff_one" | awk '{print $1}')"
+payload_two="acme/widget:24:$(sha256sum -- "$diff_two" | awk '{print $1}')"
 state="$state_dir/record"
 
-# Payload identity is derived from the PR number and exact diff bytes.
-out=$(/bin/bash "$script" payload --pr 24 --diff "$diff_one")
-assert_eq "$payload_one" "$out" 'payload derives the PR and exact diff hash'
+# Payload identity is derived from the repository, PR number and exact diff bytes.
+out=$(/bin/bash "$script" payload --repo acme/widget --pr 24 --diff "$diff_one")
+assert_eq "$payload_one" "$out" 'payload derives the repo, PR and exact diff hash'
 assert_not_contains "$out" "$payload_two" 'changed diff bytes change the payload identity'
+
+# PR numbers are only unique within one repository. Identical bytes under the
+# same number in a second repository must NOT derive the same payload, or a
+# reused record would satisfy check for a repository never disclosed.
+other_repo_payload=$(/bin/bash "$script" payload --repo acme/other --pr 24 --diff "$diff_one")
+assert_eq differ \
+    "$( [[ $out != "$other_repo_payload" ]] && printf differ || printf same )" \
+    'the same PR number and diff bytes in another repository derive a different payload'
+# Granted for acme/widget in its own record, so the rejection below can only be
+# the repository mismatch -- not a missing state file and not a changed digest.
+cross_state="$state_dir/cross-repo-record"
+/bin/bash "$script" grant --state "$cross_state" --provider anthropic \
+    --payload "$out" --source interactive >/dev/null
+assert_rc 10 'consent granted for one repository does not check out for another' -- \
+    /bin/bash "$script" check --state "$cross_state" --provider anthropic \
+    --payload "$other_repo_payload"
+assert_rc 2 'payload refuses a missing repository' -- \
+    /bin/bash "$script" payload --pr 24 --diff "$diff_one"
+assert_rc 2 'payload refuses a repository carrying the payload delimiter' -- \
+    /bin/bash "$script" payload --repo 'acme/wid:get' --pr 24 --diff "$diff_one"
 
 # Disclosure is informational only and cannot create consent state.
 disclosure=$(/bin/bash "$script" disclose --payload "$payload_one" \
@@ -112,13 +132,13 @@ for helper in "$claude" "$codex"; do
     if [[ $helper == *claude* ]]; then
         CLAUDE_EXECUTABLE="$launch_dir/fake-provider" \
             FAKE_PROVIDER_MARKER="$counter" /bin/bash "$helper" \
-            --mode review --model claude-test --pr 24 --diff "$diff_one" \
+            --mode review --model claude-test --repo acme/widget --pr 24 --diff "$diff_one" \
             --consent-state "$launch_dir/missing/record" \
             --transcript "$launch_dir/claude.transcript" > /dev/null 2>"$launch_err" || launch_rc=$?
     else
         CODEX_EXECUTABLE="$launch_dir/fake-provider" \
             FAKE_PROVIDER_MARKER="$counter" /bin/bash "$helper" \
-            --mode review --model gpt-test --pr 24 --diff "$diff_one" \
+            --mode review --model gpt-test --repo acme/widget --pr 24 --diff "$diff_one" \
             --consent-state "$launch_dir/missing/record" \
             --transcript "$launch_dir/codex.transcript" > /dev/null 2>"$launch_err" || launch_rc=$?
     fi

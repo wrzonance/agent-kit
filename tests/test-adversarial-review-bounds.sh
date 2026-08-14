@@ -224,14 +224,14 @@ claude_consent_state="$private/claude-consent"
 codex_consent_state="$private/codex-consent"
 grant_consent() {
     local state_path=$1 provider=$2 diff_path=$3 payload
-    payload=$(/bin/bash "$consent_script" payload --pr 24 --diff "$diff_path")
+    payload=$(/bin/bash "$consent_script" payload --repo acme/widget --pr 24 --diff "$diff_path")
     /bin/bash "$consent_script" grant --state "$state_path" --provider "$provider" \
         --payload "$payload" --source interactive >/dev/null
 }
 grant_consent "$codex_consent_state" openai "$no_usage_diff"
 codex_no_usage_rc=0
 FAKE_CODEX_NO_USAGE=1 CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" \
-    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$private/codex-no-usage.jsonl" \
     --poll-seconds 1 --max-duration-seconds 30 --max-tokens 1024 \
@@ -250,7 +250,7 @@ oversized_consent_state="$private/oversized-consent"
 grant_consent "$oversized_consent_state" openai "$oversized_diff"
 oversized_err="$tmp/oversized.err"
 oversized_rc=0
-CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode review --model gpt-test \
+CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode review --model gpt-test --repo acme/widget \
     --pr 24 --consent-state "$oversized_consent_state" --diff "$oversized_diff" \
     --transcript "$private/oversized.jsonl" \
     --poll-seconds 1 --max-duration-seconds 30 --max-tokens 1024 \
@@ -293,7 +293,7 @@ mkdir -- "$claude_success_dir"
 chmod 700 -- "$claude_success_dir"
 claude_success_result="$tmp/claude-success.result.json"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-success" bash "$claude" \
-    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$claude_success_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$claude_success_result"
@@ -311,7 +311,7 @@ mkdir -- "$pid_dir"
 chmod 700 -- "$pid_dir"
 pid_result="$tmp/claude-pidfile.result.json"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" bash "$claude" \
-    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$pid_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$pid_result" &
@@ -369,7 +369,7 @@ failure_err="$tmp/claude-heartbeat-failure.err"
 failure_producer_pid_file="$tmp/claude-heartbeat-failure.pid"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" FAKE_CLAUDE_PID_FILE="$failure_producer_pid_file" \
 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$claude" \
-    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$failure_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$failure_result" 2>"$failure_err" &
@@ -406,7 +406,7 @@ codex_failure_err="$tmp/codex-heartbeat-failure.err"
 codex_failure_producer_pid_file="$tmp/codex-heartbeat-failure.pid"
 CODEX_EXECUTABLE="$tmp/fake-codex-slow" FAKE_CODEX_PID_FILE="$codex_failure_producer_pid_file" \
 FAKE_CODEX_SLEEP=10 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$codex" \
-    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$codex_failure_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 >"$codex_failure_result" 2>"$codex_failure_err" &
@@ -444,7 +444,7 @@ mkdir -- "$codex_success_dir"
 chmod 700 -- "$codex_success_dir"
 codex_success_result="$tmp/codex-success.result.json"
 CODEX_EXECUTABLE="$tmp/fake-codex-success" bash "$codex" \
-    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$codex_success_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 >"$codex_success_result"
@@ -458,7 +458,7 @@ mkdir -- "$codex_status_dir"
 chmod 700 -- "$codex_status_dir"
 codex_status_result="$tmp/codex-status.result.json"
 CODEX_EXECUTABLE="$tmp/fake-codex-slow" bash "$codex" \
-    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$no_usage_diff" \
     --transcript "$codex_status_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 >"$codex_status_result" &

@@ -9,6 +9,7 @@ STATE_PATH=''
 PROVIDER=''
 PAYLOAD=''
 SOURCE=''
+REPO=''
 PR_NUMBER=''
 DIFF_PATH=''
 DESTINATION=''
@@ -17,7 +18,7 @@ PURPOSE=''
 usage() {
     cat <<EOF
 Usage:
-  $PROGNAME payload --pr N --diff PATH
+  $PROGNAME payload --repo OWNER/NAME --pr N --diff PATH
   $PROGNAME disclose --payload ID --destination TEXT --purpose TEXT
   $PROGNAME grant --state PATH --provider NAME --payload ID --source interactive|auto-review-flag
   $PROGNAME check --state PATH --provider NAME --payload ID
@@ -47,6 +48,8 @@ parse_options() {
         --payload=*) PAYLOAD=${1#*=}; shift ;;
         --source) require_value "$1" "${2:-}"; SOURCE=$2; shift 2 ;;
         --source=*) SOURCE=${1#*=}; shift ;;
+        --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
+        --repo=*) REPO=${1#*=}; shift ;;
         --pr) require_value "$1" "${2:-}"; PR_NUMBER=$2; shift 2 ;;
         --pr=*) PR_NUMBER=${1#*=}; shift ;;
         --diff) require_value "$1" "${2:-}"; DIFF_PATH=$2; shift 2 ;;
@@ -68,6 +71,15 @@ field_is_safe() {
 }
 
 validate_payload_inputs() {
+    # The repository is part of the payload identity because PR numbers are only
+    # unique within one repository. Without it, the same PR number and identical
+    # diff bytes in a second repository derive the same payload, so a reused
+    # state record would satisfy `check` for a repository the user never
+    # consented to disclose. The character class is deliberately narrower than
+    # GitHub's own -- it excludes the ':' payload delimiter and the ';'/'='
+    # record delimiters, so no repository name can forge a payload or a field.
+    [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+        die '--repo must be OWNER/NAME using [A-Za-z0-9._-]' 2
     [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer' 2
     [[ -f $DIFF_PATH && ! -L $DIFF_PATH && -O $DIFF_PATH ]] ||
         die "diff must be an owned regular file, not a symlink: $DIFF_PATH" 2
@@ -79,7 +91,7 @@ payload_command() {
     digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
         die "could not hash diff: $DIFF_PATH"
     [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || die 'sha256sum returned an invalid digest'
-    printf '%s:%s\n' "$PR_NUMBER" "$digest"
+    printf '%s:%s:%s\n' "$REPO" "$PR_NUMBER" "$digest"
 }
 
 validate_record_fields() {

@@ -123,7 +123,7 @@ grant_consent() {
     /bin/bash "$consent_script" grant --state "$state_path" --provider "$provider" \
         --payload "$output_payload" --source interactive >/dev/null
 }
-output_payload=$(/bin/bash "$consent_script" payload --pr 24 --diff "$output_diff")
+output_payload=$(/bin/bash "$consent_script" payload --repo acme/widget --pr 24 --diff "$output_diff")
 grant_consent "$claude_consent_state" anthropic
 grant_consent "$codex_consent_state" openai
 
@@ -138,7 +138,7 @@ for alias_helper in "$claude" "$codex"; do
     consent_state="$output_run/$alias_name-consent"
     alias_transcript="$output_run/$alias_name-alias.transcript"
     alias_rc=0
-    bash "$alias_helper" --mode review --model m --pr 24 --consent-state "$consent_state" \
+    bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
         --diff "$output_diff" \
         --transcript "$alias_transcript" --output "$alias_transcript" \
         > "$tmp/$alias_name-alias.out" 2> "$tmp/$alias_name-alias.err" || alias_rc=$?
@@ -147,7 +147,7 @@ for alias_helper in "$claude" "$codex"; do
         "--output: $alias_name says the paths alias"
 
     alias_rel_rc=0
-    ( cd "$output_run" && bash "$alias_helper" --mode review --model m --pr 24 \
+    ( cd "$output_run" && bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 \
         --consent-state "$consent_state" --diff "$output_diff" \
         --transcript "$alias_name-rel.transcript" \
         --output "./$alias_name-rel.transcript" ) \
@@ -156,7 +156,7 @@ for alias_helper in "$claude" "$codex"; do
 
     for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
         status_rc=0
-        bash "$alias_helper" --mode review --model m --pr 24 --consent-state "$consent_state" \
+        bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
             --diff "$output_diff" \
             --transcript "$alias_transcript" --output "$status_alias" \
             > /dev/null 2> "$tmp/$alias_name-status.err" || status_rc=$?
@@ -165,7 +165,7 @@ for alias_helper in "$claude" "$codex"; do
     done
 
     alias_diff_rc=0
-    bash "$alias_helper" --mode review --model m --pr 24 --consent-state "$consent_state" \
+    bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
         --diff "$output_diff" \
         --transcript "$output_run/$alias_name-diffalias.transcript" \
         --output "$output_diff" > /dev/null 2> "$tmp/$alias_name-diffalias.err" || alias_diff_rc=$?
@@ -179,7 +179,7 @@ success_output="$output_run/success.result.json"
 success_stdout="$tmp/output-success.stdout"
 success_rc=0
 CLAUDE_EXECUTABLE="$tmp/fake-claude-output-success" bash "$claude" \
-    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
     --diff "$output_diff" \
     --transcript "$output_run/success.transcript" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 \
@@ -281,7 +281,7 @@ codex_success_output="$output_run/codex-success.result.json"
 codex_success_stdout="$tmp/codex-output-success.stdout"
 codex_success_rc=0
 CODEX_EXECUTABLE="$tmp/fake-codex-output-success" bash "$codex" \
-    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$output_diff" \
     --transcript "$output_run/codex-success.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 \
