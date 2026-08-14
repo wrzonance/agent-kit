@@ -312,6 +312,10 @@ assert_contains "$normalized_text" 'preserves the raw command text for audit' \
     'parallel dispatch preserves worker handback command text'
 assert_contains "$text" 'parse into validated arguments without eval' \
     'parallel dispatch parses handback arguments without eval'
+assert_contains "$text" 'validate-handback.sh' \
+    'parallel dispatch invokes the publication handback validator'
+assert_contains "$text" 'mapfile -d' \
+    'parallel dispatch consumes validated handback argv without re-parsing shell text'
 assert_contains "$text" 'expected worktree-commit.sh helper' \
     'parallel dispatch validates the expected commit helper'
 assert_contains "$normalized_text" 'every explicit path is inside the worktree and allowed handback set' \
