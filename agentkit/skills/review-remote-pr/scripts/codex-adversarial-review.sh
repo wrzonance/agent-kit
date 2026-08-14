@@ -95,7 +95,8 @@ Required:
                              review: review the diff at --diff.
   --model <model>            Model for the review (e.g. gpt-5.6-terra).
   --transcript <path>        Where to write the raw JSONL event stream.
-                             Must be a fresh path in an existing 0700 directory;
+                             Must be a fresh path in a private directory;
+                             missing parent directories are created as 0700;
                              created exclusively with mode 0600.
 
 Conditionally required:
@@ -123,9 +124,9 @@ Options:
                              directory, chmod 600, then rename). Written on exit 0
                              (the completed verdict) and exit 3 (the blocked
                              object); never created or left behind on exit 1. The
-                             path's directory must already exist, be owned by this
-                             user, non-symlink, and mode 0700 -- the same bar as
-                             the transcript directory above.
+                             path's directory must be owned by this
+                             user, non-symlink, and mode 0700; missing parent
+                             directories are created as 0700.
   -h, --help                 Show this help.
 
 Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
