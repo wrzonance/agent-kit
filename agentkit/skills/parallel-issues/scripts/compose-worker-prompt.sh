@@ -126,28 +126,38 @@ done <<< "$command_list"
 # A declaration that merely exists is not a runner; agent-run.sh rejects a
 # non-executable one, so accepting it here would pass the check and still fail
 # in the worker's hands.
-runner_resolves() {
-    local path first
+# Mirrors agent-run.sh's resolve_declared_runner: $AGENT_REPO_RUNNER wins, else
+# the same key from .agent/config.env. Only the config.env value is resolved
+# against the repository root -- the ENVIRONMENT value is taken verbatim there,
+# so a relative one names whatever the cwd agent-run.sh runs in makes it, which
+# this composer cannot settle in advance and so does not count as resolved.
+declared_runner_resolves() {
+    local path
     if [[ -n ${AGENT_REPO_RUNNER:-} ]]; then
-        # agent-run.sh takes the ENVIRONMENT value verbatim -- unlike the
-        # config.env key, a relative one is never resolved against the
-        # repository root, so what it names depends on the cwd agent-run.sh
-        # happens to run in. That is not something this composer can settle in
-        # advance, so a relative environment runner does not count as resolved.
         path=$AGENT_REPO_RUNNER
         [[ $path == /* ]] || return 1
     elif ((runner_declared)); then
         path=$runner_value
         [[ $path == /* ]] || path=$worktree/$path
-    elif [[ -f $worktree/.agent/runner ]]; then
-        first=$(sed -n '/^[[:space:]]*[^#[:space:]]/{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' \
-            "$worktree/.agent/runner" 2>/dev/null || true)
-        [[ -n $first ]] || return 1
-        path=$first
-        [[ $path == /* ]] || path=$worktree/$path
     else
         return 1
     fi
+    [[ -x $path ]]
+}
+
+# Mirrors agent-run.sh's resolve_runner, including its FALLTHROUGH: a declared
+# runner that fails to resolve does not end the search, because agent-run.sh
+# goes on to try .agent/runner. Returning early here would reject a repository
+# whose test command actually resolves at runtime.
+runner_resolves() {
+    local path first
+    declared_runner_resolves && return 0
+    [[ -f $worktree/.agent/runner ]] || return 1
+    first=$(sed -n '/^[[:space:]]*[^#[:space:]]/{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' \
+        "$worktree/.agent/runner" 2>/dev/null || true)
+    [[ -n $first ]] || return 1
+    path=$first
+    [[ $path == /* ]] || path=$worktree/$path
     [[ -x $path ]]
 }
 

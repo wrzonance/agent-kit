@@ -239,4 +239,36 @@ AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead \
 assert_eq 1 "$rel_env_rc" \
     'a relative AGENT_REPO_RUNNER does not satisfy the focus selector even when the worktree copy is executable'
 
+# An unusable environment runner does not end the search: agent-run.sh's
+# resolve_runner falls through to .agent/runner, so a repository whose test
+# command does resolve at runtime must not be rejected at compose time.
+make_runner_fallback_repo() {
+    local dir=$1
+    compose_focus_repo "$dir"
+    mkdir -p "$dir/tools"
+    printf '#!/usr/bin/env bash\n' > "$dir/tools/fallback"
+    chmod +x "$dir/tools/fallback"
+    printf 'tools/fallback\n' > "$dir/.agent/runner"
+}
+
+rel_env_fallback="$tmp/rel-env-fallback"
+make_runner_fallback_repo "$rel_env_fallback"
+rel_env_fallback_rc=0
+AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead \
+    --worktree "$rel_env_fallback" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || rel_env_fallback_rc=$?
+assert_eq 0 "$rel_env_fallback_rc" \
+    'a relative AGENT_REPO_RUNNER falls through to an executable .agent/runner'
+
+nonexec_env_fallback="$tmp/nonexec-env-fallback"
+make_runner_fallback_repo "$nonexec_env_fallback"
+printf '#!/usr/bin/env bash\n' > "$nonexec_env_fallback/tools/absent-exec"
+chmod -x "$nonexec_env_fallback/tools/absent-exec"
+nonexec_env_fallback_rc=0
+AGENT_REPO_RUNNER="$nonexec_env_fallback/tools/absent-exec" bash "$compose" --template issue-lead \
+    --worktree "$nonexec_env_fallback" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || nonexec_env_fallback_rc=$?
+assert_eq 0 "$nonexec_env_fallback_rc" \
+    'a non-executable AGENT_REPO_RUNNER falls through to an executable .agent/runner'
+
 finish
