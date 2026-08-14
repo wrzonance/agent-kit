@@ -20,6 +20,7 @@ REPO=''
 GH_ARGS=()
 WORK_DIR=''
 VERIFY_ENDPOINT=''
+MUTATION_COMPLETED=0
 
 usage() {
     cat <<EOF
@@ -124,6 +125,11 @@ validate_body() {
 }
 
 cleanup() {
+    local exit_status=$?
+    if ((exit_status != 0)) && [[ $ACTION == create && $MUTATION_COMPLETED == 1 &&
+        -s $WORK_DIR/mutation.out ]]; then
+        cat "$WORK_DIR/mutation.out"
+    fi
     [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
 }
 
@@ -136,6 +142,7 @@ run_mutation() {
         [[ ! -s $WORK_DIR/mutation.err ]] || cat "$WORK_DIR/mutation.err" >&2
         die "gh $RESOURCE $ACTION failed (rc=$rc); body was not verified"
     fi
+    MUTATION_COMPLETED=1
 }
 
 endpoint_from_url() {
@@ -158,9 +165,11 @@ endpoint_from_url() {
 }
 
 endpoint_from_target() {
+    local repo_path
     if [[ $TARGET =~ $UINT_RE ]]; then
         TARGET_NUMBER=$TARGET
-        VERIFY_ENDPOINT='repos/{owner}/{repo}'
+        repo_path=${REPO:-'{owner}/{repo}'}
+        VERIFY_ENDPOINT="repos/$repo_path"
         if [[ $RESOURCE == pr ]]; then
             VERIFY_ENDPOINT+="/pulls/$TARGET"
         else
@@ -186,9 +195,7 @@ endpoint_from_target() {
 
 fetch_stored_body() {
     local rc=0
-    local -a api_args=("$VERIFY_ENDPOINT")
-    [[ -z $REPO ]] || api_args+=(--repo "$REPO")
-    "$GH_BIN" api "${api_args[@]}" \
+    "$GH_BIN" api "$VERIFY_ENDPOINT" \
         >"$WORK_DIR/stored.json" 2>"$WORK_DIR/verify.err" || rc=$?
     if ((rc != 0)); then
         [[ ! -s $WORK_DIR/verify.err ]] || cat "$WORK_DIR/verify.err" >&2

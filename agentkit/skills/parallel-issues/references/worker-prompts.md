@@ -227,6 +227,17 @@ preserve escape sequences literally and collapse the rendered body to one line. 
 data, so author the static template literally and substitute only explicit placeholders with
 fixed-string Bash parameter expansion.
 
+For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
+of `--base "$base"`) and insert this block immediately before the final attribution in the body,
+substituting the predecessor's PR number as a fixed literal:
+
+```text
+Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
+(`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
+only retargets automatically when the base branch is deleted on merge, which not every
+repository does.
+```
+
 ```bash
 pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
 pr_body_template=''
@@ -283,17 +294,6 @@ banner and closing attribution as the PR template:
 "$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file" \
   --title "$issue_title"
 "$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"
-```
-
-For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
-of `--base "$base"`) and append this line to the body, substituting the predecessor's PR number
-as a fixed literal:
-
-```text
-Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
-(`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
-only retargets automatically when the base branch is deleted on merge, which not every
-repository does.
 ```
 
 ## Fix-batch worker prompt

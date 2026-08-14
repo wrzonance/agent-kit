@@ -44,6 +44,22 @@ if [[ ${1-} == pr || ${1-} == issue ]]; then
 fi
 
 if [[ ${1-} == api ]]; then
+    [[ $# -eq 2 ]] || {
+        printf 'gh api received unexpected arguments: %q\n' "$*" >&2
+        exit 23
+    }
+    printf '%s\n' "$2" >>"$GH_API_LOG"
+    case ${2-} in
+        repos/owner/repo/pulls/41|repos/owner/repo/issues/42|repos/url-owner/url-repo/issues/42) ;;
+        *)
+            printf 'gh api received unexpected endpoint: %s\n' "${2-}" >&2
+            exit 23
+            ;;
+    esac
+    if [[ ${GH_VERIFY_FAILURE:-0} == 1 ]]; then
+        printf 'verification unavailable\n' >&2
+        exit 24
+    fi
     if [[ ${GH_MISMATCH:-0} == 1 ]]; then
         jq -n '{body: "tampered"}'
     else
@@ -65,8 +81,10 @@ printf '%s\n' \
     '🤖 Co-authored by Codex gpt-5.6-luna.' >"$body"
 
 run_body() {
-    GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_STORED_BODY="$tmp/stored.md" \
+    GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
+        GH_STORED_BODY="$tmp/stored.md" \
         GH_MISMATCH="${GH_MISMATCH:-0}" \
+        GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
 }
 
@@ -88,9 +106,11 @@ output=$(run_body issue create --repo owner/repo --body-file="$body" --title 'An
 assert_contains "$output" 'https://github.com/owner/repo/issues/42' \
     'issue create returns the gh result after exact verification'
 
-output=$(run_body issue edit https://github.com/owner/repo/issues/42 \
+output=$(run_body issue edit https://github.com/url-owner/url-repo/issues/42 \
     --repo owner/repo --body-file "$body")
 assert_contains "$output" 'updated issue #42' 'issue edit accepts a canonical target URL'
+assert_contains "$(cat "$tmp/api.log")" 'repos/url-owner/url-repo/issues/42' \
+    'URL edit verification preserves the repository parsed from the target URL'
 
 invalid="$tmp/invalid.md"
 printf '%s\n' 'body without the required front banner' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$invalid"
@@ -124,5 +144,31 @@ assert_eq '1' "$mismatch_rc" 'stored body mismatch fails the mutation'
 assert_eq '' "$mismatch_output" 'mismatch emits no success result'
 assert_contains "$(cat "$tmp/mismatch.err")" 'stored body does not match' \
     'mismatch reports the failed byte comparison'
+
+set +e
+export GH_MISMATCH=1
+create_mismatch_output=$(run_body pr create --repo owner/repo --body-file "$body" \
+    2>"$tmp/create-mismatch.err")
+create_mismatch_rc=$?
+unset GH_MISMATCH
+set -e
+assert_eq '1' "$create_mismatch_rc" 'create byte mismatch fails verification'
+assert_contains "$create_mismatch_output" 'https://github.com/owner/repo/pull/41' \
+    'create byte mismatch preserves the created URL'
+assert_contains "$(cat "$tmp/create-mismatch.err")" 'stored body does not match' \
+    'create byte mismatch still reports the failed byte comparison'
+
+set +e
+export GH_VERIFY_FAILURE=1
+refetch_output=$(run_body issue create --repo owner/repo --body-file "$body" \
+    2>"$tmp/refetch.err")
+refetch_rc=$?
+unset GH_VERIFY_FAILURE
+set -e
+assert_eq '1' "$refetch_rc" 'create re-fetch failure fails verification'
+assert_contains "$refetch_output" 'https://github.com/owner/repo/issues/42' \
+    'create re-fetch failure preserves the created URL'
+assert_contains "$(cat "$tmp/refetch.err")" 'body re-fetch failed' \
+    'create re-fetch failure explains the unverified mutation'
 
 finish
