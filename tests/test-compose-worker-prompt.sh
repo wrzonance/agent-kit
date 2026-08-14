@@ -120,4 +120,60 @@ assert_eq 1 "$missing_base_rc" 'missing base branch fails closed'
 assert_contains "$missing_base_output" 'AGENT_BASE_BRANCH' \
     'missing base branch error names the unresolved fact'
 
+# The worker sources these two lines. With a worktree path containing spaces an
+# unquoted value parses as an assignment followed by a stray command, so the
+# rendered assignments must survive a real shell parse -- asserting on the text
+# alone would pass for a value that no shell could read back.
+assignment_line=$(printf '%s\n' "$prompt" | grep -m1 '^worktree=')
+shared_line=$(printf '%s\n' "$prompt" | grep -m1 '^shared=')
+assert_eq "$repo" "$(bash -c "$assignment_line"'; printf %s "$worktree"')" \
+    'the rendered worktree assignment reads back as the exact path in bash'
+assert_eq "$repo" "$(zsh -c "$assignment_line"'; printf %s "$worktree"' 2>/dev/null || \
+    bash -c "$assignment_line"'; printf %s "$worktree"')" \
+    'the rendered worktree assignment reads back as the exact path in zsh'
+assert_eq "$root/agentkit/skills/.shared/scripts" \
+    "$(bash -c "$shared_line"'; printf %s "$shared"')" \
+    'the rendered shared assignment reads back as the exact path'
+
+# The shared path comes from the contract, not the worktree, so it needs its own
+# spaced case -- the assertion above runs against a repo path with no spaces and
+# would pass unquoted.
+spaced_skills="$tmp/skills dir"
+spaced_contract=$'skills= path='"$spaced_skills"$'\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+spaced_repo="$tmp/spaced-contract"
+make_repo "$spaced_repo" "$spaced_contract"
+spaced_prompt=$(bash "$compose" --template issue-lead --worktree "$spaced_repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
+spaced_shared_line=$(printf '%s\n' "$spaced_prompt" | grep -m1 '^shared=')
+assert_eq "$spaced_skills/.shared/scripts" \
+    "$(bash -c "$spaced_shared_line"'; printf %s "$shared"')" \
+    'a shared path containing spaces reads back intact'
+
+# AGENT_CMD_TEST_FOCUS alone cannot resolve --cmd test: agent-run.sh needs either
+# AGENT_CMD_TEST or a declared runner, and with neither the emitted focused
+# selector would fail in the worker's hands.
+focus_only="$tmp/focus-only"
+make_repo "$focus_only" "$contract"
+sed -i '/^AGENT_CMD_TEST=/d' "$focus_only/.agent/config.env"
+focus_only_output=''
+focus_only_rc=0
+focus_only_output=$(bash "$compose" --template issue-lead --worktree "$focus_only" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high 2>&1) || focus_only_rc=$?
+assert_eq 1 "$focus_only_rc" 'a declared focus with no resolvable test command fails closed'
+assert_contains "$focus_only_output" 'AGENT_CMD_TEST_FOCUS' \
+    'the refusal names the focus declaration'
+
+# A declared runner satisfies --cmd test on its own, so the same config with a
+# runner must still compose rather than be rejected.
+focus_runner="$tmp/focus-runner"
+make_repo "$focus_runner" "$contract"
+sed -i '/^AGENT_CMD_TEST=/d' "$focus_runner/.agent/config.env"
+printf 'tools/run\n' > "$focus_runner/.agent/runner"
+focus_runner_rc=0
+bash "$compose" --template issue-lead --worktree "$focus_runner" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high >/dev/null 2>&1 || focus_runner_rc=$?
+assert_eq 0 "$focus_runner_rc" 'a declared runner satisfies the focus selector without AGENT_CMD_TEST'
+
 finish

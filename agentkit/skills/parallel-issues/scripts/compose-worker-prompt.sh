@@ -80,6 +80,8 @@ shared_path=$shared_path/.shared/scripts
 
 declare -a command_names=()
 focus_declared=0
+test_declared=0
+runner_declared=0
 is_verification_key() {
     case $1 in
         AGENT_CMD_TEST|AGENT_CMD_*_TEST|AGENT_CMD_LINT|AGENT_CMD_*_LINT|AGENT_CMD_BUILD|AGENT_CMD_*_BUILD|AGENT_CMD_TYPECHECK|AGENT_CMD_*_TYPECHECK|AGENT_CMD_TYPE_CHECK|AGENT_CMD_*_TYPE_CHECK|AGENT_CMD_VERIFY|AGENT_CMD_*_VERIFY|AGENT_CMD_CHECK|AGENT_CMD_*_CHECK|AGENT_CMD_COVERAGE|AGENT_CMD_*_COVERAGE)
@@ -95,10 +97,18 @@ if ! command_list=$("$repo_config" --repo-root "$worktree" --list); then
 fi
 while IFS='=' read -r key value; do
     : "$value"
+    # A declared runner satisfies --cmd test on its own: agent-run.sh invokes
+    # `runner test` when AGENT_CMD_TEST is absent.
+    if [[ $key == AGENT_REPO_RUNNER && -n $value ]]; then
+        runner_declared=1
+    fi
     [[ $key =~ ^AGENT_CMD_[A-Z][A-Z0-9_]*$ ]] || continue
     if [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
         focus_declared=1
         continue
+    fi
+    if [[ $key == AGENT_CMD_TEST ]]; then
+        test_declared=1
     fi
     is_verification_key "$key" || continue
     name=${key#AGENT_CMD_}
@@ -107,6 +117,15 @@ while IFS='=' read -r key value; do
     command_names+=("$name")
 done <<< "$command_list"
 ((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
+
+# AGENT_CMD_TEST_FOCUS does not imply AGENT_CMD_TEST, because agent-run.sh falls
+# back to `runner test`. With neither, the emitted `--cmd test --only` selector
+# cannot resolve and would fail in the worker's hands. Refuse at compose time on
+# root instead of shipping an instruction that is guaranteed to break.
+if ((focus_declared)) && ((test_declared == 0)) && ((runner_declared == 0)) &&
+    [[ -z ${AGENT_REPO_RUNNER:-} && ! -f $worktree/.agent/runner ]]; then
+    die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or a repository runner'
+fi
 
 command_flags=
 if ((yolo)); then
@@ -198,8 +217,17 @@ while IFS= read -r line || [[ -n $line ]]; do
         skip_when=1
         continue
     fi
+    # These two are shell ASSIGNMENTS the worker sources, so their values are
+    # %q-quoted -- an unquoted path containing spaces parses as an assignment
+    # followed by a stray command. The prose spellings of the same paths
+    # ("Worktree: ...") are substituted below and deliberately left unquoted.
     if [[ $line == shared='<PASTE the validated shared-scripts path from the contract>' ]]; then
-        printf 'shared=%s\n' "$shared_path"
+        printf 'shared=%q\n' "$shared_path"
+        continue
+    fi
+    if [[ $line == 'worktree=/ABS/PATH/.worktrees/feat/issue-NNN' ||
+        $line == 'worktree=FULL_PATH' ]]; then
+        printf 'worktree=%q\n' "$worktree"
         continue
     fi
     if [[ $line == '__DECLARED_COMMANDS__' ]]; then
