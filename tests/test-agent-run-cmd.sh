@@ -568,15 +568,47 @@ done
 
 # --- runner fallback -------------------------------------------------------
 repo=$(make_repo)
+printf 'AGENT_CMD_TEST=echo declared-query-ran\n' > "$repo/.agent/config.env"
+query_out=''
+query_rc=0
+query_out=$(cd "$repo" && "$real_run_sh" --resolve test 2>&1) || query_rc=$?
+assert_eq '0' "$query_rc" 'the query returns the declared-command status'
+assert_eq 'declared' "$query_out" 'the query reports a declared command'
+assert_eq 'no' "$([[ -e $repo/.agent/logs ]] && echo yes || echo no)" \
+    'the resolution query does not create execution logs'
+out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+assert_contains "$out" 'declared-query-ran' \
+    'a command reported as declared executes through the normal path'
+
+repo=$(make_repo)
 mkdir -p "$repo/tools"
 # shellcheck disable=SC2016  # "$1" belongs to the generated stub, not to us.
 printf '#!/bin/sh\nprintf "runner-got:%%s\\n" "$1"\n' > "$repo/tools/verify"
 chmod +x "$repo/tools/verify"
 printf 'AGENT_REPO_RUNNER=tools/verify\n' > "$repo/.agent/config.env"
+query_out=''
+query_rc=0
+query_out=$(cd "$repo" && "$real_run_sh" --resolve test 2>&1) || query_rc=$?
+assert_eq '2' "$query_rc" 'the query returns the repository-runner status'
+assert_eq 'runner' "$query_out" 'the query reports a repository runner'
 out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
 # shellcheck disable=SC2016  # backticks inside an assertion MESSAGE, quoting the
 # `runner <name>` convention for a human reader.
 assert_contains "$out" 'runner-got:test' 'falls back to the runner as `runner <name>`'
+
+repo=$(make_repo)
+: > "$repo/.agent/config.env"
+query_out=''
+query_rc=0
+query_out=$(cd "$repo" && "$real_run_sh" --resolve test 2>&1) || query_rc=$?
+assert_eq '3' "$query_rc" 'the query returns the unresolved status'
+assert_eq 'unresolved' "$query_out" 'the query reports an unresolved command'
+run_out=''
+run_rc=0
+run_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1) || run_rc=$?
+assert_eq '1' "$run_rc" 'execution refuses a command reported unresolved'
+assert_contains "$run_out" 'no command named' \
+    'the unresolved execution still explains the missing declaration'
 
 # --- .agent/runner file is equally honored --------------------------------
 repo=$(make_repo)
@@ -585,6 +617,11 @@ mkdir -p "$repo/tools"
 printf '#!/bin/sh\nprintf "runner-got:%%s\\n" "$1"\n' > "$repo/tools/verify"
 chmod +x "$repo/tools/verify"
 printf '%s/tools/verify\n' "$repo" > "$repo/.agent/runner"
+query_out=''
+query_rc=0
+query_out=$(cd "$repo" && "$real_run_sh" --resolve lint 2>&1) || query_rc=$?
+assert_eq '2' "$query_rc" 'the query recognizes the .agent/runner convention'
+assert_eq 'runner' "$query_out" 'the query reports the .agent/runner as a repository runner'
 out=$(cd "$repo" && "$run_sh" --cmd lint 2>&1)
 assert_contains "$out" 'runner-got:lint' 'the .agent/runner convention still works'
 

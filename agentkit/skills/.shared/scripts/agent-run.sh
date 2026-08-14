@@ -18,7 +18,7 @@
 # know the repository's ecosystem: the repository declares what "test" means as
 # AGENT_CMD_TEST in .agent/config.env, else its runner is invoked as `runner test`.
 #
-# Usage: agent-run.sh [--dir PATH] [--label NAME] (--cmd NAME | [--] <command> ...)
+# Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] (--cmd NAME | [--] <command> ...)
 # Exit status: the wrapped command's status (this script's own usage errors exit 1).
 
 set -euo pipefail
@@ -31,7 +31,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--approve|--yolo] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--approve|--yolo] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -63,6 +63,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
+  --resolve NAME Query a named command without executing it. Prints declared,
+                 runner, or unresolved and exits 0, 2, or 3 respectively.
   --cmd NAME     Run the command this repository declares under that name, instead
                  of spelling one out. Mutually exclusive with a literal command.
   --             End of options; everything after it is the command.
@@ -115,6 +117,7 @@ die() {
 dir_opt=
 label=
 cmd_name=
+resolve_name=
 cmd=()
 focus_opt=''
 focus_requested=0
@@ -157,12 +160,13 @@ while (($#)); do
             focus_opt=$2
             shift 2
             ;;
-        --dir|--label|--cmd)
+        --dir|--label|--cmd|--resolve)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
                 --dir) dir_opt=$2 ;;
                 --label) label=$2 ;;
-                *) cmd_name=$2 ;;
+                --cmd) cmd_name=$2 ;;
+                --resolve) resolve_name=$2 ;;
             esac
             shift 2
             ;;
@@ -190,7 +194,14 @@ if ((focus_requested)); then
     [[ -n $cmd_name ]] || die '--only requires --cmd test.'
 fi
 
-if [[ -n $cmd_name ]]; then
+if [[ -n $resolve_name ]]; then
+    [[ -z $cmd_name ]] || die '--cmd NAME and --resolve NAME are mutually exclusive.'
+    ((${#cmd[@]} == 0)) || die '--resolve NAME and a literal command are mutually exclusive.'
+    ((focus_requested == 0)) || die '--resolve NAME cannot be combined with --only.'
+    ((approve_cmd == 0 && yolo_cmd == 0 && force_cmd == 0)) ||
+        die '--resolve NAME cannot be combined with execution flags.'
+    ((if_declared == 0)) || die '--resolve NAME cannot be combined with --if-declared.'
+elif [[ -n $cmd_name ]]; then
     ((${#cmd[@]} == 0)) || die '--cmd NAME and a literal command are mutually exclusive.'
 else
     ((${#cmd[@]})) || die 'No command given.'
@@ -507,6 +518,7 @@ repo_config_get() {
 
 # ------------------------------------------------------------------- runner ---
 runner_path='' runner_src=''
+resolution_kind=unresolved
 declare -a relevant_config_keys=()
 declare -A resolved_config_values=() resolved_config_present=()
 declare -a resolved_command_argv=() resolved_focus_argv=()
@@ -698,6 +710,7 @@ resolve_named_command() {
         cmd=("${resolved_command_argv[@]}")
         ((${#cmd[@]})) || die "invalid argv for $key"
         cmd_declared=yes
+        resolution_kind=declared
 
         # A monorepo command usually has to run IN its component. Without this
         # the only root-runnable form of a dashboard test invocation globbed
@@ -718,6 +731,7 @@ resolve_named_command() {
     # supplied AGENT_REPO_RUNNER in the environment, the resolver is not read.
     if resolve_runner; then
         cmd=("$name")
+        resolution_kind=runner
         return 0
     fi
 
@@ -728,6 +742,10 @@ resolve_named_command() {
     if ((if_declared)); then
         printf 'agent-run: no command named %s declared here; skipping\n' "$name" >&2
         exit 0
+    fi
+    if [[ -n $resolve_name ]]; then
+        printf 'unresolved\n'
+        exit 3
     fi
     die "no command named '$name': declare $key in .agent/config.env, or add .agent/runner"
 }
@@ -1461,6 +1479,14 @@ record_verification() {
 if [[ -n $cmd_name ]]; then
     resolve_named_command "$cmd_name"
     apply_test_focus
+elif [[ -n $resolve_name ]]; then
+    resolve_named_command "$resolve_name"
+    printf '%s\n' "$resolution_kind"
+    case $resolution_kind in
+        declared) exit 0 ;;
+        runner) exit 2 ;;
+        *) die "unknown resolution kind: $resolution_kind" ;;
+    esac
 fi
 finalise_label
 refresh_cmd_str

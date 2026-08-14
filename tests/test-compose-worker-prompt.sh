@@ -12,6 +12,14 @@ compose="$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
+compose_source=$(<"$compose")
+assert_contains "$compose_source" '--resolve test' \
+    'composer asks agent-run for focus-command resolution'
+assert_not_contains "$compose_source" 'runner_resolves' \
+    'composer has no mirrored runner resolution function'
+assert_not_contains "$compose_source" 'declared_runner_resolves' \
+    'composer has no mirrored declared-runner resolution function'
+
 make_repo() {
     local dir=$1 contract=$2
     mkdir -p "$dir/.agent"
