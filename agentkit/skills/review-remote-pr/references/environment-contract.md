@@ -28,8 +28,9 @@ cache and reports the substitution as a `note:` line.
 Run `.shared/scripts/agent-preflight.sh` exactly ONCE, in Step 0a, and treat its printed block
 (`skills=`/`repo`/`branch`/`worktree`/`base`/`config`/`git`/`gh`/`sandbox`/`tls`/`caches`/`runners`/
 `harness`/`peer-cli`) as the contract for the whole run — never re-probe. **Paste it verbatim into
-every dispatched worker prompt.** Decision lines: `gh= … project-scope=no` → grooming needs
-`gh auth refresh -s project` up front; `peer-cli= <name> absent` → skip the Step 1b peer probe
+every dispatched worker prompt.** Decision lines: `gh= … project-scope=no` → a human OAuth session
+may need `gh auth refresh -s project`, while an unattended fleet session must verify the App's
+`Projects: write` permission and never fall back to a human token; `peer-cli= <name> absent` → skip the Step 1b peer probe
 entirely, go straight to the blind same-harness fallback; `config= present=no` → facts come from
 discovery instead of `.agent/config.env`.
 
@@ -37,3 +38,10 @@ A repo opts into its own command runner via exactly two mechanisms, in order: `A
 env var, then a committed `.agent/runner`. `.agent/` is untracked; Step 0a adds it to local
 excludes; `worktree-commit.sh` stages only the FILE arguments given to it, so a careless
 `git add -A` is not safe.
+
+For unattended orchestration, `gh` must inherit the fleet GitHub App installation token through
+`GH_TOKEN` (or `GITHUB_TOKEN` when `GH_TOKEN` is absent). This identity owns Project GraphQL reads
+and mutations, draft PR creation, and workflow-authored comments. Never repair a missing fleet
+credential by logging the human account into the worker shell. Draft-to-ready flips, approvals, and
+merges remain human-gated actions from a separately authenticated human shell; see the
+[fleet identity runbook](../../../../docs/fleet-identity.md).
