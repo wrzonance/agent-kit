@@ -82,6 +82,41 @@ assert_decoy_survives() {
     fi
 }
 
+# The empty-array expansions must be guarded explicitly: Bash 4.2 with
+# nounset can treat an initialized empty array as unset during "${array[@]}".
+# Keep a source assertion alongside the runtime boundary checks so this suite
+# remains meaningful on newer Bash versions whose expansion behavior changed.
+guard_pattern="if ((\${#REVIEW_CHILD_PIDS[@]})); then"
+empty_registry_guard_count=$(grep -F -c "$guard_pattern" "$review_lib" || true)
+assert_eq 2 "$empty_registry_guard_count" \
+    'shared PID loops guard empty arrays for Bash 4.2 nounset compatibility'
+remaining_guard_pattern="if ((\${#remaining[@]})); then"
+remaining_guard_count=$(grep -F -c "$remaining_guard_pattern" "$review_lib" || true)
+assert_eq 1 "$remaining_guard_count" \
+    'forget_pid guards empty remaining arrays before registry replacement'
+
+forget_rc=0
+bash -u -c 'source "$1"; REVIEW_CHILD_PIDS=(123 456); review_forget_pid 456; [[ ${#REVIEW_CHILD_PIDS[@]} -eq 1 && ${REVIEW_CHILD_PIDS[0]} == 123 ]]; review_forget_pid 123; [[ ${#REVIEW_CHILD_PIDS[@]} -eq 0 ]]' \
+    _ "$review_lib" || forget_rc=$?
+assert_eq 0 "$forget_rc" \
+    'forgetting registered PIDs preserves survivors and safely clears the last PID under nounset'
+
+empty_pid_file="$tmp/empty.pid"
+empty_status_file="$tmp/empty.status"
+empty_status_tmp="$tmp/empty.status.tmp"
+empty_output_tmp="$tmp/empty.output.tmp"
+touch "$empty_pid_file" "$empty_status_file" "$empty_status_tmp" "$empty_output_tmp"
+cleanup_rc=0
+bash -u -c 'source "$1"; PID_FILE="$2"; STATUS_FILE="$3"; STATUS_TMP="$4"; OUTPUT_TMP="$5"; review_cleanup' \
+    _ "$review_lib" "$empty_pid_file" "$empty_status_file" "$empty_status_tmp" "$empty_output_tmp" ||
+    cleanup_rc=$?
+assert_eq 0 "$cleanup_rc" \
+    'cleanup with an empty registry is safe under nounset'
+for artifact in "$empty_pid_file" "$empty_status_file" "$empty_status_tmp" "$empty_output_tmp"; do
+    assert_eq no "$( [[ -e $artifact ]] && printf yes || printf no )" \
+        "empty-registry cleanup removes temporary artifact ${artifact##*/}"
+done
+
 # Cleanup must ignore mutable PID slots even when a caller assigns an arbitrary
 # process after the shared library has been sourced. Only registered spawn PIDs
 # are cleanup authority.

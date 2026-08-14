@@ -24,10 +24,16 @@ review_register_pid() {
 review_forget_pid() {
     local pid=${1:-} registered
     local -a remaining=()
-    for registered in "${REVIEW_CHILD_PIDS[@]}"; do
-        [[ $registered == "$pid" ]] || remaining+=("$registered")
-    done
-    REVIEW_CHILD_PIDS=("${remaining[@]}")
+    if ((${#REVIEW_CHILD_PIDS[@]})); then
+        for registered in "${REVIEW_CHILD_PIDS[@]}"; do
+            [[ $registered == "$pid" ]] || remaining+=("$registered")
+        done
+    fi
+    if ((${#remaining[@]})); then
+        REVIEW_CHILD_PIDS=("${remaining[@]}")
+    else
+        REVIEW_CHILD_PIDS=()
+    fi
 }
 
 
@@ -55,11 +61,13 @@ review_publish_output() {
 
 review_cleanup() {
     local pid
-    for pid in "${REVIEW_CHILD_PIDS[@]}"; do
-        [[ -n $pid ]] || continue
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    done
+    if ((${#REVIEW_CHILD_PIDS[@]})); then
+        for pid in "${REVIEW_CHILD_PIDS[@]}"; do
+            [[ -n $pid ]] || continue
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        done
+    fi
     REVIEW_CHILD_PIDS=()
     POLLER_PID=""
     CLAUDE_PID=""
