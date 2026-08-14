@@ -239,6 +239,8 @@ agent_identity=${agent_identity:?set the actual agent identity for PR attributio
 pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}
 # The quoted heredoc keeps every body byte literal, including Markdown backticks and $().
 cat >"$pr_body_template" <<'EOF'
+This was written agentically; verify its assertions:
+
 ## Why
 
 <motivation>
@@ -268,8 +270,21 @@ body_suffix=${body_remainder#*__PR_CLOSE_LINE__}
 body=$body_prefix$agent_identity$body_middle$pr_close_line$body_suffix
 printf %s "$body" >"$pr_body_file"
 rm -f -- "$pr_body_template"
-gh pr create --draft --body-file "$pr_body_file" \
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
   --title "$pr_title" --base "$base" --head "$branch"
+```
+
+The same verified transport covers issue mutations. Every issue body file uses the same front
+banner and closing attribution as the PR template:
+
+```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file" \
+  --title "$issue_title"
+"$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"
 ```
 
 For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead

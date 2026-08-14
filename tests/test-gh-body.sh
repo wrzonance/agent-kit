@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Suite: PR and issue mutation bodies are posted and byte-verified by one helper.
+# shellcheck disable=SC2016  # literal body fixtures must stay unexpanded
+set -uo pipefail
+
+TEST_NAME='gh-body'
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
+cat >"$tmp/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+
+body_file=''
+for ((i = 1; i <= $#; i++)); do
+    case ${!i} in
+        --body-file)
+            i=$((i + 1))
+            body_file=${!i}
+            ;;
+        --body-file=*) body_file=${!i#*=} ;;
+    esac
+done
+
+if [[ ${1-} == pr || ${1-} == issue ]]; then
+    [[ -n $body_file && -f $body_file ]] || exit 21
+    cp -- "$body_file" "$GH_STORED_BODY"
+    if [[ ${2-} == create ]]; then
+        if [[ ${1-} == pr ]]; then
+            printf '%s\n' 'https://github.com/owner/repo/pull/41'
+        else
+            printf '%s\n' 'https://github.com/owner/repo/issues/42'
+        fi
+    fi
+    exit 0
+fi
+
+if [[ ${1-} == api ]]; then
+    if [[ ${GH_MISMATCH:-0} == 1 ]]; then
+        jq -n '{body: "tampered"}'
+    else
+        jq -Rs '{body: .}' <"$GH_STORED_BODY"
+    fi
+    exit 0
+fi
+
+printf 'unexpected gh invocation\n' >&2
+exit 22
+EOF
+chmod +x "$tmp/gh"
+
+body="$tmp/body.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    'literal `sha` and $(printf should-not-run)' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' >"$body"
+
+run_body() {
+    GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_STORED_BODY="$tmp/stored.md" \
+        GH_MISMATCH="${GH_MISMATCH:-0}" \
+        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
+}
+
+output=$(run_body pr create --repo owner/repo --body-file "$body" --draft --title 'A `title`')
+assert_contains "$output" 'https://github.com/owner/repo/pull/41' \
+    'PR create returns the gh result after exact verification'
+if cmp -s "$body" "$tmp/stored.md"; then
+    _pass 'PR create forwards the exact body file bytes'
+else
+    _fail 'PR create forwards the exact body file bytes' 'stored body differs from source file'
+fi
+assert_contains "$(cat "$tmp/gh.log")" '--body-file' 'PR create uses gh body-file transport'
+assert_contains "$(cat "$tmp/gh.log")" '--draft' 'PR create forwards non-body options'
+
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$body" --title 'edited')
+assert_contains "$output" 'updated pr #41' 'PR edit verifies a target with no gh stdout URL'
+
+output=$(run_body issue create --repo owner/repo --body-file="$body" --title 'An issue')
+assert_contains "$output" 'https://github.com/owner/repo/issues/42' \
+    'issue create returns the gh result after exact verification'
+
+output=$(run_body issue edit https://github.com/owner/repo/issues/42 \
+    --repo owner/repo --body-file "$body")
+assert_contains "$output" 'updated issue #42' 'issue edit accepts a canonical target URL'
+
+invalid="$tmp/invalid.md"
+printf '%s\n' 'body without the required front banner' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$invalid"
+set +e
+invalid_output=$(run_body pr create --repo owner/repo --body-file "$invalid" 2>"$tmp/invalid.err")
+invalid_rc=$?
+set -e
+assert_eq '1' "$invalid_rc" 'missing attribution banner fails before posting'
+assert_eq '' "$invalid_output" 'invalid attribution has no success output'
+assert_contains "$(cat "$tmp/invalid.err")" 'front banner' \
+    'front-banner failure is explained'
+
+missing_footer="$tmp/missing-footer.md"
+printf '%s\n' 'This was written agentically; verify its assertions:' 'body without footer' >"$missing_footer"
+set +e
+footer_output=$(run_body issue edit 42 --repo owner/repo --body-file "$missing_footer" 2>"$tmp/footer.err")
+footer_rc=$?
+set -e
+assert_eq '1' "$footer_rc" 'missing attribution footer fails before posting'
+assert_eq '' "$footer_output" 'missing footer has no success output'
+assert_contains "$(cat "$tmp/footer.err")" 'closing attribution' \
+    'closing-attribution failure is explained'
+
+set +e
+export GH_MISMATCH=1
+mismatch_output=$(run_body pr edit 41 --repo owner/repo --body-file "$body" 2>"$tmp/mismatch.err")
+mismatch_rc=$?
+unset GH_MISMATCH
+set -e
+assert_eq '1' "$mismatch_rc" 'stored body mismatch fails the mutation'
+assert_eq '' "$mismatch_output" 'mismatch emits no success result'
+assert_contains "$(cat "$tmp/mismatch.err")" 'stored body does not match' \
+    'mismatch reports the failed byte comparison'
+
+finish
