@@ -491,7 +491,12 @@ guard_contract_is_ours() {
     fi
     [[ -n $file && -r $file && -f $file && ! -L $file && -O $file ]] || return 1
     [[ -n $root ]] || return 0
-    ! git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1
+    local rc=0
+    git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1 || rc=$?
+    # Lockstep with contract_is_ours in contract-read.sh: only status 1 proves
+    # the path is untracked. Any other failure means git never established
+    # provenance, so refuse rather than fail open.
+    ((rc == 1))
 }
 
 # True when ANY candidate repository carries the file. A guard keyed to a

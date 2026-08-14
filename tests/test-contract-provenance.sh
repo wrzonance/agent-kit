@@ -177,4 +177,62 @@ assert_eq yes "$guard_valid" 'hook predicate accepts the same trusted contract'
 assert_eq no "$guard_tracked" 'hook predicate rejects the same tracked contract'
 assert_eq no "$guard_symlink" 'hook predicate rejects the same symlinked contract'
 
+# "Untracked" must be something git actually established, not merely a non-zero
+# exit. git reports 1 for an untracked path but 128 when the root is not a
+# usable work tree (missing, or refused for dubious ownership). Treating every
+# non-zero status as untracked fails OPEN and serves a contract whose
+# provenance was never proven.
+nogit_repo="$tmp/nogit"
+mkdir -p "$nogit_repo/.agent"
+cp -- "$valid_repo/.agent/env-contract.txt" "$nogit_repo/.agent/env-contract.txt"
+git -C "$nogit_repo" ls-files --error-unmatch -- "$nogit_repo/.agent/env-contract.txt" \
+    > /dev/null 2>&1
+assert_eq 128 "$?" 'a non-work-tree root makes git report an operational failure, not "untracked"'
+assert_rc 4 'a contract outside a Git work tree is untrusted' -- \
+    "$reader" --repo-root "$nogit_repo" --get repo.slug
+nogit_err=$("$reader" --repo-root "$nogit_repo" --get repo.slug 2>&1 > /dev/null || true)
+assert_contains "$nogit_err" 'work tree' \
+    'the refusal names the unusable work tree rather than a generic failure'
+if guard_contract_is_ours "$nogit_repo/.agent/env-contract.txt" "$nogit_repo"; then
+    guard_nogit=yes
+else
+    guard_nogit=no
+fi
+assert_eq no "$guard_nogit" 'hook predicate also refuses when git cannot determine tracking'
+
+# The assertion above passes through the predicate's DELEGATION branch: for the
+# canonical "$root/.agent/env-contract.txt" it just calls the reader, so it
+# proves nothing about the predicate's own tracking check. Exercise the fallback
+# branch directly with a non-canonical contract path, or guard-lib could fail
+# open on its own while every other assertion here stayed green.
+fallback_contract="$nogit_repo/.agent/alternate-contract.txt"
+cp -- "$valid_repo/.agent/env-contract.txt" "$fallback_contract"
+if guard_contract_is_ours "$fallback_contract" "$nogit_repo"; then
+    guard_fallback=yes
+else
+    guard_fallback=no
+fi
+assert_eq no "$guard_fallback" \
+    'hook predicate fallback refuses a contract git cannot prove untracked'
+
+fallback_tracked="$tracked_repo/.agent/alternate-contract.txt"
+cp -- "$valid_repo/.agent/env-contract.txt" "$fallback_tracked"
+git -C "$tracked_repo" add -- .agent/alternate-contract.txt
+if guard_contract_is_ours "$fallback_tracked" "$tracked_repo"; then
+    guard_fallback_tracked=yes
+else
+    guard_fallback_tracked=no
+fi
+assert_eq no "$guard_fallback_tracked" 'hook predicate fallback still refuses a tracked contract'
+
+fallback_untracked="$valid_repo/.agent/alternate-contract.txt"
+cp -- "$valid_repo/.agent/env-contract.txt" "$fallback_untracked"
+if guard_contract_is_ours "$fallback_untracked" "$valid_repo"; then
+    guard_fallback_ok=yes
+else
+    guard_fallback_ok=no
+fi
+assert_eq yes "$guard_fallback_ok" \
+    'hook predicate fallback still accepts a genuinely untracked contract'
+
 finish

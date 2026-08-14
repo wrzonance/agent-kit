@@ -99,8 +99,14 @@ fi
 # the executable source of truth; the hook delegates here instead of copying
 # the predicate.
 contract_is_ours() {
+    local rc=0
     [[ -n $contract && -r $contract && -f $contract && ! -L $contract && -O $contract ]] || return 1
-    ! git -C "$repo_root" ls-files --error-unmatch -- "$contract" > /dev/null 2>&1
+    git -C "$repo_root" ls-files --error-unmatch -- "$contract" > /dev/null 2>&1 || rc=$?
+    # Only status 1 means "git looked and the path is untracked". Status 0 means
+    # tracked, and anything else (128 for a missing or refused work tree, 127
+    # for no git at all) means git never established provenance. Accepting a
+    # bare non-zero status would fail OPEN there and serve a tracked contract.
+    ((rc == 1))
 }
 
 if ! contract_is_ours; then
@@ -114,6 +120,8 @@ if ! contract_is_ours; then
         die 4 "environment contract is not readable: $contract"
     elif git -C "$repo_root" ls-files --error-unmatch -- "$contract" > /dev/null 2>&1; then
         die 4 "environment contract is tracked: $contract"
+    elif ! git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        die 4 "cannot prove the environment contract is untracked; not a usable Git work tree: $repo_root"
     else
         die 4 "environment contract failed provenance checks: $contract"
     fi
