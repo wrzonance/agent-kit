@@ -110,6 +110,11 @@ assert_contains "$(cat "$tmp/a.out")" 'feat: commit a' \
     'the first output keeps its own message'
 assert_contains "$(cat "$tmp/b.out")" 'feat: commit b' \
     'the second output keeps its own message'
+reported_sha=$(sed -n 's/^committed \([^ ]*\) .*/\1/p' "$tmp/a.out")
+assert_eq '40' "${#reported_sha}" \
+    'the commit report pins a full 40-character SHA'
+assert_eq "$(git -C "$worktree_a" rev-parse HEAD)" "$reported_sha" \
+    'the commit report pins the actual HEAD SHA'
 assert_eq 'feat: commit a' "$(git -C "$worktree_a" log -1 --format=%s)" \
     'the first branch receives its own commit'
 assert_eq 'feat: commit b' "$(git -C "$worktree_b" log -1 --format=%s)" \
