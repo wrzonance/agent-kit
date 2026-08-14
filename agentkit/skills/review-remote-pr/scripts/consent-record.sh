@@ -4,6 +4,10 @@ set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 COMMAND=${1:-}
 STATE_PATH=''
 PROVIDER=''
@@ -119,6 +123,8 @@ state_path_is_safe() {
 
 validate_state_for_write() {
     local parent
+    parent=$(dirname -- "$STATE_PATH")
+    private_dir_ensure "$parent" "state parent"
     parent=$(state_parent) || die "state parent must be an owned private mode-0700 directory: $STATE_PATH"
     state_path_is_safe "$parent" || die "state path is not an owned mode-0600 regular file: $STATE_PATH"
 }

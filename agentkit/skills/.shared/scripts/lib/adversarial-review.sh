@@ -37,6 +37,9 @@ review_forget_pid() {
 }
 
 
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "${BASH_SOURCE[0]%/*}/private-dir.sh"
+
 review_die_blocked() {
     local reason=$1 detail=$2 fallback=$3 json
     local fallback_message=${4:-$fallback}
@@ -82,12 +85,9 @@ review_cleanup() {
 }
 
 review_prepare_transcript() {
-    local parent mode artifact
+    local parent artifact
     parent=$(dirname -- "$TRANSCRIPT_PATH")
-    [[ -d $parent && ! -L $parent ]] || die "Transcript parent must be an existing private directory: $parent"
-    mode=$(stat -c %a -- "$parent") || die "Cannot inspect transcript parent: $parent"
-    [[ $mode == 700 ]] || die "Transcript parent must have mode 0700: $parent"
-    [[ -O $parent ]] || die "Transcript parent is not owned by this user: $parent"
+    private_dir_ensure "$parent" "Transcript parent"
     [[ ! -L $TRANSCRIPT_PATH ]] || die "Refusing to write through a transcript symlink: $TRANSCRIPT_PATH"
     if [[ -e $TRANSCRIPT_PATH ]]; then
         [[ -f $TRANSCRIPT_PATH && -O $TRANSCRIPT_PATH ]] || die "Refusing to overwrite transcript not owned by this user: $TRANSCRIPT_PATH"
@@ -115,12 +115,9 @@ review_canonical_path() {
 
 review_prepare_output() {
     [[ -n ${OUTPUT_PATH:-} ]] || return 0
-    local parent mode artifact canonical_output canonical_output_tmp canonical_other
+    local parent artifact canonical_output canonical_output_tmp canonical_other
     parent=$(dirname -- "$OUTPUT_PATH")
-    [[ -d $parent && ! -L $parent ]] || die "Output parent must be an existing private directory: $parent"
-    mode=$(stat -c %a -- "$parent") || die "Cannot inspect output parent: $parent"
-    [[ $mode == 700 ]] || die "Output parent must have mode 0700: $parent"
-    [[ -O $parent ]] || die "Output parent is not owned by this user: $parent"
+    private_dir_ensure "$parent" "Output parent"
     OUTPUT_TMP="$OUTPUT_PATH.tmp"
     canonical_output=$(review_canonical_path "$OUTPUT_PATH")
     canonical_output_tmp=$(review_canonical_path "$OUTPUT_TMP")
