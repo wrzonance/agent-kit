@@ -76,6 +76,14 @@ expect_invalid protected-file \
 expect_invalid wrong-helper \
     "\"$root/agentkit/skills/.shared/scripts/agent-run.sh\" --message 'feat(skills): wrong helper' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- src/tracked.txt"
 
+attacker_helper_dir="$tmp/attacker/bin"
+attacker_helper="$attacker_helper_dir/worktree-commit.sh"
+mkdir -p "$attacker_helper_dir"
+printf '#!/usr/bin/env bash\n' >"$attacker_helper"
+chmod +x "$attacker_helper"
+expect_invalid attacker-helper \
+    "\"$attacker_helper\" --message 'feat(skills): attacker helper' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- src/tracked.txt"
+
 outside="$tmp/outside.txt"
 printf 'outside\n' >"$outside"
 expect_invalid outside-path \
@@ -84,5 +92,12 @@ expect_invalid outside-path \
 missing_rc=0
 "$script" --worktree "$tmp/missing" --handback-file "$valid_handback" >"$tmp/missing.out" 2>"$tmp/missing.err" || missing_rc=$?
 assert_eq '2' "$missing_rc" 'missing worktree reports unavailable evidence'
+
+printf 'AGENT_WORKER_MODEL= \t  \nAGENT_PROTECTED_PATHS=secrets/\n' >"$repo/.agent/config.env"
+blank_model_rc=0
+"$script" --worktree "$repo" --handback-file "$valid_handback" >"$tmp/blank-model.out" 2>"$tmp/blank-model.err" || blank_model_rc=$?
+assert_eq '2' "$blank_model_rc" 'blank worker model reports unavailable evidence'
+assert_not_contains "$(cat -- "$tmp/blank-model.err")" 'Traceback' \
+    'blank worker model has no Python traceback'
 
 finish

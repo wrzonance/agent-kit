@@ -709,9 +709,10 @@ Root preserves the raw command text for audit. Validator: parse into validated a
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
-"$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" >"$validated_argv_file"
+if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
-"${validated_argv[@]}"
+((${#validated_argv[@]})) || exit 1
+(cd -- "$worktree" && "${validated_argv[@]}")
 ```
 
 Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full

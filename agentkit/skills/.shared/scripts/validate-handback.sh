@@ -35,6 +35,7 @@ PROTECTED_LIB = Path(sys.argv[1])
 REPO_CONFIG = Path(sys.argv[2])
 ARGS = sys.argv[3:]
 PROGRAM = "validate-handback.sh"
+SHIPPED_HELPER = PROTECTED_LIB.parent.parent / "worktree-commit.sh"
 
 
 class InvalidHandback(Exception):
@@ -130,7 +131,14 @@ def read_handback(path):
 
 
 def parse_handback(argv):
-    if not argv or Path(argv[0]).name != "worktree-commit.sh":
+    if not argv:
+        invalid("expected worktree-commit.sh as the only helper")
+    try:
+        helper = Path(argv[0]).resolve(strict=False)
+        shipped_helper = SHIPPED_HELPER.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        unavailable(f"cannot resolve worktree-commit.sh helper: {error}")
+    if helper != shipped_helper:
         invalid("expected worktree-commit.sh as the only helper")
 
     message = None
@@ -272,6 +280,8 @@ def validate(root, handback_path):
     message, trailers, raw_files = parse_handback(argv)
     model = read_config(root, "AGENT_WORKER_MODEL")
     declared = read_config(root, "AGENT_PROTECTED_PATHS", optional=True)
+    if not model.strip():
+        unavailable("repository worker model is unavailable")
 
     if "\r" in message or "\n" in message:
         invalid("commit subject must be a single line")
