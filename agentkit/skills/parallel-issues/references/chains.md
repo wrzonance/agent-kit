@@ -42,8 +42,9 @@ not from "the PR looks mergeable."
 
 A chain successor's worktree is created and its lead dispatched only after the root has
 validated, committed, and pushed the predecessor's handback — never earlier, and never
-merely once the predecessor's lead *reports* done. `chain_base_sha` is recorded from the
-commit line `worktree-commit.sh` printed for that predecessor, and it is what the successor's
+merely once the predecessor's lead *reports* done. `chain_base_sha` is recorded as the full
+40-character lowercase SHA from the commit line `worktree-commit.sh` printed for that
+predecessor, and it is what the successor's
 `git worktree add` starts from instead of `origin/$base`.
 
 A deferred issue holds no concurrency slot while it waits — it is not "dispatched but idle,"

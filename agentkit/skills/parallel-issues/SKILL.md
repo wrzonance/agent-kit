@@ -554,7 +554,7 @@ When the runtime advertises a cap, include the root in that cap, start the remai
 
 **Chained issues defer.** A chain successor's worktree is created and its lead dispatched
 only after the root has validated, committed, and pushed the predecessor's handback. Record
-`chain_base_sha` from the commit line `worktree-commit.sh` printed. A deferred issue holds no
+the full 40-character lowercase `chain_base_sha` from `worktree-commit.sh`. Deferred issues hold no
 concurrency slot. If the predecessor's lead fails or is BLOCKED, its successors are never
 dispatched — park the chain and name it in the report. See
 [references/chains.md](references/chains.md#deferred-dispatch) for the full rationale.
