@@ -314,8 +314,14 @@ assert_contains "$text" 'parse into validated arguments without eval' \
     'parallel dispatch parses handback arguments without eval'
 assert_contains "$text" 'validate-handback.sh' \
     'parallel dispatch invokes the publication handback validator'
+assert_contains "$text" 'if ! "$agentkit/.shared/scripts/validate-handback.sh"' \
+    'parallel dispatch checks the validator status before publication'
 assert_contains "$text" 'mapfile -d' \
     'parallel dispatch consumes validated handback argv without re-parsing shell text'
+assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \
+    'parallel dispatch rejects empty validated argv'
+assert_contains "$text" 'cd -- "$worktree"' \
+    'parallel dispatch executes the validated argv in the worktree'
 assert_contains "$text" 'expected worktree-commit.sh helper' \
     'parallel dispatch validates the expected commit helper'
 assert_contains "$normalized_text" 'every explicit path is inside the worktree and allowed handback set' \
