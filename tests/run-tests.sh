@@ -313,6 +313,10 @@ trap 'rm -rf -- "$suite_tmp"' EXIT
 declare -a suite_status suite_output suite_pid active_pids=()
 declare -A pid_index=()
 
+suite_has_summary() {
+    grep -Eq '^[^:]+: [0-9]+ assertions, [0-9]+ failed$' "$1"
+}
+
 wait_for_suite() {
     local done_pid index status
     if wait -n -p done_pid "${active_pids[@]}"; then
@@ -351,7 +355,13 @@ done
 for i in "${!selected[@]}"; do
     printf '\n-- test-%s.sh\n' "${selected_names[i]}"
     cat -- "${suite_output[i]}"
-    [[ ${suite_status[i]:-0} -eq 0 ]] || rc=1
+    if [[ ${suite_status[i]:-0} -ne 0 ]]; then
+        if ! suite_has_summary "${suite_output[i]}"; then
+            printf 'CRASHED (no summary): %s rc=%s\n' \
+                "${selected[i]#"$root"/}" "${suite_status[i]}"
+        fi
+        rc=1
+    fi
 done
 
 printf '\n%s\n' "$([[ $rc -eq 0 ]] && echo 'ALL GREEN' || echo 'FAILURES ABOVE')"
