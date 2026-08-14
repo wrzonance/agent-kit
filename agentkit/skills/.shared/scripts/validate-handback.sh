@@ -184,7 +184,11 @@ def parse_handback(argv):
         invalid("--message is required")
     if not files:
         invalid("at least one explicit file operand is required")
-    return message, trailers, files
+    # The canonical path travels back to the caller so the emitted argv can name
+    # the shipped helper rather than whatever argv[0] spelled. Resolving argv[0]
+    # only proves what it pointed at during validation; a symlink retargeted
+    # afterwards would otherwise hand root a worker-controlled program to run.
+    return message, trailers, files, shipped_helper
 
 
 def read_config(root, key, *, optional=False):
@@ -241,6 +245,52 @@ def changed_paths(root):
     return changed
 
 
+def staged_paths(root):
+    # worktree-commit.sh stages its explicit operands and then commits the whole
+    # index, so anything the worker staged beforehand is published too. Its own
+    # guard_staged_protected_paths only fires during an active merge, which
+    # leaves the ordinary path ungated -- this set is what makes the explicit
+    # operands a complete description of the commit rather than a subset of it.
+    result = run_evidence(
+        [
+            "git",
+            "-C",
+            str(root),
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ]
+    )
+    records = result.stdout.split(b"\0")
+    staged = set()
+    index = 0
+    while index < len(records) - 1:
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        if len(record) < 4 or record[2:3] != b" ":
+            unavailable("git status produced an unrecognized porcelain record")
+        try:
+            status = record[:2].decode("ascii")
+            raw_path = os.fsdecode(record[3:])
+        except UnicodeDecodeError as error:
+            unavailable(f"git status contains an undecodable path: {error}")
+        index_status = status[0]
+        if index_status not in (" ", "?", "!"):
+            staged.add(resolve_inside(root, raw_path, "git status path"))
+        if "R" in status or "C" in status:
+            if index >= len(records) - 1 or not records[index]:
+                unavailable("git status rename/copy record is incomplete")
+            if index_status not in (" ", "?", "!"):
+                staged.add(
+                    resolve_inside(root, os.fsdecode(records[index]), "git status path")
+                )
+            index += 1
+    return staged
+
+
 def protected_pattern(root, relative_path, declared):
     command = [
         "bash",
@@ -277,7 +327,7 @@ def validate(root, handback_path):
         unavailable("--worktree is not the git toplevel")
 
     argv = read_handback(handback_path)
-    message, trailers, raw_files = parse_handback(argv)
+    message, trailers, raw_files, shipped_helper = parse_handback(argv)
     model = read_config(root, "AGENT_WORKER_MODEL")
     declared = read_config(root, "AGENT_PROTECTED_PATHS", optional=True)
     if not model.strip():
@@ -315,7 +365,20 @@ def validate(root, handback_path):
         explicit.append(resolved)
     if not explicit:
         invalid("at least one explicit file operand is required")
-    return argv
+
+    # Everything already in the index is committed alongside the operands, so a
+    # path staged but not declared would be published without ever reaching the
+    # protected check above.
+    explicit_set = set(explicit)
+    for resolved in sorted(staged_paths(root)):
+        relative = resolved.relative_to(root).as_posix()
+        pattern = protected_pattern(root, relative, declared)
+        if pattern:
+            invalid(f"protected path is not publishable: {relative} ({pattern})")
+        if resolved not in explicit_set:
+            invalid(f"staged path is not declared: {relative}")
+
+    return [str(shipped_helper)] + argv[1:]
 
 
 def main():

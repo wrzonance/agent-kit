@@ -120,4 +120,155 @@ assert_eq 1 "$missing_base_rc" 'missing base branch fails closed'
 assert_contains "$missing_base_output" 'AGENT_BASE_BRANCH' \
     'missing base branch error names the unresolved fact'
 
+# The worker sources these two lines. With a worktree path containing spaces an
+# unquoted value parses as an assignment followed by a stray command, so the
+# rendered assignments must survive a real shell parse -- asserting on the text
+# alone would pass for a value that no shell could read back.
+assignment_line=$(printf '%s\n' "$prompt" | grep -m1 '^worktree=')
+shared_line=$(printf '%s\n' "$prompt" | grep -m1 '^shared=')
+assert_eq "$repo" "$(bash -c "$assignment_line"'; printf %s "$worktree"')" \
+    'the rendered worktree assignment reads back as the exact path in bash'
+# No bash fallback here. Falling back on a zsh *failure* would let a zsh parse
+# error pass as success, which is the one thing this case exists to catch. Zsh
+# being absent is reported as an explicit skip instead of being papered over.
+if command -v zsh >/dev/null 2>&1; then
+    assert_eq "$repo" "$(zsh -c "$assignment_line"'; printf %s "$worktree"')" \
+        'the rendered worktree assignment reads back as the exact path in zsh'
+else
+    printf '  skip zsh assignment parse (zsh is not installed)\n'
+fi
+assert_eq "$root/agentkit/skills/.shared/scripts" \
+    "$(bash -c "$shared_line"'; printf %s "$shared"')" \
+    'the rendered shared assignment reads back as the exact path'
+
+# The shared path comes from the contract, not the worktree, so it needs its own
+# spaced case -- the assertion above runs against a repo path with no spaces and
+# would pass unquoted.
+spaced_skills="$tmp/skills dir"
+spaced_contract=$'skills= path='"$spaced_skills"$'\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+spaced_repo="$tmp/spaced-contract"
+make_repo "$spaced_repo" "$spaced_contract"
+spaced_prompt=$(bash "$compose" --template issue-lead --worktree "$spaced_repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
+spaced_shared_line=$(printf '%s\n' "$spaced_prompt" | grep -m1 '^shared=')
+assert_eq "$spaced_skills/.shared/scripts" \
+    "$(bash -c "$spaced_shared_line"'; printf %s "$shared"')" \
+    'a shared path containing spaces reads back intact'
+
+# AGENT_CMD_TEST_FOCUS alone cannot resolve --cmd test: agent-run.sh needs either
+# AGENT_CMD_TEST or a declared runner, and with neither the emitted focused
+# selector would fail in the worker's hands.
+focus_only="$tmp/focus-only"
+make_repo "$focus_only" "$contract"
+sed -i '/^AGENT_CMD_TEST=/d' "$focus_only/.agent/config.env"
+focus_only_output=''
+focus_only_rc=0
+focus_only_output=$(bash "$compose" --template issue-lead --worktree "$focus_only" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high 2>&1) || focus_only_rc=$?
+assert_eq 1 "$focus_only_rc" 'a declared focus with no resolvable test command fails closed'
+assert_contains "$focus_only_output" 'AGENT_CMD_TEST_FOCUS' \
+    'the refusal names the focus declaration'
+
+# A declared runner satisfies --cmd test on its own -- but only a real one.
+# agent-run.sh requires the resolved runner to be EXECUTABLE, so the composer
+# applies the same test; a declaration naming a missing or non-executable path
+# is not a runner and must not unlock the focused selector.
+compose_focus_repo() {
+    local dir=$1
+    make_repo "$dir" "$contract"
+    sed -i '/^AGENT_CMD_TEST=/d' "$dir/.agent/config.env"
+}
+run_focus_compose() {
+    local dir=$1 rc=0
+    bash "$compose" --template issue-lead --worktree "$dir" \
+        --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+        --worker-effort high >/dev/null 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+
+focus_runner="$tmp/focus-runner"
+compose_focus_repo "$focus_runner"
+mkdir -p "$focus_runner/tools"
+printf '#!/usr/bin/env bash\n' > "$focus_runner/tools/run"
+chmod +x "$focus_runner/tools/run"
+printf 'tools/run\n' > "$focus_runner/.agent/runner"
+assert_eq 0 "$(run_focus_compose "$focus_runner")" \
+    'an executable .agent/runner satisfies the focus selector without AGENT_CMD_TEST'
+
+focus_missing_runner="$tmp/focus-missing-runner"
+compose_focus_repo "$focus_missing_runner"
+printf 'tools/absent\n' > "$focus_missing_runner/.agent/runner"
+assert_eq 1 "$(run_focus_compose "$focus_missing_runner")" \
+    'an .agent/runner naming a missing path does not satisfy the focus selector'
+
+focus_nonexec_runner="$tmp/focus-nonexec-runner"
+compose_focus_repo "$focus_nonexec_runner"
+mkdir -p "$focus_nonexec_runner/tools"
+printf '#!/usr/bin/env bash\n' > "$focus_nonexec_runner/tools/run"
+chmod -x "$focus_nonexec_runner/tools/run"
+printf 'tools/run\n' > "$focus_nonexec_runner/.agent/runner"
+assert_eq 1 "$(run_focus_compose "$focus_nonexec_runner")" \
+    'an .agent/runner naming a non-executable path does not satisfy the focus selector'
+
+focus_nonexec_env="$tmp/focus-nonexec-env"
+compose_focus_repo "$focus_nonexec_env"
+mkdir -p "$focus_nonexec_env/tools"
+printf '#!/usr/bin/env bash\n' > "$focus_nonexec_env/tools/run"
+chmod -x "$focus_nonexec_env/tools/run"
+nonexec_env_rc=0
+AGENT_REPO_RUNNER="$focus_nonexec_env/tools/run" bash "$compose" --template issue-lead \
+    --worktree "$focus_nonexec_env" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || nonexec_env_rc=$?
+assert_eq 1 "$nonexec_env_rc" \
+    'a non-executable AGENT_REPO_RUNNER does not satisfy the focus selector'
+
+# agent-run.sh uses an ENVIRONMENT AGENT_REPO_RUNNER verbatim and never resolves
+# a relative one against the repository root, so what it names depends on that
+# process's cwd. Resolving it against the worktree here would accept a runner
+# agent-run.sh could reject -- even with $worktree/tools/run executable.
+focus_rel_env="$tmp/focus-rel-env"
+compose_focus_repo "$focus_rel_env"
+mkdir -p "$focus_rel_env/tools"
+printf '#!/usr/bin/env bash\n' > "$focus_rel_env/tools/run"
+chmod +x "$focus_rel_env/tools/run"
+rel_env_rc=0
+AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead \
+    --worktree "$focus_rel_env" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || rel_env_rc=$?
+assert_eq 1 "$rel_env_rc" \
+    'a relative AGENT_REPO_RUNNER does not satisfy the focus selector even when the worktree copy is executable'
+
+# An unusable environment runner does not end the search: agent-run.sh's
+# resolve_runner falls through to .agent/runner, so a repository whose test
+# command does resolve at runtime must not be rejected at compose time.
+make_runner_fallback_repo() {
+    local dir=$1
+    compose_focus_repo "$dir"
+    mkdir -p "$dir/tools"
+    printf '#!/usr/bin/env bash\n' > "$dir/tools/fallback"
+    chmod +x "$dir/tools/fallback"
+    printf 'tools/fallback\n' > "$dir/.agent/runner"
+}
+
+rel_env_fallback="$tmp/rel-env-fallback"
+make_runner_fallback_repo "$rel_env_fallback"
+rel_env_fallback_rc=0
+AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead \
+    --worktree "$rel_env_fallback" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || rel_env_fallback_rc=$?
+assert_eq 0 "$rel_env_fallback_rc" \
+    'a relative AGENT_REPO_RUNNER falls through to an executable .agent/runner'
+
+nonexec_env_fallback="$tmp/nonexec-env-fallback"
+make_runner_fallback_repo "$nonexec_env_fallback"
+printf '#!/usr/bin/env bash\n' > "$nonexec_env_fallback/tools/absent-exec"
+chmod -x "$nonexec_env_fallback/tools/absent-exec"
+nonexec_env_fallback_rc=0
+AGENT_REPO_RUNNER="$nonexec_env_fallback/tools/absent-exec" bash "$compose" --template issue-lead \
+    --worktree "$nonexec_env_fallback" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || nonexec_env_fallback_rc=$?
+assert_eq 0 "$nonexec_env_fallback_rc" \
+    'a non-executable AGENT_REPO_RUNNER falls through to an executable .agent/runner'
+
 finish

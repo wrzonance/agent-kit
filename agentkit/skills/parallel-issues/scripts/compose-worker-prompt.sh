@@ -80,6 +80,9 @@ shared_path=$shared_path/.shared/scripts
 
 declare -a command_names=()
 focus_declared=0
+test_declared=0
+runner_declared=0
+runner_value=
 is_verification_key() {
     case $1 in
         AGENT_CMD_TEST|AGENT_CMD_*_TEST|AGENT_CMD_LINT|AGENT_CMD_*_LINT|AGENT_CMD_BUILD|AGENT_CMD_*_BUILD|AGENT_CMD_TYPECHECK|AGENT_CMD_*_TYPECHECK|AGENT_CMD_TYPE_CHECK|AGENT_CMD_*_TYPE_CHECK|AGENT_CMD_VERIFY|AGENT_CMD_*_VERIFY|AGENT_CMD_CHECK|AGENT_CMD_*_CHECK|AGENT_CMD_COVERAGE|AGENT_CMD_*_COVERAGE)
@@ -95,10 +98,19 @@ if ! command_list=$("$repo_config" --repo-root "$worktree" --list); then
 fi
 while IFS='=' read -r key value; do
     : "$value"
+    # A declared runner satisfies --cmd test on its own: agent-run.sh invokes
+    # `runner test` when AGENT_CMD_TEST is absent.
+    if [[ $key == AGENT_REPO_RUNNER && -n $value ]]; then
+        runner_declared=1
+        runner_value=$value
+    fi
     [[ $key =~ ^AGENT_CMD_[A-Z][A-Z0-9_]*$ ]] || continue
     if [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
         focus_declared=1
         continue
+    fi
+    if [[ $key == AGENT_CMD_TEST ]]; then
+        test_declared=1
     fi
     is_verification_key "$key" || continue
     name=${key#AGENT_CMD_}
@@ -107,6 +119,55 @@ while IFS='=' read -r key value; do
     command_names+=("$name")
 done <<< "$command_list"
 ((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
+
+# Mirrors agent-run.sh's resolve_runner: $AGENT_REPO_RUNNER, else the same key in
+# .agent/config.env, else the first non-blank non-comment line of .agent/runner --
+# each resolved against the repository root and each required to be EXECUTABLE.
+# A declaration that merely exists is not a runner; agent-run.sh rejects a
+# non-executable one, so accepting it here would pass the check and still fail
+# in the worker's hands.
+# Mirrors agent-run.sh's resolve_declared_runner: $AGENT_REPO_RUNNER wins, else
+# the same key from .agent/config.env. Only the config.env value is resolved
+# against the repository root -- the ENVIRONMENT value is taken verbatim there,
+# so a relative one names whatever the cwd agent-run.sh runs in makes it, which
+# this composer cannot settle in advance and so does not count as resolved.
+declared_runner_resolves() {
+    local path
+    if [[ -n ${AGENT_REPO_RUNNER:-} ]]; then
+        path=$AGENT_REPO_RUNNER
+        [[ $path == /* ]] || return 1
+    elif ((runner_declared)); then
+        path=$runner_value
+        [[ $path == /* ]] || path=$worktree/$path
+    else
+        return 1
+    fi
+    [[ -x $path ]]
+}
+
+# Mirrors agent-run.sh's resolve_runner, including its FALLTHROUGH: a declared
+# runner that fails to resolve does not end the search, because agent-run.sh
+# goes on to try .agent/runner. Returning early here would reject a repository
+# whose test command actually resolves at runtime.
+runner_resolves() {
+    local path first
+    declared_runner_resolves && return 0
+    [[ -f $worktree/.agent/runner ]] || return 1
+    first=$(sed -n '/^[[:space:]]*[^#[:space:]]/{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' \
+        "$worktree/.agent/runner" 2>/dev/null || true)
+    [[ -n $first ]] || return 1
+    path=$first
+    [[ $path == /* ]] || path=$worktree/$path
+    [[ -x $path ]]
+}
+
+# AGENT_CMD_TEST_FOCUS does not imply AGENT_CMD_TEST, because agent-run.sh falls
+# back to `runner test`. With neither, the emitted `--cmd test --only` selector
+# cannot resolve and would fail in the worker's hands. Refuse at compose time on
+# root instead of shipping an instruction that is guaranteed to break.
+if ((focus_declared)) && ((test_declared == 0)) && ! runner_resolves; then
+    die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
+fi
 
 command_flags=
 if ((yolo)); then
@@ -198,8 +259,17 @@ while IFS= read -r line || [[ -n $line ]]; do
         skip_when=1
         continue
     fi
+    # These two are shell ASSIGNMENTS the worker sources, so their values are
+    # %q-quoted -- an unquoted path containing spaces parses as an assignment
+    # followed by a stray command. The prose spellings of the same paths
+    # ("Worktree: ...") are substituted below and deliberately left unquoted.
     if [[ $line == shared='<PASTE the validated shared-scripts path from the contract>' ]]; then
-        printf 'shared=%s\n' "$shared_path"
+        printf 'shared=%q\n' "$shared_path"
+        continue
+    fi
+    if [[ $line == 'worktree=/ABS/PATH/.worktrees/feat/issue-NNN' ||
+        $line == 'worktree=FULL_PATH' ]]; then
+        printf 'worktree=%q\n' "$worktree"
         continue
     fi
     if [[ $line == '__DECLARED_COMMANDS__' ]]; then
