@@ -354,8 +354,12 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## Fix-batch worker prompt$/p' "$worker_prompts"
 )
-assert_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
-    'draft PR publication passes a newline-preserving body file to gh'
+assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
+    'draft PR publication uses the byte-verifying body transport'
+assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
+    'draft PR publication does not bypass the byte-verifying transport'
+assert_contains "$publication_section" 'This was written agentically; verify its assertions:' \
+    'draft PR body opens with the attribution banner enforced by gh-body.sh'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
 assert_contains "$publication_section" "cat >\"\$pr_body_template\" <<'EOF'" \
@@ -392,12 +396,24 @@ assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an agent identity before interpolation'
 assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \
     'draft PR publication requires a close line before interpolation'
+assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file"' \
+    'issue creation recipe uses the byte-verifying body transport'
+assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"' \
+    'issue editing recipe uses the byte-verifying body transport'
 assert_contains "$publication_section" '__AGENT_IDENTITY__' \
     'draft PR publication keeps the identity placeholder literal in the template'
 assert_contains "$publication_section" '__PR_CLOSE_LINE__' \
     'draft PR publication keeps the close placeholder literal in the template'
 assert_contains "$publication_section" 'Stacked on #' \
     'stacked PRs declare their base PR in the body'
+stacked_line=$(awk '/^Stacked on #/{print NR; exit}' <<<"$publication_section")
+attribution_line=$(awk '/^🤖 Co-authored by __AGENT_IDENTITY__/{print NR; exit}' <<<"$publication_section")
+if [[ -n $stacked_line && -n $attribution_line && $stacked_line -lt $attribution_line ]]; then
+    _pass 'stacked body block precedes the final attribution'
+else
+    _fail 'stacked body block precedes the final attribution' \
+        "stacked line: ${stacked_line:-missing}" "attribution line: ${attribution_line:-missing}"
+fi
 assert_contains "$publication_section" 'retarget this PR to the default branch' \
     'stacked body instructs an explicit retarget, never reliance on branch deletion'
 assert_contains "$text" 'verify the successor'"'"'s baseRefName' \

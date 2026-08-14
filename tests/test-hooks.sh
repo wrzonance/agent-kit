@@ -980,7 +980,7 @@ chmod +w "$locked/.agent/cache" 2>/dev/null || true
 # fresh session, since the rule now opens after one denial.
 for bad in 'agent-run.sh --cmd test' '  agent-run.sh' 'cd /tmp; agent-run.sh' \
     'git status && agent-run.sh --cmd verify' 'bash agent-run.sh' \
-    'triage-issues.sh --state open'; do
+    'triage-issues.sh --state open' 'gh-body.sh pr create'; do
     out=$(pre_input "$repo" "$bad" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "denies in command position: $bad"
 done
