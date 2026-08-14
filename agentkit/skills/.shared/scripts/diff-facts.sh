@@ -4,6 +4,12 @@
 # small, trivial, or ready to merge.
 set -euo pipefail
 
+if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
+    printf '%s: requires Bash >= 4 (invoked interpreter: %s); run this helper with bash, not zsh\n' \
+        "${0##*/}" "${SHELL:-unknown}" >&2
+    exit 3
+fi
+
 readonly PROGRAM=${0##*/}
 
 usage() {
@@ -49,7 +55,7 @@ resolver="$script_dir/repo-config.sh"
 [[ -x $resolver ]] || die "repo-config.sh is missing or not executable: $resolver"
 
 if [[ -z $base ]]; then
-    base=$($resolver --repo-root "$repo_root" --get AGENT_BASE_BRANCH 2> /dev/null || true)
+    base=$("$resolver" --repo-root "$repo_root" --get AGENT_BASE_BRANCH 2> /dev/null || true)
 fi
 if [[ -z $base ]]; then
     remote_head=$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD || true)
@@ -58,8 +64,10 @@ fi
 [[ -n $base ]] || die 'no base ref; pass --base REF or declare AGENT_BASE_BRANCH'
 git -C "$repo_root" rev-parse --verify --end-of-options "$base^{commit}" > /dev/null 2>&1 ||
     die "base ref does not resolve to a commit: $base"
+merge_base=$(git -C "$repo_root" merge-base -- "$base" HEAD 2> /dev/null) ||
+    die "could not resolve merge base for base ref: $base"
 
-generated_paths=$($resolver --repo-root "$repo_root" --get AGENT_GENERATED_PATHS 2> /dev/null || true)
+generated_paths=$("$resolver" --repo-root "$repo_root" --get AGENT_GENERATED_PATHS 2> /dev/null || true)
 
 declare -a categories=(operational generated lockfile fixture non_operational)
 declare -A file_counts=() insertions=() deletions=() changed_lines=()
@@ -143,7 +151,7 @@ while IFS= read -r -d '' record; do
     insertions[$category]=$((insertions[$category] + added))
     deletions[$category]=$((deletions[$category] + removed))
     changed_lines[$category]=$((changed_lines[$category] + added + removed))
-done < <(git -C "$repo_root" diff --numstat --no-renames -z "$base" --)
+done < <(git -C "$repo_root" diff --numstat --no-renames -z "$merge_base" --)
 
 file_counts[non_operational]=$((file_counts[generated] + file_counts[lockfile] + file_counts[fixture]))
 insertions[non_operational]=$((insertions[generated] + insertions[lockfile] + insertions[fixture]))
