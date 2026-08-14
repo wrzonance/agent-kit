@@ -22,7 +22,10 @@ review_lib_text=$(<"$review_lib")
 run_rejected() {
     local helper=$1 transcript=$2 stderr_file=$3
     local rc=0
-    if [[ $helper == *claude* ]]; then
+    # Match the basename, never the whole path: a checkout under a directory
+    # containing "claude" would otherwise route the codex helper down the claude
+    # branch, leaving CODEX_EXECUTABLE unstubbed and invoking the real CLI.
+    if [[ ${helper##*/} == *claude* ]]; then
         CLAUDE_EXECUTABLE=/definitely/missing/claude \
             bash "$helper" --mode probe --model claude-opus-5 \
             --transcript "$transcript" > /dev/null 2>"$stderr_file" || rc=$?
