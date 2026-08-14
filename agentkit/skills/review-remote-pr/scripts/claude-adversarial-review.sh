@@ -64,6 +64,9 @@ CLAUDE_RESOLVED=""
 MODEL=""
 EFFORT="xhigh"
 DIFF_PATH=""
+CONSENT_STATE_PATH=""
+CONSENT_PAYLOAD=""
+PR_NUMBER=""
 TRANSCRIPT_PATH=""
 OUTPUT_PATH=""
 # shellcheck disable=SC2034
@@ -96,6 +99,8 @@ Required:
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
+  --pr <number>              PR number used to bind consent to the exact diff.
+  --consent-state <path>     Private consent record. Required in review mode.
 
 Options:
   --claude <path>            claude executable (default: \$CLAUDE_EXECUTABLE, else
@@ -223,6 +228,12 @@ parse_args() {
 		--effort=*) EFFORT=${1#*=} && EFFORT=${EFFORT,,} && shift ;;
 		--diff) require_value "$1" "${2:-}" && DIFF_PATH=$2 && shift 2 ;;
 		--diff=*) DIFF_PATH=${1#*=} && shift ;;
+		--pr) require_value "$1" "${2:-}" && PR_NUMBER=$2 && shift 2 ;;
+		--pr=*) PR_NUMBER=${1#*=} && shift ;;
+		--consent-state|--state) require_value "$1" "${2:-}" && CONSENT_STATE_PATH=$2 && shift 2 ;;
+		--consent-state=*|--state=*) CONSENT_STATE_PATH=${1#*=} && shift ;;
+		--consent-payload) require_value "$1" "${2:-}" && CONSENT_PAYLOAD=$2 && shift 2 ;;
+		--consent-payload=*) CONSENT_PAYLOAD=${1#*=} && shift ;;
 		--transcript) require_value "$1" "${2:-}" && TRANSCRIPT_PATH=$2 && shift 2 ;;
 		--transcript=*) TRANSCRIPT_PATH=${1#*=} && shift ;;
 		--poll-seconds) require_value "$1" "${2:-}" && POLL_SECONDS=$2 && shift 2 ;;
@@ -257,8 +268,26 @@ validate_args() {
 		die "--max-budget-usd must be between 0.01 and 1000"
 	# Normalize away any locale-specific decimal handling before it reaches the CLI.
 	MAX_BUDGET_USD=$(LC_ALL=C printf '%.2f' "$MAX_BUDGET_USD")
-	[[ $MODE == review && -z $DIFF_PATH ]] && die "--diff is required in review mode"
+	if [[ $MODE == review ]]; then
+		[[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
+		[[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
+		[[ -n $CONSENT_STATE_PATH ]] || die "--consent-state is required in review mode"
+	fi
 	return 0
+}
+
+verify_consent() {
+	local consent_script payload
+	consent_script="$SCRIPT_DIR/consent-record.sh"
+	[[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+	payload=$("$consent_script" payload --pr "$PR_NUMBER" --diff "$DIFF_PATH") ||
+		die 'cannot derive consent payload; refusing to launch review'
+	if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
+		die 'supplied consent payload does not match the exact review diff'
+	fi
+	"$consent_script" check --state "$CONSENT_STATE_PATH" --provider anthropic \
+		--payload "$payload" >/dev/null 2>&1 ||
+		die 'valid cross-provider consent check is required; refusing to launch review'
 }
 
 # Resolve the CLI and prove the isolation/streaming flags this harness depends on
@@ -558,6 +587,7 @@ verify_model_identity() {
 main() {
 	parse_args "$@"
 	validate_args
+	[[ $MODE == review ]] && verify_consent
 	local started exit_code=0
 	started=$(date +%s)
 	DEADLINE_EPOCH=$((started + MAX_DURATION_SECONDS))

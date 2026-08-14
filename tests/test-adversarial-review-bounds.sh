@@ -219,9 +219,20 @@ codex_no_usage_result="$tmp/codex-no-usage.json"
 codex_no_usage_err="$tmp/codex-no-usage.err"
 no_usage_diff="$tmp/no-usage.diff"
 printf '%s\n' 'diff --git a/example.txt b/example.txt' '+safe' >"$no_usage_diff"
+consent_script="$root/agentkit/skills/review-remote-pr/scripts/consent-record.sh"
+claude_consent_state="$private/claude-consent"
+codex_consent_state="$private/codex-consent"
+grant_consent() {
+    local state_path=$1 provider=$2 diff_path=$3 payload
+    payload=$(/bin/bash "$consent_script" payload --pr 24 --diff "$diff_path")
+    /bin/bash "$consent_script" grant --state "$state_path" --provider "$provider" \
+        --payload "$payload" --source interactive >/dev/null
+}
+grant_consent "$codex_consent_state" openai "$no_usage_diff"
 codex_no_usage_rc=0
 FAKE_CODEX_NO_USAGE=1 CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" \
-    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$private/codex-no-usage.jsonl" \
     --poll-seconds 1 --max-duration-seconds 30 --max-tokens 1024 \
     >"$codex_no_usage_result" 2>"$codex_no_usage_err" || codex_no_usage_rc=$?
@@ -231,12 +242,17 @@ assert_contains "$(<"$codex_no_usage_result")" '"budgetCeiling": "unverified"' \
 assert_contains "$(<"$codex_no_usage_result")" '"usedTokens": null' \
     'Codex preserves a nullable token usage result'
 
+grant_consent "$claude_consent_state" anthropic "$no_usage_diff"
+
 oversized_diff="$tmp/oversized.diff"
 head -c 8192 /dev/zero | tr '\0' x >"$oversized_diff"
+oversized_consent_state="$private/oversized-consent"
+grant_consent "$oversized_consent_state" openai "$oversized_diff"
 oversized_err="$tmp/oversized.err"
 oversized_rc=0
 CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode review --model gpt-test \
-    --diff "$oversized_diff" --transcript "$private/oversized.jsonl" \
+    --pr 24 --consent-state "$oversized_consent_state" --diff "$oversized_diff" \
+    --transcript "$private/oversized.jsonl" \
     --poll-seconds 1 --max-duration-seconds 30 --max-tokens 1024 \
     > /dev/null 2>"$oversized_err" || oversized_rc=$?
 assert_eq 1 "$oversized_rc" 'Codex rejects a diff that cannot fit the token ceiling'
@@ -277,7 +293,8 @@ mkdir -- "$claude_success_dir"
 chmod 700 -- "$claude_success_dir"
 claude_success_result="$tmp/claude-success.result.json"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-success" bash "$claude" \
-    --mode review --model claude-test --diff "$no_usage_diff" \
+    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$claude_success_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$claude_success_result"
 assert_contains "$(cat "$claude_success_result")" '"status": "completed"' \
@@ -294,7 +311,8 @@ mkdir -- "$pid_dir"
 chmod 700 -- "$pid_dir"
 pid_result="$tmp/claude-pidfile.result.json"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" bash "$claude" \
-    --mode review --model claude-test --diff "$no_usage_diff" \
+    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$pid_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$pid_result" &
 helper_pid=$!
@@ -350,8 +368,9 @@ failure_result="$tmp/claude-heartbeat-failure.result.json"
 failure_err="$tmp/claude-heartbeat-failure.err"
 failure_producer_pid_file="$tmp/claude-heartbeat-failure.pid"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" FAKE_CLAUDE_PID_FILE="$failure_producer_pid_file" \
-    PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$claude" \
-    --mode review --model claude-test --diff "$no_usage_diff" \
+PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$claude" \
+    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$failure_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$failure_result" 2>"$failure_err" &
 failure_helper_pid=$!
@@ -386,8 +405,9 @@ codex_failure_result="$tmp/codex-heartbeat-failure.result.json"
 codex_failure_err="$tmp/codex-heartbeat-failure.err"
 codex_failure_producer_pid_file="$tmp/codex-heartbeat-failure.pid"
 CODEX_EXECUTABLE="$tmp/fake-codex-slow" FAKE_CODEX_PID_FILE="$codex_failure_producer_pid_file" \
-    FAKE_CODEX_SLEEP=10 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$codex" \
-    --mode review --model gpt-test --diff "$no_usage_diff" \
+FAKE_CODEX_SLEEP=10 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$codex" \
+    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$codex_failure_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 >"$codex_failure_result" 2>"$codex_failure_err" &
 codex_failure_helper_pid=$!
@@ -424,7 +444,8 @@ mkdir -- "$codex_success_dir"
 chmod 700 -- "$codex_success_dir"
 codex_success_result="$tmp/codex-success.result.json"
 CODEX_EXECUTABLE="$tmp/fake-codex-success" bash "$codex" \
-    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$codex_success_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 >"$codex_success_result"
 assert_contains "$(cat "$codex_success_result")" '"status": "completed"' \
@@ -437,7 +458,8 @@ mkdir -- "$codex_status_dir"
 chmod 700 -- "$codex_status_dir"
 codex_status_result="$tmp/codex-status.result.json"
 CODEX_EXECUTABLE="$tmp/fake-codex-slow" bash "$codex" \
-    --mode review --model gpt-test --diff "$no_usage_diff" \
+    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --diff "$no_usage_diff" \
     --transcript "$codex_status_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 >"$codex_status_result" &
 codex_helper_pid=$!

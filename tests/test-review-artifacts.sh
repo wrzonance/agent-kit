@@ -115,6 +115,17 @@ chmod +x "$tmp/fake-claude-output-hang"
 output_run="$tmp/output.run"
 mkdir -- "$output_run"
 chmod 700 -- "$output_run"
+consent_script="$root/agentkit/skills/review-remote-pr/scripts/consent-record.sh"
+claude_consent_state="$output_run/claude-consent"
+codex_consent_state="$output_run/codex-consent"
+grant_consent() {
+    local state_path=$1 provider=$2
+    /bin/bash "$consent_script" grant --state "$state_path" --provider "$provider" \
+        --payload "$output_payload" --source interactive >/dev/null
+}
+output_payload=$(/bin/bash "$consent_script" payload --pr 24 --diff "$output_diff")
+grant_consent "$claude_consent_state" anthropic
+grant_consent "$codex_consent_state" openai
 
 # --output is documented as ADDITIVE, so it must not be allowed to name another
 # artifact. prepare_output runs after prepare_transcript and clears a
@@ -124,9 +135,11 @@ chmod 700 -- "$output_run"
 # relative spelling of the same file cannot slip past.
 for alias_helper in "$claude" "$codex"; do
     alias_name=$(basename "$alias_helper" | cut -d- -f1)
+    consent_state="$output_run/$alias_name-consent"
     alias_transcript="$output_run/$alias_name-alias.transcript"
     alias_rc=0
-    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+    bash "$alias_helper" --mode review --model m --pr 24 --consent-state "$consent_state" \
+        --diff "$output_diff" \
         --transcript "$alias_transcript" --output "$alias_transcript" \
         > "$tmp/$alias_name-alias.out" 2> "$tmp/$alias_name-alias.err" || alias_rc=$?
     assert_eq 1 "$alias_rc" "--output: $alias_name rejects an --output that aliases --transcript"
@@ -134,15 +147,17 @@ for alias_helper in "$claude" "$codex"; do
         "--output: $alias_name says the paths alias"
 
     alias_rel_rc=0
-    ( cd "$output_run" && bash "$alias_helper" --mode review --model m \
-        --diff "$output_diff" --transcript "$alias_name-rel.transcript" \
+    ( cd "$output_run" && bash "$alias_helper" --mode review --model m --pr 24 \
+        --consent-state "$consent_state" --diff "$output_diff" \
+        --transcript "$alias_name-rel.transcript" \
         --output "./$alias_name-rel.transcript" ) \
         > /dev/null 2> "$tmp/$alias_name-rel.err" || alias_rel_rc=$?
     assert_eq 1 "$alias_rel_rc" "--output: $alias_name rejects a relative alias of the transcript"
 
     for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
         status_rc=0
-        bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        bash "$alias_helper" --mode review --model m --pr 24 --consent-state "$consent_state" \
+            --diff "$output_diff" \
             --transcript "$alias_transcript" --output "$status_alias" \
             > /dev/null 2> "$tmp/$alias_name-status.err" || status_rc=$?
         assert_eq 1 "$status_rc" \
@@ -150,7 +165,8 @@ for alias_helper in "$claude" "$codex"; do
     done
 
     alias_diff_rc=0
-    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+    bash "$alias_helper" --mode review --model m --pr 24 --consent-state "$consent_state" \
+        --diff "$output_diff" \
         --transcript "$output_run/$alias_name-diffalias.transcript" \
         --output "$output_diff" > /dev/null 2> "$tmp/$alias_name-diffalias.err" || alias_diff_rc=$?
     assert_eq 1 "$alias_diff_rc" "--output: $alias_name rejects an --output that aliases --diff"
@@ -163,7 +179,8 @@ success_output="$output_run/success.result.json"
 success_stdout="$tmp/output-success.stdout"
 success_rc=0
 CLAUDE_EXECUTABLE="$tmp/fake-claude-output-success" bash "$claude" \
-    --mode review --model claude-test --diff "$output_diff" \
+    --mode review --model claude-test --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$output_diff" \
     --transcript "$output_run/success.transcript" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 \
     --output "$success_output" >"$success_stdout" || success_rc=$?
@@ -264,7 +281,8 @@ codex_success_output="$output_run/codex-success.result.json"
 codex_success_stdout="$tmp/codex-output-success.stdout"
 codex_success_rc=0
 CODEX_EXECUTABLE="$tmp/fake-codex-output-success" bash "$codex" \
-    --mode review --model gpt-test --diff "$output_diff" \
+    --mode review --model gpt-test --pr 24 --consent-state "$codex_consent_state" \
+    --diff "$output_diff" \
     --transcript "$output_run/codex-success.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 \
     --output "$codex_success_output" >"$codex_success_stdout" || codex_success_rc=$?

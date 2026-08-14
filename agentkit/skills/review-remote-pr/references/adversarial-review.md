@@ -109,6 +109,30 @@ provider, PR, or diff changes, obtain confirmation again. If confirmation is mis
 declined, or cannot be recorded, **do not send the diff**; report the gate as blocked and wait for
 user direction rather than silently substituting another external reviewer.
 
+The executable record is the launch boundary, not a replacement for the disclosure and decision:
+
+```bash
+consent="$agentkit/review-remote-pr/scripts/consent-record.sh"
+consent_state="$RUN_DIR/state/cross-provider-consent"
+payload_id=$("$consent" payload --pr "$PR" --diff "$diff_path")
+"$consent" disclose --payload "$payload_id" \
+    --destination 'Anthropic via Claude' \
+    --purpose 'one adversarial review of that diff'
+# After the direct question receives an unambiguous yes:
+"$consent" grant --state "$consent_state" --provider anthropic \
+    --payload "$payload_id" --source interactive
+# When and only when --auto-review was read from this invocation line instead:
+"$consent" grant --state "$consent_state" --provider anthropic \
+    --payload "$payload_id" --source auto-review-flag
+```
+
+The orchestrator selects exactly one grant command. `consent-record.sh` never prompts, interprets
+`--yes`, or infers the auto-review flag. Every review launcher derives the payload again from its
+own `--pr` and `--diff` arguments and refuses to start without a successful `check` against this
+state record. A missing, malformed, unwritable, mismatched, or symlinked record fails closed.
+For the blind Codex fallback, use the same commands with destination `OpenAI via Codex` and
+provider `openai`.
+
 ## Availability → pick the reviewer
 
 **Read the Step 0a environment contract; do not re-probe.** Its `peer-cli=` line already decides this:
@@ -225,6 +249,7 @@ reviewer_effort='high'
 
 transcript="$RUN_DIR/claude.ndjson"
 verdict_path="$RUN_DIR/adversarial.result.json"
+consent_state="$RUN_DIR/state/cross-provider-consent"
 # Clear any prior verdict before launch -- prepare_output() only clears it once
 # parse_args/prepare_transcript succeed, so a helper that dies before that
 # point (bad transcript dir, usage error, spawn failure) would otherwise leave
@@ -237,7 +262,8 @@ rm -f -- "$verdict_path"
 # rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.
 review_rc=0
 "$helper" --mode review --model "$reviewer_model" --effort "$reviewer_effort" \
-    --diff "$diff_path" --transcript "$transcript" --output "$verdict_path" \
+    --pr "$PR" --consent-state "$consent_state" --diff "$diff_path" \
+    --transcript "$transcript" --output "$verdict_path" \
     --poll-seconds 120 --max-duration-seconds 900 --max-budget-usd 5.00 >/dev/null || review_rc=$?
 printf 'adversarial-review rc=%s verdict=%s transcript=%s\n' \
     "$review_rc" "$verdict_path" "$transcript"
@@ -344,6 +370,7 @@ fi
 helper="$agentkit/review-remote-pr/scripts/codex-adversarial-review.sh"
 diff_path="$RUN_DIR/adversarial.diff"
 verdict_path="$RUN_DIR/adversarial.result.json"
+consent_state="$RUN_DIR/state/cross-provider-consent"
 # Clear any prior verdict before launch -- see the Claude launch block above
 # for why this must happen before prepare_output() would otherwise do it.
 rm -f -- "$verdict_path"
@@ -351,7 +378,8 @@ rm -f -- "$verdict_path"
 # on rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.
 review_rc=0
 "$helper" --mode review --model gpt-5.6-terra --effort xhigh \
-    --diff "$diff_path" --output "$verdict_path" \
+    --pr "$PR" --consent-state "$consent_state" --diff "$diff_path" \
+    --output "$verdict_path" \
     --transcript "$RUN_DIR/codex.jsonl" --max-duration-seconds 900 --max-tokens 400000 >/dev/null || review_rc=$?
 # rc 3 is the helper's STRUCTURED environment-blocked result, not a failure: the
 # verdict object exists and carries blockedReason. Collapsing it into the generic
