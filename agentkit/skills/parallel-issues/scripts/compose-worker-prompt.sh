@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# Compose a worker prompt from repository-controlled facts and persisted issue artifacts.
+set -euo pipefail
+
+program=${0##*/}
+usage() {
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E [--yolo] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+}
+die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
+
+template_kind=
+worktree=
+issue=
+branch=
+worker_model=
+worker_effort=
+chain_base=
+output=
+yolo=0
+while (($#)); do
+    case $1 in
+        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--chain-base|--output|-o)
+            (($# >= 2)) || die "$1 requires a value"
+            case $1 in
+                --template) template_kind=$2 ;;
+                --worktree) worktree=$2 ;;
+                --issue) issue=$2 ;;
+                --branch) branch=$2 ;;
+                --worker-model) worker_model=$2 ;;
+                --worker-effort) worker_effort=$2 ;;
+                --chain-base) chain_base=$2 ;;
+                --output|-o) output=$2 ;;
+            esac
+            shift 2
+            ;;
+        --yolo) yolo=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage; die "unknown argument: $1" ;;
+    esac
+done
+
+[[ $template_kind == issue-lead || $template_kind == fix-batch ]] || die '--template must be issue-lead or fix-batch'
+[[ $worktree == /* && -d $worktree ]] || die '--worktree must be an absolute directory'
+[[ $issue =~ ^[1-9][0-9]*$ ]] || die '--issue must be a positive integer'
+[[ $branch =~ ^[A-Za-z0-9._/-]+$ && $branch != -* && $branch != *..* && $branch != */ ]] || die '--branch must be a safe branch name'
+[[ $worker_model =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die '--worker-model must be a safe single-token identifier'
+[[ $worker_effort =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die '--worker-effort must be a safe single-token identifier'
+if [[ -n $chain_base ]]; then
+    ((yolo)) || die '--chain-base requires --yolo'
+    [[ $chain_base =~ ^[0-9a-f]{40}$ ]] || die '--chain-base requires a full 40-character lowercase commit SHA'
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
+template_file=$script_dir/../references/worker-prompts.md
+repo_config=$script_dir/../../.shared/scripts/repo-config.sh
+[[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
+[[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
+
+contract=$worktree/.agent/env-contract.txt
+spec=$worktree/.agent/fenced-spec.txt
+prior_art=$worktree/.agent/fenced-prior-art.txt
+[[ -f $contract && ! -L $contract && -r $contract && -O $contract ]] || die "missing owner-only environment contract: $contract"
+[[ -f $spec && ! -L $spec && -r $spec ]] || die "missing persisted spec: $spec"
+[[ -f $prior_art && ! -L $prior_art && -r $prior_art ]] || die "missing persisted prior art: $prior_art"
+if grep -Eq '<(PASTE|WHEN)([[:space:]]|[^[:alnum:]_])' "$contract"; then
+    die 'environment contract contains an unresolved <PASTE ...> or <WHEN ...> placeholder'
+fi
+
+repo_slug=$($repo_config --repo-root "$worktree" --get AGENT_REPO_SLUG 2> /dev/null || true)
+base_branch=$($repo_config --repo-root "$worktree" --get AGENT_BASE_BRANCH 2> /dev/null || true)
+shared_path=$(sed -n 's/^skills= path=//p' "$contract" | head -n 1)
+[[ $shared_path == /* ]] || die 'environment contract has no absolute skills path'
+shared_path=$shared_path/.shared/scripts
+[[ -n $repo_slug ]] || repo_slug='unknown/unknown'
+[[ -n $base_branch ]] || base_branch='main'
+
+declare -a command_names=()
+focus_declared=0
+while IFS='=' read -r key value; do
+    : "$value"
+    [[ $key =~ ^AGENT_CMD_[A-Z][A-Z0-9_]*$ ]] || continue
+    if [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
+        focus_declared=1
+        continue
+    fi
+    name=${key#AGENT_CMD_}
+    name=${name,,}
+    name=${name//_/-}
+    command_names+=("$name")
+done < <($repo_config --repo-root "$worktree" --list 2> /dev/null)
+((${#command_names[@]})) || die 'repository declares no AGENT_CMD_* commands'
+
+command_flags=
+if ((yolo)); then
+    command_flags=' --yolo'
+    [[ -z $chain_base ]] || command_flags+=" --yolo-base $chain_base"
+fi
+
+temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'
+cleanup() { rm -f -- "$temporary"; }
+trap cleanup EXIT HUP INT TERM
+
+emit_commands() {
+    local name
+    for name in "${command_names[@]}"; do
+        printf '%s --dir %s --cmd %s%s\n' "\"\$shared/agent-run.sh\"" "\"\$worktree\"" "$name" "$command_flags"
+    done
+}
+
+emit_focus() {
+    if ((focus_declared)); then
+        printf 'During red/green iteration, use the repository-declared focused selector:\n'
+        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''%s\n' "\"\$shared/agent-run.sh\"" "\"\$worktree\"" "$command_flags"
+        printf 'It requires AGENT_CMD_TEST_FOCUS and captures evidence only for the named suites; it never claims that skipped suites passed. Run the full declared test command once against the final tree state before handback.\n'
+    else
+        printf 'No focused selector is declared; use the full declared command for scoped checks and once against the final tree state before handback.\n'
+    fi
+}
+
+emit_trust_rule() {
+    if ((yolo)); then
+        if [[ -n $chain_base ]]; then
+            printf '# Every generated agent-run.sh command carries --yolo --yolo-base %s.\n' "$chain_base"
+        else
+            printf '# Every generated agent-run.sh command carries --yolo.\n'
+        fi
+    else
+        printf '# This invocation is attended; generated commands carry no unattended trust flags.\n'
+    fi
+}
+
+capture=0
+section_seen=0
+skip_paste=0
+skip_when=0
+template_placeholder=0
+case $template_kind in
+    issue-lead) open_fence='````text'; close_fence='````' ;;
+    fix-batch) open_fence='```text'; close_fence='```' ;;
+esac
+
+while IFS= read -r line || [[ -n $line ]]; do
+    if (( ! capture )); then
+        if [[ $template_kind == fix-batch ]]; then
+            [[ $line == '## Fix-batch worker prompt' ]] && section_seen=1
+            [[ $section_seen == 1 && $line == "$open_fence" ]] && capture=1
+        else
+            [[ $line == "$open_fence" ]] && capture=1
+        fi
+        continue
+    fi
+    [[ $line == "$close_fence" ]] && break
+    if ((skip_paste)); then
+        [[ $line == *'prompt>'* || $line == *'prompt.>'* ]] && skip_paste=0
+        continue
+    fi
+    if ((skip_when)); then
+        [[ $line == *'trust record.>'* ]] && skip_when=0
+        continue
+    fi
+    if [[ $line == *'<PASTE, verbatim, the agent-preflight.sh contract'* ]]; then
+        cat -- "$contract"
+        printf '\n'
+        skip_paste=1
+        [[ $line == *'prompt>'* || $line == *'prompt.>'* ]] && skip_paste=0
+        continue
+    fi
+    if [[ $line == *'<PASTE the complete output selected by the boundary mode for the approved design-doc contents or full issue body>'* ]]; then
+        cat -- "$spec"
+        printf '\n'
+        continue
+    fi
+    if [[ $line == *'<PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>'* ]]; then
+        cat -- "$prior_art"
+        printf '\n'
+        continue
+    fi
+    if [[ $line == *'<WHEN this parallel-issues invocation carried --yolo'* ]]; then
+        emit_trust_rule
+        skip_when=1
+        continue
+    fi
+    if [[ $line == shared='<PASTE the validated shared-scripts path from the contract>' ]]; then
+        printf 'shared=%s\n' "$shared_path"
+        continue
+    fi
+    if [[ $line == '__DECLARED_COMMANDS__' ]]; then
+        emit_commands
+        continue
+    fi
+    if [[ $line == '__DECLARED_FOCUS__' ]]; then
+        emit_focus
+        continue
+    fi
+    line=${line//OWNER\/REPO/$repo_slug}
+    line=${line//\/ABS\/PATH\/.worktrees\/feat\/issue-NNN/$worktree}
+    line=${line//FULL_PATH/$worktree}
+    line=${line//feat\/issue-NNN/$branch}
+    line=${line//NNN/$issue}
+    line=${line//__BASE_BRANCH__/$base_branch}
+    line=${line//__WORKER_EFFORT__/$worker_effort}
+    line=${line//<worker model id selected by the root dispatch>/$worker_model}
+    [[ $line != 'Spec source: design-doc | issue-body' ]] || line='Spec source: issue-body'
+    if [[ $line == *'<PASTE'* || $line == *'<WHEN'* || $line == *'OWNER/REPO'* ||
+        $line == *'FULL_PATH'* || $line == *'/ABS/PATH'* ||
+        $line == *'__BASE_BRANCH__'* || $line == *'__WORKER_EFFORT__'* ||
+        $line == *'__DECLARED_'* || $line == *'<worker model id selected by the root dispatch>'* ]]; then
+        template_placeholder=1
+    fi
+    printf '%s\n' "$line"
+done < "$template_file" > "$temporary"
+
+if ((template_placeholder)); then
+    die 'unresolved <PASTE ...> or <WHEN ...> placeholder remains'
+fi
+
+if [[ -z $output || $output == - ]]; then
+    cat -- "$temporary"
+else
+    [[ ! -L $output ]] || die "refusing symlink output: $output"
+    output_dir=$(dirname -- "$output")
+    [[ -d $output_dir ]] || die "output directory does not exist: $output_dir"
+    output_tmp=$(mktemp "$output_dir/.compose-worker-prompt.XXXXXXXXXX") || die "could not allocate output buffer in $output_dir"
+    trap 'rm -f -- "$temporary" "$output_tmp"' EXIT HUP INT TERM
+    cat -- "$temporary" > "$output_tmp"
+    mv -f -- "$output_tmp" "$output"
+    output_tmp=
+fi

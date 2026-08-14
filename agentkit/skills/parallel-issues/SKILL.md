@@ -676,20 +676,16 @@ copy-pasteable approval block **before or at dispatch**, one line per worktree p
 Read [references/trust-and-fencing.md](references/trust-and-fencing.md#attended-command-approval-handoff)
 in full for the exact recipe (`agent-run.sh --approve --cmd <name>`) and its rules — recipes never hand off the main checkout, and the block is skipped entirely when `--trust-trunk` or `--yolo` is present.
 
-Per-issue prompt:
-
-Read [references/worker-prompts.md](references/worker-prompts.md#issue-lead-prompt) in full and
-fill it exactly, then paste it verbatim — every placeholder resolved, the environment contract and
-boundary-mode-selected Spec/Prior-art blocks embedded — before dispatching any issue lead. A worker
-forked with `fork_context: false` starts with no memory of this session; a pointer is not something
-it can follow, so the template itself must travel in the dispatch, never a reference to it.
-
-The spec and prior-art notes are pasted as **contents**, never as paths. In `public-fenced` mode
-they are explicitly fenced as untrusted data; the selected private or yolo exception is disclosed
-above the blocks. The environment contract is pasted for exactly the same reason. A worker forked
-with `fork_context: false` starts with no memory of this session: anything you leave out, it
-rediscovers one failure at a time.
-
+Per-issue prompt: compose through the repository-local helper; it fills the contract, persisted data, declared commands, trust flags, and placeholder gate.
+```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
+prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX") || exit 1; chmod 600 -- "$prompt_file" || exit 1
+compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
+if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
+"$compose_script" "${compose_args[@]}"; worker_prompt=$(<"$prompt_file"); : "$worker_prompt"; rm -f -- "$prompt_file"
+```
 ### Collect (per-completion — never wait for the slowest issue)
 
 Act on each lead result as soon as it arrives:
@@ -847,11 +843,7 @@ same-harness `gpt-5.6-terra` xhigh fallback exactly once; this reviewer decision
 
 **Per-agent prompt template:**
 
-Fill [references/worker-prompts.md](references/worker-prompts.md#fix-batch-worker-prompt) exactly
-and paste it verbatim — worktree/branch/PR filled in, the environment contract embedded — before
-dispatching any fix-batch worker; on the degraded path, treat it as your own instructions the same
-way. Same reasoning as the issue-lead prompt above: `fork_context: false` means the template must
-travel in the dispatch, not a pointer to it.
+Use the same helper with `--template fix-batch` and the fix-batch PR number as `--issue`; pass its composed `worker_prompt` verbatim on both normal and degraded paths.
 
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 

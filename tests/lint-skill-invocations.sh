@@ -47,7 +47,7 @@ skills_dir=${1:?usage: lint-skill-invocations.sh SKILLS_DIR}
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-readonly HELPERS='agent-run|worktree-commit|validate-handback|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues|post-receipt|prepare-issue-artifacts|board-list'
+readonly HELPERS='agent-run|worktree-commit|validate-handback|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|claude-adversarial-review|codex-adversarial-review|apply-ledger|fence-untrusted-data|pick-issues|post-receipt|prepare-issue-artifacts|compose-worker-prompt|board-list'
 readonly FULL_RESOLVER_MARK='agentkit=\$(sed -n "s/\^skills= path='
 # Both halves of the guard are matched as complete TEST EXPRESSIONS on a single
 # non-comment line, never as loose substrings. Substring matching is not enough:
