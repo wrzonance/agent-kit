@@ -19,6 +19,9 @@ cat >"$artifact" <<'EOF'
     {"id":"PRRT_bot","isResolved":false,"comments":{"nodes":[
       {"databaseId":111,"body":"bot finding","author":{"login":"coderabbitai[bot]","__typename":"Bot"}}
     ]}},
+    {"id":"PRRT_code_quality","isResolved":false,"comments":{"nodes":[
+      {"databaseId":444,"body":"Code Quality finding","author":{"login":"github-code-quality[bot]","__typename":"Bot"}}
+    ]}},
     {"id":"PRRT_human","isResolved":false,"comments":{"nodes":[
       {"databaseId":222,"body":"I disagree with this change","author":{"login":"reviewer-jane","__typename":"User"}}
     ]}},
@@ -46,7 +49,7 @@ done
 cp -- "$body" "$CAPTURED_BODY"
 if [[ ${COMMENT_MODE:-} == anchor-422 && " $original_args " == *' --anchor '* && ! -e $ANCHOR_SEEN ]]; then
     : >"$ANCHOR_SEEN"
-    printf '%s\n' '422 line is not in the PR diff' >&2
+    printf '%s\n' 'HTTP status=422: line is not in the PR diff' >&2
     exit 1
 fi
 if [[ ${COMMENT_MODE:-} == unverified ]]; then
@@ -88,6 +91,19 @@ assert_eq 'no' "$( [[ ! -e $tmp/action.log ]] && printf no || printf yes )" \
     'human refusal happens before posting or resolving'
 
 set +e
+run_action --thread-id PRRT_code_quality --kind fixed --text 'not safe' --sha abc1234 \
+    >/dev/null 2>"$tmp/code-quality.err"
+code_quality_rc=$?
+set -e
+assert_eq '1' "$code_quality_rc" 'Code Quality threads are refused'
+assert_contains "$(cat "$tmp/code-quality.err")" 'github-code-quality[bot]' \
+    'Code Quality refusal names the original provider'
+assert_contains "$(cat "$tmp/code-quality.err")" 'auto-clear or be dismissed' \
+    'Code Quality refusal explains the required handling'
+assert_eq 'no' "$( [[ ! -e $tmp/action.log ]] && printf no || printf yes )" \
+    'Code Quality refusal happens before posting or resolving'
+
+set +e
 run_action --thread-id PRRT_bot --comment-id 222 --kind fixed \
     --text 'mismatch' --sha abc1234 >/dev/null 2>"$tmp/mismatch.err"
 mismatch_rc=$?
@@ -116,6 +132,15 @@ run_action --thread-id PRRT_bot --kind declined --text 'Deliberate design choice
 assert_contains "$(cat "$tmp/body.md")" \
     'Declining — Deliberate design choice. (commit `abc1234`).' \
     'declined reply preserves the model rationale and SHA'
+
+: >"$tmp/action.log"
+: >"$tmp/action.args"
+run_action --comment-id 111 --anchor 'src/example.ts:42' \
+    --kind fixed --text 'Reply to the selected thread.' --sha abc1234 >/dev/null
+assert_contains "$(sed -n '1p' "$tmp/action.args")" '--reply-to 111' \
+    'a selected comment remains an in-thread reply when an anchor is supplied'
+assert_not_contains "$(sed -n '1p' "$tmp/action.args")" '--anchor' \
+    'an available reply target takes precedence over the anchor'
 
 : >"$tmp/action.log"
 : >"$tmp/action.args"

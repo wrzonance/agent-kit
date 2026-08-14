@@ -118,7 +118,7 @@ cleanup() {
 }
 
 read_target() {
-    local schema count human_count
+    local schema count human_count original_author
     schema=$(jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' \
         "$THREADS_ARTIFACT" 2>/dev/null) ||
         die 'threads artifact has no usable reviewThreads.nodes array'
@@ -146,6 +146,12 @@ read_target() {
     [[ -n $TARGET_THREAD_ID ]] || die 'selected artifact thread has no node ID'
     [[ $(jq -r 'if (.isResolved // false) then "resolved" else "open" end' \
         "$WORK_DIR/target.json") == open ]] || die 'target thread is already resolved'
+    original_author=$(jq -r '(.comments.nodes[0].author.login // "") | ascii_downcase' \
+        "$WORK_DIR/target.json") || die 'could not identify the original thread author'
+    if [[ $original_author == github-code-quality ||
+        $original_author == 'github-code-quality[bot]' ]]; then
+        die 'target thread is an original github-code-quality[bot] finding; it must auto-clear or be dismissed with a reason'
+    fi
     human_count=$(jq -r --arg re "$AGENT_MARKER_RE" '
         [.comments.nodes[]? | select(
           (
@@ -186,14 +192,15 @@ build_body() {
 post_comment() {
     local -a args=(--pr "$PR" --repo "$REPO" --body-file "$WORK_DIR/body.md")
     local post_rc=0
-    if [[ -n $ANCHOR_PATH ]]; then
+    if [[ -n $COMMENT_ID ]]; then
+        args+=(--reply-to "$COMMENT_ID")
+    elif [[ -n $ANCHOR_PATH ]]; then
         args+=(--anchor "$ANCHOR_PATH:$ANCHOR_LINE" --side "$SIDE")
         [[ -n $START_LINE ]] && args+=(--start-line "$START_LINE")
-    elif [[ -n $COMMENT_ID ]]; then
-        args+=(--reply-to "$COMMENT_ID")
     fi
     POST_OUTPUT=$(bash "$COMMENT_HELPER" "${args[@]}" 2>"$WORK_DIR/comment.err") || post_rc=$?
-    if ((post_rc != 0)) && [[ -n $ANCHOR_PATH ]] && grep -qE '\b422\b' "$WORK_DIR/comment.err"; then
+    if ((post_rc != 0)) && [[ -n $ANCHOR_PATH ]] && \
+        grep -Eq '(^|[^[:digit:]])422([^[:digit:]]|$)' "$WORK_DIR/comment.err"; then
         # Anchor failures are a routine API outcome. Retry once as the
         # documented top-level fallback, preserving the exact body.
         post_rc=0
