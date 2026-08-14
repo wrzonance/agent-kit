@@ -72,9 +72,9 @@ fi
 shared="$agentkit/.shared/scripts"
 
 contract_path=''
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    contract_path=$(grep -m1 '^skills= path=' "$contract")
+if [[ -n $contract_root && -x "$shared/contract-read.sh" ]]; then
+    contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" \
+        --get skills.path 2>/dev/null || true)
 fi
 if [[ -z $contract_path ]]; then
     "$shared/agent-preflight.sh" --worktree "$(git rev-parse --show-toplevel)" 2>/dev/null

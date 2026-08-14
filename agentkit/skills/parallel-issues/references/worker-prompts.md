@@ -105,25 +105,23 @@ tree state; these are excluded worktree evidence, never deliverables. If the tre
 your work, report every file, its diffstat, and whether the checkpoint manifest explains it before
 adopting anything. Do not alter unexplained work.
 
-contract="$worktree/.agent/env-contract.txt"
 contract_root="$worktree"
-if [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    :
-else
-    printf 'agent contract is not an untracked regular file owned by this user\n' >&2
+"$shared/contract-read.sh" --repo-root "$contract_root" --check > /dev/null 2>&1 || {
+    printf 'agent contract is not trusted; re-run agent-preflight.sh\n' >&2
     exit 1
-fi
-AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
-[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; re-run agent-preflight.sh\n' >&2; exit 1; }
+}
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
-worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
-[ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
+worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
+    --get harness.trailer --worker-model "$worker_model") || {
+    printf 'no harness= trailer; report BLOCKED\n' >&2
+    exit 1
+}
+[ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
 The handback command must embed the expanded literal value of `worker_attribution` (including the
-worker model id) in its `--trailer` argument; do not return `$AGENT_TRAILER` or `$worker_attribution`
-as an unresolved placeholder. The resulting literal remains provider-neutral because its base comes
+worker model id) in its `--trailer` argument; do not return the helper command or an unresolved
+shell placeholder. The resulting literal remains provider-neutral because its base comes
 from the contract's `harness=` line.
 
 Finish with a publication handback to the top-level session, never a publication action. Include:
@@ -344,25 +342,23 @@ and report the incident and restoration in the handback.
 ## Commands you MUST use
 worktree=FULL_PATH
 shared=<PASTE the validated shared-scripts path from the contract>
-contract="$worktree/.agent/env-contract.txt"
 contract_root="$worktree"
-if [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
-    :
-else
-    printf 'agent contract is not an untracked regular file owned by this user\n' >&2
+"$shared/contract-read.sh" --repo-root "$contract_root" --check > /dev/null 2>&1 || {
+    printf 'agent contract is not trusted; report BLOCKED\n' >&2
     exit 1
-fi
-AGENT_TRAILER=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
-[ -n "$AGENT_TRAILER" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
+}
 worker_model='<worker model id selected by the root dispatch>'
 [ -n "$worker_model" ] || { printf 'no worker model id; report BLOCKED\n' >&2; exit 1; }
-worker_attribution=${AGENT_TRAILER/ </ $worker_model <}
-[ "$worker_attribution" != "$AGENT_TRAILER" ] || { printf 'harness trailer has no email boundary\n' >&2; exit 1; }
+worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
+    --get harness.trailer --worker-model "$worker_model") || {
+    printf 'no harness= trailer; report BLOCKED\n' >&2
+    exit 1
+}
+[ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
 The handback command must embed the expanded literal value of `worker_attribution` (including the
-worker model id) in its `--trailer` argument; do not return `$AGENT_TRAILER` or `$worker_attribution`
-as an unresolved placeholder. Its provider-neutral base comes from the contract's `harness=` line.
+worker model id) in its `--trailer` argument; do not return the helper command or an unresolved
+shell placeholder. Its provider-neutral base comes from the contract's `harness=` line.
 
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.

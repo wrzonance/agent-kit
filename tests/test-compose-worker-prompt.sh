@@ -12,6 +12,12 @@ compose="$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
+trust_line=$(grep -m1 -n 'shared_path=.*contract_reader' "$compose" | cut -d: -f1)
+# shellcheck disable=SC2016
+contract_read_pattern='grep -Eq.*\$contract'
+contract_read_line=$(grep -m1 -n "$contract_read_pattern" "$compose" | cut -d: -f1)
+assert_eq yes "$([[ -n $trust_line && -n $contract_read_line && trust_line -lt contract_read_line ]] && printf yes || printf no)" \
+    'composer validates the contract before reading its content'
 compose_source=$(<"$compose")
 assert_contains "$compose_source" '--resolve test' \
     'composer asks agent-run for focus-command resolution'

@@ -78,6 +78,10 @@ assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
     'chained WHEN-yolo threading pins the base'
 assert_contains "$text" 'only after the root has validated, committed, and pushed' \
     'chain successors defer on root publication, not PR state'
+assert_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
+    'parallel preflight passes its owned repository_root to contract-read.sh'
+assert_not_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get skills.path' \
+    'parallel preflight does not use the undefined contract_root'
 # The wait-contract rule sentences are single-sourced in
 # .shared/wait-discipline.md; the body keeps only a pointer (see the "###
 # Polling discipline" subsection), so the pinned wait-rule content is
@@ -285,9 +289,10 @@ assert_contains "$issue_lead_prompt" 'publication handback' 'issue lead returns 
 assert_contains "$draft_loop_prompt" 'publication handback' 'phase lead returns a publication handback'
 for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
-    assert_contains "$prompt_text" 'contract="$worktree/.agent/env-contract.txt"' "$prompt_label derives its contract trailer"
-    assert_contains "$prompt_text" 'AGENT_TRAILER=$(sed -n' "$prompt_label parses the harness trailer"
-    assert_contains "$prompt_text" '[ -n "$AGENT_TRAILER" ] ||' "$prompt_label guards an empty harness trailer"
+    assert_contains "$prompt_text" '"$shared/contract-read.sh" --repo-root "$contract_root" --check' \
+        "$prompt_label validates its contract through contract-read.sh"
+    assert_contains "$prompt_text" '--get harness.trailer --worker-model "$worker_model"' \
+        "$prompt_label derives the worker trailer through contract-read.sh"
     assert_contains "$prompt_text" 'worker_attribution=' "$prompt_label appends the worker model id"
     assert_contains "$prompt_text" 'expanded literal value' "$prompt_label expands the attribution before handback"
     assert_contains "$prompt_text" "[ -n \"\$worker_model\" ] ||" \

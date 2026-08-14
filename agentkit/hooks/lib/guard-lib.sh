@@ -31,10 +31,16 @@ readonly RESOLVE_HINT='  agentkit=
           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
           -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
       [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+  fi
+  if [[ -n "$contract_root" && -n "$agentkit" &&
+        -x "$agentkit/.shared/scripts/contract-read.sh" ]]; then
+      contract_skills=$("$agentkit/.shared/scripts/contract-read.sh" \
+          --repo-root "$contract_root" --get skills.path 2>/dev/null)
+      [[ -z "$contract_skills" || "$contract_skills" == "$agentkit" ]] || agentkit=
   fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
-readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment|gh-body'
+readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|contract-read|triage-issues|move-github-project-item|gh-comment|gh-body'
 
 GUARD_LIB_DIR=${BASH_SOURCE[0]%/*}
 [[ $GUARD_LIB_DIR != "${BASH_SOURCE[0]}" ]] || GUARD_LIB_DIR=.
@@ -477,9 +483,20 @@ guard_out_of_scope_target() {
 # Rejecting costs one preflight run. Accepting costs the session.
 guard_contract_is_ours() {
     local file=$1 root=${2:-}
-    [[ -n $file && ! -L $file && -f $file && -O $file ]] || return 1
+    local reader="$GUARD_LIB_DIR/../../skills/.shared/scripts/contract-read.sh"
+    if [[ -n $root && $file == "$root/.agent/env-contract.txt" ]]; then
+        [[ -x $reader ]] || return 1
+        "$reader" --repo-root "$root" --check > /dev/null 2>&1
+        return
+    fi
+    [[ -n $file && -r $file && -f $file && ! -L $file && -O $file ]] || return 1
     [[ -n $root ]] || return 0
-    ! git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1
+    local rc=0
+    git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1 || rc=$?
+    # Lockstep with contract_is_ours in contract-read.sh: only status 1 proves
+    # the path is untracked. Any other failure means git never established
+    # provenance, so refuse rather than fail open.
+    ((rc == 1))
 }
 
 # True when ANY candidate repository carries the file. A guard keyed to a

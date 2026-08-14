@@ -26,11 +26,13 @@ root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || true)
 
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+self_dir=$(cd -- "$self_dir" 2> /dev/null && pwd -P) || allow
 # shellcheck source=lib/guard-lib.sh
 source "$self_dir/lib/guard-lib.sh" 2> /dev/null || allow
 
 resolver="$self_dir/../skills/.shared/scripts/repo-config.sh"
 [[ -x $resolver ]] || allow
+contract_reader="$self_dir/../skills/.shared/scripts/contract-read.sh"
 
 # 1. Opt-in check.
 verify_name=''
@@ -95,16 +97,15 @@ then finish."
 # Stop remediation must also be directly pasteable when this hook knows its own
 # installed tree. Keep both: the absolute line is the actionable command.
 contract_skills=''
-contract_file=$root/.agent/env-contract.txt
-if [[ -r $contract_file && ! -L $contract_file && -O $contract_file ]]; then
-    contract_skills=$(sed -n 's/^skills= path=//p' "$contract_file" 2> /dev/null | head -n 1 || true)
+if [[ -x $contract_reader ]]; then
+    contract_skills=$("$contract_reader" --repo-root "$root" --get skills.path 2> /dev/null || true)
 fi
 if [[ -n $contract_skills ]]; then
     # Resolve through the session contract instead of printing the physical
     # plugin-cache version directory. The one line remains copy-pasteable and
     # follows whichever stable skills entry point the current session owns.
     remediation=$(printf '%s\n' 'Exact resolved command:' \
-        "  agentkit=\$(sed -n \"s/^skills= path=//p\" \"$contract_file\" | head -n 1); \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name")
+        "  agentkit=\$(\"$contract_reader\" --repo-root \"$root\" --get skills.path); \"\$agentkit/.shared/scripts/agent-run.sh\" --cmd $verify_name")
     reason+=$'\n\n'"$remediation"
 fi
 

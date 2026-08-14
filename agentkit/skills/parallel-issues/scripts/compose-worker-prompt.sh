@@ -53,15 +53,20 @@ fi
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
 template_file=$script_dir/../references/worker-prompts.md
 repo_config=$script_dir/../../.shared/scripts/repo-config.sh
+contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
+[[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
 
 contract=$worktree/.agent/env-contract.txt
 spec=$worktree/.agent/fenced-spec.txt
 prior_art=$worktree/.agent/fenced-prior-art.txt
-[[ -f $contract && ! -L $contract && -r $contract && -O $contract ]] || die "missing owner-only environment contract: $contract"
 [[ -f $spec && ! -L $spec && -r $spec ]] || die "missing persisted spec: $spec"
 [[ -f $prior_art && ! -L $prior_art && -r $prior_art ]] || die "missing persisted prior art: $prior_art"
+shared_path=$("$contract_reader" --repo-root "$worktree" --get skills.path) ||
+    die "could not read trusted skills path from environment contract: $contract"
+[[ $shared_path == /* ]] || die 'environment contract has no absolute skills path'
+shared_path=$shared_path/.shared/scripts
 if grep -Eq '<(PASTE|WHEN)([[:space:]]|[^[:alnum:]_])' "$contract"; then
     die 'environment contract contains an unresolved <PASTE ...> or <WHEN ...> placeholder'
 fi
@@ -72,9 +77,6 @@ fi
 if ! base_branch=$("$repo_config" --repo-root "$worktree" --get AGENT_BASE_BRANCH); then
     die 'could not resolve AGENT_BASE_BRANCH from repository config'
 fi
-shared_path=$(sed -n 's/^skills= path=//p' "$contract" | head -n 1)
-[[ $shared_path == /* ]] || die 'environment contract has no absolute skills path'
-shared_path=$shared_path/.shared/scripts
 [[ -n $repo_slug ]] || die 'AGENT_REPO_SLUG is empty in repository config'
 [[ -n $base_branch ]] || die 'AGENT_BASE_BRANCH is empty in repository config'
 

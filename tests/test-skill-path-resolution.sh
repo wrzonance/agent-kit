@@ -114,6 +114,27 @@ err=$(CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$tmp/does-not-exist" bash -c "
 " 2>&1 >/dev/null)
 assert_eq '' "$err" 'an absent harness home produces no error output'
 
+# A contract-absent checkout still has to keep the installed plugin path after
+# contract-read.sh reports that there is no contract to read. This is the
+# resolver boundary: the bootstrap path is valid even though the optional
+# contract-derived value is empty.
+contract_repo="$tmp/contract-absent-repo"
+contract_home="$tmp/contract-absent-home"
+contract_plugin=$(plugin_layout "$contract_home")
+mkdir -p "$contract_repo/.agent" "$contract_plugin/.shared/scripts"
+git -C "$contract_repo" init -q
+cp -- "$root/agentkit/skills/.shared/scripts/contract-read.sh" \
+    "$contract_plugin/.shared/scripts/contract-read.sh"
+chmod +x -- "$contract_plugin/.shared/scripts/contract-read.sh"
+resolved=''
+rc=0
+resolved=$(cd "$contract_repo" && \
+    CODEX_HOME="$contract_home" CLAUDE_CONFIG_DIR="$tmp/contract-absent-claude" \
+    bash -c "$RESOLVE_HINT; printf '%s' \"\$agentkit\"") || rc=$?
+assert_eq '0' "$rc" 'contract-absent resolver exits successfully'
+assert_eq "$contract_plugin" "$resolved" \
+    'contract-absent resolver preserves the discovered plugin skills path'
+
 # --- zsh safety ------------------------------------------------------------
 # Codex runs shell commands through $SHELL -lc, which is zsh on the target
 # machine. An unmatched glob is a FATAL error in zsh, so a resolver written with

@@ -189,7 +189,7 @@ if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $re
     printf '%s\n' 'Run this skill from a Git repository.' >&2
     exit 1
 fi
-preflight="$agentkit/.shared/scripts/agent-preflight.sh"
+"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path >/dev/null 2>&1 || exit 1; preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
     printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
     exit 1
