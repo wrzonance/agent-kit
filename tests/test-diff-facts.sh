@@ -113,6 +113,59 @@ out=$(bash "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
     --repo-root "$repo" --list 2> /dev/null)
 assert_not_contains "$out" 'AGENT_GENERATED_PATHS=' 'drops invalid generated paths'
 
+# These cases need the declaration committed in the base, so rewriting it does
+# not itself land in the diff being measured.
+make_classify_repo() {
+    local dir=$1 spec=$2
+    mkdir -p "$dir/.agent" "$dir/src" "$dir/generated"
+    git -C "$dir" init -q -b base
+    git -C "$dir" config user.email test@example.invalid
+    git -C "$dir" config user.name 'Diff Facts Test'
+    printf 'AGENT_BASE_BRANCH=base\nAGENT_GENERATED_PATHS=%s\n' "$spec" > "$dir/.agent/config.env"
+    printf 'old\n' > "$dir/src/app.sh"
+    printf 'old\n' > "$dir/generated/api.ts"
+    git -C "$dir" add -- .
+    git -C "$dir" commit -q -m base
+    printf 'old\nchanged\n' > "$dir/src/app.sh"
+    printf 'old\nchanged\n' > "$dir/generated/api.ts"
+}
+
+# './' and '.' name the same directory, so they must classify identically. './'
+# normalizes to an empty prefix, which previously matched nothing -- silently
+# inverting a declaration that every path is generated.
+dot_slash_repo="$tmp/classify dot slash"
+make_classify_repo "$dot_slash_repo" './'
+dot_slash_out=$(bash "$script" --repo-root "$dot_slash_repo")
+# Line-anchored: 'operational.files=0' is a substring of
+# 'non_operational.files=0', so an unanchored assert_contains passes even when
+# the classification is wrong.
+assert_contains $'\n'"$dot_slash_out" $'\noperational.files=0' \
+    'AGENT_GENERATED_PATHS=./ classifies every path as generated'
+assert_contains $'\n'"$dot_slash_out" $'\ngenerated.files=2' \
+    'AGENT_GENERATED_PATHS=./ counts every changed file as generated'
+dot_repo="$tmp/classify dot"
+make_classify_repo "$dot_repo" '.'
+dot_out=$(bash "$script" --repo-root "$dot_repo")
+assert_eq "$dot_out" "$dot_slash_out" \
+    'AGENT_GENERATED_PATHS=. and ./ produce identical facts'
+
+# A stray comma must never widen the declaration to the repository root. It does
+# not reach the matcher at all: repo-config.sh rejects the value and drops the
+# whole declaration, so nothing is classified generated and the operator is
+# warned. Pinned here because the empty-prefix branch above would otherwise be
+# one validator change away from letting a typo reclassify an entire diff.
+comma_repo="$tmp/classify trailing comma"
+make_classify_repo "$comma_repo" 'generated/,'
+comma_err=$(bash "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
+    --repo-root "$comma_repo" --list 2>&1 > /dev/null)
+assert_contains "$comma_err" 'AGENT_GENERATED_PATHS' \
+    'a trailing comma is reported as an invalid generated-paths value'
+trailing_comma_out=$(bash "$script" --repo-root "$comma_repo")
+assert_contains $'\n'"$trailing_comma_out" $'\noperational.files=2' \
+    'a trailing comma drops the declaration rather than widening it to the root'
+assert_contains $'\n'"$trailing_comma_out" $'\ngenerated.files=0' \
+    'a dropped declaration classifies nothing as generated'
+
 assert_contains "$(<"$root/agentkit/skills/.shared/schema/config.env.example")" \
     'AGENT_GENERATED_PATHS=' 'onboarding schema surfaces generated paths'
 assert_contains "$(<"$root/agentkit/skills/parallel-issues/SKILL.md")" \

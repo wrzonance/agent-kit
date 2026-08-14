@@ -84,9 +84,16 @@ matches_generated() {
     [[ -n $generated_paths ]] || return 1
     IFS=, read -ra paths <<< "$generated_paths"
     for spec in "${paths[@]}"; do
+        # An element that is empty BEFORE normalization is a stray comma, not a
+        # declaration -- skip it. Without this, the empty-spec branch below would
+        # let a trailing comma silently mark the entire repository generated.
+        [[ -n $spec ]] || continue
         while [[ $spec == ./* ]]; do spec=${spec#./}; done
         while [[ $spec == */ ]]; do spec=${spec%/}; done
-        [[ $spec == . || $path == "$spec" || $path == "$spec/"* ]] && return 0
+        # A spec naming the repository root normalizes to empty here. './' and
+        # '.' denote the same directory, so they must classify the same way --
+        # previously './' matched nothing while '.' matched everything.
+        [[ -z $spec || $spec == . || $path == "$spec" || $path == "$spec/"* ]] && return 0
     done
     return 1
 }
