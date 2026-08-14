@@ -8,10 +8,27 @@
 # never be inherited from the caller's environment: Claude Code exports
 # CLAUDE_PID (the interactive session's own PID) into Bash tool shells, and an
 # env-inherited value would make review_cleanup kill the host session.
+# shellcheck disable=SC2034  # operational slots are assigned by the wrappers
 CLAUDE_PID=""
 CODEX_PID=""
 LIMIT_PID=""
 POLLER_PID=""
+REVIEW_CHILD_PIDS=()
+
+review_register_pid() {
+    local pid=${1:-}
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || die "Cannot register invalid child PID: $pid"
+    REVIEW_CHILD_PIDS+=("$pid")
+}
+
+review_forget_pid() {
+    local pid=${1:-} registered
+    local -a remaining=()
+    for registered in "${REVIEW_CHILD_PIDS[@]}"; do
+        [[ $registered == "$pid" ]] || remaining+=("$registered")
+    done
+    REVIEW_CHILD_PIDS=("${remaining[@]}")
+}
 
 
 review_die_blocked() {
@@ -38,16 +55,13 @@ review_publish_output() {
 
 review_cleanup() {
     local pid
-    if [[ -n ${POLLER_PID:-} ]]; then
-        kill "$POLLER_PID" 2>/dev/null || true
-        wait "$POLLER_PID" 2>/dev/null || true
-        POLLER_PID=""
-    fi
-    for pid in ${CLAUDE_PID:-} ${CODEX_PID:-} ${LIMIT_PID:-}; do
+    for pid in "${REVIEW_CHILD_PIDS[@]}"; do
         [[ -n $pid ]] || continue
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
+    REVIEW_CHILD_PIDS=()
+    POLLER_PID=""
     CLAUDE_PID=""
     CODEX_PID=""
     LIMIT_PID=""
