@@ -424,8 +424,10 @@ run_codex() {
     timeout --signal=KILL "$seconds" "$CODEX_RESOLVED" "${args[@]}" \
         <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
+    review_register_pid "$CODEX_PID"
     monitor_token_limit &
     LIMIT_PID=$!
+    review_register_pid "$LIMIT_PID"
     local heartbeat_failed=0
     while kill -0 "$CODEX_PID" 2>/dev/null; do
         if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
@@ -440,9 +442,11 @@ run_codex() {
     if ((heartbeat_failed == 0)); then
         wait "$CODEX_PID" || status=$?
     fi
+    review_forget_pid "$CODEX_PID"
     CODEX_PID=""
     kill "$LIMIT_PID" 2>/dev/null || true
     wait "$LIMIT_PID" 2>/dev/null || true
+    review_forget_pid "$LIMIT_PID"
     LIMIT_PID=""
     [[ $(<"$LIMIT_REASON_FILE") == token-budget ]] && return 125
     ((heartbeat_failed == 1)) && return 125
@@ -541,12 +545,14 @@ main() {
 
     review_poll_progress "$started" &
     POLLER_PID=$!
+    review_register_pid "$POLLER_PID"
 
     run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
         exit_code=$?
 
     kill "$POLLER_PID" 2>/dev/null || true
     wait "$POLLER_PID" 2>/dev/null || true
+    review_forget_pid "$POLLER_PID"
     POLLER_PID=""
 
     if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
