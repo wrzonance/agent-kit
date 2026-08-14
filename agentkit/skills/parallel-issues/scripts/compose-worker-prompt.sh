@@ -66,16 +66,33 @@ if grep -Eq '<(PASTE|WHEN)([[:space:]]|[^[:alnum:]_])' "$contract"; then
     die 'environment contract contains an unresolved <PASTE ...> or <WHEN ...> placeholder'
 fi
 
-repo_slug=$($repo_config --repo-root "$worktree" --get AGENT_REPO_SLUG 2> /dev/null || true)
-base_branch=$($repo_config --repo-root "$worktree" --get AGENT_BASE_BRANCH 2> /dev/null || true)
+if ! repo_slug=$("$repo_config" --repo-root "$worktree" --get AGENT_REPO_SLUG); then
+    die 'could not resolve AGENT_REPO_SLUG from repository config'
+fi
+if ! base_branch=$("$repo_config" --repo-root "$worktree" --get AGENT_BASE_BRANCH); then
+    die 'could not resolve AGENT_BASE_BRANCH from repository config'
+fi
 shared_path=$(sed -n 's/^skills= path=//p' "$contract" | head -n 1)
 [[ $shared_path == /* ]] || die 'environment contract has no absolute skills path'
 shared_path=$shared_path/.shared/scripts
-[[ -n $repo_slug ]] || repo_slug='unknown/unknown'
-[[ -n $base_branch ]] || base_branch='main'
+[[ -n $repo_slug ]] || die 'AGENT_REPO_SLUG is empty in repository config'
+[[ -n $base_branch ]] || die 'AGENT_BASE_BRANCH is empty in repository config'
 
 declare -a command_names=()
 focus_declared=0
+is_verification_key() {
+    case $1 in
+        AGENT_CMD_TEST|AGENT_CMD_*_TEST|AGENT_CMD_LINT|AGENT_CMD_*_LINT|AGENT_CMD_BUILD|AGENT_CMD_*_BUILD|AGENT_CMD_TYPECHECK|AGENT_CMD_*_TYPECHECK|AGENT_CMD_TYPE_CHECK|AGENT_CMD_*_TYPE_CHECK|AGENT_CMD_VERIFY|AGENT_CMD_*_VERIFY|AGENT_CMD_CHECK|AGENT_CMD_*_CHECK|AGENT_CMD_COVERAGE|AGENT_CMD_*_COVERAGE)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+if ! command_list=$("$repo_config" --repo-root "$worktree" --list); then
+    die 'could not list repository commands'
+fi
 while IFS='=' read -r key value; do
     : "$value"
     [[ $key =~ ^AGENT_CMD_[A-Z][A-Z0-9_]*$ ]] || continue
@@ -83,12 +100,13 @@ while IFS='=' read -r key value; do
         focus_declared=1
         continue
     fi
+    is_verification_key "$key" || continue
     name=${key#AGENT_CMD_}
     name=${name,,}
     name=${name//_/-}
     command_names+=("$name")
-done < <($repo_config --repo-root "$worktree" --list 2> /dev/null)
-((${#command_names[@]})) || die 'repository declares no AGENT_CMD_* commands'
+done <<< "$command_list"
+((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
 
 command_flags=
 if ((yolo)); then

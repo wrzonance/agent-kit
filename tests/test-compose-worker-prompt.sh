@@ -22,6 +22,11 @@ make_repo() {
         'AGENT_CMD_VERIFY=tools/verify' \
         'AGENT_CMD_BACKEND_TEST=tools/backend-test' \
         'AGENT_CMD_TEST=tools/full-test' \
+        'AGENT_CMD_SETUP=tools/setup' \
+        'AGENT_CMD_INSTALL=tools/install' \
+        'AGENT_CMD_SERVE=tools/serve' \
+        'AGENT_CMD_DEV=tools/dev' \
+        'AGENT_CMD_TEST_SETUP=tools/test-setup' \
         'AGENT_CMD_TEST_FOCUS=tools/focused-test --only %s' \
         > "$dir/.agent/config.env"
     printf '%s\n' "$contract" > "$dir/.agent/env-contract.txt"
@@ -30,7 +35,7 @@ make_repo() {
 }
 
 contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"'
-repo="$tmp/repo"
+repo="$tmp/repo with spaces"
 make_repo "$repo" "$contract"
 
 chain_base=30c38b2c1fa35c6cecc5946aaa7c41e7c132885c
@@ -51,6 +56,11 @@ assert_not_contains "$prompt" '<PASTE' 'issue lead has no PASTE placeholder'
 assert_not_contains "$prompt" '<WHEN' 'issue lead has no WHEN placeholder'
 assert_not_contains "$prompt" '--cmd lint' 'undeclared lint command is not injected'
 assert_not_contains "$prompt" '--cmd build' 'undeclared build command is not injected'
+assert_not_contains "$prompt" '--cmd setup' 'operational setup command is not injected'
+assert_not_contains "$prompt" '--cmd install' 'operational install command is not injected'
+assert_not_contains "$prompt" '--cmd serve' 'long-running serve command is not injected'
+assert_not_contains "$prompt" '--cmd dev' 'long-running dev command is not injected'
+assert_not_contains "$prompt" '--cmd test-setup' 'operational test setup command is not injected'
 assert_contains "$prompt" '--cmd verify --yolo --yolo-base ' 'verify receives chained yolo flags'
 assert_contains "$prompt" '--cmd backend-test --yolo --yolo-base ' 'multi-word declaration becomes a dashed command name'
 assert_contains "$prompt" '--cmd test --yolo --yolo-base ' 'test receives chained yolo flags'
@@ -59,6 +69,7 @@ assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base
 
 command_lines=$(printf '%s\n' "$prompt" | rg 'agent-run\.sh.*--cmd' || true)
 assert_not_contains "$command_lines" "\$(" 'generated command lines have no command substitutions'
+assert_not_contains "$command_lines" '--cmd test-focus' 'focused selector is not emitted as a normal command'
 assert_not_contains "$command_lines" '[[' 'generated command lines have no Bash conditionals'
 assert_not_contains "$command_lines" 'mapfile' 'generated command lines have no Bash-only mapfile'
 assert_not_contains "$command_lines" '<<<' 'generated command lines have no Bash-only here-string'
@@ -84,5 +95,29 @@ make_repo "$bad_repo" 'skills= path='"$root"$'/agentkit/skills\n<PASTE bad contr
 assert_rc 1 'surviving PASTE placeholders fail closed' -- bash "$compose" \
     --template issue-lead --worktree "$bad_repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high
+
+missing_slug="$tmp/missing-slug"
+make_repo "$missing_slug" "$contract"
+sed -i '/^AGENT_REPO_SLUG=/d' "$missing_slug/.agent/config.env"
+missing_slug_output=''
+missing_slug_rc=0
+missing_slug_output=$(bash "$compose" --template issue-lead --worktree "$missing_slug" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high 2>&1) || missing_slug_rc=$?
+assert_eq 1 "$missing_slug_rc" 'missing repository slug fails closed'
+assert_contains "$missing_slug_output" 'AGENT_REPO_SLUG' \
+    'missing repository slug error names the unresolved fact'
+
+missing_base="$tmp/missing-base"
+make_repo "$missing_base" "$contract"
+sed -i '/^AGENT_BASE_BRANCH=/d' "$missing_base/.agent/config.env"
+missing_base_output=''
+missing_base_rc=0
+missing_base_output=$(bash "$compose" --template issue-lead --worktree "$missing_base" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high 2>&1) || missing_base_rc=$?
+assert_eq 1 "$missing_base_rc" 'missing base branch fails closed'
+assert_contains "$missing_base_output" 'AGENT_BASE_BRANCH' \
+    'missing base branch error names the unresolved fact'
 
 finish
