@@ -34,25 +34,33 @@ if [[ ${1-} == pr || ${1-} == issue ]]; then
     [[ -n $body_file && -f $body_file ]] || exit 21
     cp -- "$body_file" "$GH_STORED_BODY"
     if [[ ${2-} == create ]]; then
+        host=${GH_CREATE_HOST:-github.com}
         if [[ ${1-} == pr ]]; then
-            printf '%s\n' 'https://github.com/owner/repo/pull/41'
+            printf 'https://%s/%s/pull/%s\n' "$host" "${GH_CREATE_SLUG:-owner/repo}" "${GH_CREATE_NUMBER:-41}"
         else
-            printf '%s\n' 'https://github.com/owner/repo/issues/42'
+            printf 'https://%s/%s/issues/%s\n' "$host" "${GH_CREATE_SLUG:-owner/repo}" "${GH_CREATE_NUMBER:-42}"
         fi
     fi
     exit 0
 fi
 
 if [[ ${1-} == api ]]; then
-    [[ $# -eq 2 ]] || {
+    shift
+    api_host=''
+    if [[ ${1-} == --hostname ]]; then
+        api_host=${2-}
+        shift 2
+    fi
+    [[ $# -eq 1 ]] || {
         printf 'gh api received unexpected arguments: %q\n' "$*" >&2
         exit 23
     }
-    printf '%s\n' "$2" >>"$GH_API_LOG"
-    case ${2-} in
+    printf 'host=%s endpoint=%s\n' "${api_host:-<ambient>}" "$1" >>"$GH_API_LOG"
+    case $1 in
         repos/owner/repo/pulls/41|repos/owner/repo/issues/42|repos/url-owner/url-repo/issues/42) ;;
+        repos/ent-owner/ent-repo/pulls/7|repos/ent-owner/ent-repo/pulls/8) ;;
         *)
-            printf 'gh api received unexpected endpoint: %s\n' "${2-}" >&2
+            printf 'gh api received unexpected endpoint: %s\n' "$1" >&2
             exit 23
             ;;
     esac
@@ -111,6 +119,35 @@ output=$(run_body issue edit https://github.com/url-owner/url-repo/issues/42 \
 assert_contains "$output" 'updated issue #42' 'issue edit accepts a canonical target URL'
 assert_contains "$(cat "$tmp/api.log")" 'repos/url-owner/url-repo/issues/42' \
     'URL edit verification preserves the repository parsed from the target URL'
+
+# A URL carries the host the mutation actually landed on. gh api would otherwise
+# resolve the ambient host (repo context, GH_HOST, else github.com), verifying an
+# Enterprise mutation against the wrong server.
+: >"$tmp/api.log"
+output=$(run_body pr edit https://ghe.example/ent-owner/ent-repo/pull/7 --body-file "$body")
+assert_contains "$output" 'updated pr #7' 'Enterprise URL edit target is verified'
+assert_contains "$(cat "$tmp/api.log")" 'host=ghe.example' \
+    'Enterprise edit target verifies against its originating host'
+assert_contains "$(cat "$tmp/api.log")" 'endpoint=repos/ent-owner/ent-repo/pulls/7' \
+    'Enterprise edit target keeps the repository parsed from the URL'
+
+: >"$tmp/api.log"
+export GH_CREATE_HOST=ghe.example GH_CREATE_SLUG=ent-owner/ent-repo GH_CREATE_NUMBER=8
+output=$(run_body pr create --body-file "$body" --title 'ent')
+unset GH_CREATE_HOST GH_CREATE_SLUG GH_CREATE_NUMBER
+assert_contains "$output" 'https://ghe.example/ent-owner/ent-repo/pull/8' \
+    'Enterprise create returns the created URL'
+assert_contains "$(cat "$tmp/api.log")" 'host=ghe.example' \
+    'Enterprise create verifies against the host in the returned URL'
+
+# A numeric target carries no host, so ambient resolution must be preserved --
+# that is the same host gh itself used for the mutation.
+: >"$tmp/api.log"
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$body")
+assert_contains "$(cat "$tmp/api.log")" 'host=<ambient>' \
+    'a numeric target leaves host resolution to gh'
+assert_not_contains "$(cat "$tmp/api.log")" '--hostname' \
+    'a numeric target never pins a host'
 
 invalid="$tmp/invalid.md"
 printf '%s\n' 'body without the required front banner' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$invalid"
