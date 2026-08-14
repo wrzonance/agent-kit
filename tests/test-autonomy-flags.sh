@@ -113,7 +113,7 @@ assert_contains "$parallel" 'An empty selection is an answer' \
 assert_contains "$review_adversarial" 'consent given in advance' 'the flag answers the consent question'
 assert_contains "$review_adversarial" 'do not stop to ask' 'and the agent does not ask anyway'
 assert_contains "$review_adversarial" 'Still disclose' 'the disclosure survives the flag'
-assert_contains "$review_adversarial" 'source=--auto-review' 'and the record says where consent came from'
+assert_contains "$review_adversarial" 'source=auto-review-flag' 'and the record says where consent came from'
 assert_contains "$review_adversarial" 'It cannot consent on behalf of whoever owns' \
     'the flag cannot authorise disclosing a third party repository'
 assert_contains "$review_adversarial" 'Still fails closed' 'an unrecordable or unknown destination still blocks'
