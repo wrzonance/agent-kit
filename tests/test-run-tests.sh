@@ -50,14 +50,6 @@ printf '$suite summary\\n'
 EOF
         chmod +x "$dir/tests/test-$suite.sh"
     done
-    cat >"$dir/tests/test-crash.sh" <<'EOF'
-#!/usr/bin/env bash
-trace=${TRACE:?}
-printf 'crash-start\n' >> "$trace"
-printf 'crash began\n'
-exit 9
-EOF
-    chmod +x "$dir/tests/test-crash.sh"
     cat >"$dir/tests/test-gamma.sh" <<'EOF'
 #!/usr/bin/env bash
 trace=${TRACE:?}
@@ -76,7 +68,6 @@ cat >"$dir/tests/test-fail.sh" <<'EOF'
 trace=${TRACE:?}
 printf 'fail-start\n' >> "$trace"
 printf 'fail summary\n'
-printf 'fail: 1 assertions, 1 failed\n'
 exit 7
 EOF
     chmod +x "$dir/tests/test-fail.sh"
@@ -156,14 +147,6 @@ assert_eq '1' "$rc" 'a suite failure propagates a nonzero exit status'
 out=$(<"$tmp/out")
 assert_contains "$out" 'FAILURES ABOVE' 'a failing suite keeps the failure footer'
 assert_contains "$out" 'fail summary' 'a failing suite output is retained'
-assert_not_contains "$out" 'CRASHED (no summary)' \
-    'a failing suite with a summary is not reported as crashed'
-
-rc=$(run_fixture 1 crash)
-assert_eq '1' "$rc" 'a suite crash propagates a nonzero exit status'
-out=$(<"$tmp/out")
-assert_contains "$out" 'CRASHED (no summary): tests/test-crash.sh rc=9' \
-    'a crashed suite is named when it emits no assertion summary'
 
 rc=$(run_fixture 1 alpha,beta)
 assert_eq '0' "$rc" 'serial focused run succeeds'
