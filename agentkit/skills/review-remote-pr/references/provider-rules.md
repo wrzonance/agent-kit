@@ -337,20 +337,31 @@ which posts a top-level comment quoting the nitpick. These **marked agent-docume
 yours: leave them open so CodeRabbit sees the mention on its next provider pass, then resolve
 them at exit only if no unmarked human comment has joined the thread.
 
-**Resolve threads (requires GraphQL thread node ID from Step 1):**
+**Reply, anchor, and resolve through the guarded helper:**
 ```bash
-gh api graphql -f query='
-mutation {
-  resolveReviewThread(input: {threadId: "PRRT_kwDO..."}) {
-    thread { isResolved }
-  }
-}'
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+agent_identity='Codex gpt-5.6-luna'       # the agent that actually wrote the fix
+short_sha=$(git rev-parse --short HEAD)
+
+"$agentkit/review-remote-pr/scripts/thread-action.sh" \
+  --pr "$PR" --repo "$REPO" \
+  --threads-artifact "$RUN_DIR/state/pr_${PR}_threads.json" \
+  --thread-id 'PRRT_kwDO...' --comment-id 1234567890 \
+  --kind fixed --text 'Safe fix applied.' --sha "$short_sha" \
+  --agent-identity "$agent_identity"
+
+# For a body-only nitpick, add --anchor path:line. A 422 is retried internally
+# as a top-level comment; the helper still requires an exact verified post
+# before it resolves the artifact-selected thread.
 ```
 
-Resolve CodeRabbit and generic automated threads — both accepted fixes and declined suggestions —
-only when they contain no unmarked human-lane comment, and always **reply BEFORE resolving**. A
-declined thread is resolved after the reply explains why. **Never resolve a human-touched thread** —
-post only a user-approved reply, leave resolution to the human, and list it in the exit report. This
+The helper independently derives the target thread and human lane from the artifact; it never
+trusts a caller-supplied thread ID. It resolves CodeRabbit and generic automated threads — both
+accepted fixes and declined suggestions — only after the exact verified reply. A declined thread
+is resolved after the rationale reply. **Never resolve a human-touched thread** — the helper exits
+non-zero before posting, while approved human feedback remains confirmation-gated and open. This
 includes feedback authored by the authenticated `gh` login. Body-only nitpicks are complete when
 documented in their marked anchored thread. **Adversarial-review findings** have no review thread;
 record each outcome in a PR comment.
