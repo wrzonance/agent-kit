@@ -128,6 +128,69 @@ fetch_pr() {
         --json number,baseRefName,headRefName,headRefOid,statusCheckRollup,reviewDecision,reviews,closingIssuesReferences
 }
 
+# The retarget boundary, read from the forge's own clock rather than this
+# machine's: every freshness comparison below is against provider timestamps, so
+# a skewed local clock would silently decide the verdict.
+retarget_boundary() {
+    local headers date_line epoch
+    headers=$("$GH_BIN" api --include /rate_limit 2>/dev/null) ||
+        die 'could not read provider time for the retarget boundary; evidence provenance is unavailable'
+    date_line=$(printf '%s\n' "$headers" |
+        sed -nE 's/^[Dd]ate:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' | head -n 1)
+    [[ -n $date_line ]] ||
+        die 'provider response carried no Date header; evidence provenance is unavailable'
+    epoch=$(date -u -d "$date_line" +%s 2> /dev/null) ||
+        die 'provider Date header was unparseable; evidence provenance is unavailable'
+    [[ $epoch =~ ^[0-9]+$ ]] ||
+        die 'provider Date header did not yield an epoch; evidence provenance is unavailable'
+    printf '%s\n' "$epoch"
+}
+
+iso_to_epoch() {
+    local value=$1 epoch
+    [[ -n $value && $value != null ]] || return 1
+    epoch=$(date -u -d "$value" +%s 2> /dev/null) || return 1
+    [[ $epoch =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$epoch"
+}
+
+# `gh pr edit --base` leaves headRefOid untouched, and both the check rollup and
+# provider approvals hang off the head commit -- so evidence produced against the
+# OLD base survives the retarget and satisfies a naive green/approved test. The
+# workflow does not re-run on a base change either (`pull_request` defaults to
+# opened/synchronize/reopened), so this cannot self-heal: it must fail closed
+# until CI is actually re-run against the new base. chains.md is explicit that a
+# stale digest is a stop signal, not a green result.
+check_ci_fresh() {
+    local pr_json=$1 boundary=$2 stale
+    stale=$(jq -r --argjson boundary "$boundary" '
+        [ .statusCheckRollup[]?
+          | (.completedAt // .startedAt // .createdAt // "") as $ts
+          | (.name // .context // "check") as $label
+          | if ($ts | length) == 0 then $label
+            else ($ts | fromdateiso8601) as $epoch
+                 | if $epoch <= $boundary then $label else empty end
+            end
+        ] | join(", ")
+    ' <<<"$pr_json") ||
+        die 'check rollup timestamps were unreadable; CI provenance is unavailable'
+    [[ -z $stale ]] ||
+        die "CI evidence predates the retarget (stale: $stale); re-run CI against the new base -- a stale digest is a stop signal, not a green result"
+}
+
+check_approval_fresh() {
+    local pr_json=$1 boundary=$2 fresh
+    fresh=$(jq -r --argjson boundary "$boundary" '
+        any(.reviews[]?;
+            (.state == "APPROVED")
+            and ((.submittedAt // .submitted_at // "") | length) > 0
+            and (((.submittedAt // .submitted_at) | fromdateiso8601) > $boundary))
+    ' <<<"$pr_json") ||
+        die 'review timestamps were unreadable; approval provenance is unavailable'
+    [[ $fresh == true ]] ||
+        die 'approval predates the retarget; residual approval state after a base change remains a human judgment -- record the residue in the handoff and stop'
+}
+
 check_ancestry() {
     local head_sha=$1 compare_json behind status
     compare_json=$("$GH_BIN" api "repos/$REPO/compare/$BASE...$head_sha") ||
@@ -202,8 +265,11 @@ closing_issue_count() {
 }
 
 retarget() {
-    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count
+    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count boundary
     resolve_repo
+    # Captured before the edit so anything produced against the old base sorts
+    # strictly below it.
+    boundary=$(retarget_boundary)
     "$GH_BIN" pr edit "$PR" --repo "$REPO" --base "$BASE" >/dev/null ||
         die "could not retarget PR #$PR to base $BASE"
     pr_json=$(fetch_pr) || die "could not re-read PR #$PR after retarget"
@@ -220,12 +286,14 @@ retarget() {
     check_ancestry "$head_sha"
     ci_counts=$(check_ci "$pr_json")
     IFS=$'\t' read -r total pass <<<"$ci_counts"
+    check_ci_fresh "$pr_json" "$boundary"
     check_approval "$pr_json" "$head_sha"
+    check_approval_fresh "$pr_json" "$boundary"
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green approval=current ancestry=verified closing-issues=%s\n' \
+    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=%s\n' \
         "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$closing_count"
 }
 
