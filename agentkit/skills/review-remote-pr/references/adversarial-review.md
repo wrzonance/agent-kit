@@ -140,6 +140,7 @@ For detached executors only, use:
 That helper reports exactly Completed, Still running, or Blocked and owns bounded sampling and
 heartbeat rules. It is not a second review launcher and does not authorize a relaunch. The
 foreground runner remains the source of truth for the review result.
+It exits 0, 1, or 2 for those states, respectively; branch on the exit code, never message text.
 The scripts enforce explicit safety ceilings with --max-duration-seconds and --max-tokens 400000.
 
 ## Read the verdict

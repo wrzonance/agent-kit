@@ -516,6 +516,8 @@ assert_contains "$adversarial_text" 'Cross-provider consent' 'the reference reta
 assert_contains "$adversarial_text" 'consent-record.sh' 'the reference points at the consent authority'
 assert_contains "$adversarial_text" 'adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR' 'the reference points at the one-shot runner'
 assert_contains "$adversarial_text" 'review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript"' 'the reference points at detached liveness'
+assert_contains "$adversarial_text" 'exits 0, 1, or 2 for those states' \
+    'the reference pins detached liveness exit statuses'
 assert_contains "$adversarial_text" 'Evaluate — then route into Step 5' 'the reference retains human finding judgment'
 assert_contains "$adversarial_text" 'post-receipt.sh publish' 'the reference retains receipt publication'
 assert_not_contains "$adversarial_text" 'git --no-pager diff' 'the reference removes hand-built diff orchestration'
@@ -524,5 +526,13 @@ assert_not_contains "$adversarial_text" 'review_rc=' 'the reference removes hand
 assert_not_contains "$adversarial_text" 'relaunch exactly once' 'the reference removes hand-executed relaunch policy'
 assert_not_contains "$adversarial_text" 'cross-cell heartbeat fallback' 'the reference removes obsolete liveness mechanics'
 assert_not_contains "$adversarial_text" 'kill -0' 'the reference contains no producer-PID recipe'
+assert_not_contains "$skill_union_text" 'kill -0' \
+    'the skill never recommends cross-cell PID probes'
+assert_not_contains "$skill_union_text" '>"$verdict_path"' \
+    'the skill never streams directly into the final verdict path'
+assert_not_contains "$skill_union_text" 'claude.result.json' \
+    'the skill has no Claude-specific verdict path'
+assert_not_contains "$skill_union_text" 'codex.result.json' \
+    'the skill has no Codex-specific verdict path'
 
 finish
