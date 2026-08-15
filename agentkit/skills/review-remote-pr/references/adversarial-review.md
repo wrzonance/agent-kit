@@ -143,6 +143,12 @@ foreground runner remains the source of truth for the review result.
 It exits 0, 1, or 2 for those states, respectively; branch on the exit code, never message text.
 The scripts enforce explicit safety ceilings with --max-duration-seconds and --max-tokens 400000.
 
+### Capability probes are not reviews
+
+A harness capability probe must be visibly distinct from a real review on the command line: invoke
+the provider helper with `--mode probe --no-payload`. The helper's probe mode sends only a synthetic snippet; it sends no PR diff and must not receive `--diff`. Probe results are smoke-test evidence
+only: they do not enter `adversarial-run.sh`, do not publish a receipt, and never count against the one-review-per-PR budget. `post-receipt.sh` rejects probe mode before any transport.
+
 ## Read the verdict
 
 Read adversarial.result.json only after the runner has returned. The canonical verdict is nested:

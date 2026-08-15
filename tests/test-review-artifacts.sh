@@ -27,11 +27,11 @@ run_rejected() {
     # branch, leaving CODEX_EXECUTABLE unstubbed and invoking the real CLI.
     if [[ ${helper##*/} == *claude* ]]; then
         CLAUDE_EXECUTABLE=/definitely/missing/claude \
-            bash "$helper" --mode probe --model claude-opus-5 \
+            bash "$helper" --mode probe --no-payload --model claude-opus-5 \
             --transcript "$transcript" > /dev/null 2>"$stderr_file" || rc=$?
     else
         CODEX_EXECUTABLE=/definitely/missing/codex \
-            bash "$helper" --mode probe --model gpt-5.6-terra \
+            bash "$helper" --mode probe --no-payload --model gpt-5.6-terra \
             --transcript "$transcript" > /dev/null 2>"$stderr_file" || rc=$?
     fi
     printf '%s' "$rc"
@@ -250,7 +250,7 @@ blocked_output="$output_run/blocked.result.json"
 blocked_stdout="$tmp/output-blocked.stdout"
 blocked_rc=0
 CLAUDE_EXECUTABLE=/definitely/missing/claude bash "$claude" \
-    --mode probe --model claude-test \
+    --mode probe --no-payload --model claude-test \
     --transcript "$output_run/blocked.transcript" \
     --output "$blocked_output" >"$blocked_stdout" 2>/dev/null || blocked_rc=$?
 assert_eq 3 "$blocked_rc" '--output: an environment-blocked review still exits 3'
@@ -266,7 +266,7 @@ failure_output="$output_run/failure.result.json"
 failure_err="$tmp/output-failure.err"
 failure_rc=0
 CLAUDE_EXECUTABLE="$tmp/fake-claude-output-hang" bash "$claude" \
-    --mode probe --model claude-test \
+    --mode probe --no-payload --model claude-test \
     --transcript "$output_run/failure.transcript" --poll-seconds 1 \
     --max-duration-seconds 1 --output "$failure_output" \
     >/dev/null 2>"$failure_err" || failure_rc=$?
@@ -286,7 +286,7 @@ unsafe_output="$unsafe_dir/result.json"
 unsafe_err="$tmp/output-unsafe.err"
 unsafe_rc=0
 CLAUDE_EXECUTABLE=/definitely/missing/claude bash "$claude" \
-    --mode probe --model claude-test \
+    --mode probe --no-payload --model claude-test \
     --transcript "$output_run/unsafe.transcript" \
     --output "$unsafe_output" >/dev/null 2>"$unsafe_err" || unsafe_rc=$?
 assert_eq 1 "$unsafe_rc" '--output: an unsafe output directory is refused'
@@ -352,7 +352,7 @@ codex_blocked_output="$output_run/codex-blocked.result.json"
 codex_blocked_stdout="$tmp/codex-output-blocked.stdout"
 codex_blocked_rc=0
 CODEX_EXECUTABLE=/definitely/missing/codex bash "$codex" \
-    --mode probe --model gpt-test \
+    --mode probe --no-payload --model gpt-test \
     --transcript "$output_run/codex-blocked.jsonl" \
     --output "$codex_blocked_output" >"$codex_blocked_stdout" 2>/dev/null || codex_blocked_rc=$?
 assert_eq 3 "$codex_blocked_rc" 'Codex --output: an environment-blocked review still exits 3'

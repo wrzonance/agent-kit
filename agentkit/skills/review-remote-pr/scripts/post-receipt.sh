@@ -81,6 +81,10 @@ precheck against --comments first and refuses (exit 11) when the marker is
 already present. --require-pushed additionally requires a clean tree whose HEAD
 is reachable from an origin/* remote-tracking ref.
 
+Capability probes are not receipts: probe invocations send only a synthetic
+snippet, no PR diff, and never count against the one-review-per-PR budget.
+Probe mode is rejected before any receipt transport.
+
 The findings file is one JSON record per line. A fixed record has title,
 verdict=fixed, and sha; a declined record has title, verdict=declined, and
 rationale. Use an empty file for a clean review. --skip-rationale and --oracle
@@ -246,6 +250,8 @@ validate_publish_args() {
     [[ -n $PROVIDER ]] || die_usage '--provider is required'
     [[ -n $MODEL ]] || die_usage '--model is required'
     [[ -n $EFFORT ]] || die_usage '--effort is required'
+    [[ $MODE != probe ]] ||
+        die_usage 'probes never count against the one-review-per-PR budget; probe mode cannot publish a receipt'
     # Accept the human-prose spelling ("blind fallback") as well as the
     # canonical flag value: SKILL.md's receipt prose describes the mode in
     # words, and an agent following it verbatim would otherwise get die_usage
