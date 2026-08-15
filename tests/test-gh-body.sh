@@ -51,6 +51,15 @@ if [[ ${1-} == api ]]; then
         api_host=${2-}
         shift 2
     fi
+    if [[ ${1-} == graphql ]]; then
+        printf 'host=%s endpoint=graphql\n' "${api_host:-<ambient>}" >>"$GH_API_LOG"
+        if [[ ${GH_INCLUDE_CLOSING:-0} == 1 ]]; then
+            jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: [{number: 42}]}}}}}'
+        else
+            jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: []}}}}}'
+        fi
+        exit 0
+    fi
     [[ $# -eq 1 ]] || {
         printf 'gh api received unexpected arguments: %q\n' "$*" >&2
         exit 23
@@ -70,8 +79,6 @@ if [[ ${1-} == api ]]; then
     fi
     if [[ ${GH_MISMATCH:-0} == 1 ]]; then
         jq -n '{body: "tampered"}'
-    elif [[ ${GH_INCLUDE_CLOSING:-0} == 1 ]]; then
-        jq -Rs '{body: ., closingIssuesReferences: [{number: 42}]}' <"$GH_STORED_BODY"
     else
         jq -Rs '{body: .}' <"$GH_STORED_BODY"
     fi
@@ -173,6 +180,8 @@ output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
 unset GH_INCLUDE_CLOSING
 assert_contains "$output" 'updated pr #41' \
     'explicit closing-reference verification passes when GitHub registers the issue'
+assert_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
+    'explicit closing-reference verification queries GitHub GraphQL'
 
 set +e
 missing_link_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \

@@ -266,12 +266,35 @@ compare_body() {
 
 verify_closing_reference() {
     [[ -z $EXPECT_CLOSING_ISSUE ]] && return 0
+
+    local owner name number graphql_query rc=0
+    [[ $VERIFY_ENDPOINT =~ ^repos/([^/]+)/([^/]+)/pulls/([1-9][0-9]*)$ ]] ||
+        die 'closing-reference verification requires a pull-request target'
+    owner=${BASH_REMATCH[1]}
+    name=${BASH_REMATCH[2]}
+    number=${BASH_REMATCH[3]}
+    # shellcheck disable=SC2016  # GraphQL variable names must remain literal.
+    graphql_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number}}}}}'
+
+    local -a graphql_args=(api)
+    [[ -z $VERIFY_HOST ]] || graphql_args+=(--hostname "$VERIFY_HOST")
+    graphql_args+=(
+        graphql
+        -f "query=$graphql_query"
+        -F "owner=$owner"
+        -F "name=$name"
+        -F "number=$number"
+    )
+    "$GH_BIN" "${graphql_args[@]}" \
+        >"$WORK_DIR/closing.json" 2>"$WORK_DIR/closing.err" || rc=$?
+    if ((rc != 0)); then
+        [[ ! -s $WORK_DIR/closing.err ]] || cat "$WORK_DIR/closing.err" >&2
+        die 'GitHub closing-reference re-fetch failed; linkage is unverified'
+    fi
     jq -e --arg expected "$EXPECT_CLOSING_ISSUE" '
-        (.closingIssuesReferences // []) as $references
-        | (if ($references | type) == "array" then $references
-           else ($references.nodes // []) end)
-        | any(.[]?; ((.number // "") | tostring) == $expected)
-    ' "$WORK_DIR/stored.json" >/dev/null ||
+        (.data.repository.pullRequest.closingIssuesReferences.nodes // []) as $references
+        | any($references[]?; ((.number // "") | tostring) == $expected)
+    ' "$WORK_DIR/closing.json" >/dev/null ||
         die "GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE"
 }
 
