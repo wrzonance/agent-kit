@@ -77,9 +77,15 @@ The cascade is complete only when each descendant has been verified against the 
 was merged into it. `chain-advance.sh --retarget --pr N --base B` then performs the agent-driven
 retarget proof: it re-reads `baseRefName`, checks `B...head` ancestry, requires settled green CI,
 requires an approval on the current head, and proves `closingIssuesReferences` is non-empty.
-The helper exits non-zero when any proof is missing or stale. Residual approval state after a
-base change remains a human judgment: record it and stop; do not dismiss, inherit, or refresh it
-automatically.
+Because `gh pr edit --base` leaves `headRefOid` untouched, and both the check rollup and provider
+approvals hang off the head commit, head-bound evidence produced against the *old* base survives
+the retarget — so the helper additionally stamps a retarget boundary from the provider's own clock
+and requires every check and the approval to postdate it. The helper exits non-zero when any proof
+is missing or stale, including when that provenance cannot be read at all. A base change does not
+re-run the workflow (`pull_request` fires on opened/synchronize/reopened, not `edited`), so this
+refusal is expected until CI is genuinely re-run against the new base. Residual approval state
+after a base change remains a human judgment: record it and stop; do not dismiss, inherit, or
+refresh it automatically.
 
 ## Merge order and the stacked-PR retarget
 
