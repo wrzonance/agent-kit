@@ -51,7 +51,7 @@ one-call helpers. The token is runtime state, not repository configuration:
       printf '%s\n' 'fleet GitHub token is not present' >&2
       exit 1
   }
-  gh api /installation --jq '.account.login // .account.slug'
+  gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login'
   ```
 
 The returned account must be the installed fleet App/bot identity. A
@@ -108,7 +108,7 @@ must make those actions explicit for the human owner.
    and confirm that `Projects: write` is enabled for the target Project owner.
 3. Teach the orchestrator launcher/broker to mint a short-lived installation
    token and export it as `GH_TOKEN` for the session.
-4. Verify `gh api /installation --jq '.account.login // .account.slug'` reports
+4. Verify `gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login'` reports
    the fleet identity, then run the normal Agent Kit preflight and named
    verification commands.
 5. Verify a board Status move through the bundled helper and confirm the audit
