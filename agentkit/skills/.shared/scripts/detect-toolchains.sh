@@ -377,9 +377,17 @@ py_tool_present() {
 }
 
 py_bin_prefix() {
-    local runner=$1 tool=$2
+    local dir=$1 runner=$2 tool=$3 relative_runner
     if [[ $runner == */* ]]; then
-        config_quote_token "$runner/$tool"
+        # PY_RUNNER is kept repository-relative for probing, but a command
+        # paired with AGENT_RUNDIR must name argv[0] from that directory.
+        # Root components already use the repository as their rundir.
+        if [[ $dir != . && $runner == "$dir"/* ]]; then
+            relative_runner=${runner#"$dir"/}
+        else
+            relative_runner=$runner
+        fi
+        config_quote_token "$relative_runner/$tool"
     elif [[ $runner == uv ]]; then
         printf 'uv run %s' "$tool" # ecosystem-allow: detection
     else
@@ -432,16 +440,16 @@ gen_node_tasks() {
 gen_python_tasks() {
     local dir=$1 runner=$2 bin
     if py_tool_present "$dir" pytest "$runner"; then
-        bin=$(py_bin_prefix "$runner" pytest)
+        bin=$(py_bin_prefix "$dir" "$runner" pytest)
         printf 'TEST\t%s\n' "$bin"
     fi
     if py_tool_present "$dir" ruff "$runner"; then
-        bin=$(py_bin_prefix "$runner" ruff)
+        bin=$(py_bin_prefix "$dir" "$runner" ruff)
         printf 'LINT\t%s\n' "$bin"
         printf 'FORMAT\t%s format --check\n' "$bin"
     fi
     if py_tool_present "$dir" mypy "$runner"; then
-        bin=$(py_bin_prefix "$runner" mypy)
+        bin=$(py_bin_prefix "$dir" "$runner" mypy)
         printf 'TYPECHECK\t%s\n' "$bin"
     fi
 }

@@ -191,6 +191,16 @@ out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$out" 'AGENT_CMD_DASH=root-only' \
     'accepts an executable found relative to the declared rundir'
 
+# Path diagnostics must use the declared rundir even when the command line
+# appears before its companion rundir line, matching the order bootstrap emits.
+printf 'AGENT_CMD_DASH=.venv/bin/missing\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+diagnostic_err=$($rc_sh --repo-root "$repo" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $repo/dashboard" \
+    'path validation resolves argv[0] from the declared rundir'
+assert_contains "$diagnostic_err" \
+    "resolved candidate: $repo/dashboard/.venv/bin/missing" \
+    'path diagnostics name the rundir-relative candidate'
+
 # Focus declarations use the same path-shaped argv[0] containment rule as
 # ordinary command declarations.
 printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"
