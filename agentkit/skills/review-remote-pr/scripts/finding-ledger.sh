@@ -124,11 +124,28 @@ reject_unsafe_text() {
         die_usage "$flag must not contain the agent-doc marker $DOC_MARKER"
 }
 
+run_dir_mode() {
+    local mode
+    if mode=$(stat -c %a -- "$RUN_DIR" 2>/dev/null) &&
+        [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$RUN_DIR" 2>/dev/null) &&
+        [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
 validate_run_dir() {
     [[ -n $RUN_DIR ]] || die_usage 'RUN_DIR must be set'
     [[ -d $RUN_DIR && ! -L $RUN_DIR && -O $RUN_DIR ]] ||
         die_evidence "RUN_DIR is not an owned directory: $RUN_DIR"
-    [[ $(stat -c %a -- "$RUN_DIR" 2>/dev/null) == 700 ]] ||
+    local mode
+    mode=$(run_dir_mode) || die_evidence "could not inspect RUN_DIR mode: $RUN_DIR"
+    (( (8#$mode & 0777) == 0700 )) ||
         die_evidence "RUN_DIR must have mode 0700: $RUN_DIR"
 }
 
@@ -137,12 +154,14 @@ validate_completed_review() {
     [[ -f $result && ! -L $result && -O $result ]] ||
         die_order "completed adversarial review result is required: $result"
     command -v jq >/dev/null 2>&1 || die_evidence 'jq is not installed'
-    jq -e '
-        type == "object" and .status == "completed" and
-        (.exitCode | type) == "number" and .exitCode == 0 and
-        (.verdict | type) == "object" and
-        (.verdict.verdict == "findings" or .verdict.verdict == "no_findings") and
-        (.verdict.findings | type) == "array"
+    jq -s -e '
+        length == 1 and
+        (.[0] |
+            type == "object" and .status == "completed" and
+            (.exitCode | type) == "number" and .exitCode == 0 and
+            (.verdict | type) == "object" and
+            (.verdict.verdict == "findings" or .verdict.verdict == "no_findings") and
+            (.verdict.findings | type) == "array")
     ' "$result" >/dev/null 2>&1 ||
         die_order "adversarial review result is not a completed validated result: $result"
 }
