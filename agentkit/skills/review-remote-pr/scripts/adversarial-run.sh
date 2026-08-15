@@ -184,20 +184,27 @@ valid_completed_result() {
     ' <"$path" >/dev/null 2>&1
 }
 
+# A blocked run produced no review, so it carries no verdict. Accepting an
+# object here let a provider return status="blocked" alongside a findings-shaped
+# verdict, which receipt_line then reported as verdict=findings with P1/P2 counts
+# -- a blocked review reading as a completed one, which is exactly the state this
+# runner exists to make impossible.
 valid_blocked_result() {
     local path=$1
     [[ -f $path && ! -L $path && -O $path ]] || return 1
     jq -e 'type == "object" and .status == "blocked" and
       (.blockedReason | type) == "string" and
-      ((.verdict | type) == "null" or (.verdict | type) == "object")' \
+      ((has("verdict") | not) or (.verdict | type) == "null")' \
         <"$path" >/dev/null 2>&1
 }
 
 receipt_line() {
     local path=$RUN_DIR/adversarial.result.json p1 p2 verdict
-    p1=$(jq -r '[.verdict | objects | .findings[]? | select(.priority == "P1")] | length' <"$path")
-    p2=$(jq -r '[.verdict | objects | .findings[]? | select(.priority == "P2")] | length' <"$path")
-    verdict=$(jq -r '(.verdict | objects | .verdict) // "blocked"' <"$path")
+    # Status is authoritative over the verdict object: even if a blocked result
+    # reaches here by some other path, it must never report findings.
+    p1=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P1")] | length end' <"$path")
+    p2=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P2")] | length end' <"$path")
+    verdict=$(jq -r 'if .status == "blocked" then "blocked" else (.verdict | objects | .verdict) // "blocked" end' <"$path")
     printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s\n' \
         "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict"
 }

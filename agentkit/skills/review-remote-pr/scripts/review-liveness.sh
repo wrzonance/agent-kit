@@ -195,6 +195,12 @@ heartbeat_fresh() {
         else empty
         end
     ' "$heartbeat_path" 2>/dev/null) || return 1
+    # A future timestamp yields a negative age, which passes the freshness test
+    # below and would hold the verdict at "still running" until the local clock
+    # caught up -- a liveness check that cannot observe a dead reviewer. The
+    # heartbeat is written on this machine, so ahead-of-now is corruption, not
+    # skew: treat it as not fresh and let the caller surface the stall.
+    ((heartbeat_epoch <= now_epoch)) || return 1
     local age=$((now_epoch - heartbeat_epoch))
     ((age <= 2 * poll_seconds))
 }
