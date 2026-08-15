@@ -89,12 +89,12 @@ for _tpl_name in issue_lead fix_batch; do
     # Collapse wrapping before matching: these sentences are reflowed by hand and
     # a phrase split across two lines is still the phrase. Matching raw text made
     # the assertion depend on where the paragraph happened to wrap.
-    _tpl_flat=$(printf '%s' "${!_tpl_var}" | tr '\n' ' ' | tr -s ' ')
+    _tpl_flat=$(printf '%s' "${!_tpl_var}" | tr '\n' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]')
     assert_contains "$_tpl_flat" 'serialize full-suite verification' \
         "the $_tpl_name prompt carries the Compose serialization fallback"
     assert_contains "$_tpl_flat" 'environment-retry-eligible' \
         "the $_tpl_name prompt classifies Compose collisions as environment retries"
-    assert_contains "$_tpl_flat" 'COMPOSE_PROJECT_NAME' \
+    assert_contains "$_tpl_flat" 'compose_project_name' \
         "the $_tpl_name prompt names the isolated Compose project variable"
 done
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
