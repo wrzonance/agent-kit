@@ -288,6 +288,9 @@ status artifact's `wallClockEpoch` to the current wall clock. A heartbeat is fre
 than `2 * --poll-seconds`. Any transcript growth means **Still running**, regardless of PID state or
 heartbeat freshness.
 
+For detached executors, use `scripts/review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript"`.
+It emits `Completed`, `Still running`, or `Blocked` and exits 0, 1, or 2 for those states.
+
 Every poll then lands in exactly one of three states, and only the third is ever "blocked":
 
 1. **Completed** — when native launcher state is available, the launcher reports a terminal child
