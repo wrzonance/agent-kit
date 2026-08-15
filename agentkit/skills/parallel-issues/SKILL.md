@@ -815,9 +815,11 @@ published **after fixes are pushed** and **before draft-phase-complete handoff**
 durable top-level PR comment — a review or skip without it is never complete. It records provider,
 model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
 `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
-or the `verified-skip rationale` + oracle. Run `post-receipt.sh publish` in a fresh shell — this
-publication block is separate from the pre-launch gate above, and the precheck must never fall
-through to a placeholder receipt:
+or the `verified-skip rationale` + oracle. The order is executable: the successful
+`adversarial-run.sh` result must precede `finding-ledger.sh add`, and publication consumes only
+that validated ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified
+skip. Run `post-receipt.sh publish` in a fresh shell — this publication block is separate from
+the pre-launch gate above, and the precheck must never fall through to a placeholder receipt:
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
@@ -826,24 +828,30 @@ through to a placeholder receipt:
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+# After the runner returns 0, run the ledger command once per outcome:
+"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --verdict fixed --sha SHA
+"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --verdict declined --rationale 'RATIONALE'
 publish_rc=0
 "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --comments "$receipt_comments" \
+    --findings-file "$RUN_DIR/findings.ndjson" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" \
     --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
-    --finding 'SHORT_TITLE|fixed|SHA1,SHA2' \
-    --finding 'OTHER_TITLE|declined|RATIONALE' \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
 case "$publish_rc" in
     0)  : ;; # post-receipt.sh posted and byte-verified the receipt
     11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
+    12) printf '%s\n' 'receipt refused: fixes are dirty or not reachable from origin' >&2; exit 1 ;;
+    13) printf '%s\n' 'receipt refused: finding pipeline is out of order' >&2; exit 1 ;;
     *)  printf '%s\n' 'receipt publication failed (evidence unavailable, bad flags, or gh-comment.sh post/verify failed)' >&2; exit 1 ;;
 esac
+# A different nonzero already caused post-receipt.sh to fetch live comments.
+# Never retry against receipt_comments until the fresh live comments are reviewed.
 ```
 
-Repeat `--finding` once per finding; omit it entirely for a clean review (`none confirmed`), or
-pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
+The ledger owns titles, dispositions, SHAs, and rationales; the script owns every receipt byte.
+Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
 

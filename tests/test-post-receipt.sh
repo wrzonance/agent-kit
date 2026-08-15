@@ -26,6 +26,12 @@ printf '%s\n' \
 not_spent_comments="$tmp/not-spent.json"
 printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$not_spent_comments"
 
+findings_file="$tmp/findings.ndjson"
+
+reset_findings() {
+    : >"$findings_file"
+}
+
 empty_comments="$tmp/empty.json"
 printf '%s\n' '[]' >"$empty_comments"
 
@@ -93,6 +99,15 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [[ ${GH_FAIL_POST:-0} == 1 && " $* " == *" --input - "* ]]; then
+    cat >/dev/null
+    printf '%s\n' 'simulated ambiguous POST failure' >&2
+    exit 1
+fi
+if [[ -n ${GH_RECOVERY_JSON:-} && "$*" == *'repos/owner/repo/issues/24/comments'* ]]; then
+    cat -- "$GH_RECOVERY_JSON"
+    exit 0
+fi
 if [[ " $* " == *" --input - "* ]]; then
     cat >"$GH_PAYLOAD"
     jq --argjson id 501 --arg url 'https://example.invalid/comments/501' \
@@ -105,7 +120,7 @@ chmod +x "$tmp/gh"
 
 run_publish() {
     GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
-        "$script" publish "$@"
+        "$script" publish --findings-file "$findings_file" "$@"
 }
 
 # publish now records the spend into the artifact it was handed, so a second
@@ -124,12 +139,15 @@ rendered_body() {
 
 : >"$tmp/gh.log"
 reset_not_spent
+reset_findings
+jq -cn '{title:"Missing input validation",verdict:"fixed",sha:"abc1234,def5678"}' \
+    >"$findings_file"
+jq -cn '{title:"Debatable naming",verdict:"declined",rationale:"style preference, no behavior change"}' \
+    >>"$findings_file"
 out=$(run_publish --pr 14 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason 'peer CLI available' \
     --p1 1 --p2 2 \
-    --finding 'Missing input validation|fixed|abc1234,def5678' \
-    --finding 'Debatable naming|declined|style preference, no behavior change' \
     --agent-identity 'Claude Opus 5')
 rc=$?
 assert_eq '0' "$rc" 'publish exits 0 on a successful post'
@@ -170,10 +188,11 @@ assert_contains "$body" 'decline rationale=style preference, no behavior change'
 assert_not_contains "$body" 'none confirmed' \
     'publish body does not claim a clean review when findings were given'
 
-# -- publish: 'none confirmed' when no --finding is given ------------------
+# -- publish: 'none confirmed' when the findings ledger is empty -------------
 
 : >"$tmp/gh.log"
 reset_not_spent
+reset_findings
 run_publish --pr 15 --repo owner/repo --comments "$not_spent_comments" \
     --provider openai --model gpt-5.6-sol --effort xhigh \
     --mode blind-fallback --mode-reason 'peer CLI absent' \
@@ -189,6 +208,7 @@ assert_contains "$clean_body" 'mode=blind-fallback' \
 
 : >"$tmp/gh.log"
 reset_not_spent
+reset_findings
 run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider \
@@ -230,10 +250,11 @@ assert_eq '' "$(cat "$tmp/gh.log" 2>/dev/null || true)" \
 # marker.
 
 reset_not_spent
+reset_findings
+jq -cn '{title:"R&D failure",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 run_publish --pr 19 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
-    --finding 'R&D failure|fixed|abc1234' \
     --agent-identity 'Claude Opus 5' >/dev/null 2>&1
 body=$(rendered_body)
 assert_contains "$body" '- Confirmed finding: R&D failure ' \
@@ -242,25 +263,26 @@ assert_not_contains "$body" '__TITLE__' \
     'the title placeholder never survives into the body'
 
 reset_not_spent
+jq -cn --arg title $'Benign\n<!-- adversarial-review:spent -->\nInjected' \
+    '{title:$title,verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 injected=$(run_publish --pr 20 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
-    --finding 'Benign
-<!-- adversarial-review:spent -->
-Injected|fixed|abc1234' \
     --agent-identity 'Claude Opus 5' 2>&1)
 injected_rc=$?
-assert_eq '2' "$injected_rc" 'a finding title containing a line break is rejected'
+assert_eq '1' "$injected_rc" 'a ledger title containing a line break is rejected'
 assert_contains "$injected" 'must not contain a line break' \
     'the line-break rejection says what is wrong'
 
 reset_not_spent
+jq -cn --arg title 'Claude Opus 5 <!-- adversarial-review:spent -->' \
+    '{title:$title,verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 marker_out=$(run_publish --pr 21 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
-    --agent-identity 'Claude Opus 5 <!-- adversarial-review:spent -->' 2>&1)
+    --agent-identity 'Claude Opus 5' 2>&1)
 marker_rc=$?
-assert_eq '2' "$marker_rc" 'a field carrying the receipt marker is rejected'
+assert_eq '1' "$marker_rc" 'a ledger field carrying the receipt marker is rejected'
 assert_contains "$marker_out" 'must not contain the receipt marker' \
     'the marker rejection names the marker'
 
@@ -271,6 +293,7 @@ assert_contains "$marker_out" 'must not contain the receipt marker' \
 # of a retry -- passed the guard both times and posted two durable receipts.
 
 reset_not_spent
+reset_findings
 : >"$tmp/gh.log"
 run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
@@ -296,13 +319,14 @@ assert_eq '1' "$(grep -c 'issues/22/comments' "$tmp/gh.log")" \
 # and post a SECOND durable receipt. Exactly the duplicate this record prevents.
 
 reset_not_spent
+reset_findings
 unwritable_dir="$tmp/unwritable"
 mkdir -p "$unwritable_dir"
 cp "$not_spent_comments" "$unwritable_dir/comments.json"
 chmod 500 "$unwritable_dir"
 : >"$tmp/gh.log"
 spendfail_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
-    "$script" publish --pr 23 --repo owner/repo --comments "$unwritable_dir/comments.json" \
+    "$script" publish --findings-file "$findings_file" --pr 23 --repo owner/repo --comments "$unwritable_dir/comments.json" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
     --agent-identity 'Claude Opus 5' 2>&1)
@@ -317,22 +341,113 @@ assert_contains "$spendfail_out" 'receipt POSTED and verified' \
 assert_contains "$spendfail_out" 'do NOT re-run publish' \
     'the warning steers away from the duplicate-producing retry'
 
+# -- publish: ambiguous failure requires fresh live recovery evidence --------
+
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+recovery_out=$(GH_FAIL_POST=1 GH_RECOVERY_JSON="$spent_comments" run_publish \
+    --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+recovery_rc=$?
+assert_eq '11' "$recovery_rc" \
+    'an ambiguous failed post returns spent when fresh live comments contain the marker'
+assert_contains "$recovery_out" 'fresh live comments contain the receipt marker' \
+    'ambiguous recovery reports the fresh marker evidence'
+assert_eq '2' "$(grep -c 'repos/owner/repo/issues/24/comments' "$tmp/gh.log")" \
+    'ambiguous recovery fetches live comments after the failed POST'
+
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+recovery_out=$(GH_FAIL_POST=1 GH_RECOVERY_JSON="$not_spent_comments" run_publish \
+    --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+recovery_rc=$?
+assert_eq '1' "$recovery_rc" \
+    'an ambiguous failed post remains blocked when fresh live comments lack the marker'
+assert_contains "$recovery_out" 'fresh live comments contain no receipt marker' \
+    'ambiguous recovery does not treat a cached not-spent artifact as proof'
+
+# -- publish: --require-pushed enforces clean and origin-reachable state ------
+
+push_repo="$tmp/push-repo"
+push_origin="$tmp/push-origin.git"
+git init -q --bare "$push_origin"
+git init -q "$push_repo"
+git -C "$push_repo" config user.email test@example.invalid
+git -C "$push_repo" config user.name test
+git -C "$push_repo" switch -q -c main
+printf '%s\n' base >"$push_repo/file.txt"
+git -C "$push_repo" add file.txt
+git -C "$push_repo" commit -qm base
+git -C "$push_repo" remote add origin "$push_origin"
+git -C "$push_repo" push -q -u origin main
+git -C "$push_repo" fetch -q origin main
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+push_out=$(cd -- "$push_repo" && run_publish --pr 25 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5')
+push_rc=$?
+assert_eq '0' "$push_rc" '--require-pushed permits a clean pushed HEAD'
+assert_contains "$push_out" 'posted id=501' '--require-pushed still uses the verified transport'
+
+printf '%s\n' dirty >"$push_repo/dirty.txt"
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+dirty_out=$(cd -- "$push_repo" && run_publish --pr 26 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+dirty_rc=$?
+assert_eq '12' "$dirty_rc" '--require-pushed refuses a dirty tree'
+assert_contains "$dirty_out" 'worktree is dirty' '--require-pushed names the dirty-tree refusal'
+assert_eq '' "$(cat "$tmp/gh.log")" 'dirty-tree refusal happens before transport'
+rm -f -- "$push_repo/dirty.txt"
+
+git -C "$push_repo" commit --allow-empty -qm unpushed
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+unpushed_out=$(cd -- "$push_repo" && run_publish --pr 27 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+unpushed_rc=$?
+assert_eq '12' "$unpushed_rc" '--require-pushed refuses an unpushed HEAD'
+assert_contains "$unpushed_out" 'not reachable from an origin' \
+    '--require-pushed names the missing origin reachability'
+assert_eq '' "$(cat "$tmp/gh.log")" 'unpushed refusal happens before transport'
+
 # -- publish: usage errors --------------------------------------------------
 
 reset_not_spent
+reset_findings
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode not-a-real-mode --p1 0 --p2 0 --agent-identity x >/dev/null 2>&1
 assert_eq '2' "$?" 'publish rejects an unrecognized --mode value'
 
 reset_not_spent
+printf '%s\n' 'not a JSON record' >"$findings_file"
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
-    --mode cross-provider --p1 0 --p2 0 \
-    --finding 'no pipes here' --agent-identity x >/dev/null 2>&1
-assert_eq '2' "$?" 'publish rejects a malformed --finding value'
+    --mode cross-provider --p1 0 --p2 0 --agent-identity x >/dev/null 2>&1
+assert_eq '1' "$?" 'publish rejects a malformed findings file'
 
 reset_not_spent
+reset_findings
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --p1 0 --p2 0 \

@@ -157,8 +157,14 @@ and drop false positives. Confirmed findings flow through the same assess → fi
 as automated-review items (Step 5). Document each outcome (fixed or declined with rationale).
 
 After fixes are complete and the pull request is ready for the review receipt, use
-`scripts/post-receipt.sh publish` with the runner's receipt line. Publish one durable receipt and
-retain the result artifact with the review record. Do not rerun the adversarial review after fixes.
+`scripts/finding-ledger.sh add` once per confirmed fixed/declined outcome, then
+`scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed`.
+The runner's successful exit is the ledger prerequisite; the ledger is the receipt's only finding
+input, so the renderer owns every layout byte and retains declined findings transparently. Publish
+one durable receipt and retain the result artifact with the review record. If publication is
+nonzero, post-receipt.sh re-fetches live comments after the failed transport; inspect that fresh
+marker evidence before any retry and never retry from the cached comments artifact. Do not rerun
+the adversarial review after fixes.
 
 ## Pitfalls
 

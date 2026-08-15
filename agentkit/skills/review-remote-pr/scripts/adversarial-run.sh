@@ -202,6 +202,18 @@ receipt_line() {
         "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict"
 }
 
+initialize_finding_ledger() {
+    local ledger=$RUN_DIR/findings.ndjson
+    [[ ! -L $ledger ]] || die "refusing to use a findings ledger symlink: $ledger"
+    if [[ -e $ledger ]]; then
+        [[ -f $ledger && -O $ledger && $(stat -c %a -- "$ledger" 2>/dev/null) == 600 ]] ||
+            die "findings ledger is not an owned mode-0600 regular file: $ledger"
+        return 0
+    fi
+    : >"$ledger" || die "could not create findings ledger: $ledger"
+    chmod 600 -- "$ledger" || die "could not secure findings ledger: $ledger"
+}
+
 run_provider() {
     local result=$RUN_DIR/adversarial.result.json transcript=$RUN_DIR/$TRANSCRIPT_NAME
     local stdout_path=$RUN_DIR/$PROVIDER.stdout stderr_path=$RUN_DIR/$PROVIDER.stderr rc=0
@@ -250,6 +262,7 @@ main() {
     build_diff
     verify_consent
     run_provider
+    initialize_finding_ledger
 }
 
 main "$@"

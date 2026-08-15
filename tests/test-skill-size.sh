@@ -182,7 +182,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows in tokens alone fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 7823 tokens' 'the token ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 8069 tokens' 'the token ratchet names its ceiling'
 
 root=$tmp/ratchet-lines
 mkdir -p "$root/review-remote-pr"
@@ -192,7 +192,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows past its line ceiling fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 519 lines' 'the line ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 527 lines' 'the line ratchet names its ceiling'
 
 root=$tmp/stale
 make_skill "$root" review-remote-pr <<'EOF'

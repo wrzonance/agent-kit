@@ -41,6 +41,9 @@ assert_receipt_contract() {
     assert_contains "$section" 'fix commit' "$label records fix commit SHAs"
     assert_contains "$section" 'decline rationale' "$label records decline rationale"
     assert_contains "$section" 'verified-skip rationale' "$label records verified skip rationale"
+    assert_contains "$section" 'finding-ledger.sh add' "$label records ledger-first disposition capture"
+    assert_contains "$section" '--findings-file' "$label publishes from the findings ledger"
+    assert_contains "$section" '--require-pushed' "$label enforces pushed fixes at publication"
     assert_contains "$normalized" 'after fixes are pushed' "$label orders receipt after fixes"
     assert_contains "$normalized" 'before draft-phase-complete handoff' "$label orders receipt before handoff"
 
@@ -73,6 +76,8 @@ assert_contains "$review_text" 'do not rerun' \
     'review-remote-pr marker precheck prevents double spend'
 assert_contains "$review_text" 'no-silent-skip' \
     'review-remote-pr receipt contract rejects silent skips'
+assert_contains "$review_text" 'fresh live comments' \
+    'review-remote-pr requires fresh recovery evidence before retry'
 
 assert_contains "$parallel_text" 'post-receipt.sh precheck' \
     'parallel-issues precheck delegates to post-receipt.sh precheck'
@@ -82,6 +87,8 @@ assert_contains "$parallel_text" 'do not rerun' \
     'parallel-issues marker precheck prevents double spend'
 assert_contains "$parallel_text" 'no-silent-skip' \
     'parallel-issues receipt contract rejects silent skips'
+assert_contains "$parallel_text" 'fresh live comments' \
+    'parallel-issues requires fresh recovery evidence before retry'
 
 # -- publish delegates to post-receipt.sh publish -----------------------
 

@@ -397,8 +397,11 @@ exactly one durable top-level PR comment. Required for both a material review an
 trivial-diff skip — a review or skip without it is never complete. It records provider, model,
 effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
 `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
-or the `verified-skip rationale` + oracle. Run `post-receipt.sh publish` (run only after the
-finding-fix push — this is the final Phase A action):
+or the `verified-skip rationale` + oracle. The order is executable: `adversarial-run.sh` must
+return `0` before `finding-ledger.sh add` records any disposition (exit `13` means the review
+result is missing or incomplete), and receipt publication consumes that ledger. Create an empty
+`$RUN_DIR/findings.ndjson` for a clean review or verified skip. Run `post-receipt.sh publish`
+(only after the finding-fix push — this is the final Phase A action):
 
 ```bash
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
@@ -407,20 +410,27 @@ finding-fix push — this is the final Phase A action):
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+# Repeat the ledger command once per confirmed outcome, after the runner returned 0:
+"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --verdict fixed --sha SHA
+"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --verdict declined --rationale 'RATIONALE'
 publish_rc=0
 "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --comments "$receipt_comments" \
+    --findings-file "$RUN_DIR/findings.ndjson" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
-    --finding 'SHORT_TITLE|fixed|SHA1,SHA2' --finding 'OTHER_TITLE|declined|RATIONALE' \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
-# Repeat --finding per finding; omit for a clean review, or pass
-# --skip-rationale S --oracle S for a verified trivial skip.
+# The ledger owns titles, dispositions, SHAs, and rationales; the script owns
+# every receipt byte. Pass --skip-rationale S --oracle S for a verified skip.
 case "$publish_rc" in
     0)  : ;; # posted and byte-verified
     11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
+    12) printf '%s\n' 'receipt refused: fixes are dirty or not reachable from origin' >&2; exit 1 ;;
+    13) printf '%s\n' 'receipt refused: finding pipeline is out of order' >&2; exit 1 ;;
     *)  printf '%s\n' 'receipt publication failed' >&2; exit 1 ;;
 esac
+# Any other nonzero has already triggered a fresh live comment re-fetch inside
+# post-receipt.sh. Do not retry from receipt_comments; inspect the fresh live comments first.
 ```
 
 ## Step 3 (Phase B): Wait for the user to decide the ready transition
