@@ -280,6 +280,32 @@ validate_publish_args() {
     reject_unsafe_field '--oracle' "$ORACLE"
 }
 
+# The receipt asserts that a review happened and how many findings it produced.
+# Neither was checked: an owned, well-formed but EMPTY ledger satisfies the
+# jq `all` below vacuously, and --p1/--p2 were taken on the caller's word. A
+# receipt could therefore be published without adversarial-run.sh ever running.
+# The ledger lives beside the runner's result, so require that result here and
+# derive the counts from the ledger's own severities.
+validate_runner_provenance() {
+    local run_dir result
+    run_dir=$(dirname -- "$FINDINGS_FILE")
+    result=$run_dir/adversarial.result.json
+    [[ -f $result && ! -L $result && -O $result ]] ||
+        evidence_unavailable "a validated adversarial review result is required beside the findings file: $result"
+    jq -s -e '
+        length == 1 and
+        (.[0] |
+            type == "object" and .status == "completed" and
+            (.exitCode | type) == "number" and .exitCode == 0 and
+            (.requestedModel | type) == "string" and (.transcript | type) == "string" and
+            (.verdict | type) == "object" and
+            (.verdict.verdict == "findings" or .verdict.verdict == "no_findings") and
+            (.verdict.findings | type) == "array")
+    ' "$result" >/dev/null 2>&1 ||
+        evidence_unavailable "adversarial review result is not a completed validated result: $result"
+}
+
+
 validate_findings_file() {
     [[ -f $FINDINGS_FILE && ! -L $FINDINGS_FILE && -O $FINDINGS_FILE && -r $FINDINGS_FILE ]] ||
         evidence_unavailable "findings file is not an owned readable regular file: $FINDINGS_FILE"
@@ -287,7 +313,8 @@ validate_findings_file() {
     jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" '
         all(.[];
           type == "object" and
-          ((keys - ["title", "verdict", "sha", "rationale"]) | length == 0) and
+          ((keys - ["title", "severity", "verdict", "sha", "rationale"]) | length == 0) and
+          (.severity == "P1" or .severity == "P2") and
           (.title | type == "string") and
           (.title | length > 0) and
           (.title | test("[\\r\\n]") | not) and
@@ -311,6 +338,19 @@ validate_findings_file() {
     if ((finding_count != total)); then
         printf '%s: finding counts P1=%s P2=%s total=%s but ledger has %s record(s)\n' \
             "$PROGNAME" "$P1" "$P2" "$total" "$finding_count" >&2
+        exit 13
+    fi
+
+    # The total alone does not pin the split: one record satisfies P1=1,P2=0 and
+    # P1=0,P2=1 equally, so the receipt could report either severity for it.
+    local ledger_p1 ledger_p2
+    ledger_p1=$(jq -s '[.[] | select(.severity == "P1")] | length' "$FINDINGS_FILE") ||
+        evidence_unavailable 'could not count P1 findings in the ledger'
+    ledger_p2=$(jq -s '[.[] | select(.severity == "P2")] | length' "$FINDINGS_FILE") ||
+        evidence_unavailable 'could not count P2 findings in the ledger'
+    if [[ $P1 != "$ledger_p1" || $P2 != "$ledger_p2" ]]; then
+        printf '%s: finding counts P1=%s P2=%s but ledger severities are P1=%s P2=%s\n' \
+            "$PROGNAME" "$P1" "$P2" "$ledger_p1" "$ledger_p2" >&2
         exit 13
     fi
 }
@@ -432,6 +472,7 @@ cmd_publish() {
     parse_publish_args "$@"
     validate_publish_args
     validate_findings_file
+    validate_runner_provenance
     ((REQUIRE_PUSHED == 0)) || require_pushed_state
     resolve_gh_comment_script
 

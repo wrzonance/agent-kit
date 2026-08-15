@@ -535,4 +535,34 @@ assert_not_contains "$skill_union_text" 'claude.result.json' \
 assert_not_contains "$skill_union_text" 'codex.result.json' \
     'the skill has no Codex-specific verdict path'
 
+
+
+# These clauses are hand-reflowed prose, so match against a whitespace-collapsed
+# copy: a phrase split across two lines is still the phrase, and an assertion
+# that breaks on rewrapping silently stops protecting anything.
+adversarial_flat=$(printf '%s' "$adversarial_text" | tr '\n' ' ' | tr -s ' ')
+
+# The section headings alone proved only that the contract's shape survived the
+# consolidation, not its meaning. A sentence can invert and keep every heading --
+# "No parseable verdict is blocked" read as the reverse of the fail-closed rule
+# and passed every check above. Pin the clauses that carry the contract.
+assert_contains "$adversarial_flat" 'A missing or unparseable verdict is blocked, never clean' \
+    'the reference states the fail-closed verdict rule unambiguously'
+assert_not_contains "$adversarial_flat" 'No parseable verdict is blocked' \
+    'the reference never states the fail-closed rule in its reversible form'
+assert_contains "$adversarial_flat" 'A provider failure, missing provider, or unparseable verdict is blocked' \
+    'the reference pins the blocked-not-clean rule for provider failures'
+assert_contains "$adversarial_flat" '.verdict.verdict` is the verdict string and `.verdict.findings` is the findings array' \
+    'the reference pins the nested verdict contract'
+assert_contains "$adversarial_flat" 'The maintainer must verify each finding against the current tree' \
+    'the reference pins the maintainer verification gate'
+assert_contains "$adversarial_text" 'does not authorize an edit' \
+    'the reference denies a model finding standing authority to edit'
+assert_contains "$adversarial_flat" 'It owns consent enforcement, diff capture, provider selection, schema validation' \
+    'the reference pins what the one-shot entry point owns, including consent'
+assert_contains "$adversarial_text" 'scripts/review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript" --verdict "$verdict_path"' \
+    'the reference pins the complete liveness command'
+assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, or Blocked' \
+    'the reference pins the three liveness states'
+
 finish

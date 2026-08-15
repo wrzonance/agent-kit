@@ -12,14 +12,15 @@ readonly ORDER_RC=13
 RUN_DIR=${RUN_DIR:-}
 TITLE=''
 VERDICT=''
+SEVERITY=''
 SHA=''
 RATIONALE=''
 DETAIL_KIND=''
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME add --title TITLE --verdict fixed --sha SHA
-       $PROGNAME add --title TITLE --verdict declined --rationale RATIONALE
+Usage: $PROGNAME add --title TITLE --severity P1|P2 --verdict fixed --sha SHA
+       $PROGNAME add --title TITLE --severity P1|P2 --verdict declined --rationale RATIONALE
 
 Appends one validated JSON record to \$RUN_DIR/findings.ndjson. RUN_DIR must
 be the private run directory containing a completed adversarial.result.json.
@@ -74,6 +75,12 @@ parse_add_args() {
                 VERDICT=${1#*=}
                 shift
                 ;;
+            --severity)
+                [[ ${2-} ]] || die_usage '--severity requires a value'
+                SEVERITY=$2; shift 2 ;;
+            --severity=*)
+                [[ -n ${1#*=} ]] || die_usage '--severity requires a value'
+                SEVERITY=${1#*=}; shift ;;
             --sha)
                 require_value "$1" "${2-}"
                 [[ -z $DETAIL_KIND ]] || die_usage 'exactly one of --sha or --rationale is required'
@@ -154,14 +161,29 @@ validate_completed_review() {
     [[ -f $result && ! -L $result && -O $result ]] ||
         die_order "completed adversarial review result is required: $result"
     command -v jq >/dev/null 2>&1 || die_evidence 'jq is not installed'
+    # Mirrors valid_completed_result in adversarial-run.sh, the only producer of
+    # this document. A looser copy here would accept results the runner can never
+    # publish -- notably verdict "findings" with an empty findings array -- while
+    # claiming the file is "a completed validated result".
     jq -s -e '
         length == 1 and
         (.[0] |
             type == "object" and .status == "completed" and
             (.exitCode | type) == "number" and .exitCode == 0 and
+            (.requestedModel | type) == "string" and (.transcript | type) == "string" and
             (.verdict | type) == "object" and
+            ((.verdict | keys) - ["verdict", "findings"] | length) == 0 and
             (.verdict.verdict == "findings" or .verdict.verdict == "no_findings") and
-            (.verdict.findings | type) == "array")
+            (.verdict.findings | type) == "array" and
+            (if .verdict.verdict == "no_findings" then (.verdict.findings | length) == 0
+             else (.verdict.findings | length) > 0 end) and
+            all(.verdict.findings[];
+              (type == "object") and
+              ((keys - ["priority", "location", "failureScenario", "smallestFix"]) | length == 0) and
+              (.priority == "P1" or .priority == "P2") and
+              (.location | type) == "string" and
+              (.failureScenario | type) == "string" and
+              (.smallestFix | type) == "string"))
     ' "$result" >/dev/null 2>&1 ||
         die_order "adversarial review result is not a completed validated result: $result"
 }
@@ -173,16 +195,18 @@ validate_existing_ledger() {
     [[ -f $ledger && -O $ledger && -r $ledger ]] ||
         die_evidence "findings ledger is not an owned regular file: $ledger"
     command -v jq >/dev/null 2>&1 || die_evidence 'jq is not installed'
-    jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" '
+    jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" \
+        --arg sha_re "$SHA_RE" '
         all(.[];
           type == "object" and
-          ((keys - ["title", "verdict", "sha", "rationale"]) | length == 0) and
+          ((keys - ["title", "severity", "verdict", "sha", "rationale"]) | length == 0) and
+          (.severity == "P1" or .severity == "P2") and
           (.title | type == "string") and
           (.title | test("[\\r\\n]") | not) and
           (.title | contains($receipt) | not) and
           (.title | contains($doc) | not) and
           ((.verdict == "fixed" and has("sha") and (has("rationale") | not) and
-              (.sha | type == "string" and test("^[[:xdigit:]]{7,64}(,[[:xdigit:]]{7,64})*$"))) or
+              (.sha | type == "string" and test($sha_re))) or
            (.verdict == "declined" and has("rationale") and (has("sha") | not) and
               (.rationale | type == "string" and length > 0) and
               (.rationale | test("[\\r\\n]") | not) and
@@ -199,6 +223,11 @@ validate_add_args() {
     [[ -n $TITLE ]] || die_usage '--title is required'
     [[ $VERDICT == fixed || $VERDICT == declined ]] ||
         die_usage '--verdict must be fixed or declined'
+    # The receipt reports separate P1 and P2 counts. Without a severity on each
+    # record those counts are unverifiable caller assertions: one finding equally
+    # supports P1=1,P2=0 or P1=0,P2=1.
+    [[ $SEVERITY == P1 || $SEVERITY == P2 ]] ||
+        die_usage '--severity must be P1 or P2'
     [[ $DETAIL_KIND == sha || $DETAIL_KIND == rationale ]] ||
         die_usage 'exactly one of --sha or --rationale is required'
     reject_unsafe_text '--title' "$TITLE"
@@ -221,11 +250,11 @@ validate_add_args() {
 append_record() {
     local ledger=$RUN_DIR/findings.ndjson entry
     if [[ $VERDICT == fixed ]]; then
-        entry=$(jq -cn --arg title "$TITLE" --arg sha "$SHA" \
-            '{title:$title,verdict:"fixed",sha:$sha}')
+        entry=$(jq -cn --arg title "$TITLE" --arg sha "$SHA" --arg severity "$SEVERITY" \
+            '{title:$title,severity:$severity,verdict:"fixed",sha:$sha}')
     else
-        entry=$(jq -cn --arg title "$TITLE" --arg rationale "$RATIONALE" \
-            '{title:$title,verdict:"declined",rationale:$rationale}')
+        entry=$(jq -cn --arg title "$TITLE" --arg rationale "$RATIONALE" --arg severity "$SEVERITY" \
+            '{title:$title,severity:$severity,verdict:"declined",rationale:$rationale}')
     fi
     printf '%s\n' "$entry" >>"$ledger" ||
         die_evidence "could not append to findings ledger: $ledger"

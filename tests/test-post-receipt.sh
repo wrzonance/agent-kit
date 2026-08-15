@@ -32,6 +32,12 @@ reset_findings() {
     : >"$findings_file"
 }
 
+# post-receipt.sh now requires the runner's validated result beside the ledger,
+# and each record's severity must account for the receipt's P1/P2 split.
+printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"findings","findings":[{"priority":"P1","location":"a:1","failureScenario":"x","smallestFix":"y"}]}}' \
+    >"$tmp/adversarial.result.json"
+chmod 600 -- "$tmp/adversarial.result.json"
+
 empty_comments="$tmp/empty.json"
 printf '%s\n' '[]' >"$empty_comments"
 
@@ -140,11 +146,11 @@ rendered_body() {
 : >"$tmp/gh.log"
 reset_not_spent
 reset_findings
-jq -cn '{title:"Missing input validation",verdict:"fixed",sha:"abc1234,def5678"}' \
+jq -cn '{title:"Missing input validation",severity:"P1",verdict:"fixed",sha:"abc1234,def5678"}' \
     >"$findings_file"
-jq -cn '{title:"Debatable naming",verdict:"declined",rationale:"style preference, no behavior change"}' \
+jq -cn '{title:"Debatable naming",severity:"P2",verdict:"declined",rationale:"style preference, no behavior change"}' \
     >>"$findings_file"
-jq -cn '{title:"Unrelated cleanup",verdict:"declined",rationale:"not required for this change"}' \
+jq -cn '{title:"Unrelated cleanup",severity:"P2",verdict:"declined",rationale:"not required for this change"}' \
     >>"$findings_file"
 out=$(run_publish --pr 14 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
@@ -211,7 +217,7 @@ assert_contains "$clean_body" 'mode=blind-fallback' \
 : >"$tmp/gh.log"
 reset_not_spent
 reset_findings
-jq -cn '{title:"Only one confirmed finding",verdict:"fixed",sha:"abc1234"}' \
+jq -cn '{title:"Only one confirmed finding",severity:"P1",verdict:"fixed",sha:"abc1234"}' \
     >"$findings_file"
 mismatch_out=$(run_publish --pr 151 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
@@ -272,7 +278,7 @@ assert_eq '' "$(cat "$tmp/gh.log" 2>/dev/null || true)" \
 
 reset_not_spent
 reset_findings
-jq -cn '{title:"R&D failure",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+jq -cn '{title:"R&D failure",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 run_publish --pr 19 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
@@ -285,7 +291,7 @@ assert_not_contains "$body" '__TITLE__' \
 
 reset_not_spent
 jq -cn --arg title $'Benign\n<!-- adversarial-review:spent -->\nInjected' \
-    '{title:$title,verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+    '{title:$title,severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 injected=$(run_publish --pr 20 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
@@ -297,7 +303,7 @@ assert_contains "$injected" 'must not contain a line break' \
 
 reset_not_spent
 jq -cn --arg title 'Claude Opus 5 <!-- adversarial-review:spent -->' \
-    '{title:$title,verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+    '{title:$title,severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 marker_out=$(run_publish --pr 21 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
@@ -315,7 +321,7 @@ assert_contains "$marker_out" 'must not contain the receipt marker' \
 
 reset_not_spent
 reset_findings
-jq -cn '{title:"Exactly once",verdict:"fixed",sha:"abc1234"}' \
+jq -cn '{title:"Exactly once",severity:"P2",verdict:"fixed",sha:"abc1234"}' \
     >"$findings_file"
 : >"$tmp/gh.log"
 run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
@@ -476,5 +482,38 @@ run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --mode cross-provider --p1 0 --p2 0 \
     --skip-rationale 'only a rationale, no oracle' --agent-identity x >/dev/null 2>&1
 assert_eq '2' "$?" 'publish rejects --skip-rationale without --oracle'
+
+
+
+# --- the receipt must be bound to a real review ----------------------------
+# An owned, schema-valid ledger proved nothing about whether adversarial-run.sh
+# ever ran, and the P1/P2 split was taken on the caller's word. Either gap lets a
+# receipt attest to a review that did not happen, or misreport what it found.
+
+reset_not_spent
+reset_findings
+jq -cn '{title:"No runner ever ran",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+mv -- "$tmp/adversarial.result.json" "$tmp/adversarial.result.json.hidden"
+missing_result=$(run_publish --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+missing_result_rc=$?
+mv -- "$tmp/adversarial.result.json.hidden" "$tmp/adversarial.result.json"
+assert_eq '1' "$missing_result_rc" 'publish refuses without the runner result beside the ledger'
+assert_contains "$missing_result" 'validated adversarial review result is required' \
+    'the refusal names the missing runner provenance'
+
+reset_not_spent
+reset_findings
+jq -cn '{title:"One P2 finding",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+swapped=$(run_publish --pr 25 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 1 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+swapped_rc=$?
+assert_eq '13' "$swapped_rc" 'publish refuses a severity split the ledger does not support'
+assert_contains "$swapped" 'ledger severities are P1=0 P2=1' \
+    'the refusal names the split the ledger actually holds'
 
 finish
