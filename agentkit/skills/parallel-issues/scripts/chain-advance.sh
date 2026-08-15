@@ -129,16 +129,16 @@ fetch_pr() {
 }
 
 check_ancestry() {
-    local head_ref=$1 compare_json behind status
-    compare_json=$("$GH_BIN" api "repos/$REPO/compare/$BASE...$head_ref") ||
-        die "base...head comparison failed for $BASE...$head_ref"
+    local head_sha=$1 compare_json behind status
+    compare_json=$("$GH_BIN" api "repos/$REPO/compare/$BASE...$head_sha") ||
+        die "base...head comparison failed for $BASE...$head_sha"
     behind=$(jq -r '.behind_by // empty' <<<"$compare_json") ||
-        die "base...head comparison was not valid JSON for $BASE...$head_ref"
+        die "base...head comparison was not valid JSON for $BASE...$head_sha"
     [[ $behind =~ ^[0-9]+$ ]] ||
-        die "base...head comparison omitted behind_by for $BASE...$head_ref"
-    ((behind == 0)) || die "base...head is stale: $BASE...$head_ref behind_by=$behind"
+        die "base...head comparison omitted behind_by for $BASE...$head_sha"
+    ((behind == 0)) || die "base...head is stale: $BASE...$head_sha behind_by=$behind"
     status=$(jq -r '.status // empty' <<<"$compare_json") ||
-        die "base...head comparison could not report status for $BASE...$head_ref"
+        die "base...head comparison could not report status for $BASE...$head_sha"
     [[ -z $status || $status == ahead || $status == identical ]] ||
         die "base...head is not an ancestor-safe comparison: status=$status"
 }
@@ -169,6 +169,7 @@ check_ci() {
     ) || die 'could not parse statusCheckRollup; CI evidence unavailable'
     [[ $total =~ ^[0-9]+$ && $pass =~ ^[0-9]+$ && $pending =~ ^[0-9]+$ &&
         $failing =~ ^[0-9]+$ ]] || die 'statusCheckRollup counts were malformed; CI evidence unavailable'
+    ((total > 0)) || die 'statusCheckRollup is empty; CI evidence unavailable'
     ((pending == 0 && failing == 0)) ||
         die "CI is stale or not green: total=$total pass=$pass pending=$pending failing=$failing"
     printf '%s\t%s\n' "$total" "$pass"
@@ -216,7 +217,7 @@ retarget() {
         die 'headRefOid was unreadable after retarget'
     [[ -n $head_ref && $head_sha =~ $SHA_RE ]] ||
         die 'head ref/SHA evidence was missing after retarget'
-    check_ancestry "$head_ref"
+    check_ancestry "$head_sha"
     ci_counts=$(check_ci "$pr_json")
     IFS=$'\t' read -r total pass <<<"$ci_counts"
     check_approval "$pr_json" "$head_sha"

@@ -44,7 +44,7 @@ case " $* " in
 {"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}],"closingIssuesReferences":[{"number":137}]}
 JSON
         ;;
-    *"compare/main...feat/child"*) printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}' ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -57,8 +57,53 @@ assert_contains "$output" 'closing-issues=1' 'retarget reports linkage evidence'
 log=$(<"$tmp/gh.log")
 assert_contains "$log" 'pr edit 7 --repo owner/repo --base main' 'retarget edits the requested base'
 assert_contains "$log" 'pr view 7 --repo owner/repo' 'retarget re-reads PR metadata'
-assert_contains "$log" 'repos/owner/repo/compare/main...feat/child' \
+assert_contains "$log" 'repos/owner/repo/compare/main...1111111111111111111111111111111111111111' \
     'retarget checks base-to-head ancestry'
+
+cat >"$tmp/gh-sha" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) exit 0 ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"repos/owner/repo/compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}'
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-sha"
+set +e
+sha_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-sha" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+sha_rc=$?
+set -e
+assert_eq '0' "$sha_rc" 'retarget compares ancestry against the immutable head SHA'
+assert_contains "$sha_output" 'ancestry=verified' 'SHA ancestry proof completes'
+
+cat >"$tmp/gh-empty" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) exit 0 ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main..."*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-empty"
+set +e
+empty_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-empty" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+empty_rc=$?
+set -e
+assert_eq '1' "$empty_rc" 'retarget fails when no CI checks are reported'
+assert_contains "$empty_output" 'statusCheckRollup is empty' \
+    'empty CI failure names the missing evidence'
 
 cat >"$tmp/gh-stale" <<'EOF'
 #!/usr/bin/env bash
@@ -88,7 +133,7 @@ case " $* " in
     *" pr view "*)
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"IN_PROGRESS"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
-    *"compare/main...feat/child"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -109,7 +154,7 @@ case " $* " in
     *" pr view "*)
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
-    *"compare/main...feat/child"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -130,7 +175,7 @@ case " $* " in
     *" pr view "*)
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}],"closingIssuesReferences":[]}'
         ;;
-    *"compare/main...feat/child"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *) exit 23 ;;
 esac
 EOF
