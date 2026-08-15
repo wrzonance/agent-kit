@@ -593,7 +593,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         continue
     fi
 
-    if ! validate "$key" "$value"; then
+    if [[ ! $key =~ ^AGENT_CMD_ ]] && ! validate "$key" "$value"; then
         path_validation_diagnostic "$key" "$value"
         # An empty value is the one rejection that looks like a deliberate
         # statement rather than a mistake -- "this repository has no priority
