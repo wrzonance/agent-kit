@@ -162,7 +162,11 @@ optional cleanup. Record the conflict pairs and their overlap globs in
 
 After selection, never silently revise a conflict edge, predecessor, or
 successor. Append a `conflictMap.revisions` object with a non-empty `reason`
-for every post-selection change, including a successor swap. If a handback
+for every post-selection change, including a successor swap. A revision that
+authorizes a `writeSetDisposition` must also carry `issues` naming the affected
+issue numbers and `paths` covering that disposition's paths: a bare list of
+revisions proves only that *some* revision exists, so without that binding a
+revision recorded for another issue would authorize this one's operand. If a handback
 names an operand outside its pinned prediction, the entry must carry
 `writeSetDisposition` with a `kind` of exactly `chain-conversion`, `merge-down`,
 or `prediction-expansion`, a non-empty `reason`, and `paths` covering every

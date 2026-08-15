@@ -269,10 +269,37 @@ def read_dispatch_plan(path, issue):
         if not isinstance(revision, dict) or not isinstance(revision.get("reason"), str) \
                 or not revision["reason"].strip():
             unavailable("every conflict-map revision must record a reason")
-    if selected[1] is not None and not revisions:
-        unavailable(
-            "an out-of-prediction disposition requires a conflict-map revision"
-        )
+        revision_issues = revision.get("issues")
+        if revision_issues is not None:
+            if not isinstance(revision_issues, list) or not revision_issues or \
+                    any(not isinstance(value, int) or isinstance(value, bool) or value < 1
+                        for value in revision_issues):
+                unavailable("a conflict-map revision's issues must be positive issue numbers")
+        revision_paths = revision.get("paths")
+        if revision_paths is not None:
+            if not isinstance(revision_paths, list) or not revision_paths:
+                unavailable("a conflict-map revision's paths must be a non-empty array")
+            for number, pattern in enumerate(revision_paths):
+                validate_plan_pattern(pattern, f"conflictMap.revisions.paths[{number}]")
+    if selected[1] is not None:
+        if not revisions:
+            unavailable(
+                "an out-of-prediction disposition requires a conflict-map revision"
+            )
+        # A non-empty list proves only that SOME revision exists. Without binding
+        # it to this issue and these paths, a revision recorded for another issue
+        # -- or for an earlier, unrelated change -- authorizes this disposition,
+        # and the operand ships with no conflict-map change of its own.
+        disposition_paths = set(selected[1]["paths"])
+        if not any(
+            issue in (revision.get("issues") or [])
+            and disposition_paths <= set(revision.get("paths") or [])
+            for revision in revisions
+        ):
+            unavailable(
+                f"an out-of-prediction disposition requires a conflict-map revision naming "
+                f"issue #{issue} and covering its disposition paths"
+            )
     return selected
 
 

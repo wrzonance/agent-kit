@@ -151,7 +151,7 @@ for disposition in chain-conversion merge-down prediction-expansion; do
   }],
   "conflictMap": {
     "pairs": [],
-    "revisions": [{"phase": "post-selection", "reason": "record the late overlap response"}]
+    "revisions": [{"phase": "post-selection", "issues": [167], "paths": ["src/late-overlap.txt"], "reason": "record the late overlap response"}]
   }
 }
 EOF
@@ -162,6 +162,43 @@ EOF
     assert_eq '0' "$disposition_rc" "$disposition disposition accepts its scoped operand"
     assert_not_contains "$(tr '\0' '\n' <"$disposition_output")" 'writeSetDisposition' \
         "$disposition metadata is not passed to the commit helper"
+done
+
+# --- a revision must be bound to the disposition it authorizes -------------
+# A non-empty revisions list proves only that SOME revision exists. Each fixture
+# below carries a well-formed revision that has nothing to do with the operand
+# being published: one recorded for a different issue, one covering different
+# paths. Either previously satisfied the gate, letting a late-overlap operand
+# ship with no conflict-map change of its own.
+for unrelated in wrong-issue wrong-paths; do
+    case $unrelated in
+        wrong-issue) rev='{"phase": "post-selection", "issues": [164], "paths": ["src/late-overlap.txt"], "reason": "another issue entirely"}' ;;
+        wrong-paths) rev='{"phase": "post-selection", "issues": [167], "paths": ["src/somewhere-else.txt"], "reason": "a different operand"}' ;;
+    esac
+    cat >"$plan" <<EOF
+{
+  "schemaVersion": 1,
+  "entries": [{
+    "issue": 167,
+    "predictedWriteSet": ["src/tracked.txt", "src/untracked.txt"],
+    "writeSetDisposition": {
+      "kind": "merge-down",
+      "reason": "late-discovered overlap requires the recorded response",
+      "paths": ["src/late-overlap.txt"]
+    }
+  }],
+  "conflictMap": {
+    "pairs": [],
+    "revisions": [$rev]
+  }
+}
+EOF
+    unrelated_rc=0
+    validate "$repo" "$late_handback" >"$tmp/$unrelated.out" 2>"$tmp/$unrelated.err" || unrelated_rc=$?
+    assert_eq '2' "$unrelated_rc" \
+        "a $unrelated revision does not authorize this disposition"
+    assert_contains "$(cat "$tmp/$unrelated.out" "$tmp/$unrelated.err")" 'covering its disposition paths' \
+        "the $unrelated refusal names the missing binding"
 done
 
 # A disposition without a conflict-map revision is also unavailable: recording
@@ -308,5 +345,7 @@ validate "$repo" "$valid_handback" >"$tmp/blank-model.out" 2>"$tmp/blank-model.e
 assert_eq '2' "$blank_model_rc" 'blank worker model reports unavailable evidence'
 assert_not_contains "$(cat -- "$tmp/blank-model.err")" 'Traceback' \
     'blank worker model has no Python traceback'
+
+
 
 finish
