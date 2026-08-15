@@ -61,7 +61,7 @@ validate_section() {
     [[ -n $path ]] || die "$label is required"
     [[ -f $path && ! -L $path && -r $path && -O $path ]] ||
         die "$label must be an owned readable regular file: $path"
-    LC_ALL=C grep -qE '[^[:space:]]' "$path" ||
+    LC_ALL=C grep -qE '[^[:space:]]' -- "$path" ||
         die "$label is empty or whitespace-only: $path"
 }
 
