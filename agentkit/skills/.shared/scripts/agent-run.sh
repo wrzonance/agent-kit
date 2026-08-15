@@ -484,18 +484,24 @@ compose_static_value() {
 }
 
 compose_argv() {
-    local token base previous=''
+    local token base engine_seen=0
     for token in "${cmd[@]}"; do
         base=${token##*/}
         case $base in
             docker-compose | podman-compose)
                 return 0
                 ;;
+            docker | podman)
+                # Remember the engine rather than only the previous token: global
+                # options may sit between it and its subcommand, and
+                # `docker --context ci compose` still honours --project-name.
+                # Matching on the immediate predecessor missed exactly those.
+                engine_seen=1
+                ;;
             compose)
-                [[ $previous == docker || $previous == podman ]] && return 0
+                ((engine_seen)) && return 0
                 ;;
         esac
-        previous=$base
     done
     return 1
 }

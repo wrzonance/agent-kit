@@ -36,7 +36,12 @@ make_emit_repo() {
 }
 
 latest_log() {
-    find "$1/.agent/logs" -type f -name '*-test*.log' -print | sort | tail -n 1
+    # Not a lexical sort: two runs inside one second produce `<stamp>-test.log`
+    # and `<stamp>-test.<pid>.log`, and `l` sorts after any digit, so `sort |
+    # tail -1` returns the FIRST file and the repeat-invocation assertion below
+    # silently re-reads the original log instead of the second run's.
+    find "$1/.agent/logs" -type f -name '*-test*.log' -printf '%T@\t%p\n' |
+        sort -n | tail -n 1 | cut -f2-
 }
 
 # --- deterministic per-worktree identity -----------------------------------

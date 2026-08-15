@@ -70,6 +70,33 @@ draft_loop_prompt=$(awk '
     printf 'could not extract the draft-loop prompt block from %s\n' "$worker_prompts" >&2
     exit 1
 }
+
+# The fix-batch worker runs full verification through the same wrapper as an
+# issue lead, so the Compose isolation rules must reach BOTH templates. Pinning
+# them only on the whole-file text would pass while the fix-batch prompt carried
+# none of them.
+fix_batch_prompt=$(awk '
+    /^## Fix-batch worker prompt$/ { capture=1; next }
+    capture && /^## Exit Report$/ { exit }
+    capture { print }
+' "$worker_prompts")
+[[ -n $fix_batch_prompt ]] || {
+    printf 'could not extract the fix-batch prompt block from %s\n' "$worker_prompts" >&2
+    exit 1
+}
+for _tpl_name in issue_lead fix_batch; do
+    _tpl_var="${_tpl_name}_prompt"
+    # Collapse wrapping before matching: these sentences are reflowed by hand and
+    # a phrase split across two lines is still the phrase. Matching raw text made
+    # the assertion depend on where the paragraph happened to wrap.
+    _tpl_flat=$(printf '%s' "${!_tpl_var}" | tr '\n' ' ' | tr -s ' ')
+    assert_contains "$_tpl_flat" 'serialize full-suite verification' \
+        "the $_tpl_name prompt carries the Compose serialization fallback"
+    assert_contains "$_tpl_flat" 'environment-retry-eligible' \
+        "the $_tpl_name prompt classifies Compose collisions as environment retries"
+    assert_contains "$_tpl_flat" 'COMPOSE_PROJECT_NAME' \
+        "the $_tpl_name prompt names the isolated Compose project variable"
+done
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
 assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
     'chain ordering sources are exactly the two mechanical ones'
