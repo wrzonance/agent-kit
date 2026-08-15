@@ -146,8 +146,8 @@ The scripts enforce explicit safety ceilings with --max-duration-seconds and --m
 ## Read the verdict
 
 Read adversarial.result.json only after the runner has returned. The canonical verdict is nested:
-`.verdict.verdict` is the verdict string and `.verdict.findings` is the findings array. No
-parseable verdict is blocked, never clean; an exit status alone is not a clean result.
+`.verdict.verdict` is the verdict string and `.verdict.findings` is the findings array. A missing
+or unparseable verdict is blocked, never clean; an exit status alone is not a clean result.
 
 ## Evaluate — then route into Step 5
 
