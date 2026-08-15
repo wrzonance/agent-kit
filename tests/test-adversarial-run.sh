@@ -52,6 +52,10 @@ if [[ ${1:-} == --help ]]; then
     printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
     exit 0
 fi
+# Records that the provider CLI was actually launched. A consent gate that
+# blocks must leave no marker: absence of a result file alone would still pass
+# if a regression launched the provider and simply failed to publish.
+[[ -z ${FAKE_CLAUDE_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CLAUDE_CALLED"
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5","tools":["StructuredOutput"],"mcp_servers":[]}'
 if [[ ${FAKE_INVALID:-} == 1 ]]; then
     printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[],"unexpected":true},"modelUsage":{"claude-opus-5":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
@@ -97,12 +101,15 @@ chmod 700 "$missing"
 printf '%s\n' 'stale result' >"$missing/adversarial.result.json"
 missing_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/missing.called" \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$missing") \
     >"$tmp/missing.out" 2>"$tmp/missing.err" || missing_rc=$?
 assert_eq 1 "$missing_rc" 'missing consent blocks before provider launch'
 assert_contains "$(cat -- "$tmp/missing.err")" 'consent' 'missing consent is named'
 assert_eq no "$( [[ -e $missing/adversarial.result.json ]] && printf yes || printf no )" \
     'missing consent does not publish a verdict'
+assert_eq no "$( [[ -e $tmp/missing.called ]] && printf yes || printf no )" \
+    'missing consent never launches the provider CLI at all'
 
 mismatch_run="$tmp/mismatch-run"
 mkdir -- "$mismatch_run" "$mismatch_run/state"
@@ -195,5 +202,50 @@ assert_contains "$(cat -- "$tmp/codex.out")" 'provider=openai' 'fallback receipt
 assert_contains "$(cat -- "$tmp/codex.out")" 'mode=blind-fallback' 'fallback receipt line names blind mode'
 assert_contains "$(cat -- "$tmp/codex.out")" 'P1=0' 'fallback receipt line counts P1 findings'
 assert_contains "$(cat -- "$tmp/codex.out")" 'P2=0' 'fallback receipt line counts P2 findings'
+
+
+
+# --- a blocked result must never carry a verdict object --------------------
+# status="blocked" alongside a findings-shaped verdict previously validated, and
+# receipt_line read the verdict object rather than the status -- so a review that
+# never happened reported verdict=findings with P1/P2 counts. A blocked run
+# produced no review; it has no verdict to report.
+verdict_root="$tmp/verdict-plugin"
+verdict_script_dir="$verdict_root/skills/review-remote-pr/scripts"
+mkdir -p -- "$verdict_script_dir" "$verdict_root/skills/.shared/scripts/lib"
+cp -- "$script" "$verdict_script_dir/adversarial-run.sh"
+cp -- "$consent" "$verdict_script_dir/consent-record.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
+    "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
+cat >"$verdict_script_dir/claude-adversarial-review.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=''
+while (($#)); do
+    case $1 in
+        --output) output=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf '%s\n' '{"status":"blocked","blockedReason":"provider refused","verdict":{"verdict":"findings","findings":[{"priority":"P1","location":"a.sh:1","failureScenario":"x","smallestFix":"y"}]}}' >"$output"
+exit 3
+EOF
+chmod +x "$verdict_script_dir/adversarial-run.sh" "$verdict_script_dir/consent-record.sh" \
+    "$verdict_script_dir/claude-adversarial-review.sh"
+
+verdict_run="$tmp/verdict-run"
+grant "$verdict_run" anthropic
+verdict_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" \
+    bash "$verdict_script_dir/adversarial-run.sh" --pr 42 --repo acme/widget \
+        --run-dir "$verdict_run") \
+    >"$tmp/verdict.out" 2>"$tmp/verdict.err" || verdict_rc=$?
+assert_eq 1 "$verdict_rc" 'a blocked result carrying a verdict object fails closed'
+assert_contains "$(cat -- "$tmp/verdict.out")" 'verdict=blocked' \
+    'a blocked result never reports the verdict it carried'
+assert_contains "$(cat -- "$tmp/verdict.out")" 'P1=0' \
+    'a blocked result reports no P1 findings'
+assert_not_contains "$(cat -- "$tmp/verdict.out")" 'verdict=findings' \
+    'a blocked review is never reported as a completed one'
 
 finish
