@@ -19,6 +19,12 @@ run_ledger() {
     RUN_DIR="$run_dir" "$script" "$@"
 }
 
+run_ledger_at() {
+    local dir=$1
+    shift
+    RUN_DIR="$dir" "$script" "$@"
+}
+
 # A disposition cannot be recorded until the one-shot adversarial runner has
 # published a validated completed result. This pins consent -> runner -> ledger
 # ordering at an executable boundary rather than in prose.
@@ -35,6 +41,29 @@ jq -cn '{status:"completed", exitCode:0, requestedModel:"review-model",
     transcript:"review.ndjson", verdict:{verdict:"findings", findings:[]}}' \
     >"$run_dir/adversarial.result.json"
 chmod 600 -- "$run_dir/adversarial.result.json"
+
+setgid_run="$tmp/setgid-run"
+mkdir -- "$setgid_run"
+chmod 2700 -- "$setgid_run"
+cp -- "$run_dir/adversarial.result.json" "$setgid_run/adversarial.result.json"
+chmod 600 -- "$setgid_run/adversarial.result.json"
+assert_rc 0 'owner-private setgid directories remain valid run directories' -- \
+    run_ledger_at "$setgid_run" add --title 'Setgid mode' --verdict fixed --sha abc1234
+
+multi_result_run="$tmp/multi-result-run"
+mkdir -- "$multi_result_run"
+chmod 700 -- "$multi_result_run"
+printf '%s\n' '{"status":"running"}' >"$multi_result_run/adversarial.result.json"
+jq -cn '{status:"completed", exitCode:0, verdict:{verdict:"findings", findings:[]}}' \
+    >>"$multi_result_run/adversarial.result.json"
+chmod 600 -- "$multi_result_run/adversarial.result.json"
+multi_result_rc=0
+run_ledger_at "$multi_result_run" add --title 'Multiple results' --verdict fixed \
+    --sha abc1234 >/dev/null 2>"$tmp/multi-result.err" || multi_result_rc=$?
+assert_eq '13' "$multi_result_rc" \
+    'multiple result documents are rejected before recording a disposition'
+assert_eq 'no' "$( [[ -e $multi_result_run/findings.ndjson ]] && printf yes || printf no )" \
+    'multiple result rejection does not create a findings ledger'
 
 assert_rc 0 'a fixed finding is appended' -- run_ledger add \
     --title 'R&D failure' --verdict fixed --sha abc1234
