@@ -82,4 +82,28 @@ assert_rc 1 'composer rejects an empty agent identity' -- bash "$compose" \
     --decisions-file "$decisions" --testing-file "$testing" \
     --agent '' --output "$output"
 
+
+
+# --- a section file named like an option is a file, not a flag -------------
+# The validator hands the path straight to grep. Under GNU grep an unguarded
+# `--help` operand is consumed as an option: grep exits 0 with usage text, so a
+# whitespace-only Testing section passes validation and emits no checkbox. The
+# argument itself must start with `--` to reproduce it, so this runs from the
+# directory holding the file and passes a relative path.
+optdir=$(mktemp -d "$tmp/optlike.XXXXXX")
+printf '   \n' >"$optdir/--help"
+cp -- "$why" "$optdir/why.md"
+cp -- "$what" "$optdir/what.md"
+cp -- "$decisions" "$optdir/decisions.md"
+set +e
+optlike_output=$(cd -- "$optdir" && bash "$compose" \
+    --issue 137 --why-file why.md --what-file what.md \
+    --decisions-file decisions.md --testing-file '--help' \
+    --agent 'Codex gpt-5.6-luna' --output out.md 2>&1)
+optlike_rc=$?
+set -e
+assert_eq '1' "$optlike_rc" 'a whitespace-only section named --help is rejected, not parsed as an option'
+assert_not_contains "$optlike_output" 'Usage: grep' \
+    'grep usage text never reaches the output'
+
 finish

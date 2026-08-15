@@ -713,7 +713,8 @@ cat -- "$prompt_file"
 
 ### Collect (per-completion — never wait for the slowest issue)
 
-Root parks that workstream only; continues every other workstream. See [input-diff digest](references/trust-and-fencing.md).
+On a `--yolo` changed-input refusal, root parks that workstream only;
+continues every other workstream. See [input-diff digest](references/trust-and-fencing.md).
 
 Act on each lead result as soon as it arrives:
 

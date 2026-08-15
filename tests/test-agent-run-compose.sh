@@ -36,7 +36,12 @@ make_emit_repo() {
 }
 
 latest_log() {
-    find "$1/.agent/logs" -type f -name '*-test*.log' -print | sort | tail -n 1
+    # Not a lexical sort: two runs inside one second produce `<stamp>-test.log`
+    # and `<stamp>-test.<pid>.log`, and `l` sorts after any digit, so `sort |
+    # tail -1` returns the FIRST file and the repeat-invocation assertion below
+    # silently re-reads the original log instead of the second run's.
+    find "$1/.agent/logs" -type f -name '*-test*.log' -printf '%T@\t%p\n' |
+        sort -n | tail -n 1 | cut -f2-
 }
 
 # --- deterministic per-worktree identity -----------------------------------
@@ -84,11 +89,61 @@ printf '#!/bin/sh\nprintf "%%s\\n" "${COMPOSE_PROJECT_NAME-}"\n' > "$repo/tools/
 chmod +x "$repo/tools/docker"
 printf 'AGENT_CMD_TEST=tools/docker compose --project-name fixed-cli-project\n' \
     > "$repo/.agent/config.env"
+set +e
 cli_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+cli_rc=$?
+set -e
 assert_contains "$cli_out" 'hardcodes a Compose project name' \
     'a declared CLI project name is reported'
 assert_contains "$cli_out" 'fixed-cli-project' \
     'the CLI hardcode value is visible for remediation'
+# A declared -p/--project-name outranks the exported name, so isolation cannot be
+# established at all. Warning and running anyway is the collision this gate
+# exists to prevent, so the run must fail closed instead of proceeding.
+assert_eq '5' "$cli_rc" 'a declared CLI project name fails closed instead of running unisolated'
+assert_contains "$cli_out" 'ISOLATION-IMPOSSIBLE' \
+    'the refusal is greppable by a dispatcher'
+assert_contains "$cli_out" 'serialize full-suite verification' \
+    'the refusal names serialization as the remedy'
+assert_not_contains "$cli_out" 'PASS:' \
+    'the declared command never runs when isolation is impossible'
+
+# The dispatcher asserts it has serialized; the same command then proceeds.
+set +e
+cli_serialized_out=$(cd "$repo" && AGENT_COMPOSE_SERIALIZED=1 "$run_sh" --cmd test 2>&1)
+cli_serialized_rc=$?
+set -e
+assert_eq '0' "$cli_serialized_rc" \
+    'AGENT_COMPOSE_SERIALIZED=1 lets the serialized run proceed'
+assert_contains "$cli_serialized_out" 'isolation-impossible accepted' \
+    'the serialized run records the assertion it proceeded under'
+
+# --- the engine subcommand behind global options ---------------------------
+# `docker --context ci compose ...` is still a Compose invocation, but matching
+# only the token immediately before `compose` saw `ci` and missed it entirely:
+# no hardcode diagnostic and no fallback, while --project-name still took effect.
+# One case per engine, since each spells its global option differently.
+for engine_case in 'docker:--context' 'podman:--connection'; do
+    engine=${engine_case%%:*}
+    global_opt=${engine_case##*:}
+    repo=$(make_repo)
+    printf '#!/bin/sh\nprintf "%%s\\n" "${COMPOSE_PROJECT_NAME-}"\n' > "$repo/tools/$engine"
+    chmod +x "$repo/tools/$engine"
+    printf 'AGENT_CMD_TEST=tools/%s %s ci compose --project-name fixed-%s-global\n' \
+        "$engine" "$global_opt" "$engine" > "$repo/.agent/config.env"
+    set +e
+    global_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+    global_rc=$?
+    set -e
+    assert_contains "$global_out" 'hardcodes a Compose project name' \
+        "a $engine global option before compose still reports the hardcode"
+    assert_contains "$global_out" "fixed-$engine-global" \
+        "the $engine global-option hardcode value is visible for remediation"
+    assert_eq '5' "$global_rc" \
+        "a $engine global option before compose still fails closed"
+    assert_contains "$global_out" 'ISOLATION-IMPOSSIBLE' \
+        "the $engine global-option refusal is greppable by a dispatcher"
+done
 
 repo=$(make_repo)
 make_emit_repo "$repo"

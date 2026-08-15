@@ -71,6 +71,13 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --             End of options; everything after it is the command.
   -h, --help     Show this help and exit 0.
 
+Compose isolation: a deterministic per-worktree COMPOSE_PROJECT_NAME is exported
+for declared commands, overriding a repository .env value or a compose-file
+top-level name:. A literal -p/--project-name in the declaration outranks that
+export, so isolation cannot be established and the run exits 5 without executing.
+Serialize full-suite verification and set AGENT_COMPOSE_SERIALIZED=1 to assert no
+concurrent full-suite run, or drop the flag from the declaration.
+
 Environment:
   AGENT_CACHE_ROOT    Force cache dirs under this root (otherwise a fallback root
                       is used only when the normal cache home is unusable).
@@ -484,18 +491,24 @@ compose_static_value() {
 }
 
 compose_argv() {
-    local token base previous=''
+    local token base engine_seen=0
     for token in "${cmd[@]}"; do
         base=${token##*/}
         case $base in
             docker-compose | podman-compose)
                 return 0
                 ;;
+            docker | podman)
+                # Remember the engine rather than only the previous token: global
+                # options may sit between it and its subcommand, and
+                # `docker --context ci compose` still honours --project-name.
+                # Matching on the immediate predecessor missed exactly those.
+                engine_seen=1
+                ;;
             compose)
-                [[ $previous == docker || $previous == podman ]] && return 0
+                ((engine_seen)) && return 0
                 ;;
         esac
-        previous=$base
     done
     return 1
 }
@@ -557,8 +570,21 @@ compose_project_hardcodes() {
     fi
 }
 
+# Two cases, because Compose's own precedence splits them:
+#
+#   COMPOSE_PROJECT_NAME (exported here) outranks a repository `.env` value and a
+#   compose-file top-level `name:`. Overriding those IS the isolation, and it is
+#   safe for an ephemeral verification run, so they are reported and overridden.
+#
+#   A literal -p/--project-name in the declared command outranks the export. That
+#   one cannot be overridden from here, so isolation genuinely cannot be
+#   established and every worktree would share one project. Warning and running
+#   anyway walks straight into the collision this gate exists to prevent, so that
+#   path fails closed and the caller serializes instead. Set
+#   AGENT_COMPOSE_SERIALIZED=1 to assert no concurrent full-suite run is in
+#   flight; the command then proceeds under that assertion.
 configure_compose_project() {
-    local finding project
+    local finding project argv_findings=()
     [[ -n $cmd_name ]] || return 0
     project=$(compose_project_name_for_worktree) ||
         die "cannot derive a deterministic Compose project name for $git_top"
@@ -568,7 +594,19 @@ configure_compose_project() {
         add_note "repository hardcodes a Compose project name: $finding"
         printf 'agent-run: WARNING: repository hardcodes a Compose project name: %s\n' \
             "$finding" >&2
+        [[ $finding == argv\[* ]] && argv_findings+=("$finding")
     done < <(compose_project_hardcodes | sort -u)
+
+    ((${#argv_findings[@]})) || return 0
+    if [[ ${AGENT_COMPOSE_SERIALIZED:-} == 1 ]]; then
+        add_note "isolation-impossible accepted under AGENT_COMPOSE_SERIALIZED=1: ${argv_findings[*]}"
+        printf 'agent-run: note: isolation-impossible accepted under AGENT_COMPOSE_SERIALIZED=1\n' >&2
+        return 0
+    fi
+    printf 'agent-run: ISOLATION-IMPOSSIBLE: %s\n' "${argv_findings[*]}" >&2
+    printf 'agent-run: a declared -p/--project-name outranks COMPOSE_PROJECT_NAME, so this run cannot be isolated from sibling worktrees.\n' >&2
+    printf 'agent-run: serialize full-suite verification -- let one unchanged full-suite command finish before starting another -- then re-run with AGENT_COMPOSE_SERIALIZED=1, or remove the flag from the declaration.\n' >&2
+    exit 5
 }
 
 # A literal executable path is an ad-hoc command, not a repository declaration.
@@ -1208,8 +1246,13 @@ yolo_refusal_remediation() {
         printf '    %s\n' "$input" >&2
     done <<< "$changed"
     printf -v runner '%q' "$self_dir/agent-run.sh"
-    printf '  approve-with-record: %s --approve --cmd %q (review the digest from an interactive terminal).\n' \
-        "$runner" "$cmd_name" >&2
+    # Parallel workers run with --dir <worktree>. Without it the root re-runs this
+    # from its own checkout, where the directory defaults to $PWD and the approval
+    # is recorded against a different repository state than the one refused. This
+    # is run_dir, the value --dir actually sets -- not work_dir, which AGENT_RUNDIR_*
+    # moves to a component subdirectory.
+    printf '  approve-with-record: %s --dir %q --approve --cmd %q (review the digest from an interactive terminal).\n' \
+        "$runner" "$run_dir" "$cmd_name" >&2
     printf '  park-and-hand-off: preserve this workstream and hand off the digest plus that exact command; continue other workstreams.\n' >&2
     printf '  no approval record is created; approval is not implied by --yolo. Do not strip the input or retry with a literal command.\n' >&2
 }

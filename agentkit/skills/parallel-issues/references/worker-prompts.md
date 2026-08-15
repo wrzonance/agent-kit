@@ -99,8 +99,11 @@ PYTHONPATH, exports a deterministic per-worktree `COMPOSE_PROJECT_NAME`, delegat
 runner when one is declared, and suppresses output: success is a single PASS line; failure
 prints the matched error lines plus the full log path under <worktree>/.agent/logs/. Its exit
 status IS the wrapped command's exit status. It reports repository Compose files, `.env` values,
-or command argv that hardcode a project name; if that hardcode defeats isolation, serialize
-full-suite verification across worktrees. A Compose dependency-start collision is an
+or command argv that hardcode a project name. A repository `.env` value or compose-file `name:` is
+reported and deliberately overridden -- that override is the isolation. A literal
+`-p`/`--project-name` in the declaration outranks the export, so isolation cannot be established:
+agent-run.sh exits 5 without running. Serialize full-suite verification across worktrees, then
+re-run with `AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
 `environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
 command after the conflicting dependency has drained or been isolated. On failure READ THE
 NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
@@ -376,6 +379,17 @@ Changed-input refusal rule: a worker reports BLOCKED for that workstream; the ro
 an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
 `park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
 merge-conflict risk.
+
+Compose isolation rule: this prompt runs full verification through the same wrapper as an issue
+lead, so the same rules bind here. `agent-run.sh` exports a deterministic per-worktree
+`COMPOSE_PROJECT_NAME` and reports repository Compose files, `.env` values, or command argv that
+hardcode a project name. A repository `.env` value or compose-file `name:` is reported and
+deliberately overridden -- that override is the isolation. A literal `-p`/`--project-name` in the
+declaration outranks the export, so isolation cannot be established: agent-run.sh exits 5 without
+running. Serialize full-suite verification across worktrees, then re-run with
+`AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
+`environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
+command after the conflicting dependency has drained or been isolated.
 
 Do not perform publication or metadata operations from this worker prompt.
 
