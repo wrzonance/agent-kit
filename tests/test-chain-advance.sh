@@ -251,4 +251,35 @@ assert_eq '1' "$preapproval_rc" 'retarget refuses an approval that predates the 
 assert_contains "$preapproval_output" 'human judgment' \
     'the approval residue is reported as a human judgment, not inherited'
 
+
+
+# --- a split approval never adds up to a current one -----------------------
+# Two separate reviews must not satisfy the two halves between them: a stale
+# approval OF the current head, plus a fresh approval of some OLDER commit,
+# leaves no single review that is both current-head and post-retarget.
+cat >"$tmp/gh-splitapproval" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) exit 0 ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}},{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *) exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-splitapproval"
+set +e
+split_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-splitapproval" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+split_rc=$?
+set -e
+assert_eq '1' "$split_rc" 'a stale head approval plus a fresh approval of another commit is refused'
+assert_contains "$split_output" 'current-head and post-retarget' \
+    'the refusal names the conjunction that failed'
+assert_not_contains "$split_output" 'retargeted pr #7' \
+    'no success line is printed on a split approval'
+
 finish

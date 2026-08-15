@@ -178,17 +178,23 @@ check_ci_fresh() {
         die "CI evidence predates the retarget (stale: $stale); re-run CI against the new base -- a stale digest is a stop signal, not a green result"
 }
 
+# Both conditions must hold for ONE review. Splitting them across two existential
+# checks would pass a PR carrying a stale approval of the current head plus a
+# fresh approval of some older commit, where no single review is both.
 check_approval_fresh() {
-    local pr_json=$1 boundary=$2 fresh
-    fresh=$(jq -r --argjson boundary "$boundary" '
+    local pr_json=$1 head_sha=$2 boundary=$3 fresh
+    fresh=$(jq -r --arg head "$head_sha" --argjson boundary "$boundary" '
         any(.reviews[]?;
             (.state == "APPROVED")
-            and ((.submittedAt // .submitted_at // "") | length) > 0
+            and (((if (.commit | type) == "object" then .commit.oid
+                   elif (.commit | type) == "string" then .commit
+                   else .commitId end // "") | tostring) == $head)
+            and (((.submittedAt // .submitted_at // "") | length) > 0)
             and (((.submittedAt // .submitted_at) | fromdateiso8601) > $boundary))
     ' <<<"$pr_json") ||
         die 'review timestamps were unreadable; approval provenance is unavailable'
     [[ $fresh == true ]] ||
-        die 'approval predates the retarget; residual approval state after a base change remains a human judgment -- record the residue in the handoff and stop'
+        die 'no approval is both current-head and post-retarget; residual approval state after a base change remains a human judgment -- record the residue in the handoff and stop'
 }
 
 check_ancestry() {
@@ -288,7 +294,7 @@ retarget() {
     IFS=$'\t' read -r total pass <<<"$ci_counts"
     check_ci_fresh "$pr_json" "$boundary"
     check_approval "$pr_json" "$head_sha"
-    check_approval_fresh "$pr_json" "$boundary"
+    check_approval_fresh "$pr_json" "$head_sha" "$boundary"
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
