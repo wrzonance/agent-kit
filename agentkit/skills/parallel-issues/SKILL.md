@@ -616,7 +616,7 @@ no-op: project #3 "Example Board" has no Status field
 no-op: project #3 "Example Board" has no matching Status option "In progress"
 ```
 
-Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved ` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` Project access (the fleet App needs `Projects: write`).
+Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved #` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` Project access (the fleet App needs `Projects: write`).
 
 ### Root canonical issue fetch and fence preparation
 

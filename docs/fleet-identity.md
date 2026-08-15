@@ -47,14 +47,28 @@ one-call helpers. The token is runtime state, not repository configuration:
 - Before dispatching work, verify the identity without printing the token:
 
   ```bash
+  # The installed fleet App/bot login this session must be running as.
+  expected_login='my-fleet-app[bot]'
+
   [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || {
       printf '%s\n' 'fleet GitHub token is not present' >&2
       exit 1
   }
-  gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login'
+  actual_login="$(gh api graphql -f query='{ viewer { login } }' \
+      --jq '.data.viewer.login')" && [ -n "$actual_login" ] || {
+      printf '%s\n' 'fleet identity is unavailable' >&2
+      exit 1
+  }
+  [ "$actual_login" = "$expected_login" ] || {
+      printf 'fleet identity mismatch: got %s, expected %s\n' \
+          "$actual_login" "$expected_login" >&2
+      exit 1
+  }
   ```
 
-The returned account must be the installed fleet App/bot identity. A
+The comparison is the check. Printing the login only reports it, so a
+maintainer credential would pass; exiting nonzero on mismatch or on an
+unavailable identity is what makes a human credential fail closed here. A
 successful `gh` call under a maintainer login is not a valid fleet check; it
 only proves that the human credential can reach GitHub.
 
