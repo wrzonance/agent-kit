@@ -80,15 +80,23 @@ assert_not_contains "$hardcode_project" 'another-fixed-project' \
     'the deterministic worktree name overrides an environment hardcode'
 
 repo=$(make_repo)
-printf '#!/bin/sh\nprintf "%%s\\n" "${COMPOSE_PROJECT_NAME-}"\n' > "$repo/tools/emit-compose"
-chmod +x "$repo/tools/emit-compose"
-printf 'AGENT_CMD_TEST=tools/emit-compose --project-name fixed-cli-project\n' \
+printf '#!/bin/sh\nprintf "%%s\\n" "${COMPOSE_PROJECT_NAME-}"\n' > "$repo/tools/docker"
+chmod +x "$repo/tools/docker"
+printf 'AGENT_CMD_TEST=tools/docker compose --project-name fixed-cli-project\n' \
     > "$repo/.agent/config.env"
 cli_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
 assert_contains "$cli_out" 'hardcodes a Compose project name' \
     'a declared CLI project name is reported'
 assert_contains "$cli_out" 'fixed-cli-project' \
     'the CLI hardcode value is visible for remediation'
+
+repo=$(make_repo)
+make_emit_repo "$repo"
+printf 'AGENT_CMD_TEST=tools/emit-compose -p no:cacheprovider\n' \
+    > "$repo/.agent/config.env"
+unrelated_flag_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+assert_not_contains "$unrelated_flag_out" 'hardcodes a Compose project name' \
+    'an unrelated short -p flag is not treated as a Compose project name'
 
 # --- Compose dependency-start collisions are retry-eligible findings --------
 repo=$(make_repo)
@@ -112,5 +120,23 @@ printf 'AGENT_CMD_TEST=tools/fail-code\n' > "$repo/.agent/config.env"
 code_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
 assert_not_contains "$code_out" 'environment-retry-eligible' \
     'a normal command failure is not mislabeled as a Compose environment finding'
+
+repo=$(make_repo)
+printf '#!/bin/sh\nprintf "composer: address already in use\\n"\nexit 1\n' \
+    > "$repo/tools/fail-composer"
+chmod +x "$repo/tools/fail-composer"
+printf 'AGENT_CMD_TEST=tools/fail-composer\n' > "$repo/.agent/config.env"
+composer_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
+assert_not_contains "$composer_out" 'environment-retry-eligible' \
+    'a Composer-style failure is not treated as a Compose collision'
+
+repo=$(make_repo)
+printf '#!/bin/sh\nprintf "docker compose: address already in use\\n"\nexit 1\n' \
+    > "$repo/tools/fail-compose-address"
+chmod +x "$repo/tools/fail-compose-address"
+printf 'AGENT_CMD_TEST=tools/fail-compose-address\n' > "$repo/.agent/config.env"
+compose_address_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
+assert_not_contains "$compose_address_out" 'environment-retry-eligible' \
+    'a bare address collision without dependency evidence is not retry-eligible'
 
 finish

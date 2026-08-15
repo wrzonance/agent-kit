@@ -483,6 +483,23 @@ compose_static_value() {
     [[ -n $value && $value != *'$'* && $value != \#* ]]
 }
 
+compose_argv() {
+    local token base previous=''
+    for token in "${cmd[@]}"; do
+        base=${token##*/}
+        case $base in
+            docker-compose | podman-compose)
+                return 0
+                ;;
+            compose)
+                [[ $previous == docker || $previous == podman ]] && return 0
+                ;;
+        esac
+        previous=$base
+    done
+    return 1
+}
+
 # Print repository-controlled Compose project names as path:value findings.
 # This is deliberately a narrow filename/shape scan: arbitrary YAML `name:`
 # fields and unrelated environment variables are not Compose evidence.
@@ -517,25 +534,27 @@ compose_project_hardcodes() {
     # A literal CLI project flag has precedence over COMPOSE_PROJECT_NAME and
     # therefore defeats the per-worktree export. The declaration is already a
     # parsed argv array, so inspect tokens without invoking a shell.
-    for ((i = 0; i < ${#cmd[@]}; i++)); do
-        token=${cmd[i]}
-        value=''
-        case $token in
-            --project-name=*) value=${token#--project-name=} ;;
-            -p?*) value=${token#-p} ;;
-            -p | --project-name)
-                ((i + 1 < ${#cmd[@]})) || continue
-                next=${cmd[i + 1]}
-                value=$next
-                ((i += 1))
-                ;;
-            COMPOSE_PROJECT_NAME=*) value=${token#COMPOSE_PROJECT_NAME=} ;;
-            *) continue ;;
-        esac
-        if compose_static_value "$value"; then
-            printf 'argv[%s]:%s\n' "$i" "$value"
-        fi
-    done
+    if compose_argv; then
+        for ((i = 0; i < ${#cmd[@]}; i++)); do
+            token=${cmd[i]}
+            value=''
+            case $token in
+                --project-name=*) value=${token#--project-name=} ;;
+                -p?*) value=${token#-p} ;;
+                -p | --project-name)
+                    ((i + 1 < ${#cmd[@]})) || continue
+                    next=${cmd[i + 1]}
+                    value=$next
+                    ((i += 1))
+                    ;;
+                COMPOSE_PROJECT_NAME=*) value=${token#COMPOSE_PROJECT_NAME=} ;;
+                *) continue ;;
+            esac
+            if compose_static_value "$value"; then
+                printf 'argv[%s]:%s\n' "$i" "$value"
+            fi
+        done
+    fi
 }
 
 configure_compose_project() {
@@ -1419,9 +1438,10 @@ print_notes() {
 # assertion and application failures remain ordinary command failures.
 compose_dependency_start_collision() {
     local log=$1
-    grep -Eiq 'docker[ -]?compose|compose' "$log" 2>/dev/null || return 1
+    grep -Eiq '(^|[^[:alnum:]_-])docker([[:space:]]+|-)compose([^[:alnum:]_-]|$)' \
+        "$log" 2>/dev/null || return 1
     grep -Eiq \
-        'dependency[[:space:][:punct:]]+failed to start|dependency[^[:cntrl:]]*(already in use|already exists|port is already allocated|address already in use|conflict)|container name[^[:cntrl:]]*already in use|port is already allocated|address already in use|network[^[:cntrl:]]*already exists|Error response from daemon:[[:space:]]*Conflict|driver failed programming external connectivity' \
+        'dependency[[:space:][:punct:]]+failed to start|dependency[^[:cntrl:]]*(already in use|already exists|port is already allocated|conflict)|container name[^[:cntrl:]]*already in use|port is already allocated|network[^[:cntrl:]]*already exists|Error response from daemon:[[:space:]]*Conflict|driver failed programming external connectivity' \
         "$log" 2>/dev/null
 }
 
