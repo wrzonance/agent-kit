@@ -263,7 +263,8 @@ tests.
 Validation resolves path-shaped `argv[0]` from the rundir. If it exists only at the root, fix
 `AGENT_CMD_*` before approval; do not add a literal twin (it can still fail with rc=127).
 
-Commented proposals are stale observations, not config; `bootstrap-repo.sh --force` is the only migration.
+Commented proposals are stale observations, not config, so nothing migrates; regenerate them with
+`bootstrap-repo.sh --refresh`.
 
 **A polyglot monorepo** with no single root-runnable command gets either the per-component commands that
 *do* run from the root (`AGENT_CMD_LINT=server/.venv/bin/ruff check server`), or a proposed `tools/verify`
