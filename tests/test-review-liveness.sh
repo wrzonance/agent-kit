@@ -75,6 +75,19 @@ assert_state 1 'Still running' 'fresh heartbeat keeps an unchanged transcript al
 invoke 2021
 assert_state 2 Blocked 'a stale heartbeat blocks after the required interval'
 
+# --- a heartbeat from the future is corruption, not freshness --------------
+# now_epoch - wallClockEpoch goes negative when the stamp is ahead of now, and a
+# negative age satisfies `age <= 2 * poll_seconds`. That held the verdict at
+# "Still running" for as long as the local clock trailed the stamp, no matter how
+# long the transcript had been unchanged -- a liveness check that cannot observe
+# a dead reviewer.
+reset_case
+write_status 9000
+invoke 3000
+assert_state 1 'Still running' 'a future heartbeat still waits for a second sample'
+invoke 3011
+assert_state 2 Blocked 'a future heartbeat does not keep an unchanged transcript alive'
+
 reset_case
 write_documented_status 2100
 invoke 2100
