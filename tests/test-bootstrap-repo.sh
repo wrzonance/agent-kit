@@ -186,6 +186,11 @@ assert_contains "$config" '# proposal-command|AGENT_CMD_VERIFY|tools/verify|pres
 # declarations carrying the runner the repository actually locked.
 assert_contains "$config" 'AGENT_CMD_TEST=' 'surfaces package.json scripts as declarations'
 assert_not_contains "$config" $'\nAGENT_CMD_' 'never uncomments a suggestion'
+# The line above needs a preceding newline to match, so it cannot see a
+# declaration sitting on the file's very first line; this pins the proposed
+# key itself as inactive regardless of where it lands.
+assert_eq '0' "$(grep -c '^AGENT_CMD_VERIFY=' "$repo/.agent/config.env" || true)" \
+    'records the verify proposal without activating the declaration'
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'suggestions produce no resolver warnings'
 
@@ -424,5 +429,24 @@ out=$(PATH="$tmp/stub-unlinked:$PATH" "$bs_sh" --repo-root "$repo" --project 2 \
     --owner other-org --dry-run 2>&1)
 assert_contains "$out" '"owner": "other-org"' \
     'board.json records the BOARD owner, not the repository owner'
+
+# --- a refresh never erases the generator stamp ----------------------------
+# AGENT_ONBOARDED_BY is generator-owned, so the carry-forward filter drops the
+# previous value by design. When version discovery yields nothing there is no
+# replacement to emit, and the provenance record -- the very thing drift
+# detection reads -- would vanish. Reproduced by running a copy of the script
+# from a tree where the plugin manifest does not resolve, which is what an
+# install layout looks like.
+stamp_repo=$(make_repo)
+mkdir -p "$stamp_repo/.agent"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ONBOARDED_BY=agentkit/0.0.9\n' \
+    > "$stamp_repo/.agent/config.env"
+orphan_dir=$(mktemp -d "$tmp/orphan.XXXXXX")/a/b/c
+mkdir -p "$orphan_dir"
+cp "$bs_sh" "$orphan_dir/bootstrap-repo.sh"
+PATH="$tmp/stub:$PATH" "$orphan_dir/bootstrap-repo.sh" \
+    --repo-root "$stamp_repo" --project 7 --refresh > /dev/null 2>&1 || true
+assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=agentkit/0.0.9' \
+    'a refresh with no discoverable version keeps the previous generator stamp'
 
 finish

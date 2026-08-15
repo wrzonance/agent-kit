@@ -113,6 +113,18 @@ generator_version=$(jq -r '.version // empty' "$self_dir/../../..//.codex-plugin
 generator_stamp=''
 [[ -n $generator_version ]] && generator_stamp="agentkit/$generator_version"
 
+# Discovery above fails softly -- no jq, an unreadable or malformed plugin.json,
+# an install layout this relative path does not resolve in. AGENT_ONBOARDED_BY is
+# generator-owned, so the carry-forward filter further down deliberately drops the
+# previous one; with no replacement to emit, a refresh would erase the only
+# provenance record and make generator drift permanently undetectable -- the exact
+# condition the stamp exists to detect. Keep the old value when we have nothing
+# better. --reset is the one case that intends to forget it.
+if [[ -z $generator_stamp && $reset -eq 0 && -r $repo_root/.agent/config.env ]]; then
+    generator_stamp=$(sed -nE 's/^[[:space:]]*AGENT_ONBOARDED_BY=[[:space:]]*(.*)$/\1/p' \
+        "$repo_root/.agent/config.env" 2> /dev/null | tail -1)
+fi
+
 if ((refresh)) && [[ -r $repo_root/.agent/config.env && -x $self_dir/onboard-refresh.sh ]]; then
     "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --report 2> /dev/null || true
 fi
@@ -293,7 +305,12 @@ fi
 
 proposal_inventory=''
 if [[ -x $self_dir/onboard-refresh.sh ]]; then
-    proposal_inventory=$("$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --inventory 2> /dev/null || true)
+    # `|| true` would keep whatever the command printed before it died, and a
+    # half-written inventory becomes the recorded baseline that later drift is
+    # measured against. Take the status separately and keep only a clean run.
+    if ! proposal_inventory=$("$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --inventory 2> /dev/null); then
+        proposal_inventory=''
+    fi
 fi
 
 adr_dir=''
