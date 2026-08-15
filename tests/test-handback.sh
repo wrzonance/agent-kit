@@ -87,6 +87,30 @@ validate "$repo" "$valid_handback" >"$tmp/glob.out" 2>"$tmp/glob.err" || glob_rc
 assert_eq '0' "$glob_rc" 'glob prediction accepts matching explicit operands'
 plan=$plan_before_glob
 
+# A trailing newline is legal path data, not the end of a regex match. The
+# predicted write set must reject it instead of treating `$` as a true anchor.
+newline_plan="$tmp/newline-plan.json"
+cat >"$newline_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 167, "predictedWriteSet": ["src/trailing.txt"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+newline_path=$'src/trailing.txt\n'
+printf 'newline\n' >"$repo/$newline_path"
+newline_handback="$tmp/newline.handback"
+printf '"%s" --message '\''feat(skills): reject newline path'\'' --trailer '\''Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>'\'' -- "%s"\n' \
+    "$helper" "$newline_path" >"$newline_handback"
+plan_before_newline=$plan
+plan=$newline_plan
+newline_rc=0
+validate "$repo" "$newline_handback" >"$tmp/newline.out" 2>"$tmp/newline.err" || newline_rc=$?
+assert_eq '1' "$newline_rc" 'trailing-newline path is outside the predicted write set'
+assert_contains "$(cat -- "$tmp/newline.err")" 'outside predicted write set' \
+    'trailing-newline refusal names the pinned write set'
+plan=$plan_before_newline
+
 # The plan is mandatory: a caller cannot silently fall back to the pre-pin
 # validator that accepted any changed operand.
 legacy_rc=0

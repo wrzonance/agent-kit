@@ -182,7 +182,7 @@ def path_glob_matches(path, pattern):
         else:
             pieces.append(re.escape(character))
         index += 1
-    pieces.append("$")
+    pieces.append(r"\Z")
     return re.match("".join(pieces), path) is not None
 
 
