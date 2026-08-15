@@ -26,6 +26,8 @@ git -C "$repo" push --quiet -u origin main
 git -C "$repo" switch --quiet -c feature
 printf '%s\n' changed >"$repo/example.txt"
 git -C "$repo" commit --quiet -am change
+head_oid=$(git -C "$repo" rev-parse HEAD)
+export FAKE_HEAD_OID=$head_oid
 
 fake_bin="$tmp/bin"
 mkdir -- "$fake_bin"
@@ -33,7 +35,10 @@ cat >"$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${1:-} == pr && ${2:-} == view ]] || exit 1
-printf '%s\n' main
+case " $* " in
+    *' headRefOid '*) printf '%s\n' "$FAKE_HEAD_OID" ;;
+    *) printf '%s\n' main ;;
+esac
 EOF
 chmod +x "$fake_bin/gh"
 
@@ -99,6 +104,19 @@ assert_contains "$(cat -- "$tmp/missing.err")" 'consent' 'missing consent is nam
 assert_eq no "$( [[ -e $missing/adversarial.result.json ]] && printf yes || printf no )" \
     'missing consent does not publish a verdict'
 
+mismatch_run="$tmp/mismatch-run"
+mkdir -- "$mismatch_run" "$mismatch_run/state"
+chmod 700 "$mismatch_run" "$mismatch_run/state"
+mismatch_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" FAKE_HEAD_OID=0000000000000000000000000000000000000000 \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$mismatch_run") \
+    >"$tmp/mismatch.out" 2>"$tmp/mismatch.err" || mismatch_rc=$?
+assert_eq 1 "$mismatch_rc" 'checkout that is not the PR head is rejected'
+assert_contains "$(cat -- "$tmp/mismatch.err")" 'does not match PR head' \
+    'checkout mismatch names the PR head invariant'
+assert_eq no "$( [[ -e $mismatch_run/adversarial.diff ]] && printf yes || printf no )" \
+    'checkout mismatch does not build a review diff'
+
 claude_run="$tmp/claude-run"
 grant "$claude_run" anthropic
 claude_rc=0
@@ -127,6 +145,44 @@ assert_eq blocked "$(jq -r '.status' <"$invalid_run/adversarial.result.json")" \
     'schema-invalid provider output publishes a blocked result'
 assert_contains "$(cat -- "$tmp/invalid.out")" 'verdict=blocked' \
     'schema-invalid provider output cannot emit a clean verdict'
+
+malformed_root="$tmp/malformed-plugin"
+malformed_script_dir="$malformed_root/skills/review-remote-pr/scripts"
+mkdir -p -- "$malformed_script_dir" "$malformed_root/skills/.shared/scripts/lib"
+cp -- "$script" "$malformed_script_dir/adversarial-run.sh"
+cp -- "$consent" "$malformed_script_dir/consent-record.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
+    "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
+cat >"$malformed_script_dir/claude-adversarial-review.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=''
+while (($#)); do
+    case $1 in
+        --output) output=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf '%s\n' '{"status":"blocked","blockedReason":"test","verdict":"blocked"}' >"$output"
+exit 3
+EOF
+chmod +x "$malformed_script_dir/adversarial-run.sh" "$malformed_script_dir/consent-record.sh" \
+    "$malformed_script_dir/claude-adversarial-review.sh"
+
+malformed_run="$tmp/malformed-run"
+grant "$malformed_run" anthropic
+malformed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" \
+    bash "$malformed_script_dir/adversarial-run.sh" --pr 42 --repo acme/widget \
+        --run-dir "$malformed_run") \
+    >"$tmp/malformed.out" 2>"$tmp/malformed.err" || malformed_rc=$?
+assert_eq 1 "$malformed_rc" 'malformed blocked result fails closed'
+assert_contains "$(cat -- "$tmp/malformed.out")" 'verdict=blocked' \
+    'malformed blocked result still emits a safe receipt'
+assert_not_contains "$(cat -- "$tmp/malformed.err")" 'Cannot index' \
+    'malformed blocked result does not crash receipt parsing'
+assert_eq blocked "$(jq -r '.status' <"$malformed_run/adversarial.result.json")" \
+    'malformed blocked result is replaced with a validated blocked result'
 
 codex_run="$tmp/codex-run"
 grant "$codex_run" openai

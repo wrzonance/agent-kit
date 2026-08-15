@@ -110,11 +110,19 @@ prepare_owned_artifact() {
 }
 
 resolve_base() {
+    local head_oid current_oid
     BASE_REF=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName 2>/dev/null) ||
         die "could not resolve the base branch for $REPO#$PR"
     [[ -n $BASE_REF ]] || die 'the pull request base branch is empty'
     git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
         die "the pull request base branch is invalid: $BASE_REF"
+    head_oid=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null) ||
+        die "could not resolve the pull request head for $REPO#$PR"
+    [[ $head_oid =~ ^[[:xdigit:]]{40}$ ]] ||
+        die "the pull request head OID is invalid: $head_oid"
+    current_oid=$(git rev-parse HEAD 2>/dev/null) || die 'could not resolve the checkout HEAD'
+    [[ $current_oid == "$head_oid" ]] ||
+        die "checkout HEAD $current_oid does not match PR head $head_oid"
 }
 
 build_diff() {
@@ -179,15 +187,17 @@ valid_completed_result() {
 valid_blocked_result() {
     local path=$1
     [[ -f $path && ! -L $path && -O $path ]] || return 1
-    jq -e 'type == "object" and .status == "blocked" and (.blockedReason | type) == "string"' \
+    jq -e 'type == "object" and .status == "blocked" and
+      (.blockedReason | type) == "string" and
+      ((.verdict | type) == "null" or (.verdict | type) == "object")' \
         <"$path" >/dev/null 2>&1
 }
 
 receipt_line() {
     local path=$RUN_DIR/adversarial.result.json p1 p2 verdict
-    p1=$(jq -r '[.verdict.findings[]? | select(.priority == "P1")] | length' <"$path")
-    p2=$(jq -r '[.verdict.findings[]? | select(.priority == "P2")] | length' <"$path")
-    verdict=$(jq -r '.verdict.verdict // "blocked"' <"$path")
+    p1=$(jq -r '[.verdict | objects | .findings[]? | select(.priority == "P1")] | length' <"$path")
+    p2=$(jq -r '[.verdict | objects | .findings[]? | select(.priority == "P2")] | length' <"$path")
+    verdict=$(jq -r '(.verdict | objects | .verdict) // "blocked"' <"$path")
     printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s\n' \
         "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict"
 }
