@@ -29,9 +29,11 @@ usage() {
 Usage: $PROGNAME --run-dir DIR --transcript PATH [options]
 
 Classify one detached review poll as Completed, Still running, or Blocked.
-Exit status is 0, 1, or 2 for those states respectively.
+Exit status is 0, 1, or 2 for those states respectively; exit 3 is a usage or
+environment error.
 
 Options:
+  --verdict PATH          Canonical verdict beneath DIR (default: DIR/adversarial.result.json).
   --poll-seconds N       Required spacing between unchanged transcript samples (1-3600).
   --now-epoch N          Override the current epoch for deterministic callers/tests.
   --launcher-state S     running|completed|unknown (default: unknown).
@@ -40,7 +42,7 @@ EOF
 
 die() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    exit 2
+    exit 3
 }
 
 require_value() {
@@ -54,6 +56,8 @@ parse_args() {
             --run-dir=*) run_dir=${1#*=}; shift ;;
             --transcript) require_value "$1" "${2:-}"; transcript=$2; shift 2 ;;
             --transcript=*) transcript=${1#*=}; shift ;;
+            --verdict) require_value "$1" "${2:-}"; result_path=$2; shift 2 ;;
+            --verdict=*) result_path=${1#*=}; shift ;;
             --poll-seconds) require_value "$1" "${2:-}"; poll_seconds=$2; shift 2 ;;
             --poll-seconds=*) poll_seconds=${1#*=}; shift ;;
             --now-epoch) require_value "$1" "${2:-}"; now_epoch=$2; shift 2 ;;
@@ -106,7 +110,18 @@ validate_args() {
 
     sample_path="$run_dir_real/.review-liveness.state"
     heartbeat_path="$transcript_real.status"
-    result_path="$run_dir_real/adversarial.result.json"
+    if [[ -z $result_path ]]; then
+        result_path="$run_dir_real/adversarial.result.json"
+    else
+        [[ $result_path == /* ]] || result_path="$run_dir_real/$result_path"
+        validate_path "$result_path" verdict
+        result_path=$(readlink -f -- "$result_path") ||
+            die "could not resolve --verdict: $result_path"
+        case $result_path in
+            "$run_dir_real"/*) ;;
+            *) die '--verdict must be beneath --run-dir' ;;
+        esac
+    fi
     validate_path "$sample_path" liveness-state
     validate_path "$heartbeat_path" heartbeat
     validate_path "$result_path" result
@@ -173,7 +188,7 @@ heartbeat_fresh() {
     [[ -f $heartbeat_path && ! -L $heartbeat_path && -O $heartbeat_path ]] || return 1
     local heartbeat_epoch
     heartbeat_epoch=$(jq -er '
-        if type == "object" and .status == "running" and
+        if type == "object" and
            (.wallClockEpoch | type) == "number" and
            (.wallClockEpoch | floor) == .wallClockEpoch
         then .wallClockEpoch
@@ -234,6 +249,11 @@ main() {
     local current_bytes elapsed
     current_bytes=$(transcript_bytes)
     if (( ! have_previous )); then
+        write_sample "$current_bytes" "$now_epoch"
+        emit_state 'Still running' 1
+    fi
+
+    if ((current_bytes < previous_bytes)); then
         write_sample "$current_bytes" "$now_epoch"
         emit_state 'Still running' 1
     fi

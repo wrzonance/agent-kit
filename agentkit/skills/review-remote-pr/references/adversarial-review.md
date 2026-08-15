@@ -135,7 +135,7 @@ and is never clean.
 
 For detached executors only, use:
 
-    scripts/review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript"
+    scripts/review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript" --verdict "$verdict_path"
 
 That helper reports exactly Completed, Still running, or Blocked and owns bounded sampling and
 heartbeat rules. It is not a second review launcher and does not authorize a relaunch. The
