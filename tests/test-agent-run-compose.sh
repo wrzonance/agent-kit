@@ -118,6 +118,33 @@ assert_eq '0' "$cli_serialized_rc" \
 assert_contains "$cli_serialized_out" 'isolation-impossible accepted' \
     'the serialized run records the assertion it proceeded under'
 
+# --- the engine subcommand behind global options ---------------------------
+# `docker --context ci compose ...` is still a Compose invocation, but matching
+# only the token immediately before `compose` saw `ci` and missed it entirely:
+# no hardcode diagnostic and no fallback, while --project-name still took effect.
+# One case per engine, since each spells its global option differently.
+for engine_case in 'docker:--context' 'podman:--connection'; do
+    engine=${engine_case%%:*}
+    global_opt=${engine_case##*:}
+    repo=$(make_repo)
+    printf '#!/bin/sh\nprintf "%%s\\n" "${COMPOSE_PROJECT_NAME-}"\n' > "$repo/tools/$engine"
+    chmod +x "$repo/tools/$engine"
+    printf 'AGENT_CMD_TEST=tools/%s %s ci compose --project-name fixed-%s-global\n' \
+        "$engine" "$global_opt" "$engine" > "$repo/.agent/config.env"
+    set +e
+    global_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+    global_rc=$?
+    set -e
+    assert_contains "$global_out" 'hardcodes a Compose project name' \
+        "a $engine global option before compose still reports the hardcode"
+    assert_contains "$global_out" "fixed-$engine-global" \
+        "the $engine global-option hardcode value is visible for remediation"
+    assert_eq '5' "$global_rc" \
+        "a $engine global option before compose still fails closed"
+    assert_contains "$global_out" 'ISOLATION-IMPOSSIBLE' \
+        "the $engine global-option refusal is greppable by a dispatcher"
+done
+
 repo=$(make_repo)
 make_emit_repo "$repo"
 printf 'AGENT_CMD_TEST=tools/emit-compose -p no:cacheprovider\n' \
