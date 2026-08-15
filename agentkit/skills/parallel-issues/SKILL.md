@@ -875,10 +875,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-When the batch contains chains, the ready-flip handoff lists each chain's merge order
-explicitly (base PR first); after each predecessor merges, retarget the successor
-(`gh pr edit <N> --base <default>`) and verify the successor's baseRefName actually changed
-before it merges — never rely on automatic retargeting. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget) for the full rationale and the unretargeted failure mode.
+When chains exist, the ready-flip handoff lists merge order (base first). After each predecessor, the agent path runs `chain-advance.sh --retarget --pr <N> --base <default>`; it must verify the successor's baseRefName, `base...head`, CI/approval, and closing-linkage proof before merge. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 

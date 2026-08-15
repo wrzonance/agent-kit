@@ -31,7 +31,9 @@ validated argv without `eval`, verifies the expected helper/trailer/paths, and i
 `git status --short` + `git diff -- <paths>` (incl. unstaged) before publication. It invokes the
 command as argv exactly once, and only afterward inspects `base...HEAD`; it then republishes the
 handback command verbatim once before the single cycle push and any forge replies. It then pushes
-and opens a DRAFT PR (Why/What/Design decisions/tickable Testing/agent credit/Closes #NNN). A dirty
+and opens a DRAFT PR (Why/What/Design decisions/tickable Testing/agent credit/Closes #NNN). For
+stacked chains, use `chain-advance.sh` to re-read `baseRefName` and prove `base...head` before
+merging a successor; stale approval residue remains a human judgment. A dirty
 tree not authored by the worker is surfaced before validation and never adopted.
 
 For a correction cycle, resume the same worker with `followup_task` when possible rather than
