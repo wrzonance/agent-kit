@@ -14,8 +14,7 @@ description: >-
 and labels as commented lines rather than guessing, because a wrong declaration is worse than an absent one
 — it gets invoked.
 
-Filling those blanks is a judgement task, which is why it is a skill and not more script. The cost is one
-upfront conversation; every later session reads the result instead of rediscovering it.
+Filling blanks is judgment work: this skill records one-time decisions so later sessions reuse them.
 
 ## Resumable stage contract
 
@@ -25,6 +24,9 @@ written), `verified` (declared commands and CI comparison passed), `committed` (
 artifacts are ready for review), or `armed` (the merged contract is active). Rerunning a stage is a
 refresh/no-op; archive-and-regenerate is only available with the explicit `--reset` flag and must be
 reported.
+
+When SessionStart emits an `agentkit drift advisory`, copy its summary into the orchestrator handoff.
+Defer refresh and `.agent/config.env` edits; they are operator/trunk decisions.
 
 Before `verified`, run the environment preflight and print its exact findings: the venv/install command for
 a missing runtime, `npm ci` (ecosystem-allow: detected setup command, not prescribed) or equivalent when a
@@ -45,8 +47,7 @@ Completion reports include this four-step go-live checklist:
 3. After merge, run the resolved absolute `agent-run.sh --cmd <declared name> --yolo` command.
 4. Explain that the trust scope covers the declared command inputs for this repository only.
 
-**Finish the job.** A repository left with `config.env` but no declared command is barely better off than an
-un-onboarded one: the `Stop` verification check has nothing to enforce and `--cmd` resolves nothing.
+**Finish the job.** A repository without a declared command has no `Stop` verification gate.
 
 ---
 

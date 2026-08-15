@@ -76,6 +76,8 @@ listed=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$listed" 'AGENT_PROJECT_NUMBER=7' 'generated config carries the project number'
 assert_contains "$listed" 'AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done' \
     'status vocabulary comes from the discovered option order'
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' \
+    'generated config records the installed generator version'
 
 # --- a repo linked to exactly one board needs no --project -----------------
 # An org can own dozens of boards while a repo is linked to one. Asking the
@@ -175,6 +177,10 @@ run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 config=$(cat "$repo/.agent/config.env")
 assert_contains "$config" '# AGENT_CMD_' 'suggests commands as commented lines'
 assert_contains "$config" 'AGENT_CMD_VERIFY=tools/verify' 'surfaces a bespoke dispatcher as a declaration'
+assert_contains "$config" '# proposal-component|.|node|package.json' \
+    'records the detected component in the proposal inventory'
+assert_contains "$config" '# proposal-command|AGENT_CMD_VERIFY|tools/verify|present|' \
+    'records proposal binary availability without declaring it'
 # The old detection hardcoded `npm run <script>` whatever the lockfile said, and
 # `npm lint` is not even a command. Suggestions are now ready-to-uncomment
 # declarations carrying the runner the repository actually locked.
@@ -260,6 +266,13 @@ assert_contains "$after" 'AGENT_CMD_TEST=true' 'a declared command survives --fo
 assert_contains "$after" 'AGENT_LABEL_TYPES=bug,enhancement' 'and a label classification'
 assert_contains "$after" 'AGENT_PROTECTED_PATHS=migrations/' 'and declared protected paths'
 assert_contains "$out" 'carried forward' 'and the run says what it preserved'
+
+declared_before=$(grep -E '^AGENT_(CMD_TEST|LABEL_TYPES|PROTECTED_PATHS)=' "$repo/.agent/config.env")
+assert_rc 0 'refresh is an explicit force refresh' -- run_bs --repo-root "$repo" --project 7 --refresh
+declared_after=$(grep -E '^AGENT_(CMD_TEST|LABEL_TYPES|PROTECTED_PATHS)=' "$repo/.agent/config.env")
+assert_eq "$declared_before" "$declared_after" 'refresh preserves carried declarations exactly'
+assert_eq '' "$(grep -E '^AGENT_CMD_LINT_SHELL=' "$repo/.agent/config.env" || true)" \
+    'refresh leaves an unrelated proposal commented'
 
 # Discovered facts are still refreshed rather than duplicated -- carrying
 # everything forward blindly would pin a stale slug or board number for ever.

@@ -12,7 +12,7 @@
 #
 # Usage:
 #   bootstrap-repo.sh [--repo-root DIR] [--project N] [--owner LOGIN]
-#                     [--dry-run] [--force] [--reset]
+#                     [--dry-run] [--force] [--refresh] [--reset]
 #
 # Exit: 0 success, 1 discovery failed or would clobber, 2 bad usage,
 #       3 gh unavailable or unauthenticated (environment-blocked).
@@ -32,7 +32,7 @@ die_blocked() {
 }
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--project N] [--dry-run] [--force] [--reset]\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--project N] [--dry-run] [--force] [--refresh] [--reset]\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -44,6 +44,7 @@ project_number=''
 board_owner=''
 dry_run=0
 force=0
+refresh=0
 reset=0
 
 while (($#)); do
@@ -65,6 +66,7 @@ while (($#)); do
             ;;
         --dry-run) dry_run=1 ;;
         --force) force=1 ;;
+        --refresh) refresh=1; force=1 ;;
         --reset) reset=1; force=1 ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -106,6 +108,14 @@ fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 resolver="$self_dir/repo-config.sh"
+
+generator_version=$(jq -r '.version // empty' "$self_dir/../../..//.codex-plugin/plugin.json" 2> /dev/null || true)
+generator_stamp=''
+[[ -n $generator_version ]] && generator_stamp="agentkit/$generator_version"
+
+if ((refresh)) && [[ -r $repo_root/.agent/config.env && -x $self_dir/onboard-refresh.sh ]]; then
+    "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --report 2> /dev/null || true
+fi
 
 # --- discover the repository ------------------------------------------------
 # Slug and default branch in ONE call. Deliberately NOT `git remote show origin`:
@@ -281,6 +291,11 @@ if [[ -x $detector ]]; then
     suggestions=$("$detector" --repo-root "$repo_root" --format suggestions 2> /dev/null) || suggestions=''
 fi
 
+proposal_inventory=''
+if [[ -x $self_dir/onboard-refresh.sh ]]; then
+    proposal_inventory=$("$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --inventory 2> /dev/null || true)
+fi
+
 adr_dir=''
 for candidate in docs/adr docs/adrs docs/decisions docs/architecture/decisions adr doc/adr; do
     if [[ -d $repo_root/$candidate ]]; then
@@ -300,6 +315,7 @@ done
     printf 'AGENT_STATUS_VOCAB=%s\n' "$status_vocab"
     [[ -n $adr_dir ]] && printf 'AGENT_ADR_DIR=%s\n' "$adr_dir"
     printf 'AGENT_WORKTREE_ROOT=.worktrees\n'
+    [[ -n $generator_stamp ]] && printf 'AGENT_ONBOARDED_BY=%s\n' "$generator_stamp"
     if [[ -n $labels ]]; then
         printf '\n# This repository'"'"'s labels, for you to split by intent. Uncomment and\n'
         printf '# classify the ones agents should reuse instead of inventing new labels.\n'
@@ -314,6 +330,11 @@ done
         printf '%s\n' "$suggestions"
         printf '# AGENT_CMD_VERIFY=\n# AGENT_CMD_TEST=\n# AGENT_CMD_LINT=\n'
     fi
+    if [[ -n $proposal_inventory ]]; then
+        printf '\n# Recorded proposal inventory. These lines are observations only; they\n'
+        printf '# never declare or execute a command. Refresh replaces this block.\n'
+        printf '%s\n' "$proposal_inventory"
+    fi
     # --force regenerates DISCOVERED facts; it must not throw away DECLARED ones.
     #
     # Everything above is rediscoverable from the forge. The verify commands and
@@ -327,7 +348,7 @@ done
     # verbatim, and reported.
     if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
         carried=$(grep -E '^[[:space:]]*AGENT_[A-Z0-9_]+=' "$repo_root/.agent/config.env" 2> /dev/null |
-            grep -vE '^[[:space:]]*(AGENT_REPO_SLUG|AGENT_BASE_BRANCH|AGENT_PROJECT_OWNER|AGENT_PROJECT_NUMBER|AGENT_STATUS_VOCAB|AGENT_ADR_DIR|AGENT_WORKTREE_ROOT)=' || true)
+            grep -vE '^[[:space:]]*(AGENT_REPO_SLUG|AGENT_BASE_BRANCH|AGENT_PROJECT_OWNER|AGENT_PROJECT_NUMBER|AGENT_STATUS_VOCAB|AGENT_ADR_DIR|AGENT_WORKTREE_ROOT|AGENT_ONBOARDED_BY)=' || true)
         if [[ -n $carried ]]; then
             printf '\n# Carried forward from the previous config: declarations this generator\n'
             printf '# does not produce and therefore must not discard.\n'

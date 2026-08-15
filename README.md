@@ -68,8 +68,12 @@ This writes two committed files, plus the `.gitignore` rules that keep everythin
 under `.agent/` out of your history:
 
 - `.agent/config.env` holds the repo slug, trunk branch, board number, Status column
-  names, and commented suggestions for your verify commands.
+  names, generator stamp, and commented suggestions for your verify commands.
 - `.agent/board.json` caches the board's node IDs, so a status move costs one API call.
+
+On later sessions, `onboard-state.sh --report` includes a cheap drift summary. Inspect named findings with
+`onboard-refresh.sh --report`; when the operator chooses to regenerate proposals, use
+`bootstrap-repo.sh --refresh`. Refresh preserves declared values and never activates a proposal.
 
 Both files are committed and readable, so secrets are refused outright: tokens, proxies,
 and CA paths never belong in either.

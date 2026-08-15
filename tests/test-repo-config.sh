@@ -32,6 +32,10 @@ got=$("$rc_sh" --repo-root "$repo" --get AGENT_BASE_BRANCH 2> /dev/null)
 assert_eq 'main' "$got" '--get returns a single value'
 assert_rc 1 '--get on an absent key exits 1' -- "$rc_sh" --repo-root "$repo" --get AGENT_NOPE
 
+printf 'AGENT_ONBOARDED_BY=agentkit/0.1.0\n' >> "$repo/.agent/config.env"
+stamp_out=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$stamp_out" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' 'accepts the generator stamp'
+
 # Exported lines must be safe to eval.
 eval "$out"
 assert_eq 'example-org/example-repo' "${AGENT_REPO_SLUG:-}" 'eval of --export sets the variable'
