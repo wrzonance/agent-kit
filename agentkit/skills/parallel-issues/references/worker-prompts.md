@@ -95,10 +95,15 @@ git branch --show-current
 ```
 
 agent-run.sh sets the run's caches and CA bundle, prepends the detected source roots to
-PYTHONPATH, delegates to the repo runner when one is declared, and suppresses output: success
-is a single PASS line; failure prints the matched error lines plus the full log path under
-<worktree>/.agent/logs/. Its exit status IS the wrapped command's exit status. On failure READ
-THE NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
+PYTHONPATH, exports a deterministic per-worktree `COMPOSE_PROJECT_NAME`, delegates to the repo
+runner when one is declared, and suppresses output: success is a single PASS line; failure
+prints the matched error lines plus the full log path under <worktree>/.agent/logs/. Its exit
+status IS the wrapped command's exit status. It reports repository Compose files, `.env` values,
+or command argv that hardcode a project name; if that hardcode defeats isolation, serialize
+full-suite verification across worktrees. A Compose dependency-start collision is an
+`environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
+command after the conflicting dependency has drained or been isolated. On failure READ THE
+NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
 Pass `--` whenever the command's first token starts with `-`; always passing it is simplest.
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 

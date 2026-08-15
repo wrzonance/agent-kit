@@ -19,6 +19,7 @@ github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
 shared_six_step_loop="$root/agentkit/skills/.shared/six-step-loop.md"
 trust_and_fencing="$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md"
+verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -48,6 +49,7 @@ triage_and_selection_text=$(<"$triage_and_selection")
 wait_discipline_text=$(<"$shared_wait_discipline")
 six_step_loop_text=$(<"$shared_six_step_loop")
 trust_and_fencing_text=$(<"$trust_and_fencing")
+verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
 issue_lead_prompt=$(awk '
     /^Per-issue prompt:/ { capture=1; next }
@@ -143,6 +145,18 @@ assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
 assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
+assert_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
+    'dispatch names the hard PR-loop cap at the launch boundary'
+assert_contains "$text" 'pr_loop_dispatch_cap' \
+    'dispatch derives an effective loop cap before launching agents'
+assert_contains "$text" 'queue overflow PR loops' \
+    'dispatch queues PR loops beyond the effective cap'
+assert_contains "$verification_isolation_text" 'serialize full-suite verification' \
+    'dispatch documents full-suite serialization when Compose isolation is defeated'
+assert_contains "$verification_isolation_text" 'COMPOSE_PROJECT_NAME' \
+    'worker verification contract names the per-worktree Compose namespace'
+assert_contains "$verification_isolation_text" 'environment-retry-eligible' \
+    'worker verification contract names retry-eligible Compose findings'
 assert_contains "$prepare_script_text" 'target="$agent_dir/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
 assert_contains "$prepare_script_text" 'prior_target="$agent_dir/fenced-prior-art.txt"' \

@@ -62,6 +62,9 @@ a hit. Run focused suites during red/green iteration, the full suite once per tr
 before commit; `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is
 authoritative for that SHA. Detail: [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence).
 
+Read [references/verification-isolation.md](references/verification-isolation.md) in full before
+dispatching verification that may use Compose.
+
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
 not skip brainstorm, does not skip approval, and does not extend to a repository the
@@ -784,6 +787,26 @@ worker cannot see the outer invocation, so adding the grant without it has manuf
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
 
+The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
+cap includes the root; reserve it before deriving child capacity:
+
+```bash
+PR_LOOP_CONCURRENCY_CAP=2
+runtime_child_cap=$((max_concurrent_threads_per_session - 1))
+pr_loop_dispatch_cap=$((runtime_child_cap < PR_LOOP_CONCURRENCY_CAP ? runtime_child_cap : PR_LOOP_CONCURRENCY_CAP))
+((pr_loop_dispatch_cap > 0)) || {
+    printf '%s\n' 'No child capacity remains for PR loops; do not dispatch.' >&2
+    exit 1
+}
+printf 'PR-loop dispatch cap: %s agents (hard cap=%s, runtime children=%s)\n' \
+    "$pr_loop_dispatch_cap" "$PR_LOOP_CONCURRENCY_CAP" "$runtime_child_cap"
+```
+
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and
+refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker
+slot: the loop agent uses the documented spawn-unavailable path for root-approved fix batches.
+This dispatch-time counter is the enforcement point, not a post-hoc report.
+
 ### Adversarial-review receipt:
 
 Every dispatched `review-remote-pr` loop must run `post-receipt.sh precheck` before launching
@@ -849,10 +872,11 @@ pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The recei
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
 
-Dispatch at most two PR-loop agents concurrently. **Do not reserve a slot for a nested worker: a
-spawned PR-loop agent cannot spawn one.** It runs `review-remote-pr`'s documented
-spawn-unavailable path and does the implementation itself under the same six-step gate, labelling
-its report `worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
+Dispatch no more than the `pr_loop_dispatch_cap` computed above, which is never greater than
+`PR_LOOP_CONCURRENCY_CAP=2`. **Do not reserve a slot for a nested worker: a spawned PR-loop
+agent cannot spawn one.** It runs `review-remote-pr`'s documented spawn-unavailable path and
+does the implementation itself under the same six-step gate, labelling its report
+`worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
 The root reads `peer-cli=` from the contract: when absent, skip the probe and use the blind
 same-harness `gpt-5.6-terra` xhigh fallback exactly once; this reviewer decision is root-owned.
 
