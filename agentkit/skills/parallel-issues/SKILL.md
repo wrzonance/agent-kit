@@ -391,6 +391,13 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
+Before dispatch, write the root-owned dispatch plan. Each entry gets a
+non-empty repository-relative `predictedWriteSet` (paths/globs), plus
+`conflictMap.pairs` and reasoned revisions; successor swaps require a revision.
+Include shared build config, lockfiles, and generated contracts in every check. See
+[references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
+for the schema and the chain-conversion/merge-down response to late overlap.
+
 Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
 
 **With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
@@ -720,8 +727,9 @@ Root preserves the raw command text for audit. Validator: parse into validated a
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
-if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" >"$validated_argv_file"; then exit 1; fi
+if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
 (cd -- "$worktree" && "${validated_argv[@]}")

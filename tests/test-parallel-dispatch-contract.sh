@@ -84,6 +84,20 @@ assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
     'chained WHEN-yolo threading pins the base'
 assert_contains "$text" 'only after the root has validated, committed, and pushed' \
     'chain successors defer on root publication, not PR state'
+assert_contains "$text" 'root-owned dispatch plan' \
+    'dispatch creates the root-owned plan before selection is dispatched'
+assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
+    'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
+    'dispatch-plan records post-selection conflict-map revisions'
+assert_contains "$triage_and_selection_text" 'shared root files' \
+    'conflict analysis includes shared root files by default'
+assert_contains "$triage_and_selection_text" 'chain-conversion' \
+    'late overlap has an explicit chain-conversion disposition'
+assert_contains "$triage_and_selection_text" 'merge-down' \
+    'late overlap has an explicit merge-down disposition'
+assert_contains "$triage_and_selection_text" 'inherited #137' \
+    'late overlap points at the inherited #137 response'
 assert_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
     'parallel preflight passes its owned repository_root to contract-read.sh'
 assert_not_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get skills.path' \
@@ -378,6 +392,8 @@ assert_contains "$text" 'validate-handback.sh' \
     'parallel dispatch invokes the publication handback validator'
 assert_contains "$text" 'if ! "$agentkit/.shared/scripts/validate-handback.sh"' \
     'parallel dispatch checks the validator status before publication'
+assert_contains "$text" '--issue "$issue_number" --dispatch-plan "$dispatch_plan"' \
+    'parallel dispatch validates handbacks against the selected plan entry'
 assert_contains "$text" 'mapfile -d' \
     'parallel dispatch consumes validated handback argv without re-parsing shell text'
 assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \

@@ -143,6 +143,12 @@ session reviews the scoped diff, runs that invocation verbatim once, and
 owns every external or privileged follow-up. A dirty tree not authored by you must be surfaced
 before validation and either explained by the manifest or left untouched.
 
+The root validates those explicit operands against the dispatch plan's pinned
+predicted write set. Do not silently widen the set in a handback: a late
+overlap must be reported so the root can record one of the sanctioned
+`chain-conversion`, `merge-down`, or `prediction-expansion` dispositions with
+an evidence-based reason before publication.
+
 ## Branch Rules (MANDATORY — before touching any file)
 1. cd into the absolute worktree above.
 2. git branch --show-current must print feat/issue-NNN; otherwise STOP.
