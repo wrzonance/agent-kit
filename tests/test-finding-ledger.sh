@@ -38,7 +38,9 @@ assert_contains "$(cat -- "$tmp/before.err")" 'adversarial.result.json' \
     'order refusal names the missing review result'
 
 jq -cn '{status:"completed", exitCode:0, requestedModel:"review-model",
-    transcript:"review.ndjson", verdict:{verdict:"findings", findings:[]}}' \
+    transcript:"review.ndjson", verdict:{verdict:"findings", findings:[
+        {priority:"P1", location:"src/a.sh:1", failureScenario:"breaks",
+         smallestFix:"repair"}]}}' \
     >"$run_dir/adversarial.result.json"
 chmod 600 -- "$run_dir/adversarial.result.json"
 
@@ -84,7 +86,8 @@ assert_eq 'declined' "$(jq -r -s '.[1].verdict' <"$run_dir/findings.ndjson")" \
 assert_eq 'style preference, no behavior change' \
     "$(jq -r -s '.[1].rationale' <"$run_dir/findings.ndjson")" \
     'the ledger preserves the decline rationale'
-assert_eq '600' "$(stat -c '%a' "$run_dir/findings.ndjson")" \
+file_mode() { stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null; }
+assert_eq '600' "$(file_mode "$run_dir/findings.ndjson")" \
     'the findings ledger is owner-private'
 
 bad_rc=0
@@ -107,5 +110,59 @@ run_ledger add --title 'Bad SHA' --verdict fixed --sha not-a-sha \
 assert_eq '2' "$bad_rc" 'non-hex commit identifiers are rejected'
 assert_contains "$(cat -- "$tmp/sha.err")" 'SHA' \
     'the SHA validation names the invalid field'
+
+
+
+# --- security-relevant refusals ---------------------------------------------
+# Each of these branches guards an artifact an attacker or a careless refactor
+# could subvert, and none of them had a test: a refactor could drop any one and
+# the suite would stay green.
+
+# A symlinked ledger would let an append escape the run directory entirely.
+symlink_run="$tmp/symlink-run"
+mkdir -- "$symlink_run"; chmod 700 -- "$symlink_run"
+cp -- "$run_dir/adversarial.result.json" "$symlink_run/adversarial.result.json"
+chmod 600 -- "$symlink_run/adversarial.result.json"
+ln -s "$tmp/elsewhere.ndjson" "$symlink_run/findings.ndjson"
+symlink_rc=0
+run_ledger_at "$symlink_run" add --title 'Symlinked ledger' --verdict fixed --sha abc1234 \
+    >"$tmp/symlink.out" 2>"$tmp/symlink.err" || symlink_rc=$?
+assert_eq 1 "$symlink_rc" 'a symlinked findings ledger is refused'
+assert_eq no "$( [[ -e $tmp/elsewhere.ndjson ]] && printf yes || printf no )" \
+    'the refusal never writes through the symlink'
+
+# A world- or group-readable run directory leaks review content.
+open_run="$tmp/open-run"
+mkdir -- "$open_run"; chmod 755 -- "$open_run"
+cp -- "$run_dir/adversarial.result.json" "$open_run/adversarial.result.json"
+chmod 600 -- "$open_run/adversarial.result.json"
+open_rc=0
+run_ledger_at "$open_run" add --title 'Open run dir' --verdict fixed --sha abc1234 \
+    >"$tmp/open.out" 2>"$tmp/open.err" || open_rc=$?
+assert_eq 1 "$open_rc" 'a run directory that is not owner-private is refused'
+
+# An existing ledger holding a malformed record must not be appended to.
+invalid_ledger_run="$tmp/invalid-ledger-run"
+mkdir -- "$invalid_ledger_run"; chmod 700 -- "$invalid_ledger_run"
+cp -- "$run_dir/adversarial.result.json" "$invalid_ledger_run/adversarial.result.json"
+chmod 600 -- "$invalid_ledger_run/adversarial.result.json"
+printf '%s\n' '{"title":"broken"}' >"$invalid_ledger_run/findings.ndjson"
+chmod 600 -- "$invalid_ledger_run/findings.ndjson"
+invalid_ledger_rc=0
+run_ledger_at "$invalid_ledger_run" add --title 'Onto invalid' --verdict fixed --sha abc1234 \
+    >"$tmp/invalid-ledger.out" 2>"$tmp/invalid-ledger.err" || invalid_ledger_rc=$?
+assert_eq 1 "$invalid_ledger_rc" 'an existing ledger with an invalid record is refused'
+assert_eq 1 "$(wc -l <"$invalid_ledger_run/findings.ndjson")" \
+    'the refusal appends nothing to the invalid ledger'
+
+# The verdict and its evidence must agree: a fix needs a SHA, a decline a reason.
+mismatch_rc=0
+run_ledger add --title 'Fixed with rationale' --verdict fixed --rationale 'no sha here' \
+    >"$tmp/mismatch1.out" 2>"$tmp/mismatch1.err" || mismatch_rc=$?
+assert_eq 2 "$mismatch_rc" 'a fixed verdict cannot be evidenced by a rationale'
+mismatch2_rc=0
+run_ledger add --title 'Declined with sha' --verdict declined --sha abc1234 \
+    >"$tmp/mismatch2.out" 2>"$tmp/mismatch2.err" || mismatch2_rc=$?
+assert_eq 2 "$mismatch2_rc" 'a declined verdict cannot be evidenced by a SHA'
 
 finish

@@ -154,14 +154,29 @@ validate_completed_review() {
     [[ -f $result && ! -L $result && -O $result ]] ||
         die_order "completed adversarial review result is required: $result"
     command -v jq >/dev/null 2>&1 || die_evidence 'jq is not installed'
+    # Mirrors valid_completed_result in adversarial-run.sh, the only producer of
+    # this document. A looser copy here would accept results the runner can never
+    # publish -- notably verdict "findings" with an empty findings array -- while
+    # claiming the file is "a completed validated result".
     jq -s -e '
         length == 1 and
         (.[0] |
             type == "object" and .status == "completed" and
             (.exitCode | type) == "number" and .exitCode == 0 and
+            (.requestedModel | type) == "string" and (.transcript | type) == "string" and
             (.verdict | type) == "object" and
+            ((.verdict | keys) - ["verdict", "findings"] | length) == 0 and
             (.verdict.verdict == "findings" or .verdict.verdict == "no_findings") and
-            (.verdict.findings | type) == "array")
+            (.verdict.findings | type) == "array" and
+            (if .verdict.verdict == "no_findings" then (.verdict.findings | length) == 0
+             else (.verdict.findings | length) > 0 end) and
+            all(.verdict.findings[];
+              (type == "object") and
+              ((keys - ["priority", "location", "failureScenario", "smallestFix"]) | length == 0) and
+              (.priority == "P1" or .priority == "P2") and
+              (.location | type) == "string" and
+              (.failureScenario | type) == "string" and
+              (.smallestFix | type) == "string"))
     ' "$result" >/dev/null 2>&1 ||
         die_order "adversarial review result is not a completed validated result: $result"
 }
@@ -173,7 +188,8 @@ validate_existing_ledger() {
     [[ -f $ledger && -O $ledger && -r $ledger ]] ||
         die_evidence "findings ledger is not an owned regular file: $ledger"
     command -v jq >/dev/null 2>&1 || die_evidence 'jq is not installed'
-    jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" '
+    jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" \
+        --arg sha_re "$SHA_RE" '
         all(.[];
           type == "object" and
           ((keys - ["title", "verdict", "sha", "rationale"]) | length == 0) and
@@ -182,7 +198,7 @@ validate_existing_ledger() {
           (.title | contains($receipt) | not) and
           (.title | contains($doc) | not) and
           ((.verdict == "fixed" and has("sha") and (has("rationale") | not) and
-              (.sha | type == "string" and test("^[[:xdigit:]]{7,64}(,[[:xdigit:]]{7,64})*$"))) or
+              (.sha | type == "string" and test($sha_re))) or
            (.verdict == "declined" and has("rationale") and (has("sha") | not) and
               (.rationale | type == "string" and length > 0) and
               (.rationale | test("[\\r\\n]") | not) and
