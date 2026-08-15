@@ -18,12 +18,13 @@ transcript="$run_dir/claude.ndjson"
 status="$transcript.status"
 result="$run_dir/adversarial.result.json"
 sample="$run_dir/.review-liveness.state"
+custom_result="$run_dir/custom.result.json"
 
 LAST_RC=0
 LAST_OUTPUT=''
 
 reset_case() {
-    rm -f -- "$status" "$result" "$sample"
+    rm -f -- "$status" "$result" "$sample" "$custom_result"
     : >"$transcript"
 }
 
@@ -39,6 +40,10 @@ invoke() {
 
 write_status() {
     printf '{"status":"running","wallClockEpoch":%s}\n' "$1" >"$status"
+}
+
+write_documented_status() {
+    printf '{"elapsedSeconds":1,"transcriptBytes":0,"eventCount":0,"wallClockEpoch":%s}\n' "$1" >"$status"
 }
 
 write_result() {
@@ -71,6 +76,13 @@ invoke 2021
 assert_state 2 Blocked 'a stale heartbeat blocks after the required interval'
 
 reset_case
+write_documented_status 2100
+invoke 2100
+assert_state 1 'Still running' 'documented heartbeat shape keeps the first sample alive'
+invoke 2111
+assert_state 1 'Still running' 'documented heartbeat shape keeps an unchanged transcript alive'
+
+reset_case
 invoke 3000
 printf '%s\n' '{"event":"progress"}' >>"$transcript"
 invoke 3010
@@ -82,6 +94,11 @@ reset_case
 write_result '{"status":"completed","exitCode":0,"requestedModel":"claude-opus-5","transcript":"claude.ndjson","verdict":{"verdict":"no_findings","findings":[]}}'
 invoke 4000
 assert_state 0 Completed 'validated result completes without launcher state'
+
+reset_case
+printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"claude-opus-5","transcript":"claude.ndjson","verdict":{"verdict":"no_findings","findings":[]}}' >"$custom_result"
+invoke 4500 --verdict "$custom_result"
+assert_state 0 Completed 'custom verdict path completes when explicitly selected'
 
 reset_case
 write_result '{"status":"completed","exitCode":0,"requestedModel":"claude-opus-5","transcript":"claude.ndjson","verdict":{"verdict":"no_findings","findings":[]}}'
@@ -101,6 +118,14 @@ invoke 7000
 invoke 7010
 assert_state 2 Blocked 'malformed result never becomes Completed'
 
+reset_case
+invoke 8000
+printf '%s\n' '{"event":"progress"}' >>"$transcript"
+invoke 8010
+: >"$transcript"
+invoke 8020
+assert_state 1 'Still running' 'transcript shrink resets samples for a relaunch'
+
 outside="$tmp/outside.ndjson"
 : >"$outside"
 ln -s "$outside" "$run_dir/symlink.ndjson"
@@ -108,9 +133,14 @@ symlink_rc=0
 "$script" --run-dir "$run_dir" --transcript "$run_dir/symlink.ndjson" \
     --poll-seconds 10 --now-epoch 8000 >"$tmp/symlink.out" 2>"$tmp/symlink.err" ||
     symlink_rc=$?
-assert_eq 2 "$symlink_rc" 'transcript symlinks are rejected'
+assert_eq 3 "$symlink_rc" 'transcript symlinks are rejected'
 assert_contains "$(cat -- "$tmp/symlink.err")" 'symlink' \
     'transcript symlink rejection is explicit'
+
+usage_rc=0
+"$script" --run-dir "$run_dir" --transcript "$transcript" --unknown-option \
+    >"$tmp/usage.out" 2>"$tmp/usage.err" || usage_rc=$?
+assert_eq 3 "$usage_rc" 'usage errors have a distinct exit status'
 
 assert_not_contains "$(cat -- "$script" 2>/dev/null || true)" 'kill -0' \
     'liveness classification never probes producer PIDs'
