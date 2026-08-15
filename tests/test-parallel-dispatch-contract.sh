@@ -17,6 +17,8 @@ parallel_refs=("$root/agentkit/skills/parallel-issues/references"/*.md)
 shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
+shared_six_step_loop="$root/agentkit/skills/.shared/six-step-loop.md"
+trust_and_fencing="$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -44,6 +46,8 @@ worker_prompts_text=$(<"$worker_prompts")
 triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 triage_and_selection_text=$(<"$triage_and_selection")
 wait_discipline_text=$(<"$shared_wait_discipline")
+six_step_loop_text=$(<"$shared_six_step_loop")
+trust_and_fencing_text=$(<"$trust_and_fencing")
 worker_gate_text=$(<"$worker_gate")
 issue_lead_prompt=$(awk '
     /^Per-issue prompt:/ { capture=1; next }
@@ -209,6 +213,34 @@ assert_contains "$text" 'agent-run.sh --approve --cmd <name>' \
     'approval handoff carries a copy-pasteable command recipe'
 assert_contains "$text" 'never hand off the main checkout' \
     'approval recipes reject the main checkout'
+assert_contains "$text" 'parks that workstream only' \
+    'trust-gate refusal parks only the refused workstream'
+assert_contains "$text" 'continues every other workstream' \
+    'trust-gate refusal allows sibling workstreams to continue'
+assert_contains "$text" 'input-diff digest' \
+    'trust-gate handoff requires an input-diff digest'
+assert_contains "$trust_and_fencing_text" 'approve-with-record' \
+    'trust-gate handoff names approval remediation'
+assert_contains "$trust_and_fencing_text" 'park-and-hand-off' \
+    'trust-gate handoff names parking remediation'
+assert_contains "$trust_and_fencing_text" 'shared input' \
+    'trust-gate handoff surfaces shared-input ripple'
+assert_contains "$trust_and_fencing_text" 'sibling PRs' \
+    'trust-gate handoff warns about sibling PR conflicts'
+assert_contains "$worker_prompts_text" 'reports BLOCKED for that workstream' \
+    'worker contract blocks only the refused workstream'
+assert_contains "$worker_prompts_text" 'literal command' \
+    'worker contract rejects literal-command evasion'
+assert_contains "$six_step_loop_text" 'input-diff digest' \
+    'shared six-step contract carries trust-gate digest handoff'
+assert_contains "$six_step_loop_text" 'not implied by `--yolo`' \
+    'shared six-step contract denies implicit yolo approval'
+assert_contains "$trust_and_fencing_text" 'git diff --stat' \
+    'trust reference documents diffstat evidence'
+assert_contains "$trust_and_fencing_text" 'git diff --binary' \
+    'trust reference documents per-input diff evidence'
+assert_contains "$trust_and_fencing_text" 'untracked' \
+    'trust reference covers untracked changed inputs'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
 assert_contains "$(<"$review_skill")" 'full-suite verdict' \

@@ -1047,38 +1047,61 @@ yolo_base_declarations() {
 # A path counts as changed when the checkout has content the base does not, or
 # when a base input was deleted here. Sentinel inputs are deliberately refused:
 # they describe a command input that cannot be proven repository-contained.
+# Emit every changed input so the refusal can be handed off as an adjudication
+# request instead of forcing the operator to rediscover the comparison set.
 yolo_changed_input() {
-    local base=$1 rel abs untracked
+    local base=$1 rel abs untracked found=1
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
         if is_command_input_sentinel "$rel"; then
-            printf '%s' "$rel"
-            return 0
+            printf '%s\n' "$rel"
+            found=0
+            continue
         fi
         abs=$git_top/$rel
         if [[ -e $abs || -L $abs ]]; then
             if ! git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
-                printf '%s' "$rel"
-                return 0
+                printf '%s\n' "$rel"
+                found=0
+                continue
             fi
             if ! git -C "$git_top" diff --quiet "$base" -- "$rel" 2> /dev/null; then
-                printf '%s' "$rel"
-                return 0
+                printf '%s\n' "$rel"
+                found=0
+                continue
             fi
             if [[ -d $abs ]]; then
                 untracked=$(git -C "$git_top" status --porcelain=v1 \
                     --untracked-files=all --ignored=matching -- "$rel" 2> /dev/null || true)
                 if [[ -n $untracked ]]; then
-                    printf '%s' "$rel"
-                    return 0
+                    printf '%s\n' "$rel"
+                    found=0
+                    continue
                 fi
             fi
         elif git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
-            printf '%s' "$rel"
-            return 0
+            printf '%s\n' "$rel"
+            found=0
         fi
     done < <(yolo_repo_inputs | sort -u)
-    return 1
+    return "$found"
+}
+
+yolo_refusal_remediation() {
+    local base=$1 changed=$2 input runner
+    printf '  remediation: this refusal is an adjudication request, not a dead end.\n' >&2
+    printf '  input-diff digest against %s: hand off every changed command input, its diffstat, and its full diff before retrying.\n' \
+        "$base" >&2
+    printf '  changed command inputs:\n' >&2
+    while IFS= read -r input; do
+        [[ -n $input ]] || continue
+        printf '    %s\n' "$input" >&2
+    done <<< "$changed"
+    printf -v runner '%q' "$self_dir/agent-run.sh"
+    printf '  approve-with-record: %s --approve --cmd %q (review the digest from an interactive terminal).\n' \
+        "$runner" "$cmd_name" >&2
+    printf '  park-and-hand-off: preserve this workstream and hand off the digest plus that exact command; continue other workstreams.\n' >&2
+    printf '  no approval record is created; approval is not implied by --yolo. Do not strip the input or retry with a literal command.\n' >&2
 }
 
 # A pinned base substitutes for the trunk anchor. Root-published only: the SHA
@@ -1135,6 +1158,7 @@ yolo_gate() {
     if [[ $resolved_parse_failed == yes ]]; then
         printf 'agent-run: refusing --yolo for %s: AGENT_CMD_%s cannot be proven equal after config parse errors\n' \
             "$cmd_name" "$(printf '%s' "$cmd_name" | tr '[:lower:]-' '[:upper:]_')" >&2
+        yolo_refusal_remediation "$base" '.agent/config.env'
         exit 1
     fi
     canonical_out=''
@@ -1147,6 +1171,7 @@ yolo_gate() {
             [[ -n $key && -n ${resolved_config_present[$key]+yes} ]] || continue
             printf 'agent-run: refusing --yolo for %s: %s is declared on this checkout but missing from %s\n' \
                 "$cmd_name" "$key" "$base_desc" >&2
+            yolo_refusal_remediation "$base" ".agent/config.env (declaration $key)"
             exit 1
         done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
         canonical_out=''
@@ -1169,19 +1194,23 @@ yolo_gate() {
             -n ${current_present[$key]+yes} && -z ${base_present[$key]+yes} ]]; then
             printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
                 "$cmd_name" "$key" "$base_desc" >&2
+            yolo_refusal_remediation "$base" ".agent/config.env (declaration $key)"
             exit 1
         fi
         if [[ -n ${current_present[$key]+yes} && ${current_values[$key]} != "${base_values[$key]}" ]]; then
             printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
                 "$cmd_name" "$key" "$base_desc" >&2
+            yolo_refusal_remediation "$base" ".agent/config.env (declaration $key)"
             exit 1
         fi
     done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
     if changed=$(yolo_changed_input "$base"); then
+        first=${changed%%$'\n'*}
         printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
-            "$cmd_name" "$changed" "$base_desc" >&2
+            "$cmd_name" "$first" "$base_desc" >&2
+        yolo_refusal_remediation "$base" "$changed"
         printf '  --yolo trusts only command inputs the trunk already carries. This checkout\n' >&2
-        printf '  changes one, so it is new code asking to run unattended -- review the\n' >&2
+        printf '  changes one or more, so it is new code asking to run unattended -- review the\n' >&2
         printf '  change and approve it from your own terminal.\n' >&2
         exit 1
     fi
