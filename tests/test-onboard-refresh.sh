@@ -26,6 +26,7 @@ cat > "$repo/.agent/config.env" <<'EOF'
 AGENT_REPO_SLUG=example-org/example-repo
 AGENT_ONBOARDED_BY=agentkit/0.0.0
 AGENT_CMD_VERIFY=tools/verify
+AGENT_RUNDIR_VERIFY=dashboard
 # proposal-component|old|node|package.json
 # proposal-command|AGENT_CMD_VERIFY|tools/verify|missing|
 EOF
@@ -44,11 +45,23 @@ assert_contains "$out" 'generator= stale' \
 assert_contains "$out" 'ci-gap-gate= Format' \
     'report folds an uncovered CI gate into the drift details'
 
+mkdir -p "$repo/dashboard"
+printf '%s\n' '[project]' 'dependencies = ["pytest"]' > "$repo/dashboard/pyproject.toml"
+inventory=$(bash "$refresh_sh" --repo-root "$repo" --inventory)
+assert_contains "$inventory" \
+    '# proposal-command|AGENT_CMD_DASHBOARD_TEST|' \
+    'inventory retains the command key for a component rundir'
+assert_contains "$inventory" '|present|dashboard' \
+    'inventory resolves a command alongside its declared rundir'
+rm -rf -- "$repo/dashboard"
+
 sed -i 's/|missing|/|present|/' "$repo/.agent/config.env"
 rm -f "$repo/tools/verify"
 out=$(bash "$refresh_sh" --repo-root "$repo" --summary 2>&1)
 assert_contains "$out" 'toolchains=-1' \
     'summary reports a proposal binary becoming unavailable'
+assert_contains "$out" 'paths=drift' \
+    'summary preserves path drift alongside generator drift'
 
 current=$(
     jq -r '.version' < "$root/agentkit/.codex-plugin/plugin.json"

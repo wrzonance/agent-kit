@@ -111,7 +111,7 @@ binary_present() {
 }
 
 collect_current() {
-    local line key value binary rundir record
+    local line key value binary rundir rundir_key record
     local components='' suggestions=''
     if [[ -x $detector ]]; then
         components=$("$detector" --repo-root "$repo_root" --format components 2> /dev/null || true)
@@ -139,7 +139,8 @@ collect_current() {
     done <<< "$suggestions"
 
     for key in "${!current_binary[@]}"; do
-        rundir=${current_rundir[$key]:-}
+        rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
+        rundir=${current_rundir[$rundir_key]:-}
         if binary_present "${current_binary[$key]}" "$rundir"; then
             current_state[$key]=present
         else
@@ -209,12 +210,13 @@ collect_ci() {
 }
 
 print_inventory() {
-    local record key
+    local record key rundir_key
     for record in "${!current_components[@]}"; do
         printf '%s\n' "# proposal-component|$record"
     done | sort
     for key in "${!current_binary[@]}"; do
-        printf '%s\n' "# proposal-command|$key|${current_binary[$key]}|${current_state[$key]}|${current_rundir[$key]:-}"
+        rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
+        printf '%s\n' "# proposal-command|$key|${current_binary[$key]}|${current_state[$key]}|${current_rundir[$rundir_key]:-}"
     done | sort
 }
 
@@ -298,14 +300,12 @@ fi
 if [[ ${ci_uncovered:-0} =~ ^[1-9][0-9]*$ ]]; then
     parts+=("ci-gaps=$ci_uncovered")
 fi
+[[ -n $path_drift ]] && parts+=("paths=drift")
 
 if ((${#parts[@]} == 0)) && [[ -z $path_drift ]]; then
     summary='drift= none'
 else
     summary="drift= ${parts[*]}"
-    if ((${#parts[@]} == 0)); then
-        summary='drift= components=paths'
-    fi
 fi
 
 if [[ $mode == summary ]]; then
