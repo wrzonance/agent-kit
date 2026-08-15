@@ -444,9 +444,18 @@ printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ONBOARDED_BY=agentkit/0.
 orphan_dir=$(mktemp -d "$tmp/orphan.XXXXXX")/a/b/c
 mkdir -p "$orphan_dir"
 cp "$bs_sh" "$orphan_dir/bootstrap-repo.sh"
+set +e
 PATH="$tmp/stub:$PATH" "$orphan_dir/bootstrap-repo.sh" \
-    --repo-root "$stamp_repo" --project 7 --refresh > /dev/null 2>&1 || true
+    --repo-root "$stamp_repo" --project 7 --refresh > /dev/null 2>&1
+stamp_rc=$?
+set -e
+# Without this the bare `|| true` would let a bootstrap that died before writing
+# anything pass the assertion below: the pre-existing config still holds the old
+# stamp, so "preserved" and "never rewritten" are indistinguishable.
+assert_eq '0' "$stamp_rc" 'the refresh under a missing manifest still succeeds'
 assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=agentkit/0.0.9' \
     'a refresh with no discoverable version keeps the previous generator stamp'
+assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_PROJECT_NUMBER=7' \
+    'the refresh actually rewrote the config rather than leaving it untouched'
 
 finish
