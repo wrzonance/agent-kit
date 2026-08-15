@@ -121,8 +121,14 @@ drift_repo=$(make_repo)
 printf '%s\n' '{}' > "$drift_repo/package.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ONBOARDED_BY=agentkit/0.0.0\n' \
     > "$drift_repo/.agent/config.env"
+config_before=$(cat "$drift_repo/.agent/config.env")
 out=$(session_input "$drift_repo" | "$hooks/session-start.sh" 2>/dev/null)
 ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
+# The advisory is the whole contract: SessionStart reports drift and leaves the
+# repair to the operator. Asserting only the text would pass a hook that
+# silently refreshed the config out from under the handoff it is describing.
+assert_eq "$config_before" "$(cat "$drift_repo/.agent/config.env")" \
+    'SessionStart reports drift without rewriting .agent/config.env'
 assert_contains "$ctx" 'agentkit drift advisory: drift= generator=stale' \
     'SessionStart surfaces the aggregated drift summary'
 assert_contains "$ctx" 'report this in your handoff' \
