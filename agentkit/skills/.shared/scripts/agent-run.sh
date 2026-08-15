@@ -1098,8 +1098,13 @@ yolo_refusal_remediation() {
         printf '    %s\n' "$input" >&2
     done <<< "$changed"
     printf -v runner '%q' "$self_dir/agent-run.sh"
-    printf '  approve-with-record: %s --approve --cmd %q (review the digest from an interactive terminal).\n' \
-        "$runner" "$cmd_name" >&2
+    # Parallel workers run with --dir <worktree>. Without it the root re-runs this
+    # from its own checkout, where the directory defaults to $PWD and the approval
+    # is recorded against a different repository state than the one refused. This
+    # is run_dir, the value --dir actually sets -- not work_dir, which AGENT_RUNDIR_*
+    # moves to a component subdirectory.
+    printf '  approve-with-record: %s --dir %q --approve --cmd %q (review the digest from an interactive terminal).\n' \
+        "$runner" "$run_dir" "$cmd_name" >&2
     printf '  park-and-hand-off: preserve this workstream and hand off the digest plus that exact command; continue other workstreams.\n' >&2
     printf '  no approval record is created; approval is not implied by --yolo. Do not strip the input or retry with a literal command.\n' >&2
 }

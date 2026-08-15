@@ -40,7 +40,11 @@ From the refused worktree, use the exact trust base reported by `agent-run.sh` (
 the pinned base) and the changed inputs named by the refusal:
 
 ```bash
-base_ref=origin/main
+# The base the refusal named above -- the trunk ref, or the pinned base SHA on a
+# chained workstream. Do not substitute origin/main: a chained run compares
+# against its pinned SHA, and diffing the wrong anchor produces evidence about
+# a comparison point nobody refused.
+base_ref='PASTE THE REPORTED TRUST BASE'
 git status --short --untracked-files=all
 git diff --stat "$base_ref" -- path/to/input
 git diff --binary "$base_ref" -- path/to/input
