@@ -70,6 +70,8 @@ if [[ ${1-} == api ]]; then
     fi
     if [[ ${GH_MISMATCH:-0} == 1 ]]; then
         jq -n '{body: "tampered"}'
+    elif [[ ${GH_INCLUDE_CLOSING:-0} == 1 ]]; then
+        jq -Rs '{body: ., closingIssuesReferences: [{number: 42}]}' <"$GH_STORED_BODY"
     else
         jq -Rs '{body: .}' <"$GH_STORED_BODY"
     fi
@@ -93,6 +95,7 @@ run_body() {
         GH_STORED_BODY="$tmp/stored.md" \
         GH_MISMATCH="${GH_MISMATCH:-0}" \
         GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
+        GH_INCLUDE_CLOSING="${GH_INCLUDE_CLOSING:-0}" \
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
 }
 
@@ -148,6 +151,40 @@ assert_contains "$(cat "$tmp/api.log")" 'host=<ambient>' \
     'a numeric target leaves host resolution to gh'
 assert_not_contains "$(cat "$tmp/api.log")" '--hostname' \
     'a numeric target never pins a host'
+
+canonical="$tmp/canonical.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    '## Testing' \
+    '' \
+    '- [ ] canonical footer' \
+    '' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' \
+    '' \
+    'Closes #42' >"$canonical"
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical")
+assert_contains "$output" 'updated pr #41' \
+    'canonical separate signature and closing line pass byte verification'
+
+export GH_INCLUDE_CLOSING=1
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42)
+unset GH_INCLUDE_CLOSING
+assert_contains "$output" 'updated pr #41' \
+    'explicit closing-reference verification passes when GitHub registers the issue'
+
+set +e
+missing_link_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42 2>"$tmp/missing-link.err")
+missing_link_rc=$?
+set -e
+assert_eq '1' "$missing_link_rc" \
+    'explicit closing-reference verification fails when GitHub registers no issue'
+assert_eq '' "$missing_link_output" \
+    'missing linkage emits no success output'
+assert_contains "$(cat "$tmp/missing-link.err")" 'closingIssuesReferences' \
+    'missing linkage failure names the machine evidence'
 
 invalid="$tmp/invalid.md"
 printf '%s\n' 'body without the required front banner' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$invalid"

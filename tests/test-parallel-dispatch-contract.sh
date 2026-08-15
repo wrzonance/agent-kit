@@ -314,7 +314,7 @@ assert_contains "$prepare_script_text" 'mv -f -- "$tmp" "$target"' 'root atomica
 assert_contains "$prepare_script_text" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
 assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
-assert_contains "$normalized_text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
+assert_contains "$normalized_text" 'Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line' \
     'root draft PR carries the required report fields'
 assert_contains "$text" 'PR URL feeds Collect and Step 3a' \
     'root feeds the resulting PR URL into collection and draft dispatch'
@@ -351,10 +351,9 @@ assert_contains "$normalized_text" 'every staged path declared and unprotected' 
     'parallel dispatch reconciles staged paths against the declared operands'
 assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
     'parallel dispatch defers base diff inspection until publication'
-# The draft-PR body template heredoc recipe is single-sourced in
-# references/worker-prompts.md (issue #107 phase 3's split) -- it is
-# dispatch-output content read at publication time, not a worker prompt, but
-# it lives beside the worker prompts it is read alongside. SKILL.md's body
+# The draft-PR body composer recipe is single-sourced in references/worker-prompts.md
+# -- it is dispatch-output content read at publication time, not a worker prompt,
+# but it lives beside the worker prompts it is read alongside. SKILL.md's body
 # keeps only a gate statement + pointer at the binding step.
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## Fix-batch worker prompt$/p' "$worker_prompts"
@@ -363,68 +362,36 @@ assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" p
     'draft PR publication uses the byte-verifying body transport'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
+assert_contains "$publication_section" 'compose-pr-body.sh' \
+    'draft PR publication uses the canonical body composer'
+assert_contains "$publication_section" '--why-file "$pr_why_file"' \
+    'draft PR publication supplies the root-approved Why file'
+assert_contains "$publication_section" '--testing-file "$pr_testing_file"' \
+    'draft PR publication supplies the root-approved Testing file'
+assert_contains "$publication_section" '--expect-closing-issue "$issue_number"' \
+    'default-branch PR publication verifies GitHub closing linkage'
 assert_contains "$publication_section" 'This was written agentically; verify its assertions:' \
-    'draft PR body opens with the attribution banner enforced by gh-body.sh'
+    'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" "cat >\"\$pr_body_template\" <<'EOF'" \
-    'draft PR publication uses a quoted heredoc for literal body bytes'
-assert_not_contains "$publication_section" 'body=${body//__AGENT_IDENTITY__/$agent_identity}' \
-    'draft PR publication never uses replacement-string expansion for identity bytes'
-assert_not_contains "$publication_section" 'body=${body//__PR_CLOSE_LINE__/$pr_close_line}' \
-    'draft PR publication never uses replacement-string expansion for close-line bytes'
-assert_contains "$publication_section" 'body_prefix=${body%%__AGENT_IDENTITY__*}' \
-    'draft PR publication isolates the identity prefix without replacement expansion'
-assert_contains "$publication_section" 'body_remainder=${body#*__AGENT_IDENTITY__}' \
-    'draft PR publication isolates the body remainder without replacement expansion'
-assert_contains "$publication_section" 'body_middle=${body_remainder%%__PR_CLOSE_LINE__*}' \
-    'draft PR publication isolates the close-line prefix without replacement expansion'
-assert_contains "$publication_section" 'body_suffix=${body_remainder#*__PR_CLOSE_LINE__}' \
-    'draft PR publication isolates the close-line suffix without replacement expansion'
-assert_contains "$publication_section" 'printf %s "$body" >"$pr_body_file"' \
-    'draft PR publication writes the substituted body without shell expansion'
-assert_not_contains "$publication_section" '<<EOF' \
-    'draft PR publication has no interpolating heredoc'
 assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
     'draft PR publication secures the body file with mode 600'
-assert_contains "$publication_section" 'pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX")' \
-    'draft PR publication allocates an independent template file'
-assert_not_contains "$publication_section" 'pr_body_template="$pr_body_file.template"' \
-    'draft PR publication never derives a predictable template path'
-assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file" "$pr_body_template"' \
-    'draft PR publication secures both body files with mode 600'
-assert_not_contains "$publication_section" 'cat >"$pr_body_file.template"' \
-    'draft PR publication never writes through the derived template path'
-assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file" "$pr_body_template"'\'' EXIT' \
-    'draft PR publication removes both body files on exit'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
-    'draft PR publication requires an agent identity before interpolation'
-assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \
-    'draft PR publication requires a close line before interpolation'
+    'draft PR publication requires an LLM/service/model identity'
+assert_contains "$publication_section" 'pr_why_file=${pr_why_file:?' \
+    'draft PR publication requires approved Why content'
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file"' \
     'issue creation recipe uses the byte-verifying body transport'
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"' \
     'issue editing recipe uses the byte-verifying body transport'
-assert_contains "$publication_section" '__AGENT_IDENTITY__' \
-    'draft PR publication keeps the identity placeholder literal in the template'
-assert_contains "$publication_section" '__PR_CLOSE_LINE__' \
-    'draft PR publication keeps the close placeholder literal in the template'
 assert_contains "$publication_section" 'Stacked on #' \
-    'stacked PRs declare their base PR in the body'
-stacked_line=$(awk '/^Stacked on #/{print NR; exit}' <<<"$publication_section")
-attribution_line=$(awk '/^🤖 Co-authored by __AGENT_IDENTITY__/{print NR; exit}' <<<"$publication_section")
-if [[ -n $stacked_line && -n $attribution_line && $stacked_line -lt $attribution_line ]]; then
-    _pass 'stacked body block precedes the final attribution'
-else
-    _fail 'stacked body block precedes the final attribution' \
-        "stacked line: ${stacked_line:-missing}" "attribution line: ${attribution_line:-missing}"
-fi
-assert_contains "$publication_section" 'retarget this PR to the default branch' \
-    'stacked body instructs an explicit retarget, never reliance on branch deletion'
+    'stacked PRs keep the base disclosure in approved section content'
+assert_contains "$publication_section" 'chain-advance.sh --retarget' \
+    'stacked PRs use the machine retarget proof before merging'
 assert_contains "$text" 'verify the successor'"'"'s baseRefName' \
     'chain merge order requires verified retargeting before a successor merges'
-assert_contains "$publication_section" 'only retargets automatically when the base branch is deleted' \
-    'stacked body explains the auto-retarget unwind'
+assert_contains "$publication_section" 'automatic retarget' \
+    'stacked body explains the human auto-retarget path'
 assert_contains "$text" 'merge order' 'ready-flip handoff states the chain merge order'
 
 body_template="$tmp/body-template"

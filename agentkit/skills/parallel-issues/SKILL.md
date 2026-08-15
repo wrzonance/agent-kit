@@ -710,7 +710,7 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
-Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN; PR URL feeds Collect and Step 3a.
+Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with the canonical body composer: Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL feeds Collect and Step 3a.
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
@@ -722,8 +722,7 @@ mapfile -d '' -t validated_argv <"$validated_argv_file"
 ```
 
 Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full
-for the draft-PR body template recipe (quoted heredoc, placeholder substitution without Bash
-replacement-string expansion, and the stacked-issue base/retarget addendum) before opening any
+for the composer recipe and stacked retarget/linkage proof before opening any
 draft PR — it is dispatch-*output* content, read at the moment of publication rather than pasted
 in advance.
 
