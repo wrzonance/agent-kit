@@ -297,6 +297,16 @@ validate_findings_file() {
         )
     ' "$FINDINGS_FILE" >/dev/null 2>&1 ||
         evidence_unavailable 'findings file must not contain a line break; it must not contain the receipt marker; it must match the ledger schema'
+
+    local finding_count total
+    finding_count=$(jq -s 'length' "$FINDINGS_FILE") ||
+        evidence_unavailable 'could not count the findings ledger'
+    total=$((P1 + P2))
+    if ((finding_count != total)); then
+        printf '%s: finding counts P1=%s P2=%s total=%s but ledger has %s record(s)\n' \
+            "$PROGNAME" "$P1" "$P2" "$total" "$finding_count" >&2
+        exit 13
+    fi
 }
 
 refuse_push() {

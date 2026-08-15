@@ -144,6 +144,8 @@ jq -cn '{title:"Missing input validation",verdict:"fixed",sha:"abc1234,def5678"}
     >"$findings_file"
 jq -cn '{title:"Debatable naming",verdict:"declined",rationale:"style preference, no behavior change"}' \
     >>"$findings_file"
+jq -cn '{title:"Unrelated cleanup",verdict:"declined",rationale:"not required for this change"}' \
+    >>"$findings_file"
 out=$(run_publish --pr 14 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason 'peer CLI available' \
@@ -203,6 +205,25 @@ assert_contains "$clean_body" 'Confirmed finding: none confirmed' \
     'publish body records none confirmed when no finding is given'
 assert_contains "$clean_body" 'mode=blind-fallback' \
     'publish body records the blind-fallback mode'
+
+# -- publish: counts must match the findings ledger -------------------------
+
+: >"$tmp/gh.log"
+reset_not_spent
+reset_findings
+jq -cn '{title:"Only one confirmed finding",verdict:"fixed",sha:"abc1234"}' \
+    >"$findings_file"
+mismatch_out=$(run_publish --pr 151 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 1 --p2 1 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+mismatch_rc=$?
+assert_eq '13' "$mismatch_rc" \
+    'publish rejects counts that do not match the findings ledger'
+assert_contains "$mismatch_out" 'finding counts' \
+    'count mismatch names the findings pipeline invariant'
+assert_eq '' "$(cat "$tmp/gh.log")" \
+    'count mismatch happens before receipt transport'
 
 # -- publish: verified-skip line is optional --------------------------------
 
@@ -294,6 +315,8 @@ assert_contains "$marker_out" 'must not contain the receipt marker' \
 
 reset_not_spent
 reset_findings
+jq -cn '{title:"Exactly once",verdict:"fixed",sha:"abc1234"}' \
+    >"$findings_file"
 : >"$tmp/gh.log"
 run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
