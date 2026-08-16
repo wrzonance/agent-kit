@@ -350,11 +350,13 @@ became active, and what `Stop` will now enforce.
 | `AGENT_STATUS_VOCAB` | the board's Status column names, in order |
 | `AGENT_CMD_<NAME>` | a command invoked as `agent-run.sh --cmd <name>` |
 | `AGENT_RUNDIR_<NAME>` | the directory that command runs in, relative to the repo root |
-| `AGENT_CMD_SETUP` | how a FRESH worktree installs dependencies; parallel work runs it before the first verify |
-| `AGENT_REPO_RUNNER` | a single dispatcher; skills call `runner <name>` instead |
-| `AGENT_WORKTREE_ROOT` | where isolated worktrees are created |
-| `AGENT_PROTECTED_PATHS` | extra paths that gate other checks; edits to them are refused once |
-| `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | labels to reuse rather than invent |
+| `AGENT_CMD_SETUP` | install before verify |
+| `AGENT_REPO_RUNNER` | command dispatcher |
+| `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
+| `AGENT_GENERATED_PATHS` | generated path prefixes |
+| `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
+| `AGENT_PROTECTED_PATHS` | extra gating paths; edits refused once |
+| `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | reuse labels |
 
 Named repository commands require explicit approval before their first run and after a declaration or
 repository-backed input changes (`agent-run.sh --approve --cmd <name>`); the approval record is owner-only
