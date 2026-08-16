@@ -60,8 +60,9 @@ while (($#)); do
     esac
 done
 
+root_input=$root
 if ! root=$(cd -- "$root" 2>/dev/null && pwd); then
-    printf 'release version check failed: root is not a directory: %s\n' "$root" >&2
+    printf 'release version check failed: root is not a directory: %s\n' "$root_input" >&2
     exit 2
 fi
 

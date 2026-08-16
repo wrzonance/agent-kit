@@ -11,6 +11,8 @@ root=$(cd -- "$here/.." && pwd)
 checker="$here/check-release-version.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+expected_version=$(jq -r '.version' < "$root/agentkit/.claude-plugin/plugin.json")
+mismatch_version="${expected_version}-mismatch"
 
 fixture="$tmp/tree"
 mkdir -p "$fixture/agentkit/.claude-plugin" \
@@ -36,22 +38,22 @@ run_checker() {
 
 out="$tmp/agreement.out"
 assert_eq '0' "$(run_checker "$out")" 'matching manifests pass without a tag'
-assert_contains "$(cat -- "$out")" 'all 4 manifests agree on 0.1.0' \
+assert_contains "$(cat -- "$out")" "all 4 manifests agree on $expected_version" \
     'agreement success names the version and manifest count'
 
 out="$tmp/tag.out"
-assert_eq '0' "$(run_checker "$out" --tag refs/tags/v0.1.0)" \
+assert_eq '0' "$(run_checker "$out" --tag "refs/tags/v$expected_version")" \
     'a v-prefixed tag matches the manifest version'
-assert_contains "$(cat -- "$out")" 'tag refs/tags/v0.1.0 matches 0.1.0' \
+assert_contains "$(cat -- "$out")" "tag refs/tags/v$expected_version matches $expected_version" \
     'tag success names the tag and normalized version'
 
 out="$tmp/tag-mismatch.out"
-assert_eq '1' "$(run_checker "$out" --tag v9.9.9)" \
+assert_eq '1' "$(run_checker "$out" --tag "v$mismatch_version")" \
     'a tag mismatch fails the gate'
 assert_contains "$(cat -- "$out")" 'tag version mismatch' \
     'tag mismatch identifies the failed invariant'
 
-sed 's/"version": "0.1.0"/"version": "9.9.9"/' \
+jq --arg version "$mismatch_version" '.version = $version' \
     "$fixture/plugin/agentkit/.codex-plugin/plugin.json" \
     > "$fixture/plugin/agentkit/.codex-plugin/plugin.json.new"
 mv -- "$fixture/plugin/agentkit/.codex-plugin/plugin.json.new" \
@@ -59,7 +61,7 @@ mv -- "$fixture/plugin/agentkit/.codex-plugin/plugin.json.new" \
 out="$tmp/disagreement.out"
 assert_eq '1' "$(run_checker "$out")" 'disagreeing manifests fail the gate'
 assert_contains "$(cat -- "$out")" \
-    'plugin/agentkit/.codex-plugin/plugin.json declares 9.9.9; expected 0.1.0' \
+    "plugin/agentkit/.codex-plugin/plugin.json declares $mismatch_version; expected $expected_version" \
     'disagreement identifies the path and both values'
 
 rm -- "$fixture/plugin/agentkit/.codex-plugin/plugin.json"
@@ -80,7 +82,7 @@ assert_contains "$(cat -- "$out")" \
 
 cp -- "$fixture/agentkit/.claude-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json"
-sed 's/"version": "0.1.0"/"version": ""/' \
+jq '.version = ""' \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json" \
     > "$fixture/plugin/agentkit/.claude-plugin/plugin.json.new"
 mv -- "$fixture/plugin/agentkit/.claude-plugin/plugin.json.new" \
@@ -94,16 +96,26 @@ assert_contains "$(cat -- "$out")" \
 cp -- "$fixture/agentkit/.claude-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json"
 out="$tmp/tag-context.out"
-export GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0
+export GITHUB_REF_TYPE=tag GITHUB_REF_NAME="v$expected_version"
 assert_eq '0' "$(run_checker "$out")" \
     'tag-push context checks the tag without an argument'
 unset GITHUB_REF_TYPE GITHUB_REF_NAME
+
+bad_root="$tmp/missing-root"
+out="$tmp/bad-root.out"
+rc=0
+"$checker" --root "$bad_root" >"$out" 2>&1 || rc=$?
+assert_eq '2' "$rc" 'a missing checker root is a usage failure'
+assert_contains "$(cat -- "$out")" "root is not a directory: $bad_root" \
+    'a missing checker root reports the original path'
 
 ci_text=$(cat -- "$root/.github/workflows/ci.yml")
 assert_contains "$ci_text" "tags: ['v*']" 'CI runs the gate for versioned tag pushes'
 assert_contains "$ci_text" 'types: [published]' 'CI runs the gate for published releases'
 assert_contains "$ci_text" 'tests/check-release-version.sh' 'CI invokes the release gate'
-assert_contains "$ci_text" 'github.event.release.tag_name || github.ref' \
+assert_contains "$ci_text" 'github.event.release.tag_name || github.sha' \
     'release runs check out the published tag'
+assert_not_contains "$ci_text" 'github.event.release.tag_name || github.ref' \
+    'CI does not resolve non-release checkouts from a moving ref'
 
 finish

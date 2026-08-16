@@ -28,7 +28,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ github.event.release.tag_name || github.sha }}
 
       - name: Install pinned ShellCheck
         # Reference release: ShellCheck v0.11.0
