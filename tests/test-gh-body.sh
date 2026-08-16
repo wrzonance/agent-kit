@@ -51,6 +51,25 @@ if [[ ${1-} == api ]]; then
         api_host=${2-}
         shift 2
     fi
+    if [[ ${1-} == graphql ]]; then
+        printf 'host=%s endpoint=graphql\n' "${api_host:-<ambient>}" >>"$GH_API_LOG"
+        if [[ ${GH_CLOSING_PAGE2:-0} == 1 ]]; then
+            # The expected issue lives past the first page: page one carries an
+            # unrelated linkage and a cursor, page two carries #42.
+            if printf '%s\n' "$@" | grep -q '^after=CUR1$'; then
+                jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: [{number: 42}], pageInfo: {hasNextPage: false, endCursor: null}}}}}}'
+            else
+                jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: [{number: 99}], pageInfo: {hasNextPage: true, endCursor: "CUR1"}}}}}}'
+            fi
+            exit 0
+        fi
+        if [[ ${GH_INCLUDE_CLOSING:-0} == 1 ]]; then
+            jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: [{number: 42}]}}}}}'
+        else
+            jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: []}}}}}'
+        fi
+        exit 0
+    fi
     [[ $# -eq 1 ]] || {
         printf 'gh api received unexpected arguments: %q\n' "$*" >&2
         exit 23
@@ -93,6 +112,8 @@ run_body() {
         GH_STORED_BODY="$tmp/stored.md" \
         GH_MISMATCH="${GH_MISMATCH:-0}" \
         GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
+        GH_INCLUDE_CLOSING="${GH_INCLUDE_CLOSING:-0}" \
+        GH_CLOSING_PAGE2="${GH_CLOSING_PAGE2:-0}" \
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
 }
 
@@ -148,6 +169,42 @@ assert_contains "$(cat "$tmp/api.log")" 'host=<ambient>' \
     'a numeric target leaves host resolution to gh'
 assert_not_contains "$(cat "$tmp/api.log")" '--hostname' \
     'a numeric target never pins a host'
+
+canonical="$tmp/canonical.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    '## Testing' \
+    '' \
+    '- [ ] canonical footer' \
+    '' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' \
+    '' \
+    'Closes #42' >"$canonical"
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical")
+assert_contains "$output" 'updated pr #41' \
+    'canonical separate signature and closing line pass byte verification'
+
+export GH_INCLUDE_CLOSING=1
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42)
+unset GH_INCLUDE_CLOSING
+assert_contains "$output" 'updated pr #41' \
+    'explicit closing-reference verification passes when GitHub registers the issue'
+assert_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
+    'explicit closing-reference verification queries GitHub GraphQL'
+
+set +e
+missing_link_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42 2>"$tmp/missing-link.err")
+missing_link_rc=$?
+set -e
+assert_eq '1' "$missing_link_rc" \
+    'explicit closing-reference verification fails when GitHub registers no issue'
+assert_eq '' "$missing_link_output" \
+    'missing linkage emits no success output'
+assert_contains "$(cat "$tmp/missing-link.err")" 'closingIssuesReferences' \
+    'missing linkage failure names the machine evidence'
 
 invalid="$tmp/invalid.md"
 printf '%s\n' 'body without the required front banner' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$invalid"
@@ -207,5 +264,18 @@ assert_contains "$refetch_output" 'https://github.com/owner/repo/issues/42' \
     'create re-fetch failure preserves the created URL'
 assert_contains "$(cat "$tmp/refetch.err")" 'body re-fetch failed' \
     'create re-fetch failure explains the unverified mutation'
+
+
+
+# --- closing linkage past the first page -----------------------------------
+# closingIssuesReferences(first:100) reads one page. A linkage sitting beyond it
+# is present but unreadable in a single fetch, so a one-page verifier reports
+# valid linkage as missing and refuses a correct PR.
+export GH_CLOSING_PAGE2=1
+page2_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42)
+unset GH_CLOSING_PAGE2
+assert_contains "$page2_output" 'updated pr #41' \
+    'closing linkage on the second page is found, not rejected'
 
 finish
