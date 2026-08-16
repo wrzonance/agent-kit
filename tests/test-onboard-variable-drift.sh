@@ -11,6 +11,7 @@ source "$here/lib/assert.sh"
 schema="$root/agentkit/skills/.shared/schema/config.env.example"
 skill="$root/agentkit/skills/onboard-repo/SKILL.md"
 resolver="$root/agentkit/skills/.shared/scripts/repo-config.sh"
+runner="$root/agentkit/skills/.shared/scripts/agent-run.sh"
 
 assert_eq 'yes' "$([[ -f $schema && ! -L $schema ]] && printf yes || printf no)" \
     'the config.env example is a regular file'
@@ -50,11 +51,38 @@ config_consumer_probe='read from .agent/config.env: AGENT_CONFIG_PROBE'
 assert_contains "$(awk '/config\.env/ { print }' <<< "$config_consumer_probe")" \
     'AGENT_CONFIG_PROBE' 'the consumer scan recognizes a literal config.env reference'
 
-# This is consumed by agent-run.sh as a runtime assertion, not as a persistent
-# config.env declaration. Its documentation is still part of the onboarding
-# contract so operators can discover the serialization control.
-runtime_keys=(AGENT_COMPOSE_SERIALIZED)
+# These are read by agent-run.sh straight from the environment as runtime
+# assertions, never as a persistent config.env declaration. Their documentation
+# is still part of the onboarding contract so operators can discover them.
+runtime_keys=(AGENT_CACHE_ROOT AGENT_COMPOSE_SERIALIZED AGENT_TRUST_ROOT)
 consumed_keys+=("${runtime_keys[@]}")
+
+# Guard runtime_keys itself against drift: derive every AGENT_* environment
+# read in the runner (assignment/export sites, internal double-underscore
+# markers, and dynamic AGENT_CMD_/AGENT_RUNDIR_ tokens excluded) and assert it
+# equals runtime_keys exactly, minus keys the resolver already declares. A new
+# or renamed runtime-only read must be added here before this test goes green.
+mapfile -t runner_reads < <(
+    grep -nE '\$\{?AGENT_[A-Z]' "$runner" |
+        grep -vE '^[0-9]+:[[:space:]]*(export[[:space:]]+)?AGENT_[A-Z0-9_]*=' |
+        grep -vE '^[0-9]+:[[:space:]]*#' |
+        grep -oE 'AGENT_[A-Z][A-Z0-9_]*' | sort -u
+)
+derived_runtime_keys=()
+for key in "${runner_reads[@]}"; do
+    case $key in
+        AGENT_CMD_ | AGENT_RUNDIR_) continue ;;
+        *__) continue ;;
+    esac
+    declared=no
+    for config_key in "${config_keys[@]}"; do
+        [[ $key == "$config_key" ]] && declared=yes && break
+    done
+    [[ $declared == yes ]] || derived_runtime_keys+=("$key")
+done
+assert_eq "$(printf '%s\n' "${runtime_keys[@]}" | sort)" \
+    "$(printf '%s\n' "${derived_runtime_keys[@]}" | sort)" \
+    'runtime_keys matches every AGENT_* environment read in agent-run.sh'
 
 variable_table=$(
     awk '
@@ -69,6 +97,8 @@ cmd_row="| ${tick}AGENT_CMD_<NAME>${tick} |"
 rundir_row="| ${tick}AGENT_RUNDIR_<NAME>${tick} |"
 generated_row="| ${tick}AGENT_GENERATED_PATHS${tick} |"
 compose_row="| ${tick}AGENT_COMPOSE_SERIALIZED${tick} |"
+trust_root_row="| ${tick}AGENT_TRUST_ROOT${tick} |"
+cache_root_row="| ${tick}AGENT_CACHE_ROOT${tick} |"
 
 for key in "${config_keys[@]}"; do
     in_schema=no
@@ -103,5 +133,9 @@ assert_contains "$variable_table" "$generated_row" \
     'the onboarding table documents generated artifact paths'
 assert_contains "$variable_table" "$compose_row" \
     'the onboarding table documents runtime-only compose serialization'
+assert_contains "$variable_table" "$trust_root_row" \
+    'the onboarding table documents the runtime-only trust root override'
+assert_contains "$variable_table" "$cache_root_row" \
+    'the onboarding table documents the runtime-only cache root override'
 
 finish

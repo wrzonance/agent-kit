@@ -40,7 +40,7 @@ path from the environment contract. A bare `agent-run.sh`, a guessed cache path,
 literal is not an actionable instruction. When the contract is absent, resolve the tree first and print the
 resulting absolute command as one copy-pasteable line.
 
-Completion reports include this four-step go-live checklist:
+Completion reports include this go-live checklist:
 
 1. Open a PR that commits `.agent/config.env`, `.agent/board.json`, and `.gitignore`.
 2. Until that PR merges, approvals remain per-machine and are not repository trust.
@@ -214,12 +214,11 @@ Treat every line as a CANDIDATE, not an answer — it inspects marker files, not
 here is proven until Step 6 runs it.
 
 **Do not test a candidate by running it yourself first.** Declare it, then run it once through
-`agent-run.sh` in Step 6; if it fails there, remove or fix the declaration — running it twice (once bare to
-"check", once through the declaration to validate) spends the whole suite's runtime proving something the
-second run already proves. On a monorepo it emits one block per component, each with its own
-`AGENT_CMD_<COMPONENT>_<TASK>` and, unless the component is the repo root, a companion
-`AGENT_RUNDIR_<COMPONENT>_<TASK>` — that is the pairing that keeps a component command from running out of
-the wrong directory.
+`agent-run.sh` in Step 6; if it fails, remove or fix the declaration — running it twice (once bare to
+"check", once through the declaration) spends the whole suite's runtime proving the same thing twice. On a
+monorepo it emits one block per component, each with its own `AGENT_CMD_<COMPONENT>_<TASK>` and, unless the
+component is the repo root, a companion `AGENT_RUNDIR_<COMPONENT>_<TASK>` — the pairing that keeps a
+component command from running out of the wrong directory.
 
 **Declare `SETUP` if a fresh checkout needs one** — `AGENT_CMD_SETUP=<the locked, offline-capable install
 command>` — since a worktree starts with none of the repository's dependencies installed, so without it the
@@ -237,9 +236,9 @@ AGENT_CMD_TEST=<the full suite, minutes>
 **Approval is separate from declaration, and it is meant to be a human step.** A committed `AGENT_CMD_*`
 value is repository-controlled data, not permission to execute — before the first run a human reviews the
 declaration and approves the exact command from their own terminal (`--approve` reads confirmation from the
-controlling terminal). That is defense-in-depth, not a human-only guarantee: a non-interactive agent shell
-cannot answer the prompt, but a same-user process could still drive a pseudo-terminal or write the trust
-record directly.
+controlling terminal). That is defense-in-depth, not proof: a non-interactive
+shell can't answer the prompt, but a same-user process could still drive a pseudo-terminal or write the
+trust record directly.
 
 ```bash
 : "${agentkit:?re-run Step 0}"
@@ -250,9 +249,9 @@ record directly.
 ```
 
 Approval lives outside the checkout and fingerprints the declaration plus repository-backed command inputs,
-so a changed `tools/verify` or package manifest cannot inherit an old approval — `agent-run.sh` refuses to
-run until a human reviews and approves again. Literal commands (`agent-run.sh -- ...`) are caller-supplied
-and never use this trust record.
+so a changed `tools/verify` or manifest can't inherit an old approval — `agent-run.sh` refuses to run until
+a human re-approves. Literal commands (`agent-run.sh -- ...`) are caller-supplied and never use this trust
+record.
 
 **Several commands in one ecosystem** get one key each — values are argv, no shell syntax, pipes, `&&`, or
 `cd`. A command needing to run inside a component pairs with a rundir key instead of wrapping itself
@@ -355,12 +354,14 @@ became active, and what `Stop` will now enforce.
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
 | `AGENT_GENERATED_PATHS` | generated path prefixes |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
+| `AGENT_TRUST_ROOT` | runtime-only; overrides the command-trust state root |
+| `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |
 | `AGENT_PROTECTED_PATHS` | extra gating paths; edits refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | reuse labels |
 
 Named repository commands require explicit approval before their first run and after a declaration or
 repository-backed input changes (`agent-run.sh --approve --cmd <name>`); the approval record is owner-only
-state outside the checkout, intentionally not a committed key a pull request could change alongside the command.
+state outside the checkout, not a committed key a pull request could change.
 
 Shared helpers require Bash 4+ for associative arrays. Invoke them with Bash; zsh calls fail fast.
 
