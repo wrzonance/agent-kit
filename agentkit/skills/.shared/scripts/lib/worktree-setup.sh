@@ -87,6 +87,10 @@ worktree_setup_load_config() {
 
 worktree_setup_worktree_root() {
     local config=$1 root=$2 value
+    [[ -x $config ]] || {
+        worktree_setup_fail "repository config helper is missing or not executable: $config"
+        return 1
+    }
     value=$("$config" --repo-root "$root" --get AGENT_WORKTREE_ROOT 2>/dev/null) || value=''
     [[ -n $value ]] || value='.worktrees'
     [[ $value != /* && $value != *..* && $value != *$'\n'* && $value != *$'\r'* ]] || {
@@ -122,7 +126,7 @@ worktree_setup_validate_full_sha() {
 
 worktree_setup_validate_repo_slug() {
     local value=$1
-    [[ $value =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+    [[ $value =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || {
         worktree_setup_fail 'repository must look like OWNER/REPO'
         return 1
     }
@@ -237,6 +241,14 @@ worktree_setup_propagate_config() {
         # error.
         rm -f "$temp"
         return 0
+    fi
+    if ((placement_status == 11)); then
+        # The exclusive open succeeded (it created $target), but the write
+        # into it failed. Remove the resulting empty file so a later run
+        # never mistakes it for a previously trusted target.
+        rm -f "$temp" "$target"
+        worktree_setup_fail "could not copy root-local config.env into place"
+        return 1
     fi
     if ((placement_status != 0)); then
         rm -f "$temp"

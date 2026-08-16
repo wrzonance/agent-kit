@@ -95,8 +95,8 @@ main() {
     parse_args "$@"
     validate_args
 
-    local root config resolver shared preflight head_branch cross_repo existing worktree_root
-    local worktree branch setup_declared created_worktree=0
+    local root config shared preflight head_branch cross_repo existing worktree_root
+    local worktree branch setup_declared created_worktree=0 config_export
     root=$(worktree_setup_resolve_repo_root "$PWD") || exit 1
     config="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
     shared="$SCRIPT_DIR/../../.shared/scripts"
@@ -131,18 +131,20 @@ main() {
         # This ordering is deliberately kept in this entry point as a contract
         # regression guard for the review skill's Step 0a hazard.
         unset AGENT_WORKTREE_ROOT
-        resolver=$config
-        eval "$("$resolver" --repo-root "$root" --export)" || {
-            worktree_setup_fail 'could not load repository configuration'
-            exit 1
-        }
+        # worktree_setup_load_config's own -x check reports a specific error;
+        # capturing its output through a plain assignment (rather than
+        # embedding the substitution directly inside `eval`'s argument) is
+        # required for that failure's exit status to actually reach this
+        # `|| exit 1` instead of being discarded by eval's own exit status.
+        config_export=$(worktree_setup_load_config "$config" "$root") || exit 1
+        eval "$config_export"
         worktree_root=${AGENT_WORKTREE_ROOT:-.worktrees}
         worktree_setup_validate_worktree_root "$worktree_root" || exit 1
         worktree_setup_ensure_exclude "$root" "$worktree_root/" || exit 1
-        worktree="${PR_WORKTREE:-$root/$worktree_root/pr-$PR}"
-        if [[ $worktree != /* ]]; then
-            worktree=$root/$worktree
-        fi
+        # The worktree path is always derived from the validated repository
+        # root and worktree root — no environment override is honored here,
+        # so nothing can steer worktree creation outside the repository.
+        worktree="$root/$worktree_root/pr-$PR"
         if [[ -e $worktree || -L $worktree ]]; then
             worktree_setup_fail "worktree path exists: $worktree"
             exit 1

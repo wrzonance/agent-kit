@@ -229,6 +229,16 @@ PATH="$copy_fail_bin:$PATH" WORKTREE_SETUP_REAL_CAT="$real_cat" \
     WORKTREE_SETUP_FAIL_CAT_SOURCE="$copy_fail_root/.agent/config.env" \
     worktree_setup_propagate_config "$copy_fail_root" "$copy_fail_worktree" >/dev/null 2>&1 || copy_fail_ok=no
 assert_eq no "$copy_fail_ok" 'config propagation rejects a post-create copy failure'
+# The failed copy must not leave an empty target behind: an empty file at
+# $target would be indistinguishable from a "previously trusted target" on
+# the next run, silently poisoning it with a config that never arrives.
+assert_eq no "$(test -e "$copy_fail_worktree/.agent/config.env" && printf yes || printf no)" \
+    'config propagation removes the empty target left by a failed copy'
+copy_fail_retry_ok=yes
+worktree_setup_propagate_config "$copy_fail_root" "$copy_fail_worktree" >/dev/null 2>&1 || copy_fail_retry_ok=no
+assert_eq yes "$copy_fail_retry_ok" 'a retried config propagation succeeds after a failed copy'
+assert_eq "$(<"$copy_fail_root/.agent/config.env")" "$(<"$copy_fail_worktree/.agent/config.env")" \
+    'a retried config propagation is not poisoned by a leftover empty target'
 
 if [[ -x $create_sh ]]; then
     assert_rc 1 'issue setup rejects an invalid issue number' -- \
@@ -247,6 +257,19 @@ for invalid_ref in 'foo..bar' 'foo bar' '-option' 'foo~bar'; do
     worktree_setup_validate_ref "$invalid_ref" 'test branch' >/dev/null 2>&1 || ref_ok=no
     assert_eq no "$ref_ok" "branch validation rejects invalid ref: $invalid_ref"
 done
+
+# A dot-leading segment (in particular '..') must not slip past the slug
+# guard: $REPO is forwarded to gh and agent-preflight.sh, and a segment that
+# reads as a path-traversal token is weaker than the guard's own failure
+# message ("must look like OWNER/REPO") claims to reject.
+for invalid_slug in '../..' './x' 'owner/..' '../repo'; do
+    slug_ok=yes
+    worktree_setup_validate_repo_slug "$invalid_slug" >/dev/null 2>&1 || slug_ok=no
+    assert_eq no "$slug_ok" "repo slug validation rejects dot-leading segment: $invalid_slug"
+done
+slug_ok=yes
+worktree_setup_validate_repo_slug 'owner-name/repo.name_2' >/dev/null 2>&1 || slug_ok=no
+assert_eq yes "$slug_ok" 'repo slug validation still accepts ordinary names containing dots'
 
 shorthand_repo=$tmp/shorthand-repo
 mkdir -p "$shorthand_repo"
@@ -293,6 +316,8 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '  *"pr view 10"*headRefName*) printf "%s\\n" fork/pr-head ;;' \
     '  *"pr view 10"*isCrossRepository*) printf "%s\\n" true ;;' \
     '  *"pr checkout 10"*) exit 0 ;;' \
+    '  *"pr view 11"*headRefName*) printf "%s\\n" feat/pr-11-head ;;' \
+    '  *"pr view 11"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *) exit 1 ;;' \
     'esac' >"$fake_gh"
 fake_jq=$fake_bin/jq
@@ -330,6 +355,26 @@ if [[ -x $pr_sh ]]; then
         "$root/agentkit/skills/.shared/scripts/agent-run.sh" "$pr_repo/.fleet/pr-9"
     assert_eq 'setup-ran' "$(<"$pr_repo/.fleet/pr-9/setup.marker")" \
         'same-repository PR setup runs through agent-run after approval'
+
+    # An inherited PR_WORKTREE must never steer worktree creation outside the
+    # repository: the worktree path is always derived from the validated
+    # repository root and worktree root, with no environment override honored.
+    git -C "$pr_repo" switch -q -c 'feat/pr-11-head'
+    git -C "$pr_repo" push -q origin 'feat/pr-11-head'
+    git -C "$pr_repo" switch -q main
+    escaped_target="$pr_repo/../elsewhere"
+    rm -rf -- "$escaped_target"
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        PR_WORKTREE='../elsewhere' WORKTREE_SETUP_GH_LOG="$gh_log" \
+        "$pr_sh" --pr 11 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '1' "$rc" 'PR setup with a malicious PR_WORKTREE still stops for setup approval'
+    assert_eq 'yes' "$(test -d "$pr_repo/.fleet/pr-11" && printf yes || printf no)" \
+        'PR_WORKTREE environment override no longer changes the derived worktree path'
+    assert_eq 'no' "$(test -e "$escaped_target" && printf yes || printf no)" \
+        'a malicious PR_WORKTREE does not escape the repository root'
+    rm -rf -- "$escaped_target"
 
     fork_repo=$tmp/fork-repo
     mkdir -p "$fork_repo"
