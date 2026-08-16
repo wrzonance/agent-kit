@@ -159,22 +159,25 @@ assert_eq no "$(test -e "$secure_worktree/.agent/config.env" && printf yes || pr
     'config propagation does not create a target for a source symlink'
 
 # A target directory can appear after the existence check. The placement must
-# not let mv reinterpret it as a directory destination and report success.
+# not reinterpret it as a directory destination and report success. The
+# staging shim creates that directory immediately after mktemp returns, which
+# is the handoff point immediately before placement.
 race_root=$tmp/race-root
 race_worktree=$tmp/race-worktree
 race_bin=$tmp/race-bin
 mkdir -p "$race_root/.agent" "$race_worktree" "$race_bin"
 printf '%s\n' 'AGENT_CMD_SETUP=tools/setup' >"$race_root/.agent/config.env"
-race_mv=$race_bin/mv
+race_mktemp=$race_bin/mktemp
 # shellcheck disable=SC2016  # the fixture intentionally records literal env refs.
 printf '%s\n' '#!/usr/bin/env bash' \
+    'staged=$("$WORKTREE_SETUP_REAL_MKTEMP" "$@") || exit 1' \
     'mkdir -p -- "$WORKTREE_SETUP_RACE_TARGET"' \
-    'exec "$WORKTREE_SETUP_REAL_MV" "$@"' >"$race_mv"
-chmod +x "$race_mv"
-real_mv=$(command -v mv)
+    'printf "%s\n" "$staged"' >"$race_mktemp"
+chmod +x "$race_mktemp"
+real_mktemp=$(command -v mktemp)
 race_ok=yes
 PATH="$race_bin:$PATH" WORKTREE_SETUP_RACE_TARGET="$race_worktree/.agent/config.env" \
-    WORKTREE_SETUP_REAL_MV="$real_mv" \
+    WORKTREE_SETUP_REAL_MKTEMP="$real_mktemp" \
     worktree_setup_propagate_config "$race_root" "$race_worktree" >/dev/null 2>&1 || race_ok=no
 assert_eq no "$race_ok" 'config propagation rejects a raced target directory'
 assert_eq yes "$(test -d "$race_worktree/.agent/config.env" && printf yes || printf no)" \
@@ -182,12 +185,92 @@ assert_eq yes "$(test -d "$race_worktree/.agent/config.env" && printf yes || pri
 assert_eq no "$(test -f "$race_worktree/.agent/config.env/config.env" && printf yes || printf no)" \
     'config propagation does not place config inside the raced directory'
 
+# The placement path must not depend on GNU-only mv flags; a macOS-style mv
+# that rejects them still leaves a valid staged config to place.
+portable_root=$tmp/portable-root
+portable_worktree=$tmp/portable-worktree
+portable_bin=$tmp/portable-bin
+mkdir -p "$portable_root/.agent" "$portable_worktree" "$portable_bin"
+printf '%s\n' 'AGENT_CMD_SETUP=tools/setup' >"$portable_root/.agent/config.env"
+portable_mv=$portable_bin/mv
+# shellcheck disable=SC2016  # the fixture intentionally records literal env refs.
+printf '%s\n' '#!/usr/bin/env bash' \
+    'for arg in "$@"; do' \
+    '    case "$arg" in --no-clobber|--no-target-directory) exit 64 ;; esac' \
+    'done' \
+    'exec "$WORKTREE_SETUP_REAL_MV" "$@"' >"$portable_mv"
+chmod +x "$portable_mv"
+real_mv=$(command -v mv)
+portable_ok=yes
+PATH="$portable_bin:$PATH" WORKTREE_SETUP_REAL_MV="$real_mv" \
+    worktree_setup_propagate_config "$portable_root" "$portable_worktree" >/dev/null 2>&1 || portable_ok=no
+assert_eq yes "$portable_ok" 'config propagation works without GNU mv flags'
+assert_eq "$(<"$portable_root/.agent/config.env")" "$(<"$portable_worktree/.agent/config.env")" \
+    'portable config propagation preserves the staged bytes'
+
+# An exclusive open can succeed before the copy fails. That post-create copy
+# failure must not be mistaken for a trusted pre-existing target.
+copy_fail_root=$tmp/copy-fail-root
+copy_fail_worktree=$tmp/copy-fail-worktree
+copy_fail_bin=$tmp/copy-fail-bin
+mkdir -p "$copy_fail_root/.agent" "$copy_fail_worktree" "$copy_fail_bin"
+printf '%s\n' 'AGENT_CMD_SETUP=tools/setup' >"$copy_fail_root/.agent/config.env"
+copy_fail_cat=$copy_fail_bin/cat
+# shellcheck disable=SC2016  # the fixture intentionally records literal env refs.
+printf '%s\n' '#!/usr/bin/env bash' \
+    'if [[ ${1:-} == "$WORKTREE_SETUP_FAIL_CAT_SOURCE" ]]; then' \
+    '    exec "$WORKTREE_SETUP_REAL_CAT" "$@"' \
+    'fi' \
+    'exit 73' >"$copy_fail_cat"
+chmod +x "$copy_fail_cat"
+real_cat=$(command -v cat)
+copy_fail_ok=yes
+PATH="$copy_fail_bin:$PATH" WORKTREE_SETUP_REAL_CAT="$real_cat" \
+    WORKTREE_SETUP_FAIL_CAT_SOURCE="$copy_fail_root/.agent/config.env" \
+    worktree_setup_propagate_config "$copy_fail_root" "$copy_fail_worktree" >/dev/null 2>&1 || copy_fail_ok=no
+assert_eq no "$copy_fail_ok" 'config propagation rejects a post-create copy failure'
+
 if [[ -x $create_sh ]]; then
     assert_rc 1 'issue setup rejects an invalid issue number' -- \
         "$create_sh" --repo-root "$repo" --issue 0 --base main
     assert_rc 1 'issue setup rejects an abbreviated chain base' -- \
         "$create_sh" --repo-root "$repo" --issue 8 --base main --chain-base abc
 fi
+
+# Git owns branch-ref grammar; retain the leading-dash guard while accepting
+# valid punctuation and Unicode that the old ASCII hand-regex rejected.
+ref_ok=yes
+worktree_setup_validate_ref 'feat/pr+head%üñîcode' 'test branch' >/dev/null 2>&1 || ref_ok=no
+assert_eq yes "$ref_ok" 'branch validation accepts Git-valid punctuation and Unicode'
+for invalid_ref in 'foo..bar' 'foo bar' '-option' 'foo~bar'; do
+    ref_ok=yes
+    worktree_setup_validate_ref "$invalid_ref" 'test branch' >/dev/null 2>&1 || ref_ok=no
+    assert_eq no "$ref_ok" "branch validation rejects invalid ref: $invalid_ref"
+done
+
+shorthand_repo=$tmp/shorthand-repo
+mkdir -p "$shorthand_repo"
+git init -q -b main "$shorthand_repo"
+git -C "$shorthand_repo" config user.name test
+git -C "$shorthand_repo" config user.email test@example.invalid
+printf '%s\n' seed >"$shorthand_repo/seed"
+git -C "$shorthand_repo" add -- seed
+git -C "$shorthand_repo" commit -qm seed
+git -C "$shorthand_repo" switch -q -c previous
+git -C "$shorthand_repo" switch -q main
+ref_ok=yes
+(cd "$shorthand_repo" && worktree_setup_validate_ref '@{-1}' 'test branch') >/dev/null 2>&1 || ref_ok=no
+assert_eq no "$ref_ok" 'branch validation rejects checkout shorthand'
+
+# Resolve Git's existing common directory without depending on readlink -f.
+no_readlink=$tmp/no-readlink
+mkdir -p "$no_readlink"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 97' >"$no_readlink/readlink"
+chmod +x "$no_readlink/readlink"
+common_expected=$(cd -- "$repo/$(git -C "$repo" rev-parse --git-common-dir)" && pwd -P)
+common_actual=$(PATH="$no_readlink:$PATH" worktree_setup_common_dir "$repo")
+assert_eq "$common_expected" "$common_actual" \
+    'common-dir resolution works without readlink -f'
 
 if [[ -x $pr_sh ]]; then
     assert_rc 1 'PR setup rejects an invalid PR number before forge access' -- \
@@ -205,7 +288,7 @@ fake_gh=$fake_bin/gh
 printf '%s\n' '#!/usr/bin/env bash' \
     'printf "%s\\n" "$*" >> "$WORKTREE_SETUP_GH_LOG"' \
     'case "$*" in' \
-    '  *"pr view 9"*headRefName*) printf "%s\\n" feat/pr-head ;;' \
+    '  *"pr view 9"*headRefName*) printf "%s\\n" "feat/pr+head%üñîcode" ;;' \
     '  *"pr view 9"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *"pr view 10"*headRefName*) printf "%s\\n" fork/pr-head ;;' \
     '  *"pr view 10"*isCrossRepository*) printf "%s\\n" true ;;' \
@@ -220,8 +303,8 @@ if [[ -x $pr_sh ]]; then
     pr_repo=$tmp/pr-repo
     mkdir -p "$pr_repo"
     make_repo "$pr_repo" >/dev/null
-    git -C "$pr_repo" switch -q -c feat/pr-head
-    git -C "$pr_repo" push -q origin feat/pr-head
+    git -C "$pr_repo" switch -q -c 'feat/pr+head%üñîcode'
+    git -C "$pr_repo" push -q origin 'feat/pr+head%üñîcode'
     git -C "$pr_repo" switch -q main
     gh_log=$tmp/gh.log
     : >"$gh_log"

@@ -40,10 +40,15 @@ worktree_setup_common_dir() {
     if [[ $common != /* ]]; then
         common=$root/$common
     fi
-    readlink -f -- "$common" 2>/dev/null || {
-        worktree_setup_fail "could not resolve Git common directory: $common"
+    [[ -d $common ]] || {
+        worktree_setup_fail "Git common directory does not exist: $common"
         return 1
     }
+    common=$(cd -- "$common" 2>/dev/null && pwd -P) || {
+        worktree_setup_fail "could not canonicalize Git common directory: $common"
+        return 1
+    }
+    printf '%s\n' "$common"
 }
 
 worktree_setup_exclude_path() {
@@ -92,11 +97,17 @@ worktree_setup_worktree_root() {
 }
 
 worktree_setup_validate_ref() {
-    local value=$1 label=$2
-    [[ $value =~ ^[A-Za-z0-9._/-]+$ && $value != -* && $value != /* &&
-        $value != */ && $value != *..* && $value != *//* &&
-        $value != *'@{'* ]] || {
-        worktree_setup_fail "$label must be a safe branch ref"
+    local value=$1 label=$2 normalized
+    [[ -n $value && $value != -* ]] || {
+        worktree_setup_fail "$label must be a valid branch ref"
+        return 1
+    }
+    normalized=$(git check-ref-format --branch "$value" 2>/dev/null) || {
+        worktree_setup_fail "$label must be a valid branch ref"
+        return 1
+    }
+    [[ $normalized == "$value" ]] || {
+        worktree_setup_fail "$label must not use checkout shorthand"
         return 1
     }
 }
@@ -156,7 +167,7 @@ worktree_setup_prepare_agent_dir() {
 }
 
 worktree_setup_propagate_config() {
-    local root=$1 worktree=$2 source_dir source target temp
+    local root=$1 worktree=$2 source_dir source target temp placement_status
     source_dir="$root/.agent"
     source="$source_dir/config.env"
     target="$worktree/.agent/config.env"
@@ -199,29 +210,49 @@ worktree_setup_propagate_config() {
         worktree_setup_fail "could not create a private config staging file: $worktree/.agent"
         return 1
     }
-    if ! cat -- "$source" >"$temp" || ! chmod 600 -- "$temp"; then
-        rm -f -- "$temp"
+    if ! cat "$source" >"$temp" || ! chmod 600 "$temp"; then
+        rm -f "$temp"
         worktree_setup_fail "could not stage root-local config.env"
         return 1
     fi
-    # Linux's no-target-directory mode prevents a raced directory from being
-    # interpreted as the destination directory. No-clobber keeps an existing
-    # regular target authoritative, and neither mode follows a symlink target.
-    if ! mv --no-clobber --no-target-directory -- "$temp" "$target" 2>/dev/null; then
-        rm -f -- "$temp"
-        worktree_setup_fail "could not place root-local config.env"
+
+    # Bash noclobber opens the destination with O_EXCL. A fixed descriptor is
+    # portable across the Bash/Linux+macOS contract (macOS's Bash lacks dynamic
+    # fd allocation); the staged bytes are written only after the open succeeds.
+    placement_status=0
+    (
+        set -C
+        umask 077
+        exec 9>"$target" || exit 10
+        cat "$temp" >&9 || exit 11
+    ) || placement_status=$?
+    if ((placement_status == 10)); then
+        if [[ -L $target || ! -f $target || ! -O $target ]]; then
+            rm -f "$temp"
+            worktree_setup_fail "worktree config.env placement was not a self-owned regular file: $target"
+            return 1
+        fi
+        # A trusted regular target won the exclusive-open race; preserve it
+        # and discard our staged copy without treating the open failure as an
+        # error.
+        rm -f "$temp"
+        return 0
+    fi
+    if ((placement_status != 0)); then
+        rm -f "$temp"
+        worktree_setup_fail "could not copy root-local config.env into place"
         return 1
     fi
-    # Revalidate after the move: a target can appear or change between the
-    # initial checks and placement. Never report success for a non-regular,
-    # symlinked, or foreign-owned result.
+    # Revalidate after placement: a target can appear or change between the
+    # initial checks and the O_EXCL outcome. Never report success for a
+    # non-regular, symlinked, or foreign-owned result.
     if [[ -L $target || ! -f $target || ! -O $target ]]; then
-        rm -f -- "$temp"
+        rm -f "$temp"
         worktree_setup_fail "worktree config.env placement was not a self-owned regular file: $target"
         return 1
     fi
     if [[ -e $temp ]]; then
-        rm -f -- "$temp"
+        rm -f "$temp"
     fi
 }
 
