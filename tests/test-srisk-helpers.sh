@@ -54,6 +54,8 @@ assert_eq 'boundary mode: private-trusted' \
 assert_eq 'boundary mode: yolo-trusted' \
     "$("$boundary" --visibility false --yolo 2>/dev/null)" \
     'explicit yolo selects yolo-trusted regardless of visibility'
+assert_rc 2 'boundary helper rejects an unknown option despite YOLO mode' -- \
+    env YOLO_INVOCATION=true "$boundary" --no-yol0
 
 # --- read-only board and Code Quality helpers ------------------------------
 mkdir -p "$tmp/bin"

@@ -37,6 +37,7 @@ while (($#)); do
         --no-yolo) yolo_invocation=false; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
+            [[ $1 != -* ]] || { usage >&2; die "unknown option: $1"; }
             [[ $visibility == unknown ]] || { usage >&2; die "unknown option: $1"; }
             visibility=$1
             shift

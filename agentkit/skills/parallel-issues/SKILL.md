@@ -569,6 +569,8 @@ Role separation: the root/orchestrator must not implement when a real worker can
 Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap:
 
 ```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 # `multi_agent` is supplied by the dispatch capability probe. No spawn means
 # the documented worker=self serial degradation and deliberately bypasses the
 # runtime config probe.

@@ -13,6 +13,18 @@ List the Backlog column of the board this repo's issues live on:
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+if [[ -z ${REPO_ROOT:-} ]]; then
+    REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+fi
+[[ -n $REPO_ROOT && -d $REPO_ROOT ]] || {
+    printf '%s\n' 'repository root unavailable; skipping Backlog grooming' >&2
+    exit 1
+}
+REPO_ROOT=$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null) || {
+    printf '%s\n' 'repository root is not a Git checkout; skipping Backlog grooming' >&2
+    exit 1
+}
+REPO_ROOT=$(cd -- "$REPO_ROOT" && pwd -P) || exit 1
 # The helper queries Backlog exactly once, filters to Issue-typed rows, and
 # exits cleanly when this environment cannot query a Project. It never calls
 # the board mover: promotion remains an explicit, human-approved action.

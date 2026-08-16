@@ -51,6 +51,8 @@ six_step_loop_text=$(<"$shared_six_step_loop")
 trust_and_fencing_text=$(<"$trust_and_fencing")
 verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
+provider_rules_text=$(<"$root/agentkit/skills/review-remote-pr/references/provider-rules.md")
+grooming_text=$(<"$root/agentkit/skills/review-remote-pr/references/grooming.md")
 issue_lead_prompt=$(awk '
     /^Per-issue prompt:/ { capture=1; next }
     capture && /^````$/ { exit }
@@ -188,6 +190,11 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
+dispatch_section=$(sed -n '/^### Dispatch /,/^When the runtime advertises/p' "$skill")
+assert_contains "$dispatch_section" '[ -d "${agentkit:-}/.shared/scripts" ]' \
+    'concurrency dispatch carries the resolver directory guard'
+assert_contains "$dispatch_section" 'agentkit_provenance' \
+    'concurrency dispatch validates resolver provenance'
 assert_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch names the hard PR-loop cap at the launch boundary'
 assert_contains "$text" 'pr_loop_dispatch_cap' \
@@ -264,6 +271,14 @@ assert_contains "$text" 'agent-run.sh --approve --cmd <name>' \
     'approval handoff carries a copy-pasteable command recipe'
 assert_contains "$text" 'never hand off the main checkout' \
     'approval recipes reject the main checkout'
+assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
+    'Code Quality evidence failure stops before no-findings processing'
+assert_contains "$provider_rules_text" 'Code Quality findings unavailable' \
+    'Code Quality evidence failure is reported as unavailable'
+assert_contains "$grooming_text" 'REPO_ROOT=$(git rev-parse --show-toplevel' \
+    'backlog grooming resolves its repository root explicitly'
+assert_contains "$grooming_text" 'git -C "$REPO_ROOT" rev-parse --show-toplevel' \
+    'backlog grooming validates its repository root'
 assert_contains "$text" 'parks that workstream only' \
     'trust-gate refusal parks only the refused workstream'
 assert_contains "$text" 'continues every other workstream' \

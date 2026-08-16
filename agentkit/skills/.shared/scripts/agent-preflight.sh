@@ -35,9 +35,12 @@ fi
 
 ARG_WORKTREE=""
 ARG_REPO=""
+ARG_REPO_SET=0
 ARG_WRITE=""
+ARG_WRITE_SET=0
 ARG_NO_WRITE=0
 ARG_ENSURE=0
+ARG_MEASURED_FROM_SET=0
 # Which process this run speaks for. A hook runs OUTSIDE the agent's sandbox,
 # so everything measured here about writability and sandboxing describes the
 # hook, not the shell that will run the commands -- see probe_sandbox().
@@ -142,13 +145,14 @@ parse_args() {
             --worktree) need_value "$@"; ARG_WORKTREE="$2"; shift 2 ;;
             --measured-from)
                 need_value "$@"
+                ARG_MEASURED_FROM_SET=1
                 case "$2" in
                     agent|hook) ARG_MEASURED_FROM="$2" ;;
                     *) die "--measured-from takes agent or hook, got: $2" ;;
                 esac
                 shift 2 ;;
-            --repo)     need_value "$@"; ARG_REPO="$2"; shift 2 ;;
-            --write)    need_value "$@"; ARG_WRITE="$2"; ARG_NO_WRITE=0; shift 2 ;;
+            --repo)     need_value "$@"; ARG_REPO="$2"; ARG_REPO_SET=1; shift 2 ;;
+            --write)    need_value "$@"; ARG_WRITE="$2"; ARG_WRITE_SET=1; ARG_NO_WRITE=0; shift 2 ;;
             --no-write) ARG_NO_WRITE=1; ARG_WRITE=""; shift ;;
             --ensure) ARG_ENSURE=1; shift ;;
             --)         shift; break ;;
@@ -762,12 +766,17 @@ write_block() {
 main() {
     parse_args "$@"
     if (( ARG_ENSURE )); then
+        if (( ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET )); then
+            die '--ensure cannot be combined with --write, --repo, or --measured-from'
+        fi
         resolve_worktree
         contract_reader="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/contract-read.sh"
         if [[ -x $contract_reader ]] &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
-            cat -- "$WORKTREE/.agent/env-contract.txt"
-            return 0
+            if cat -- "$WORKTREE/.agent/env-contract.txt"; then
+                return 0
+            fi
+            note 'trusted contract changed while it was being read -- continuing with a fresh preflight'
         fi
     fi
     probe_skills_path
