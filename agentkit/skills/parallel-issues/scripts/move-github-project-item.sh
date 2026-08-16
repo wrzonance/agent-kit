@@ -48,6 +48,12 @@ Output (stdout carries only these lines):
   no-op: project #3 "Example Board" has no Status field
   no-op: project #3 "Example Board" has no matching Status option "In review"
 
+The "(board.json, 1 call)" warm path deliberately skips reading the card's
+current status before mutating it -- that read is the API call this path
+exists to avoid. So it reports "moved" even when the card was already in the
+target status; only the slower paths can report the "already" no-op above.
+Callers must treat "moved" as covering both "moved" and "already there".
+
 Exit status: 0 on a move or a no-op, 1 on bad arguments or an API error.
 EOF
 }
@@ -160,15 +166,38 @@ board_readable() {
         <"$board_file" >/dev/null 2>&1
 }
 
-# A cache is trusted only when it is a regular file owned by the operator and
-# cannot be changed by another user through group/world write permissions.
-# Symlinks are rejected before the regular-file and ownership checks.
+# A cache is trusted only when both the file itself AND every directory the
+# trusted path depends on -- up to and including .agent/ -- are regular
+# (non-symlink), owned by the operator, and cannot be changed by another user
+# through group/world write permissions. Permission to *replace* a file comes
+# from its containing directory, not the file, so a group- or world-writable
+# .agent/ or .agent/cache/ would let another local user unlink board.json or
+# board-items.json and substitute their own content -- checking the file
+# alone would miss exactly that attack.
 trusted_cache_file() {
-    local file=$1 mode
-    [[ -n $file && -f $file && ! -L $file && -r $file && -O $file ]] || return 1
-    mode=$(stat -c '%a' -- "$file" 2>/dev/null) || return 1
+    local file=$1
+    [[ -n $file ]] || return 1
+    trusted_cache_dir "$repo_root/.agent" || return 1
+    if [[ $file == "$items_file" ]]; then
+        trusted_cache_dir "$repo_root/.agent/cache" || return 1
+    fi
+    [[ -f $file && ! -L $file && -r $file && -O $file ]] || return 1
+    trusted_cache_mode "$file"
+}
+
+# Shared by trusted_cache_file (files) and trusted_cache_dir (directories):
+# the last three octal mode digits must show no group- or world-write bit.
+trusted_cache_mode() {
+    local path=$1 mode
+    mode=$(stat -c '%a' -- "$path" 2>/dev/null) || return 1
     mode=${mode: -3}
     [[ ${mode:1:1} != [2367] && ${mode:2:1} != [2367] ]]
+}
+
+trusted_cache_dir() {
+    local dir=$1
+    [[ -n $dir && -d $dir && ! -L $dir && -O $dir ]] || return 1
+    trusted_cache_mode "$dir"
 }
 
 # Prints the option id for a status name, matched case-insensitively so the
@@ -203,18 +232,19 @@ cache_item_id() {
     [[ -n $items_file && -n $project_id && -n $item ]] || return 0
     mkdir -p -- "$(dirname -- "$items_file")" 2>/dev/null || return 0
     if trusted_cache_file "$items_file"; then
-        existing=$(jq -c --arg repository "$repository" --arg owner "$project_owner" \
-            --arg number "$project_number" --arg p "$project_id" \
-            'if (.schemaVersion == 1 and .repository == $repository and
+        existing=$(jq -c --argjson v "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
+            --arg owner "$project_owner" --arg number "$project_number" --arg p "$project_id" \
+            'if (.schemaVersion == $v and .repository == $repository and
                  .owner == $owner and (.projectNumber | tostring) == $number and
                  .project == $p and (.items | type) == "object")
              then .items else {} end' \
             <"$items_file" 2>/dev/null || printf '{}')
     fi
+    [[ -n $existing ]] || existing='{}'
     staged=$(mktemp "$(dirname -- "$items_file")/.items.XXXXXX") || return 0
     if jq -n --argjson v "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
         --arg owner "$project_owner" --argjson number "$project_number" \
-        --arg p "$project_id" --argjson items "${existing:-\{\}}" \
+        --arg p "$project_id" --argjson items "$existing" \
         --arg n "$issue" --arg id "$item" \
         '{schemaVersion: $v, repository: $repository, owner: $owner,
           projectNumber: $number, project: $p,
@@ -238,9 +268,10 @@ invalidate_cached_item() {
         -n $project_number ]] || return 0
     trusted_cache_file "$items_file" || return 0
     staged=$(mktemp "$(dirname -- "$items_file")/.items.XXXXXX") || return 0
-    if jq --arg repository "$repository" --arg owner "$project_owner" \
-        --arg number "$project_number" --arg p "$project_id" --arg n "$issue" '
-        if (.schemaVersion == 1 and .repository == $repository and
+    if jq --argjson v "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
+        --arg owner "$project_owner" --arg number "$project_number" \
+        --arg p "$project_id" --arg n "$issue" '
+        if (.schemaVersion == $v and .repository == $repository and
             .owner == $owner and (.projectNumber | tostring) == $number and
             .project == $p and (.items | type) == "object")
         then .items |= del(.[$n])
@@ -364,9 +395,10 @@ board_provenance_matches() {
 
 item_cache_provenance_matches() {
     local project_number=$1 project_id=$2 project_owner=$3
-    jq -e --arg repository "$repository" --arg owner "$project_owner" \
-        --arg number "$project_number" --arg project "$project_id" '
-        .schemaVersion == 1 and .repository == $repository and
+    jq -e --argjson v "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
+        --arg owner "$project_owner" --arg number "$project_number" \
+        --arg project "$project_id" '
+        .schemaVersion == $v and .repository == $repository and
         .owner == $owner and (.projectNumber | tostring) == $number and
         .project == $project and (.items | type) == "object"
     ' <"$items_file" >/dev/null 2>&1

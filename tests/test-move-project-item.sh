@@ -139,6 +139,42 @@ assert_not_contains "$log" 'item-list' 'does not re-scan the board'
 assert_contains "$out" 'board.json, 1 call' 'terminal line reports the warm-cache cost'
 assert_contains "$out" 'moved #57' 'reports the move'
 
+# The warm path deliberately never reads the card's current status before
+# mutating it, so it reports "moved" even when the card is already at the
+# target status -- pin this documented tradeoff (see usage's Output section
+# and references/grooming.md) rather than letting it drift silently.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CURRENT_STATUS='In progress' STATUS_SHAPE=direct \
+    run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
+assert_eq '1' "$(wc -l < "$tmp/gh.log")" \
+    'a warm cache with an already-target card still costs exactly one gh call'
+assert_contains "$out" 'moved #57 -> "In progress"' \
+    'a warm cache reports moved even when the card is already at the target status'
+assert_contains "$out" 'board.json, 1 call' \
+    'the already-target warm move still reports the one-call cost'
+
+# A fully warm batch -- every requested issue already in the item cache --
+# costs one gh call per issue and never falls back to a live item-list read.
+repo=$(seed_repo)
+jq '.items["58"] = "PVTI_example58"' < "$repo/.agent/cache/board-items.json" \
+    > "$repo/.agent/cache/tmp.json"
+mv "$repo/.agent/cache/tmp.json" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_eq '2' "$(wc -l < "$tmp/gh.log")" \
+    'a fully warm batch costs exactly one gh call per issue'
+log=$(cat "$tmp/gh.log")
+assert_eq '2' "$(grep -c 'item-edit' <<< "$log" || true)" \
+    'a fully warm batch edits every issue'
+assert_not_contains "$log" 'item-list' \
+    'a fully warm batch never reads the board at all'
+assert_contains "$out" 'moved #57' 'fully warm batch reports the first moved issue'
+assert_contains "$out" 'moved #58' 'fully warm batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'board.json, 1 call' <<< "$out" || true)" \
+    'each move in a fully warm batch reports the one-call cost'
+
 # A cache bound to another repository must fail closed before mutation. The
 # live board contains the requested repository's card and IDs; foreign cached
 # values may not be sent to item-edit.
@@ -195,6 +231,31 @@ assert_contains "$log" '--id PVTI_example57' \
     'an unsafe item cache falls back to the requested-repository card'
 assert_not_contains "$log" 'PVTI_attacker' \
     'an unsafe item cache never reaches item-edit'
+
+# Permission to replace a file comes from its containing directory, not the
+# file: a group/world-writable .agent/cache/ is never trusted, even when
+# board-items.json itself is perfectly safe.
+repo=$(seed_repo)
+chmod 777 "$repo/.agent/cache"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'item-list' \
+    'a group/world-writable cache directory is not trusted for the fast path'
+assert_contains "$log" '--id PVTI_example57' \
+    'a group/world-writable cache directory still falls back to the requested-repository card'
+chmod 700 "$repo/.agent/cache"
+
+# The same applies to .agent/ itself: it backs both board.json and the item
+# cache, so a writable .agent/ forces a full fallback to live discovery.
+repo=$(seed_repo)
+chmod 777 "$repo/.agent"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'project list' \
+    'a group/world-writable .agent/ directory falls back to full discovery'
+chmod 700 "$repo/.agent"
 
 # A rejected cached mutation invalidates that issue's cache entry before the
 # fallback. If project discovery is unavailable, the stale ID cannot remain for
