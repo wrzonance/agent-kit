@@ -66,9 +66,10 @@ each canonical path and require it remains inside the worktree.
 worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 shared=<PASTE the validated shared-scripts path from the contract>
 
-Whenever you create a new `tests/*.sh` file, run `chmod +x -- path/to/test.sh` (substituting its actual
-path) immediately after writing it, before invoking it as `./tests/...` or handing it off for commit.
-A shebang does not set the executable bit; verify the mode is 755/100755 before the first run.
+Whenever you create a new `tests/*.sh` file, run `chmod +x -- "$worktree/tests/<name>.sh"` (substituting
+its actual path) immediately after writing it, before invoking it as "$worktree/tests/<name>.sh" or
+handing it off for commit. A shebang does not set the executable bit; verify the mode is 755/100755
+before the first run.
 
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
@@ -346,9 +347,10 @@ and report the incident and restoration in the handback.
 worktree=FULL_PATH
 shared=<PASTE the validated shared-scripts path from the contract>
 
-Whenever you create a new `tests/*.sh` file, run `chmod +x -- path/to/test.sh` (substituting its actual
-path) immediately after writing it, before invoking it as `./tests/...` or handing it off for commit.
-A shebang does not set the executable bit; verify the mode is 755/100755 before the first run.
+Whenever you create a new `tests/*.sh` file, run `chmod +x -- "$worktree/tests/<name>.sh"` (substituting
+its actual path) immediately after writing it, before invoking it as "$worktree/tests/<name>.sh" or
+handing it off for commit. A shebang does not set the executable bit; verify the mode is 755/100755
+before the first run.
 
 contract_root="$worktree"
 "$shared/contract-read.sh" --repo-root "$contract_root" --check > /dev/null 2>&1 || {
