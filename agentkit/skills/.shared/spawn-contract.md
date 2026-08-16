@@ -9,10 +9,13 @@ mandatory and names this file for the detail.
 
 ## Model/effort selection (MANDATORY before dispatch)
 
-Bulk implementation belongs on the low-complexity worker tier, never on the orchestrator's
-own model. Resolve the repository's worker declarations before inspecting the current
-`collaboration.spawn_agent` capability. The resolver reads `.agent/config.env` line-wise and
-never sources it:
+Implementation work is assigned to a worker for role separation: each worker receives fresh fenced context
+with sole-writer isolation, while the root performs independent root validation before publication. Resolve
+the repository's `AGENT_WORKER_MODEL`,
+`AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` declarations before inspecting the
+current `collaboration.spawn_agent` capability; worker model and effort are configuration, not a
+model-tier or pricing judgment. The resolver reads `.agent/config.env` line-wise and never
+sources it:
 
 ```bash
 worker_model_default='gpt-5.6-luna'

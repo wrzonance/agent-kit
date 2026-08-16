@@ -560,13 +560,9 @@ worktrees provide isolation.
 
 ### Implementation-model preflight (MANDATORY — before worktrees or board mutations)
 
-Bulk implementation belongs on the low-complexity worker tier, never the orchestrator's own
-model. Read [.shared/spawn-contract.md](../.shared/spawn-contract.md) before dispatch — it is
-the single detailed home for model/effort selection (Luna→Terra fallback), the exact spawn
-call shape and its exact-parameter warnings, the nesting-blocked fact, and the degraded
-`worker=self` path. The completion table must include `worker model` — or `worker=self
-(spawn unavailable)` on the degraded path — so a Luna claim is never inferred from prompt
-text alone. Each loop step's lead-phase mapping is in
+Role separation: workers receive fresh fenced context and sole-writer isolation, followed by independent root validation. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` declarations for model/effort. Read
+[.shared/spawn-contract.md](../.shared/spawn-contract.md) before dispatch — it details model/effort selection, spawn warnings, nesting, and degraded `worker=self` path. Completion table must include `worker model` — or
+`worker=self (spawn unavailable)` — so Luna claims are not inferred from prompt text. Each loop step's lead-phase mapping is in
 [.shared/six-step-loop.md](../.shared/six-step-loop.md).
 
 ### Dispatch (one round, then refill slots)

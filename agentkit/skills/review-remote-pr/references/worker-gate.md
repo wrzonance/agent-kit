@@ -6,10 +6,13 @@ restating it.
 ## Implementation-worker gate
 
 The PR-loop agent orchestrates — inspects state, evaluates findings, owns human-confirmation
-gates — and does **not** generate a fix batch on its own model. Whenever CI, conflicts,
-adversarial findings, CodeRabbit, Code Quality, or approved human feedback requires a code change,
-dispatch one real worker as the sole writer for that batch. The Step 1b reviewer (read-only)
-**never** satisfies this gate.
+gates — and does **not** generate a fix batch on its own model. This is role separation: each worker receives fresh fenced context
+and sole-writer isolation, while the root performs independent root validation before publication. Whenever CI, conflicts, adversarial findings, CodeRabbit, Code
+Quality, or approved human feedback requires a code change, dispatch one real worker as the sole
+writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
+`AGENT_WORKER_EFFORT` for the worker model and effort from the repository declarations, not from a
+model tier or the orchestrator's pricing. The Step 1b reviewer (read-only) **never** satisfies this
+gate.
 
 Before dispatching any worker, read [../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)
 for the model/effort selection (Luna→Terra fallback), the exact spawn call shape and parameter

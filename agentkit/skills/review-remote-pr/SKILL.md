@@ -125,10 +125,7 @@ only after provenance passes, so a stale or profile-inherited `agentkit` still f
 
 ## Implementation-worker gate (MANDATORY for every code change)
 
-The PR-loop agent orchestrates and does **not** generate a fix batch on its own model: whenever CI,
-conflicts, adversarial findings, CodeRabbit, Code Quality, or approved human feedback requires a
-code change, dispatch one real worker as the sole writer for that batch — the Step 1b reviewer
-(read-only) never satisfies this gate. Before dispatching, read
+Role separation: PR-loop orchestrates; workers receive fresh fenced context and sole-writer isolation; root performs independent root validation. Dispatch one worker for CI/conflict/adversarial/automated or approved-human code fixes; the Step 1b reviewer never satisfies this gate. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort; read
 [../.shared/spawn-contract.md](../.shared/spawn-contract.md) for model/effort selection — this
 file is dispatcher-side guidance, never pasted into a worker prompt — and
 [../.shared/six-step-loop.md](../.shared/six-step-loop.md) for the required loop. Paste the
