@@ -66,6 +66,23 @@ assert_contains "$exact_output" 'Security scan' \
 assert_not_contains "$exact_output" 'Check out' \
     'spaced checkout steps are excluded from the gate report'
 
+case_sensitive_repo="$tmp/case-sensitive"
+make_repo "$case_sensitive_repo" 'AGENT_CMD_TEST=tests/run-tests.sh' \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Run suite exactly
+        run: tests/Run-Tests.sh'
+case_sensitive_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$case_sensitive_repo")
+assert_contains "$case_sensitive_output" 'ci-gap= workflows=1 gates=1 covered=0 uncovered=1' \
+    'a workflow command differing from the declared command only by letter case is not an exact match'
+assert_contains "$case_sensitive_output" 'Run suite exactly' \
+    'the case-differing step is reported as uncovered, not silently covered'
+
 unnamed_run_repo="$tmp/unnamed-run"
 make_repo "$unnamed_run_repo" "AGENT_CMD_TEST=tests/run-tests.sh" \
     'name: CI
@@ -76,7 +93,7 @@ jobs:
     steps:
       - name: Security scan
         uses: aquasecurity/trivy-action@v0
-      - uses: actions/checkout@v4
+      - shell: bash
         run: tests/run-tests.sh'
 unnamed_run_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
     --repo-root "$unnamed_run_repo")

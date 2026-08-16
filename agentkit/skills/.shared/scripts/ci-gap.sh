@@ -107,7 +107,7 @@ normalize_command() {
     fi
     value=${value#"${value%%[![:space:]]*}"}
     value=${value%"${value##*[![:space:]]}"}
-    printf '%s' "${value,,}"
+    printf '%s' "$value"
 }
 
 declare -a declared_commands=()
