@@ -85,6 +85,11 @@ __DECLARED_COMMANDS__
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
 
+Changed-input refusal rule: a worker reports BLOCKED for that workstream; the root preserves it, produces
+an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
+`park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
+merge-conflict risk.
+
 ```bash
 git branch --show-current
 ```
@@ -355,6 +360,11 @@ placeholder still in the prompt. A worker refused at the trust gate — as
 from the trunk — reports BLOCKED with that reason. It never approves, drives a
 pseudo-terminal, or writes a trust record.>
 __DECLARED_COMMANDS__
+
+Changed-input refusal rule: a worker reports BLOCKED for that workstream; the root preserves it, produces
+an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
+`park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
+merge-conflict risk.
 
 Do not perform publication or metadata operations from this worker prompt.
 

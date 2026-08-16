@@ -206,6 +206,13 @@ out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
 assert_eq '1' "$rc" 'a declaration changed from the trunk is refused under --yolo'
 assert_contains "$out" 'refusing --yolo' 'the refusal names the yolo gate'
 assert_contains "$out" 'AGENT_CMD_VERIFY' 'the refusal names the changed declaration key'
+assert_contains "$out" 'input-diff digest' 'changed-input refusal requests an input-diff digest'
+assert_contains "$out" 'approve-with-record' 'changed-input refusal names approval remediation'
+assert_contains "$out" 'park-and-hand-off' 'changed-input refusal names parking remediation'
+assert_contains "$out" '--approve --cmd verify' 'changed-input refusal gives the exact approval command'
+assert_contains "$out" 'interactive terminal' 'approval remediation keeps the terminal gate'
+assert_contains "$out" 'not implied by --yolo' 'refusal denies implicit yolo approval'
+assert_contains "$out" 'literal command' 'refusal warns against literal-command evasion'
 assert_eq '' "$(trust_files "$trust_root")" 'the trunk-mismatch refusal persists no trust'
 git -C "$repo" checkout -q -- .agent/config.env
 

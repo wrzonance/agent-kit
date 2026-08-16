@@ -123,6 +123,13 @@ inputs are identical to the remote trunk's; anything new or changed on the check
 requires a terminal approval. Skills thread the flag down from your own `--yolo`
 invocation and never add it on their own.
 
+A changed-input refusal under `--yolo` is an adjudication request, not a dead end. The root
+must preserve the workstream and produce an input-diff digest listing every changed command
+input, its diffstat, and its full diff. It may then use the harness flow from an interactive
+terminal — `agent-run.sh --approve --cmd NAME` — so the approval reviewer sees that concrete
+diff, or park and hand off the workstream with the digest and exact command. Never strip the
+input, retry with a literal equivalent, or treat `--yolo` as an approval record.
+
 ## Hooks
 
 | Hook | Behaviour |
