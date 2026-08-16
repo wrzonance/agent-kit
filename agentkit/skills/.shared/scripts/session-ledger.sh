@@ -145,13 +145,18 @@ require_commands() {
 }
 
 validate_text() {
-    local name=$1 value=$2
+    local name=$1 value=$2 normalized_value normalized_secret_re
     [[ -n $value ]] || die_usage "$name must be non-empty"
     ((${#value} <= MAX_TEXT_LENGTH)) ||
         die_usage "$name is too long (maximum $MAX_TEXT_LENGTH characters)"
     [[ $value != *$'\n'* && $value != *$'\r'* ]] ||
         die_usage "$name must be a single line"
-    [[ ! $value =~ $SECRET_RE ]] ||
+    # The existing-record validator is case-insensitive; normalize both sides
+    # here so an uppercase credential label cannot be written and permanently
+    # poison the ledger before the replay-side check sees it.
+    normalized_value=${value,,}
+    normalized_secret_re=${SECRET_RE,,}
+    [[ ! $normalized_value =~ $normalized_secret_re ]] ||
         die_usage "$name resembles a secret; do not record credential material"
 }
 

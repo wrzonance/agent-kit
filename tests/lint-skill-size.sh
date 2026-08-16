@@ -35,7 +35,7 @@ declare -A KNOWN_OVERSIZE=(
 
 # Issue #151 adds the session-ledger instructions to both orchestrator bodies;
 # keep the ratchet explicit while the planned shrink targets remain unchanged.
-KNOWN_OVERSIZE[review-remote-pr]="535:8290:450"
+KNOWN_OVERSIZE[review-remote-pr]="550:8413:450"
 KNOWN_OVERSIZE[parallel-issues]="1012:16609:900"
 
 readonly MAX_BODY_LINES=500

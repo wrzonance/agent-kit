@@ -66,7 +66,7 @@ assert_eq '2' "$(wc -l < "$ledger" | tr -d ' ')" 'rejected input does not alter 
 # A ledger is not a secret store. Reject common credential-shaped material in
 # every human-controlled field before it reaches disk.
 for secret in 'token=ghp_example' 'password: hunter2' 'Bearer abc123' \
-    '-----BEGIN PRIVATE KEY-----' 'github_pat_abc123'; do
+    'Password: hunter2' '-----BEGIN PRIVATE KEY-----' 'github_pat_abc123'; do
     assert_rc 2 "append rejects secret-shaped quote: $secret" -- "$script" append \
         --ledger "$ledger" --run-id 'review-pr-24' --decision grant \
         --skills-path "$skills_path" --procedure-set parallel-issues \
@@ -129,14 +129,15 @@ assert_contains "$parallel_text" \
     'invocation_flags="yolo=${yolo_invocation:-false};trust-trunk=${trust_trunk:-false};fast-mode=${fast_mode:-false};auto-review=${auto_review:-false};auto-serialize=${auto_serialize:-false}"' \
     'parallel run IDs include canonical authorization flags'
 assert_contains "$parallel_text" \
-    'starting_head="$(git rev-parse HEAD)"' \
-    'parallel run IDs include the pinned starting head'
-assert_contains "$parallel_text" \
-    'contract_head="$(sha256sum "$repository_root/.agent/env-contract.txt" | cut -c1-16)"' \
-    'parallel run IDs include the pinned contract head'
-assert_contains "$parallel_text" \
     'RUN_ID="parallel-issues-$(printf '\''%s'\'' "$run_inputs" | sha256sum | cut -c1-32)"' \
     'parallel run IDs hash the normalized invocation inputs'
+assert_contains "$parallel_text" \
+    'run_inputs="scope=$(normalize_run_input "$issue_scope");flags=$(normalize_run_input "$invocation_flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base")"' \
+    'parallel run IDs use only stable invocation inputs'
+assert_not_contains "$parallel_text" 'starting_head=' \
+    'parallel run IDs do not depend on mutable starting HEAD state'
+assert_not_contains "$parallel_text" 'contract_head=' \
+    'parallel run IDs do not depend on mutable contract state'
 assert_contains "$parallel_text" \
     'scope=57,54' \
     'parallel documents the first distinct issue scope input'
@@ -156,18 +157,33 @@ normalize_run_input() {
     printf '%s' "$value"
 }
 run_id_digest() {
-    local scope=$1 flags=$2 repository=$3 base=$4 starting_head=$5 contract_head=$6
+    local scope=$1 flags=$2 repository=$3 base=$4
     local inputs
-    inputs="scope=$(normalize_run_input "$scope");flags=$(normalize_run_input "$flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base");starting-head=$(normalize_run_input "$starting_head");contract-head=$(normalize_run_input "$contract_head")"
+    inputs="scope=$(normalize_run_input "$scope");flags=$(normalize_run_input "$flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base")"
     printf 'parallel-issues-%s' "$(printf '%s' "$inputs" | sha256sum | cut -c1-32)"
 }
-scope_run_a=$(run_id_digest '57,54' 'yolo=false;auto-review=false' wrzonance/agent-kit main abc123 contract-a)
-scope_run_b=$(run_id_digest '57,62' 'yolo=false;auto-review=false' wrzonance/agent-kit main abc123 contract-a)
-flag_run_b=$(run_id_digest '57,54' 'yolo=false;auto-review=true' wrzonance/agent-kit main abc123 contract-a)
+scope_run_a=$(run_id_digest '57,54' 'yolo=false;auto-review=false' wrzonance/agent-kit main)
+scope_run_b=$(run_id_digest '57,62' 'yolo=false;auto-review=false' wrzonance/agent-kit main)
+flag_run_b=$(run_id_digest '57,54' 'yolo=false;auto-review=true' wrzonance/agent-kit main)
 assert_eq 'different' "$([[ $scope_run_a != "$scope_run_b" ]] && printf different || printf same)" \
     'different issue scopes produce different parallel run IDs'
 assert_eq 'different' "$([[ $scope_run_a != "$flag_run_b" ]] && printf different || printf same)" \
     'different authorization flags produce different parallel run IDs'
+
+review_text=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
+assert_contains "$review_text" \
+    'review_invocation_flags="auto-review=${auto_review:-false}"' \
+    'review run IDs include the current invocation authorization flag'
+assert_contains "$review_text" \
+    'RUN_ID="review-pr-$(printf '\''%s'\'' "$review_run_inputs" | sha256sum | cut -c1-32)"' \
+    'review run IDs hash invocation inputs'
+review_run_id() {
+    local flags=$1 inputs
+    inputs="pr=203;repo=wrzonance/agent-kit;flags=$(normalize_run_input "$flags")"
+    printf 'review-pr-%s' "$(printf '%s' "$inputs" | sha256sum | cut -c1-32)"
+}
+assert_eq 'different' "$([[ $(review_run_id auto-review=false) != $(review_run_id auto-review=true) ]] && printf different || printf same)" \
+    'different review authorization flags produce different run IDs'
 
 ledger_section=$(awk '/^## Session decision ledger/{capture=1} /^### Diff-size facts/{capture=0} capture' \
     "$root/agentkit/skills/parallel-issues/SKILL.md")
