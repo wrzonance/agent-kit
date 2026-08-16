@@ -72,14 +72,9 @@ fi
 # $shared rather than silently building an empty path.
 shared="$agentkit/.shared/scripts"
 
-contract_path=''
-if [[ -n $contract_root && -x "$shared/contract-read.sh" ]]; then
-    contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" \
-        --get skills.path 2>/dev/null || true)
-fi
-if [[ -z $contract_path ]]; then
-    "$shared/agent-preflight.sh" --worktree "$(git rev-parse --show-toplevel)" 2>/dev/null
-fi
+# shellcheck disable=SC2034
+contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path 2>/dev/null || true)
+"$shared/agent-preflight.sh" --ensure --worktree "$(git rev-parse --show-toplevel)" 2>/dev/null
 ```
 
 With the tree resolved, ask the executable onboarding boundary what is next and report its stage before
@@ -88,6 +83,7 @@ doing any work:
 ```bash
 : "${shared:?re-run Step 0}"
 "$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
+"$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --next-steps
 ```
 
 Perform only the reported `next` stage. Before the first verification, also run the same boundary's

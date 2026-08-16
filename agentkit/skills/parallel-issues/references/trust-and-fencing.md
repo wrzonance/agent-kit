@@ -107,13 +107,15 @@ agent-run.sh --approve --cmd <name>` line per worktree per needed command. Colle
 verification invocations the prompts will use, then print one line per worktree per needed
 command using the absolute runner path resolved by Step 0:
 
-```text
-Workers will block at command approval until these are run from an operator terminal:
-
-cd /ABS/PATH/.worktrees/feat/issue-123 && /ABS/PATH/agentkit/skills/.shared/scripts/agent-run.sh --approve --cmd test
-cd /ABS/PATH/.worktrees/feat/issue-123 && /ABS/PATH/agentkit/skills/.shared/scripts/agent-run.sh --approve --cmd lint
-cd /ABS/PATH/.worktrees/feat/issue-124 && /ABS/PATH/agentkit/skills/.shared/scripts/agent-run.sh --approve --cmd test
+```bash
+"$agentkit/parallel-issues/scripts/print-approval-handoff.sh" \
+  --worktree /ABS/PATH/.worktrees/feat/issue-123 --cmd test --cmd lint \
+  --worktree /ABS/PATH/.worktrees/feat/issue-124 --cmd test
 ```
+
+It prints the heading and one `cd <worktree> && <absolute agent-run.sh>
+--approve --cmd <name>` line per worktree and command. The helper refuses the
+main checkout, so never hand off that path in a manually assembled recipe.
 
 Use the actual absolute worktree and runner paths and include focused selectors when they
 are part of the exact invocation. This is one batched handoff for the entire predictable

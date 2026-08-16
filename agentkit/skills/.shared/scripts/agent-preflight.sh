@@ -37,6 +37,7 @@ ARG_WORKTREE=""
 ARG_REPO=""
 ARG_WRITE=""
 ARG_NO_WRITE=0
+ARG_ENSURE=0
 # Which process this run speaks for. A hook runs OUTSIDE the agent's sandbox,
 # so everything measured here about writability and sandboxing describes the
 # hook, not the shell that will run the commands -- see probe_sandbox().
@@ -63,6 +64,7 @@ agent-preflight.sh -- declare the agent's sandbox environment once, up front.
 
 Usage:
   agent-preflight.sh [--worktree PATH] [--repo OWNER/REPO] [--write FILE | --no-write]
+                     [--ensure]
                      [--measured-from agent|hook] [-h|--help]
 
 Options:
@@ -70,6 +72,9 @@ Options:
   --repo OWNER/REPO  Use this slug instead of parsing one from the origin remote.
   --write FILE       Write the block here (default: <worktree>/.agent/env-contract.txt).
   --no-write         Print the block only; write no file.
+  --ensure           Reuse and print a trusted existing contract; run the
+                     preflight probes only when that contract is missing or
+                     fails contract-read provenance checks.
   --measured-from W  Whose environment this describes: "agent" (default, the
                      shell that will run commands) or "hook", which runs
                      outside the agent sandbox and can only report its own.
@@ -145,6 +150,7 @@ parse_args() {
             --repo)     need_value "$@"; ARG_REPO="$2"; shift 2 ;;
             --write)    need_value "$@"; ARG_WRITE="$2"; ARG_NO_WRITE=0; shift 2 ;;
             --no-write) ARG_NO_WRITE=1; ARG_WRITE=""; shift ;;
+            --ensure) ARG_ENSURE=1; shift ;;
             --)         shift; break ;;
             -*)         die "unknown option: $1" ;;
             *)          die "unexpected argument: $1 (this command takes options only)" ;;
@@ -755,6 +761,15 @@ write_block() {
 
 main() {
     parse_args "$@"
+    if (( ARG_ENSURE )); then
+        resolve_worktree
+        contract_reader="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/contract-read.sh"
+        if [[ -x $contract_reader ]] &&
+            "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
+            cat -- "$WORKTREE/.agent/env-contract.txt"
+            return 0
+        fi
+    fi
     probe_skills_path
     resolve_worktree
     probe_identity

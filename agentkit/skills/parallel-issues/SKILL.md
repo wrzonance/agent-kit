@@ -566,31 +566,16 @@ Role separation: the root/orchestrator must not implement when a real worker can
 
 ### Dispatch (one round, then refill slots)
 
-Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ:
+Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap:
 
 ```bash
-config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
-max_concurrent_threads_per_session=''
-if [[ -r $config_file ]]; then
-    max_concurrent_threads_per_session=$(awk '
-        /^[[:space:]]*\[(agents|features\.multi_agent_v2|multi_agent_v2)\][[:space:]]*$/ { in_section=1; next }
-        /^[[:space:]]*\[/ { in_section=0 }
-        in_section && /^[[:space:]]*max_concurrent_threads_per_session[[:space:]]*=/ {
-            sub(/^[^=]*=/, "")
-            sub(/[[:space:]]*#.*/, "")
-            gsub(/[[:space:]]/, "")
-            print
-            exit
-        }
-    ' "$config_file")
-fi
-
-if [[ $max_concurrent_threads_per_session =~ ^[1-9][0-9]*$ ]]; then
-    printf 'runtime concurrency cap: %s total threads, including the root\n' \
-        "$max_concurrent_threads_per_session"
+# `multi_agent` is supplied by the dispatch capability probe. No spawn means
+# the documented worker=self serial degradation and deliberately bypasses the
+# runtime config probe.
+if [[ ${multi_agent:-true} == false ]]; then
+    "$agentkit/parallel-issues/scripts/concurrency-cap.sh" --no-spawn
 else
-    printf 'Unable to advertise concurrency: %s is absent or lacks a valid max_concurrent_threads_per_session under [agents] (v1), [features.multi_agent_v2], or [multi_agent_v2] (v2); do not infer a cap from prose.\n' "$config_file" >&2
-    exit 1
+    "$agentkit/parallel-issues/scripts/concurrency-cap.sh" --spawn-capable
 fi
 ```
 
@@ -665,13 +650,14 @@ repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
 repository_visibility=$(gh repo view "$repository" --json isPrivate -q '.isPrivate' 2>/dev/null) ||
     repository_visibility='unknown'
 : "${yolo_invocation:?set from the invocation line}"
-if [[ $yolo_invocation == true ]]; then
-    boundary_mode=yolo-trusted
-elif [[ $repository_visibility == true ]]; then
-    boundary_mode=private-trusted
-else
-    boundary_mode=public-fenced
-fi
+boundary_args=(--visibility "$repository_visibility")
+if [[ $yolo_invocation == true ]]; then boundary_args+=(--yolo); else boundary_args+=(--no-yolo); fi
+boundary_output=$("$agentkit/parallel-issues/scripts/select-boundary-mode.sh" "${boundary_args[@]}") || exit 1
+boundary_mode=${boundary_output#boundary mode: }
+[[ $boundary_mode =~ ^(public-fenced|private-trusted|yolo-trusted)$ ]] || {
+    printf '%s\n' 'Boundary selector returned an invalid mode.' >&2
+    exit 1
+}
 printf 'boundary mode: %s\n' "$boundary_mode"
 ```
 
