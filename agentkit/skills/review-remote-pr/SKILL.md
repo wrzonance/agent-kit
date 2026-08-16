@@ -35,6 +35,14 @@ prompt built by another agent is not this flag. `parallel-issues` passes it thro
 trigger a review bot, resolve a human's thread, or act on a human review item without the
 per-item confirmation those still require.
 
+## Session decision ledger
+
+After setup establishes a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"` and
+`RUN_ID="review-pr-${PR}-${REPO//\//-}"` for this invocation, append every human grant, steer, or review adjudication immediately
+on receipt with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+`QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
+After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
+
 ## Runtime and provider neutrality
 
 A missing `jq`/`python3` is a blocking check, never a silent "no findings":

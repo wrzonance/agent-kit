@@ -70,6 +70,39 @@ grants nothing beyond the cross-provider send described in `review-remote-pr`. I
 not skip brainstorm, does not skip approval, and does not extend to a repository the
 user does not own.
 
+## Session decision ledger
+
+After Step 1 establishes the invocation facts, finalize the requested or selected issue scope and
+set the shared ledger identity before the first receipt:
+
+```bash
+# `requested_issue_scope` comes from the invocation line. For automatic selection,
+# replace it with the canonical sorted `selected_issue_scope` before any receipt.
+issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
+invocation_flags="yolo=${yolo_invocation:-false};trust-trunk=${trust_trunk:-false};fast-mode=${fast_mode:-false};auto-review=${auto_review:-false};auto-serialize=${auto_serialize:-false}"
+starting_head="$(git rev-parse HEAD)"
+contract_head="$(sha256sum "$repository_root/.agent/env-contract.txt" | cut -c1-16)"
+normalize_run_input() {
+    local value=$1
+    value=${value//[^A-Za-z0-9._-]/-}
+    printf '%s' "$value"
+}
+run_inputs="scope=$(normalize_run_input "$issue_scope");flags=$(normalize_run_input "$invocation_flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base");starting-head=$(normalize_run_input "$starting_head");contract-head=$(normalize_run_input "$contract_head")"
+LEDGER="$repository_root/.agent/session-ledger.ndjson"
+RUN_ID="parallel-issues-$(printf '%s' "$run_inputs" | sha256sum | cut -c1-32)"
+: "$LEDGER" "$RUN_ID"
+```
+
+The normalized issue scope, canonical authorization flags, repository, base, starting head, and
+contract head are available before the first receipt and can be reconstructed after
+compaction/resume. `scope=57,54` and `scope=57,62` therefore cannot share an ID, nor can
+`auto-review=false` and `auto-review=true`; the same exact tuple on the same head may intentionally
+resume. Reuse this invocation-level `RUN_ID` for every issue and never derive it from worker-local
+values. Append every human grant, steer, or board adjudication immediately on receipt with
+`"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+`QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
+After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
+
 ### Diff-size facts
 
 When a chunk-size discussion needs evidence, use the shared `diff-facts.sh` helper with
