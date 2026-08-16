@@ -206,6 +206,7 @@ generated_paths_valid() {
 
 providers_valid() {
     local item saw_none=0 seen_coderabbit=0 seen_code_quality=0
+    [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
     local -a items=()
     IFS=, read -ra items <<< "$1"
     ((${#items[@]})) || return 1

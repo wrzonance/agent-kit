@@ -45,6 +45,26 @@ assert_eq 'provider=none mode=disabled source=invalid' "$out" \
 assert_contains "$(<"$tmp/err")" 'invalid value for AGENT_REVIEW_PROVIDERS' \
     'mixed none declarations explain the rejection'
 
+repo=$(make_repo 'coderabbit,')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=none mode=disabled source=invalid' "$out" \
+    'a trailing delimiter is rejected rather than silently dropped'
+
+repo=$(make_repo 'none,')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=none mode=disabled source=invalid' "$out" \
+    'a trailing delimiter after none is rejected rather than silently dropped'
+
+repo=$(make_repo ',coderabbit')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=none mode=disabled source=invalid' "$out" \
+    'a leading delimiter is rejected'
+
+repo=$(make_repo 'coderabbit,,coderabbit')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=none mode=disabled source=invalid' "$out" \
+    'a repeated delimiter is rejected'
+
 repo=$(make_repo 'unknown-provider')
 out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
 assert_eq 'provider=none mode=disabled source=invalid' "$out" \
