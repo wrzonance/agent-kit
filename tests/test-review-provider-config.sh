@@ -28,6 +28,11 @@ assert_eq $'provider=coderabbit mode=triggerable source=declared\nprovider=githu
     "$out" 'declared providers resolve to their capability modes'
 assert_eq '' "$(<"$tmp/err")" 'valid declarations are silent'
 
+repo=$(make_repo 'coderabbit,coderabbit')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=none mode=disabled source=invalid' "$out" \
+    'duplicate providers fall back to one disabled plan'
+
 repo=$(make_repo none)
 out=$(bash "$resolver" --repo-root "$repo")
 assert_eq 'provider=none mode=disabled source=declared' "$out" \

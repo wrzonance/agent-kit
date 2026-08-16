@@ -205,13 +205,20 @@ generated_paths_valid() {
 }
 
 providers_valid() {
-    local item saw_none=0
+    local item saw_none=0 seen_coderabbit=0 seen_code_quality=0
     local -a items=()
     IFS=, read -ra items <<< "$1"
     ((${#items[@]})) || return 1
     for item in "${items[@]}"; do
         case $item in
-            coderabbit | github-code-quality) ((saw_none == 0)) || return 1 ;;
+            coderabbit)
+                ((saw_none == 0 && seen_coderabbit == 0)) || return 1
+                seen_coderabbit=1
+                ;;
+            github-code-quality)
+                ((saw_none == 0 && seen_code_quality == 0)) || return 1
+                seen_code_quality=1
+                ;;
             none)
                 ((saw_none == 0 && ${#items[@]} == 1)) || return 1
                 saw_none=1
