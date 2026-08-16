@@ -76,6 +76,8 @@ assert_contains "$prompt" 'Worktree: '"$repo" 'issue lead receives the absolute 
 assert_contains "$prompt" 'Branch: feat/issue-136' 'issue lead receives the requested branch'
 assert_contains "$prompt" 'Base: develop' 'issue lead receives the configured base branch'
 assert_contains "$prompt" 'Worker effort: high' 'issue lead receives the requested worker effort'
+assert_contains "$prompt" 'chmod +x -- path/to/test.sh' \
+    'issue lead is told to set the executable bit on new shell tests'
 assert_contains "$prompt" "SPEC-BYTES \$(must-stay-literal)" 'spec bytes stay literal'
 assert_contains "$prompt" 'PRIOR-BYTES' 'prior-art bytes are injected'
 assert_contains "$prompt" 'worker_model='"'"'gpt-5.6-luna' 'worker model is filled'
@@ -111,6 +113,8 @@ fix_prompt=$(<"$output_file")
 assert_contains "$fix_prompt" 'PR: 136' 'fix-batch receives the issue number'
 assert_contains "$fix_prompt" 'Base: develop' 'fix-batch receives the configured base branch'
 assert_contains "$fix_prompt" 'Worker effort: high' 'fix-batch receives the requested worker effort'
+assert_contains "$fix_prompt" 'chmod +x -- path/to/test.sh' \
+    'fix-batch is told to set the executable bit on new shell tests'
 assert_contains "$fix_prompt" '--cmd verify' 'fix-batch receives declared commands'
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
