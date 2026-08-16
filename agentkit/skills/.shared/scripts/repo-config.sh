@@ -45,7 +45,7 @@ readonly ACCEPTED_KEYS=(
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
     AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
-    AGENT_GENERATED_PATHS
+    AGENT_GENERATED_PATHS AGENT_ONBOARDED_BY
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
 )
 
@@ -448,6 +448,7 @@ validate() {
     local key=$1 value=$2
     case $key in
         AGENT_REPO_SLUG) [[ $value =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ;;
+        AGENT_ONBOARDED_BY) [[ $value =~ ^agentkit/[A-Za-z0-9._:-]+$ ]] ;;
         AGENT_PROJECT_OWNER) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
         AGENT_PROJECT_NUMBER) [[ $value =~ ^[0-9]{1,6}$ ]] ;;
         AGENT_BASE_BRANCH) safe_ref "$value" ;;

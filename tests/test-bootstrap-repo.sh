@@ -76,6 +76,8 @@ listed=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$listed" 'AGENT_PROJECT_NUMBER=7' 'generated config carries the project number'
 assert_contains "$listed" 'AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done' \
     'status vocabulary comes from the discovered option order'
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' \
+    'generated config records the installed generator version'
 
 # --- a repo linked to exactly one board needs no --project -----------------
 # An org can own dozens of boards while a repo is linked to one. Asking the
@@ -175,11 +177,20 @@ run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 config=$(cat "$repo/.agent/config.env")
 assert_contains "$config" '# AGENT_CMD_' 'suggests commands as commented lines'
 assert_contains "$config" 'AGENT_CMD_VERIFY=tools/verify' 'surfaces a bespoke dispatcher as a declaration'
+assert_contains "$config" '# proposal-component|.|node|package.json' \
+    'records the detected component in the proposal inventory'
+assert_contains "$config" '# proposal-command|AGENT_CMD_VERIFY|tools/verify|present|' \
+    'records proposal binary availability without declaring it'
 # The old detection hardcoded `npm run <script>` whatever the lockfile said, and
 # `npm lint` is not even a command. Suggestions are now ready-to-uncomment
 # declarations carrying the runner the repository actually locked.
 assert_contains "$config" 'AGENT_CMD_TEST=' 'surfaces package.json scripts as declarations'
 assert_not_contains "$config" $'\nAGENT_CMD_' 'never uncomments a suggestion'
+# The line above needs a preceding newline to match, so it cannot see a
+# declaration sitting on the file's very first line; this pins the proposed
+# key itself as inactive regardless of where it lands.
+assert_eq '0' "$(grep -c '^AGENT_CMD_VERIFY=' "$repo/.agent/config.env" || true)" \
+    'records the verify proposal without activating the declaration'
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'suggestions produce no resolver warnings'
 
@@ -260,6 +271,13 @@ assert_contains "$after" 'AGENT_CMD_TEST=true' 'a declared command survives --fo
 assert_contains "$after" 'AGENT_LABEL_TYPES=bug,enhancement' 'and a label classification'
 assert_contains "$after" 'AGENT_PROTECTED_PATHS=migrations/' 'and declared protected paths'
 assert_contains "$out" 'carried forward' 'and the run says what it preserved'
+
+declared_before=$(grep -E '^AGENT_(CMD_TEST|LABEL_TYPES|PROTECTED_PATHS)=' "$repo/.agent/config.env")
+assert_rc 0 'refresh is an explicit force refresh' -- run_bs --repo-root "$repo" --project 7 --refresh
+declared_after=$(grep -E '^AGENT_(CMD_TEST|LABEL_TYPES|PROTECTED_PATHS)=' "$repo/.agent/config.env")
+assert_eq "$declared_before" "$declared_after" 'refresh preserves carried declarations exactly'
+assert_eq '' "$(grep -E '^AGENT_CMD_LINT_SHELL=' "$repo/.agent/config.env" || true)" \
+    'refresh leaves an unrelated proposal commented'
 
 # Discovered facts are still refreshed rather than duplicated -- carrying
 # everything forward blindly would pin a stale slug or board number for ever.
@@ -411,5 +429,33 @@ out=$(PATH="$tmp/stub-unlinked:$PATH" "$bs_sh" --repo-root "$repo" --project 2 \
     --owner other-org --dry-run 2>&1)
 assert_contains "$out" '"owner": "other-org"' \
     'board.json records the BOARD owner, not the repository owner'
+
+# --- a refresh never erases the generator stamp ----------------------------
+# AGENT_ONBOARDED_BY is generator-owned, so the carry-forward filter drops the
+# previous value by design. When version discovery yields nothing there is no
+# replacement to emit, and the provenance record -- the very thing drift
+# detection reads -- would vanish. Reproduced by running a copy of the script
+# from a tree where the plugin manifest does not resolve, which is what an
+# install layout looks like.
+stamp_repo=$(make_repo)
+mkdir -p "$stamp_repo/.agent"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ONBOARDED_BY=agentkit/0.0.9\n' \
+    > "$stamp_repo/.agent/config.env"
+orphan_dir=$(mktemp -d "$tmp/orphan.XXXXXX")/a/b/c
+mkdir -p "$orphan_dir"
+cp "$bs_sh" "$orphan_dir/bootstrap-repo.sh"
+set +e
+PATH="$tmp/stub:$PATH" "$orphan_dir/bootstrap-repo.sh" \
+    --repo-root "$stamp_repo" --project 7 --refresh > /dev/null 2>&1
+stamp_rc=$?
+set -e
+# Without this the bare `|| true` would let a bootstrap that died before writing
+# anything pass the assertion below: the pre-existing config still holds the old
+# stamp, so "preserved" and "never rewritten" are indistinguishable.
+assert_eq '0' "$stamp_rc" 'the refresh under a missing manifest still succeeds'
+assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=agentkit/0.0.9' \
+    'a refresh with no discoverable version keeps the previous generator stamp'
+assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_PROJECT_NUMBER=7' \
+    'the refresh actually rewrote the config rather than leaving it untouched'
 
 finish
