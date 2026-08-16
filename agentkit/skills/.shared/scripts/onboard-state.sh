@@ -2,7 +2,7 @@
 # Report the next resumable onboarding stage and environment setup facts.
 set -uo pipefail
 PROGRAM=${0##*/}
-usage() { printf 'usage: %s --repo-root DIR (--report | --next | --preflight)\n' "$PROGRAM" >&2; exit 2; }
+usage() { printf 'usage: %s --repo-root DIR (--report | --next | --preflight | --next-steps)\n' "$PROGRAM" >&2; exit 2; }
 die() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; exit 1; }
 repo_root=''; mode=''
 while (($#)); do
@@ -11,6 +11,7 @@ while (($#)); do
         --report) mode=report; shift ;;
         --next) mode=next; shift ;;
         --preflight) mode=preflight; shift ;;
+        --next-steps) mode='next-steps'; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
@@ -66,6 +67,21 @@ else
 fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+if [[ $mode == next-steps ]]; then
+    agent_run=$self_dir/agent-run.sh
+    preflight=$self_dir/agent-preflight.sh
+    commit_helper=$self_dir/worktree-commit.sh
+    printf 'go-live checklist (repo-root=%s):\n' "$repo_root"
+    printf '1. Open a PR that commits .agent/config.env, .agent/board.json, and .gitignore.\n'
+    printf '   Commit helper: %s\n' "$commit_helper"
+    printf '2. Until that PR merges, approvals remain per-machine and are not repository trust.\n'
+    printf '   Approval command: %s --approve --cmd <declared name>\n' "$agent_run"
+    printf '3. After merge, run the resolved command: %s --cmd <declared name> --yolo\n' "$agent_run"
+    printf '4. Trust covers the declared command inputs for this repository only.\n'
+    printf '   If the contract is missing or untrusted, refresh it with: %s --ensure --worktree %s\n' \
+        "$preflight" "$repo_root"
+    exit 0
+fi
 if [[ $mode == report || $mode == next ]]; then
     printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
     if [[ $mode == report && -r $config && -x $self_dir/onboard-refresh.sh ]]; then

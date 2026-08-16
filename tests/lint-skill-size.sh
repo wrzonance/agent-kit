@@ -43,8 +43,11 @@ declare -A KNOWN_OVERSIZE=(
 # ratchet down (1020->1015, 550->547) while review-remote-pr's tokens rise 9
 # (8413->8422), because the pointer it leaves behind is denser than the prose it
 # replaced. Both dimensions are ratcheted independently, so both are re-set.
+# Issue #145 extracts the deterministic S-risk helpers, repeating that shape for
+# parallel-issues: 1015->1003 lines but 16724->16735 tokens, since the helper
+# invocations that replace the inline procedure are denser per line.
 KNOWN_OVERSIZE[review-remote-pr]="547:8422:450"
-KNOWN_OVERSIZE[parallel-issues]="1015:16724:900"
+KNOWN_OVERSIZE[parallel-issues]="1003:16735:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

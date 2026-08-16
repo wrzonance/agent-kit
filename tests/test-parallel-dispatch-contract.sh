@@ -51,6 +51,8 @@ six_step_loop_text=$(<"$shared_six_step_loop")
 trust_and_fencing_text=$(<"$trust_and_fencing")
 verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
+provider_rules_text=$(<"$root/agentkit/skills/review-remote-pr/references/provider-rules.md")
+grooming_text=$(<"$root/agentkit/skills/review-remote-pr/references/grooming.md")
 issue_lead_prompt=$(awk '
     /^Per-issue prompt:/ { capture=1; next }
     capture && /^````$/ { exit }
@@ -186,6 +188,13 @@ assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
 assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
+assert_contains "$text" 'concurrency-cap.sh' \
+    'dispatch delegates runtime cap parsing to the helper'
+dispatch_section=$(sed -n '/^### Dispatch /,/^When the runtime advertises/p' "$skill")
+assert_contains "$dispatch_section" '[ -d "${agentkit:-}/.shared/scripts" ]' \
+    'concurrency dispatch carries the resolver directory guard'
+assert_contains "$dispatch_section" 'agentkit_provenance' \
+    'concurrency dispatch validates resolver provenance'
 assert_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch names the hard PR-loop cap at the launch boundary'
 assert_contains "$text" 'pr_loop_dispatch_cap' \
@@ -212,12 +221,10 @@ assert_contains "$bulk_section" 'applied/remaining' \
 assert_contains "$bulk_section" 'if grep -Eq' \
     'bulk recipe guards a nonmatching budget marker explicitly'
 root_fence_section=$(sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill")
-assert_contains "$root_fence_section" 'if [[ $yolo_invocation == true ]]; then' \
-    'root derives boundary mode from the explicit invocation'
-assert_contains "$root_fence_section" 'boundary_mode=private-trusted' \
-    'private visibility selects the trusted boundary'
-assert_contains "$root_fence_section" 'boundary_mode=public-fenced' \
-    'unknown visibility has a public fenced fallback'
+assert_contains "$root_fence_section" 'select-boundary-mode.sh' \
+    'root delegates boundary mode selection to the helper'
+assert_contains "$root_fence_section" 'boundary_mode' \
+    'root carries the selected boundary mode'
 assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]; then' \
     'trusted modes persist exact bytes without invoking the fence helper'
 assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
@@ -231,19 +238,15 @@ assert_contains "$dispatch_handoff" 'cat -- "$prompt_file"' \
     'dispatch handoff emits the composed prompt bytes'
 assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
-boundary_snippet=$(awk '
-    /^if \[\[ \$yolo_invocation == true \]\]; then$/ { capture=1 }
-    capture { print }
-    capture && /^printf '\''boundary mode:/ { exit }
-' "$skill")
-assert_contains "$boundary_snippet" 'boundary_mode=public-fenced' \
-    'boundary selector snippet is extractable for regression checks'
+boundary_selector="$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh"
+assert_eq yes "$( [[ -x $boundary_selector ]] && printf yes || printf no )" \
+    'boundary selector helper is executable'
 for visibility in false unknown ''; do
-    selected=$(repository_visibility="$visibility" yolo_invocation=false bash -c "$boundary_snippet" 2>/dev/null | tail -n 1)
+    selected=$("$boundary_selector" --visibility "$visibility" --no-yolo 2>/dev/null | tail -n 1)
     assert_eq 'boundary mode: public-fenced' "$selected" \
         "visibility '$visibility' fails closed to public-fenced"
 done
-selected=$(repository_visibility=false yolo_invocation=true bash -c "$boundary_snippet" 2>/dev/null | tail -n 1)
+selected=$("$boundary_selector" --visibility false --yolo 2>/dev/null | tail -n 1)
 assert_eq 'boundary mode: yolo-trusted' "$selected" \
     'explicit yolo selects yolo-trusted regardless of visibility'
 assert_contains "$text" 'one canonical issue-body fetch during preparation' \
@@ -268,6 +271,14 @@ assert_contains "$text" 'agent-run.sh --approve --cmd <name>' \
     'approval handoff carries a copy-pasteable command recipe'
 assert_contains "$text" 'never hand off the main checkout' \
     'approval recipes reject the main checkout'
+assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
+    'Code Quality evidence failure stops before no-findings processing'
+assert_contains "$provider_rules_text" 'Code Quality findings unavailable' \
+    'Code Quality evidence failure is reported as unavailable'
+assert_contains "$grooming_text" 'REPO_ROOT=$(git rev-parse --show-toplevel' \
+    'backlog grooming resolves its repository root explicitly'
+assert_contains "$grooming_text" 'git -C "$REPO_ROOT" rev-parse --show-toplevel' \
+    'backlog grooming validates its repository root'
 assert_contains "$text" 'parks that workstream only' \
     'trust-gate refusal parks only the refused workstream'
 assert_contains "$text" 'continues every other workstream' \
@@ -626,17 +637,14 @@ assert_eq '2' "$inner_open_count" \
 assert_eq '2' "$inner_close_count" \
     'inner bash examples retain their triple-backtick closers'
 
-snippet=$(awk '
-    index($0, "config_file=\"${CODEX_HOME:-$HOME/.codex}/config.toml\"") == 1 { capture=1 }
-    capture && /^```$/ { exit }
-    capture { print }
-' "$skill")
-
+cap_helper="$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh"
+assert_eq yes "$( [[ -x $cap_helper ]] && printf yes || printf no )" \
+    'concurrency cap helper is executable'
 configured_home="$tmp/configured"
 mkdir -p "$configured_home/.codex"
 printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 10' \
     > "$configured_home/.codex/config.toml"
-out=$(env -u CODEX_HOME HOME="$configured_home" bash -c "$snippet" 2>/dev/null)
+out=$("$cap_helper" --config "$configured_home/.codex/config.toml" 2>/dev/null)
 status=$?
 assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
     'dispatch advertises the configured runtime cap'
@@ -646,7 +654,7 @@ codex_home="$tmp/codex-home"
 mkdir -p "$codex_home"
 printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 7' \
     > "$codex_home/config.toml"
-out=$(CODEX_HOME="$codex_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+out=$("$cap_helper" --config "$codex_home/config.toml" 2>/dev/null)
 assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
 
@@ -654,7 +662,7 @@ v1_home="$tmp/v1-home"
 mkdir -p "$v1_home"
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' 'max_depth = 2' \
     > "$v1_home/config.toml"
-out=$(CODEX_HOME="$v1_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+out=$("$cap_helper" --config "$v1_home/config.toml" 2>/dev/null)
 status=$?
 assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
     'the v1 [agents] section advertises the cap'
@@ -664,7 +672,7 @@ v2_home="$tmp/v2-home"
 mkdir -p "$v2_home"
 printf '%s\n' '[features.multi_agent_v2]' 'enabled = true' \
     'max_concurrent_threads_per_session = 8' > "$v2_home/config.toml"
-out=$(CODEX_HOME="$v2_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+out=$("$cap_helper" --config "$v2_home/config.toml" 2>/dev/null)
 status=$?
 assert_contains "$out" 'runtime concurrency cap: 8 total threads, including the root' \
     'the v2 [features.multi_agent_v2] section advertises the cap'
@@ -675,13 +683,13 @@ mkdir -p "$commented_home"
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' \
     '# [features.multi_agent_v2]' '# max_concurrent_threads_per_session = 99' \
     > "$commented_home/config.toml"
-out=$(CODEX_HOME="$commented_home" HOME="$tmp/no-such-home" bash -c "$snippet" 2>/dev/null)
+out=$("$cap_helper" --config "$commented_home/config.toml" 2>/dev/null)
 assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
     'a commented-out v2 block does not shadow the live [agents] cap'
 
 missing_home="$tmp/missing"
 mkdir -p "$missing_home"
-err=$(env -u CODEX_HOME HOME="$missing_home" bash -c "$snippet" 2>&1 >/dev/null)
+err=$("$cap_helper" --config "$missing_home/config.toml" 2>&1 >/dev/null)
 status=$?
 assert_contains "$err" 'Unable to advertise concurrency' \
     'missing runtime config explains why the cap is unavailable'

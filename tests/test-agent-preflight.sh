@@ -42,6 +42,35 @@ else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
 
+# --ensure must not silently discard operands whose documented semantics belong
+# to a full probe. Fail closed before checking the fast-path contract instead.
+assert_rc 2 '--ensure rejects an explicit --write target' -- \
+    "$script" --ensure --worktree "$repo" --write "$tmp/other-contract"
+assert_rc 2 '--ensure rejects an explicit repository override' -- \
+    "$script" --ensure --worktree "$repo" --repo owner/repo
+assert_rc 2 '--ensure rejects an explicit measured-from override' -- \
+    "$script" --ensure --worktree "$repo" --measured-from hook
+
+# The contract can disappear or become unreadable after contract-read validates
+# it. A failed fast-path read must fall back to the normal probe and preserve
+# the documented success status rather than returning cat's status 1.
+mkdir -p "$tmp/cat-race-bin"
+cat > "$tmp/cat-race-bin/cat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == '--' && "${2:-}" == "${PRETEND_CONTRACT:-}" ]]; then
+    exit 1
+fi
+exec /usr/bin/cat "$@"
+EOF
+chmod +x "$tmp/cat-race-bin/cat"
+assert_rc 0 'an unreadable trusted contract falls back to a fresh preflight' -- \
+    env PATH="$tmp/cat-race-bin:$PATH" PRETEND_CONTRACT="$repo/.agent/env-contract.txt" \
+    "$script" --ensure --worktree "$repo"
+race_out=$(PATH="$tmp/cat-race-bin:$PATH" PRETEND_CONTRACT="$repo/.agent/env-contract.txt" \
+    "$script" --ensure --worktree "$repo" 2> /dev/null)
+assert_contains "$race_out" 'harness=' \
+    'the fallback still emits a complete preflight contract'
+
 # The contract is not secret, but it is not public either: local paths, a CA
 # bundle location, an account name. A lax umask should not decide that.
 mode=$(stat -c '%a' "$repo/.agent/env-contract.txt" 2> /dev/null || printf '?')

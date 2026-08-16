@@ -59,12 +59,10 @@ GitHub's public Code Quality REST API currently exposes finding retrieval, not a
 
 ```bash
 # Inspect Code Quality findings available through the public API (read-only).
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
+if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --summary; then
+    printf '%s\n' 'Code Quality findings unavailable; blocked, not no findings.' >&2
     exit 1
 fi
-gh api "repos/$REPO/code-quality/findings?state=open&per_page=100" \
-  -H "X-GitHub-Api-Version: 2026-03-10"
 # The PR finding comments and their IDs come from the Step 1 artifact — no re-query.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 jq -r '.[] | "\(.id)\t\(.path)\t\(.line)\t\(.commit_id)"' \
