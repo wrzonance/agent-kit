@@ -510,40 +510,24 @@ assert_not_contains "$skill_union_text" "/tmp/pr_\${PR}_" \
     'the skill no longer uses shared PR-number-only state paths'
 assert_contains "$skill_text" 're-set RUN_DIR to the Step 0c output; shell state does not persist' \
     'the skill guards per-shell review-artifact directory reuse'
-# The diff/verdict recipe itself now lives in references/adversarial-review.md
-# (SKILL.md only names when to read it); the Step 0c artifact-directory pins
-# checked above stay targeted at SKILL.md, since that's where they still live.
-assert_contains "$adversarial_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
-    'the skill names one shared adversarial diff artifact'
-assert_contains "$adversarial_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
-    'the skill names one neutral adversarial verdict artifact'
-# Verdict staging/atomic publication is delegated to each wrapper's --output
-# flag (see the helper loop above, which checks OUTPUT_TMP staging and the
-# rc=3 publish-before-exit ordering in both scripts directly), not
-# reimplemented in the reference doc; it only documents that delegation at
-# each call site.
-assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$adversarial_ref" || true)" \
-    'the skill documents atomic verdict staging at both call sites'
-assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$adversarial_ref" || true)" \
-    'both adversarial wrappers publish their rc=3 blocked artifacts'
-assert_contains "$adversarial_text" 'A final file' \
-    'the skill defines completion by terminal producer events'
-assert_contains "$adversarial_text" 'cross-cell heartbeat fallback' \
-    'the skill documents the cross-cell heartbeat fallback'
-assert_contains "$adversarial_text" '2 * --poll-seconds' \
-    'the skill pins the heartbeat freshness window'
-assert_contains "$adversarial_text" 'zero transcript growth across' \
-    'the skill requires two unchanged byte samples before declaring death'
-assert_contains "$adversarial_text" 'relaunch exactly once' \
-    'the skill bounds relaunches to one after the death predicate'
-assert_contains "$adversarial_text" 'launcher reports a terminal child' \
-    'the skill prefers native launcher terminal state'
-assert_contains "$adversarial_text" 'Without native launcher state, a validated canonical verdict is Completed' \
-    'the skill permits detached canonical-verdict completion'
+assert_contains "$adversarial_text" 'Materiality — run vs. document a skip' 'the reference retains the materiality gate'
+assert_contains "$adversarial_text" 'External-service authorization' 'the reference retains the external-service boundary'
+assert_contains "$adversarial_text" 'Cross-provider consent' 'the reference retains the consent gate'
+assert_contains "$adversarial_text" 'consent-record.sh' 'the reference points at the consent authority'
+assert_contains "$adversarial_text" 'adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR' 'the reference points at the one-shot runner'
+assert_contains "$adversarial_text" 'review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript"' 'the reference points at detached liveness'
+assert_contains "$adversarial_text" 'exits 0, 1, or 2 for those states' \
+    'the reference pins detached liveness exit statuses'
+assert_contains "$adversarial_text" 'Evaluate — then route into Step 5' 'the reference retains human finding judgment'
+assert_contains "$adversarial_text" 'post-receipt.sh publish' 'the reference retains receipt publication'
+assert_not_contains "$adversarial_text" 'git --no-pager diff' 'the reference removes hand-built diff orchestration'
+assert_not_contains "$adversarial_text" 'probe_rc=' 'the reference removes hand-executed probe branching'
+assert_not_contains "$adversarial_text" 'review_rc=' 'the reference removes hand-executed launch branching'
+assert_not_contains "$adversarial_text" 'relaunch exactly once' 'the reference removes hand-executed relaunch policy'
+assert_not_contains "$adversarial_text" 'cross-cell heartbeat fallback' 'the reference removes obsolete liveness mechanics'
+assert_not_contains "$adversarial_text" 'kill -0' 'the reference contains no producer-PID recipe'
 assert_not_contains "$skill_union_text" 'kill -0' \
     'the skill never recommends cross-cell PID probes'
-assert_contains "$adversarial_text" 'bounded in both directions' \
-    'the skill bounds the wait against both stalls and premature verdicts'
 assert_not_contains "$skill_union_text" '>"$verdict_path"' \
     'the skill never streams directly into the final verdict path'
 assert_not_contains "$skill_union_text" 'claude.result.json' \
@@ -552,14 +536,33 @@ assert_not_contains "$skill_union_text" 'codex.result.json' \
     'the skill has no Codex-specific verdict path'
 
 
-diff_pattern="git --no-pager diff.*\"\\\$diff_path\""
-diff_line=$(grep -n "$diff_pattern" "$adversarial_ref" | head -1 | cut -d: -f1 || true)
-probe_line=$(grep -n '^probe_rc=0$' "$adversarial_ref" | head -1 | cut -d: -f1 || true)
-if ((diff_line < probe_line)); then
-    _pass 'the shared diff is created before probe branching'
-else
-    _fail 'the shared diff is created before probe branching' \
-        "diff line: $diff_line" "probe line: $probe_line"
-fi
+
+# These clauses are hand-reflowed prose, so match against a whitespace-collapsed
+# copy: a phrase split across two lines is still the phrase, and an assertion
+# that breaks on rewrapping silently stops protecting anything.
+adversarial_flat=$(printf '%s' "$adversarial_text" | tr '\n' ' ' | tr -s ' ')
+
+# The section headings alone proved only that the contract's shape survived the
+# consolidation, not its meaning. A sentence can invert and keep every heading --
+# "No parseable verdict is blocked" read as the reverse of the fail-closed rule
+# and passed every check above. Pin the clauses that carry the contract.
+assert_contains "$adversarial_flat" 'A missing or unparseable verdict is blocked, never clean' \
+    'the reference states the fail-closed verdict rule unambiguously'
+assert_not_contains "$adversarial_flat" 'No parseable verdict is blocked' \
+    'the reference never states the fail-closed rule in its reversible form'
+assert_contains "$adversarial_flat" 'A provider failure, missing provider, or unparseable verdict is blocked' \
+    'the reference pins the blocked-not-clean rule for provider failures'
+assert_contains "$adversarial_flat" '.verdict.verdict` is the verdict string and `.verdict.findings` is the findings array' \
+    'the reference pins the nested verdict contract'
+assert_contains "$adversarial_flat" 'The maintainer must verify each finding against the current tree' \
+    'the reference pins the maintainer verification gate'
+assert_contains "$adversarial_text" 'does not authorize an edit' \
+    'the reference denies a model finding standing authority to edit'
+assert_contains "$adversarial_flat" 'It owns consent enforcement, diff capture, provider selection, schema validation' \
+    'the reference pins what the one-shot entry point owns, including consent'
+assert_contains "$adversarial_text" 'scripts/review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript" --verdict "$verdict_path"' \
+    'the reference pins the complete liveness command'
+assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, or Blocked' \
+    'the reference pins the three liveness states'
 
 finish
