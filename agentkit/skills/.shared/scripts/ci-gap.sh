@@ -124,6 +124,8 @@ done <<< "$declared"
 mapfile -t step_runs < <(
     awk '
         function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        FNR == 1 { current = "" }
+        /^[[:space:]]*-[[:space:]]/ { current = "" }
         /^[[:space:]]+- name:[[:space:]]*.+$/ {
             line=$0; sub(/^[[:space:]]+- name:[[:space:]]*/, "", line)
             current=trim(line); next

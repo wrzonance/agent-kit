@@ -66,6 +66,25 @@ assert_contains "$exact_output" 'Security scan' \
 assert_not_contains "$exact_output" 'Check out' \
     'spaced checkout steps are excluded from the gate report'
 
+unnamed_run_repo="$tmp/unnamed-run"
+make_repo "$unnamed_run_repo" "AGENT_CMD_TEST=tests/run-tests.sh" \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Security scan
+        uses: aquasecurity/trivy-action@v0
+      - uses: actions/checkout@v4
+        run: tests/run-tests.sh'
+unnamed_run_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$unnamed_run_repo")
+assert_contains "$unnamed_run_output" 'ci-gap= workflows=1 gates=1 covered=0 uncovered=1' \
+    'an unnamed run is not attributed to the preceding named step'
+assert_contains "$unnamed_run_output" 'Security scan' \
+    'a named step with no run command remains uncovered'
+
 divergent_repo="$tmp/divergent"
 make_repo "$divergent_repo" $'AGENT_CMD_TEST=pytest -q' \
     $'name: CI\non:\n  pull_request:\njobs:\n  checks:\n    steps:\n      - name: Run verifier\n        run: "verify.sh --full"'
