@@ -71,6 +71,13 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --             End of options; everything after it is the command.
   -h, --help     Show this help and exit 0.
 
+Compose isolation: a deterministic per-worktree COMPOSE_PROJECT_NAME is exported
+for declared commands, overriding a repository .env value or a compose-file
+top-level name:. A literal -p/--project-name in the declaration outranks that
+export, so isolation cannot be established and the run exits 5 without executing.
+Serialize full-suite verification and set AGENT_COMPOSE_SERIALIZED=1 to assert no
+concurrent full-suite run, or drop the flag from the declaration.
+
 Environment:
   AGENT_CACHE_ROOT    Force cache dirs under this root (otherwise a fallback root
                       is used only when the normal cache home is unusable).
@@ -459,6 +466,147 @@ canonicalise_work_dir() {
     resolved=$(cd -- "$work_dir" 2>/dev/null && pwd -P) ||
         die "Working directory cannot be resolved: $work_dir"
     work_dir=$resolved
+}
+
+# Docker Compose falls back to a directory-derived project name. Worktree
+# directories are not necessarily unique by basename, and concurrent worktrees
+# must never inherit the same project. Hash the canonical git root so the value
+# is stable for this worktree, valid for Compose, and independent of caller env.
+compose_project_name_for_worktree() {
+    local digest
+    digest=$(printf '%s' "$git_top" | sha256sum | awk '{print $1}') || return 1
+    [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    printf 'agentkit-%s' "${digest:0:16}"
+}
+
+compose_static_value() {
+    local value=$1
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    value=${value#\"}
+    value=${value%\"}
+    value=${value#\'}
+    value=${value%\'}
+    [[ -n $value && $value != *'$'* && $value != \#* ]]
+}
+
+compose_argv() {
+    local token base engine_seen=0
+    for token in "${cmd[@]}"; do
+        base=${token##*/}
+        case $base in
+            docker-compose | podman-compose)
+                return 0
+                ;;
+            docker | podman)
+                # Remember the engine rather than only the previous token: global
+                # options may sit between it and its subcommand, and
+                # `docker --context ci compose` still honours --project-name.
+                # Matching on the immediate predecessor missed exactly those.
+                engine_seen=1
+                ;;
+            compose)
+                ((engine_seen)) && return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+# Print repository-controlled Compose project names as path:value findings.
+# This is deliberately a narrow filename/shape scan: arbitrary YAML `name:`
+# fields and unrelated environment variables are not Compose evidence.
+compose_project_hardcodes() {
+    local rel base line value token next i
+    while IFS= read -r -d '' rel; do
+        base=${rel##*/}
+        case $base in
+            .env | .env.*)
+                while IFS= read -r line || [[ -n $line ]]; do
+                    [[ $line =~ ^[[:space:]]*COMPOSE_PROJECT_NAME[[:space:]]*= ]] || continue
+                    value=${line#*=}
+                    if compose_static_value "$value"; then
+                        printf '%s:%s\n' "$rel" "$value"
+                    fi
+                done < "$git_top/$rel"
+                ;;
+            compose.yml | compose.yaml | compose-*.yml | compose-*.yaml | \
+            docker-compose.yml | docker-compose.yaml | docker-compose-*.yml | \
+            docker-compose-*.yaml)
+                while IFS= read -r line || [[ -n $line ]]; do
+                    [[ $line =~ ^name:[[:space:]]* ]] || continue
+                    value=${line#name:}
+                    if compose_static_value "$value"; then
+                        printf '%s:%s\n' "$rel" "$value"
+                    fi
+                done < <(awk '/^[^[:space:]#][^:]*:[[:space:]]*/ && $0 ~ /^name:[[:space:]]*/ { print }' "$git_top/$rel")
+                ;;
+        esac
+    done < <(git -C "$git_top" ls-files --cached --others --exclude-standard -z 2>/dev/null)
+
+    # A literal CLI project flag has precedence over COMPOSE_PROJECT_NAME and
+    # therefore defeats the per-worktree export. The declaration is already a
+    # parsed argv array, so inspect tokens without invoking a shell.
+    if compose_argv; then
+        for ((i = 0; i < ${#cmd[@]}; i++)); do
+            token=${cmd[i]}
+            value=''
+            case $token in
+                --project-name=*) value=${token#--project-name=} ;;
+                -p?*) value=${token#-p} ;;
+                -p | --project-name)
+                    ((i + 1 < ${#cmd[@]})) || continue
+                    next=${cmd[i + 1]}
+                    value=$next
+                    ((i += 1))
+                    ;;
+                COMPOSE_PROJECT_NAME=*) value=${token#COMPOSE_PROJECT_NAME=} ;;
+                *) continue ;;
+            esac
+            if compose_static_value "$value"; then
+                printf 'argv[%s]:%s\n' "$i" "$value"
+            fi
+        done
+    fi
+}
+
+# Two cases, because Compose's own precedence splits them:
+#
+#   COMPOSE_PROJECT_NAME (exported here) outranks a repository `.env` value and a
+#   compose-file top-level `name:`. Overriding those IS the isolation, and it is
+#   safe for an ephemeral verification run, so they are reported and overridden.
+#
+#   A literal -p/--project-name in the declared command outranks the export. That
+#   one cannot be overridden from here, so isolation genuinely cannot be
+#   established and every worktree would share one project. Warning and running
+#   anyway walks straight into the collision this gate exists to prevent, so that
+#   path fails closed and the caller serializes instead. Set
+#   AGENT_COMPOSE_SERIALIZED=1 to assert no concurrent full-suite run is in
+#   flight; the command then proceeds under that assertion.
+configure_compose_project() {
+    local finding project argv_findings=()
+    [[ -n $cmd_name ]] || return 0
+    project=$(compose_project_name_for_worktree) ||
+        die "cannot derive a deterministic Compose project name for $git_top"
+    export COMPOSE_PROJECT_NAME=$project
+    while IFS= read -r finding; do
+        [[ -n $finding ]] || continue
+        add_note "repository hardcodes a Compose project name: $finding"
+        printf 'agent-run: WARNING: repository hardcodes a Compose project name: %s\n' \
+            "$finding" >&2
+        [[ $finding == argv\[* ]] && argv_findings+=("$finding")
+    done < <(compose_project_hardcodes | sort -u)
+
+    ((${#argv_findings[@]})) || return 0
+    if [[ ${AGENT_COMPOSE_SERIALIZED:-} == 1 ]]; then
+        add_note "isolation-impossible accepted under AGENT_COMPOSE_SERIALIZED=1: ${argv_findings[*]}"
+        printf 'agent-run: note: isolation-impossible accepted under AGENT_COMPOSE_SERIALIZED=1\n' >&2
+        return 0
+    fi
+    printf 'agent-run: ISOLATION-IMPOSSIBLE: %s\n' "${argv_findings[*]}" >&2
+    printf 'agent-run: a declared -p/--project-name outranks COMPOSE_PROJECT_NAME, so this run cannot be isolated from sibling worktrees.\n' >&2
+    printf 'agent-run: serialize full-suite verification -- let one unchanged full-suite command finish before starting another -- then re-run with AGENT_COMPOSE_SERIALIZED=1, or remove the flag from the declaration.\n' >&2
+    exit 5
 }
 
 # A literal executable path is an ad-hoc command, not a repository declaration.
@@ -1327,11 +1475,28 @@ print_notes() {
     done
 }
 
+# Compose's dependency-start messages are often the only durable signal that
+# concurrent worktrees contended for a container, port, or network. Require a
+# Compose/dependency context plus a collision/startup signature so ordinary
+# assertion and application failures remain ordinary command failures.
+compose_dependency_start_collision() {
+    local log=$1
+    grep -Eiq '(^|[^[:alnum:]_-])docker([[:space:]]+|-)compose([^[:alnum:]_-]|$)' \
+        "$log" 2>/dev/null || return 1
+    grep -Eiq \
+        'dependency[[:space:][:punct:]]+failed to start|dependency[^[:cntrl:]]*(already in use|already exists|port is already allocated|conflict)|container name[^[:cntrl:]]*already in use|port is already allocated|network[^[:cntrl:]]*already exists|Error response from daemon:[[:space:]]*Conflict|driver failed programming external connectivity' \
+        "$log" 2>/dev/null
+}
+
 report_failure() {
     local rc=$1 log=$2 excerpt
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
     printf '  cwd=%s runner=none\n' "$work_dir"
     print_notes '  '
+    if compose_dependency_start_collision "$log"; then
+        printf '  classification: environment-retry-eligible — Compose dependency-start collision; not a code regression.\n'
+        printf '  retry guidance: rerun the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
+    fi
     if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
         printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around approval.\n' \
             "$literal_token" "$literal_repository_base" "$literal_execution_base"
@@ -1550,6 +1715,12 @@ if [[ -n $cmd_name ]]; then
     fi
 fi
 
+# Configure the per-worktree Compose namespace only for a named command. This
+# happens after trust adjudication so the derived runtime value is not mistaken
+# for repository-controlled command input, and before either delegation or
+# execution so every declared command sees it.
+configure_compose_project
+
 tree_hash=''
 if verification_cache_eligible; then
     tree_hash=$(compute_tree_hash 2>/dev/null || true)
@@ -1652,6 +1823,9 @@ trap - INT TERM
 elapsed=$((SECONDS - started_at))
 lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
 ((lines >= 0)) || lines=0
+if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
+    printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
+fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 
 if ((rc == 0)); then
