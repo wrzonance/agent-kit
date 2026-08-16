@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Suite: move-github-project-item.sh live rebinding and self-healing.
+# Suite: move-github-project-item.sh cached fast path and self-healing.
 #
 # Exit codes follow this script's own long-standing contract (0 move-or-no-op,
 # 1 bad arguments or API error), not the tree-wide "2 = usage" convention. It
@@ -23,7 +23,12 @@ cat > "$tmp/stub/gh" << EOF
 set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
-  *"item-edit"*)          [[ -n \${FAIL_EDIT:-} ]] && exit 1; exit 0 ;;
+  *"item-edit"*)
+      [[ -n \${FAIL_EDIT:-} ]] && exit 1
+      if [[ -n \${FAIL_STALE_ITEM:-} && "\$*" == *"PVTI_stale57"* ]]; then exit 1; fi
+      if [[ -n \${FAIL_CACHED_ITEM:-} && "\$*" == *"PVTI_example57"* ]]; then exit 1; fi
+      exit 0
+      ;;
   *"project view"*)       printf '{"id":"PVT_kwDOAexample1","number":7}\n' ;;
   *"project field-list"*)
       if [[ -n \${CUSTOM_STATUS:-} ]]; then
@@ -73,7 +78,7 @@ seed_repo() {
     git -C "$dir" init -q
     mkdir -p "$dir/.agent/cache"
     cat > "$dir/.agent/board.json" << 'EOF'
-{"schemaVersion":1,"owner":"example-org",
+{"schemaVersion":1,"repository":"example-org/example-repo","owner":"example-org",
  "project":{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board"},
  "statusField":{"id":"PVTSSF_lADOAexampleB","name":"Status",
    "options":{"Backlog":"opt-backlog","Ready":"opt-ready",
@@ -81,8 +86,10 @@ seed_repo() {
  "fingerprint":"sha256:seed"}
 EOF
     cat > "$dir/.agent/cache/board-items.json" << 'EOF'
-{"schemaVersion":1,"project":"PVT_kwDOAexample1","items":{"57":"PVTI_example57"}}
+{"schemaVersion":1,"repository":"example-org/example-repo","owner":"example-org",
+ "projectNumber":7,"project":"PVT_kwDOAexample1","items":{"57":"PVTI_example57"}}
 EOF
+    chmod 600 "$dir/.agent/board.json" "$dir/.agent/cache/board-items.json"
     printf '%s' "$dir"
 }
 
@@ -118,23 +125,155 @@ assert_contains "$(cat "$tmp/move-parser.err")" 'jq' 'missing board parser error
 assert_contains "$(cat "$tmp/move-parser.err")" 'evidence unavailable' \
     'missing board parser error says evidence is unavailable'
 
-# --- committed IDs are rebound against live board data ---------------------
+# --- warm board.json + item cache: exactly one mutation ---------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
-assert_eq '4' "$(wc -l < "$tmp/gh.log")" 'a warm cache still validates all live IDs'
+assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'a warm cache costs exactly one gh call'
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'item-edit' 'the final call is item-edit'
-assert_contains "$log" 'PVTI_example57' 'uses the live requested-repo item id'
-assert_contains "$log" 'opt-inprog' 'uses the live option id'
-assert_contains "$log" 'field-list' 're-resolves the Status field'
-assert_contains "$log" 'item-list' 're-scans the board'
+assert_contains "$log" 'item-edit' 'the one call is item-edit'
+assert_contains "$log" 'PVTI_example57' 'uses the cached item id'
+assert_contains "$log" 'opt-inprog' 'uses the cached option id'
+assert_not_contains "$log" 'field-list' 'does not re-resolve the Status field'
+assert_not_contains "$log" 'item-list' 'does not re-scan the board'
+assert_contains "$out" 'board.json, 1 call' 'terminal line reports the warm-cache cost'
 assert_contains "$out" 'moved #57' 'reports the move'
 
-# An item already at the requested live Status is a terminal no-op and must
-# never issue an item-edit mutation.
+# The warm path deliberately never reads the card's current status before
+# mutating it, so it reports "moved" even when the card is already at the
+# target status -- pin this documented tradeoff (see usage's Output section
+# and references/grooming.md) rather than letting it drift silently.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CURRENT_STATUS='In progress' STATUS_SHAPE=direct \
+    run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
+assert_eq '1' "$(wc -l < "$tmp/gh.log")" \
+    'a warm cache with an already-target card still costs exactly one gh call'
+assert_contains "$out" 'moved #57 -> "In progress"' \
+    'a warm cache reports moved even when the card is already at the target status'
+assert_contains "$out" 'board.json, 1 call' \
+    'the already-target warm move still reports the one-call cost'
+
+# A fully warm batch -- every requested issue already in the item cache --
+# costs one gh call per issue and never falls back to a live item-list read.
+repo=$(seed_repo)
+jq '.items["58"] = "PVTI_example58"' < "$repo/.agent/cache/board-items.json" \
+    > "$repo/.agent/cache/tmp.json"
+mv "$repo/.agent/cache/tmp.json" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_eq '2' "$(wc -l < "$tmp/gh.log")" \
+    'a fully warm batch costs exactly one gh call per issue'
+log=$(cat "$tmp/gh.log")
+assert_eq '2' "$(grep -c 'item-edit' <<< "$log" || true)" \
+    'a fully warm batch edits every issue'
+assert_not_contains "$log" 'item-list' \
+    'a fully warm batch never reads the board at all'
+assert_contains "$out" 'moved #57' 'fully warm batch reports the first moved issue'
+assert_contains "$out" 'moved #58' 'fully warm batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'board.json, 1 call' <<< "$out" || true)" \
+    'each move in a fully warm batch reports the one-call cost'
+
+# A cache bound to another repository must fail closed before mutation. The
+# live board contains the requested repository's card and IDs; foreign cached
+# values may not be sent to item-edit.
+repo=$(seed_repo)
+jq '.repository = "example-org/other-repo" | .project.id = "PVT_attacker" |
+    .statusField.id = "PVTSSF_attacker" |
+    .statusField.options.Ready = "opt-attacker"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+jq '.repository = "example-org/other-repo" | .project = "PVT_attacker" |
+    .items["57"] = "PVTI_otherrepo57"' \
+    < "$repo/.agent/cache/board-items.json" > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/board.json" "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--project-id PVT_kwDOAexample1' \
+    'foreign board cache falls back to the live project'
+assert_contains "$log" '--id PVTI_example57' \
+    'foreign item cache falls back to the requested-repository card'
+assert_not_contains "$log" 'PVT_attacker' \
+    'the foreign project never reaches item-edit'
+assert_not_contains "$log" 'PVTI_otherrepo57' \
+    'the foreign item never reaches item-edit'
+
+# An unsafe board file is never trusted for mutation, even when its contents
+# contain attacker-controlled project and field IDs.
+repo=$(seed_repo)
+jq '.project.id = "PVT_attacker" | .statusField.id = "PVTSSF_attacker" |
+    .statusField.options.Ready = "opt-attacker"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+chmod 666 "$repo/.agent/board.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--project-id PVT_kwDOAexample1' \
+    'an unsafe board file falls back to the live project'
+assert_not_contains "$log" 'PVT_attacker' \
+    'an unsafe board project never reaches item-edit'
+
+# An unsafe item cache is not trusted for the mutation either; the one-read
+# fallback selects the requested repository's live card before rewriting it.
+repo=$(seed_repo)
+jq '.items["57"] = "PVTI_attacker"' \
+    < "$repo/.agent/cache/board-items.json" > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+chmod 666 "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--id PVTI_example57' \
+    'an unsafe item cache falls back to the requested-repository card'
+assert_not_contains "$log" 'PVTI_attacker' \
+    'an unsafe item cache never reaches item-edit'
+
+# Permission to replace a file comes from its containing directory, not the
+# file: a group/world-writable .agent/cache/ is never trusted, even when
+# board-items.json itself is perfectly safe.
+repo=$(seed_repo)
+chmod 777 "$repo/.agent/cache"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'item-list' \
+    'a group/world-writable cache directory is not trusted for the fast path'
+assert_contains "$log" '--id PVTI_example57' \
+    'a group/world-writable cache directory still falls back to the requested-repository card'
+chmod 700 "$repo/.agent/cache"
+
+# The same applies to .agent/ itself: it backs both board.json and the item
+# cache, so a writable .agent/ forces a full fallback to live discovery.
+repo=$(seed_repo)
+chmod 777 "$repo/.agent"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'project list' \
+    'a group/world-writable .agent/ directory falls back to full discovery'
+chmod 700 "$repo/.agent"
+
+# A rejected cached mutation invalidates that issue's cache entry before the
+# fallback. If project discovery is unavailable, the stale ID cannot remain for
+# a second invocation to retry.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+FAIL_CACHED_ITEM=1 FAIL_PROJECT_LIST=1 run_mv "$repo" --issue-number 57 --status Ready \
+    > /dev/null 2>&1 || true
+assert_eq 'null' "$(jq -r '.items["57"] // null' < "$repo/.agent/cache/board-items.json")" \
+    'a rejected cached item is removed before fallback'
+assert_eq '1' "$(grep -c -- '--id PVTI_example57' "$tmp/gh.log" || true)" \
+    'the rejected cached item is attempted only once'
+
+# A cache miss uses one live item-list read and still classifies an
+# already-target card as a no-op.
 for status_shape in direct nodes array; do
     repo=$(seed_repo)
+    rm -f "$repo/.agent/cache/board-items.json"
     : > "$tmp/gh.log"
     out=$(CURRENT_STATUS='Ready' STATUS_SHAPE="$status_shape" run_mv "$repo" --issue-number 57 --status Ready 2>&1)
     assert_contains "$out" 'no-op: issue #57 already "Ready"' \
@@ -143,7 +282,7 @@ for status_shape in direct nodes array; do
         "$status_shape already-target status does not call item-edit"
 done
 assert_contains "$(<"$mv_sh")" 'no-op: issue #%s already "%s"' \
-    'mover documents the exact already-target stdout shape'
+    'mover retains the exact already-target stdout shape'
 
 # The cache-miss/process_project discovery path must honor the same direct
 # Status shape and remain a no-op without issuing an item-edit mutation.
@@ -172,50 +311,6 @@ assert_eq "$before" "$after" 'an identical second move preserves board.json byte
 assert_eq '' "$(git -C "$repo" status --short)" \
     'an identical second move leaves the repository clean'
 
-# The known-board path validates against live metadata; after its successful
-# move, it must persist that data rather than retaining stale mutation hints.
-repo=$(seed_repo)
-jq '.statusField.id = "PVTSSF_stale" | .statusField.options.Ready = "opt-stale"' \
-    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
-mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
-assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
-    'a known-board move refreshes the live Status field id'
-assert_eq 'opt-ready' "$(jq -r '.statusField.options.Ready' < "$repo/.agent/board.json")" \
-    'and refreshes the live Status option id'
-
-# A forged cache item must never be sent to item-edit. The live board contains
-# both repositories at #57; only the requested repository's item is valid.
-repo=$(seed_repo)
-jq '.items["57"] = "PVTI_otherrepo57"' < "$repo/.agent/cache/board-items.json" \
-    > "$repo/.agent/cache/items.tmp"
-mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
-: > "$tmp/gh.log"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
-log=$(cat "$tmp/gh.log")
-assert_contains "$log" '--id PVTI_example57' 'rebinds a forged cache entry to the live requested-repo item'
-assert_not_contains "$log" 'PVTI_otherrepo57' 'never edits the forged unrelated item'
-
-# Forged project, field, and option IDs are likewise hints only. A mismatched
-# project forces the normal live project-list path, which still edits only the
-# real project and its live Status field.
-repo=$(seed_repo)
-jq '.project.id = "PVT_attacker" | .statusField.id = "PVTSSF_attacker" |
-    .statusField.options.Ready = "opt-attacker"' \
-    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
-mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
-: > "$tmp/gh.log"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
-log=$(cat "$tmp/gh.log")
-assert_contains "$log" '--project-id PVT_kwDOAexample1' 'rebinds a forged project ID to the live project'
-assert_contains "$log" '--field-id PVTSSF_lADOAexampleB' 'rebinds a forged Status field ID'
-assert_contains "$log" '--single-select-option-id opt-ready' 'rebinds a forged option ID'
-assert_not_contains "$log" 'PVT_attacker' 'never mutates the forged project'
-assert_eq 'PVT_kwDOAexample1' "$(jq -r '.project.id' < "$repo/.agent/board.json")" \
-    'a discovery move refreshes the live project id'
-assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
-    'and refreshes the live Status metadata'
-
 # --- cache miss on the issue falls back -----------------------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
@@ -229,6 +324,16 @@ assert_eq 'PVTI_example99' "$(jq -r '.items["99"] // "absent"' < "$cache")" \
     'a discovered item id is written back to the cache'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"] // "absent"' < "$cache")" \
     'existing cache entries survive the write-back'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$cache")" \
+    'the item cache records the exact repository provenance'
+assert_eq '7' "$(jq -r '.projectNumber' < "$cache")" \
+    'the item cache records the project number provenance'
+assert_eq '600' "$(stat -c '%a' "$cache")" \
+    'the item cache writer applies a private mode'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/board.json")" \
+    'the board writer records the exact repository provenance'
+assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
+    'the board writer applies a private mode'
 
 # --- fresh clone: board.json committed, item cache absent -----------------
 # The discovery path is O(boards owned by the org), so an org with a dozen
@@ -238,11 +343,11 @@ repo=$(seed_repo)
 rm -f "$repo/.agent/cache/board-items.json"
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
-assert_eq '4' "$(wc -l < "$tmp/gh.log")" 'a fresh clone validates the declared board in four calls'
+assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone reads the declared board once before editing'
 log=$(cat "$tmp/gh.log")
 assert_not_contains "$log" 'project list' 'does not enumerate every board the owner has'
 assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
-assert_contains "$out" 'board.json, 4 calls' 'reports which path it took'
+assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
     'and refreshes the cache with the live item id'
 
@@ -273,6 +378,10 @@ repo=$(bare_repo)
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'project list' 'with no board.json it discovers as before'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/board.json")" \
+    'full discovery writes board repository provenance'
+assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
+    'full discovery writes a private board mode'
 
 # --- unrecognized schemaVersion is ignored, not fatal ---------------------
 repo=$(seed_repo)
@@ -311,20 +420,22 @@ mv "$repo/.agent/b.tmp" "$repo/.agent/board.json"
 out=$(CUSTOM_STATUS=1 run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
 assert_contains "$(cat "$tmp/gh.log")" 'opt-ice' 'a board-declared column outside the canonical five works'
 
-# --- batch moves share live board lookups ----------------------------------
+# --- batch moves share the one cache-miss read -----------------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --issue-number 99 --status Ready 2>&1)
 assert_contains "$out" 'moved #57' 'batch reports the first moved issue'
 assert_contains "$out" 'moved #99' 'batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'board.json, 2 calls' <<< "$out" || true)" \
+    'batch keeps the measured cache-miss suffix on each move'
 assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
     'batch edits each issue'
-assert_eq '1' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
-    'batch shares project lookup'
 assert_eq '1' "$(grep -c 'item-list' "$tmp/gh.log" || true)" \
     'batch shares item lookup'
-assert_eq '1' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
-    'batch shares Status lookup'
+assert_eq '0' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
+    'batch avoids project validation reads'
+assert_eq '0' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
+    'batch avoids Status validation reads'
 
 # A moved/no-op mixture terminates the moved issue and emits one terminal
 # no-op for the issue absent from every board.

@@ -33,6 +33,10 @@ declare -A KNOWN_OVERSIZE=(
     # linear, not something a later pass reaches into by name.
 )
 
+# Issue #148 adds the root handback Stage 4 validation contract; the resulting
+# deliberate ratchet is 990 body lines / ~16193 tokens.
+KNOWN_OVERSIZE[parallel-issues]="990:16193:900"
+
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
 readonly MAX_DESC_CHARS=500

@@ -66,6 +66,11 @@ each canonical path and require it remains inside the worktree.
 worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 shared=<PASTE the validated shared-scripts path from the contract>
 
+Whenever you create a new `tests/*.sh` file, run `chmod +x -- "$worktree/tests/<name>.sh"` (substituting
+its actual path) immediately after writing it, before invoking it as "$worktree/tests/<name>.sh" or
+handing it off for commit. A shebang does not set the executable bit; verify the mode is 755/100755
+before the first run.
+
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
 # its .agent/runner resolves it. The wrapper is not optional.
@@ -166,7 +171,7 @@ Before implementation, report the six-step checklist and its status. Do not coll
 1. **STRUCTS** — name or reshape data structures.
 2. **INTERFACES** — define contracts, inputs, outputs, and errors.
 3. **TODOS** — map affected files, call sites, wiring, and verification commands.
-4. **SPIKE + REVERT** — for every code-bearing issue, rough-implement one bounded vertical slice only enough to learn, record what the design missed, then revert every spike change before tests or production code. This is not optional for code-bearing work. A documentation-only or no-code issue may report N/A with the concrete reason.
+4. **SPIKE + REVERT** — for every code-bearing issue, rough-implement one bounded vertical slice only enough to learn, record what the design missed, then revert every spike change before tests or production code. This is not optional for code-bearing work. A code-bearing change may declare the spike skipped only when its final diff has at most 10 changed implementation lines (tests, docs, and generated files excluded) and touches only an existing pattern: no new data shape, control flow, integration boundary, or failure mode. The handback must include the one-line form `SPIKE + REVERT: SKIPPED — <one-line justification>`. For a performed spike, use `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`; the references must identify immutable transcript/tool evidence containing both the spike edit and the revert, not a prose narrative. A documentation-only or no-code issue may report `SPIKE + REVERT: N/A — <concrete reason>`.
 5. **INVARIANTS** — revise the design from spike learnings and state boundary invariants; derive the ordered tasks.
 6. **IMPLEMENTATION (TDD)** — for each task, write a failing boundary test, make it pass minimally, refactor, and run scoped checks through agent-run.sh; run the full suite the same way at the final task. Leave progress unstaged for handback.
 
@@ -341,6 +346,12 @@ and report the incident and restoration in the handback.
 ## Commands you MUST use
 worktree=FULL_PATH
 shared=<PASTE the validated shared-scripts path from the contract>
+
+Whenever you create a new `tests/*.sh` file, run `chmod +x -- "$worktree/tests/<name>.sh"` (substituting
+its actual path) immediately after writing it, before invoking it as "$worktree/tests/<name>.sh" or
+handing it off for commit. A shebang does not set the executable bit; verify the mode is 755/100755
+before the first run.
+
 contract_root="$worktree"
 "$shared/contract-read.sh" --repo-root "$contract_root" --check > /dev/null 2>&1 || {
     printf 'agent contract is not trusted; report BLOCKED\n' >&2
@@ -402,7 +413,11 @@ Do not perform publication or metadata operations from this worker prompt.
 1. Confirm the supplied worktree and branch, inspect only in-scope instruction files, and surface
    any pre-existing dirty files with diffstat and checkpoint-manifest status.
 2. Apply only the accepted fix batch. Follow the six-step loop: Structs, Interfaces, Todos,
-   Spike + Revert, Invariants, then Implementation (TDD).
+   Spike + Revert, Invariants, then Implementation (TDD). Use the Stage 4 report contract:
+   a qualifying trivial diff may use `SPIKE + REVERT: SKIPPED — <one-line justification>`;
+   a performed spike must use `SPIKE + REVERT: PERFORMED — transcript evidence: ...` naming
+   both the spike edit and the revert; a no-code batch may use `SPIKE + REVERT: N/A —
+   <concrete reason>`.
 3. Run every focused and full verification command through `agent-run.sh`; retain the fresh
    green marker-bearing log path and do not rerun a failed command outside the wrapper.
 4. Leave all authored progress unstaged. If unrelated dirt appears, stop and surface its files,
