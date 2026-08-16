@@ -208,12 +208,12 @@ assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale e
 
 # The stacked parallel-issues skill is intentionally over the standard budget;
 # keep its measured ratchet explicit so the lint ceiling cannot drift back to
-# the predecessor's 1020-line / 16733-token values.
+# the predecessor's 1015-line / 16724-token values.
 root=$tmp/parallel-ratchet
 mkdir -p "$root/parallel-issues"
 {
     printf -- '---\nname: parallel-issues\ndescription: Use when an allowlisted skill grows past its stacked ceiling.\n---\n'
-    for ((i = 0; i < 1016; i++)); do
+    for ((i = 0; i < 1004; i++)); do
         printf 'body line %04d ' "$i"
         head -c 70 /dev/zero | tr '\0' x
         printf '\n'
@@ -221,9 +221,9 @@ mkdir -p "$root/parallel-issues"
 } > "$root/parallel-issues/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1015 lines' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1003 lines' \
     'the parallel-issues line ratchet pins the stacked ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 16724 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 16735 tokens' \
     'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these
