@@ -88,7 +88,8 @@ done
 
 A line whose first word is `moved` is the evidence the promotion happened; an already-target line such as
 `no-op: issue #123 already "Ready"` is the terminal redundant no-op evidence. Both exit
-`0`, so never treat the exit status alone as proof.
+`0`, so never treat the exit status alone as proof. The already-target line appears only on
+the slower discovery paths -- the warm path skips the status read, so `moved` covers both cases.
 
 ## Pitfalls
 

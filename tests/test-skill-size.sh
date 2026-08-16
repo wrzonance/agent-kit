@@ -192,7 +192,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows past its line ceiling fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 550 lines' 'the line ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 547 lines' 'the line ratchet names its ceiling'
 
 root=$tmp/stale
 make_skill "$root" review-remote-pr <<'EOF'
@@ -205,6 +205,26 @@ EOF
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill back under budget fails as a stale entry'
 assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale entry is named'
+
+# The stacked parallel-issues skill is intentionally over the standard budget;
+# keep its measured ratchet explicit so the lint ceiling cannot drift back to
+# the predecessor's 1020-line / 16733-token values.
+root=$tmp/parallel-ratchet
+mkdir -p "$root/parallel-issues"
+{
+    printf -- '---\nname: parallel-issues\ndescription: Use when an allowlisted skill grows past its stacked ceiling.\n---\n'
+    for ((i = 0; i < 1016; i++)); do
+        printf 'body line %04d ' "$i"
+        head -c 70 /dev/zero | tr '\0' x
+        printf '\n'
+    done
+} > "$root/parallel-issues/SKILL.md"
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1015 lines' \
+    'the parallel-issues line ratchet pins the stacked ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 16724 tokens' \
+    'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these
 # do not degrade to a loud zero: a non-numeric field aborts the whole lint with

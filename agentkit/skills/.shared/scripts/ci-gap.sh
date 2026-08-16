@@ -87,13 +87,64 @@ declared=$("$self_dir/repo-config.sh" --repo-root "$repo_root" --list 2> /dev/nu
 # values, and the names they are declared under.
 haystack=$(tr '[:upper:]' '[:lower:]' <<< "$declared" | tr -c 'a-z0-9' ' ')
 
+# A workflow step can be covered by the exact command it runs even when its
+# human-readable name has no distinctive word in the local declaration.
+# Normalize only presentation differences; this is still a textual comparison
+# and deliberately does not attempt to interpret shell syntax.
+normalize_command() {
+    local value=$1
+    value=${value//$'\r'/}
+    value=$(sed -E 's/[[:space:]]+#.*$//' <<< "$value")
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    value=${value//$'\t'/ }
+    while [[ $value == *'  '* ]]; do value=${value//'  '/ }; done
+    if [[ ${#value} -ge 2 ]]; then
+        if [[ ${value:0:1} == \" && ${value: -1} == \" ]] ||
+            [[ ${value:0:1} == \' && ${value: -1} == \' ]]; then
+            value=${value:1:${#value}-2}
+        fi
+    fi
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    printf '%s' "$value"
+}
+
+declare -a declared_commands=()
+while IFS= read -r declaration; do
+    case $declaration in
+        AGENT_CMD_*=*) declared_commands+=("$(normalize_command "${declaration#*=}")") ;;
+    esac
+done <<< "$declared"
+
+# Keep the named step alongside its single-line run command. The existing
+# ci_runs extraction below intentionally remains broader for the divergence
+# report, while this association prevents one exact command from covering a
+# different named step.
+mapfile -t step_runs < <(
+    awk '
+        function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        FNR == 1 { current = "" }
+        /^[[:space:]]*-[[:space:]]/ { current = "" }
+        /^[[:space:]]+- name:[[:space:]]*.+$/ {
+            line=$0; sub(/^[[:space:]]+- name:[[:space:]]*/, "", line)
+            current=trim(line); next
+        }
+        /^[[:space:]]*run:[[:space:]]*[^|>[:space:]].*$/ {
+            if (current == "") next
+            line=$0; sub(/^[[:space:]]*run:[[:space:]]*/, "", line)
+            print current "\t" trim(line)
+        }
+    ' "${workflows[@]}" 2> /dev/null
+)
+
 # Step names carry the intent ("Type check (tsc --noEmit)"), which is what a
 # reader needs. Setup steps are excluded: installing a toolchain is not a gate,
 # and listing it as uncovered would bury the ones that are.
 mapfile -t steps < <(
     grep -hoE '^[[:space:]]+- name:[[:space:]]+.+$' "${workflows[@]}" 2> /dev/null |
         sed -E 's/^[[:space:]]+- name:[[:space:]]+//; s/["'"'"']//g' |
-        grep -viE '^(setup|install|checkout|cache|configure|login|upload|download|set up|restore)\b' |
+        grep -viE '^(setup|install|checkout|check out|cache|configure|login|upload|download|set up|restore)\b' |
         sort -u
 )
 ((${#steps[@]})) || {
@@ -108,14 +159,28 @@ for step in "${steps[@]}"; do
     # executing CI to find out, and a false "covered" is corrected by reading
     # one line, while a missing gate is corrected by a failed push.
     hit=no
-    for word in $(tr '[:upper:]' '[:lower:]' <<< "$step" | tr -c 'a-z0-9' ' '); do
-        ((${#word} >= 4)) || continue
-        case " $haystack " in *" $word "*)
+    for step_run in "${step_runs[@]}"; do
+        step_run_name=${step_run%%$'\t'*}
+        [[ $step_run_name == "$step" ||
+            $step_run_name == "\"$step\"" || $step_run_name == "'$step'" ]] || continue
+        step_run_command=${step_run#*$'\t'}
+        normalized_run=$(normalize_command "$step_run_command")
+        for declared_command in "${declared_commands[@]}"; do
+            [[ -n $declared_command && $normalized_run == "$declared_command" ]] || continue
             hit=yes
-            break
-            ;;
-        esac
+            break 2
+        done
     done
+    if [[ $hit == no ]]; then
+        for word in $(tr '[:upper:]' '[:lower:]' <<< "$step" | tr -c 'a-z0-9' ' '); do
+            ((${#word} >= 4)) || continue
+            case " $haystack " in *" $word "*)
+                hit=yes
+                break
+                ;;
+            esac
+        done
+    fi
     if [[ $hit == yes ]]; then covered+=("$step"); else uncovered+=("$step"); fi
 done
 
