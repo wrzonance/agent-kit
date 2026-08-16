@@ -137,12 +137,12 @@ run_wrapper_with_decoy() {
     pid=$(start_decoy "$marker")
     if [[ $name == claude-adversarial-review.sh ]]; then
         CLAUDE_PID=$pid CODEX_PID=$pid LIMIT_PID=$pid POLLER_PID=$pid \
-            CLAUDE_EXECUTABLE="$fake" bash "$helper" --mode probe --model claude-test \
+            CLAUDE_EXECUTABLE="$fake" bash "$helper" --mode probe --no-payload --model claude-test \
             --transcript "$run_dir/transcript.jsonl" --poll-seconds 1 \
             --max-duration-seconds 30 >/dev/null 2>"$run_dir/stderr.log" || rc=$?
     else
         CLAUDE_PID=$pid CODEX_PID=$pid LIMIT_PID=$pid POLLER_PID=$pid \
-            CODEX_EXECUTABLE="$fake" bash "$helper" --mode probe --model gpt-test \
+            CODEX_EXECUTABLE="$fake" bash "$helper" --mode probe --no-payload --model gpt-test \
             --transcript "$run_dir/transcript.jsonl" --poll-seconds 1 \
             --max-duration-seconds 30 --max-tokens 1024 \
             >/dev/null 2>"$run_dir/stderr.log" || rc=$?

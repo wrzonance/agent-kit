@@ -180,7 +180,7 @@ chmod 700 -- "$private"
 
 invalid_err="$tmp/invalid.err"
 invalid_rc=0
-bash "$claude" --mode probe --model claude-test --transcript "$private/invalid" \
+bash "$claude" --mode probe --no-payload --model claude-test --transcript "$private/invalid" \
     --max-duration-seconds 0 > /dev/null 2>"$invalid_err" || invalid_rc=$?
 assert_eq 1 "$invalid_rc" 'Claude rejects a zero duration ceiling'
 assert_contains "$(<"$invalid_err")" '--max-duration-seconds' \
@@ -188,7 +188,7 @@ assert_contains "$(<"$invalid_err")" '--max-duration-seconds' \
 
 claude_err="$tmp/claude.err"
 claude_rc=0
-CLAUDE_EXECUTABLE="$tmp/fake-claude" bash "$claude" --mode probe --model claude-test \
+CLAUDE_EXECUTABLE="$tmp/fake-claude" bash "$claude" --mode probe --no-payload --model claude-test \
     --transcript "$private/claude.ndjson" --poll-seconds 1 --max-duration-seconds 1 \
     --max-budget-usd 0.25 > /dev/null 2>"$claude_err" || claude_rc=$?
 assert_eq 1 "$claude_rc" 'Claude review expires at its duration ceiling'
@@ -197,7 +197,7 @@ assert_contains "$(<"$claude_err")" 'duration' \
 
 codex_err="$tmp/codex.err"
 codex_rc=0
-FAKE_CODEX_PID_FILE="$tmp/codex.pid" CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode probe --model gpt-test \
+FAKE_CODEX_PID_FILE="$tmp/codex.pid" CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" --mode probe --no-payload --model gpt-test \
     --transcript "$private/codex.jsonl" --poll-seconds 1 --max-duration-seconds 30 \
     --max-tokens 1024 > /dev/null 2>"$codex_err" || codex_rc=$?
 assert_eq 1 "$codex_rc" 'Codex rejects usage above its token ceiling'
@@ -262,7 +262,7 @@ assert_contains "$(<"$oversized_err")" 'input tokens' \
 codex_duration_err="$tmp/codex-duration.err"
 codex_duration_rc=0
 FAKE_CODEX_USAGE=1 CODEX_EXECUTABLE="$tmp/fake-codex" bash "$codex" \
-    --mode probe --model gpt-test --transcript "$private/codex-duration.jsonl" \
+    --mode probe --no-payload --model gpt-test --transcript "$private/codex-duration.jsonl" \
     --poll-seconds 1 --max-duration-seconds 1 --max-tokens 1024 > /dev/null \
     2>"$codex_duration_err" || codex_duration_rc=$?
 assert_eq 1 "$codex_duration_rc" 'Codex review expires at its duration ceiling'

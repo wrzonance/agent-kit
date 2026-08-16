@@ -58,6 +58,7 @@ readonly REQUIRED_FLAGS=(
 )
 
 MODE=""
+NO_PAYLOAD=0
 CODEX_BIN=${CODEX_EXECUTABLE:-codex}
 CODEX_RESOLVED=""
 MODEL=""
@@ -109,6 +110,9 @@ Conditionally required:
 Options:
   --codex <path>             codex executable (default: \$CODEX_EXECUTABLE, else
                              the first "codex" on PATH).
+  --no-payload               Required in probe mode. The probe sends only a
+                             synthetic snippet, no PR diff, and never counts
+                             against the one-review-per-PR budget.
   --effort <level>           Reasoning effort, passed as model_reasoning_effort
                              (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval on stderr (default: $POLL_SECONDS).
@@ -182,6 +186,7 @@ parse_args() {
         case $1 in
         --mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
         --mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
+        --no-payload) NO_PAYLOAD=1 && shift ;;
         --codex) require_value "$1" "${2:-}" && CODEX_BIN=$2 && shift 2 ;;
         --codex=*) CODEX_BIN=${1#*=} && shift ;;
         --model) require_value "$1" "${2:-}" && MODEL=$2 && shift 2 ;;
@@ -234,6 +239,15 @@ validate_args() {
     [[ $MAX_TOKENS =~ ^[0-9]+$ ]] || die "--max-tokens must be an integer"
     ((MAX_TOKENS >= 1024 && MAX_TOKENS <= 1000000)) ||
         die "--max-tokens must be 1024-1000000"
+    if [[ $MODE == probe ]]; then
+        ((NO_PAYLOAD == 1)) ||
+            die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
+        [[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
+            -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+            die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
+    else
+        ((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
+    fi
     if [[ $MODE == review ]]; then
         [[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
         [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
@@ -319,6 +333,9 @@ structured verdict.
 EOF
     if [[ $MODE == probe ]]; then
         cat >>"$target" <<'EOF'
+
+This is a capability probe with no payload. Review only this synthetic snippet;
+there is no PR diff and this probe never counts against the one-review-per-PR budget.
 
 Adversarially review this minimal code and return the required structured verdict:
 

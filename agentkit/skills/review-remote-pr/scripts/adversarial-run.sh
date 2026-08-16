@@ -32,6 +32,10 @@ Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
 publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
 line containing provider, model, effort, mode, P1, and P2.
 
+This is the real PR-diff review path. Capability probes use the provider helper
+with --mode probe --no-payload, send only a synthetic snippet, and never spend
+the one-review-per-PR receipt budget.
+
 The consent record is always DIR/state/cross-provider-consent. There is no
 caller-supplied consent flag.
 EOF

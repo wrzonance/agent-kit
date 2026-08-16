@@ -59,6 +59,7 @@ readonly REQUIRED_FLAGS=(
 )
 
 MODE=""
+NO_PAYLOAD=0
 CLAUDE_BIN=${CLAUDE_EXECUTABLE:-claude}
 CLAUDE_RESOLVED=""
 MODEL=""
@@ -109,6 +110,9 @@ Conditionally required:
 Options:
   --claude <path>            claude executable (default: \$CLAUDE_EXECUTABLE, else
                              the first "claude" on PATH).
+  --no-payload               Required in probe mode. The probe sends only a
+                             synthetic snippet, no PR diff, and never counts
+                             against the one-review-per-PR budget.
   --effort <level>           low|medium|high|xhigh|max (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval (default: $POLL_SECONDS).
   --max-budget-usd <amount>  Hard API spend cap, 0.01-1000 (default: $MAX_BUDGET_USD).
@@ -224,6 +228,7 @@ parse_args() {
 		case $1 in
 		--mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
 		--mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
+		--no-payload) NO_PAYLOAD=1 && shift ;;
 		--claude) require_value "$1" "${2:-}" && CLAUDE_BIN=$2 && shift 2 ;;
 		--claude=*) CLAUDE_BIN=${1#*=} && shift ;;
 		--model) require_value "$1" "${2:-}" && MODEL=$2 && shift 2 ;;
@@ -274,6 +279,15 @@ validate_args() {
 		die "--max-budget-usd must be between 0.01 and 1000"
 	# Normalize away any locale-specific decimal handling before it reaches the CLI.
 	MAX_BUDGET_USD=$(LC_ALL=C printf '%.2f' "$MAX_BUDGET_USD")
+	if [[ $MODE == probe ]]; then
+		((NO_PAYLOAD == 1)) ||
+			die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
+		[[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
+			-z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+			die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
+	else
+		((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
+	fi
 	if [[ $MODE == review ]]; then
 		[[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
 		[[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
@@ -394,6 +408,9 @@ write_review_input() {
 	local target=$1
 	if [[ $MODE == probe ]]; then
 		cat >"$target" <<'EOF'
+This is a capability probe with no payload. Review only this synthetic snippet;
+there is no PR diff and this probe never counts against the one-review-per-PR budget.
+
 Adversarially review this minimal code and return the required structured verdict:
 
 ```diff
