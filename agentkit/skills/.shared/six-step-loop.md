@@ -27,8 +27,15 @@ implementation begins only at Stage 6.
 4. **SPIKE + REVERT** — for every code-bearing change, rough-implement one bounded
    vertical slice only far enough to expose what the design missed, record the learnings,
    then revert every spike change before tests or production code. Not optional for
-   code-bearing work. A documentation-only or no-code change may report `N/A` with the
-   concrete reason.
+   code-bearing work. A code-bearing change may declare the spike skipped only when its
+   final diff has at most 10 changed implementation lines (tests, docs, and generated
+   files excluded) and touches only an existing pattern: no new data shape, control flow,
+   integration boundary, or failure mode. The handback must include the one-line form
+   `SPIKE + REVERT: SKIPPED — <one-line justification>`. For a performed spike, use
+   `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert
+   reference>`; the references must identify immutable transcript/tool evidence containing
+   both the spike edit and the revert, not a prose narrative. A documentation-only or
+   no-code change may report `SPIKE + REVERT: N/A — <concrete reason>`.
 5. **INVARIANTS** — fold the spike's learnings back into the design, state the boundary
    pre/postconditions, and derive 5–10 ordered tasks (cap 12). These invariants become the
    tests, and little else — pin them at boundaries, not internals.
