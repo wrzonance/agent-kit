@@ -28,8 +28,9 @@ Options:
   --repo-root DIR           Repository root holding .agent/ (default: git toplevel
                             of the cwd). A warm .agent/board.json plus
                             .agent/cache/board-items.json performs the mutation
-                            directly; a cache miss reads that one declared board
-                            before editing and refreshes the item cache.
+                            directly when both trusted caches match this repo;
+                            a cache miss reads that one declared board before
+                            editing and refreshes the item cache.
   --all-boards              Walk EVERY project the issue is on: keep going after
                             a successful move, and keep going past a board that
                             has no Status field or no matching Status option.
@@ -154,9 +155,20 @@ if [[ -n $repo_root ]]; then
 fi
 
 board_readable() {
-    [[ -n $board_file && -r $board_file ]] || return 1
+    trusted_cache_file "$board_file" || return 1
     jq -e --argjson v "$BOARD_SCHEMA_VERSION" '.schemaVersion == $v' \
         <"$board_file" >/dev/null 2>&1
+}
+
+# A cache is trusted only when it is a regular file owned by the operator and
+# cannot be changed by another user through group/world write permissions.
+# Symlinks are rejected before the regular-file and ownership checks.
+trusted_cache_file() {
+    local file=$1 mode
+    [[ -n $file && -f $file && ! -L $file && -r $file && -O $file ]] || return 1
+    mode=$(stat -c '%a' -- "$file" 2>/dev/null) || return 1
+    mode=${mode: -3}
+    [[ ${mode:1:1} != [2367] && ${mode:2:1} != [2367] ]]
 }
 
 # Prints the option id for a status name, matched case-insensitively so the
@@ -186,20 +198,59 @@ status_is_valid || die \
 # Merge one issue -> item mapping into the cache, scoped to its board. Written
 # temp-then-move so a concurrent reader never sees a half-written file.
 cache_item_id() {
-    local project_id=$1 issue=$2 item=$3 existing='{}' staged
+    local project_id=$1 issue=$2 item=$3 project_owner=$4 project_number=$5
+    local existing='{}' staged
     [[ -n $items_file && -n $project_id && -n $item ]] || return 0
     mkdir -p -- "$(dirname -- "$items_file")" 2>/dev/null || return 0
-    if [[ -r $items_file ]]; then
-        existing=$(jq -c --arg p "$project_id" \
-            'if (.project == $p and .schemaVersion == 1) then (.items // {}) else {} end' \
+    if trusted_cache_file "$items_file"; then
+        existing=$(jq -c --arg repository "$repository" --arg owner "$project_owner" \
+            --arg number "$project_number" --arg p "$project_id" \
+            'if (.schemaVersion == 1 and .repository == $repository and
+                 .owner == $owner and (.projectNumber | tostring) == $number and
+                 .project == $p and (.items | type) == "object")
+             then .items else {} end' \
             <"$items_file" 2>/dev/null || printf '{}')
     fi
     staged=$(mktemp "$(dirname -- "$items_file")/.items.XXXXXX") || return 0
-    if jq -n --argjson v "$BOARD_SCHEMA_VERSION" --arg p "$project_id" \
-        --argjson items "${existing:-\{\}}" --arg n "$issue" --arg id "$item" \
-        '{schemaVersion: $v, project: $p, items: ($items + {($n): $id})}' \
+    if jq -n --argjson v "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
+        --arg owner "$project_owner" --argjson number "$project_number" \
+        --arg p "$project_id" --argjson items "${existing:-\{\}}" \
+        --arg n "$issue" --arg id "$item" \
+        '{schemaVersion: $v, repository: $repository, owner: $owner,
+          projectNumber: $number, project: $p,
+          items: ($items + {($n): $id})}' \
         >"$staged" 2>/dev/null; then
-        mv -- "$staged" "$items_file"
+        if chmod 600 -- "$staged" && mv -- "$staged" "$items_file"; then
+            :
+        else
+            rm -f -- "$staged"
+        fi
+    else
+        rm -f -- "$staged"
+    fi
+}
+
+# Remove one issue -> item mapping after a cached mutation is rejected. The
+# rewrite is atomic so a later fallback cannot retry the same stale id.
+invalidate_cached_item() {
+    local project_id=$1 issue=$2 project_owner=$3 project_number=$4 staged
+    [[ -n $items_file && -n $project_id && -n $issue && -n $project_owner &&
+        -n $project_number ]] || return 0
+    trusted_cache_file "$items_file" || return 0
+    staged=$(mktemp "$(dirname -- "$items_file")/.items.XXXXXX") || return 0
+    if jq --arg repository "$repository" --arg owner "$project_owner" \
+        --arg number "$project_number" --arg p "$project_id" --arg n "$issue" '
+        if (.schemaVersion == 1 and .repository == $repository and
+            .owner == $owner and (.projectNumber | tostring) == $number and
+            .project == $p and (.items | type) == "object")
+        then .items |= del(.[$n])
+        else .
+        end' <"$items_file" >"$staged" 2>/dev/null; then
+        if chmod 600 -- "$staged" && mv -- "$staged" "$items_file"; then
+            :
+        else
+            rm -f -- "$staged"
+        fi
     else
         rm -f -- "$staged"
     fi
@@ -227,11 +278,12 @@ refresh_board_metadata() {
     generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     staged=$(mktemp "$(dirname -- "$board_file")/.board.XXXXXX") || return 1
 
-    if ! jq -n --argjson version "$BOARD_SCHEMA_VERSION" --arg owner "$board_owner" \
+    if ! jq -n --argjson version "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
+        --arg owner "$board_owner" \
         --argjson number "$project_number" --arg project "$project_id" --arg title "$project_title" \
         --arg field "$field_id" --argjson options "$options" --arg fingerprint "$fingerprint" \
         --arg generated_at "$generated_at" \
-        '{schemaVersion: $version, owner: $owner,
+        '{schemaVersion: $version, repository: $repository, owner: $owner,
           project: {number: $number, id: $project, title: $title},
           statusField: {id: $field, name: "Status", options: $options},
           generatedAt: $generated_at, fingerprint: $fingerprint}' > "$staged"; then
@@ -242,14 +294,14 @@ refresh_board_metadata() {
         rm -f -- "$staged"
         return 1
     }
-    if [[ -r $board_file ]] &&
+    if trusted_cache_file "$board_file" &&
         existing_substantive=$(jq -S -c 'del(.generatedAt)' <"$board_file" 2>/dev/null); then
         if [[ $staged_substantive == "$existing_substantive" ]]; then
             rm -f -- "$staged"
             return 0
         fi
     fi
-    mv -- "$staged" "$board_file"
+    chmod 600 -- "$staged" && mv -- "$staged" "$board_file"
 }
 
 # Match on issue number AND repository. Project v2 boards are routinely shared
@@ -301,20 +353,36 @@ select_item_status() {
         ) // empty' <<< "$items_json"
 }
 
-# One mutation instead of the previous four reads plus mutation. The board and
-# item caches are the declared repository contract for the single-board path;
-# a rejected mutation falls through to live discovery below so stale IDs still
-# self-heal without hiding an API error.
-# Returns 0 when every requested issue moved, 1 on any cache doubt, and 2 when
-# a cached mutation was rejected.
+board_provenance_matches() {
+    local project_number=$1 project_id=$2 project_owner=$3
+    jq -e --arg repository "$repository" --arg owner "$project_owner" \
+        --arg number "$project_number" --arg project "$project_id" '
+        .repository == $repository and .owner == $owner and
+        (.project.number | tostring) == $number and .project.id == $project
+    ' <"$board_file" >/dev/null 2>&1
+}
+
+item_cache_provenance_matches() {
+    local project_number=$1 project_id=$2 project_owner=$3
+    jq -e --arg repository "$repository" --arg owner "$project_owner" \
+        --arg number "$project_number" --arg project "$project_id" '
+        .schemaVersion == 1 and .repository == $repository and
+        .owner == $owner and (.projectNumber | tostring) == $number and
+        .project == $project and (.items | type) == "object"
+    ' <"$items_file" >/dev/null 2>&1
+}
+
+# A trusted board and item cache are the fail-closed boundary for a warm move:
+# provenance and file safety are checked locally, then the cached IDs go
+# directly to the one mutation. Returns 0 when every requested issue is
+# handled, 1 on cache doubt, and 2 when a trusted cached mutation is rejected.
 try_fast_path() {
-    local project_number project_id project_title field_id option_id item_id cached_project issue_number
+    local project_number project_id project_title field_id option_id item_id issue_number
+    local project_owner
 
     ((all_boards == 0)) || return 1
     board_readable || return 1
-    [[ -n $items_file && -r $items_file ]] || return 1
-    jq -e --argjson v "$BOARD_SCHEMA_VERSION" '.schemaVersion == $v' \
-        <"$items_file" >/dev/null 2>&1 || return 1
+    trusted_cache_file "$items_file" || return 1
 
     project_number=$(jq -r '.project.number // empty' <"$board_file" 2>/dev/null) || return 1
     project_id=$(jq -r '.project.id // empty' <"$board_file" 2>/dev/null) || return 1
@@ -323,11 +391,11 @@ try_fast_path() {
     option_id=$(board_option_id "$status") || return 1
     [[ -n $project_number && -n $project_id && -n $field_id && -n $option_id ]] || return 1
 
-    cached_project=$(jq -r '.project // empty' <"$items_file" 2>/dev/null) || return 1
-    [[ $cached_project == "$project_id" ]] || return 1
+    project_owner=$(jq -r '.owner // empty' <"$board_file" 2>/dev/null) || return 1
+    [[ -n $project_owner ]] || return 1
+    board_provenance_matches "$project_number" "$project_id" "$project_owner" || return 1
+    item_cache_provenance_matches "$project_number" "$project_id" "$project_owner" || return 1
 
-    # Check every requested item before issuing the first mutation. A partial
-    # batch takes the one-read known-board path rather than mixing call counts.
     for issue_number in "${issue_numbers[@]}"; do
         item_id=$(jq -r --arg n "$issue_number" '.items[$n] // empty' \
             <"$items_file" 2>/dev/null) || return 1
@@ -341,8 +409,11 @@ try_fast_path() {
             --id "$item_id" \
             --project-id "$project_id" \
             --field-id "$field_id" \
-            --single-select-option-id "$option_id" >/dev/null 2>&1 || return 2
-        cache_item_id "$project_id" "$issue_number" "$item_id"
+            --single-select-option-id "$option_id" >/dev/null 2>&1 || {
+                invalidate_cached_item "$project_id" "$issue_number" "$project_owner" "$project_number"
+                return 2
+            }
+        cache_item_id "$project_id" "$issue_number" "$item_id" "$project_owner" "$project_number"
         completed_issues[$issue_number]=1
         printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 1 call)\n' \
             "$issue_number" "$status" "$project_number" "$project_title"
@@ -350,10 +421,8 @@ try_fast_path() {
     return 0
 }
 
-# board.json names the project, but its IDs are repository-controlled hints, not
-# authority. A missing item cache is rebound with one item-list read, then the
-# declared board IDs are used for the mutation. Rejection falls through to the
-# full discovery path below.
+# board.json names a trusted project and Status field. A missing item cache uses
+# one live item-list read, then the declared board IDs for the mutation.
 # Returns 0 moved, 1 cannot use this path, 2 the API rejected the edit.
 try_known_board() {
     local project_number project_id project_title field_id option_id items_json item_id issue_number
@@ -371,7 +440,8 @@ try_known_board() {
     [[ -n $project_number && -n $project_id && -n $field_id && -n $option_id ]] || return 1
 
     project_owner=$(jq -r '.owner // empty' <"$board_file" 2>/dev/null) || return 1
-    [[ -n $project_owner ]] || project_owner=$owner
+    [[ -n $project_owner ]] || return 1
+    board_provenance_matches "$project_number" "$project_id" "$project_owner" || return 1
 
     items_json=$(gh project item-list "$project_number" --owner "$project_owner" \
         --limit "$ITEM_LIMIT" --format json 2>/dev/null) || return 1
@@ -391,8 +461,11 @@ try_known_board() {
             --id "$item_id" \
             --project-id "$project_id" \
             --field-id "$field_id" \
-            --single-select-option-id "$option_id" >/dev/null 2>&1 || return 2
-        cache_item_id "$project_id" "$issue_number" "$item_id"
+            --single-select-option-id "$option_id" >/dev/null 2>&1 || {
+                invalidate_cached_item "$project_id" "$issue_number" "$project_owner" "$project_number"
+                return 2
+            }
+        cache_item_id "$project_id" "$issue_number" "$item_id" "$project_owner" "$project_number"
         completed_issues[$issue_number]=1
         printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 2 calls)\n' \
             "$issue_number" "$status" "$project_number" "$project_title"
@@ -495,7 +568,7 @@ process_project() {
             --single-select-option-id "$option_id" >/dev/null; then
             die "Could not move issue #$issue_number to '$status'."
         fi
-        cache_item_id "$project_id" "$issue_number" "$item_id"
+        cache_item_id "$project_id" "$issue_number" "$item_id" "$owner" "$project_number"
         completed_issues[$issue_number]=1
         printf 'moved #%s -> "%s" on project #%s "%s"\n' \
             "$issue_number" "$status" "$project_number" "$project_title"
