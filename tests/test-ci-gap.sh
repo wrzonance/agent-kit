@@ -41,6 +41,31 @@ assert_not_contains "$covered_output" 'Setup runtime' \
 assert_contains "$covered_output" 'Plausibly covered' \
     'mixed workflow reports the covered gate section'
 
+exact_repo="$tmp/exact-command"
+make_repo "$exact_repo" "AGENT_CMD_TEST='tests/run-tests.sh'" \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Run the suite
+        run: " tests/run-tests.sh "
+      - name: Security scan
+        run: scan.sh'
+exact_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$exact_repo")
+assert_contains "$exact_output" 'ci-gap= workflows=1 gates=2 covered=1 uncovered=1' \
+    'exact run command and spaced checkout produce the expected gate count'
+assert_contains "$exact_output" 'Run the suite' \
+    'an exact declared command covers a short-name workflow step'
+assert_contains "$exact_output" 'Security scan' \
+    'an unrelated step remains uncovered when another step has an exact command'
+assert_not_contains "$exact_output" 'Check out' \
+    'spaced checkout steps are excluded from the gate report'
+
 divergent_repo="$tmp/divergent"
 make_repo "$divergent_repo" $'AGENT_CMD_TEST=pytest -q' \
     $'name: CI\non:\n  pull_request:\njobs:\n  checks:\n    steps:\n      - name: Run verifier\n        run: "verify.sh --full"'
