@@ -38,9 +38,13 @@ declare -A KNOWN_OVERSIZE=(
 # to parallel-issues, ratcheting it to 990:16193 measured against a tree without
 # the ledger content. Neither chain's CI could observe the combined total, so both
 # ceilings below are re-measured against the merged body and set to the minimum
-# that passes -- the planned shrink targets are unchanged.
-KNOWN_OVERSIZE[review-remote-pr]="550:8413:450"
-KNOWN_OVERSIZE[parallel-issues]="1020:16733:900"
+# that passes -- the planned shrink targets are unchanged. Issue #147 then moves
+# the role-separation rationale into references/, trimming both bodies: lines
+# ratchet down (1020->1015, 550->547) while review-remote-pr's tokens rise 9
+# (8413->8422), because the pointer it leaves behind is denser than the prose it
+# replaced. Both dimensions are ratcheted independently, so both are re-set.
+KNOWN_OVERSIZE[review-remote-pr]="547:8422:450"
+KNOWN_OVERSIZE[parallel-issues]="1015:16724:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
