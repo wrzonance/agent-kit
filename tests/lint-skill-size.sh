@@ -46,8 +46,13 @@ declare -A KNOWN_OVERSIZE=(
 # Issue #145 extracts the deterministic S-risk helpers, repeating that shape for
 # parallel-issues: 1015->1003 lines but 16724->16735 tokens, since the helper
 # invocations that replace the inline procedure are denser per line.
-KNOWN_OVERSIZE[review-remote-pr]="547:8422:450"
-KNOWN_OVERSIZE[parallel-issues]="1003:16735:900"
+# Issue #144 centralizes worktree setup into a shared library, and unlike the
+# entries above this one moves BOTH dimensions down together: parallel-issues
+# 1003->966 lines / 16735->16394 tokens, review-remote-pr 547->511 / 8422->7959.
+# Ratcheted down rather than left slack -- a ceiling well above the measured
+# body silently re-permits the growth this gate exists to catch.
+KNOWN_OVERSIZE[review-remote-pr]="511:7959:450"
+KNOWN_OVERSIZE[parallel-issues]="966:16394:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

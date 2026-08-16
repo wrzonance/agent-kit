@@ -213,6 +213,12 @@ parallel_refs=("$skills"/parallel-issues/references/*.md)
 shared_refs=("$skills"/.shared/*.md)
 gh_pr_state_script="$skills/review-remote-pr/scripts/gh-pr-state.sh"
 prepare_issue_script="$skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
+review_setup_status_line=$(grep -m1 -n '^if ! setup_output=' "$review_skill" | cut -d: -f1)
+review_setup_parse_line=$(grep -m1 -n '^PR_WORKTREE=' "$review_skill" | cut -d: -f1)
+assert_line_order 'review helper status is checked before parsing its worktree output' \
+    "$review_setup_status_line" "$review_setup_parse_line"
+assert_contains "$(<"$review_skill")" 'if ! setup_output=' \
+    'review helper setup captures failure before output parsing'
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
     'review recipes name jq parser failures as unavailable evidence'
 # The former inline python3 thread-classification recipe was absorbed into

@@ -196,58 +196,22 @@ Never switch branches in a worktree that may belong to another issue/PR.
 # skips that branch and still runs agent-preflight.sh out of "$agentkit".
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; fi
-REPO_ROOT=$(git rev-parse --show-toplevel)
-HEAD_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq '.headRefName')
-CROSS_REPO=$(gh pr view "$PR" --repo "$REPO" --json isCrossRepository --jq '.isCrossRepository')
-git fetch origin
-EXISTING_WORKTREE=$(git worktree list --porcelain | awk -v b="refs/heads/$HEAD_BRANCH" \
-  '$1=="worktree"{wt=$2} $1=="branch"&&$2==b{print wt; exit}')
-
-if [ -n "$EXISTING_WORKTREE" ]; then
-  PR_WORKTREE="$EXISTING_WORKTREE"
-else
-  # A repository may name its own worktree root; .worktrees/ is the default.
-  # Load that configuration FIRST: reading AGENT_WORKTREE_ROOT before the export
-  # writes the exclude entry for the default while the worktree is created under
-  # the configured root, leaving the real worktree untracked in the main repo.
-  resolver="$agentkit/.shared/scripts/repo-config.sh"
-  [ -x "$resolver" ] && eval "$("$resolver" --export)"
-
-  # In-repo, not a sibling: follow the current contract's writable-root guidance,
-  # so ../<repo>-pr-N cannot be created. The root is resolved once, here, and
-  # reused for both the exclude entry and the worktree path so they cannot drift.
-  exclude_path="$(git rev-parse --git-path info/exclude)"
-  worktree_root="${AGENT_WORKTREE_ROOT:-.worktrees}"
-  grep -Fxq "$worktree_root/" "$exclude_path" 2>/dev/null ||
-    printf '%s\n' "$worktree_root/" >> "$exclude_path"
-  PR_WORKTREE="${PR_WORKTREE:-$REPO_ROOT/$worktree_root/pr-$PR}"
-  if [ -e "$PR_WORKTREE" ]; then
-    echo "Worktree path exists: $PR_WORKTREE"
-    echo "Set PR_WORKTREE to an unused path, then rerun setup."
-    exit 1
-  fi
-  if [ "$CROSS_REPO" = "true" ]; then
-    # fork PR: head branch absent on origin -- gh wires the fork remote/push
-    git worktree add --detach "$PR_WORKTREE" && ( cd "$PR_WORKTREE" && gh pr checkout "$PR" --repo "$REPO" )
-  else
-    git worktree add -b "$HEAD_BRANCH" "$PR_WORKTREE" "origin/$HEAD_BRANCH" 2>/dev/null || \
-      git worktree add "$PR_WORKTREE" "$HEAD_BRANCH"
-  fi
+if ! setup_output=$("$agentkit/skills/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
+  printf '%s\n' "$setup_output" >&2
+  printf '%s\n' 'STOP: PR worktree helper failed; no worktree output will be parsed.' >&2
+  exit 1
 fi
-
-# Preflight the NEW worktree BEFORE entering it, from the main repo (its
-# contract already exists). Run-once: not the resolver, don't prepend elsewhere.
-"$agentkit/.shared/scripts/agent-preflight.sh" --repo "$REPO" --worktree "$PR_WORKTREE"
-git_common_dir=$(git rev-parse --git-common-dir)
-mkdir -p "$git_common_dir/info"
-grep -qxF '.agent/*' "$git_common_dir/info/exclude" 2>/dev/null || printf '%s\n' '.agent/*' >>"$git_common_dir/info/exclude"  # never `.agent/` -- invites `git add -A`
-
-cd "$PR_WORKTREE" || { echo "STOP: worktree missing at $PR_WORKTREE"; exit 1; }  # still in main repo if this fails
-[ "$CROSS_REPO" = "true" ] || git pull --ff-only origin "$HEAD_BRANCH"
+printf '%s\n' "$setup_output"
+PR_WORKTREE=$(sed -n 's/^worktree=//p' <<<"$setup_output" | tail -n 1 | sed 's/ branch=.*//')
+[[ -n $PR_WORKTREE ]] || { echo 'STOP: worktree helper returned no worktree path'; exit 1; }
+cd "$PR_WORKTREE" || { echo "STOP: worktree missing at $PR_WORKTREE"; exit 1; }
+# The helper excludes .agent/* as local state; never git add -A.
 ```
 
-**Run all subsequent commands from `$PR_WORKTREE`.** All commits go to `$HEAD_BRANCH`. Carry the
-preflight block forward, paste it verbatim into every worker prompt; act on its decision lines:
+**Run all subsequent commands from `$PR_WORKTREE`.** All commits go to the PR head branch. The
+helper owns Step 0a's branch/exclude mutations, secure propagation of root-local ignored config,
+preflight, fork checkout, fast-forward pull, and declared setup dispatch. Carry the printed
+preflight block forward and paste it verbatim into every worker prompt; act on its decision lines:
 `project-scope=no` → fleet: verify App `Projects: write`; OAuth: `gh auth refresh -s project`; `peer-cli= <name> absent` →
 Step 1b skips the probe, goes straight to the blind same-harness fallback; `git= … writable=no` →
 expect `worktree-commit.sh` exit `2` on the first commit (a documented retry).

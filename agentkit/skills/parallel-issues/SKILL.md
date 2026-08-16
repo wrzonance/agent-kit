@@ -494,59 +494,22 @@ if ! base="$(git remote show origin | sed -n 's/^.*HEAD branch:[[:space:]]*//p' 
     exit 1
 fi
 issue_number=123 # Replace with the approved issue number.
-branch="feat/issue-$issue_number"
-worktree="$repository_root/.worktrees/feat/issue-$issue_number"
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-shared_scripts="$agentkit/.shared/scripts"
-exclude_path="$(git rev-parse --git-path info/exclude)"
-if ! grep -Fxq '.worktrees/' "$exclude_path" 2>/dev/null; then
-    printf '%s\n' '.worktrees/' >> "$exclude_path"
-fi
-git fetch origin || {
-    printf '%s\n' 'Could not fetch origin.' >&2
-    exit 1
-}
-if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    printf 'Remote branch origin/%s already exists; choose a different branch or resolve it before dispatching.\n' "$branch" >&2
-    exit 1
-fi
 # For a chained issue, chain_base_sha is the root-published commit of its
 # predecessor (worktree-commit.sh printed it); empty means an independent
 # issue starting from trunk.
 chain_base_sha="${chain_base_sha:-}"
-git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}" || {
-    printf 'Could not create worktree %s.\n' "$worktree" >&2
-    exit 1
-}
-(
-    cd "$worktree" || exit 1
-    git push --set-upstream origin "$branch" || {
-        printf 'Could not create remote branch origin/%s.\n' "$branch" >&2
-        exit 1
-    }
-    "$shared_scripts/agent-preflight.sh" --worktree "$worktree" 2>/dev/null
-    # A fresh worktree has NONE of the repository's installed dependencies, so
-    # the first verification fails for a reason that has nothing to do with the
-    # change -- and the Stop gate then holds the worker there, unable to finish,
-    # with nobody watching. Observed: a lint gate that passes at the repository
-    # root dies in a new worktree before linting anything.
-    #
-    # The repository declares what to run; this does not guess. No declaration
-    # means nothing to do, which is the right answer for a repo that needs none.
-    if [[ -n $("$shared_scripts/repo-config.sh" --get AGENT_CMD_SETUP 2>/dev/null) ]]; then
-        "$shared_scripts/agent-run.sh" --dir "$worktree" --cmd setup || {
-            printf 'Setup failed in %s; every verify there will fail for that reason.\n' "$worktree" >&2
-            exit 1
-        }
-    fi
-)
+# The helper expands this to the historical start-point contract:
+# git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
+setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base")
+[[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
+"$agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-Two things that block runs later happen in that subshell, so do not drop them:
+The helper owns the mutating branch/exclude operations and keeps their approval boundary intact. Before preflight it excludes `.agent/*` and securely carries a root-local, ignored `.agent/config.env` into a new worktree when present; symlinked or non-regular state fails closed, while an existing regular target is preserved. It also performs the per-worktree preflight and runs the repository-declared `AGENT_CMD_SETUP` through `agent-run.sh` when present. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
 
-- The **per-worktree preflight** prints this worktree's contract (with `skills=`, `worktree=`, and `branch=` pointing here) and creates `<worktree>/.agent/logs/`. That printed block — not Step 0's — is what gets pasted into this issue's worker prompt. `.agent/*` is already excluded repo-wide from Step 0, because `info/exclude` lives in the shared git directory.
-- The bootstrap runs **through `agent-run.sh`**, which is what puts the run's cache directories and CA bundle in front of the package manager. A bare bootstrap here is the first place a run silently repopulates a cold cache in the wrong place.
+The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
 ## Phase 2: Per-Issue Ultracode Leads (background, parallel)
 
