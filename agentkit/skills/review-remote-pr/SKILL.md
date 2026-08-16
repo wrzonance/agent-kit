@@ -228,7 +228,7 @@ cd "$PR_WORKTREE" || { echo "STOP: worktree missing at $PR_WORKTREE"; exit 1; } 
 
 **Run all subsequent commands from `$PR_WORKTREE`.** All commits go to `$HEAD_BRANCH`. Carry the
 preflight block forward, paste it verbatim into every worker prompt; act on its decision lines:
-`project-scope=no` → grooming needs `gh auth refresh -s project`; `peer-cli= <name> absent` →
+`project-scope=no` → fleet: verify App `Projects: write`; OAuth: `gh auth refresh -s project`; `peer-cli= <name> absent` →
 Step 1b skips the probe, goes straight to the blind same-harness fallback; `git= … writable=no` →
 expect `worktree-commit.sh` exit `2` on the first commit (a documented retry).
 

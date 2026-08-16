@@ -213,7 +213,7 @@ printf '%s\n' "$environment_contract"
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Answers Step 1's questions locally, with no forge round trip (`base=` carries a `source=` token — read the leading token). Reuse these values in your reasoning; the Bash blocks below re-derive them only because each block is self-contained. `repo=none` or `base=none` is the one case where Step 1 is doing real work. |
-| `gh= … project-scope=no` | Board moves cannot work. Run `gh auth refresh -s project` now instead of discovering it through a failed move. |
+| `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
 | `runners= repo-runner=` | When set, `agent-run.sh` delegates to it automatically. Never invoke the repo runner directly. |
@@ -616,7 +616,7 @@ no-op: project #3 "Example Board" has no Status field
 no-op: project #3 "Example Board" has no matching Status option "In progress"
 ```
 
-Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved ` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` with the `project` scope, which Step 0's `project-scope=` line already told you about.
+Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved #` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` Project access (the fleet App needs `Projects: write`).
 
 ### Root canonical issue fetch and fence preparation
 
@@ -944,7 +944,7 @@ mistakes in [references/chains.md](references/chains.md). Provider/human-feedbac
 - Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
 - Invoking this skill is explicit multi-agent opt-in for the issue leads. Only this root orchestrator
   can spawn; issue leads cannot spawn helpers of their own.
-- Requires GitHub remote (`gh` CLI) with Projects v2 scope: reading needs `read:project`; moving items via the Bash Project helper needs write `project` (`gh auth refresh -s project` if missing — Step 0's `project-scope=` line tells you before a move fails)
+- Requires GitHub remote (`gh` CLI) with Projects v2 access: OAuth needs `read:project`/`project`; the fleet App needs `Projects: write`. Step 0 surfaces credential state before a move fails.
 - Requires the shared helpers under `${CODEX_HOME:-$HOME/.codex}/skills/.shared/scripts/` (`agent-preflight.sh`, `agent-run.sh`, `worktree-commit.sh`), the board helper under `parallel-issues/scripts/`, and `review-remote-pr/scripts/gh-pr-state.sh` for PR state. `jq` is required by the board and PR helpers
 - Works on any repo with `AGENTS.md`, `CLAUDE.md`, or equivalent local instructions and a `main` or `master` branch
 - Review timing is repository/provider configuration — polls in Step 3d are for observing findings landing, and silence is an observed state, not a trigger decision

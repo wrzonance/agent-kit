@@ -100,6 +100,16 @@ manifests, so a changed command or input cannot inherit an old approval.
 The rationale for these controls and their deliberately limited exceptions is in the
 [security posture](docs/security-posture.md).
 
+### Fleet GitHub identity
+
+Unattended orchestrators use a short-lived GitHub App installation token in
+`GH_TOKEN`, never a maintainer's personal token. The Project helpers therefore
+use the fleet's own rate pool and bot authorship for GraphQL-backed board
+operations. Draft PRs and workflow-authored comments use the same fleet
+identity. Ready-flips, approvals, and merges remain human actions from a
+human-authenticated shell. See the [fleet identity runbook](docs/fleet-identity.md)
+for the installation permissions and rollout checklist.
+
 Runs you launch unattended are the one exception. `agent-run.sh --yolo --cmd NAME` skips
 the terminal confirmation for that single invocation, announces the skip on stderr and in
 the run log, and records no trust. It applies only when the command's repository-controlled
@@ -201,8 +211,10 @@ docs/                               design specs and review records
 ## Requirements
 
 - Linux with a GNU userland; the scripts target Debian 13 and `bash` 5.2+
-- `jq`, `git`, and the `gh` CLI authenticated with the `project` scope
-  (`gh auth refresh -s project`)
+- `jq`, `git`, and the `gh` CLI authenticated as the fleet GitHub App in
+  unattended sessions, with the App's `Projects: write` permission; human-gated
+  actions use a human account. OAuth users who need Project access can refresh
+  the separate `project` scope with `gh auth refresh -s project`.
 - Codex CLI or Claude Code for the hook layer; the skills work without hooks
 
 Shell commands run through the agent's login shell, which may be zsh, so every helper is a
