@@ -65,13 +65,16 @@ else
     fi
 fi
 
+self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 if [[ $mode == report || $mode == next ]]; then
     printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
+    if [[ $mode == report && -r $config && -x $self_dir/onboard-refresh.sh ]]; then
+        "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --summary 2> /dev/null || true
+    fi
     [[ $mode == next ]] && exit 0
 fi
 [[ $mode == preflight ]] || exit 0
 
-self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 detector=$self_dir/detect-toolchains.sh
 printf 'environment-preflight repo-root=%s\n' "$repo_root"
 ci_gap=$self_dir/ci-gap.sh

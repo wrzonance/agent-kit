@@ -239,19 +239,14 @@ if [[ -n $notice ]]; then
     context+=$notice
 fi
 
-# A moved component silently breaks every declared command pointing into it --
-# the failure then surfaces as a tool error naming a missing binary, not as
-# "the directory moved". Only checked once a repository has something
-# declared to drift; an un-onboarded repo gets ONBOARD_HINT instead, above.
+# Onboarded repositories get one bounded drift probe. The helper aggregates
+# components, proposal toolchains, generator version, and CI gaps so this hook
+# does not re-probe each axis independently.
 if [[ $in_repo -eq 1 && -r $root/.agent/config.env ]]; then
-    drift=$("$self_dir/../skills/.shared/scripts/detect-toolchains.sh" \
-        --repo-root "$root" --format drift 2> /dev/null || true)
-    if [[ -n $drift ]]; then
-        drift_notice="A path declared in .agent/config.env no longer exists on disk -- a
-component likely moved. Tell the user, and where a candidate is listed below,
-offer to update the declaration to it:
-
-$drift"
+    drift=$("$self_dir/../skills/.shared/scripts/onboard-refresh.sh" \
+        --repo-root "$root" --summary 2> /dev/null || true)
+    if [[ -n $drift && $drift != 'drift= none' ]]; then
+        drift_notice="agentkit drift advisory: $drift; report this in your handoff; defer onboarding refresh during the current work because config.env mutation is an operator/trunk decision."
         if [[ -n $context ]]; then
             context+=$'\n\n'
         fi

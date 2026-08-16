@@ -10,6 +10,7 @@ constraints discovered along the way, and the alternatives rejected.
 | `2026-08-08-non-blocking-guards-design.md` | Guards that teach once and never stop autonomous work |
 | `manual-test-plan.md` | Prompt-by-prompt checks for behaviour only a live agent exercises |
 | `onboarding-lessons.md` | Incidents behind `onboard-repo/SKILL.md`'s rules — why each one exists |
+| `fleet-identity.md` | The GitHub App installation, credential lanes, Project mutations, and authorship boundary |
 
 The matching implementation plans are deliberately not kept here: they were
 session-scoped working documents, full of absolute scratch paths that mean

@@ -3,6 +3,7 @@
 ## Contents
 - [Bulk mutation discipline: ledger, chunks, and resource budget](#bulk-mutation-discipline-ledger-chunks-and-resource-budget) — the resumable-ledger recipe for any batch of 2+ forge writes
 - [Prior-art adjudication (only for merged-ref, in-flight, and attempted)](#prior-art-adjudication-only-for-merged-ref-in-flight-and-attempted) — reading the referenced PR and applying the ADR rules
+- [Conflict analysis and dispatch-plan write sets](#conflict-analysis-and-dispatch-plan-write-sets) — pinning predicted operands and recording revisions
 - [Board adjudication](#board-adjudication) — same-board STOP rationale, the `--fast-mode` decision rule, and pickup order
 - [Optional: fuzzy prior art](#optional-fuzzy-prior-art) — the opt-in low-yield search
 - [Step 2b: Choose the set yourself — `--fast-mode` only](#step-2b-choose-the-set-yourself----fast-mode-only) — the mechanical selection procedure `--fast-mode` uses in place of the approval gate
@@ -127,6 +128,55 @@ rejected) against the issue:
   its file path in the brainstorm and the agent prompt.
 
 Only Clean, rescoped Partially-addressed, and ADR-cited issues continue.
+
+## Conflict analysis and dispatch-plan write sets
+
+Step 3 produces a root-owned `dispatch-plan` artifact before any worker is
+dispatched. It is the audit record for the selected set, not a worker-owned
+guess. Every selected issue gets exactly one entry with a non-empty
+`predictedWriteSet` of repository-relative paths or globs taken from this
+conflict analysis. The plan uses this schema:
+
+```json
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "issue": 167,
+      "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"]
+    }
+  ],
+  "conflictMap": {
+    "pairs": [{"issues": [164, 167], "overlap": ["agentkit/skills/parallel-issues/**"]}],
+    "revisions": []
+  }
+}
+```
+
+Write-set intersection checks always add shared root files by default, even
+when an issue body does not mention them: build configuration, lockfiles, and
+generated contracts (including the repository's equivalent names and globs).
+The resulting paths belong in each affected `predictedWriteSet`; they are not
+optional cleanup. Record the conflict pairs and their overlap globs in
+`conflictMap.pairs` before selection is finalized.
+
+After selection, never silently revise a conflict edge, predecessor, or
+successor. Append a `conflictMap.revisions` object with a non-empty `reason`
+for every post-selection change, including a successor swap. A revision that
+authorizes a `writeSetDisposition` must also carry `issues` naming the affected
+issue numbers and `paths` covering that disposition's paths: a bare list of
+revisions proves only that *some* revision exists, so without that binding a
+revision recorded for another issue would authorize this one's operand. If a handback
+names an operand outside its pinned prediction, the entry must carry
+`writeSetDisposition` with a `kind` of exactly `chain-conversion`, `merge-down`,
+or `prediction-expansion`, a non-empty `reason`, and `paths` covering every
+out-of-prediction operand. The handback validator rejects an uncovered
+operand; a changed prediction is never implicit.
+
+Late-discovered overlap names inherited #137 chain conversion + merge-down as
+the sanctioned response. Record the affected paths and reason in the plan,
+then validate the handback against that revised artifact. Do not swap a
+successor or widen a write set in prose after dispatch.
 
 ## Board adjudication
 
