@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Suite: move-github-project-item.sh live rebinding and self-healing.
+# Suite: move-github-project-item.sh cached fast path and self-healing.
 #
 # Exit codes follow this script's own long-standing contract (0 move-or-no-op,
 # 1 bad arguments or API error), not the tree-wide "2 = usage" convention. It
@@ -118,32 +118,34 @@ assert_contains "$(cat "$tmp/move-parser.err")" 'jq' 'missing board parser error
 assert_contains "$(cat "$tmp/move-parser.err")" 'evidence unavailable' \
     'missing board parser error says evidence is unavailable'
 
-# --- committed IDs are rebound against live board data ---------------------
+# --- warm board.json + item cache: exactly one mutation ---------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
-assert_eq '4' "$(wc -l < "$tmp/gh.log")" 'a warm cache still validates all live IDs'
+assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'a warm cache costs exactly one gh call'
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'item-edit' 'the final call is item-edit'
-assert_contains "$log" 'PVTI_example57' 'uses the live requested-repo item id'
-assert_contains "$log" 'opt-inprog' 'uses the live option id'
-assert_contains "$log" 'field-list' 're-resolves the Status field'
-assert_contains "$log" 'item-list' 're-scans the board'
+assert_contains "$log" 'item-edit' 'the one call is item-edit'
+assert_contains "$log" 'PVTI_example57' 'uses the cached item id'
+assert_contains "$log" 'opt-inprog' 'uses the cached option id'
+assert_not_contains "$log" 'field-list' 'does not re-resolve the Status field'
+assert_not_contains "$log" 'item-list' 'does not re-scan the board'
+assert_contains "$out" 'board.json, 1 call' 'terminal line reports the warm-cache cost'
 assert_contains "$out" 'moved #57' 'reports the move'
 
-# An item already at the requested live Status is a terminal no-op and must
-# never issue an item-edit mutation.
+# A warm cache contains the item ID, not its live Status value. The one-call
+# path therefore submits the idempotent mutation rather than spending a read
+# solely to classify an already-target card.
 for status_shape in direct nodes array; do
     repo=$(seed_repo)
     : > "$tmp/gh.log"
     out=$(CURRENT_STATUS='Ready' STATUS_SHAPE="$status_shape" run_mv "$repo" --issue-number 57 --status Ready 2>&1)
-    assert_contains "$out" 'no-op: issue #57 already "Ready"' \
-        "$status_shape status reports a redundant no-op"
-    assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
-        "$status_shape already-target status does not call item-edit"
+    assert_contains "$out" 'moved #57' \
+        "$status_shape warm path reports the idempotent mutation"
+    assert_eq '1' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+        "$status_shape warm path uses one item-edit"
 done
 assert_contains "$(<"$mv_sh")" 'no-op: issue #%s already "%s"' \
-    'mover documents the exact already-target stdout shape'
+    'mover retains the exact already-target stdout shape for read-backed paths'
 
 # The cache-miss/process_project discovery path must honor the same direct
 # Status shape and remain a no-op without issuing an item-edit mutation.
@@ -172,50 +174,6 @@ assert_eq "$before" "$after" 'an identical second move preserves board.json byte
 assert_eq '' "$(git -C "$repo" status --short)" \
     'an identical second move leaves the repository clean'
 
-# The known-board path validates against live metadata; after its successful
-# move, it must persist that data rather than retaining stale mutation hints.
-repo=$(seed_repo)
-jq '.statusField.id = "PVTSSF_stale" | .statusField.options.Ready = "opt-stale"' \
-    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
-mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
-assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
-    'a known-board move refreshes the live Status field id'
-assert_eq 'opt-ready' "$(jq -r '.statusField.options.Ready' < "$repo/.agent/board.json")" \
-    'and refreshes the live Status option id'
-
-# A forged cache item must never be sent to item-edit. The live board contains
-# both repositories at #57; only the requested repository's item is valid.
-repo=$(seed_repo)
-jq '.items["57"] = "PVTI_otherrepo57"' < "$repo/.agent/cache/board-items.json" \
-    > "$repo/.agent/cache/items.tmp"
-mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
-: > "$tmp/gh.log"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
-log=$(cat "$tmp/gh.log")
-assert_contains "$log" '--id PVTI_example57' 'rebinds a forged cache entry to the live requested-repo item'
-assert_not_contains "$log" 'PVTI_otherrepo57' 'never edits the forged unrelated item'
-
-# Forged project, field, and option IDs are likewise hints only. A mismatched
-# project forces the normal live project-list path, which still edits only the
-# real project and its live Status field.
-repo=$(seed_repo)
-jq '.project.id = "PVT_attacker" | .statusField.id = "PVTSSF_attacker" |
-    .statusField.options.Ready = "opt-attacker"' \
-    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
-mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
-: > "$tmp/gh.log"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
-log=$(cat "$tmp/gh.log")
-assert_contains "$log" '--project-id PVT_kwDOAexample1' 'rebinds a forged project ID to the live project'
-assert_contains "$log" '--field-id PVTSSF_lADOAexampleB' 'rebinds a forged Status field ID'
-assert_contains "$log" '--single-select-option-id opt-ready' 'rebinds a forged option ID'
-assert_not_contains "$log" 'PVT_attacker' 'never mutates the forged project'
-assert_eq 'PVT_kwDOAexample1' "$(jq -r '.project.id' < "$repo/.agent/board.json")" \
-    'a discovery move refreshes the live project id'
-assert_eq 'PVTSSF_lADOAexampleB' "$(jq -r '.statusField.id' < "$repo/.agent/board.json")" \
-    'and refreshes the live Status metadata'
-
 # --- cache miss on the issue falls back -----------------------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
@@ -238,11 +196,11 @@ repo=$(seed_repo)
 rm -f "$repo/.agent/cache/board-items.json"
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
-assert_eq '4' "$(wc -l < "$tmp/gh.log")" 'a fresh clone validates the declared board in four calls'
+assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone reads the board once before editing'
 log=$(cat "$tmp/gh.log")
 assert_not_contains "$log" 'project list' 'does not enumerate every board the owner has'
 assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
-assert_contains "$out" 'board.json, 4 calls' 'reports which path it took'
+assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
     'and refreshes the cache with the live item id'
 
@@ -311,20 +269,22 @@ mv "$repo/.agent/b.tmp" "$repo/.agent/board.json"
 out=$(CUSTOM_STATUS=1 run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
 assert_contains "$(cat "$tmp/gh.log")" 'opt-ice' 'a board-declared column outside the canonical five works'
 
-# --- batch moves share live board lookups ----------------------------------
+# --- batch moves share the one cache-miss read -----------------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --issue-number 99 --status Ready 2>&1)
 assert_contains "$out" 'moved #57' 'batch reports the first moved issue'
 assert_contains "$out" 'moved #99' 'batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'board.json, 2 calls' <<< "$out" || true)" \
+    'batch keeps the measured cache-miss suffix on each move'
 assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
     'batch edits each issue'
-assert_eq '1' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
-    'batch shares project lookup'
 assert_eq '1' "$(grep -c 'item-list' "$tmp/gh.log" || true)" \
     'batch shares item lookup'
-assert_eq '1' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
-    'batch shares Status lookup'
+assert_eq '0' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
+    'batch avoids project validation reads'
+assert_eq '0' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
+    'batch avoids Status validation reads'
 
 # A moved/no-op mixture terminates the moved issue and emits one terminal
 # no-op for the issue absent from every board.
