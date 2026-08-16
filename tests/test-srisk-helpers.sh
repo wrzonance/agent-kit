@@ -107,12 +107,21 @@ mkdir -p "$contract_repo/.agent"
 git -C "$contract_repo" init -q
 "$shared/agent-preflight.sh" --worktree "$contract_repo" >/dev/null 2>&1
 contract_before=$(<"$contract_repo/.agent/env-contract.txt")
-contract_mtime=$(stat -c %Y "$contract_repo/.agent/env-contract.txt")
+contract_inode=$(stat -c %i "$contract_repo/.agent/env-contract.txt")
+contract_mtime=$(stat -c %.9Y "$contract_repo/.agent/env-contract.txt")
 contract_out=$("$shared/agent-preflight.sh" --ensure --worktree "$contract_repo" 2>/dev/null)
 assert_eq "$contract_before" "$contract_out" \
     'preflight ensure reuses a trusted contract byte-for-byte'
-assert_eq "$contract_mtime" "$(stat -c %Y "$contract_repo/.agent/env-contract.txt")" \
-    'preflight ensure does not rewrite a trusted contract'
+# A whole-second stat -c %Y comparison cannot catch a rewrite that reproduces
+# identical bytes within the same second (e.g. a write-temp-then-rename that
+# lands on the same content). Compare the inode -- this repo's own atomic-write
+# idiom (write-temp, mv -f over target) always changes it -- alongside a
+# sub-second mtime, which catches an in-place rewrite the inode check would
+# miss.
+assert_eq "$contract_inode" "$(stat -c %i "$contract_repo/.agent/env-contract.txt")" \
+    'preflight ensure does not replace the trusted contract file (inode unchanged)'
+assert_eq "$contract_mtime" "$(stat -c %.9Y "$contract_repo/.agent/env-contract.txt")" \
+    'preflight ensure does not rewrite a trusted contract (sub-second mtime unchanged)'
 rm -f -- "$contract_repo/.agent/env-contract.txt"
 "$shared/agent-preflight.sh" --ensure --worktree "$contract_repo" >/dev/null 2>&1
 assert_eq yes "$( [[ -f $contract_repo/.agent/env-contract.txt ]] && printf yes || printf no )" \
