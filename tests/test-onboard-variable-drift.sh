@@ -37,12 +37,18 @@ assert_eq 'yes' "$([[ ${#config_keys[@]} -gt 0 ]] && printf yes || printf no)" \
 # repository declarations.
 mapfile -t consumed_keys < <(
     while IFS= read -r -d '' script; do
-        awk '/repo-config|repo_config_get|read_config|config\\.env|--get/ { print }' "$script"
+        awk '/repo-config|repo_config_get|read_config|config\.env|--get/ { print }' "$script"
     done < <(find "$root/agentkit/skills" -type f -name '*.sh' -print0) |
         grep -oE 'AGENT_[A-Z][A-Z0-9_]*' | sort -u
 )
 assert_eq 'yes' "$([[ ${#consumed_keys[@]} -gt 0 ]] && printf yes || printf no)" \
     'shipped scripts expose literal config consumers'
+
+# Keep the literal-dot branch pinned even when the current shipped scripts
+# happen to mention config.env alongside another recognized access marker.
+config_consumer_probe='read from .agent/config.env: AGENT_CONFIG_PROBE'
+assert_contains "$(awk '/config\.env/ { print }' <<< "$config_consumer_probe")" \
+    'AGENT_CONFIG_PROBE' 'the consumer scan recognizes a literal config.env reference'
 
 # This is consumed by agent-run.sh as a runtime assertion, not as a persistent
 # config.env declaration. Its documentation is still part of the onboarding
