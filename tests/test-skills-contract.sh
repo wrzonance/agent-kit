@@ -79,6 +79,23 @@ onboard_text=$(<"$onboard")
 worker_tier_text=$(<"$skills/.shared/schema/config.env.example")
 spawn_contract="$skills/.shared/spawn-contract.md"
 spawn_contract_text=$(<"$spawn_contract")
+parallel_dispatch="$skills/parallel-issues/SKILL.md"
+parallel_dispatch_text=$(<"$parallel_dispatch")
+for dispatch_text_name in spawn_contract parallel_dispatch; do
+    if [[ $dispatch_text_name == spawn_contract ]]; then
+        dispatch_text=$spawn_contract_text
+    else
+        dispatch_text=$parallel_dispatch_text
+    fi
+    assert_contains "$dispatch_text" 'must not implement when a real worker can be dispatched' \
+        "$dispatch_text_name forbids orchestrator-side implementation when spawning is available"
+    assert_contains "$dispatch_text" '`worker=self` is only the documented spawn-unavailable degraded path' \
+        "$dispatch_text_name limits worker=self to the degraded path"
+    assert_contains "$dispatch_text" 'AGENT_WORKER_MODEL' \
+        "$dispatch_text_name names the resolved worker model declaration"
+    assert_contains "$dispatch_text" 'AGENT_WORKER_EFFORT' \
+        "$dispatch_text_name names the resolved worker effort declaration"
+done
 assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL' \
     'spawn contract reads the configured worker model key'
 assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL_FALLBACK' \

@@ -17,6 +17,8 @@ current `collaboration.spawn_agent` capability; worker model and effort are conf
 model-tier or pricing judgment. The resolver reads `.agent/config.env` line-wise and never
 sources it:
 
+The root/orchestrator must not implement when a real worker can be dispatched; `worker=self` is only the documented spawn-unavailable degraded path.
+
 ```bash
 worker_model_default='gpt-5.6-luna'
 worker_model_fallback_default='gpt-5.6-terra'

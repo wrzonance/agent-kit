@@ -560,9 +560,8 @@ worktrees provide isolation.
 
 ### Implementation-model preflight (MANDATORY — before worktrees or board mutations)
 
-Role separation: workers receive fresh fenced context and sole-writer isolation, followed by independent root validation. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` declarations for model/effort. Read
-[.shared/spawn-contract.md](../.shared/spawn-contract.md) before dispatch — it details model/effort selection, spawn warnings, nesting, and degraded `worker=self` path. Completion table must include `worker model` — or
-`worker=self (spawn unavailable)` — so Luna claims are not inferred from prompt text. Each loop step's lead-phase mapping is in
+Role separation: the root/orchestrator must not implement when a real worker can be dispatched; workers get fresh fenced context, sole-writer isolation, and independent root validation. `worker=self` is only the documented spawn-unavailable degraded path. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort. Read
+[.shared/spawn-contract.md](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
 [.shared/six-step-loop.md](../.shared/six-step-loop.md).
 
 ### Dispatch (one round, then refill slots)
