@@ -724,6 +724,16 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
+Before publication, validate the worker's raw six-step report as returned. Do not request a
+post-hoc report rewrite. For Stage 4, accept either the declared-skip form
+`SPIKE + REVERT: SKIPPED — <one-line justification>` when the worker-prompt threshold and
+existing-pattern conditions are met, or the performed form
+`SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`
+when immutable transcript evidence names both operations. `SPIKE + REVERT: N/A — <concrete
+reason>` is valid only for a no-code scope. Root validation bounces only absent or unjustified
+Stage 4 reports, preserving the worktree for the next disposition; it never asks the worker to
+rewrite a completed report.
+
 Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with the canonical body composer: Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL feeds Collect and Step 3a.
 
 ```bash
