@@ -41,6 +41,67 @@ assert_not_contains "$covered_output" 'Setup runtime' \
 assert_contains "$covered_output" 'Plausibly covered' \
     'mixed workflow reports the covered gate section'
 
+exact_repo="$tmp/exact-command"
+make_repo "$exact_repo" "AGENT_CMD_TEST='tests/run-tests.sh'" \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Run the suite
+        run: " tests/run-tests.sh "
+      - name: Security scan
+        run: scan.sh'
+exact_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$exact_repo")
+assert_contains "$exact_output" 'ci-gap= workflows=1 gates=2 covered=1 uncovered=1' \
+    'exact run command and spaced checkout produce the expected gate count'
+assert_contains "$exact_output" 'Run the suite' \
+    'an exact declared command covers a short-name workflow step'
+assert_contains "$exact_output" 'Security scan' \
+    'an unrelated step remains uncovered when another step has an exact command'
+assert_not_contains "$exact_output" 'Check out' \
+    'spaced checkout steps are excluded from the gate report'
+
+case_sensitive_repo="$tmp/case-sensitive"
+make_repo "$case_sensitive_repo" 'AGENT_CMD_TEST=tests/run-tests.sh' \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Run suite exactly
+        run: tests/Run-Tests.sh'
+case_sensitive_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$case_sensitive_repo")
+assert_contains "$case_sensitive_output" 'ci-gap= workflows=1 gates=1 covered=0 uncovered=1' \
+    'a workflow command differing from the declared command only by letter case is not an exact match'
+assert_contains "$case_sensitive_output" 'Run suite exactly' \
+    'the case-differing step is reported as uncovered, not silently covered'
+
+unnamed_run_repo="$tmp/unnamed-run"
+make_repo "$unnamed_run_repo" "AGENT_CMD_TEST=tests/run-tests.sh" \
+    'name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    steps:
+      - name: Security scan
+        uses: aquasecurity/trivy-action@v0
+      - shell: bash
+        run: tests/run-tests.sh'
+unnamed_run_output=$(bash "$root/agentkit/skills/.shared/scripts/ci-gap.sh" \
+    --repo-root "$unnamed_run_repo")
+assert_contains "$unnamed_run_output" 'ci-gap= workflows=1 gates=1 covered=0 uncovered=1' \
+    'an unnamed run is not attributed to the preceding named step'
+assert_contains "$unnamed_run_output" 'Security scan' \
+    'a named step with no run command remains uncovered'
+
 divergent_repo="$tmp/divergent"
 make_repo "$divergent_repo" $'AGENT_CMD_TEST=pytest -q' \
     $'name: CI\non:\n  pull_request:\njobs:\n  checks:\n    steps:\n      - name: Run verifier\n        run: "verify.sh --full"'
