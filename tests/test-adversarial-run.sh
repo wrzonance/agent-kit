@@ -135,6 +135,12 @@ assert_eq yes "$( [[ -s $claude_run/adversarial.diff ]] && printf yes || printf 
     'orchestrator writes the shared adversarial diff'
 assert_eq yes "$( [[ -s $claude_run/adversarial.result.json ]] && printf yes || printf no )" \
     'orchestrator writes the canonical result'
+assert_eq yes "$( [[ -f $claude_run/findings.ndjson ]] && printf yes || printf no )" \
+    'a completed review initializes the findings ledger'
+assert_eq 600 "$(stat -c %a "$claude_run/findings.ndjson")" \
+    'the initialized findings ledger is owner-private'
+assert_eq 0 "$(wc -c <"$claude_run/findings.ndjson")" \
+    'a clean starting ledger has no dispositions'
 assert_contains "$(cat -- "$tmp/claude.out")" 'provider=anthropic' 'receipt line names provider'
 assert_contains "$(cat -- "$tmp/claude.out")" 'model=claude-opus-5' 'receipt line names model'
 assert_contains "$(cat -- "$tmp/claude.out")" 'mode=cross-provider' 'receipt line names mode'
@@ -150,6 +156,8 @@ invalid_rc=0
 assert_eq 1 "$invalid_rc" 'schema-invalid provider output blocks the review'
 assert_eq blocked "$(jq -r '.status' <"$invalid_run/adversarial.result.json")" \
     'schema-invalid provider output publishes a blocked result'
+assert_eq no "$( [[ -e $invalid_run/findings.ndjson ]] && printf yes || printf no )" \
+    'a blocked review does not initialize the findings ledger'
 assert_contains "$(cat -- "$tmp/invalid.out")" 'verdict=blocked' \
     'schema-invalid provider output cannot emit a clean verdict'
 
