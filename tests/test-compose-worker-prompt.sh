@@ -78,10 +78,16 @@ assert_contains "$prompt" 'Base: develop' 'issue lead receives the configured ba
 assert_contains "$prompt" 'Worker effort: high' 'issue lead receives the requested worker effort'
 expected_test_chmod="chmod +x -- \"\$worktree/tests/<name>.sh\""
 expected_test_invocation="before invoking it as \"\$worktree/tests/<name>.sh\""
+expected_test_handoff="handing it off for commit"
+expected_test_mode_check="verify the mode is 755/100755"
 assert_contains "$prompt" "$expected_test_chmod" \
     'issue lead is told to set the executable bit on new shell tests'
 assert_contains "$prompt" "$expected_test_invocation" \
     'issue lead invokes new shell tests from the assigned worktree'
+assert_contains "$prompt" "$expected_test_handoff" \
+    'issue lead sets the executable bit before handing new shell tests off for commit'
+assert_contains "$prompt" "$expected_test_mode_check" \
+    'issue lead verifies the executable mode before the first run'
 assert_contains "$prompt" "SPEC-BYTES \$(must-stay-literal)" 'spec bytes stay literal'
 assert_contains "$prompt" 'PRIOR-BYTES' 'prior-art bytes are injected'
 assert_contains "$prompt" 'worker_model='"'"'gpt-5.6-luna' 'worker model is filled'
@@ -121,6 +127,10 @@ assert_contains "$fix_prompt" "$expected_test_chmod" \
     'fix-batch is told to set the executable bit on new shell tests'
 assert_contains "$fix_prompt" "$expected_test_invocation" \
     'fix-batch invokes new shell tests from the assigned worktree'
+assert_contains "$fix_prompt" "$expected_test_handoff" \
+    'fix-batch sets the executable bit before handing new shell tests off for commit'
+assert_contains "$fix_prompt" "$expected_test_mode_check" \
+    'fix-batch verifies the executable mode before the first run'
 assert_contains "$fix_prompt" '--cmd verify' 'fix-batch receives declared commands'
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
