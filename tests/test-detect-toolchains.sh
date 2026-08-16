@@ -10,6 +10,7 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 dt_sh="$root/agentkit/skills/.shared/scripts/detect-toolchains.sh"
+rc_sh="$root/agentkit/skills/.shared/scripts/repo-config.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -123,10 +124,31 @@ assert_contains "$comp_out" 'path=dashboard lang=node marker=package.json runner
     'the node component under dashboard/ resolves its own lockfile independent of server/'
 
 sugg_out=$("$dt_sh" --repo-root "$repo" --format suggestions)
-assert_contains "$sugg_out" 'AGENT_CMD_SERVER_TEST=server/.venv/bin/pytest' \
-    'the server test command is prefixed by its own component name, not confused with the root'
+assert_contains "$sugg_out" 'AGENT_CMD_SERVER_TEST=.venv/bin/pytest' \
+    'the server test command is relative to the directory where it runs'
+assert_not_contains "$sugg_out" 'AGENT_CMD_SERVER_TEST=server/.venv/bin/pytest' \
+    'the server proposal does not duplicate its rundir in argv[0]'
 assert_contains "$sugg_out" 'AGENT_RUNDIR_SERVER_TEST=server' \
     'a python command under server/ must declare its own rundir or it runs from the repo root by accident'
+
+# Activating the generated pair verbatim must survive the config validator.
+# The proposal is an observation until an operator removes the comment marker;
+# this reproduces that exact activation shape rather than hand-writing a second
+# command spelling that could drift from the detector.
+mkdir -p "$repo/.agent"
+printf '%s\n' "$sugg_out" |
+    sed -n \
+        -e 's/^# \(AGENT_CMD_SERVER_TEST=.*\)$/\1/p' \
+        -e 's/^# \(AGENT_RUNDIR_SERVER_TEST=.*\)$/\1/p' \
+    > "$repo/.agent/config.env"
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" \
+    'a generated python proposal activates without a rundir validation warning'
+activated=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$activated" 'AGENT_CMD_SERVER_TEST=.venv/bin/pytest' \
+    'the activated generated python command is accepted'
+assert_contains "$activated" 'AGENT_RUNDIR_SERVER_TEST=server' \
+    'the activated generated rundir is accepted alongside its command'
 assert_contains "$sugg_out" 'AGENT_CMD_DASHBOARD_TEST=npm test' \
     'the dashboard test command names its own npm script'
 assert_contains "$sugg_out" 'AGENT_RUNDIR_DASHBOARD_TEST=dashboard' \

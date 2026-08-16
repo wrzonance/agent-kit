@@ -62,6 +62,9 @@ a hit. Run focused suites during red/green iteration, the full suite once per tr
 before commit; `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is
 authoritative for that SHA. Detail: [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence).
 
+Read [references/verification-isolation.md](references/verification-isolation.md) in full before
+dispatching verification that may use Compose.
+
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
 not skip brainstorm, does not skip approval, and does not extend to a repository the
@@ -213,7 +216,7 @@ printf '%s\n' "$environment_contract"
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Answers Step 1's questions locally, with no forge round trip (`base=` carries a `source=` token — read the leading token). Reuse these values in your reasoning; the Bash blocks below re-derive them only because each block is self-contained. `repo=none` or `base=none` is the one case where Step 1 is doing real work. |
-| `gh= … project-scope=no` | Board moves cannot work. Run `gh auth refresh -s project` now instead of discovering it through a failed move. |
+| `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
 | `runners= repo-runner=` | When set, `agent-run.sh` delegates to it automatically. Never invoke the repo runner directly. |
@@ -387,6 +390,13 @@ Safe to parallelize:
 Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
+
+Before dispatch, write the root-owned dispatch plan. Each entry gets a
+non-empty repository-relative `predictedWriteSet` (paths/globs), plus
+`conflictMap.pairs` and reasoned revisions; successor swaps require a revision.
+Include shared build config, lockfiles, and generated contracts in every check. See
+[references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
+for the schema and the chain-conversion/merge-down response to late overlap.
 
 Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
 
@@ -616,7 +626,7 @@ no-op: project #3 "Example Board" has no Status field
 no-op: project #3 "Example Board" has no matching Status option "In progress"
 ```
 
-Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved ` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` with the `project` scope, which Step 0's `project-scope=` line already told you about.
+Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved #` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` Project access (the fleet App needs `Projects: write`).
 
 ### Root canonical issue fetch and fence preparation
 
@@ -700,7 +710,11 @@ if ! "$compose_script" "${compose_args[@]}"; then
 fi
 cat -- "$prompt_file"
 ```
+
 ### Collect (per-completion — never wait for the slowest issue)
+
+On a `--yolo` changed-input refusal, root parks that workstream only;
+continues every other workstream. See [input-diff digest](references/trust-and-fencing.md).
 
 Act on each lead result as soon as it arrives:
 
@@ -710,20 +724,20 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
-Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN; PR URL feeds Collect and Step 3a.
+Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with the canonical body composer: Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL feeds Collect and Step 3a.
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
-if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" >"$validated_argv_file"; then exit 1; fi
+if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
 (cd -- "$worktree" && "${validated_argv[@]}")
 ```
 
 Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full
-for the draft-PR body template recipe (quoted heredoc, placeholder substitution without Bash
-replacement-string expansion, and the stacked-issue base/retarget addendum) before opening any
+for the composer recipe and stacked retarget/linkage proof before opening any
 draft PR — it is dispatch-*output* content, read at the moment of publication rather than pasted
 in advance.
 
@@ -781,6 +795,26 @@ when this parallel-issues invocation carried it; otherwise pass no review grant.
 worker cannot see the outer invocation, so adding the grant without it has manufactured their consent.
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
+
+The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
+cap includes the root; reserve it before deriving child capacity:
+
+```bash
+PR_LOOP_CONCURRENCY_CAP=2
+runtime_child_cap=$((max_concurrent_threads_per_session - 1))
+pr_loop_dispatch_cap=$((runtime_child_cap < PR_LOOP_CONCURRENCY_CAP ? runtime_child_cap : PR_LOOP_CONCURRENCY_CAP))
+((pr_loop_dispatch_cap > 0)) || {
+    printf '%s\n' 'No child capacity remains for PR loops; do not dispatch.' >&2
+    exit 1
+}
+printf 'PR-loop dispatch cap: %s agents (hard cap=%s, runtime children=%s)\n' \
+    "$pr_loop_dispatch_cap" "$PR_LOOP_CONCURRENCY_CAP" "$runtime_child_cap"
+```
+
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and
+refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker
+slot: the loop agent uses the documented spawn-unavailable path for root-approved fix batches.
+This dispatch-time counter is the enforcement point, not a post-hoc report.
 
 ### Adversarial-review receipt:
 
@@ -855,10 +889,11 @@ Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The recei
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
 
-Dispatch at most two PR-loop agents concurrently. **Do not reserve a slot for a nested worker: a
-spawned PR-loop agent cannot spawn one.** It runs `review-remote-pr`'s documented
-spawn-unavailable path and does the implementation itself under the same six-step gate, labelling
-its report `worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
+Dispatch no more than the `pr_loop_dispatch_cap` computed above, which is never greater than
+`PR_LOOP_CONCURRENCY_CAP=2`. **Do not reserve a slot for a nested worker: a spawned PR-loop
+agent cannot spawn one.** It runs `review-remote-pr`'s documented spawn-unavailable path and
+does the implementation itself under the same six-step gate, labelling its report
+`worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
 The root reads `peer-cli=` from the contract: when absent, skip the probe and use the blind
 same-harness `gpt-5.6-terra` xhigh fallback exactly once; this reviewer decision is root-owned.
 
@@ -883,10 +918,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-When the batch contains chains, the ready-flip handoff lists each chain's merge order
-explicitly (base PR first); after each predecessor merges, retarget the successor
-(`gh pr edit <N> --base <default>`) and verify the successor's baseRefName actually changed
-before it merges — never rely on automatic retargeting. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget) for the full rationale and the unretargeted failure mode.
+When chains exist, the ready-flip handoff lists merge order (base first). After each predecessor, the agent path runs `chain-advance.sh --retarget --pr <N> --base <default>`; it must verify the successor's baseRefName, `base...head`, CI/approval, and closing-linkage proof before merge. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
@@ -952,7 +984,7 @@ mistakes in [references/chains.md](references/chains.md). Provider/human-feedbac
 - Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
 - Invoking this skill is explicit multi-agent opt-in for the issue leads. Only this root orchestrator
   can spawn; issue leads cannot spawn helpers of their own.
-- Requires GitHub remote (`gh` CLI) with Projects v2 scope: reading needs `read:project`; moving items via the Bash Project helper needs write `project` (`gh auth refresh -s project` if missing — Step 0's `project-scope=` line tells you before a move fails)
+- Requires GitHub remote (`gh` CLI) with Projects v2 access: OAuth needs `read:project`/`project`; the fleet App needs `Projects: write`. Step 0 surfaces credential state before a move fails.
 - Requires the shared helpers under `${CODEX_HOME:-$HOME/.codex}/skills/.shared/scripts/` (`agent-preflight.sh`, `agent-run.sh`, `worktree-commit.sh`), the board helper under `parallel-issues/scripts/`, and `review-remote-pr/scripts/gh-pr-state.sh` for PR state. `jq` is required by the board and PR helpers
 - Works on any repo with `AGENTS.md`, `CLAUDE.md`, or equivalent local instructions and a `main` or `master` branch
 - Review timing is repository/provider configuration — polls in Step 3d are for observing findings landing, and silence is an observed state, not a trigger decision

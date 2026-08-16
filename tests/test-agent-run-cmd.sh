@@ -281,6 +281,26 @@ out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1 || true)
 assert_contains "$out" 'refusing --yolo' \
     'an untracked module payload blocks unattended command execution'
 
+# A refusal carries every changed command input, not only the first one found,
+# so the root can produce a complete adjudication digest without rediscovery.
+repo=$tmp/multiple-input-yolo
+make_yolo_repo "$repo"
+mkdir -p "$repo/inputs"
+printf 'one-base\n' > "$repo/inputs/one.txt"
+printf 'two-base\n' > "$repo/inputs/two.txt"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner --require=inputs/one.txt --require=inputs/two.txt\n' \
+    > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'one-changed\n' > "$repo/inputs/one.txt"
+printf 'two-changed\n' > "$repo/inputs/two.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo 2>&1) || rc=$?
+assert_eq '1' "$rc" 'multiple changed command inputs refuse yolo'
+assert_contains "$out" 'inputs/one.txt' 'multiple-input refusal names the first changed input'
+assert_contains "$out" 'inputs/two.txt' 'multiple-input refusal names every changed input'
+
 # Repository-relative inputs beginning with `__` are ordinary paths, not
 # sentinels. Track a directory passed through --require and refuse it only
 # after its payload changes.

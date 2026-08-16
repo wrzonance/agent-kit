@@ -17,6 +17,9 @@ parallel_refs=("$root/agentkit/skills/parallel-issues/references"/*.md)
 shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
+shared_six_step_loop="$root/agentkit/skills/.shared/six-step-loop.md"
+trust_and_fencing="$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md"
+verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -44,6 +47,9 @@ worker_prompts_text=$(<"$worker_prompts")
 triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 triage_and_selection_text=$(<"$triage_and_selection")
 wait_discipline_text=$(<"$shared_wait_discipline")
+six_step_loop_text=$(<"$shared_six_step_loop")
+trust_and_fencing_text=$(<"$trust_and_fencing")
+verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
 issue_lead_prompt=$(awk '
     /^Per-issue prompt:/ { capture=1; next }
@@ -64,6 +70,33 @@ draft_loop_prompt=$(awk '
     printf 'could not extract the draft-loop prompt block from %s\n' "$worker_prompts" >&2
     exit 1
 }
+
+# The fix-batch worker runs full verification through the same wrapper as an
+# issue lead, so the Compose isolation rules must reach BOTH templates. Pinning
+# them only on the whole-file text would pass while the fix-batch prompt carried
+# none of them.
+fix_batch_prompt=$(awk '
+    /^## Fix-batch worker prompt$/ { capture=1; next }
+    capture && /^## Exit Report$/ { exit }
+    capture { print }
+' "$worker_prompts")
+[[ -n $fix_batch_prompt ]] || {
+    printf 'could not extract the fix-batch prompt block from %s\n' "$worker_prompts" >&2
+    exit 1
+}
+for _tpl_name in issue_lead fix_batch; do
+    _tpl_var="${_tpl_name}_prompt"
+    # Collapse wrapping before matching: these sentences are reflowed by hand and
+    # a phrase split across two lines is still the phrase. Matching raw text made
+    # the assertion depend on where the paragraph happened to wrap.
+    _tpl_flat=$(printf '%s' "${!_tpl_var}" | tr '\n' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]')
+    assert_contains "$_tpl_flat" 'serialize full-suite verification' \
+        "the $_tpl_name prompt carries the Compose serialization fallback"
+    assert_contains "$_tpl_flat" 'environment-retry-eligible' \
+        "the $_tpl_name prompt classifies Compose collisions as environment retries"
+    assert_contains "$_tpl_flat" 'compose_project_name' \
+        "the $_tpl_name prompt names the isolated Compose project variable"
+done
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
 assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
     'chain ordering sources are exactly the two mechanical ones'
@@ -78,6 +111,20 @@ assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
     'chained WHEN-yolo threading pins the base'
 assert_contains "$text" 'only after the root has validated, committed, and pushed' \
     'chain successors defer on root publication, not PR state'
+assert_contains "$text" 'root-owned dispatch plan' \
+    'dispatch creates the root-owned plan before selection is dispatched'
+assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
+    'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
+    'dispatch-plan records post-selection conflict-map revisions'
+assert_contains "$triage_and_selection_text" 'shared root files' \
+    'conflict analysis includes shared root files by default'
+assert_contains "$triage_and_selection_text" 'chain-conversion' \
+    'late overlap has an explicit chain-conversion disposition'
+assert_contains "$triage_and_selection_text" 'merge-down' \
+    'late overlap has an explicit merge-down disposition'
+assert_contains "$triage_and_selection_text" 'inherited #137' \
+    'late overlap points at the inherited #137 response'
 assert_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
     'parallel preflight passes its owned repository_root to contract-read.sh'
 assert_not_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get skills.path' \
@@ -139,6 +186,18 @@ assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
 assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
+assert_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
+    'dispatch names the hard PR-loop cap at the launch boundary'
+assert_contains "$text" 'pr_loop_dispatch_cap' \
+    'dispatch derives an effective loop cap before launching agents'
+assert_contains "$text" 'queue overflow PR loops' \
+    'dispatch queues PR loops beyond the effective cap'
+assert_contains "$verification_isolation_text" 'serialize full-suite verification' \
+    'dispatch documents full-suite serialization when Compose isolation is defeated'
+assert_contains "$verification_isolation_text" 'COMPOSE_PROJECT_NAME' \
+    'worker verification contract names the per-worktree Compose namespace'
+assert_contains "$verification_isolation_text" 'environment-retry-eligible' \
+    'worker verification contract names retry-eligible Compose findings'
 assert_contains "$prepare_script_text" 'target="$agent_dir/fenced-spec.txt"' \
     'issue fencing uses the established excluded per-worktree path'
 assert_contains "$prepare_script_text" 'prior_target="$agent_dir/fenced-prior-art.txt"' \
@@ -209,6 +268,34 @@ assert_contains "$text" 'agent-run.sh --approve --cmd <name>' \
     'approval handoff carries a copy-pasteable command recipe'
 assert_contains "$text" 'never hand off the main checkout' \
     'approval recipes reject the main checkout'
+assert_contains "$text" 'parks that workstream only' \
+    'trust-gate refusal parks only the refused workstream'
+assert_contains "$text" 'continues every other workstream' \
+    'trust-gate refusal allows sibling workstreams to continue'
+assert_contains "$text" 'input-diff digest' \
+    'trust-gate handoff requires an input-diff digest'
+assert_contains "$trust_and_fencing_text" 'approve-with-record' \
+    'trust-gate handoff names approval remediation'
+assert_contains "$trust_and_fencing_text" 'park-and-hand-off' \
+    'trust-gate handoff names parking remediation'
+assert_contains "$trust_and_fencing_text" 'shared input' \
+    'trust-gate handoff surfaces shared-input ripple'
+assert_contains "$trust_and_fencing_text" 'sibling PRs' \
+    'trust-gate handoff warns about sibling PR conflicts'
+assert_contains "$worker_prompts_text" 'reports BLOCKED for that workstream' \
+    'worker contract blocks only the refused workstream'
+assert_contains "$worker_prompts_text" 'literal command' \
+    'worker contract rejects literal-command evasion'
+assert_contains "$six_step_loop_text" 'input-diff digest' \
+    'shared six-step contract carries trust-gate digest handoff'
+assert_contains "$six_step_loop_text" 'not implied by `--yolo`' \
+    'shared six-step contract denies implicit yolo approval'
+assert_contains "$trust_and_fencing_text" 'git diff --stat' \
+    'trust reference documents diffstat evidence'
+assert_contains "$trust_and_fencing_text" 'git diff --binary' \
+    'trust reference documents per-input diff evidence'
+assert_contains "$trust_and_fencing_text" 'untracked' \
+    'trust reference covers untracked changed inputs'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
 assert_contains "$(<"$review_skill")" 'full-suite verdict' \
@@ -314,7 +401,7 @@ assert_contains "$prepare_script_text" 'mv -f -- "$tmp" "$target"' 'root atomica
 assert_contains "$prepare_script_text" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
 assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
-assert_contains "$normalized_text" 'Why, What, Design decisions, tickable Testing, agent credit, and Closes #NNN' \
+assert_contains "$normalized_text" 'Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line' \
     'root draft PR carries the required report fields'
 assert_contains "$text" 'PR URL feeds Collect and Step 3a' \
     'root feeds the resulting PR URL into collection and draft dispatch'
@@ -332,6 +419,8 @@ assert_contains "$text" 'validate-handback.sh' \
     'parallel dispatch invokes the publication handback validator'
 assert_contains "$text" 'if ! "$agentkit/.shared/scripts/validate-handback.sh"' \
     'parallel dispatch checks the validator status before publication'
+assert_contains "$text" '--issue "$issue_number" --dispatch-plan "$dispatch_plan"' \
+    'parallel dispatch validates handbacks against the selected plan entry'
 assert_contains "$text" 'mapfile -d' \
     'parallel dispatch consumes validated handback argv without re-parsing shell text'
 assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \
@@ -351,10 +440,9 @@ assert_contains "$normalized_text" 'every staged path declared and unprotected' 
     'parallel dispatch reconciles staged paths against the declared operands'
 assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
     'parallel dispatch defers base diff inspection until publication'
-# The draft-PR body template heredoc recipe is single-sourced in
-# references/worker-prompts.md (issue #107 phase 3's split) -- it is
-# dispatch-output content read at publication time, not a worker prompt, but
-# it lives beside the worker prompts it is read alongside. SKILL.md's body
+# The draft-PR body composer recipe is single-sourced in references/worker-prompts.md
+# -- it is dispatch-output content read at publication time, not a worker prompt,
+# but it lives beside the worker prompts it is read alongside. SKILL.md's body
 # keeps only a gate statement + pointer at the binding step.
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## Fix-batch worker prompt$/p' "$worker_prompts"
@@ -363,68 +451,36 @@ assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" p
     'draft PR publication uses the byte-verifying body transport'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
+assert_contains "$publication_section" 'compose-pr-body.sh' \
+    'draft PR publication uses the canonical body composer'
+assert_contains "$publication_section" '--why-file "$pr_why_file"' \
+    'draft PR publication supplies the root-approved Why file'
+assert_contains "$publication_section" '--testing-file "$pr_testing_file"' \
+    'draft PR publication supplies the root-approved Testing file'
+assert_contains "$publication_section" '--expect-closing-issue "$issue_number"' \
+    'default-branch PR publication verifies GitHub closing linkage'
 assert_contains "$publication_section" 'This was written agentically; verify its assertions:' \
-    'draft PR body opens with the attribution banner enforced by gh-body.sh'
+    'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" "cat >\"\$pr_body_template\" <<'EOF'" \
-    'draft PR publication uses a quoted heredoc for literal body bytes'
-assert_not_contains "$publication_section" 'body=${body//__AGENT_IDENTITY__/$agent_identity}' \
-    'draft PR publication never uses replacement-string expansion for identity bytes'
-assert_not_contains "$publication_section" 'body=${body//__PR_CLOSE_LINE__/$pr_close_line}' \
-    'draft PR publication never uses replacement-string expansion for close-line bytes'
-assert_contains "$publication_section" 'body_prefix=${body%%__AGENT_IDENTITY__*}' \
-    'draft PR publication isolates the identity prefix without replacement expansion'
-assert_contains "$publication_section" 'body_remainder=${body#*__AGENT_IDENTITY__}' \
-    'draft PR publication isolates the body remainder without replacement expansion'
-assert_contains "$publication_section" 'body_middle=${body_remainder%%__PR_CLOSE_LINE__*}' \
-    'draft PR publication isolates the close-line prefix without replacement expansion'
-assert_contains "$publication_section" 'body_suffix=${body_remainder#*__PR_CLOSE_LINE__}' \
-    'draft PR publication isolates the close-line suffix without replacement expansion'
-assert_contains "$publication_section" 'printf %s "$body" >"$pr_body_file"' \
-    'draft PR publication writes the substituted body without shell expansion'
-assert_not_contains "$publication_section" '<<EOF' \
-    'draft PR publication has no interpolating heredoc'
 assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
     'draft PR publication secures the body file with mode 600'
-assert_contains "$publication_section" 'pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX")' \
-    'draft PR publication allocates an independent template file'
-assert_not_contains "$publication_section" 'pr_body_template="$pr_body_file.template"' \
-    'draft PR publication never derives a predictable template path'
-assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file" "$pr_body_template"' \
-    'draft PR publication secures both body files with mode 600'
-assert_not_contains "$publication_section" 'cat >"$pr_body_file.template"' \
-    'draft PR publication never writes through the derived template path'
-assert_contains "$publication_section" 'trap '\''rm -f -- "$pr_body_file" "$pr_body_template"'\'' EXIT' \
-    'draft PR publication removes both body files on exit'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
-    'draft PR publication requires an agent identity before interpolation'
-assert_contains "$publication_section" 'pr_close_line=${pr_close_line:?' \
-    'draft PR publication requires a close line before interpolation'
+    'draft PR publication requires an LLM/service/model identity'
+assert_contains "$publication_section" 'pr_why_file=${pr_why_file:?' \
+    'draft PR publication requires approved Why content'
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file"' \
     'issue creation recipe uses the byte-verifying body transport'
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"' \
     'issue editing recipe uses the byte-verifying body transport'
-assert_contains "$publication_section" '__AGENT_IDENTITY__' \
-    'draft PR publication keeps the identity placeholder literal in the template'
-assert_contains "$publication_section" '__PR_CLOSE_LINE__' \
-    'draft PR publication keeps the close placeholder literal in the template'
 assert_contains "$publication_section" 'Stacked on #' \
-    'stacked PRs declare their base PR in the body'
-stacked_line=$(awk '/^Stacked on #/{print NR; exit}' <<<"$publication_section")
-attribution_line=$(awk '/^🤖 Co-authored by __AGENT_IDENTITY__/{print NR; exit}' <<<"$publication_section")
-if [[ -n $stacked_line && -n $attribution_line && $stacked_line -lt $attribution_line ]]; then
-    _pass 'stacked body block precedes the final attribution'
-else
-    _fail 'stacked body block precedes the final attribution' \
-        "stacked line: ${stacked_line:-missing}" "attribution line: ${attribution_line:-missing}"
-fi
-assert_contains "$publication_section" 'retarget this PR to the default branch' \
-    'stacked body instructs an explicit retarget, never reliance on branch deletion'
+    'stacked PRs keep the base disclosure in approved section content'
+assert_contains "$publication_section" 'chain-advance.sh --retarget' \
+    'stacked PRs use the machine retarget proof before merging'
 assert_contains "$text" 'verify the successor'"'"'s baseRefName' \
     'chain merge order requires verified retargeting before a successor merges'
-assert_contains "$publication_section" 'only retargets automatically when the base branch is deleted' \
-    'stacked body explains the auto-retarget unwind'
+assert_contains "$publication_section" 'automatic retarget' \
+    'stacked body explains the human auto-retarget path'
 assert_contains "$text" 'merge order' 'ready-flip handoff states the chain merge order'
 
 body_template="$tmp/body-template"

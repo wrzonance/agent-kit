@@ -27,6 +27,47 @@ The bypass is trunk-bounded: a command whose declaration, runner, or repo-backed
 argv/module payload or nearby build manifest changed on the branch is still refused under
 `--yolo`, and that refusal is a correct BLOCKED report, not a defect to work around.
 
+## Changed-input refusals are adjudication requests
+
+A `--yolo` refusal because a command input differs from its trust base is not permission to
+discard the input or retry through another command spelling. The root preserves that one
+workstream, while other workstreams continue, and creates an input-diff digest before any
+remediation decision. The digest names every changed command input, includes a diffstat, and
+includes the complete diff for each input. For a repo-root shared input, the handoff also says
+that sibling PRs may conflict with it at merge time.
+
+From the refused worktree, use the exact trust base reported by `agent-run.sh` (the trunk ref or
+the pinned base) and the changed inputs named by the refusal:
+
+```bash
+# The base the refusal named above -- the trunk ref, or the pinned base SHA on a
+# chained workstream. Do not substitute origin/main: a chained run compares
+# against its pinned SHA, and diffing the wrong anchor produces evidence about
+# a comparison point nobody refused.
+base_ref='PASTE THE REPORTED TRUST BASE'
+git status --short --untracked-files=all
+git diff --stat "$base_ref" -- path/to/input
+git diff --binary "$base_ref" -- path/to/input
+```
+
+Repeat the two `git diff` commands for each changed input. For an untracked input, include its
+diff with `git diff --no-index --binary /dev/null path/to/input || test $? -eq 1`; the exit code
+of one means the expected no-index difference was found, not that the digest failed. Preserve
+the resulting file list, diffstat, and diffs as the handoff evidence.
+
+After reviewing that evidence, the root has exactly two sanctioned outcomes:
+
+- `approve-with-record`: run the harness's interactive
+  `agent-run.sh --approve --cmd NAME` flow for the refused worktree and command. This creates
+  an explicit approval record for the reviewed state; it is never forged and is never implied
+  by `--yolo`.
+- `park-and-hand-off`: leave only the refused workstream parked and hand off its worktree, the
+  input-diff digest, the shared-input merge-risk note when applicable, and the exact
+  `agent-run.sh --approve --cmd NAME` remediation command.
+
+Literal command invocations remain caller-supplied and do not satisfy this gate. Running one to
+obtain green evidence is evasion, not remediation.
+
 ## Never forge the gate — any flag, any mode
 
 A worker that hits `refusing unapproved repository command` on a prompt without `--yolo`

@@ -4,7 +4,7 @@ Finishing this PR drains the Ready / In-progress queue. Before handing back, fan
 
 **Propose, never auto-promote.** Backlog → Ready is a vetting decision (`github-projects.md`: Backlog = captured but *not vetted*; Ready = *cleared* for pickup). Surface candidates with rationale; only run the board helper with `--status 'Ready'` after the user confirms.
 
-**No-op silently** (never fail the PR work over a board move) when there is no GitHub remote, the repo is on no Project board, the board has no Backlog/Ready column, or `gh` lacks `project` scope (`gh auth refresh -s project`).
+**No-op silently** (never fail the PR work over a board move) when there is no GitHub remote, the repo is on no Project board, the board has no Backlog/Ready column, or `gh` lacks Project access. A human OAuth session can refresh `project` with `gh auth refresh -s project`; an unattended fleet session must repair the GitHub App installation's `Projects: write` permission instead of using a human token.
 
 ## Pull the Backlog
 

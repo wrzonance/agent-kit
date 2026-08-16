@@ -125,4 +125,16 @@ assert_contains "$out" 'CI verifier: verify.sh --full' \
 assert_contains "$out" 'CI entry point/defaults: inspect verify.sh --help' \
     'preflight requires entry-point defaults to be confirmed'
 
+# The report carries the one-line drift summary so a caller does not need a
+# second probe to discover that onboarding facts are stale.
+drift_repo="$tmp/drift"
+mkdir -p "$drift_repo/.agent" "$drift_repo/new"
+git -C "$drift_repo" init -q
+printf '%s\n' '{"scripts":{"test":"jest"}}' > "$drift_repo/new/package.json"
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ONBOARDED_BY=agentkit/0.0.0\n# proposal-component|old|node|package.json\n' > "$drift_repo/.agent/config.env"
+printf '{}\n' > "$drift_repo/.agent/board.json"
+out=$($state_sh --repo-root "$drift_repo" --report)
+assert_contains "$out" 'drift= components=+1/-1 generator=stale' \
+    'report includes the aggregated drift summary'
+
 finish

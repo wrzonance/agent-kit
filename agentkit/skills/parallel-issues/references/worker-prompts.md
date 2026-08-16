@@ -85,15 +85,28 @@ __DECLARED_COMMANDS__
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
 
+Changed-input refusal rule: a worker reports BLOCKED for that workstream; the root preserves it, produces
+an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
+`park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
+merge-conflict risk.
+
 ```bash
 git branch --show-current
 ```
 
 agent-run.sh sets the run's caches and CA bundle, prepends the detected source roots to
-PYTHONPATH, delegates to the repo runner when one is declared, and suppresses output: success
-is a single PASS line; failure prints the matched error lines plus the full log path under
-<worktree>/.agent/logs/. Its exit status IS the wrapped command's exit status. On failure READ
-THE NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
+PYTHONPATH, exports a deterministic per-worktree `COMPOSE_PROJECT_NAME`, delegates to the repo
+runner when one is declared, and suppresses output: success is a single PASS line; failure
+prints the matched error lines plus the full log path under <worktree>/.agent/logs/. Its exit
+status IS the wrapped command's exit status. It reports repository Compose files, `.env` values,
+or command argv that hardcode a project name. A repository `.env` value or compose-file `name:` is
+reported and deliberately overridden -- that override is the isolation. A literal
+`-p`/`--project-name` in the declaration outranks the export, so isolation cannot be established:
+agent-run.sh exits 5 without running. Serialize full-suite verification across worktrees, then
+re-run with `AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
+`environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
+command after the conflicting dependency has drained or been isolated. On failure READ THE
+NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
 Pass `--` whenever the command's first token starts with `-`; always passing it is simplest.
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 
@@ -132,6 +145,12 @@ Commit subject/body, `Co-Authored-By: <expanded worker_attribution>` derived fro
 session reviews the scoped diff, runs that invocation verbatim once, and
 owns every external or privileged follow-up. A dirty tree not authored by you must be surfaced
 before validation and either explained by the manifest or left untouched.
+
+The root validates those explicit operands against the dispatch plan's pinned
+predicted write set. Do not silently widen the set in a handback: a late
+overlap must be reported so the root can record one of the sanctioned
+`chain-conversion`, `merge-down`, or `prediction-expansion` dispositions with
+an evidence-based reason before publication.
 
 ## Branch Rules (MANDATORY — before touching any file)
 1. cd into the absolute worktree above.
@@ -218,69 +237,49 @@ reason. Do not contact the forge or ask for privilege escalation.
 ## Draft PR body template
 
 After validating and executing a worker handback (SKILL.md's "Root publication after a worker
-handback"), the root pushes the branch and opens the DRAFT PR with this recipe. Write every
-multiline PR body to a private temporary file with a quoted heredoc, then pass that file to
-GitHub. Never pass a multiline PR body through inline `--body`: shell and orchestration layers can
-preserve escape sequences literally and collapse the rendered body to one line. Body content is
-data, so author the static template literally and substitute only explicit placeholders with
-fixed-string Bash parameter expansion.
+handback"), the root pushes the branch and opens the DRAFT PR with this recipe. The body is
+composed by `compose-pr-body.sh` from four root-approved section files; the issue number and
+agent/service/model identity are the only generated footer values. Never pass a multiline PR
+body through inline `--body`: shell and orchestration layers can preserve escape sequences
+literally and collapse the rendered body to one line. The composer emits the fixed order:
+agentic disclosure, `Why`, `What`, `Decisions`, checkbox-formatted `Testing`, a signature line,
+and a separate closing-keyword line.
+Every composed body starts with the literal line `This was written agentically; verify its assertions:`.
+Never pass a multiline PR body through inline `--body`; the composer writes a private file for
+the byte-verifying transport.
 
 For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
-of `--base "$base"`) and insert this block immediately before the final attribution in the body,
-substituting the predecessor's PR number as a fixed literal:
+of `--base "$base"`) and keep the `Stacked on #<PR>` disclosure in the approved Why or Decisions
+section. GitHub's closing keyword is dormant while the PR is stacked; after the predecessor
+merges, use `chain-advance.sh --retarget` and require its linkage proof before merging.
 
 ```text
-Stacked on #__BASE_PR__ — merge that PR first. After it merges, retarget this PR to the default branch
-(`gh pr edit <this-PR> --base <default>`) and verify the new base before merging; GitHub
-only retargets automatically when the base branch is deleted on merge, which not every
-repository does.
+Stacked on #__BASE_PR__ — merge that PR first. Agent-driven merges run
+`chain-advance.sh --retarget --pr <this-PR> --base <default>` and require its full proof before
+merging; interactive human merges may merge then delete the predecessor branch for GitHub's
+automatic retarget.
 ```
 
 ```bash
 pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
-pr_body_template=''
-trap 'rm -f -- "$pr_body_file" "$pr_body_template"' EXIT
-pr_body_template=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body-template.XXXXXXXXXX") || exit 1
-chmod 600 -- "$pr_body_file" "$pr_body_template" || exit 1
-agent_identity=${agent_identity:?set the actual agent identity for PR attribution}
-pr_close_line=${pr_close_line:?set the issue close line, for example Closes #123}
-# The quoted heredoc keeps every body byte literal, including Markdown backticks and $().
-cat >"$pr_body_template" <<'EOF'
-This was written agentically; verify its assertions:
-
-## Why
-
-<motivation>
-
-## What
-
-<high-level outcome>
-
-## Design decisions
-
-<decisions>
-
-## Testing
-
-- [ ] <verification command and result>
-
-🤖 Co-authored by __AGENT_IDENTITY__. __PR_CLOSE_LINE__
-EOF
-body=$(<"$pr_body_template")
-body+=$'\n'
-# Split around each unique token so replacement bytes are never interpreted as
-# a Bash replacement string (`&` and backslashes stay byte-identical).
-body_prefix=${body%%__AGENT_IDENTITY__*}
-body_remainder=${body#*__AGENT_IDENTITY__}
-body_middle=${body_remainder%%__PR_CLOSE_LINE__*}
-body_suffix=${body_remainder#*__PR_CLOSE_LINE__}
-body=$body_prefix$agent_identity$body_middle$pr_close_line$body_suffix
-printf %s "$body" >"$pr_body_file"
-rm -f -- "$pr_body_template"
+trap 'rm -f -- "$pr_body_file"' EXIT
+chmod 600 -- "$pr_body_file" || exit 1
+agent_identity=${agent_identity:?set the actual LLM/service/model identity}
+pr_why_file=${pr_why_file:?set the root-approved Why section file}
+pr_what_file=${pr_what_file:?set the root-approved What section file}
+pr_decisions_file=${pr_decisions_file:?set the root-approved Decisions section file}
+pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
+default_branch=${default_branch:?set the repository default branch}
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/parallel-issues/scripts/compose-pr-body.sh" \
+  --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
+  --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
+  --agent "$agent_identity" --output "$pr_body_file"
+linkage_args=()
+[[ $base == "$default_branch" ]] && linkage_args+=(--expect-closing-issue "$issue_number")
 "$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
-  --title "$pr_title" --base "$base" --head "$branch"
+  --title "$pr_title" --base "$base" --head "$branch" "${linkage_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front
@@ -375,6 +374,22 @@ placeholder still in the prompt. A worker refused at the trust gate — as
 from the trunk — reports BLOCKED with that reason. It never approves, drives a
 pseudo-terminal, or writes a trust record.>
 __DECLARED_COMMANDS__
+
+Changed-input refusal rule: a worker reports BLOCKED for that workstream; the root preserves it, produces
+an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
+`park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
+merge-conflict risk.
+
+Compose isolation rule: this prompt runs full verification through the same wrapper as an issue
+lead, so the same rules bind here. `agent-run.sh` exports a deterministic per-worktree
+`COMPOSE_PROJECT_NAME` and reports repository Compose files, `.env` values, or command argv that
+hardcode a project name. A repository `.env` value or compose-file `name:` is reported and
+deliberately overridden -- that override is the isolation. A literal `-p`/`--project-name` in the
+declaration outranks the export, so isolation cannot be established: agent-run.sh exits 5 without
+running. Serialize full-suite verification across worktrees, then re-run with
+`AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
+`environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
+command after the conflicting dependency has drained or been isolated.
 
 Do not perform publication or metadata operations from this worker prompt.
 

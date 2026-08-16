@@ -9,6 +9,8 @@ readonly UINT_RE='^[1-9][0-9]*$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
 readonly FRONT_BANNER='This was written agentically; verify its assertions:'
 readonly ATTRIBUTION_RE='^🤖 Co-authored by .+\.( (Closes|Fixes|Resolves) #[1-9][0-9]*)?$'
+readonly SIGNATURE_RE='^🤖 Co-authored by .+\.$'
+readonly CLOSING_RE='^(Closes|Fixes|Resolves) #[1-9][0-9]*$'
 
 GH_BIN=${GH_BODY_GH:-gh}
 RESOURCE=''
@@ -22,13 +24,15 @@ WORK_DIR=''
 VERIFY_ENDPOINT=''
 VERIFY_HOST=''
 MUTATION_COMPLETED=0
+EXPECT_CLOSING_ISSUE=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options...]
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
-and compares its stored body byte-for-byte with FILE.
+and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
+also proves that GitHub registered the closing issue reference.
 EOF
 }
 
@@ -89,6 +93,15 @@ parse_args() {
                 GH_ARGS+=("$1")
                 shift
                 ;;
+            --expect-closing-issue)
+                require_value "$1" "${2-}"
+                EXPECT_CLOSING_ISSUE=$2
+                shift 2
+                ;;
+            --expect-closing-issue=*)
+                EXPECT_CLOSING_ISSUE=${1#*=}
+                shift
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -106,23 +119,41 @@ validate_body() {
     [[ -f $BODY_FILE && ! -L $BODY_FILE && -r $BODY_FILE && -O $BODY_FILE ]] ||
         die "--body-file must be an owned readable regular file: $BODY_FILE"
     [[ -s $BODY_FILE ]] || die "body file is empty: $BODY_FILE"
-    LC_ALL=C grep -qE '[^[:space:]]' "$BODY_FILE" ||
+    LC_ALL=C grep -qE '[^[:space:]]' -- "$BODY_FILE" ||
         die "body file is whitespace-only: $BODY_FILE"
 
-    local first_line last_line
+    local first_line
     IFS= read -r first_line <"$BODY_FILE" || true
     [[ $first_line == "$FRONT_BANNER" ]] ||
         die 'body must start with the front banner: This was written agentically; verify its assertions:'
-    last_line=$(tail -n 1 -- "$BODY_FILE")
-    [[ $last_line =~ $ATTRIBUTION_RE ]] ||
-        die 'body must end with a closing attribution: 🤖 Co-authored by <agent>.'
+    validate_footer
 
     [[ -z $REPO || $REPO =~ $SLUG_RE ]] ||
         die "--repo must look like OWNER/REPO, got: $REPO"
+    [[ -z $EXPECT_CLOSING_ISSUE || $EXPECT_CLOSING_ISSUE =~ $UINT_RE ]] ||
+        die '--expect-closing-issue must be a positive integer'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
     command -v cmp >/dev/null 2>&1 || die 'cmp not found on PATH; evidence unavailable'
     command -v diff >/dev/null 2>&1 || die 'diff not found on PATH; evidence unavailable'
     command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
+}
+
+validate_footer() {
+    local last_line signature separator
+    last_line=$(tail -n 1 -- "$BODY_FILE")
+    if [[ $last_line =~ $CLOSING_RE ]]; then
+        local -a footer_lines=()
+        mapfile -t footer_lines < <(tail -n 3 -- "$BODY_FILE")
+        ((${#footer_lines[@]} == 3)) ||
+            die 'canonical footer must be signature, blank line, and closing keyword'
+        signature=${footer_lines[0]}
+        separator=${footer_lines[1]}
+        [[ $signature =~ $SIGNATURE_RE && -z $separator ]] ||
+            die 'canonical footer must be signature, blank line, and closing keyword'
+        return 0
+    fi
+    [[ $last_line =~ $ATTRIBUTION_RE ]] ||
+        die 'body must end with a closing attribution: 🤖 Co-authored by <agent>.'
 }
 
 cleanup() {
@@ -233,6 +264,64 @@ compare_body() {
     return 1
 }
 
+verify_closing_reference() {
+    [[ -z $EXPECT_CLOSING_ISSUE ]] && return 0
+
+    local owner name number graphql_query rc=0
+    [[ $VERIFY_ENDPOINT =~ ^repos/([^/]+)/([^/]+)/pulls/([1-9][0-9]*)$ ]] ||
+        die 'closing-reference verification requires a pull-request target'
+    owner=${BASH_REMATCH[1]}
+    name=${BASH_REMATCH[2]}
+    number=${BASH_REMATCH[3]}
+    # shellcheck disable=SC2016  # GraphQL variable names must remain literal.
+    graphql_query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100,after:$after){nodes{number}pageInfo{hasNextPage endCursor}}}}}'
+
+    # One page is not the whole edge set: a linkage sitting past the first 100
+    # would be reported as missing, so walk the cursor until the expected issue
+    # is found or the pages genuinely run out.
+    local after='' has_next='true' page=0
+    while [[ $has_next == true ]]; do
+        ((++page <= 50)) ||
+            die 'closing-reference pagination exceeded 50 pages; linkage is unverified'
+        rc=0
+        local -a graphql_args=(api)
+        [[ -z $VERIFY_HOST ]] || graphql_args+=(--hostname "$VERIFY_HOST")
+        graphql_args+=(
+            graphql
+            -f "query=$graphql_query"
+            -F "owner=$owner"
+            -F "name=$name"
+            -F "number=$number"
+        )
+        if [[ -n $after ]]; then
+            graphql_args+=(-F "after=$after")
+        fi
+        "$GH_BIN" "${graphql_args[@]}" \
+            >"$WORK_DIR/closing.json" 2>"$WORK_DIR/closing.err" || rc=$?
+        if ((rc != 0)); then
+            [[ ! -s $WORK_DIR/closing.err ]] || cat "$WORK_DIR/closing.err" >&2
+            die 'GitHub closing-reference re-fetch failed; linkage is unverified'
+        fi
+        if jq -e --arg expected "$EXPECT_CLOSING_ISSUE" '
+            (.data.repository.pullRequest.closingIssuesReferences.nodes // []) as $references
+            | any($references[]?; ((.number // "") | tostring) == $expected)
+        ' "$WORK_DIR/closing.json" >/dev/null; then
+            return 0
+        fi
+        has_next=$(jq -r '
+            .data.repository.pullRequest.closingIssuesReferences.pageInfo.hasNextPage // false
+        ' "$WORK_DIR/closing.json") ||
+            die 'closing-reference pageInfo was unreadable; linkage is unverified'
+        after=$(jq -r '
+            .data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor // ""
+        ' "$WORK_DIR/closing.json") ||
+            die 'closing-reference cursor was unreadable; linkage is unverified'
+        [[ $has_next != true || -n $after ]] ||
+            die 'closing-reference pagination reported another page with no cursor; linkage is unverified'
+    done
+    die "GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE"
+}
+
 main() {
     parse_args "$@"
     validate_body
@@ -247,6 +336,7 @@ main() {
     fi
     fetch_stored_body
     compare_body || exit 1
+    verify_closing_reference
 
     if [[ $ACTION == create ]]; then
         cat "$WORK_DIR/mutation.out"
