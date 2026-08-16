@@ -182,7 +182,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows in tokens alone fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 8084 tokens' 'the token ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 8413 tokens' 'the token ratchet names its ceiling'
 
 root=$tmp/ratchet-lines
 mkdir -p "$root/review-remote-pr"
@@ -192,7 +192,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows past its line ceiling fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 527 lines' 'the line ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 550 lines' 'the line ratchet names its ceiling'
 
 root=$tmp/stale
 make_skill "$root" review-remote-pr <<'EOF'
@@ -208,12 +208,12 @@ assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale e
 
 # The stacked parallel-issues skill is intentionally over the standard budget;
 # keep its measured ratchet explicit so the lint ceiling cannot drift back to
-# the predecessor's 980-line / 16011-token values.
+# the predecessor's 990-line / 16193-token values.
 root=$tmp/parallel-ratchet
 mkdir -p "$root/parallel-issues"
 {
     printf -- '---\nname: parallel-issues\ndescription: Use when an allowlisted skill grows past its stacked ceiling.\n---\n'
-    for ((i = 0; i < 991; i++)); do
+    for ((i = 0; i < 1021; i++)); do
         printf 'body line %04d ' "$i"
         head -c 70 /dev/zero | tr '\0' x
         printf '\n'
@@ -221,9 +221,9 @@ mkdir -p "$root/parallel-issues"
 } > "$root/parallel-issues/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 990 lines' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1020 lines' \
     'the parallel-issues line ratchet pins the stacked ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 16193 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 16733 tokens' \
     'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these
@@ -239,7 +239,7 @@ with_entry() { # prints the path to a lint copy whose review-remote-pr entry is 
     # fails loudly if the entry is renamed or its shape changes.
     escaped=${replacement//\\/\\\\}
     escaped=${escaped//&/\\&}
-    sed -E "s|\[review-remote-pr\]=\"[^\"]*\"|[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
+    sed -E "s|KNOWN_OVERSIZE\[review-remote-pr\]=\"[^\"]*\"|KNOWN_OVERSIZE[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
     chmod +x "$copy"
     if cmp -s "$lint" "$copy"; then
         _fail "the '$replacement' fixture actually edits the allowlist" \

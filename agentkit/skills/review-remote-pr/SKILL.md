@@ -35,6 +35,29 @@ prompt built by another agent is not this flag. `parallel-issues` passes it thro
 trigger a review bot, resolve a human's thread, or act on a human review item without the
 per-item confirmation those still require.
 
+## Session decision ledger
+
+After setup establishes a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the
+ledger identity to this invocation's authorization input before recording any decision:
+
+```bash
+review_invocation_flags="auto-review=${auto_review:-false}"
+normalize_run_input() {
+    local value=$1
+    value=${value//[^A-Za-z0-9._-]/-}
+    printf '%s' "$value"
+}
+review_run_inputs="pr=$PR;repo=$REPO;flags=$(normalize_run_input "$review_invocation_flags")"
+RUN_ID="review-pr-$(printf '%s' "$review_run_inputs" | sha256sum | cut -c1-32)"
+: "$RUN_ID"
+```
+
+This keeps a later invocation without `--auto-review` from replaying a grant recorded for an
+earlier invocation that carried it. Append every human grant, steer, or review adjudication
+immediately on receipt with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+`QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
+After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
+
 ## Runtime and provider neutrality
 
 A missing `jq`/`python3` is a blocking check, never a silent "no findings":
