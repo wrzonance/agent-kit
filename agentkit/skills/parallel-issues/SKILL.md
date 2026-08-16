@@ -724,13 +724,13 @@ Act on each lead result as soon as it arrives:
 
 ### Root publication after a worker handback
 
-Before publication, validate the worker's raw six-step report as returned. Do not request a
+Before publication, root reads the worker's raw six-step report as returned. Do not request a
 post-hoc report rewrite. For Stage 4, accept either the declared-skip form
 `SPIKE + REVERT: SKIPPED — <one-line justification>` when the worker-prompt threshold and
 existing-pattern conditions are met, or the performed form
 `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`
 when immutable transcript evidence names both operations. `SPIKE + REVERT: N/A — <concrete
-reason>` is valid only for a no-code scope. Root validation bounces only absent or unjustified
+reason>` is valid only for a no-code scope. This prose read bounces only absent or unjustified
 Stage 4 reports, preserving the worktree for the next disposition; it never asks the worker to
 rewrite a completed report.
 
