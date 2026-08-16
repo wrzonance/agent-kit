@@ -35,16 +35,17 @@ assert_rc 0 'append writes a grant record' -- "$script" append \
     --quote 'Yes, send this PR diff to the named reviewer.'
 assert_eq 600 "$(stat -c '%a' -- "$ledger")" 'the ledger is owner-private'
 assert_eq '1' "$(wc -l < "$ledger" | tr -d ' ')" 'one append is one NDJSON record'
-jq -e --arg skills "$skills_real" '
-  (keys | sort) == ["decision", "procedure_set", "quote", "run_id", "scope", "skills_path", "timestamp"]
-  and .run_id == "review-pr-24"
-  and .skills_path == $skills
-  and .procedure_set == "parallel-issues"
-  and .decision == "granted cross-provider review"
-  and .scope == "PR diff"
-  and .quote == "Yes, send this PR diff to the named reviewer."
-  and (.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-' "$ledger" >/dev/null
+assert_rc 0 'appended record matches the full ledger schema' -- \
+    jq -e --arg skills "$skills_real" '
+      (keys | sort) == ["decision", "procedure_set", "quote", "run_id", "scope", "skills_path", "timestamp"]
+      and .run_id == "review-pr-24"
+      and .skills_path == $skills
+      and .procedure_set == "parallel-issues"
+      and .decision == "granted cross-provider review"
+      and .scope == "PR diff"
+      and .quote == "Yes, send this PR diff to the named reviewer."
+      and (.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+    ' "$ledger"
 assert_rc 0 'read returns records for the requested run' -- "$script" read \
     --ledger "$ledger" --run-id 'review-pr-24'
 assert_eq '' "$({ "$script" read --ledger "$ledger" --run-id other; } 2>/dev/null)" \
@@ -100,6 +101,29 @@ wait
 assert_eq '5' "$(jq -s 'length' "$ledger")" 'concurrent appends preserve every record'
 assert_eq '3' "$("$script" read --ledger "$ledger" --run-id concurrent | jq -s 'length')" \
     'read returns all concurrent decisions'
+
+# The read path must serialize on the same lock the append path uses, so a
+# read can never observe a torn NDJSON line mid-append. Prove it: hold the
+# ledger lock from a background subshell, confirm a concurrent read blocks
+# while it is held, then confirm the read completes once it is released.
+lock_marker="$tmp/lock-held"
+rm -f -- "$lock_marker"
+(
+    exec 9>"$ledger.lock"
+    flock 9
+    : >"$lock_marker"
+    sleep 2
+) &
+lock_holder=$!
+for _attempt in $(seq 1 50); do
+    [[ -e $lock_marker ]] && break
+    sleep 0.1
+done
+assert_rc 124 'read blocks while another process holds the ledger lock' -- \
+    timeout 1 "$script" read --ledger "$ledger" --run-id concurrent
+wait "$lock_holder"
+assert_rc 0 'read completes once the ledger lock is released' -- \
+    timeout 5 "$script" read --ledger "$ledger" --run-id concurrent
 
 # The repository's existing working-state ignore rule covers this durable
 # artifact, so it cannot be swept into history by ordinary staging.

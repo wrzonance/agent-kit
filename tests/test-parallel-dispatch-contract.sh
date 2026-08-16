@@ -297,6 +297,20 @@ assert_contains "$worker_prompts_text" 'reports BLOCKED for that workstream' \
     'worker contract blocks only the refused workstream'
 assert_contains "$worker_prompts_text" 'literal command' \
     'worker contract rejects literal-command evasion'
+assert_contains "$worker_prompts_text" 'at most 10 changed implementation lines' \
+    'worker contract defines the trivial-diff spike-skip threshold'
+assert_contains "$worker_prompts_text" 'existing pattern' \
+    'worker contract limits spike skips to existing patterns'
+assert_contains "$worker_prompts_text" 'one-line justification' \
+    'worker contract requires a one-line skip justification'
+assert_contains "$worker_prompts_text" 'transcript evidence' \
+    'worker contract requires transcript evidence for performed spikes'
+assert_contains "$worker_prompts_text" 'both the spike edit and the revert' \
+    'worker contract requires evidence for both spike operations'
+assert_contains "$normalized_text" 'Do not request a post-hoc report rewrite' \
+    'root validation does not request post-hoc spike report rewrites'
+assert_contains "$normalized_text" 'bounces only absent or unjustified' \
+    'root validation bounces only absent or unjustified spike reports'
 assert_contains "$six_step_loop_text" 'input-diff digest' \
     'shared six-step contract carries trust-gate digest handoff'
 assert_contains "$six_step_loop_text" 'not implied by `--yolo`' \

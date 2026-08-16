@@ -322,10 +322,17 @@ read_records() {
     [[ ! -L $parent ]] || die_evidence "ledger parent is a symlink: $parent"
     [[ -e $parent ]] || return 0
     validate_parent "$parent"
-    [[ -e $LEDGER || -L $LEDGER ]] || return 0
+    # Hold the same lock the append path uses so a read never observes a
+    # torn NDJSON line written mid-append.
+    acquire_lock
+    if [[ ! -e $LEDGER && ! -L $LEDGER ]]; then
+        release_lock
+        return 0
+    fi
     validate_ledger_file
     validate_existing_records
     jq -c --arg run_id "$RUN_ID" 'select(.run_id == $run_id)' "$LEDGER"
+    release_lock
 }
 
 main() {
