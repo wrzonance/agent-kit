@@ -95,6 +95,8 @@ for dispatch_text_name in spawn_contract parallel_dispatch; do
         "$dispatch_text_name names the resolved worker model declaration"
     assert_contains "$dispatch_text" 'AGENT_WORKER_EFFORT' \
         "$dispatch_text_name names the resolved worker effort declaration"
+    assert_contains "$dispatch_text" 'AGENT_WORKER_MODEL_FALLBACK' \
+        "$dispatch_text_name names the resolved worker model fallback declaration"
 done
 assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL' \
     'spawn contract reads the configured worker model key'

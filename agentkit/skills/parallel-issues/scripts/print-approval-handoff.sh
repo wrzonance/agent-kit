@@ -64,7 +64,14 @@ for command_name in "${commands[@]}"; do
         die "unsafe command name: $command_name"
 done
 
-runner=$(readlink -f -- "$runner" 2>/dev/null || printf '%s' "$runner")
+# Resolve to an absolute path without relying on readlink -f, which is a
+# GNU coreutils extension absent on BSD/macOS. Only the containing directory
+# is canonicalized (cd + pwd -P, the idiom already used below for the
+# worktree and Git root); the basename is kept as-is so a runner that is
+# itself a symlink still resolves and executes correctly.
+runner_dir=$(dirname -- "$runner")
+runner_dir=$(cd -- "$runner_dir" 2>/dev/null && pwd -P) || die "cannot resolve runner directory: $runner"
+runner=$runner_dir/$(basename -- "$runner")
 printf '%s\n' 'Workers will block at command approval until these are run from an operator terminal:'
 for worktree in "${worktrees[@]}"; do
     [[ -d $worktree ]] || die "worktree is not a directory: $worktree"

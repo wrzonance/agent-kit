@@ -33,10 +33,21 @@ declare -A KNOWN_OVERSIZE=(
     # linear, not something a later pass reaches into by name.
 )
 
-# Issue #151 adds the session-ledger instructions to both orchestrator bodies;
-# keep the ratchet explicit while the planned shrink targets remain unchanged.
-KNOWN_OVERSIZE[review-remote-pr]="550:8422:450"
-KNOWN_OVERSIZE[parallel-issues]="1012:16609:900"
+# Issue #151 adds the session-ledger instructions to both orchestrator bodies.
+# Issue #148 (already merged) added the root handback Stage 4 validation contract
+# to parallel-issues, ratcheting it to 990:16193 measured against a tree without
+# the ledger content. Neither chain's CI could observe the combined total, so both
+# ceilings below are re-measured against the merged body and set to the minimum
+# that passes -- the planned shrink targets are unchanged. Issue #147 then moves
+# the role-separation rationale into references/, trimming both bodies: lines
+# ratchet down (1020->1015, 550->547) while review-remote-pr's tokens rise 9
+# (8413->8422), because the pointer it leaves behind is denser than the prose it
+# replaced. Both dimensions are ratcheted independently, so both are re-set.
+# Issue #145 extracts the deterministic S-risk helpers, repeating that shape for
+# parallel-issues: 1015->1003 lines but 16724->16735 tokens, since the helper
+# invocations that replace the inline procedure are denser per line.
+KNOWN_OVERSIZE[review-remote-pr]="547:8422:450"
+KNOWN_OVERSIZE[parallel-issues]="1003:16735:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
