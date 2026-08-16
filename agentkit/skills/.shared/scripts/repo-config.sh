@@ -205,13 +205,17 @@ generated_paths_valid() {
 }
 
 providers_valid() {
-    local item
+    local item saw_none=0
     local -a items=()
     IFS=, read -ra items <<< "$1"
     ((${#items[@]})) || return 1
     for item in "${items[@]}"; do
         case $item in
-            coderabbit | github-code-quality | none) ;;
+            coderabbit | github-code-quality) ((saw_none == 0)) || return 1 ;;
+            none)
+                ((saw_none == 0 && ${#items[@]} == 1)) || return 1
+                saw_none=1
+                ;;
             *) return 1 ;;
         esac
     done
