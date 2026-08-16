@@ -191,6 +191,33 @@ out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$out" 'AGENT_CMD_DASH=root-only' \
     'accepts an executable found relative to the declared rundir'
 
+# Path diagnostics must use the declared rundir even when the command line
+# appears before its companion rundir line, matching the order bootstrap emits.
+printf 'AGENT_CMD_DASH=.venv/bin/missing\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+diagnostic_err=$($rc_sh --repo-root "$repo" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $repo/dashboard" \
+    'path validation resolves argv[0] from the declared rundir'
+assert_contains "$diagnostic_err" \
+    "resolved candidate: $repo/dashboard/.venv/bin/missing" \
+    'path diagnostics name the rundir-relative candidate'
+
+# Generated component commands put the command before its rundir. The command
+# must be deferred until the complete config is loaded, or a root-level
+# symlink to an out-of-tree environment makes the valid component command
+# disappear before its declared rundir can be considered.
+external_venv=$(mktemp -d "$tmp/external-venv.XXXXXX")
+mkdir -p "$external_venv/bin" "$repo/server/.venv/bin"
+printf '#!/bin/sh\nexit 0\n' > "$external_venv/bin/pytest"
+printf '#!/bin/sh\nexit 0\n' > "$repo/server/.venv/bin/pytest"
+chmod +x "$external_venv/bin/pytest" "$repo/server/.venv/bin/pytest"
+ln -s "$external_venv" "$repo/.venv"
+printf 'AGENT_CMD_SERVER_TEST=.venv/bin/pytest\nAGENT_RUNDIR_SERVER_TEST=server\n' > "$repo/.agent/config.env"
+out=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_SERVER_TEST=.venv/bin/pytest' \
+    'retains a generated command when its rundir follows the command'
+assert_contains "$out" 'AGENT_RUNDIR_SERVER_TEST=server' \
+    'retains the generated rundir alongside its command'
+
 # Focus declarations use the same path-shaped argv[0] containment rule as
 # ordinary command declarations.
 printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"
