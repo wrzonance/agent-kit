@@ -29,6 +29,18 @@ git -C "$repo" commit --quiet -am change
 head_oid=$(git -C "$repo" rev-parse HEAD)
 export FAKE_HEAD_OID=$head_oid
 
+mkdir -- "$repo/.agent"
+contract="$repo/.agent/env-contract.txt"
+write_contract() {
+    local harness=$1 peer=$2 state=$3
+    printf '%s\n' \
+        'repo=acme/widget' \
+        "harness= name=$harness trailer=\"Test <test@example.invalid>\" other=$peer" \
+        "peer-cli= $peer $state" >"$contract"
+    chmod 600 -- "$contract"
+}
+write_contract codex claude "present path=$tmp/fake-claude"
+
 fake_bin="$tmp/bin"
 mkdir -- "$fake_bin"
 cat >"$fake_bin/gh" <<'EOF'
@@ -147,6 +159,51 @@ assert_contains "$(cat -- "$tmp/claude.out")" 'mode=cross-provider' 'receipt lin
 assert_contains "$(cat -- "$tmp/claude.out")" 'P1=1' 'receipt line counts P1 findings'
 assert_contains "$(cat -- "$tmp/claude.out")" 'P2=1' 'receipt line counts P2 findings'
 
+write_contract claude codex "present path=$tmp/fake-codex"
+codex_peer_run="$tmp/codex-peer-run"
+grant "$codex_peer_run" openai
+codex_peer_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_peer_run") \
+    >"$tmp/codex-peer.out" 2>"$tmp/codex-peer.err" || codex_peer_rc=$?
+assert_eq 0 "$codex_peer_rc" 'Claude harness selects the Codex peer helper'
+assert_contains "$(cat -- "$tmp/codex-peer.out")" 'provider=openai' \
+    'Claude harness receipt names the Codex peer provider'
+assert_contains "$(cat -- "$tmp/codex-peer.out")" 'model=gpt-5.6-terra' \
+    'Claude harness receipt names the Codex peer model'
+assert_contains "$(cat -- "$tmp/codex-peer.out")" 'mode=cross-provider' \
+    'Claude harness and Codex peer are genuinely cross-provider'
+
+write_contract claude claude "present path=$tmp/fake-claude"
+same_harness_run="$tmp/same-harness-run"
+grant "$same_harness_run" anthropic
+same_harness_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$same_harness_run") \
+    >"$tmp/same-harness.out" 2>"$tmp/same-harness.err" || same_harness_rc=$?
+assert_eq 0 "$same_harness_rc" 'same-harness selection completes'
+assert_contains "$(cat -- "$tmp/same-harness.out")" 'provider=anthropic' \
+    'same-harness receipt names the selected provider'
+assert_contains "$(cat -- "$tmp/same-harness.out")" 'mode=blind-fallback' \
+    'same-harness selection uses blind-fallback mode'
+assert_not_contains "$(cat -- "$tmp/same-harness.out")" 'mode=cross-provider' \
+    'same-harness selection can never emit cross-provider mode'
+
+write_contract claude codex 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
+claude_fallback_run="$tmp/claude-fallback-run"
+grant "$claude_fallback_run" anthropic
+claude_fallback_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_fallback_run") \
+    >"$tmp/claude-fallback.out" 2>"$tmp/claude-fallback.err" || claude_fallback_rc=$?
+assert_eq 0 "$claude_fallback_rc" 'Claude harness uses a same-harness fallback when its peer is absent'
+assert_contains "$(cat -- "$tmp/claude-fallback.out")" 'provider=anthropic' \
+    'Claude fallback receipt names the running provider'
+assert_contains "$(cat -- "$tmp/claude-fallback.out")" 'model=claude-opus-5' \
+    'Claude fallback receipt names the running model'
+assert_contains "$(cat -- "$tmp/claude-fallback.out")" 'mode=blind-fallback' \
+    'Claude fallback receipt names blind mode'
+
 invalid_run="$tmp/invalid-run"
 grant "$invalid_run" anthropic
 invalid_rc=0
@@ -199,18 +256,20 @@ assert_not_contains "$(cat -- "$tmp/malformed.err")" 'Cannot index' \
 assert_eq blocked "$(jq -r '.status' <"$malformed_run/adversarial.result.json")" \
     'malformed blocked result is replaced with a validated blocked result'
 
+write_contract codex claude 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
 codex_run="$tmp/codex-run"
 grant "$codex_run" openai
 codex_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
-    bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_run" --peer-cli-absent) \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_run") \
     >"$tmp/codex.out" 2>"$tmp/codex.err" || codex_rc=$?
-assert_eq 0 "$codex_rc" 'peer-cli-absent selects the blind fallback once'
+assert_eq 0 "$codex_rc" 'contract peer absence selects the blind fallback once'
 assert_contains "$(cat -- "$tmp/codex.out")" 'provider=openai' 'fallback receipt line names OpenAI'
 assert_contains "$(cat -- "$tmp/codex.out")" 'mode=blind-fallback' 'fallback receipt line names blind mode'
 assert_contains "$(cat -- "$tmp/codex.out")" 'P1=0' 'fallback receipt line counts P1 findings'
 assert_contains "$(cat -- "$tmp/codex.out")" 'P2=0' 'fallback receipt line counts P2 findings'
 
+write_contract codex claude "present path=$tmp/fake-claude"
 
 
 # --- a blocked result must never carry a verdict object --------------------

@@ -120,9 +120,12 @@ symlinked record fails closed.
 
 ## Availability and authoritative helpers
 
-Read the Step 0a environment contract; its peer-cli= line decides whether the peer CLI is present.
-When it is unavailable, pass the explicit peer-absent mode to the runner; do not substitute another
-provider or manually replay a failed launch.
+Read the Step 0a environment contract; its `harness=` line identifies the running provider and its
+`peer-cli=` line identifies the reviewer to select. The runner maps a present peer to its matching
+helper, model, and provider. When the peer is absent, it selects the running harness's matching
+reviewer as the blind same-harness fallback. If the caller passes `--peer-cli-absent`, it must agree
+with the contract's `peer-cli= ... absent` fact; do not substitute another provider or manually
+replay a failed launch.
 
 The one-shot blocking entry point is:
 

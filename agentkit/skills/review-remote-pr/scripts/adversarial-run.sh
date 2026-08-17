@@ -16,6 +16,9 @@ PR=''
 REPO=''
 RUN_DIR=''
 PEER_CLI_ABSENT=0
+HARNESS_NAME=''
+RUNNING_PROVIDER=''
+PEER_CLI_NAME=''
 BASE_REF=''
 PROVIDER=''
 MODEL=''
@@ -31,6 +34,10 @@ Usage: $PROGNAME --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
 Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
 publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
 line containing provider, model, effort, mode, P1, and P2.
+
+Reviewer selection comes from the running harness and peer-cli facts in the
+untracked environment contract at the repository root. The optional
+--peer-cli-absent flag must agree with a peer-cli= ... absent contract fact.
 
 This is the real PR-diff review path. Capability probes use the provider helper
 with --mode probe --no-payload, send only a synthetic snippet, and never spend
@@ -72,6 +79,94 @@ parse_args() {
     done
 }
 
+provider_for_cli() {
+    case $1 in
+        codex) printf '%s' openai ;;
+        claude) printf '%s' anthropic ;;
+        *) return 1 ;;
+    esac
+}
+
+load_environment_contract() {
+    local contract_root contract peer_line tracked_rc=0
+    if ! contract_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+        die 'could not resolve the repository root for the environment contract'
+    fi
+    contract="$contract_root/.agent/env-contract.txt"
+    [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
+        die "environment contract is not a self-owned regular file: $contract"
+    git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \
+        >/dev/null 2>&1 || tracked_rc=$?
+    case $tracked_rc in
+        0) die "environment contract is tracked: $contract" ;;
+        1) : ;;
+        *) die "could not prove environment contract provenance: $contract" ;;
+    esac
+
+    HARNESS_NAME=$(sed -n 's/^harness= name=\([^[:space:]]*\).*/\1/p' "$contract" | head -n 1)
+    case $HARNESS_NAME in
+        codex|claude) ;;
+        '') die "environment contract harness identity is missing: $contract" ;;
+        *) die "unsupported harness in environment contract: $HARNESS_NAME" ;;
+    esac
+    RUNNING_PROVIDER=$(provider_for_cli "$HARNESS_NAME") ||
+        die "could not map harness to a provider: $HARNESS_NAME"
+
+    peer_line=$(sed -n 's/^peer-cli= //p' "$contract" | head -n 1)
+    PEER_CLI_NAME=${peer_line%% *}
+    case $PEER_CLI_NAME in
+        codex|claude) ;;
+        '') die "environment contract peer-cli identity is missing: $contract" ;;
+        *) die "unsupported peer CLI in environment contract: $PEER_CLI_NAME" ;;
+    esac
+    case $peer_line in
+        "$PEER_CLI_NAME absent"|"$PEER_CLI_NAME absent "?*)
+            PEER_CLI_ABSENT=1
+            ;;
+        "$PEER_CLI_NAME present path="?*)
+            if ((PEER_CLI_ABSENT)); then
+                die '--peer-cli-absent conflicts with a present peer-cli contract fact'
+            fi
+            PEER_CLI_ABSENT=0
+            ;;
+        *)
+            die "invalid peer-cli fact in environment contract: $peer_line"
+            ;;
+    esac
+}
+
+select_reviewer() {
+    local reviewer_cli=$PEER_CLI_NAME
+    # With no peer there is no cross-harness reviewer to select. Keep the
+    # blind fallback on the running harness so its provider cannot be
+    # mislabeled as cross-provider merely because the peer is unavailable.
+    ((PEER_CLI_ABSENT)) && reviewer_cli=$HARNESS_NAME
+    case $reviewer_cli in
+        codex)
+            PROVIDER=openai
+            MODEL=gpt-5.6-terra
+            EFFORT=xhigh
+            HELPER=$SCRIPT_DIR/codex-adversarial-review.sh
+            TRANSCRIPT_NAME=codex.jsonl
+            ;;
+        claude)
+            PROVIDER=anthropic
+            MODEL=claude-opus-5
+            EFFORT=high
+            HELPER=$SCRIPT_DIR/claude-adversarial-review.sh
+            TRANSCRIPT_NAME=claude.ndjson
+            ;;
+        *)
+            die "unsupported reviewer CLI: $reviewer_cli"
+            ;;
+    esac
+    if [[ $PROVIDER == "$RUNNING_PROVIDER" ]]; then
+        MODE=blind-fallback
+    else
+        MODE=cross-provider
+    fi
+}
+
 validate_args() {
     [[ $PR =~ ^[1-9][0-9]*$ ]] || die_usage '--pr must be a positive integer'
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
@@ -79,22 +174,8 @@ validate_args() {
     [[ -n $RUN_DIR ]] || die_usage '--run-dir is required'
     command -v gh >/dev/null 2>&1 || die 'gh is required to resolve the pull request base'
     command -v jq >/dev/null 2>&1 || die 'jq is required to validate the review result'
-
-    if ((PEER_CLI_ABSENT)); then
-        PROVIDER=openai
-        MODEL=gpt-5.6-terra
-        EFFORT=xhigh
-        MODE=blind-fallback
-        HELPER=$SCRIPT_DIR/codex-adversarial-review.sh
-        TRANSCRIPT_NAME=codex.jsonl
-    else
-        PROVIDER=anthropic
-        MODEL=claude-opus-5
-        EFFORT=high
-        MODE=cross-provider
-        HELPER=$SCRIPT_DIR/claude-adversarial-review.sh
-        TRANSCRIPT_NAME=claude.ndjson
-    fi
+    load_environment_contract
+    select_reviewer
     [[ -x $HELPER ]] || die "review helper is missing or not executable: $HELPER"
 }
 
