@@ -31,10 +31,12 @@ make_fixture() {
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-markdown-blocks.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-skill-invocations.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-skill-size.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-helper-refs.sh"
     mkdir -p "$dir/tests/stub"
     cp -- "$root/tests/stub/gh" "$dir/tests/stub/gh"
     chmod +x "$dir/tests/run-tests.sh" "$dir/tests/lint-markdown-blocks.sh" \
-        "$dir/tests/lint-skill-invocations.sh" "$dir/tests/lint-skill-size.sh" "$dir/tests/stub/gh"
+        "$dir/tests/lint-skill-invocations.sh" "$dir/tests/lint-skill-size.sh" \
+        "$dir/tests/lint-helper-refs.sh" "$dir/tests/stub/gh"
     for suite in alpha beta; do
         cat >"$dir/tests/test-$suite.sh" <<EOF
 #!/usr/bin/env bash

@@ -80,6 +80,8 @@ expected_test_chmod="chmod +x -- \"\$worktree/tests/<name>.sh\""
 expected_test_invocation="before invoking it as \"\$worktree/tests/<name>.sh\""
 expected_test_handoff="handing it off for commit"
 expected_test_mode_check="verify the mode is 755/100755"
+expected_agent_run="'$root/agentkit/skills/.shared/scripts/agent-run.sh'"
+shared_reference="\"\$shared/"
 assert_contains "$prompt" "$expected_test_chmod" \
     'issue lead is told to set the executable bit on new shell tests'
 assert_contains "$prompt" "$expected_test_invocation" \
@@ -108,7 +110,9 @@ assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base
     'focused test selector receives chained yolo flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
 
-command_lines=$(printf '%s\n' "$prompt" | rg 'agent-run\.sh.*--cmd' || true)
+command_lines=$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')
+assert_contains "$command_lines" '--cmd verify' \
+    'generated command scan finds actual agent-run --cmd lines'
 assert_not_contains "$command_lines" "\$(" 'generated command lines have no command substitutions'
 assert_not_contains "$command_lines" '--cmd test-focus' 'focused selector is not emitted as a normal command'
 assert_not_contains "$command_lines" '[[' 'generated command lines have no Bash conditionals'
@@ -132,6 +136,10 @@ assert_contains "$fix_prompt" "$expected_test_handoff" \
 assert_contains "$fix_prompt" "$expected_test_mode_check" \
     'fix-batch verifies the executable mode before the first run'
 assert_contains "$fix_prompt" '--cmd verify' 'fix-batch receives declared commands'
+assert_contains "$fix_prompt" "$expected_agent_run" \
+    'fix-batch command paths are fully resolved absolute paths'
+assert_not_contains "$fix_prompt" "$shared_reference" \
+    'fix-batch output does not leave helper paths for the worker to derive'
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
 assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
@@ -197,6 +205,10 @@ fi
 assert_eq "$root/agentkit/skills/.shared/scripts" \
     "$(bash -c "$shared_line"'; printf %s "$shared"')" \
     'the rendered shared assignment reads back as the exact path'
+assert_contains "$prompt" "$expected_agent_run" \
+    'issue-lead command paths are fully resolved absolute paths'
+assert_not_contains "$prompt" "$shared_reference" \
+    'issue-lead output does not leave helper paths for the worker to derive'
 
 # The shared path comes from the contract, not the worktree, so it needs its own
 # spaced case -- the assertion above runs against a repo path with no spaces and
@@ -211,6 +223,70 @@ spaced_shared_line=$(printf '%s\n' "$spaced_prompt" | grep -m1 '^shared=')
 assert_eq "$spaced_skills/.shared/scripts" \
     "$(bash -c "$spaced_shared_line"'; printf %s "$shared"')" \
     'a shared path containing spaces reads back intact'
+
+# A trusted skills path may itself contain the placeholder marker. Replacement
+# must consume the marker in the template once, rather than rescanning the
+# replacement and looping forever. Keep this invocation bounded so the old
+# implementation fails red without hanging the suite.
+literal_shared_skills="$tmp/skills-\$shared"
+literal_shared_contract=$'skills= path='"$literal_shared_skills"$'\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+literal_shared_repo="$tmp/literal-shared-contract"
+make_repo "$literal_shared_repo" "$literal_shared_contract"
+literal_shared_prompt=''
+literal_shared_rc=0
+literal_shared_prompt=$(timeout 3 bash "$compose" --template issue-lead \
+    --worktree "$literal_shared_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1) || literal_shared_rc=$?
+assert_eq 0 "$literal_shared_rc" \
+    "a literal \$shared marker in the trusted skills path does not loop"
+literal_shared_command=$(printf '%s\n' "$literal_shared_prompt" |
+    grep -E -m1 '^.*agent-run\.sh.*--cmd test')
+assert_contains "$literal_shared_command" 'agent-run.sh' \
+    "literal \$shared scan finds an emitted helper command"
+literal_shared_expected="'$literal_shared_skills/.shared/scripts/agent-run.sh'"
+assert_contains "$literal_shared_command" "$literal_shared_expected" \
+    "literal \$shared bytes remain in a shell-safe emitted helper path"
+
+# Helper paths are emitted as commands executed by the worker. A trusted path
+# containing shell metacharacters must be one shell word in both normal and
+# focused command lines, preserving spaces, $, backticks, quotes, and slashes.
+metachar_skills="$tmp/skills "
+metachar_skills+='$'
+metachar_skills+='`'
+metachar_skills+='&'
+metachar_skills+='"'
+metachar_skills+="'"
+metachar_skills+=$'\\'
+metachar_skills+=' dir'
+metachar_contract=$'skills= path='"$metachar_skills"$'\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+metachar_repo="$tmp/metachar-contract"
+make_repo "$metachar_repo" "$metachar_contract"
+metachar_prompt=$(bash "$compose" --template issue-lead --worktree "$metachar_repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
+metachar_reference_line=$(printf '%s\n' "$metachar_prompt" |
+    grep -F -m1 "$metachar_skills/.shared/scripts/contract-read.sh")
+assert_contains "$metachar_reference_line" 'contract-read.sh' \
+    'metacharacter scan finds the resolved reference command'
+assert_contains "$metachar_reference_line" "$metachar_skills/.shared/scripts/contract-read.sh" \
+    'metacharacters survive non-rescanning placeholder replacement'
+parse_helper_path() {
+    local command_line=$1
+    bash -c 'set -- '"$command_line"'; printf %s "$1"'
+}
+metachar_command=$(printf '%s\n' "$metachar_prompt" |
+    grep -E -m1 '^.*agent-run\.sh.*--cmd test ')
+metachar_focus_command=$(printf '%s\n' "$metachar_prompt" |
+    grep -E -m1 '^.*agent-run\.sh.*--cmd test --only ')
+assert_contains "$metachar_command" 'agent-run.sh' \
+    'metacharacter scan finds an emitted normal helper command'
+assert_contains "$metachar_focus_command" 'agent-run.sh' \
+    'metacharacter scan finds an emitted focused helper command'
+assert_eq "$metachar_skills/.shared/scripts/agent-run.sh" \
+    "$(parse_helper_path "$metachar_command")" \
+    'metacharacter helper path parses as one normal command word'
+assert_eq "$metachar_skills/.shared/scripts/agent-run.sh" \
+    "$(parse_helper_path "$metachar_focus_command")" \
+    'metacharacter helper path parses as one focused command word'
 
 # AGENT_CMD_TEST_FOCUS alone cannot resolve --cmd test: agent-run.sh needs either
 # AGENT_CMD_TEST or a declared runner, and with neither the emitted focused
