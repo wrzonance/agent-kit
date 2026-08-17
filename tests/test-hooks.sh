@@ -773,19 +773,35 @@ assert_contains "$out" 'checkout -b' 'and says what to do instead'
 # this commit will land, so the guard must stay silent rather than spend its
 # deny-once refusal on the wrong branch. The subshell's real cwd is the linked
 # worktree; only the hook input deliberately carries the stale session cwd.
-linked_main=$(mktemp -d "$tmp/linked-main.XXXXXX")
-linked_feature=$(mktemp -d "$tmp/linked-feature.XXXXXX")
+linked_main=$(cd -- "$(mktemp -d "$tmp/linked-main.XXXXXX")" && pwd -P)
+linked_feature=$(cd -- "$(mktemp -d "$tmp/linked-feature.XXXXXX")" && pwd -P)
 git -C "$linked_main" init -q -b main
 mkdir -p "$linked_main/.agent/cache"
 printf 'AGENT_BASE_BRANCH=main\n' > "$linked_main/.agent/config.env"
 git -C "$linked_main" -c user.email=t@example.invalid -c user.name=t \
     commit -q --allow-empty -m base
 git -C "$linked_main" worktree add -q -b feat/linked "$linked_feature"
+
+# The worker's checkout is the linked worktree, so Git's own branch evidence is
+# the only trustworthy landing context. Resolve the same root the hook inspects
+# and pin the result to the worktree's branch; this is the regression boundary
+# for the reported "would land on main" near-miss.
+linked_landing=$(cd "$linked_feature" && bash -c '
+    source "$1"
+    guard_resolve_roots "$2" "$3"
+    root=$(guard_command_repository_root "$2" "$3")
+    printf "%s|%s" "$root" "$(git -C "$root" symbolic-ref --short HEAD)"
+' _ "$hooks/lib/guard-lib.sh" "$linked_feature" 'git commit -m "linked feature"')
+assert_eq "$linked_feature|feat/linked" "$linked_landing" \
+    'the hook resolves a linked worktree root and its actual landing branch'
+
 out=$(cd "$linked_feature" &&
     pre_input "$linked_main" 'git commit -m "linked feature"' "linked-worktree" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
     'an ambiguous linked-worktree commit is not refused as trunk work'
+assert_not_contains "$out" 'would land on main' \
+    'a linked feature worker never receives a main-branch inference'
 
 # An explicit git -C pins the command to the inspected main worktree, so the
 # same stale session cwd must still receive the true-positive trunk refusal.
