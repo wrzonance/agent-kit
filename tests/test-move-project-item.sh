@@ -443,8 +443,9 @@ assert_eq '0' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
 # captured through a pipe, and the summary makes any short capture visible.
 repo=$(seed_repo)
 : > "$tmp/large-batch.out"
-pipe_lines=$(LARGE_BATCH=1 run_mv "$repo" --issue-numbers 1,2,3,4,5,6,7,8,9 --status Ready 2>&1 |
-    tee "$tmp/large-batch.out" | wc -l)
+LARGE_BATCH=1 run_mv "$repo" --issue-numbers 1,2,3,4,5,6,7,8,9 --status Ready 2>&1 |
+    tee "$tmp/large-batch.out" > /dev/null
+pipe_lines=$(awk 'END { print NR + 0 }' "$tmp/large-batch.out")
 assert_eq '10' "$pipe_lines" 'a 9-issue batch emits nine evidence lines plus its summary through a pipe'
 assert_eq '9' "$(grep -c '^moved #' "$tmp/large-batch.out" || true)" \
     'a piped large batch emits one moved line per issue'
