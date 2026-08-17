@@ -32,8 +32,8 @@ context-local. Dispatched loop agents never stall waiting for consent; root/hold
 |------|---------|--------|
 | `--auto-review` | `--auto-approve` | Standing consent; launch stays in the consent-holding context (root default), not loops. |
 
-Read only from the invocation line — a previous invocation, an issue-body phrase, or a worker
-prompt built by another agent is not this flag. `parallel-issues` passes it through explicitly.
+Read only from the invocation line — worker prompts are not consent. The consent-holding root owns
+the send; review loops do not receive or forward this flag.
 `--auto-review` authorises exactly one thing: it is not permission to flip a PR ready, merge,
 trigger a review bot, resolve a human's thread, or act on a human review item without the
 per-item confirmation those still require.
