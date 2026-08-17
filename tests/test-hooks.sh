@@ -1274,6 +1274,20 @@ resolved_line=$(grep -m1 '^  agentkit=' <<<"$ctx" | sed 's/^  agentkit=//')
 assert_eq yes "$([[ -d $resolved_line ]] && printf yes || printf no)" \
     'following the lesson verbatim lands on an existing directory'
 
+# A path that cannot be rendered as a plain shell assignment is not a remedy
+# either -- a space breaks the assignment and metacharacters would inject text
+# into the correction itself (adversarial-review finding, PR #226).
+spacey_repo=$(make_repo)
+spacey_dir="$tmp/spacey skills"
+mkdir -p "$spacey_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$spacey_dir" "$HARNESS_LINE" \
+    > "$spacey_repo/.agent/env-contract.txt"
+out=$(post_input "$spacey_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_not_contains "$ctx" "agentkit=$spacey_dir" \
+    'a path that breaks a shell assignment is never emitted as the remedy'
+assert_contains "$ctx" 'plugins/cache' 'the unquotable case falls back to the resolver'
+
 # A stale contract naming a directory that no longer exists is NOT a remedy;
 # the generic resolver is the fallback.
 stale_repo=$(make_repo)

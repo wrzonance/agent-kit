@@ -34,10 +34,13 @@ issues — the rest of the chain plan is unaffected.
 (C blocked by both A and B), there is no single predecessor SHA to start from — but that is
 a sequencing fact, not a reason to lose the issue from the run. Defer C until every
 predecessor's commit is pushed, then build its start point by merging those pushed commits
-down: create C's branch from the first predecessor's SHA and `git merge --no-commit --no-ff`
-each remaining predecessor's SHA into it, inspecting the result. A clean merge-down is C's
-`chain_base_sha`; a conflict parks exactly C by name for human resolution — never pick one
-predecessor and silently drop the other's commits, and never invent a merge base by hand.
+down: create C's branch from the first predecessor's SHA, then for each remaining
+predecessor's SHA in turn run `git merge --no-ff` (inspect with `--no-commit` first when
+caution is warranted, but **commit each merge before starting the next** — one pending
+merge blocks another, and an uncommitted merge has no SHA). The final integration commit's
+full 40-character SHA is C's `chain_base_sha`. A conflict at any step parks exactly C by
+name for human resolution — never pick one predecessor and silently drop the other's
+commits, and never invent a merge base by hand.
 Report the join, its predecessors, and the merged base in the chain plan so a five-issue set
 dispatches five issues. Chains respect a hard depth cap of 4; an issue that would extend a
 chain past that depth is dropped from the chain with a named report rather than silently

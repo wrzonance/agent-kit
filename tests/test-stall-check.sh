@@ -75,6 +75,21 @@ assert_contains "$out" 'verdict=quiet' 'the streak requirement holds at threshol
 out=$("$helper" --worktree "$recent_wt" --state "$zero_state" --threshold-minutes 0)
 assert_eq 3 $? 'threshold zero stalls on the second silent check'
 
+# The documented state path lives INSIDE the worktree (.agent/stall-state).
+# The detector's own state writes must not read as liveness, or the quiet
+# streak resets on every check and a stall is structurally undetectable
+# (adversarial-review finding, PR #226).
+inside_wt="$tmp/inside"
+mkdir -p "$inside_wt/.agent" "$inside_wt/src"
+printf 'x\n' > "$inside_wt/src/d.txt"
+touch -d '2020-01-01 00:00:00' "$inside_wt/src/d.txt"
+inside_state="$inside_wt/.agent/stall-state"
+"$helper" --worktree "$inside_wt" --state "$inside_state" > /dev/null
+"$helper" --worktree "$inside_wt" --state "$inside_state" > /dev/null
+out=$("$helper" --worktree "$inside_wt" --state "$inside_state")
+assert_eq 3 $? 'an in-worktree state file still lets the stall fire'
+assert_contains "$out" 'verdict=stalled' 'the detector ignores its own state writes'
+
 # Git metadata churn is not worker progress.
 git_wt="$tmp/gitchurn"
 mkdir -p "$git_wt/.git" "$git_wt/src"

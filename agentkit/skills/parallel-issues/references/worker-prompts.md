@@ -189,12 +189,18 @@ When FINISH's fresh full verification is green, publish the branch yourself:
    green marker-bearing verification log path. The top-level session reviews the pushed diff
    and owns the draft PR, board moves, review orchestration, and every other forge action.
 
-**Environment-refusal fallback (the only remaining handback path):** if `worktree-commit.sh`
-exits 2 (git metadata not writable) or the push is refused by the sandbox, stop and return a
-publication handback instead — the scoped dirty files and diffstat, the green log path, the
-branch, and the exact ready-to-run `worktree-commit.sh` invocation with the expanded
-trailer — and the top-level session runs it verbatim once. Never retry around a privilege
-refusal yourself.
+**Environment-refusal fallback (the only remaining handback paths):**
+
+- **Commit refused** — `worktree-commit.sh` exits 2 (git metadata not writable): nothing is
+  committed. Stop and return a publication handback — the scoped dirty files and diffstat,
+  the green log path, the branch, and the exact ready-to-run `worktree-commit.sh`
+  invocation with the expanded trailer — and the top-level session runs it verbatim once,
+  then pushes.
+- **Push refused after the commit succeeded**: the tree is clean and the commit exists, so
+  a commit command would have nothing to run. Report the full commit SHA and the exact
+  ready-to-run `git push -u origin feat/issue-NNN` instead.
+
+Never retry around a privilege refusal yourself.
 
 ## True blockers — the only reasons to stop early
 
@@ -503,9 +509,11 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
    push the branch. If unrelated dirt appears, stop and surface its files, diffstat, and
    whether the checkpoint manifest explains it — never commit it.
 5. Return a completion report: branch, full commit SHA from the helper's success line,
-   diffstat, and the green verification log path. If the helper exits 2 or the push is
-   refused by the sandbox, return the classic publication handback (the exact ready-to-run
-   command with the expanded trailer) instead and stop.
+   diffstat, and the green verification log path. If the helper exits 2 (nothing
+   committed), return the classic publication handback (the exact ready-to-run commit
+   command with the expanded trailer) instead and stop; if the commit succeeded but the
+   push was refused, report the commit SHA and the exact ready-to-run push command — never
+   a commit command the root cannot rerun.
 6. Do not contact external services beyond pushing the assigned branch, and do not alter
    forge metadata; phase leads hand privileged actions to the root.
 

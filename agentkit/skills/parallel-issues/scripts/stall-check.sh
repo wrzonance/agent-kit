@@ -65,11 +65,17 @@ done
 [[ -n $state_file ]] || die '--state is required'
 [[ $threshold_minutes =~ ^[0-9]+$ ]] || die '--threshold-minutes must be a non-negative integer'
 [[ ! -L $state_file ]] || die 'state file must not be a symlink'
+worktree=$(cd -P -- "$worktree" && pwd -P) || die 'could not canonicalize the worktree'
+state_canonical=$(realpath -m -- "$state_file") || die 'could not canonicalize the state path'
 
 # Newest mtime under the worktree, .git excluded: git metadata churns for
 # reasons that are not worker progress (fetches, lock probes), while every
 # real sign of life -- source edits, .agent/logs/, checkpoints -- is a file.
-newest=$(find "$worktree" -name .git -prune -o -type f -printf '%T@\n' 2> /dev/null |
+# The state file and its mktemp siblings are excluded too: the documented
+# state path lives INSIDE the worktree (.agent/stall-state), and a detector
+# that counts its own writes as liveness never reaches a second quiet check.
+newest=$(find "$worktree" -name .git -prune -o -name '.stall-check.*' -prune -o \
+    -type f ! -path "$state_canonical" -printf '%T@\n' 2> /dev/null |
     LC_ALL=C sort -n | tail -n 1) || true
 newest=${newest%%.*}
 [[ -n $newest ]] || die 'no files found under the worktree; evidence unavailable'

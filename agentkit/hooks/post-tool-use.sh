@@ -133,7 +133,12 @@ if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' <<< "$command_line" &&
         ! git -C "$state_root" ls-files --error-unmatch -- .agent/env-contract.txt \
             > /dev/null 2>&1; then
         resolved_skills=$(sed -n 's/^skills= path=//p' "$contract_file" 2> /dev/null | head -n 1)
-        [[ -d $resolved_skills ]] || resolved_skills=''
+        # The value is rendered into agent-facing text as a copyable shell
+        # assignment, so only a plain absolute path qualifies: a space breaks
+        # the assignment, and shell metacharacters would inject text into the
+        # very command this lesson exists to correct. Anything else falls back
+        # to the generic resolver.
+        [[ $resolved_skills =~ ^/[A-Za-z0-9._/@+-]+$ && -d $resolved_skills ]] || resolved_skills=''
     fi
     if [[ -n $resolved_skills ]]; then
         # shellcheck disable=SC2016  # the $agentkit references are literal text, see teach()

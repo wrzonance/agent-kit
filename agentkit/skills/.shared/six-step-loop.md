@@ -82,9 +82,10 @@ Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Rev
    contract-derived `Co-Authored-By` trailer) and push the branch. Report the branch, full
    commit SHA, diffstat, and green log path. The dispatching root reviews the pushed diff
    and owns PR creation, board moves, adversarial review, and reviewer replies. Only when
-   commit or push is refused by the environment (`worktree-commit.sh` exit 2, a sandbox
-   push refusal) does the worker fall back to returning the exact ready-to-run publication
-   command as a handback.
+   commit or push is refused by the environment does the worker fall back: a commit
+   refusal (`worktree-commit.sh` exit 2, nothing committed) returns the exact ready-to-run
+   commit command as a handback; a post-commit push refusal reports the commit SHA and the
+   exact push command — never a commit command the root cannot rerun.
 
 ## Where each step maps for an orchestrated lead
 

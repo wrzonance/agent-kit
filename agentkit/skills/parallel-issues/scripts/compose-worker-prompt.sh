@@ -4,7 +4,8 @@ set -euo pipefail
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E [--write-set GLOB[,GLOB...]] [--yolo] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] [--yolo] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+    printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
 
@@ -15,7 +16,7 @@ branch=
 worker_model=
 worker_effort=
 chain_base=
-write_set=
+declare -a write_set_args=()
 output=
 yolo=0
 while (($#)); do
@@ -29,7 +30,7 @@ while (($#)); do
                 --branch) branch=$2 ;;
                 --worker-model) worker_model=$2 ;;
                 --worker-effort) worker_effort=$2 ;;
-                --write-set) write_set=$2 ;;
+                --write-set) write_set_args+=("$2") ;;
                 --chain-base) chain_base=$2 ;;
                 --output|-o) output=$2 ;;
             esac
@@ -48,19 +49,26 @@ done
 [[ $worker_model =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die '--worker-model must be a safe single-token identifier'
 [[ $worker_effort =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die '--worker-effort must be a safe single-token identifier'
 declare -a write_set_globs=()
-if [[ -n $write_set ]]; then
-    IFS=, read -r -a write_set_globs <<< "$write_set"
-    ((${#write_set_globs[@]})) || die '--write-set must name at least one glob'
-    for glob in "${write_set_globs[@]}"; do
-        # Repository-relative globs only, matching the dispatch-plan validator's
-        # own path policy: no absolute paths, no traversal, no control bytes.
-        [[ -n $glob && $glob != /* && $glob != *$'\n'* && $glob != *"\\"* ]] ||
-            die "--write-set glob is not a repository-relative pattern: $glob"
-        case "/$glob/" in
-            *'/../'*|*'//'*|*'/./'*) die "--write-set glob contains an unsafe path: $glob" ;;
-        esac
-    done
-fi
+for write_set in ${write_set_args[@]+"${write_set_args[@]}"}; do
+    # A repeated flag carries one glob apiece (the escape hatch for paths that
+    # contain commas); a single flag may carry a comma-joined list.
+    if [[ ${#write_set_args[@]} -gt 1 ]]; then
+        write_set_globs+=("$write_set")
+    else
+        IFS=, read -r -a write_set_globs <<< "$write_set"
+    fi
+done
+((${#write_set_globs[@]})) || [[ $template_kind != issue-lead ]] ||
+    die '--write-set is required for the issue-lead template: pass the dispatch plan'"'"'s predictedWriteSet globs'
+for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
+    # Repository-relative globs only, matching the dispatch-plan validator's
+    # own path policy: no absolute paths, no traversal, no control bytes.
+    [[ -n $glob && $glob != /* && $glob != *$'\n'* && $glob != *"\\"* ]] ||
+        die "--write-set glob is not a repository-relative pattern: $glob"
+    case "/$glob/" in
+        *'/../'* | *'//'* | *'/./'*) die "--write-set glob contains an unsafe path: $glob" ;;
+    esac
+done
 if [[ -n $chain_base ]]; then
     ((yolo)) || die '--chain-base requires --yolo'
     [[ $chain_base =~ ^[0-9a-f]{40}$ ]] || die '--chain-base requires a full 40-character lowercase commit SHA'
@@ -187,14 +195,14 @@ emit_focus() {
 }
 
 emit_write_set() {
-    if ((${#write_set_globs[@]})); then
-        local glob
-        for glob in "${write_set_globs[@]}"; do
-            printf -- '- %s\n' "$glob"
-        done
-    else
-        printf -- '- (no write set pinned for this dispatch; treat the issue'\''s evident scope as the boundary and surface any surprise as a true blocker)\n'
-    fi
+    # Reaching this token without globs is a template/flag mismatch, not a
+    # boundary to improvise: the issue-lead gate above makes it structurally
+    # unreachable, and failing loud beats composing a prompt with no fence.
+    ((${#write_set_globs[@]})) || die 'internal: write-set token rendered with no globs'
+    local glob
+    for glob in "${write_set_globs[@]}"; do
+        printf -- '- %s\n' "$glob"
+    done
 }
 
 emit_trust_rule() {

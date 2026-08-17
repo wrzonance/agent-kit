@@ -96,6 +96,6 @@ if [[ -n $first_material ]]; then
         "$count" "$first_material"
 else
     printf 'materiality= files=%s verdict=skip-eligible\n' "$count"
-    printf 'oracle=every changed file is test or documentation content; the repository test suite and docs render exercise every changed line, so no model review is displaced\n'
+    printf 'oracle=path-mechanical: every changed file is under a test or documentation root, so no executable logic, workflow, authorization, or persistence surface changed; the caller records this classification as the skip reason\n'
 fi
 exit 0

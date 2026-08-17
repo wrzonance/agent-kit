@@ -110,10 +110,11 @@ After any compaction/resume, before taking another action, run `"$agentkit/.shar
 **Authorization is checked once per run, not per command.** Record each grant with a stable
 decision token (e.g. `authorize:workflow-mutations`). Before a bounded workflow mutation of a
 granted class — worktree branch pushes, draft PR creation, board moves — the check is one
-ledger query, `"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION"`,
-and exit 0 means proceed with no fresh approval round trip: re-litigating a recorded grant
-per command is exactly the overhead this rule removes. A mutation no recorded decision
-covers still stops — scope stays; permission ceremony goes.
+ledger query, `"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
+passing the same scope the grant was recorded with — a decision token alone must never
+widen a narrower grant. Exit 0 means proceed with no fresh approval round trip:
+re-litigating a recorded grant per command is exactly the overhead this rule removes. A
+mutation no recorded decision covers still stops — scope stays; permission ceremony goes.
 
 ### Diff-size facts
 
@@ -706,7 +707,9 @@ chmod 600 -- "$prompt_file" || exit 1
 # worker_effort is the per-issue value (the dispatch-plan workerEffort override
 # when present, else the AGENT_WORKER_EFFORT default). write_set_csv is the
 # issue's predictedWriteSet globs from the dispatch plan, comma-joined -- it
-# becomes the worker's declared write set.
+# becomes the worker's declared write set and is REQUIRED for an issue lead.
+# For a glob that itself contains a comma, pass repeated --write-set flags
+# (one glob per flag) instead of the CSV form.
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --write-set "$write_set_csv" --output "$prompt_file")
 if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
 if ! "$compose_script" "${compose_args[@]}"; then
@@ -763,8 +766,11 @@ must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
 feeds Collect and Step 3a.
 
-**Environment-refusal fallback only** — the worker returned the classic publication handback
-because `worktree-commit.sh` exited 2 or its push was refused: root preserves the raw command
+**Environment-refusal fallback only** — two shapes, split by where the refusal landed. A
+post-commit **push refusal** is the trivial one: the worker reports the commit SHA and the
+exact push command; root verifies that SHA exists in the worktree and pushes — there is no
+commit left to run. A **commit refusal** (`worktree-commit.sh` exit 2) returns the classic
+publication handback: root preserves the raw command
 text for audit. Validator: parse into validated arguments without eval; validate expected
 worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path
 inside the worktree and allowed, and every staged path declared and unprotected (the index
@@ -813,9 +819,9 @@ pending — CI state is data, not an error. Read the digest and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
-Phase A orchestration remains with the root. As each Phase 2 lead returns a PR URL, the root
-observes the draft through `/review-remote-pr`'s **draft-first** flow — in parallel, without
-waiting for the other issues' leads. Step 3b workers receive only root-approved fix batches for
+Phase A orchestration remains with the root. As the root opens each draft PR from a Phase 2
+lead's pushed completion report, it observes that draft through `/review-remote-pr`'s
+**draft-first** flow — in parallel, without waiting for the other issues' leads. Step 3b workers receive only root-approved fix batches for
 mechanical implementation. The root handles CI state/verification, forge conflicts, adversarial
 review, consent, replies, and publication. Workers do not poll forge state, resolve
 PR conflicts, launch reviews, make consent decisions, reply to reviewers, or touch PR
@@ -846,7 +852,9 @@ Same evidence rule as the dispatch move: the helper's printed line is the record
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
 **The materiality gate runs before the review spend.** Before launching any reviewer, the
-loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base"`.
+loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base"`
+— for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
+predecessor's changes contaminate the successor's verdict.
 `verdict=skip-eligible` (every changed file is test-only or docs-only) takes the
 documented-skip path: publish the receipt with `--skip-rationale` and the helper's printed
 oracle line, and launch no reviewer. `verdict=material` — any file touching executable
