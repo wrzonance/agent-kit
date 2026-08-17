@@ -130,6 +130,7 @@ validate_body() {
     [[ $first_line == "$FRONT_BANNER" ]] ||
         die 'body must start with the front banner: This was written agentically; verify its assertions:'
     validate_footer
+    validate_expected_closing_issue
 
     [[ -z $REPO || $REPO =~ $SLUG_RE ]] ||
         die "--repo must look like OWNER/REPO, got: $REPO"
@@ -159,6 +160,14 @@ validate_footer() {
     fi
     [[ $last_line =~ $ATTRIBUTION_RE ]] ||
         die 'body must end with a closing attribution: 🤖 Co-authored by <agent>.'
+}
+
+validate_expected_closing_issue() {
+    [[ -z $EXPECT_CLOSING_ISSUE ]] && return 0
+
+    local expected_closing_re="^(Closes|Fixes|Resolves) #$EXPECT_CLOSING_ISSUE$"
+    LC_ALL=C grep -qE "$expected_closing_re" -- "$BODY_FILE" ||
+        die "body does not contain expected closing keyword for #$EXPECT_CLOSING_ISSUE"
 }
 
 cleanup() {

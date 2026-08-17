@@ -200,6 +200,31 @@ output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical")
 assert_contains "$output" 'updated pr #41' \
     'canonical separate signature and closing line pass byte verification'
 
+wrong_link="$tmp/wrong-link.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    'body has the wrong closing issue' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' \
+    '' \
+    'Closes #99' >"$wrong_link"
+gh_calls_before=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+set +e
+wrong_link_output=$(run_body pr create --repo owner/repo --body-file "$wrong_link" \
+    --expect-closing-issue 42 2>"$tmp/wrong-link.err")
+wrong_link_rc=$?
+set -e
+assert_eq '1' "$wrong_link_rc" \
+    'body with a different closing issue fails before mutation'
+assert_eq '' "$wrong_link_output" \
+    'wrong body-side closing issue emits no success output'
+assert_contains "$(cat "$tmp/wrong-link.err")" \
+    'expected closing keyword for #42' \
+    'wrong body-side closing issue names the expected issue'
+gh_calls_after=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+assert_eq "$gh_calls_before" "$gh_calls_after" \
+    'wrong body-side closing issue never calls gh'
+
 export GH_INCLUDE_CLOSING=1
 output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
     --expect-closing-issue 42)
