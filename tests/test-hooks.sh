@@ -79,6 +79,14 @@ assert_contains "$ctx" 'board, triage, and commit guards have no facts to act on
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_contains "$ctx" 'agentkit/.shared/scripts/bootstrap-repo.sh' \
     'and it teaches the resolver-relative skills path'
+# Pinned as one substring so the --dry-run inspect step, the write step, and
+# their order all fail together if a later edit drops any of the three.
+# shellcheck disable=SC2016  # $agentkit is the literal text being matched in
+# the emitted curriculum, not a variable to expand here.
+bootstrap_sequence='  "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # inspect
+  "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write'
+assert_contains "$ctx" "$bootstrap_sequence" \
+    'and keeps the --dry-run inspect step immediately before the write step'
 assert_not_contains "$ctx" 'It writes two files the repository is expected to commit' \
     'the notice does not restate bootstrap output'
 assert_not_contains "$ctx" '.agent/board.json' \

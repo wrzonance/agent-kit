@@ -172,7 +172,10 @@ grep -n '^# AGENT_' .agent/config.env
 "$shared/detect-toolchains.sh" --format gaps
 ```
 
-Read the detector's `--format gaps` output; it distinguishes "nothing new" from "complete".
+Run the detector even when `.agent/config.env` already looks complete — only it inspects the repo
+itself, not just what a previous onboarding recorded. When nothing is new it says so explicitly
+("nothing NEW was found," never "complete") — report that distinction in Step 9 rather than
+treating a quiet run as proof.
 
 Anything still commented is a blank the script would not guess:
 
