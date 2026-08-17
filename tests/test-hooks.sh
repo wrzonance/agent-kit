@@ -1254,6 +1254,52 @@ out=$(post_input "$repo" 'sed -n "s/^skills= path=//p" .agent/env-contract.txt' 
     "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'reading env-contract.txt does not trigger an advisory'
 
+# When the repository's own contract already resolves the skills tree, the
+# lesson hands back the RESOLVED VALUE itself -- an executable remedy, not just
+# a named hazard (issue #224 WS2e). Observed live: a hazard-only lesson made
+# the model hand-delete path segments into a path that did not exist. Following
+# the emitted line verbatim must land on a directory that exists right now.
+resolved_repo=$(make_repo)
+resolved_skills_dir=$(mktemp -d "$tmp/skills.XXXXXX")
+mkdir -p "$resolved_skills_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$resolved_skills_dir" "$HARNESS_LINE" \
+    > "$resolved_repo/.agent/env-contract.txt"
+out=$(post_input "$resolved_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_contains "$ctx" "agentkit=$resolved_skills_dir" \
+    'the version-path lesson carries the contract-resolved skills path'
+assert_contains "$ctx" 'version directory' 'the resolved lesson still names the hazard'
+assert_contains "$ctx" 'plugins/cache' 'the resolved lesson still teaches the resolver'
+resolved_line=$(grep -m1 '^  agentkit=' <<<"$ctx" | sed 's/^  agentkit=//')
+assert_eq yes "$([[ -d $resolved_line ]] && printf yes || printf no)" \
+    'following the lesson verbatim lands on an existing directory'
+
+# A stale contract naming a directory that no longer exists is NOT a remedy;
+# the generic resolver is the fallback.
+stale_repo=$(make_repo)
+printf 'skills= path=%s\n%s\n' "$tmp/gone-after-update" "$HARNESS_LINE" \
+    > "$stale_repo/.agent/env-contract.txt"
+out=$(post_input "$stale_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_not_contains "$ctx" 'gone-after-update' \
+    'a stale contract path is never presented as the remedy'
+assert_contains "$ctx" 'plugins/cache' 'the stale case falls back to the resolver'
+
+# A TRACKED contract arrived with the checkout -- repository-supplied text must
+# not steer what this hook puts in an agent's head.
+tracked_repo=$(make_repo)
+tracked_dir=$(mktemp -d "$tmp/tracked-skills.XXXXXX")
+mkdir -p "$tracked_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$tracked_dir" "$HARNESS_LINE" \
+    > "$tracked_repo/.agent/env-contract.txt"
+git -C "$tracked_repo" add -f .agent/env-contract.txt
+git -C "$tracked_repo" -c user.name=t -c user.email=t@example.invalid commit -qm 'track contract'
+out=$(post_input "$tracked_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_not_contains "$ctx" "agentkit=$tracked_dir" \
+    'a tracked contract never supplies the resolved path'
+assert_contains "$ctx" 'plugins/cache' 'the tracked case still teaches the resolver'
+
 # Unrecordable state SPEAKS -- the inverse of the denial rule. A repeated
 # sentence is noise; silence would lose the lesson, and nothing here can block.
 locked2=$(make_repo)

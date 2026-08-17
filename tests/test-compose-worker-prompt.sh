@@ -116,6 +116,32 @@ assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base
     'focused test selector receives chained yolo flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
 
+# Declared write set (issue #224 WS2a): without --write-set the template's token
+# renders as an explicit none-pinned line, never as a leftover placeholder.
+assert_not_contains "$prompt" '__DECLARED_WRITE_SET__' \
+    'write-set token never survives composition'
+assert_contains "$prompt" 'no write set pinned for this dispatch' \
+    'an unpinned write set renders the explicit default boundary'
+
+write_set_prompt=$(bash "$compose" --template issue-lead --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high --write-set 'src/parser/**,tests/test-*.sh')
+assert_contains "$write_set_prompt" '- src/parser/**' \
+    'a pinned write set renders each glob'
+assert_contains "$write_set_prompt" '- tests/test-*.sh' \
+    'a pinned write set renders every glob'
+assert_not_contains "$write_set_prompt" 'no write set pinned' \
+    'a pinned write set replaces the default boundary line'
+
+err=$(bash "$compose" --template issue-lead --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high --write-set '/etc/passwd' 2>&1 >/dev/null)
+status=$?
+assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+    'an absolute write-set glob is refused'
+assert_contains "$err" 'repository-relative' \
+    'the write-set refusal names the repository-relative rule'
+
 command_lines=$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')
 assert_contains "$command_lines" '--cmd verify' \
     'generated command scan finds actual agent-run --cmd lines'

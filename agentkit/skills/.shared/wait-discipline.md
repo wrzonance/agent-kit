@@ -20,6 +20,24 @@ Blocking is safe because every wait names an explicit bound alongside its invoca
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
+## Default numeric bounds per wait class
+
+"An explicit bound" is a number, not an adjective. A wait issued without one falls back to
+the harness default (~110 s on one measured runtime), and a five-issue run spent ~2 h
+processing 61 timed-out waits that each carried zero information. The defaults:
+
+| Wait class | Default bound |
+|---|---|
+| Worker implementation wait (`wait_agent` on an issue lead or fix-batch worker) | **900 s** minimum |
+| Draft-loop, review, or CI wait | **600 s** |
+| Helper-internal polling (`gh-pr-state.sh --wait-ci`, adversarial max-duration-seconds) | the helper's own `--rounds × --interval` / duration bound |
+
+An early completion still returns early, so a large bound costs nothing when workers are
+fast. If the harness caps a single wait below the class default, issue the largest wait it
+permits. A wait that returns `timed_out:true` must never be re-issued at the same duration —
+it produced nothing and will again: escalate the bound (at least double it) or take the
+stall path (`parallel-issues/scripts/stall-check.sh`) instead of blocking blind.
+
 ## Durable state to inspect after a completion
 
 Read only from disk and the forge, and only once a wait reports an actual completion:

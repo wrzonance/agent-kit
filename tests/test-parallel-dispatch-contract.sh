@@ -111,8 +111,22 @@ assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base
     'worktree recipe parameterizes its start point'
 assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
     'chained WHEN-yolo threading pins the base'
-assert_contains "$text" 'only after the root has validated, committed, and pushed' \
-    'chain successors defer on root publication, not PR state'
+assert_contains "$normalized_text" "as soon as the predecessor's worker has committed and pushed its branch" \
+    'chain successors gate on the pushed commit, not root publication'
+assert_not_contains "$normalized_text" 'only after the root has validated, committed, and pushed' \
+    'chain successors no longer wait for the root publication ceremony'
+chains_reference_text=$(<"$root/agentkit/skills/parallel-issues/references/chains.md")
+normalized_chains_text=$(tr '\n' ' ' <<<"$chains_reference_text" | tr -s '[:space:]' ' ')
+assert_contains "$normalized_chains_text" 'pushed commit' \
+    'chains reference gates on the pushed commit'
+assert_contains "$normalized_chains_text" 'A join is scheduled, not dropped' \
+    'a multi-predecessor join is scheduled instead of dropped'
+assert_contains "$normalized_chains_text" 'a five-issue set dispatches five issues' \
+    'join scheduling keeps every selected issue dispatched'
+assert_contains "$normalized_chains_text" 'interface dependency' \
+    'chain edges require an interface dependency'
+assert_contains "$normalized_text" 'test files or prose does not serialize' \
+    'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
 assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
@@ -297,8 +311,14 @@ assert_contains "$worker_prompts_text" 'reports BLOCKED for that workstream' \
     'worker contract blocks only the refused workstream'
 assert_contains "$worker_prompts_text" 'literal command' \
     'worker contract rejects literal-command evasion'
-assert_contains "$worker_prompts_text" 'at most 10 changed implementation lines' \
-    'worker contract defines the trivial-diff spike-skip threshold'
+assert_contains "$worker_prompts_text" 'extends existing pattern <name>' \
+    'worker contract makes the spike exemption novelty-based, naming the pattern'
+assert_not_contains "$worker_prompts_text" 'at most 10 changed implementation lines' \
+    'worker contract no longer sizes the spike exemption by line count'
+assert_contains "$worker_prompts_text" 'line count is not the test' \
+    'worker contract states that size never decides the spike'
+assert_contains "$worker_prompts_text" 'A skip is never silent' \
+    'worker contract records why every spike skip happened'
 assert_contains "$worker_prompts_text" 'existing pattern' \
     'worker contract limits spike skips to existing patterns'
 assert_contains "$worker_prompts_text" 'one-line justification' \
@@ -381,7 +401,7 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_contains "$prompt_text" 'Every file operation must use an absolute path rooted in this assigned' "$prompt_label uses absolute worktree paths"
     assert_contains "$prompt_text" 'writable sandbox commonly spans the parent tree' "$prompt_label names the sandbox ownership hazard"
     assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
-    assert_contains "$prompt_text" 'report the incident and restoration in the handback' "$prompt_label reports restored incidents"
+    assert_contains "$prompt_text" 'report the incident and restoration in the completion report' "$prompt_label reports restored incidents"
     assert_not_contains "$prompt_text" 'Co-Authored-By: Codex' "$prompt_label has no literal Codex provider trailer"
     assert_not_contains "$prompt_text" 'Co-Authored-By: Claude' "$prompt_label has no literal Claude provider trailer"
     assert_not_contains "$prompt_text" 'Co-Authored-By: gpt-' "$prompt_label has no literal model trailer"
@@ -397,8 +417,30 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
         "$prompt_label carries the --yolo WHEN placeholder"
 done
 assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
-assert_contains "$issue_lead_prompt" 'publication handback' 'issue lead returns a publication handback'
-assert_contains "$draft_loop_prompt" 'publication handback' 'phase lead returns a publication handback'
+assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
+assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
+assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
+assert_contains "$draft_loop_prompt" 'push the branch' 'phase lead pushes its own branch'
+issue_lead_flat=$(tr '\n' ' ' <<<"$issue_lead_prompt" | tr -s '[:space:]' ' ')
+draft_loop_flat=$(tr '\n' ' ' <<<"$draft_loop_prompt" | tr -s '[:space:]' ' ')
+assert_contains "$issue_lead_flat" 'worktree-commit.sh" --message' \
+    'issue lead commits through the shipped helper'
+assert_contains "$issue_lead_flat" 'Environment-refusal fallback' \
+    'issue lead keeps the handback as the environment-refusal fallback only'
+assert_contains "$draft_loop_flat" 'publication handback' \
+    'phase lead keeps the fallback handback documented'
+assert_contains "$issue_lead_flat" 'True blockers' \
+    'issue lead defines true blockers explicitly'
+assert_contains "$issue_lead_flat" 'routine self-correction' \
+    'issue lead distinguishes routine self-correction from blockers'
+assert_contains "$issue_lead_flat" 'Never ask permission to do work this dispatch already assigned you' \
+    'issue lead never asks permission for assigned work'
+assert_contains "$issue_lead_prompt" '__DECLARED_WRITE_SET__' \
+    'issue lead template carries the declared write-set token'
+assert_not_contains "$issue_lead_flat" 'Leave progress unstaged' \
+    'issue lead no longer leaves progress unstaged for handback'
+assert_not_contains "$draft_loop_flat" 'Leave all authored progress unstaged' \
+    'phase lead no longer leaves progress unstaged for handback'
 for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
     assert_contains "$prompt_text" '"$shared/contract-read.sh" --repo-root "$contract_root" --check' \
@@ -424,14 +466,20 @@ assert_contains "$prepare_script_text" 'issue_contents=$(jq -r' 'root owns issue
 assert_contains "$prepare_script_text" 'fence-untrusted-data.sh' 'root owns fence helper invocation'
 assert_contains "$prepare_script_text" 'mv -f -- "$tmp" "$target"' 'root atomically publishes the spec fence'
 assert_contains "$prepare_script_text" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
-assert_contains "$text" 'push the branch' 'root pushes after executing the handback'
+assert_contains "$normalized_text" 'push the branch' 'root pushes after executing the handback'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
 assert_contains "$normalized_text" 'Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line' \
     'root draft PR carries the required report fields'
-assert_contains "$text" 'PR URL feeds Collect and Step 3a' \
+assert_contains "$normalized_text" 'PR URL feeds Collect and Step 3a' \
     'root feeds the resulting PR URL into collection and draft dispatch'
-assert_contains "$text" 'worker leaves scoped changes unstaged and returns a publication handback' \
-    'Finish leaves worker changes unstaged for root publication'
+assert_contains "$normalized_text" 'worker commits and pushes its own branch and returns a completion report' \
+    'Finish has the worker commit and push its own branch'
+assert_not_contains "$normalized_text" 'worker leaves scoped changes unstaged and returns a publication handback' \
+    'the unstaged-handback rule is removed from the primary flow'
+assert_contains "$normalized_text" 'Design review runs **after** the push' \
+    'root design review runs post-push, not as a worker-blocking gate'
+assert_contains "$normalized_text" 'Environment-refusal fallback only' \
+    'the validator flow is scoped to the environment-refusal fallback'
 assert_contains "$text" 'Step 3b workers receive only root-approved fix batches' \
     'Step 3b restricts workers to root-approved mechanical batches'
 assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
@@ -452,7 +500,7 @@ assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \
     'parallel dispatch rejects empty validated argv'
 assert_contains "$text" 'cd -- "$worktree"' \
     'parallel dispatch executes the validated argv in the worktree'
-assert_contains "$text" 'expected worktree-commit.sh helper' \
+assert_contains "$normalized_text" 'expected worktree-commit.sh helper' \
     'parallel dispatch validates the expected commit helper'
 assert_contains "$normalized_text" 'every explicit path inside the worktree and allowed' \
     'parallel dispatch validates handback path containment'
@@ -585,7 +633,7 @@ assert_not_contains "$text" '` --yolo`' \
 # ownership semantics and must not satisfy these root-only checks.
 root_sections=$(
     sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill"
-    sed -n '/^### Root publication after a worker handback$/,/^### Polling discipline/p' "$skill"
+    sed -n '/^### Root review and draft PR after a worker push$/,/^### Polling discipline/p' "$skill"
     sed -n '/^## Runtime and provider neutrality$/,/^## Automated review provider rules/p' "$review_skill"
     sed -n '/^## Implementation-worker gate$/,/^## Root-owned publication handback$/p' "$worker_gate"
     sed -n '/^## Root-owned publication handback$/,$p' "$worker_gate"
@@ -695,5 +743,66 @@ assert_contains "$err" 'Unable to advertise concurrency' \
     'missing runtime config explains why the cap is unavailable'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
+
+# --- issue #224: named wait bounds (WS1) --------------------------------------
+# The guidance must name a NUMBER per wait class, and every named bound must be
+# at least 600 seconds -- "an explicit bound" without a duration measured out as
+# the ~110 s harness default and two hours of empty timed-out waits.
+normalized_wait_text=$(tr '\n' ' ' <<<"$wait_discipline_text" | tr -s '[:space:]' ' ')
+assert_contains "$normalized_wait_text" 'Default numeric bounds per wait class' \
+    'wait discipline documents default numeric bounds'
+mapfile -t documented_bounds < <(grep -oE '\*\*[0-9]+ s\*\*' <<<"$wait_discipline_text" | grep -oE '[0-9]+')
+assert_eq 'yes' "$( ((${#documented_bounds[@]} >= 2)) && printf yes || printf no )" \
+    'wait discipline names at least two numeric class bounds'
+for bound in "${documented_bounds[@]}"; do
+    assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
+        "documented wait bound $bound s is at least 600 s"
+done
+assert_contains "$normalized_wait_text" 'never be re-issued at the same duration' \
+    'a timed-out wait escalates instead of repeating'
+assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
+    'parallel skill names the numeric bound at its wait sites'
+
+# --- issue #224: stall detection as a rule (WS4) ------------------------------
+assert_contains "$text" 'stall-check.sh' \
+    'collect loop names the stall-check helper'
+assert_contains "$text" 'STALL_THRESHOLD_MINUTES' \
+    'stall threshold is a named constant'
+assert_contains "$normalized_text" 're-dispatch it once with the preserved worktree evidence' \
+    'a stalled worker gets exactly one automatic re-dispatch'
+assert_contains "$normalized_text" 'park the workstream and name it in the report' \
+    'a twice-stalled workstream parks and is named'
+assert_contains "$normalized_text" 'never `pgrep`' \
+    'stall detection forbids process inspection'
+assert_contains "$normalized_text" 'newest file mtime is the liveness signal' \
+    'stall detection is defined by worktree mtime'
+
+# --- issue #224: materiality gate before the review spend (WS2b) --------------
+assert_contains "$text" 'materiality-check.sh' \
+    'draft loops call the mechanical materiality gate'
+assert_contains "$normalized_text" 'a skip records *why*, never silence' \
+    'a materiality skip is recorded, never silent'
+
+# --- issue #224: effort follows the issue (WS3) -------------------------------
+assert_contains "$triage_and_selection_text" 'workerEffort' \
+    'dispatch-plan entries may carry a per-issue effort override'
+assert_contains "$triage_and_selection_text" 'effortReason' \
+    'a per-issue effort override records its reason'
+assert_contains "$normalized_text" 'Effort follows the issue, not the run' \
+    'parallel skill states the per-issue effort rule'
+
+# --- issue #224: authorization checked once against the ledger (WS6) ----------
+assert_contains "$normalized_text" 'Authorization is checked once per run, not per command' \
+    'parallel skill checks authorization once per run'
+assert_contains "$text" 'covers --ledger' \
+    'the once-per-run check uses the ledger covers subcommand'
+assert_contains "$normalized_text" 'A mutation no recorded decision covers still stops' \
+    'an uncovered mutation still stops'
+
+# --- issue #224: references read once, never sized (WS2d) ---------------------
+assert_contains "$normalized_text" 'References are read once, batched, and never sized first' \
+    'parallel skill forbids per-file reference sizing'
+assert_contains "$text" 'wc -l' \
+    'the no-sizing rule names the observed probe explicitly'
 
 finish

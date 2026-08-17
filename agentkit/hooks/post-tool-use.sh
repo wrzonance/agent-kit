@@ -118,13 +118,42 @@ fi
 # a working command still earns a correction.
 if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' <<< "$command_line" &&
     guard_should_advise "$state_root" "$session" pinned-plugin-path; then
-    # shellcheck disable=SC2016  # literal text, see teach()
-    teach "That path has a version directory in it, so it stops resolving at the next
+    # A lesson that only names the hazard leaves the model to improvise a
+    # remedy, and the one observed improvisation hand-deleted path segments
+    # into a path that does not exist -- tripping the scope guard on top. So
+    # when the repository's own contract already resolves the skills tree,
+    # hand back the RESOLVED VALUE itself. Expanding it here is deliberate,
+    # unlike the literal-$agentkit text elsewhere in this file: the resolved
+    # directory IS the executable remedy. Trust bar matches RESOLVE_HINT's
+    # own: untracked regular file, not a symlink, owned by this user.
+    resolved_skills=''
+    contract_file="$state_root/.agent/env-contract.txt"
+    if [[ -n $state_root && -r $contract_file && -f $contract_file &&
+        ! -L $contract_file && -O $contract_file ]] &&
+        ! git -C "$state_root" ls-files --error-unmatch -- .agent/env-contract.txt \
+            > /dev/null 2>&1; then
+        resolved_skills=$(sed -n 's/^skills= path=//p' "$contract_file" 2> /dev/null | head -n 1)
+        [[ -d $resolved_skills ]] || resolved_skills=''
+    fi
+    if [[ -n $resolved_skills ]]; then
+        # shellcheck disable=SC2016  # the $agentkit references are literal text, see teach()
+        teach "That path has a version directory in it, so it stops resolving at the next
+plugin update -- and it fails as a missing file, which does not say why.
+This repository's environment contract already resolves the current tree. Use exactly:
+  agentkit=$resolved_skills
+That directory exists right now; build every helper path from \"\$agentkit\". Never
+edit version segments out of a path by hand. If it stops resolving after a plugin
+update, re-derive it:
+$RESOLVE_HINT"
+    else
+        # shellcheck disable=SC2016  # literal text, see teach()
+        teach "That path has a version directory in it, so it stops resolving at the next
 plugin update -- and it fails as a missing file, which does not say why.
 $RESOLVE_HINT
 The find picks the highest version present, which is what you want even when
 only one is installed. If it came back empty, the plugin is not installed where
 this is looking; say so rather than substituting a literal path."
+    fi
 fi
 
 # An escaped resolver. `\$` inside double quotes is a literal dollar, so the

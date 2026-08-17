@@ -143,7 +143,9 @@ conflict analysis. The plan uses this schema:
   "entries": [
     {
       "issue": 167,
-      "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"]
+      "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"],
+      "workerEffort": "xhigh",
+      "effortReason": "novel cache-ownership rewrite; three prior attempts failed"
     }
   ],
   "conflictMap": {
@@ -152,6 +154,14 @@ conflict analysis. The plan uses this schema:
   }
 }
 ```
+
+`workerEffort` is the optional per-issue effort override — **effort follows the issue, not
+the run**. Omitted, the issue dispatches at the `AGENT_WORKER_EFFORT` default; present, it
+must carry an `effortReason`, and the value is what the prompt composer receives for that
+issue. Raise effort for genuinely novel or repeatedly-failed work; never blanket-raise the
+run. The completion table's `worker=<model> <effort>` column is the evidence of what
+actually ran. Root design review and adversarial review keep their own effort settings
+regardless of any entry here.
 
 Write-set intersection checks always add shared root files by default, even
 when an issue body does not mention them: build configuration, lockfiles, and

@@ -17,36 +17,48 @@ carries the walkthrough behind them.
 Ordering evidence is exactly two mechanical sources inside the selected set: file-conflict
 pairs from Step 3's own analysis, and native GitHub blocked-by edges. Issue-body prose is
 never an ordering input — an issue that *says* it depends on another does not chain unless
-that dependency is also mechanically evident. Build the dependency graph from those edges
-and decompose it into linear chains; print the resulting chain plan next to the conflict
-table (attended runs get approval on it; `--fast-mode` proceeds and discloses).
+that dependency is also mechanically evident. Classify each file-conflict pair before it
+becomes an edge: only an **interface dependency** — one issue consumes code or contracts the
+other produces, or both mutate the same executable logic — serializes. Overlap confined to
+test files or prose is not a dependency: run those issues in parallel and merge the later
+branch down once at the end, resolving the textual collision there. Build the dependency
+graph from the interface edges and blocked-by edges and decompose it into linear chains;
+print the resulting chain plan next to the conflict table (attended runs get approval on it;
+`--fast-mode` proceeds and discloses).
 
 A cycle cannot be linearized into a chain. When the graph contains one, report the cyclic
 members by issue number and fall back to the ordinary drop/ask handling for exactly those
 issues — the rest of the chain plan is unaffected.
 
-**A join is not linearizable either, and is handled the same way.** If an issue has more
-than one predecessor in the graph (C blocked by both A and B), there is no single
-`chain_base_sha` for it: dispatching C from either predecessor alone silently builds it on
-a base missing the other's published commits. Report the joining issue and its predecessors
-by number and drop exactly that issue from the chain plan, leaving its predecessors to run
-as ordinary chain members. Do not pick one predecessor, and do not invent a merge base —
-combining two published commits is a real integration decision, not a dispatch detail. Chains respect a hard depth cap of 4;
-an issue that would extend a chain past that depth is dropped from the chain with a named
-report rather than silently truncated or silently included.
+**A join is scheduled, not dropped.** If an issue has more than one predecessor in the graph
+(C blocked by both A and B), there is no single predecessor SHA to start from — but that is
+a sequencing fact, not a reason to lose the issue from the run. Defer C until every
+predecessor's commit is pushed, then build its start point by merging those pushed commits
+down: create C's branch from the first predecessor's SHA and `git merge --no-commit --no-ff`
+each remaining predecessor's SHA into it, inspecting the result. A clean merge-down is C's
+`chain_base_sha`; a conflict parks exactly C by name for human resolution — never pick one
+predecessor and silently drop the other's commits, and never invent a merge base by hand.
+Report the join, its predecessors, and the merged base in the chain plan so a five-issue set
+dispatches five issues. Chains respect a hard depth cap of 4; an issue that would extend a
+chain past that depth is dropped from the chain with a named report rather than silently
+truncated or silently included.
 
-Chains gate on **root-published commits**, never on PR state (open, draft, or merged) — a
-successor starts from the exact commit the root validated and pushed for its predecessor,
-not from "the PR looks mergeable."
+Chains gate on the predecessor's **pushed commit**, never on PR state (open, draft, or
+merged) and never on the root's publication ceremony — a successor starts from the exact
+commit the predecessor's worker committed and pushed (the completion report carries the full
+SHA), not from "the PR looks mergeable," and it does not wait for the PR to exist.
 
 ## Deferred dispatch
 
-A chain successor's worktree is created and its lead dispatched only after the root has
-validated, committed, and pushed the predecessor's handback — never earlier, and never
-merely once the predecessor's lead *reports* done. `chain_base_sha` is recorded as the full
-40-character lowercase SHA from the commit line `worktree-commit.sh` printed for that
-predecessor, and it is what the successor's
-`git worktree add` starts from instead of `origin/$base`.
+A chain successor's worktree is created and its lead dispatched as soon as the
+predecessor's worker has committed **and pushed** its branch — the commit is the gate, not
+the publication. The root's post-push review, draft-PR creation, board move, and ledger
+writes are off the successor's critical path; if that review later lands a fix commit, the
+successor absorbs it as an ordinary merge-down. A lead that merely *reports* done without a
+pushed SHA has not cleared the gate. `chain_base_sha` is recorded as the full 40-character
+lowercase SHA from the commit line `worktree-commit.sh` printed for that predecessor (the
+completion report carries it), and it is what the successor's `git worktree add` starts from
+instead of `origin/$base`.
 
 A deferred issue holds no concurrency slot while it waits — it is not "dispatched but idle,"
 it simply has not started. If the predecessor's lead fails or returns BLOCKED, every

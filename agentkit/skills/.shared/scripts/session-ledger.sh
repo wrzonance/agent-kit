@@ -23,9 +23,13 @@ Usage:
   $PROGRAM append --ledger FILE --run-id ID --skills-path PATH --procedure-set NAME \
     --decision TEXT --scope TEXT --quote TEXT [--timestamp UTC]
   $PROGRAM read --ledger FILE --run-id ID
+  $PROGRAM covers --ledger FILE --run-id ID --decision TEXT [--scope TEXT]
 
 append writes one validated, owner-private NDJSON decision record. read validates
-the complete ledger and emits only records for the requested run ID.
+the complete ledger and emits only records for the requested run ID. covers exits 0
+when a validated record for the run carries the exact decision (and scope, when
+given) -- the once-per-run authorization check -- and exits 1 when nothing does,
+so a caller stops instead of silently proceeding.
 EOF
 }
 
@@ -335,10 +339,30 @@ read_records() {
     release_lock
 }
 
+covers_records() {
+    local matches
+    validate_inputs
+    validate_text '--decision' "$DECISION"
+    [[ -z $SCOPE ]] || validate_text '--scope' "$SCOPE"
+    # Reuse the read path's full validation and locking; its output is already
+    # limited to this run's records. An unreadable or invalid ledger fails
+    # closed as not-covered -- an authorization check never guesses.
+    matches=$(read_records | jq -c --arg decision "$DECISION" --arg scope "$SCOPE" '
+        select(.decision == $decision and ($scope == "" or .scope == $scope))') ||
+        die_evidence "ledger is unreadable; treating the mutation as not covered: $LEDGER"
+    if [[ -z $matches ]]; then
+        printf '%s: not covered: no recorded decision %s for run %s%s\n' \
+            "$PROGRAM" "$DECISION" "$RUN_ID" "${SCOPE:+ (scope: $SCOPE)}" >&2
+        return 1
+    fi
+    printf 'covered= run-id=%s decision=%s records=%s\n' \
+        "$RUN_ID" "$DECISION" "$(wc -l <<<"$matches")"
+}
+
 main() {
     require_commands
     case ${1:-} in
-        append|read)
+        append|read|covers)
             COMMAND=$1
             parse_options "$@"
             ;;
@@ -347,7 +371,7 @@ main() {
             exit 0
             ;;
         '')
-            die_usage 'a subcommand is required: append or read'
+            die_usage 'a subcommand is required: append, read, or covers'
             ;;
         *)
             die_usage "unknown subcommand: ${1:-}"
@@ -357,6 +381,7 @@ main() {
     case $COMMAND in
         append) append_record ;;
         read) read_records ;;
+        covers) covers_records ;;
     esac
 }
 
