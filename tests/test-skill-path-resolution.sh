@@ -31,6 +31,14 @@ extract_resolver() {
     ' "$skills/onboard-repo/SKILL.md"
 }
 
+extract_onboard_step_zero() {
+    awk '
+        /^agentkit=/ { capture = 1 }
+        capture && /^```$/ { exit }
+        capture { print }
+    ' "$skills/onboard-repo/SKILL.md"
+}
+
 resolver=$(extract_resolver)
 printf '%s\n' "$resolver" > "$tmp/resolver.sh"
 assert_contains "$resolver" 'plugins/cache' 'the shipped resolver looks in the plugin location'
@@ -137,6 +145,41 @@ resolved=$(cd "$contract_repo" && \
 assert_eq '0' "$rc" 'contract-absent resolver exits successfully'
 assert_eq "$contract_plugin" "$resolved" \
     'contract-absent resolver selects the highest discovered plugin path'
+
+# A readable, owned, untracked contract can still be incomplete. In that case
+# onboarding must use its sole contract-absent plugin-cache bootstrap rather
+# than treating the empty skills path as resolved.
+onboard_step_zero=$(extract_onboard_step_zero)
+printf '%s\n' "$onboard_step_zero" > "$tmp/onboard-step-zero.sh"
+malformed_repo="$tmp/malformed-contract-repo"
+malformed_home="$tmp/malformed-contract-home"
+malformed_plugin=$(plugin_layout "$malformed_home" 0.3.0)
+mkdir -p "$malformed_repo/.agent" "$malformed_plugin/.shared/scripts/lib"
+git -C "$malformed_repo" init -q
+printf '%s\n' 'repo=example-org/example-repo' > "$malformed_repo/.agent/env-contract.txt"
+cp "$skills/.shared/scripts/contract-read.sh" "$malformed_plugin/.shared/scripts/contract-read.sh"
+cp "$skills/.shared/scripts/lib/contract-cache.sh" "$malformed_plugin/.shared/scripts/lib/contract-cache.sh"
+# shellcheck disable=SC2016 # writes the fixture's literal helper program
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -eu' \
+    'worktree=' \
+    'while (($#)); do case $1 in --worktree) worktree=$2; shift 2 ;; *) shift ;; esac; done' \
+    '[ -n "$worktree" ]' \
+    'mkdir -p "$worktree/.agent/cache"' \
+    "printf '%s\\n' 'skills= path=$malformed_plugin' > \"\$worktree/.agent/env-contract.txt\"" \
+    > "$malformed_plugin/.shared/scripts/agent-preflight.sh"
+chmod +x "$malformed_plugin/.shared/scripts/agent-preflight.sh"
+resolved=''
+rc=0
+resolved=$(cd "$malformed_repo" && \
+    CODEX_HOME="$malformed_home" CLAUDE_CONFIG_DIR="$tmp/malformed-contract-claude" \
+    bash -c "$(cat "$tmp/onboard-step-zero.sh"); printf '%s' \"\$agentkit\"") || rc=$?
+assert_eq 0 "$rc" 'an incomplete contract falls back to plugin discovery'
+assert_eq "$malformed_plugin" "$resolved" \
+    'an incomplete contract selects the discovered plugin path'
+assert_eq yes "$(test -f "$malformed_repo/.agent/cache/contract-session.env" && printf yes || printf no)" \
+    'contract-absent bootstrap warms the session context after preflight'
 
 # --- zsh safety ------------------------------------------------------------
 # Codex runs shell commands through $SHELL -lc, which is zsh on the target
