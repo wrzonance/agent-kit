@@ -177,19 +177,31 @@ shell_quote() {
 }
 
 emit_commands() {
-    local name helper_path
+    local name helper_path flags glob
     helper_path=$(shell_quote "$shared_path/agent-run.sh")
+    flags=$command_flags
+    if ((yolo)); then
+        for glob in "${write_set_globs[@]}"; do
+            flags+=" --yolo-write-set $(shell_quote "$glob")"
+        done
+    fi
     for name in "${command_names[@]}"; do
-        printf '%s --dir %s --cmd %s%s\n' "$helper_path" "\"\$worktree\"" "$name" "$command_flags"
+        printf '%s --dir %s --cmd %s%s\n' "$helper_path" "\"\$worktree\"" "$name" "$flags"
     done
 }
 
 emit_focus() {
     if ((focus_declared)); then
-        local helper_path
+        local helper_path flags glob
         helper_path=$(shell_quote "$shared_path/agent-run.sh")
+        flags=$command_flags
+        if ((yolo)); then
+            for glob in "${write_set_globs[@]}"; do
+                flags+=" --yolo-write-set $(shell_quote "$glob")"
+            done
+        fi
         printf 'During red/green iteration, use the repository-declared focused selector:\n'
-        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''%s\n' "$helper_path" "\"\$worktree\"" "$command_flags"
+        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''%s\n' "$helper_path" "\"\$worktree\"" "$flags"
         printf 'It requires AGENT_CMD_TEST_FOCUS and captures evidence only for the named suites; it never claims that skipped suites passed. Run the full declared test command once against the final tree state before handback.\n'
     else
         printf 'No focused selector is declared; use the full declared command for scoped checks and once against the final tree state before handback.\n'

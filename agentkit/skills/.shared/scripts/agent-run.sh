@@ -31,7 +31,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--approve|--yolo] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--approve|--yolo] [--yolo-write-set GLOB[,GLOB...]] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -58,6 +58,9 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  origin-reachable ancestor commit instead of the remote trunk.
                  For chained worktrees whose base is a root-published commit
                  from an earlier issue in the same run.
+  --yolo-write-set GLOB[,GLOB...]  With --yolo: admit changed command inputs
+                 matching these repository-relative dispatch-owned globs.
+                 Inputs outside the set remain subject to the trust gate.
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
@@ -132,6 +135,8 @@ focus_requested=0
 approve_cmd=0
 yolo_cmd=0
 yolo_base_opt=''
+declare -a yolo_write_set_args=()
+declare -a yolo_write_set_globs=()
 force_cmd=0
 literal_root_fallback=no
 literal_token=''
@@ -156,6 +161,11 @@ while (($#)); do
         --yolo-base)
             (($# >= 2)) || die '--yolo-base requires a commit SHA.'
             yolo_base_opt=$2
+            shift 2
+            ;;
+        --yolo-write-set)
+            (($# >= 2)) || die '--yolo-write-set requires one or more globs.'
+            yolo_write_set_args+=("$2")
             shift 2
             ;;
         --force)
@@ -227,6 +237,25 @@ if [[ -n $yolo_base_opt ]]; then
     ((yolo_cmd)) || die '--yolo-base requires --yolo.'
     [[ $yolo_base_opt =~ ^[0-9a-f]{40}$ ]] ||
         die '--yolo-base requires a full 40-character lowercase commit SHA, not a ref or abbreviation.'
+fi
+if ((${#yolo_write_set_args[@]} == 1)); then
+    IFS=, read -r -a yolo_write_set_globs <<< "${yolo_write_set_args[0]}"
+elif ((${#yolo_write_set_args[@]} > 1)); then
+    yolo_write_set_globs=("${yolo_write_set_args[@]}")
+fi
+for write_set_glob in "${yolo_write_set_globs[@]}"; do
+    [[ -n $write_set_glob && $write_set_glob != /* &&
+        $write_set_glob != *[[:cntrl:]]* && $write_set_glob != *"\\"* ]] ||
+        die "--yolo-write-set glob is not a repository-relative pattern: $write_set_glob"
+    case "/$write_set_glob/" in
+        *'/../'* | *'//'* | *'/./'*)
+            die "--yolo-write-set glob contains an unsafe path: $write_set_glob"
+            ;;
+    esac
+done
+if ((${#yolo_write_set_globs[@]})); then
+    ((yolo_cmd)) || die '--yolo-write-set requires --yolo.'
+    [[ -n $cmd_name ]] || die '--yolo-write-set requires --cmd NAME.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -1153,7 +1182,10 @@ yolo_repo_inputs() {
     if [[ -n ${runner_path:-} && $runner_path == "$git_top"/* ]]; then
         printf '%s\n' "${runner_path#"$git_top/"}"
     fi
-    command_input_paths
+    # Some argv tokens are intentionally not path-shaped; command_input_paths
+    # returns their final predicate status, which must not short-circuit the
+    # manifest inputs below under set -e.
+    command_input_paths || true
     while IFS= read -r rel; do
         printf '%s\n' "$rel"
     done < <(manifest_paths "$work_dir")
@@ -1197,39 +1229,74 @@ yolo_base_declarations() {
 # they describe a command input that cannot be proven repository-contained.
 # Emit every changed input so the refusal can be handed off as an adjudication
 # request instead of forcing the operator to rediscover the comparison set.
+yolo_changed_inputs=()
+yolo_admitted_inputs=()
+yolo_write_set_matches() {
+    local rel=$1 glob prefix
+    for glob in "${yolo_write_set_globs[@]}"; do
+        # shellcheck disable=SC2053 # the declared glob is intentionally a pattern.
+        if [[ $rel == $glob ]]; then
+            return 0
+        fi
+        # A trailing /** denotes the directory and all of its descendants.
+        if [[ $glob == *'/**' ]]; then
+            prefix=${glob%/**}
+            [[ $rel == "$prefix" || $rel == "$prefix"/* ]] && return 0
+        fi
+    done
+    return 1
+}
 yolo_changed_input() {
     local base=$1 rel abs untracked found=1
+    yolo_changed_inputs=()
+    yolo_admitted_inputs=()
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
         if is_command_input_sentinel "$rel"; then
-            printf '%s\n' "$rel"
+            yolo_changed_inputs+=("$rel")
             found=0
             continue
         fi
         abs=$git_top/$rel
         if [[ -e $abs || -L $abs ]]; then
             if ! git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
-                printf '%s\n' "$rel"
-                found=0
+                if yolo_write_set_matches "$rel"; then
+                    yolo_admitted_inputs+=("$rel")
+                else
+                    yolo_changed_inputs+=("$rel")
+                    found=0
+                fi
                 continue
             fi
             if ! git -C "$git_top" diff --quiet "$base" -- "$rel" 2> /dev/null; then
-                printf '%s\n' "$rel"
-                found=0
+                if yolo_write_set_matches "$rel"; then
+                    yolo_admitted_inputs+=("$rel")
+                else
+                    yolo_changed_inputs+=("$rel")
+                    found=0
+                fi
                 continue
             fi
             if [[ -d $abs ]]; then
                 untracked=$(git -C "$git_top" status --porcelain=v1 \
                     --untracked-files=all --ignored=matching -- "$rel" 2> /dev/null || true)
                 if [[ -n $untracked ]]; then
-                    printf '%s\n' "$rel"
-                    found=0
+                    if yolo_write_set_matches "$rel"; then
+                        yolo_admitted_inputs+=("$rel")
+                    else
+                        yolo_changed_inputs+=("$rel")
+                        found=0
+                    fi
                     continue
                 fi
             fi
         elif git -C "$git_top" cat-file -e "$base:$rel" 2> /dev/null; then
-            printf '%s\n' "$rel"
-            found=0
+            if yolo_write_set_matches "$rel"; then
+                yolo_admitted_inputs+=("$rel")
+            else
+                yolo_changed_inputs+=("$rel")
+                found=0
+            fi
         fi
     done < <(yolo_repo_inputs | sort -u)
     return "$found"
@@ -1357,8 +1424,16 @@ yolo_gate() {
             exit 1
         fi
     done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
-    if changed=$(yolo_changed_input "$base"); then
-        first=${changed%%$'\n'*}
+    rc=0
+    yolo_changed_input "$base" || rc=$?
+    for admitted_input in "${yolo_admitted_inputs[@]}"; do
+        printf 'agent-run: trust gate write-set admission: %s (inside declared write set)\n' \
+            "$admitted_input" >&2
+        add_note "trust gate write-set admission: $admitted_input (inside declared write set)"
+    done
+    if ((rc == 0 && ${#yolo_changed_inputs[@]})); then
+        first=${yolo_changed_inputs[0]}
+        changed=$(printf '%s\n' "${yolo_changed_inputs[@]}")
         printf 'agent-run: refusing --yolo for %s: %s differs from %s\n' \
             "$cmd_name" "$first" "$base_desc" >&2
         yolo_refusal_remediation "$base" "$changed"
@@ -1367,9 +1442,15 @@ yolo_gate() {
         printf '  change and approve it from your own terminal.\n' >&2
         exit 1
     fi
-    printf 'agent-run: trust gate skipped (--yolo): %s inputs match %s; no approval record\n' \
-        "$cmd_name" "$base_desc" >&2
-    add_note "trust gate skipped (--yolo): inputs match $base_desc; no approval record"
+    if ((${#yolo_admitted_inputs[@]})); then
+        printf 'agent-run: trust gate skipped (--yolo): %s inputs match %s except declared-write-set admissions; no approval record\n' \
+            "$cmd_name" "$base_desc" >&2
+        add_note "trust gate skipped (--yolo): inputs match $base_desc except declared-write-set admissions; no approval record"
+    else
+        printf 'agent-run: trust gate skipped (--yolo): %s inputs match %s; no approval record\n' \
+            "$cmd_name" "$base_desc" >&2
+        add_note "trust gate skipped (--yolo): inputs match $base_desc; no approval record"
+    fi
 }
 
 # Reuse the exact trunk comparison for the interactive refusal teaching line,
@@ -1788,7 +1869,7 @@ printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 # command's own output, not this bookkeeping.
 LOG_HEADER_LINES=2
 if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
-    LOG_HEADER_LINES=3
+    LOG_HEADER_LINES=$((3 + ${#yolo_admitted_inputs[@]}))
 fi
 readonly LOG_HEADER_LINES
 {
@@ -1800,6 +1881,10 @@ readonly LOG_HEADER_LINES
     # read as an approved one.
     if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
         printf '=== trust gate skipped (--yolo): no approval record\n'
+        for admitted_input in "${yolo_admitted_inputs[@]}"; do
+            printf '=== trust gate write-set admission: %s (inside declared write set)\n' \
+                "$admitted_input"
+        done
     fi
 } > "$log_file"
 
