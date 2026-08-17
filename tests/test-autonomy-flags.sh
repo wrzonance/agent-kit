@@ -63,6 +63,27 @@ assert_contains "$parallel" 'Do not infer one from the other' \
 assert_contains "$parallel" '`--auto-review` is independent' \
     'the review flag stands alone'
 
+# --- the grant names its holders ---------------------------------------------
+# A grant that never says WHO may exercise it gets filled in conservatively by
+# harness approval layers: observed live, an auto-approval reviewer denied the
+# root's peer-CLI launch as an unauthorized external send despite the flag.
+assert_contains "$parallel" 'the root orchestrator and every dispatched review agent alike' \
+    'the --auto-review row names both grant holders'
+assert_contains "$parallel" 'The grant names its holders' \
+    'the body states the both-holders rule'
+assert_contains "$parallel" 'legible at the launch site' \
+    'the grant provenance is carried inline where the reviewer launches'
+assert_contains "$parallel" 'never routed around' \
+    'a harness denial escalates to the user instead of a workaround'
+assert_contains "$review" 'held by the root and any dispatched review agent alike' \
+    'review-remote-pr names both grant holders in its flags row'
+assert_contains "$review_adversarial" 'Both the root and dispatched agents hold the grant' \
+    'the consent reference states the both-holders rule'
+assert_contains "$review_adversarial" 'Make the grant legible to harness approval layers' \
+    'the consent reference requires launch-site provenance'
+assert_contains "$review_adversarial" 'answerable from the command itself' \
+    'launch-site provenance answers the authorization question locally'
+
 # --- --fast-mode removes the gate, not the analysis -------------------------
 # Two workers editing one file in separate worktrees is the failure Step 3
 # prevents. Unattended is when it costs the most, so this is exactly the wrong
