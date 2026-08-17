@@ -286,7 +286,7 @@ validate_args() {
 		((NO_PAYLOAD == 1)) ||
 			die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
 		[[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
-			-z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+			-z $BASE_REF && -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
 			die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
 	else
 		((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"

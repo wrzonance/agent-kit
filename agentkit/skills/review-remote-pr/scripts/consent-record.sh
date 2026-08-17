@@ -112,6 +112,8 @@ payload_command() {
     validate_payload_inputs
     local digest canonical_digest supplied_digest
     if [[ -n $BASE_REF ]]; then
+        git fetch --quiet origin "$BASE_REF" ||
+            die "could not refresh origin/$BASE_REF before rendering canonical diff"
         canonical_digest=$(canonical_diff "$BASE_REF" | sha256sum | awk '{print $1}') ||
             die "could not render canonical diff from origin/$BASE_REF"
         [[ $canonical_digest =~ ^[[:xdigit:]]{64}$ ]] ||
