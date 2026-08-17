@@ -80,6 +80,8 @@ expected_test_chmod="chmod +x -- \"\$worktree/tests/<name>.sh\""
 expected_test_invocation="before invoking it as \"\$worktree/tests/<name>.sh\""
 expected_test_handoff="handing it off for commit"
 expected_test_mode_check="verify the mode is 755/100755"
+expected_image_rule='Before generating any patch, re-read the target file if any intervening action could have modified it.'
+expected_mutator='verification stamps under .agent/cache/'
 expected_agent_run="'$root/agentkit/skills/.shared/scripts/agent-run.sh'"
 shared_reference="\"\$shared/"
 assert_contains "$prompt" "$expected_test_chmod" \
@@ -90,6 +92,10 @@ assert_contains "$prompt" "$expected_test_handoff" \
     'issue lead sets the executable bit before handing new shell tests off for commit'
 assert_contains "$prompt" "$expected_test_mode_check" \
     'issue lead verifies the executable mode before the first run'
+assert_contains "$prompt" "$expected_image_rule" \
+    'issue lead re-reads a target after any intervening writer'
+assert_contains "$prompt" "$expected_mutator" \
+    'issue lead receives the concrete agent-run mutator hazard'
 assert_contains "$prompt" "SPEC-BYTES \$(must-stay-literal)" 'spec bytes stay literal'
 assert_contains "$prompt" 'PRIOR-BYTES' 'prior-art bytes are injected'
 assert_contains "$prompt" 'worker_model='"'"'gpt-5.6-luna' 'worker model is filled'
@@ -135,6 +141,10 @@ assert_contains "$fix_prompt" "$expected_test_handoff" \
     'fix-batch sets the executable bit before handing new shell tests off for commit'
 assert_contains "$fix_prompt" "$expected_test_mode_check" \
     'fix-batch verifies the executable mode before the first run'
+assert_contains "$fix_prompt" "$expected_image_rule" \
+    'fix-batch re-reads a target after any intervening writer'
+assert_contains "$fix_prompt" "$expected_mutator" \
+    'fix-batch receives the concrete agent-run mutator hazard'
 assert_contains "$fix_prompt" '--cmd verify' 'fix-batch receives declared commands'
 assert_contains "$fix_prompt" "$expected_agent_run" \
     'fix-batch command paths are fully resolved absolute paths'

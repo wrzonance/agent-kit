@@ -115,6 +115,30 @@ NAMED LOG — do not re-run with more verbosity and do not start repairing the e
 Pass `--` whenever the command's first token starts with `-`; always passing it is simplest.
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 
+## File-image freshness (MANDATORY before generating a patch)
+
+Before generating any patch, re-read the target file if any intervening action could have modified it.
+Patch from that just-read image, never from memory of an earlier read. A context mismatch means the
+file image is stale: re-read the target and regenerate the patch before retrying.
+
+Treat these kit-side writers as image-invalidating whenever their target could overlap the file you
+are editing:
+
+- `agent-run.sh` writes .agent/logs/ and verification stamps under .agent/cache/; its declared
+  formatter, test, build, or other command may also rewrite tracked files.
+- `session-start.sh` can replace `.agent/env-contract.txt` and prune `.agent/cache/brief/`, while
+  `bootstrap-repo.sh` replaces `.agent/config.env` and `.agent/board.json`.
+- `prepare-issue-artifacts.sh`, `triage-issues.sh`, and `move-github-project-item.sh` atomically
+  replace persisted issue, fence, and board-cache artifacts.
+- `session-ledger.sh`, `apply-ledger.sh`, `finding-ledger.sh`, `consent-record.sh`, and review
+  receipt helpers append or replace ledger, consent, and evidence files.
+- `compose-worker-prompt.sh` and `compose-pr-body.sh` replace their requested output files.
+
+After your own edit, a formatter or hook, a root correction round, or any helper/test invocation
+that might write, discard the previous target image and read it again immediately before composing
+the next patch. Do not assume a helper is read-only because it succeeded or because its usual
+artifact path is different; an explicit output or ledger path can overlap the target.
+
 ## Progress and publication handback
 
 Keep implementation progress unstaged. At each six-step transition you may save a read-only
@@ -401,6 +425,30 @@ running. Serialize full-suite verification across worktrees, then re-run with
 `AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
 `environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
 command after the conflicting dependency has drained or been isolated.
+
+## File-image freshness (MANDATORY before generating a patch)
+
+Before generating any patch, re-read the target file if any intervening action could have modified it.
+Patch from that just-read image, never from memory of an earlier read. A context mismatch means the
+file image is stale: re-read the target and regenerate the patch before retrying.
+
+Treat these kit-side writers as image-invalidating whenever their target could overlap the file you
+are editing:
+
+- `agent-run.sh` writes .agent/logs/ and verification stamps under .agent/cache/; its declared
+  formatter, test, build, or other command may also rewrite tracked files.
+- `session-start.sh` can replace `.agent/env-contract.txt` and prune `.agent/cache/brief/`, while
+  `bootstrap-repo.sh` replaces `.agent/config.env` and `.agent/board.json`.
+- `prepare-issue-artifacts.sh`, `triage-issues.sh`, and `move-github-project-item.sh` atomically
+  replace persisted issue, fence, and board-cache artifacts.
+- `session-ledger.sh`, `apply-ledger.sh`, `finding-ledger.sh`, `consent-record.sh`, and review
+  receipt helpers append or replace ledger, consent, and evidence files.
+- `compose-worker-prompt.sh` and `compose-pr-body.sh` replace their requested output files.
+
+After your own edit, a formatter or hook, a root correction round, or any helper/test invocation
+that might write, discard the previous target image and read it again immediately before composing
+the next patch. Do not assume a helper is read-only because it succeeded or because its usual
+artifact path is different; an explicit output or ledger path can overlap the target.
 
 Do not perform publication or metadata operations from this worker prompt.
 
