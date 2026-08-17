@@ -73,12 +73,18 @@ assert_hook_output "$out" session-start 'the onboarding notice is schema-valid'
 ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
 assert_contains "$ctx" 'not onboarded' 'an un-onboarded repo is told so'
 assert_contains "$ctx" 'bootstrap-repo.sh' 'and which script to run'
-assert_contains "$ctx" '.agent/config.env' 'and which files must exist'
-assert_contains "$ctx" '.agent/board.json' 'including the board cache'
-assert_contains "$ctx" 'README' 'and where to read more'
+assert_contains "$ctx" 'ACTION REQUIRED' 'the notice remains an action for the agent'
+assert_contains "$ctx" 'board, triage, and commit guards have no facts to act on and stay inert' \
+    'the notice explains why onboarding is required'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_contains "$ctx" 'agentkit/.shared/scripts/bootstrap-repo.sh' \
     'and it teaches the resolver-relative skills path'
+assert_not_contains "$ctx" 'It writes two files the repository is expected to commit' \
+    'the notice does not restate bootstrap output'
+assert_not_contains "$ctx" '.agent/board.json' \
+    'the notice does not restate generated file contents'
+assert_not_contains "$ctx" 'Consult the agentkit README' \
+    'the notice does not restate the README pointer'
 
 # --- what "do not re-probe" may not cover ----------------------------------
 # The contract is announced as established fact, and for most of it that is

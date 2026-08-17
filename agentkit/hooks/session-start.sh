@@ -43,27 +43,13 @@ not onboarded, and offer to onboard it now. Do not silently continue -- the
 board, triage, and commit guards have no facts to act on and stay inert, which
 is indistinguishable from the tooling being broken.
 
-If the user agrees, use the onboard-repo skill: it runs the bootstrap script and
-then fills in what the script deliberately leaves blank -- this repository verify
-commands, its label vocabulary -- which is judgement work a script cannot do.
-Onboarding is a one-time cost that every later session reads instead of
-rediscovering.
-
-The script alone, if the user would rather do it by hand (safe to inspect first
-with --dry-run; it writes only .agent/ and .gitignore):
+If the user agrees, use the onboard-repo skill. The script alone, if the user
+would rather do it by hand (safe to inspect first with --dry-run):
 
 ${resolve_hint}
   ${bootstrap_command} --dry-run   # inspect
   ${bootstrap_command}             # then write
-
-It writes two files the repository is expected to commit:
-  .agent/config.env   repo slug, trunk branch, board number, Status vocabulary
-  .agent/board.json   board node ids, so a status move costs one call not seven
-and the .gitignore rules that keep everything else under .agent/ out of history.
-
-Then declare this repository verify commands in .agent/config.env as
-AGENT_CMD_<NAME>=<command>. Skills invoke them by name, so none of them assume
-a toolchain. Consult the agentkit README for the full contract."
+"
 
 # Shown when the session did not start inside a repository at all. Work can
 # still be directed at one from here, and the guards do follow a command that

@@ -172,10 +172,7 @@ grep -n '^# AGENT_' .agent/config.env
 "$shared/detect-toolchains.sh" --format gaps
 ```
 
-**Run the third command even when the file already looks complete.** The first two read `.agent/config.env`
-— what a PREVIOUS onboarding knew; only the detector looks at the repository itself. If `--format gaps`
-reports nothing new, say so explicitly in Step 9: its own output distinguishes "nothing new" from
-"complete", so report that distinction rather than treating a quiet run as proof.
+Read the detector's `--format gaps` output; it distinguishes "nothing new" from "complete".
 
 Anything still commented is a blank the script would not guess:
 
@@ -211,10 +208,7 @@ here is proven until Step 6 runs it.
 
 **Do not test a candidate by running it yourself first.** Declare it, then run it once through
 `agent-run.sh` in Step 6; if it fails, remove or fix the declaration — running it twice (once bare to
-"check", once through the declaration) spends the whole suite's runtime proving the same thing twice. On a
-monorepo it emits one block per component, each with its own `AGENT_CMD_<COMPONENT>_<TASK>` and, unless the
-component is the repo root, a companion `AGENT_RUNDIR_<COMPONENT>_<TASK>` — the pairing that keeps a
-component command from running out of the wrong directory.
+"check", once through the declaration) spends the whole suite's runtime proving the same thing twice.
 
 **Declare `SETUP` if a fresh checkout needs one** — `AGENT_CMD_SETUP=<the locked, offline-capable install
 command>` — since a worktree starts with none of the repository's dependencies installed, so without it the
@@ -254,9 +248,6 @@ record.
 (`AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest run` + `AGENT_RUNDIR_DASHBOARD_TEST=dashboard`) —
 forcing it to run from the root instead risks globbing into `node_modules` and running a dependency's own
 tests.
-
-Validation resolves path-shaped `argv[0]` from the rundir. If it exists only at the root, fix
-`AGENT_CMD_*` before approval; do not add a literal twin (it can still fail with rc=127).
 
 Commented proposals are stale observations, not config, so nothing migrates; regenerate them with
 `bootstrap-repo.sh --refresh`.
