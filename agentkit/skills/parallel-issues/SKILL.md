@@ -20,6 +20,12 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
+**References are read once, batched, and never sized first.** When a step names a reference
+file, read it in full at that step — one batched read covering several files is ideal — and do
+not re-read it later in the run. Never probe a reference's size before reading it (`wc -l`,
+`stat`, `head`): nothing in this skill consumes a line count, and per-file sizing spends one
+root turn per file before any real work starts.
+
 ## Flags
 
 Five flags decide how much this skill stops to ask. They are read from the invocation
@@ -31,7 +37,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. |
-| `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's root-published commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
+| `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
 
@@ -100,6 +106,15 @@ values. Append every human grant, steer, or board adjudication immediately on re
 `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
+
+**Authorization is checked once per run, not per command.** Record each grant with a stable
+decision token (e.g. `authorize:workflow-mutations`). Before a bounded workflow mutation of a
+granted class — worktree branch pushes, draft PR creation, board moves — the check is one
+ledger query, `"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
+passing the same scope the grant was recorded with — a decision token alone must never
+widen a narrower grant. Exit 0 means proceed with no fresh approval round trip:
+re-litigating a recorded grant per command is exactly the overhead this rule removes. A
+mutation no recorded decision covers still stops — scope stays; permission ceremony goes.
 
 ### Diff-size facts
 
@@ -436,14 +451,21 @@ the approval gate, not the reasoning that gate was there to check. Two workers e
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
 
-**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Build the
-dependency graph from file-conflict pairs and native blocked-by edges inside the selected set,
-decompose it into linear chains, and print the chain plan next to the conflict table
-(attended: get approval; `--fast-mode`: proceed). A cycle cannot be chained — report the cyclic
-members and fall back to drop/ask for exactly those. Chains respect a chain depth cap: 4; deeper
-tails are dropped with a named report. Chains gate on root-published commits, never on PR state.
-See [references/chains.md](references/chains.md) for the walkthrough behind these rules —
-building the graph, deferred dispatch, and the merge-order retarget.
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Classify each
+overlap first: only an **interface dependency** — one issue consumes code or contracts the
+other produces, or both mutate the same executable logic — becomes a chain edge; overlap
+confined to test files or prose does not serialize — run those in parallel and merge down
+once at the end. Build the dependency graph from the interface-dependency pairs and native
+blocked-by edges inside the selected set, decompose it into linear chains, and print the
+chain plan next to the conflict table (attended: get approval; `--fast-mode`: proceed). A
+cycle cannot be chained — report the cyclic members and fall back to drop/ask for exactly
+those. A multi-predecessor join is **scheduled, not dropped**: defer it until every
+predecessor's commit is pushed, then merge those commits down into its start point (a
+conflict parks the join by name). Chains respect a chain depth cap: 4; deeper tails are
+dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
+state or publication. See [references/chains.md](references/chains.md) for the walkthrough
+behind these rules — building the graph, deferred dispatch, the join merge-down, and the
+merge-order retarget.
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -495,9 +517,9 @@ fi
 issue_number=123 # Replace with the approved issue number.
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-# For a chained issue, chain_base_sha is the root-published commit of its
-# predecessor (worktree-commit.sh printed it); empty means an independent
-# issue starting from trunk.
+# For a chained issue, chain_base_sha is the predecessor's pushed commit --
+# the worker's completion report carries it (worktree-commit.sh printed it);
+# empty means an independent issue starting from trunk.
 chain_base_sha="${chain_base_sha:-}"
 # The helper expands this to the historical start-point contract:
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
@@ -522,7 +544,7 @@ worktrees provide isolation.
 
 ### Implementation-model preflight (MANDATORY — before worktrees or board mutations)
 
-Role separation: the root/orchestrator must not implement when a real worker can be dispatched; workers get fresh fenced context, sole-writer isolation, and independent root validation. `worker=self` is only the documented spawn-unavailable degraded path. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort. Read
+Role separation: the root/orchestrator must not implement when a real worker can be dispatched; workers get fresh fenced context, sole-writer isolation, and independent root validation. `worker=self` is only the documented spawn-unavailable degraded path. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort. **Effort follows the issue, not the run:** `AGENT_WORKER_EFFORT` is the per-run default; a dispatch-plan entry may raise it for one genuinely hard issue via `workerEffort` with a recorded reason, and that per-issue value is what the composer receives. Root design review and adversarial review keep their own effort setting regardless. Read
 [.shared/spawn-contract.md](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
 [.shared/six-step-loop.md](../.shared/six-step-loop.md).
 
@@ -545,9 +567,12 @@ fi
 
 When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
 
-**Chained issues defer.** A chain successor's worktree is created and its lead dispatched
-only after the root has validated, committed, and pushed the predecessor's handback. Record
-the full 40-character lowercase `chain_base_sha` from `worktree-commit.sh`. Deferred issues hold no
+**Chained issues defer — but only on the commit, not the publication.** A chain successor's
+worktree is created and its lead dispatched as soon as the predecessor's worker has
+committed and pushed its branch: record the full 40-character lowercase `chain_base_sha`
+from the completion report (worktree-commit.sh printed it). The root's post-push review, PR
+creation, board move, and ledger writes are **not** on the successor's critical path — a
+post-review fix on the predecessor becomes an ordinary merge-down. Deferred issues hold no
 concurrency slot. If the predecessor's lead fails or is BLOCKED, its successors are never
 dispatched — park the chain and name it in the report. See
 [references/chains.md](references/chains.md#deferred-dispatch) for the full rationale.
@@ -679,7 +704,14 @@ prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX")
 cleanup_prompt_file() { rm -f -- "$prompt_file"; }
 trap cleanup_prompt_file EXIT HUP INT TERM
 chmod 600 -- "$prompt_file" || exit 1
+# worker_effort is the per-issue value (the dispatch-plan workerEffort override
+# when present, else the AGENT_WORKER_EFFORT default). write_set_globs is a
+# bash array holding the issue's predictedWriteSet globs from the dispatch
+# plan, one glob per element -- REQUIRED for an issue lead. Repeated flags,
+# never a comma-joined value: CSV would split a comma-bearing glob before it
+# ever reached the prompt.
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
+for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
 if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
 if ! "$compose_script" "${compose_args[@]}"; then
     exit 1
@@ -694,23 +726,58 @@ continues every other workstream. See [input-diff digest](references/trust-and-f
 
 Act on each lead result as soon as it arrives:
 
-- **PR URL** → the root verifies branch/worktree cleanliness and evidence, moves the issue to `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
+- **Completion report (branch + pushed SHA)** → the root reviews the pushed diff ("Root
+  review and draft PR after a worker push"), opens the draft PR, moves the issue to
+  `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
+  A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
+  the PR, the board move, or the ledger write.
 - **BLOCKED** → report the reason and preserved worktree; do not blindly restart. When the blocker clears, use `collaboration.followup_task` on the same lead if it remains available, otherwise spawn a fresh lead with the completed state and exact remaining step.
 - **Queued issue** → spawn it immediately into the freed slot.
 
-### Root publication after a worker handback
+**Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
+`"$agentkit/parallel-issues/scripts/stall-check.sh" --worktree "$worktree" --state "$worktree/.agent/stall-state"`
+— the worktree's newest file mtime is the liveness signal; never `pgrep`, `stat` archaeology,
+or process inspection. Two consecutive quiet checks with no filesystem change for the named
+threshold (`STALL_THRESHOLD_MINUTES`, default 12) print `verdict=stalled`: interrupt that
+worker, re-dispatch it once with the preserved worktree evidence and the exact remaining
+step, and if the re-dispatch stalls too, park the workstream and name it in the report.
 
-Before publication, root reads the worker's raw six-step report as returned. Do not request a
-post-hoc report rewrite. For Stage 4, accept either the declared-skip form
-`SPIKE + REVERT: SKIPPED — <one-line justification>` when the worker-prompt threshold and
-existing-pattern conditions are met, or the performed form
+### Root review and draft PR after a worker push
+
+The worker committed and pushed its own branch; the root reviews and publishes — it never
+re-implements and never blocks a finished worker on ceremony. Read the worker's raw six-step
+report as returned. Do not request a post-hoc report rewrite. For Stage 4, accept the
+declared-skip form `SPIKE + REVERT: SKIPPED — extends existing pattern <name>` (or another
+one-line justification for why nothing in the change is novel), the performed form
 `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`
-when immutable transcript evidence names both operations. `SPIKE + REVERT: N/A — <concrete
-reason>` is valid only for a no-code scope. This prose read bounces only absent or unjustified
+when immutable transcript evidence names both operations, or `SPIKE + REVERT: N/A — <concrete
+reason>` for a no-code scope. This prose read bounces only absent or unjustified
 Stage 4 reports, preserving the worktree for the next disposition; it never asks the worker to
 rewrite a completed report.
 
-Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with the canonical body composer: Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL feeds Collect and Step 3a.
+Design review runs **after** the push, never as a gate that blocks a finished worker. Review
+the pushed diff once — `git -C "$worktree" diff "origin/$base...HEAD"` (a chained issue diffs
+against its recorded chain base) — through the correctness, repo-rule/security, and write-set
+lenses: every changed path must fall inside the dispatch plan's pinned predictedWriteSet for
+this issue, or the root records one of the sanctioned `chain-conversion`, `merge-down`, or
+`prediction-expansion` dispositions with an evidence-based reason before opening the PR.
+Confirmed findings go back to the same worker as one batch (`followup_task`); a follow-up
+commit on a pushed branch is cheap, a blocked worker is not. When the review clears, root
+must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
+checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
+feeds Collect and Step 3a.
+
+**Environment-refusal fallback only** — two shapes, split by where the refusal landed. A
+post-commit **push refusal** is the trivial one: the worker reports the commit SHA and the
+exact push command; root verifies that SHA exists in the worktree and pushes — there is no
+commit left to run. A **commit refusal** (`worktree-commit.sh` exit 2) returns the classic
+publication handback: root preserves the raw command
+text for audit. Validator: parse into validated arguments without eval; validate expected
+worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path
+inside the worktree and allowed, and every staged path declared and unprotected (the index
+ships too); emit NUL argv naming the canonical helper. Invoke returned argv once, then push
+the branch. Only after publication does the root inspect `base...HEAD`; never validate a base
+diff.
 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
@@ -728,8 +795,8 @@ for the composer recipe and stacked retarget/linkage proof before opening any
 draft PR — it is dispatch-*output* content, read at the moment of publication rather than pasted
 in advance.
 
-The worker leaves scoped changes unstaged and returns a publication handback; root alone must
-push the branch and open a DRAFT PR; root handles CI state/verification, forge conflicts,
+The worker commits and pushes its own branch and returns a completion report; root reviews
+the pushed diff and opens the DRAFT PR; root handles CI state/verification, forge conflicts,
 adversarial review, consent, replies, and publication.
 
 ### Polling discipline (applies to every wait in this skill)
@@ -739,6 +806,12 @@ Waiting is not work, and narrating a wait is not a status report. Read
 skill — it is the single detailed home for the no-model-turn wait rule, the one-wait-per-interval
 and completion-only-read bullets, and the durable-state recipe below.
 
+Every wait names its numeric bound at the call site: worker implementation waits are
+**900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's
+default-bounds table). A `timed_out:true` return is never re-issued at the same duration —
+it carried zero information and will again; escalate the bound or run the Collect section's
+stall check instead.
+
 Durable state to inspect after a wait reports an actual completion, and the runnable
 recipe (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO`):
 [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion).
@@ -747,12 +820,14 @@ pending — CI state is data, not an error. Read the digest and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
-Phase A orchestration remains with the root. As each Phase 2 lead returns a PR URL, the root
-observes the draft through `/review-remote-pr`'s **draft-first** flow — in parallel, without
-waiting for the other issues' leads. Step 3b workers receive only root-approved fix batches for
+Phase A orchestration remains with the root. As the root opens each draft PR from a Phase 2
+lead's pushed completion report, it observes that draft through `/review-remote-pr`'s
+**draft-first** flow — in parallel, without waiting for the other issues' leads. Step 3b workers receive only root-approved fix batches for
 mechanical implementation. The root handles CI state/verification, forge conflicts, adversarial
-review, consent, replies, and publication. Workers do not poll or mutate forge state, resolve
-conflicts, launch reviews, make consent decisions, reply to reviewers, or publish. Review
+review, consent, replies, and publication. Workers do not poll forge state, resolve
+PR conflicts, launch reviews, make consent decisions, reply to reviewers, or touch PR
+metadata; committing and pushing the assigned branch is theirs, and they stop once it is
+pushed. Review
 automation and ready/push behavior are repository and organization configuration; observe the
 state and never initiate a provider review: **never post `@coderabbitai review` or `full review`
 on any PR**.
@@ -771,11 +846,21 @@ fi
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In review' --repository "$repository"
 ```
-Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
+Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately
 
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
+
+**The materiality gate runs before the review spend.** Before launching any reviewer, the
+loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base"`
+— for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
+predecessor's changes contaminate the successor's verdict.
+`verdict=skip-eligible` (every changed file is test-only or docs-only) takes the
+documented-skip path: publish the receipt with `--skip-rationale` and the helper's printed
+oracle line, and launch no reviewer. `verdict=material` — any file touching executable
+logic, workflow, authorization, or persistence — proceeds to the full review. Either way the
+decision is recorded; a skip records *why*, never silence.
 
 When forwarding launch grants to a root-owned review orchestration, pass `--auto-review` ONLY
 when this parallel-issues invocation carried it; otherwise pass no review grant. A dispatched

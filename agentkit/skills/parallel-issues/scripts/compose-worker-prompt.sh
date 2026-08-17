@@ -4,7 +4,8 @@ set -euo pipefail
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E [--yolo] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] [--yolo] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+    printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
 
@@ -15,11 +16,12 @@ branch=
 worker_model=
 worker_effort=
 chain_base=
+declare -a write_set_args=()
 output=
 yolo=0
 while (($#)); do
     case $1 in
-        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--chain-base|--output|-o)
+        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--chain-base|--output|-o)
             (($# >= 2)) || die "$1 requires a value"
             case $1 in
                 --template) template_kind=$2 ;;
@@ -28,6 +30,7 @@ while (($#)); do
                 --branch) branch=$2 ;;
                 --worker-model) worker_model=$2 ;;
                 --worker-effort) worker_effort=$2 ;;
+                --write-set) write_set_args+=("$2") ;;
                 --chain-base) chain_base=$2 ;;
                 --output|-o) output=$2 ;;
             esac
@@ -45,6 +48,29 @@ done
 [[ $branch =~ ^[A-Za-z0-9._/-]+$ && $branch != -* && $branch != *..* && $branch != */ ]] || die '--branch must be a safe branch name'
 [[ $worker_model =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die '--worker-model must be a safe single-token identifier'
 [[ $worker_effort =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die '--worker-effort must be a safe single-token identifier'
+declare -a write_set_globs=()
+for write_set in ${write_set_args[@]+"${write_set_args[@]}"}; do
+    # A repeated flag carries one glob apiece (the escape hatch for paths that
+    # contain commas); a single flag may carry a comma-joined list.
+    if [[ ${#write_set_args[@]} -gt 1 ]]; then
+        write_set_globs+=("$write_set")
+    else
+        IFS=, read -r -a write_set_globs <<< "$write_set"
+    fi
+done
+((${#write_set_globs[@]})) || [[ $template_kind != issue-lead ]] ||
+    die '--write-set is required for the issue-lead template: pass the dispatch plan'"'"'s predictedWriteSet globs'
+for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
+    # Repository-relative globs only, matching the dispatch-plan validator's
+    # own path policy: no absolute paths, no traversal, no control bytes --
+    # ALL control characters, since these values render into the worker prompt
+    # where a CR, tab, or escape could hide or malform a declared entry.
+    [[ -n $glob && $glob != /* && $glob != *[[:cntrl:]]* && $glob != *"\\"* ]] ||
+        die "--write-set glob is not a repository-relative pattern: $glob"
+    case "/$glob/" in
+        *'/../'* | *'//'* | *'/./'*) die "--write-set glob contains an unsafe path: $glob" ;;
+    esac
+done
 if [[ -n $chain_base ]]; then
     ((yolo)) || die '--chain-base requires --yolo'
     [[ $chain_base =~ ^[0-9a-f]{40}$ ]] || die '--chain-base requires a full 40-character lowercase commit SHA'
@@ -170,6 +196,17 @@ emit_focus() {
     fi
 }
 
+emit_write_set() {
+    # Reaching this token without globs is a template/flag mismatch, not a
+    # boundary to improvise: the issue-lead gate above makes it structurally
+    # unreachable, and failing loud beats composing a prompt with no fence.
+    ((${#write_set_globs[@]})) || die 'internal: write-set token rendered with no globs'
+    local glob
+    for glob in "${write_set_globs[@]}"; do
+        printf -- '- %s\n' "$glob"
+    done
+}
+
 emit_trust_rule() {
     if ((yolo)); then
         if [[ -n $chain_base ]]; then
@@ -252,6 +289,10 @@ while IFS= read -r line || [[ -n $line ]]; do
     fi
     if [[ $line == '__DECLARED_FOCUS__' ]]; then
         emit_focus
+        continue
+    fi
+    if [[ $line == '__DECLARED_WRITE_SET__' ]]; then
+        emit_write_set
         continue
     fi
     line=${line//OWNER\/REPO/$repo_slug}

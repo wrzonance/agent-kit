@@ -67,7 +67,7 @@ assert_rendered_guard_passes() {
 }
 
 chain_base=30c38b2c1fa35c6cecc5946aaa7c41e7c132885c
-prompt=$(bash "$compose" --template issue-lead --worktree "$repo" \
+prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high --yolo --chain-base "$chain_base")
 
@@ -116,6 +116,62 @@ assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base
     'focused test selector receives chained yolo flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
 
+# Declared write set (issue #224 WS2a): the token always renders as pinned
+# globs, never as a leftover placeholder, and never as an improvised boundary.
+assert_not_contains "$prompt" '__DECLARED_WRITE_SET__' \
+    'write-set token never survives composition'
+assert_contains "$prompt" '- src/**' \
+    'the pinned write set renders into the prompt'
+
+# Omitting --write-set for an issue lead fails closed: workers now push before
+# root review, so a prompt without a fence is a boundary that does not exist.
+err=$(bash "$compose" --template issue-lead --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high 2>&1 >/dev/null)
+status=$?
+assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+    'an issue lead without a write set is refused'
+assert_contains "$err" '--write-set is required' \
+    'the refusal names the missing write set'
+
+write_set_prompt=$(bash "$compose" --template issue-lead --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high --write-set 'src/parser/**,tests/test-*.sh')
+assert_contains "$write_set_prompt" '- src/parser/**' \
+    'a pinned write set renders each glob'
+assert_contains "$write_set_prompt" '- tests/test-*.sh' \
+    'a pinned write set renders every glob'
+assert_not_contains "$write_set_prompt" 'no write set pinned' \
+    'a pinned write set replaces the default boundary line'
+
+# Repeated flags are the escape hatch for paths containing commas: each flag
+# carries exactly one glob, uncorrupted by CSV splitting.
+repeat_prompt=$(bash "$compose" --template issue-lead --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high --write-set 'src/parser/**' --write-set 'tests/odd,name-*.sh')
+assert_contains "$repeat_prompt" '- tests/odd,name-*.sh' \
+    'a repeated write-set flag preserves a comma-bearing glob'
+assert_contains "$repeat_prompt" '- src/parser/**' \
+    'repeated write-set flags each render their glob'
+
+err=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+    --worker-effort high --write-set '/etc/passwd' 2>&1 >/dev/null)
+status=$?
+assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+    'an absolute write-set glob is refused'
+assert_contains "$err" 'repository-relative' \
+    'the write-set refusal names the repository-relative rule'
+
+# Any control character is refused, not just newline: these values render into
+# the worker prompt, where a CR, tab, or escape hides or malforms an entry.
+for cntrl_glob in $'src/a\tb/**' $'src/a\rb/**' $'src/a\x1bb/**'; do
+    assert_rc 1 'a control-character write-set glob is refused' -- \
+        bash "$compose" --template issue-lead --write-set "$cntrl_glob" --worktree "$repo" \
+        --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+        --worker-effort high
+done
+
 command_lines=$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')
 assert_contains "$command_lines" '--cmd verify' \
     'generated command scan finds actual agent-run --cmd lines'
@@ -155,20 +211,20 @@ assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
 assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
 
 assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$compose" \
-    --template issue-lead --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --template issue-lead --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-effort high
 assert_rc 1 'an empty worker model is rejected by the composer' -- bash "$compose" \
-    --template issue-lead --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --template issue-lead --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-model '' --worker-effort high
 
 assert_rc 1 'a non-40-character chain base is rejected' -- bash "$compose" \
-    --template issue-lead --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --template issue-lead --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high --yolo --chain-base short
 
 bad_repo="$tmp/bad-repo"
 make_repo "$bad_repo" 'skills= path='"$root"$'/agentkit/skills\n<PASTE bad contract data>'
 assert_rc 1 'surviving PASTE placeholders fail closed' -- bash "$compose" \
-    --template issue-lead --worktree "$bad_repo" --issue 136 --branch feat/issue-136 \
+    --template issue-lead --write-set 'src/**' --worktree "$bad_repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high
 
 missing_slug="$tmp/missing-slug"
@@ -176,7 +232,7 @@ make_repo "$missing_slug" "$contract"
 sed -i '/^AGENT_REPO_SLUG=/d' "$missing_slug/.agent/config.env"
 missing_slug_output=''
 missing_slug_rc=0
-missing_slug_output=$(bash "$compose" --template issue-lead --worktree "$missing_slug" \
+missing_slug_output=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$missing_slug" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high 2>&1) || missing_slug_rc=$?
 assert_eq 1 "$missing_slug_rc" 'missing repository slug fails closed'
@@ -188,7 +244,7 @@ make_repo "$missing_base" "$contract"
 sed -i '/^AGENT_BASE_BRANCH=/d' "$missing_base/.agent/config.env"
 missing_base_output=''
 missing_base_rc=0
-missing_base_output=$(bash "$compose" --template issue-lead --worktree "$missing_base" \
+missing_base_output=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$missing_base" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high 2>&1) || missing_base_rc=$?
 assert_eq 1 "$missing_base_rc" 'missing base branch fails closed'
@@ -227,7 +283,7 @@ spaced_skills="$tmp/skills dir"
 spaced_contract=$'skills= path='"$spaced_skills"$'\nharness= name=codex trailer="Codex <noreply@openai.com>"'
 spaced_repo="$tmp/spaced-contract"
 make_repo "$spaced_repo" "$spaced_contract"
-spaced_prompt=$(bash "$compose" --template issue-lead --worktree "$spaced_repo" \
+spaced_prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$spaced_repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
 spaced_shared_line=$(printf '%s\n' "$spaced_prompt" | grep -m1 '^shared=')
 assert_eq "$spaced_skills/.shared/scripts" \
@@ -244,7 +300,7 @@ literal_shared_repo="$tmp/literal-shared-contract"
 make_repo "$literal_shared_repo" "$literal_shared_contract"
 literal_shared_prompt=''
 literal_shared_rc=0
-literal_shared_prompt=$(timeout 3 bash "$compose" --template issue-lead \
+literal_shared_prompt=$(timeout 3 bash "$compose" --template issue-lead --write-set 'src/**' \
     --worktree "$literal_shared_repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high 2>&1) || literal_shared_rc=$?
 assert_eq 0 "$literal_shared_rc" \
@@ -271,7 +327,7 @@ metachar_skills+=' dir'
 metachar_contract=$'skills= path='"$metachar_skills"$'\nharness= name=codex trailer="Codex <noreply@openai.com>"'
 metachar_repo="$tmp/metachar-contract"
 make_repo "$metachar_repo" "$metachar_contract"
-metachar_prompt=$(bash "$compose" --template issue-lead --worktree "$metachar_repo" \
+metachar_prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$metachar_repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
 metachar_reference_line=$(printf '%s\n' "$metachar_prompt" |
     grep -F -m1 "$metachar_skills/.shared/scripts/contract-read.sh")
@@ -306,7 +362,7 @@ make_repo "$focus_only" "$contract"
 sed -i '/^AGENT_CMD_TEST=/d' "$focus_only/.agent/config.env"
 focus_only_output=''
 focus_only_rc=0
-focus_only_output=$(bash "$compose" --template issue-lead --worktree "$focus_only" \
+focus_only_output=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$focus_only" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high 2>&1) || focus_only_rc=$?
 assert_eq 1 "$focus_only_rc" 'a declared focus with no resolvable test command fails closed'
@@ -324,7 +380,7 @@ compose_focus_repo() {
 }
 run_focus_compose() {
     local dir=$1 rc=0
-    bash "$compose" --template issue-lead --worktree "$dir" \
+    bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$dir" \
         --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
         --worker-effort high >/dev/null 2>&1 || rc=$?
     printf '%s' "$rc"
@@ -397,7 +453,7 @@ make_runner_fallback_repo() {
 rel_env_fallback="$tmp/rel-env-fallback"
 make_runner_fallback_repo "$rel_env_fallback"
 rel_env_fallback_rc=0
-AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead \
+AGENT_REPO_RUNNER='tools/run' bash "$compose" --template issue-lead --write-set 'src/**' \
     --worktree "$rel_env_fallback" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || rel_env_fallback_rc=$?
 assert_eq 0 "$rel_env_fallback_rc" \
@@ -408,7 +464,7 @@ make_runner_fallback_repo "$nonexec_env_fallback"
 printf '#!/usr/bin/env bash\n' > "$nonexec_env_fallback/tools/absent-exec"
 chmod -x "$nonexec_env_fallback/tools/absent-exec"
 nonexec_env_fallback_rc=0
-AGENT_REPO_RUNNER="$nonexec_env_fallback/tools/absent-exec" bash "$compose" --template issue-lead \
+AGENT_REPO_RUNNER="$nonexec_env_fallback/tools/absent-exec" bash "$compose" --template issue-lead --write-set 'src/**' \
     --worktree "$nonexec_env_fallback" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || nonexec_env_fallback_rc=$?
 assert_eq 0 "$nonexec_env_fallback_rc" \

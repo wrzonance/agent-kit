@@ -59,7 +59,10 @@ The built-in defaults preserve existing behavior when a repository declares noth
 malformed, or otherwise rejected declaration is reported and falls back to its built-in value;
 the fallback model declaration is not optional just because the preferred model declaration is
 present. A syntactically safe but unsupported model therefore remains visible to the explicit user
-authorization gate. The configured effort is carried through unchanged after resolver validation.
+authorization gate. The configured effort is carried through unchanged after resolver
+validation — it is the per-run **default**: a dispatch-plan entry's `workerEffort` override
+(recorded with its `effortReason`; see `parallel-issues`'s triage-and-selection reference)
+replaces it for exactly that issue. Effort follows the issue, not the run.
 
 Inspect the current `collaboration.spawn_agent` capability before dispatch:
 

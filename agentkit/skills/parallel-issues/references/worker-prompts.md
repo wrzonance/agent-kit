@@ -2,7 +2,7 @@
 
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
-- [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker handback
+- [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
 - [Fix-batch worker prompt](#fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker
 
 Read this before dispatching any worker in `parallel-issues`, or before the root publishes a
@@ -56,7 +56,7 @@ the shared repository root. The writable sandbox commonly spans the parent tree,
 is the boundary and nothing mechanical prevents a cross-write. If you discover your own writes
 outside this worktree, STOP; restore those foreign changes byte-exact with
 `git diff --binary | git apply -R` scoped only to them, verify sibling worktrees are untouched,
-and report the incident and restoration in the handback.
+and report the incident and restoration in the completion report.
 
 Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only regular,
 non-symlink instruction files at the worktree root and in directories changed by this PR. Resolve
@@ -139,12 +139,21 @@ that might write, discard the previous target image and read it again immediatel
 the next patch. Do not assume a helper is read-only because it succeeded or because its usual
 artifact path is different; an explicit output or ledger path can overlap the target.
 
-## Progress and publication handback
+## Declared write set (the files this dispatch owns)
 
-Keep implementation progress unstaged. At each six-step transition you may save a read-only
-diff checkpoint under `.agent/checkpoints/` and update one one-line manifest naming the files and
-tree state; these are excluded worktree evidence, never deliverables. If the tree is dirty before
-your work, report every file, its diffstat, and whether the checkpoint manifest explains it before
+__DECLARED_WRITE_SET__
+
+Every path you stage must fall inside those globs. A change you need OUTSIDE them is a true
+blocker: report the path and why before touching it, so the root can record a sanctioned
+`chain-conversion`, `merge-down`, or `prediction-expansion` disposition. Do not silently
+widen the set.
+
+## Progress, commit, and push (you publish your own branch)
+
+At each six-step transition you may save a read-only diff checkpoint under
+`.agent/checkpoints/` and update one one-line manifest naming the files and tree state; these
+are excluded worktree evidence, never deliverables. If the tree is dirty before your work,
+report every file, its diffstat, and whether the checkpoint manifest explains it before
 adopting anything. Do not alter unexplained work.
 
 contract_root="$worktree"
@@ -161,25 +170,46 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The handback command must embed the expanded literal value of `worker_attribution` (including the
-worker model id) in its `--trailer` argument; do not return the helper command or an unresolved
-shell placeholder. The resulting literal remains provider-neutral because its base comes
-from the contract's `harness=` line.
+The commit command must embed the expanded literal value of `worker_attribution` (including the
+worker model id) in its `--trailer` argument; never an unresolved shell placeholder. The
+resulting literal remains provider-neutral because its base comes from the contract's
+`harness=` line.
 
-Finish with a publication handback to the top-level session, never a publication action. Include:
-the scoped dirty files and diffstat, the exact green marker-bearing verification log path, the
-branch, and one exact ready-to-run `worktree-commit.sh` invocation containing a Conventional
-Commit subject/body, `Co-Authored-By: <expanded worker_attribution>` derived from the contract's
-`harness=` line, the worker model id in the attribution body, and explicit file operands. The top-level
-session reviews the scoped diff, runs that invocation verbatim once, and
-owns every external or privileged follow-up. A dirty tree not authored by you must be surfaced
-before validation and either explained by the manifest or left untouched.
+When FINISH's fresh full verification is green, publish the branch yourself:
 
-The root validates those explicit operands against the dispatch plan's pinned
-predicted write set. Do not silently widen the set in a handback: a late
-overlap must be reported so the root can record one of the sanctioned
-`chain-conversion`, `merge-down`, or `prediction-expansion` dispositions with
-an evidence-based reason before publication.
+1. Confirm `git status --short` shows only files inside the declared write set (and any
+   pre-existing dirt you already surfaced, left untouched).
+2. Commit with the shipped helper — explicit file operands, never blanket staging:
+   `"$shared/worktree-commit.sh" --message '<Conventional Commit subject>' --body '<why>'
+   --trailer "$worker_attribution" -- <each changed file>`. The helper refuses trunk
+   branches and protected paths and prints one machine-readable line on success — record
+   the full 40-character commit SHA from it.
+3. Push the branch: `git push -u origin feat/issue-NNN`.
+4. Return a completion report: the branch, that full commit SHA, the diffstat, and the exact
+   green marker-bearing verification log path. The top-level session reviews the pushed diff
+   and owns the draft PR, board moves, review orchestration, and every other forge action.
+
+**Environment-refusal fallback (the only remaining handback paths):**
+
+- **Commit refused** — `worktree-commit.sh` exits 2 (git metadata not writable): nothing is
+  committed. Stop and return a publication handback — the scoped dirty files and diffstat,
+  the green log path, the branch, and the exact ready-to-run `worktree-commit.sh`
+  invocation with the expanded trailer — and the top-level session runs it verbatim once,
+  then pushes.
+- **Push refused after the commit succeeded**: the tree is clean and the commit exists, so
+  a commit command would have nothing to run. Report the full commit SHA and the exact
+  ready-to-run `git push -u origin feat/issue-NNN` instead.
+
+Never retry around a privilege refusal yourself.
+
+## True blockers — the only reasons to stop early
+
+Surface to the top-level session only for: (a) a needed change outside the declared write
+set, (b) a genuine ambiguity in the issue that two readings would implement differently, or
+(c) a privileged refusal (helper exit 2, a refused push, an `agent-run.sh` trust-gate input
+change). Everything else — a failing test, a lint error, a wrong first approach — is routine
+self-correction and is yours to fix without asking. Never ask permission to do work this
+dispatch already assigned you.
 
 ## Branch Rules (MANDATORY — before touching any file)
 1. cd into the absolute worktree above.
@@ -195,14 +225,14 @@ Before implementation, report the six-step checklist and its status. Do not coll
 1. **STRUCTS** — name or reshape data structures.
 2. **INTERFACES** — define contracts, inputs, outputs, and errors.
 3. **TODOS** — map affected files, call sites, wiring, and verification commands.
-4. **SPIKE + REVERT** — for every code-bearing issue, rough-implement one bounded vertical slice only enough to learn, record what the design missed, then revert every spike change before tests or production code. This is not optional for code-bearing work. A code-bearing change may declare the spike skipped only when its final diff has at most 10 changed implementation lines (tests, docs, and generated files excluded) and touches only an existing pattern: no new data shape, control flow, integration boundary, or failure mode. The handback must include the one-line form `SPIKE + REVERT: SKIPPED — <one-line justification>`. For a performed spike, use `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`; the references must identify immutable transcript/tool evidence containing both the spike edit and the revert, not a prose narrative. A documentation-only or no-code issue may report `SPIKE + REVERT: N/A — <concrete reason>`.
+4. **SPIKE + REVERT** — required exactly when the change is novel: a new data shape, control-flow pattern, integration boundary, or failure mode. For novel work, rough-implement one bounded vertical slice only enough to learn, record what the design missed, then revert every spike change before tests or production code. A change of any size that only extends an existing pattern skips the spike and names it: `SPIKE + REVERT: SKIPPED — extends existing pattern <name>` (or another one-line justification for why nothing here is novel); line count is not the test. For a performed spike, use `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`; the references must identify immutable transcript/tool evidence containing both the spike edit and the revert, not a prose narrative. A documentation-only or no-code issue may report `SPIKE + REVERT: N/A — <concrete reason>`. A skip is never silent: the report line always records why.
 5. **INVARIANTS** — revise the design from spike learnings and state boundary invariants; derive the ordered tasks.
-6. **IMPLEMENTATION (TDD)** — for each task, write a failing boundary test, make it pass minimally, refactor, and run scoped checks through agent-run.sh; run the full suite the same way at the final task. Leave progress unstaged for handback.
+6. **IMPLEMENTATION (TDD)** — for each task, write a failing boundary test, make it pass minimally, refactor, and run scoped checks through agent-run.sh; run the full suite the same way at the final task.
 
 The lead must report transitions such as `Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Revert ✅ · 5 Invariants ✅ · 6 Implementation (TDD) in progress`. `N/A` is valid only when the accepted scope contains no code changes. After step 6, continue with Review and Finish as separate gates:
 
 7. **REVIEW** — inspect the full scoped unstaged diff through correctness, repo-rule/security, and tests lenses. Try to refute every suspected finding before acting. Fix confirmed findings with regression tests; max two rounds.
-8. **FINISH** — run the full repo verification through agent-run.sh from fresh output, confirm the scoped unstaged tree, and return the publication handback. The top-level session owns board moves, metadata publication, forge actions, and any privileged command.
+8. **FINISH** — run the full repo verification through agent-run.sh from fresh output, confirm the tree holds only declared-write-set files, then commit and push per "Progress, commit, and push" above and return the completion report. The top-level session owns the draft PR, board moves, review orchestration, and any privileged retry.
 
 ### Issue-body trust policy
 
@@ -259,14 +289,17 @@ and do not call the fence helper; private issue text is never passed through the
 ## Prior art
 <PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>
 
-Return the six-step/review/finish status and publication handback, or BLOCKED with one concrete
-reason. Do not contact the forge or ask for privilege escalation.
+Return the six-step/review/finish status and the completion report (branch, full commit SHA,
+diffstat, green verification log path) — or, on an environment refusal, the fallback
+publication handback — or BLOCKED with one concrete reason. Do not contact the forge beyond
+pushing your own branch, and do not ask for privilege escalation.
 ````
 
 ## Draft PR body template
 
-After validating and executing a worker handback (SKILL.md's "Root publication after a worker
-handback"), the root pushes the branch and opens the DRAFT PR with this recipe. The body is
+After a worker's completion report lands and the root's post-push review of `base...HEAD`
+clears it (SKILL.md's "Root review and draft PR after a worker push"), the root opens the
+DRAFT PR with this recipe. The body is
 composed by `compose-pr-body.sh` from four root-approved section files; the issue number and
 agent/service/model identity are the only generated footer values. Never pass a multiline PR
 body through inline `--body`: shell and orchestration layers can preserve escape sequences
@@ -328,8 +361,9 @@ banner and closing attribution as the PR template:
 
 ```text
 You are the mechanical fix-batch worker for the root session's PR #NNN.
-Assess only the accepted findings, edit the assigned worktree, verify locally, and return a
-publication handback. The root retains all forge, board, consent, and review orchestration.
+Assess only the accepted findings, edit the assigned worktree, verify locally, then commit
+and push the assigned branch and return a completion report. The root retains PR metadata,
+board, consent, and review orchestration.
 
 Worktree: .worktrees/feat/issue-NNN  (absolute path: FULL_PATH)
 Branch: feat/issue-NNN
@@ -365,7 +399,7 @@ the shared repository root. The writable sandbox commonly spans the parent tree,
 is the boundary and nothing mechanical prevents a cross-write. If you discover your own writes
 outside this worktree, STOP; restore those foreign changes byte-exact with
 `git diff --binary | git apply -R` scoped only to them, verify sibling worktrees are untouched,
-and report the incident and restoration in the handback.
+and report the incident and restoration in the completion report.
 
 ## Commands you MUST use
 worktree=FULL_PATH
@@ -390,9 +424,9 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The handback command must embed the expanded literal value of `worker_attribution` (including the
-worker model id) in its `--trailer` argument; do not return the helper command or an unresolved
-shell placeholder. Its provider-neutral base comes from the contract's `harness=` line.
+The commit command must embed the expanded literal value of `worker_attribution` (including the
+worker model id) in its `--trailer` argument; never an unresolved shell placeholder. Its
+provider-neutral base comes from the contract's `harness=` line.
 
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
@@ -450,7 +484,8 @@ that might write, discard the previous target image and read it again immediatel
 the next patch. Do not assume a helper is read-only because it succeeded or because its usual
 artifact path is different; an explicit output or ledger path can overlap the target.
 
-Do not perform publication or metadata operations from this worker prompt.
+Committing and pushing the assigned branch is yours. Every other forge operation — PR
+metadata, comments, replies, board moves, ready-flips — stays with the root.
 
 ## Branch Rules (MANDATORY)
 - Work only in the supplied worktree and confirm the supplied branch before editing.
@@ -462,25 +497,32 @@ Do not perform publication or metadata operations from this worker prompt.
    any pre-existing dirty files with diffstat and checkpoint-manifest status.
 2. Apply only the accepted fix batch. Follow the six-step loop: Structs, Interfaces, Todos,
    Spike + Revert, Invariants, then Implementation (TDD). Use the Stage 4 report contract:
-   a qualifying trivial diff may use `SPIKE + REVERT: SKIPPED — <one-line justification>`;
-   a performed spike must use `SPIKE + REVERT: PERFORMED — transcript evidence: ...` naming
+   a change that only extends an existing pattern, at any size, uses `SPIKE + REVERT:
+   SKIPPED — extends existing pattern <name>` (or another one-line justification); a
+   performed spike must use `SPIKE + REVERT: PERFORMED — transcript evidence: ...` naming
    both the spike edit and the revert; a no-code batch may use `SPIKE + REVERT: N/A —
    <concrete reason>`.
 3. Run every focused and full verification command through `agent-run.sh`; retain the fresh
    green marker-bearing log path and do not rerun a failed command outside the wrapper.
-4. Leave all authored progress unstaged. If unrelated dirt appears, stop and surface its files,
-   diffstat, and whether the checkpoint manifest explains it.
-5. Return a publication handback to the top-level session containing the scoped files and
-   diffstat, verification log, branch, and one exact ready-to-run publication command with the
-   expanded worker-attributing trailer. The top-level session reviews and republishes it exactly once.
-6. Do not contact external services or alter metadata; phase leads hand privileged actions to the
-   root.
+4. When verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
+   operands, Conventional Commit subject, the expanded worker-attributing `--trailer`), then
+   push the branch. If unrelated dirt appears, stop and surface its files, diffstat, and
+   whether the checkpoint manifest explains it — never commit it.
+5. Return a completion report: branch, full commit SHA from the helper's success line,
+   diffstat, and the green verification log path. If the helper exits 2 (nothing
+   committed), return the classic publication handback (the exact ready-to-run commit
+   command with the expanded trailer) instead and stop; if the commit succeeded but the
+   push was refused, report the commit SHA and the exact ready-to-run push command — never
+   a commit command the root cannot rerun.
+6. Do not contact external services beyond pushing the assigned branch, and do not alter
+   forge metadata; phase leads hand privileged actions to the root.
 
 ## Exit Report
-Return the six-step/review/finish status and publication handback: scoped files and diffstat,
-fresh green verification log, branch, and one exact ready-to-run publication command with the
-worker-attributing trailer. Report BLOCKED with one concrete reason when the handback cannot be
-produced. If you discover your own writes outside the assigned worktree, STOP; restore the foreign
-tree byte-exact with `git diff --binary | git apply -R` scoped only to those changes, verify sibling
-worktrees are untouched, and report the incident and restoration in the handback.
+Return the six-step/review/finish status and the completion report: branch, full commit SHA,
+diffstat, and the fresh green verification log path — or, on an environment refusal, the
+fallback publication handback with the exact ready-to-run command and worker-attributing
+trailer. Report BLOCKED with one concrete reason when neither can be produced. If you
+discover your own writes outside the assigned worktree, STOP; restore the foreign tree
+byte-exact with `git diff --binary | git apply -R` scoped only to those changes, verify sibling
+worktrees are untouched, and report the incident and restoration in the completion report.
 ```

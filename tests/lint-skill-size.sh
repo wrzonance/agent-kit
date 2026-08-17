@@ -51,8 +51,15 @@ declare -A KNOWN_OVERSIZE=(
 # 1003->966 lines / 16735->16394 tokens, review-remote-pr 547->511 / 8422->7959.
 # Ratcheted down rather than left slack -- a ceiling well above the measured
 # body silently re-permits the growth this gate exists to catch.
+# Issue #224 ("gotta go fast") adds spine content deliberately: named numeric
+# wait bounds, the worker commit+push publication flow with its
+# environment-refusal fallback, mtime-based stall detection, the pre-review
+# materiality gate, once-per-run ledger authorization, per-issue effort, and
+# chain-on-commit scheduling. Each buys a measured cost back (2h of timed-out
+# waits, 9-10 root<->worker round trips per issue); ceilings re-measured
+# against the merged body, minimum that passes. Target unchanged.
 KNOWN_OVERSIZE[review-remote-pr]="511:7959:450"
-KNOWN_OVERSIZE[parallel-issues]="966:16394:900"
+KNOWN_OVERSIZE[parallel-issues]="1051:17987:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

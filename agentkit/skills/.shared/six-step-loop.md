@@ -26,25 +26,27 @@ implementation begins only at Stage 6.
 3. **TODOS** — map every affected file, call site, import, wiring point, and verification
    command (each one written as an `agent-run.sh` invocation). This change-map sizes the
    work and exposes ripple before code is cut.
-4. **SPIKE + REVERT** — for every code-bearing change, rough-implement one bounded
-   vertical slice only far enough to expose what the design missed, record the learnings,
-   then revert every spike change before tests or production code. Not optional for
-   code-bearing work. A code-bearing change may declare the spike skipped only when its
-   final diff has at most 10 changed implementation lines (tests, docs, and generated
-   files excluded) and touches only an existing pattern: no new data shape, control flow,
-   integration boundary, or failure mode. The handback must include the one-line form
-   `SPIKE + REVERT: SKIPPED — <one-line justification>`. For a performed spike, use
+4. **SPIKE + REVERT** — required exactly when the change is **novel**: it introduces a new
+   data shape, control-flow pattern, integration boundary, or failure mode. For novel work,
+   rough-implement one bounded vertical slice only far enough to expose what the design
+   missed, record the learnings, then revert every spike change before tests or production
+   code. A change of **any size** that only extends an existing pattern skips the spike and
+   declares which pattern, in the one-line form
+   `SPIKE + REVERT: SKIPPED — extends existing pattern <name>` (or another one-line
+   justification naming why nothing here is novel). Line count is not the test — a 300-line
+   diff repeating a proven shape needs no spike, and a 10-line diff inventing a new
+   boundary does. For a performed spike, use
    `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert
    reference>`; the references must identify immutable transcript/tool evidence containing
    both the spike edit and the revert, not a prose narrative. A documentation-only or
-   no-code change may report `SPIKE + REVERT: N/A — <concrete reason>`.
+   no-code change may report `SPIKE + REVERT: N/A — <concrete reason>`. A skip is never
+   silent: the report line always records why.
 5. **INVARIANTS** — fold the spike's learnings back into the design, state the boundary
    pre/postconditions, and derive 5–10 ordered tasks (cap 12). These invariants become the
    tests, and little else — pin them at boundaries, not internals.
 6. **IMPLEMENTATION (TDD)** — for each task: write a failing boundary test (red), verify it
    actually fails, make it pass minimally (green), refactor, and run scoped checks through
-   `agent-run.sh`. Run the full suite the same way at the final task. Leave progress unstaged
-   for handback.
+   `agent-run.sh`. Run the full suite the same way at the final task.
 
 ### Changed-input trust-gate handoff
 
@@ -75,9 +77,15 @@ Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Rev
    repo-rule/security, and tests. Try to refute every suspected finding before acting on
    it. Fix confirmed findings with regression tests; cap at two rounds.
 8. **FINISH** — run the full repository verification through `agent-run.sh` from fresh
-   output, confirm the scoped unstaged tree, and return a publication handback. The
-   dispatching root — never the worker — owns board moves, metadata publication, forge
-   actions, and any privileged command.
+   output, confirm the tree holds only files inside the declared write set, then commit
+   with `worktree-commit.sh` (explicit operands, Conventional Commit subject, the
+   contract-derived `Co-Authored-By` trailer) and push the branch. Report the branch, full
+   commit SHA, diffstat, and green log path. The dispatching root reviews the pushed diff
+   and owns PR creation, board moves, adversarial review, and reviewer replies. Only when
+   commit or push is refused by the environment does the worker fall back: a commit
+   refusal (`worktree-commit.sh` exit 2, nothing committed) returns the exact ready-to-run
+   commit command as a handback; a post-commit push refusal reports the commit SHA and the
+   exact push command — never a commit command the root cannot rerun.
 
 ## Where each step maps for an orchestrated lead
 
@@ -89,6 +97,6 @@ Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Rev
 | 3. Todos | **Design** — map every affected file, call site, import, wiring point, and verification command; synthesize the design and decide `needsSpike` |
 | 4. Spike + revert | **Spike** — rough-implement one bounded vertical slice only far enough to expose design mistakes, record learnings, then revert every spike change |
 | 5. Invariants | **Invariants** — fold spike learnings back, state boundary pre/postconditions, and cut the ordered task list |
-| 6. Implementation (TDD) | **Implement** — red → green → refactor per task; scoped checks per task and the full suite at the final task, all through `agent-run.sh`. Leave the scoped changes **unstaged**: a worker never runs `worktree-commit.sh` itself, it returns the exact invocation in its handback and the root runs it (see the `verify + ship` row) |
+| 6. Implementation (TDD) | **Implement** — red → green → refactor per task; scoped checks per task and the full suite at the final task, all through `agent-run.sh` |
 | review gate | **Review** — correctness, house-rules, and test lenses; adversarially verify before fixing; max 2 rounds |
-| verify + ship | **Finish** — worker leaves scoped changes unstaged and returns a publication handback; the root alone verifies, commits, pushes, and publishes |
+| verify + ship | **Finish** — worker verifies fresh, commits with `worktree-commit.sh`, and pushes its own branch, then reports the SHA; the root reviews the pushed diff and owns the PR, board, and every forge follow-up. The unstaged publication handback survives only as the environment-refusal fallback |
