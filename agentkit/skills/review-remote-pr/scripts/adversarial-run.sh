@@ -93,6 +93,8 @@ load_environment_contract() {
         die 'could not resolve the repository root for the environment contract'
     fi
     contract="$contract_root/.agent/env-contract.txt"
+    [[ ! -L $contract_root/.agent ]] ||
+        die "environment contract directory is a symlink: $contract_root/.agent"
     [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
         die "environment contract is not a self-owned regular file: $contract"
     git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \

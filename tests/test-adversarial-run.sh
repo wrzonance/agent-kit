@@ -99,10 +99,10 @@ expected="$tmp/expected.diff"
 git -C "$repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$expected"
 
 grant() {
-    local run_dir=$1 provider=$2 payload
+    local run_dir=$1 provider=$2 diff=${3:-$expected} payload
     mkdir -- "$run_dir" "$run_dir/state"
     chmod 700 "$run_dir" "$run_dir/state"
-    payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$expected")
+    payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$diff")
     /bin/bash "$consent" grant --state "$run_dir/state/cross-provider-consent" \
         --provider "$provider" --payload "$payload" --source interactive >/dev/null
 }
@@ -314,5 +314,33 @@ assert_contains "$(cat -- "$tmp/verdict.out")" 'P1=0' \
     'a blocked result reports no P1 findings'
 assert_not_contains "$(cat -- "$tmp/verdict.out")" 'verdict=findings' \
     'a blocked review is never reported as a completed one'
+
+# A tracked `.agent` symlink bypasses leaf-only provenance checks: Git tracks
+# the link itself, not the resolved `.agent/env-contract.txt` path. The runner
+# must reject it before consulting attacker-controlled reviewer facts or
+# invoking the external reviewer CLI.
+rm -rf -- "$repo/.agent"
+mkdir -- "$repo/contract-redirect"
+ln -s contract-redirect "$repo/.agent"
+write_contract codex claude "present path=$tmp/fake-claude"
+git -C "$repo" add -- .agent contract-redirect/env-contract.txt
+git -C "$repo" commit --quiet -m 'test: track redirected environment contract'
+FAKE_HEAD_OID=$(git -C "$repo" rev-parse HEAD)
+export FAKE_HEAD_OID
+redirect_expected="$tmp/redirect.expected.diff"
+git -C "$repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$redirect_expected"
+redirect_run="$tmp/tracked-parent-symlink-run"
+grant "$redirect_run" anthropic "$redirect_expected"
+redirect_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/tracked-parent-symlink.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$redirect_run") \
+    >"$tmp/tracked-parent-symlink.out" 2>"$tmp/tracked-parent-symlink.err" || redirect_rc=$?
+assert_eq 1 "$redirect_rc" 'tracked environment-contract parent symlink is rejected'
+assert_contains "$(cat -- "$tmp/tracked-parent-symlink.err")" \
+    'environment contract directory is a symlink' \
+    'tracked parent symlink names the provenance violation'
+assert_eq no "$( [[ -e $tmp/tracked-parent-symlink.called ]] && printf yes || printf no )" \
+    'tracked parent symlink never launches the reviewer CLI'
 
 finish
