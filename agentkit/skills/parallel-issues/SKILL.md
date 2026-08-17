@@ -703,7 +703,7 @@ copy-pasteable approval block **before or at dispatch**, one line per worktree p
 Read [references/trust-and-fencing.md](references/trust-and-fencing.md#attended-command-approval-handoff)
 in full for the exact recipe (`agent-run.sh --approve --cmd <name>`) and its rules — recipes never hand off the main checkout, and the block is skipped entirely when `--trust-trunk` or `--yolo` is present.
 
-Per-issue prompt: compose through the repository-local helper; it fills the contract, persisted data, declared commands, trust flags, and placeholder gate.
+Per-issue prompt: helper fills contract, persisted data, commands, trust flags, and gate. **Compose once; the spawn consumes the same file — never re-compose to re-read.**
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
@@ -712,12 +712,9 @@ prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX")
 cleanup_prompt_file() { rm -f -- "$prompt_file"; }
 trap cleanup_prompt_file EXIT HUP INT TERM
 chmod 600 -- "$prompt_file" || exit 1
-# worker_effort is the per-issue value (the dispatch-plan workerEffort override
-# when present, else the AGENT_WORKER_EFFORT default). write_set_globs is a
-# bash array holding the issue's predictedWriteSet globs from the dispatch
-# plan, one glob per element -- REQUIRED for an issue lead. Repeated flags,
-# never a comma-joined value: CSV would split a comma-bearing glob before it
-# ever reached the prompt.
+# worker_effort is the per-issue override or AGENT_WORKER_EFFORT default;
+# write_set_globs contains predictedWriteSet globs, one per repeated flag
+# (never CSV, which would split comma-bearing globs).
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
 if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
