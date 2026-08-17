@@ -33,10 +33,13 @@ assert_not_contains "$findings" 'printf' \
 review_skill="$root/agentkit/skills/review-remote-pr/SKILL.md"
 guard_lib="$root/agentkit/hooks/lib/guard-lib.sh"
 onboard_skill="$root/agentkit/skills/onboard-repo/SKILL.md"
+hooks_path='core.''hooksPath'
 assert_contains "$(cat "$guard_lib")" 'core\.hooksPath' \
     'the guard library names hook execution configuration as prohibited'
-assert_contains "$(cat "$guard_lib")" '--no-verify' \
+assert_contains "$(cat "$guard_lib")" "$no_verify" \
     'the guard library names hook suppression as prohibited'
+assert_contains "$(cat "$review_skill")" "$hooks_path" \
+    'review guidance retains the hook execution configuration phrase'
 assert_contains "$(cat "$review_skill")" 'merge-inherited paths parked/handed off' \
     'review guidance reports inherited-path churn'
 assert_contains "$(cat "$onboard_skill")" 'named-base affordance' \
