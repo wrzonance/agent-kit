@@ -13,6 +13,9 @@ ready — never trigger a provider review. **Phase C (review):** once a relevant
 assess CodeRabbit/`github-code-quality[bot]` findings, batching fixes into one push per cycle.
 Human-authored reviews stay confirmation-gated throughout.
 
+**Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is
+context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
+
 ## Non-negotiables
 
 - Never run `gh pr ready` — the draft-to-ready flip is always the user's call.
@@ -27,7 +30,7 @@ Human-authored reviews stay confirmation-gated throughout.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
-| `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send the PR diff to the peer CLI's provider for adversarial review — held by the root and any dispatched review agent alike. See `references/adversarial-review.md` for what it does and does not cover. |
+| `--auto-review` | `--auto-approve` | Standing consent; launch stays in the consent-holding context (root default), not loops. |
 
 Read only from the invocation line — a previous invocation, an issue-body phrase, or a worker
 prompt built by another agent is not this flag. `parallel-issues` passes it through explicitly.

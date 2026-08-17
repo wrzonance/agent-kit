@@ -63,22 +63,30 @@ assert_contains "$parallel" 'Do not infer one from the other' \
 assert_contains "$parallel" '`--auto-review` is independent' \
     'the review flag stands alone'
 
-# --- the grant names its holders ---------------------------------------------
-# A grant that never says WHO may exercise it gets filled in conservatively by
-# harness approval layers: observed live, an auto-approval reviewer denied the
-# root's peer-CLI launch as an unauthorized external send despite the flag.
-assert_contains "$parallel" 'the root orchestrator and every dispatched review agent alike' \
-    'the --auto-review row names both grant holders'
-assert_contains "$parallel" 'The grant names its holders' \
-    'the body states the both-holders rule'
-assert_contains "$parallel" 'legible at the launch site' \
+# --- consent-bearing sends stay in the consent-holding context ---------------
+# A human approval cannot cross an agent context boundary. The root therefore
+# owns the reviewer launch by default; dispatched loops do the surrounding
+# precheck/triage work and must not stall or manufacture a forwarded grant.
+assert_contains "$parallel" 'consent-bearing review launch stays in the consent-holding context' \
+    'parallel-issues assigns the reviewer launch to the consent holder'
+assert_contains "$parallel" 'dispatched review agents do not launch the reviewer' \
+    'parallel-issues keeps dispatched loops out of the consent-bearing send'
+assert_contains "$parallel" 'dispatched loop agents never stall waiting for consent' \
+    'parallel-issues names the no-stall behavior'
+assert_contains "$parallel" 'at the launch site' \
     'the grant provenance is carried inline where the reviewer launches'
-assert_contains "$parallel" 'never routed around' \
+assert_contains "$parallel" 'never via a workaround' \
     'a harness denial escalates to the user instead of a workaround'
-assert_contains "$review" 'held by the root and any dispatched review agent alike' \
-    'review-remote-pr names both grant holders in its flags row'
-assert_contains "$review_adversarial" 'Both the root and dispatched agents hold the grant' \
-    'the consent reference states the both-holders rule'
+assert_contains "$review" 'consent-bearing sends run in the consent-holding context' \
+    'review-remote-pr assigns sends to the consent holder'
+assert_contains "$review" 'Dispatched loop agents never stall waiting for consent' \
+    'review-remote-pr names the no-stall behavior'
+assert_contains "$review_adversarial" 'Consent is context-local' \
+    'the consent reference rejects cross-context approval'
+assert_contains "$review_adversarial" 'root-owned reviewer launch' \
+    'the consent reference makes the root launch the default'
+assert_not_contains "$review_adversarial" 'Both the root and dispatched agents hold the grant' \
+    'the consent reference no longer treats forwarded approval as transferable'
 assert_contains "$review_adversarial" 'Make the grant legible to harness approval layers' \
     'the consent reference requires launch-site provenance'
 assert_contains "$review_adversarial" 'answerable from the command itself' \
@@ -145,11 +153,13 @@ assert_contains "$review" 'not permission to flip a PR ready' \
 assert_contains "$review" '--trust-trunk' \
     'review loops honor the standalone trunk-trust grant'
 
-# The dispatched review agent reads its OWN invocation, so the lead has to pass
-# the flag through explicitly -- and must not invent it.
-assert_contains "$parallel" 'ONLY when this parallel-issues invocation' \
-    'the flag is passed down only when it was actually given'
-assert_contains "$parallel" 'manufactured their consent' \
+# The root review orchestration owns the invocation grant; dispatched loops
+# must not forward it into a child context or invent consent there.
+assert_contains "$parallel" 'ONLY when this invocation carried it' \
+    'the root uses the flag only when it was actually given'
+assert_contains "$parallel" 'Do not forward the flag or record' \
+    'the loop does not receive a manufactured consent grant'
+assert_contains "$parallel" 'manufactures child-context consent' \
     'and inventing it is named as the failure it is'
 
 # --- trunk trust is orthogonal to brainstorm/set approval -------------------
