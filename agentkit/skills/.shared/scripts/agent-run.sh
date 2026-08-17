@@ -31,7 +31,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--approve|--yolo] [--yolo-write-set GLOB[,GLOB...]] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--approve|--yolo] [--yolo-write-set GLOB]... [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -58,9 +58,10 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  origin-reachable ancestor commit instead of the remote trunk.
                  For chained worktrees whose base is a root-published commit
                  from an earlier issue in the same run.
-  --yolo-write-set GLOB[,GLOB...]  With --yolo: admit changed command inputs
-                 matching these repository-relative dispatch-owned globs.
-                 Inputs outside the set remain subject to the trust gate.
+  --yolo-write-set GLOB  With --yolo: admit changed command inputs matching this
+                 repository-relative dispatch-owned glob. Repeat for multiple
+                 globs; commas are literal path characters. Inputs outside the
+                 set remain subject to the trust gate.
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
@@ -238,22 +239,20 @@ if [[ -n $yolo_base_opt ]]; then
     [[ $yolo_base_opt =~ ^[0-9a-f]{40}$ ]] ||
         die '--yolo-base requires a full 40-character lowercase commit SHA, not a ref or abbreviation.'
 fi
-if ((${#yolo_write_set_args[@]} == 1)); then
-    IFS=, read -r -a yolo_write_set_globs <<< "${yolo_write_set_args[0]}"
-elif ((${#yolo_write_set_args[@]} > 1)); then
+if ((${#yolo_write_set_args[@]})); then
     yolo_write_set_globs=("${yolo_write_set_args[@]}")
+    for write_set_glob in "${yolo_write_set_globs[@]}"; do
+        [[ -n $write_set_glob && $write_set_glob != /* &&
+            $write_set_glob != *[[:cntrl:]]* && $write_set_glob != *"\\"* ]] ||
+            die "--yolo-write-set glob is not a repository-relative pattern: $write_set_glob"
+        case "/$write_set_glob/" in
+            *'/../'* | *'//'* | *'/./'*)
+                die "--yolo-write-set glob contains an unsafe path: $write_set_glob"
+                ;;
+        esac
+    done
 fi
-for write_set_glob in "${yolo_write_set_globs[@]}"; do
-    [[ -n $write_set_glob && $write_set_glob != /* &&
-        $write_set_glob != *[[:cntrl:]]* && $write_set_glob != *"\\"* ]] ||
-        die "--yolo-write-set glob is not a repository-relative pattern: $write_set_glob"
-    case "/$write_set_glob/" in
-        *'/../'* | *'//'* | *'/./'*)
-            die "--yolo-write-set glob contains an unsafe path: $write_set_glob"
-            ;;
-    esac
-done
-if ((${#yolo_write_set_globs[@]})); then
+if ((${#yolo_write_set_args[@]})); then
     ((yolo_cmd)) || die '--yolo-write-set requires --yolo.'
     [[ -n $cmd_name ]] || die '--yolo-write-set requires --cmd NAME.'
 fi
@@ -1231,18 +1230,60 @@ yolo_base_declarations() {
 # request instead of forcing the operator to rediscover the comparison set.
 yolo_changed_inputs=()
 yolo_admitted_inputs=()
+yolo_write_set_glob_regex() {
+    local glob=$1 regex='^' char class class_closed class_start
+    local i=0 length=${#1}
+    while ((i < length)); do
+        char=${glob:i:1}
+        case $char in
+            '*') regex+='[^/]*' ;;
+            '?') regex+='[^/]' ;;
+            '[')
+                class='['
+                class_closed=0
+                class_start=$i
+                i=$((i + 1))
+                if ((i < length)) && [[ ${glob:i:1} == '!' ]]; then
+                    class+='^'
+                    i=$((i + 1))
+                fi
+                while ((i < length)); do
+                    char=${glob:i:1}
+                    class+=$char
+                    i=$((i + 1))
+                    if [[ $char == ']' ]]; then
+                        class_closed=1
+                        break
+                    fi
+                done
+                if ((class_closed)); then
+                    regex+=$class
+                    continue
+                fi
+                regex+='\\['
+                i=$((class_start + 1))
+                continue
+                ;;
+            '.'|'^'|'$'|'+'|'('|')'|'{'|'}'|'|') regex+="\\$char" ;;
+            *) regex+=$char ;;
+        esac
+        i=$((i + 1))
+    done
+    regex+='$'
+    printf '%s' "$regex"
+}
 yolo_write_set_matches() {
-    local rel=$1 glob prefix
+    local rel=$1 glob prefix regex
+    ((${#yolo_write_set_globs[@]})) || return 1
     for glob in "${yolo_write_set_globs[@]}"; do
-        # shellcheck disable=SC2053 # the declared glob is intentionally a pattern.
-        if [[ $rel == $glob ]]; then
-            return 0
-        fi
-        # A trailing /** denotes the directory and all of its descendants.
         if [[ $glob == *'/**' ]]; then
             prefix=${glob%/**}
-            [[ $rel == "$prefix" || $rel == "$prefix"/* ]] && return 0
+            regex=$(yolo_write_set_glob_regex "$prefix")
+            regex=${regex%'$'}'(/.*)?$'
+        else
+            regex=$(yolo_write_set_glob_regex "$glob")
         fi
+        [[ $rel =~ $regex ]] && return 0
     done
     return 1
 }
@@ -1426,11 +1467,13 @@ yolo_gate() {
     done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
     rc=0
     yolo_changed_input "$base" || rc=$?
-    for admitted_input in "${yolo_admitted_inputs[@]}"; do
-        printf 'agent-run: trust gate write-set admission: %s (inside declared write set)\n' \
-            "$admitted_input" >&2
-        add_note "trust gate write-set admission: $admitted_input (inside declared write set)"
-    done
+    if ((${#yolo_admitted_inputs[@]})); then
+        for admitted_input in "${yolo_admitted_inputs[@]}"; do
+            printf 'agent-run: trust gate write-set admission: %s (inside declared write set)\n' \
+                "$admitted_input" >&2
+            add_note "trust gate write-set admission: $admitted_input (inside declared write set)"
+        done
+    fi
     if ((rc == 0 && ${#yolo_changed_inputs[@]})); then
         first=${yolo_changed_inputs[0]}
         changed=$(printf '%s\n' "${yolo_changed_inputs[@]}")
@@ -1869,7 +1912,11 @@ printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 # command's own output, not this bookkeeping.
 LOG_HEADER_LINES=2
 if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
-    LOG_HEADER_LINES=$((3 + ${#yolo_admitted_inputs[@]}))
+    admission_count=0
+    if ((${#yolo_admitted_inputs[@]})); then
+        admission_count=${#yolo_admitted_inputs[@]}
+    fi
+    LOG_HEADER_LINES=$((3 + admission_count))
 fi
 readonly LOG_HEADER_LINES
 {
@@ -1881,10 +1928,12 @@ readonly LOG_HEADER_LINES
     # read as an approved one.
     if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
         printf '=== trust gate skipped (--yolo): no approval record\n'
-        for admitted_input in "${yolo_admitted_inputs[@]}"; do
-            printf '=== trust gate write-set admission: %s (inside declared write set)\n' \
-                "$admitted_input"
-        done
+        if ((${#yolo_admitted_inputs[@]})); then
+            for admitted_input in "${yolo_admitted_inputs[@]}"; do
+                printf '=== trust gate write-set admission: %s (inside declared write set)\n' \
+                    "$admitted_input"
+            done
+        fi
     fi
 } > "$log_file"
 

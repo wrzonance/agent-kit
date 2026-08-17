@@ -329,6 +329,15 @@ write_set_log=${write_set_log%")"}
 assert_contains "$(cat -- "$write_set_log")" \
     'trust gate write-set admission: inputs/owned.txt' \
     'the durable log records the admitted input'
+printf 'owned-base\n' > "$repo/inputs/owned.txt"
+printf 'comma-changed\n' > "$repo/inputs/odd,name.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/odd,name.txt' 2>&1) || rc=$?
+assert_eq '0' "$rc" 'a single comma-bearing write-set flag admits its exact glob'
+assert_contains "$out" 'write-set admission: inputs/odd,name.txt' \
+    'the single comma-bearing admission is recorded'
+printf 'owned-changed\n' > "$repo/inputs/owned.txt"
 printf 'external-changed\n' > "$repo/inputs/external.txt"
 rc=0
 out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
@@ -338,6 +347,31 @@ assert_contains "$out" 'inputs/external.txt' \
     'the outside-write-set refusal names the changed input'
 assert_contains "$out" 'write-set admission: inputs/owned.txt' \
     'a mixed verdict records the admitted input before refusing the outside input'
+
+# A single comma-bearing flag is one glob, not a CSV list. Ordinary wildcard
+# segments must not cross `/`, while trailing `/**` admits descendants.
+repo=$tmp/write-set-depth-yolo
+make_yolo_repo "$repo"
+mkdir -p "$repo/inputs/child"
+printf 'depth-base\n' > "$repo/inputs/child/payload.txt"
+printf '#!/bin/sh\ntouch "%s/write-set-depth-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner --require=inputs/child/payload.txt\n' \
+    > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'depth-changed\n' > "$repo/inputs/child/payload.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/*' 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a shallow wildcard does not admit a nested input'
+assert_contains "$out" 'inputs/child/payload.txt' \
+    'the shallow wildcard refusal names the nested input'
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/**' 2>&1) || rc=$?
+assert_eq '0' "$rc" 'a trailing recursive wildcard admits nested input'
+assert_contains "$out" 'write-set admission: inputs/child/payload.txt' \
+    'recursive admission records the nested input'
 
 # The carve-out is only meaningful for unattended named commands.
 repo=$tmp/write-set-usage

@@ -180,7 +180,7 @@ emit_commands() {
     local name helper_path flags glob
     helper_path=$(shell_quote "$shared_path/agent-run.sh")
     flags=$command_flags
-    if ((yolo)); then
+    if ((yolo)) && ((${#write_set_globs[@]})); then
         for glob in "${write_set_globs[@]}"; do
             flags+=" --yolo-write-set $(shell_quote "$glob")"
         done
@@ -195,7 +195,7 @@ emit_focus() {
         local helper_path flags glob
         helper_path=$(shell_quote "$shared_path/agent-run.sh")
         flags=$command_flags
-        if ((yolo)); then
+        if ((yolo)) && ((${#write_set_globs[@]})); then
             for glob in "${write_set_globs[@]}"; do
                 flags+=" --yolo-write-set $(shell_quote "$glob")"
             done
