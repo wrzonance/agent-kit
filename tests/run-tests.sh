@@ -148,6 +148,9 @@ step 'skill helper invocations'
 step 'skill size'
 "$here/lint-skill-size.sh" "$skills" || rc=1
 
+step 'helper/reference paths'
+"$here/lint-helper-refs.sh" "$skills" || rc=1
+
 step 'no vendored system skills'
 # .system/ is Codex's OWN bundled skill set (imagegen, skill-creator,
 # plugin-creator, review-agent, skill-installer, openai-docs), each under its own

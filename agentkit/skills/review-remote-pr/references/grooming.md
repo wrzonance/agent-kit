@@ -2,7 +2,7 @@
 
 Finishing this PR drains the Ready / In-progress queue. Before handing back, fan out across the Project **Backlog** and propose which issues are vetted enough to promote to **Ready**, so the next pickup (`parallel-issues`, autonomous pull) has a clean queue. This is the *producer* side of the queue those *consume*.
 
-**Propose, never auto-promote.** Backlog → Ready is a vetting decision (`github-projects.md`: Backlog = captured but *not vetted*; Ready = *cleared* for pickup). Surface candidates with rationale; only run the board helper with `--status 'Ready'` after the user confirms.
+**Propose, never auto-promote.** Backlog → Ready is a vetting decision (`github-projects.md`: Backlog = captured but *not vetted*; Ready = *cleared* for pickup). Surface candidates with rationale; only run the board helper with `--status 'Ready'` after the user confirms. The candidate-vetting decision has no helper script — this step is judgment; the retrieval helper only lists candidates and never decides which issue is ready.
 
 **No-op silently** (never fail the PR work over a board move) when there is no GitHub remote, the repo is on no Project board, the board has no Backlog/Ready column, or `gh` lacks Project access. A human OAuth session can refresh `project` with `gh auth refresh -s project`; an unattended fleet session must repair the GitHub App installation's `Projects: write` permission instead of using a human token.
 

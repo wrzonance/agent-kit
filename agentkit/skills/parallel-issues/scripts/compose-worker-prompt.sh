@@ -147,14 +147,14 @@ trap cleanup EXIT HUP INT TERM
 emit_commands() {
     local name
     for name in "${command_names[@]}"; do
-        printf '%s --dir %s --cmd %s%s\n' "\"\$shared/agent-run.sh\"" "\"\$worktree\"" "$name" "$command_flags"
+        printf '%s --dir %s --cmd %s%s\n' "\"$shared_path/agent-run.sh\"" "\"\$worktree\"" "$name" "$command_flags"
     done
 }
 
 emit_focus() {
     if ((focus_declared)); then
         printf 'During red/green iteration, use the repository-declared focused selector:\n'
-        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''%s\n' "\"\$shared/agent-run.sh\"" "\"\$worktree\"" "$command_flags"
+        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''%s\n' "\"$shared_path/agent-run.sh\"" "\"\$worktree\"" "$command_flags"
         printf 'It requires AGENT_CMD_TEST_FOCUS and captures evidence only for the named suites; it never claims that skipped suites passed. Run the full declared test command once against the final tree state before handback.\n'
     else
         printf 'No focused selector is declared; use the full declared command for scoped checks and once against the final tree state before handback.\n'
@@ -253,6 +253,17 @@ while IFS= read -r line || [[ -n $line ]]; do
     line=${line//__BASE_BRANCH__/$base_branch}
     line=${line//__WORKER_EFFORT__/$worker_effort}
     line=${line//<worker model id selected by the root dispatch>/$worker_model}
+    # The worker receives helper paths already resolved from the trusted
+    # contract. Keep the assignment for callers composing extra commands, but
+    # do not make a dispatched command re-derive the installed tree.
+    # shellcheck disable=SC2016  # these patterns intentionally match literal $shared
+    while [[ $line == *'$shared'* ]]; do
+        # shellcheck disable=SC2016  # these patterns intentionally match literal $shared
+        shared_prefix=${line%%'$shared'*}
+        # shellcheck disable=SC2016  # these patterns intentionally match literal $shared
+        shared_suffix=${line#*'$shared'}
+        line=$shared_prefix$shared_path$shared_suffix
+    done
     [[ $line != 'Spec source: design-doc | issue-body' ]] || line='Spec source: issue-body'
     if [[ $line == *'<PASTE'* || $line == *'<WHEN'* || $line == *'OWNER/REPO'* ||
         $line == *'FULL_PATH'* || $line == *'/ABS/PATH'* ||

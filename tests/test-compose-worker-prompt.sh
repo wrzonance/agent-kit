@@ -80,6 +80,8 @@ expected_test_chmod="chmod +x -- \"\$worktree/tests/<name>.sh\""
 expected_test_invocation="before invoking it as \"\$worktree/tests/<name>.sh\""
 expected_test_handoff="handing it off for commit"
 expected_test_mode_check="verify the mode is 755/100755"
+expected_agent_run="\"$root/agentkit/skills/.shared/scripts/agent-run.sh\""
+shared_reference="\"\$shared/"
 assert_contains "$prompt" "$expected_test_chmod" \
     'issue lead is told to set the executable bit on new shell tests'
 assert_contains "$prompt" "$expected_test_invocation" \
@@ -132,6 +134,10 @@ assert_contains "$fix_prompt" "$expected_test_handoff" \
 assert_contains "$fix_prompt" "$expected_test_mode_check" \
     'fix-batch verifies the executable mode before the first run'
 assert_contains "$fix_prompt" '--cmd verify' 'fix-batch receives declared commands'
+assert_contains "$fix_prompt" "$expected_agent_run" \
+    'fix-batch command paths are fully resolved absolute paths'
+assert_not_contains "$fix_prompt" "$shared_reference" \
+    'fix-batch output does not leave helper paths for the worker to derive'
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
 assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
@@ -197,6 +203,10 @@ fi
 assert_eq "$root/agentkit/skills/.shared/scripts" \
     "$(bash -c "$shared_line"'; printf %s "$shared"')" \
     'the rendered shared assignment reads back as the exact path'
+assert_contains "$prompt" "$expected_agent_run" \
+    'issue-lead command paths are fully resolved absolute paths'
+assert_not_contains "$prompt" "$shared_reference" \
+    'issue-lead output does not leave helper paths for the worker to derive'
 
 # The shared path comes from the contract, not the worktree, so it needs its own
 # spaced case -- the assertion above runs against a repo path with no spaces and

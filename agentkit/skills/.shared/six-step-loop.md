@@ -6,6 +6,8 @@ required for every code-bearing change in `parallel-issues` (each issue lead) an
 the loop's steps, its reporting format, and the two gates that follow it; the dispatching
 skill's own body states only that the loop is required and names this file for the detail.
 
+Placement rule: helpers invoked by more than one skill live in `.shared/scripts/`; single-skill helpers live in `<skill>/scripts/`; nothing executable lives directly in `.shared/`.
+
 **Worker prompts render this content verbatim, not as a pointer.** A dispatched worker
 starts with `fork_context: false` — no memory of this session, no guaranteed read of any
 file outside the pasted prompt. Copy the steps below into the prompt text itself; do not
