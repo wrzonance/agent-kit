@@ -11,6 +11,8 @@ readonly FRONT_BANNER='This was written agentically; verify its assertions:'
 readonly ATTRIBUTION_RE='^🤖 Co-authored by .+\.( (Closes|Fixes|Resolves) #[1-9][0-9]*)?$'
 readonly SIGNATURE_RE='^🤖 Co-authored by .+\.$'
 readonly CLOSING_RE='^(Closes|Fixes|Resolves) #[1-9][0-9]*$'
+readonly CLOSING_REFERENCE_ATTEMPTS=3
+readonly CLOSING_REFERENCE_RETRY_DELAY=${GH_BODY_CLOSING_RETRY_DELAY:-5}
 
 GH_BIN=${GH_BODY_GH:-gh}
 RESOURCE=''
@@ -23,6 +25,7 @@ GH_ARGS=()
 WORK_DIR=''
 VERIFY_ENDPOINT=''
 VERIFY_HOST=''
+MUTATION_URL=''
 MUTATION_COMPLETED=0
 EXPECT_CLOSING_ISSUE=''
 
@@ -132,6 +135,8 @@ validate_body() {
         die "--repo must look like OWNER/REPO, got: $REPO"
     [[ -z $EXPECT_CLOSING_ISSUE || $EXPECT_CLOSING_ISSUE =~ $UINT_RE ]] ||
         die '--expect-closing-issue must be a positive integer'
+    [[ $CLOSING_REFERENCE_RETRY_DELAY =~ ^[0-9]+$ ]] ||
+        die 'GH_BODY_CLOSING_RETRY_DELAY must be a non-negative integer'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
     command -v cmp >/dev/null 2>&1 || die 'cmp not found on PATH; evidence unavailable'
     command -v diff >/dev/null 2>&1 || die 'diff not found on PATH; evidence unavailable'
@@ -191,6 +196,7 @@ endpoint_from_url() {
             else
                 VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[5]}"
             fi
+            MUTATION_URL=$line
             return 0
         fi
     done <"$WORK_DIR/mutation.out"
@@ -276,50 +282,61 @@ verify_closing_reference() {
     # shellcheck disable=SC2016  # GraphQL variable names must remain literal.
     graphql_query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100,after:$after){nodes{number}pageInfo{hasNextPage endCursor}}}}}'
 
-    # One page is not the whole edge set: a linkage sitting past the first 100
-    # would be reported as missing, so walk the cursor until the expected issue
-    # is found or the pages genuinely run out.
-    local after='' has_next='true' page=0
-    while [[ $has_next == true ]]; do
-        ((++page <= 50)) ||
-            die 'closing-reference pagination exceeded 50 pages; linkage is unverified'
-        rc=0
-        local -a graphql_args=(api)
-        [[ -z $VERIFY_HOST ]] || graphql_args+=(--hostname "$VERIFY_HOST")
-        graphql_args+=(
-            graphql
-            -f "query=$graphql_query"
-            -F "owner=$owner"
-            -F "name=$name"
-            -F "number=$number"
-        )
-        if [[ -n $after ]]; then
-            graphql_args+=(-F "after=$after")
+    local attempt=0
+    while ((attempt < CLOSING_REFERENCE_ATTEMPTS)); do
+        ((++attempt))
+        # One page is not the whole edge set: a linkage sitting past the first
+        # 100 would be reported as missing, so walk the cursor until the
+        # expected issue is found or the pages genuinely run out.
+        local after='' has_next='true' page=0
+        while [[ $has_next == true ]]; do
+            ((++page <= 50)) ||
+                die 'closing-reference pagination exceeded 50 pages; linkage is unverified'
+            rc=0
+            local -a graphql_args=(api)
+            [[ -z $VERIFY_HOST ]] || graphql_args+=(--hostname "$VERIFY_HOST")
+            graphql_args+=(
+                graphql
+                -f "query=$graphql_query"
+                -F "owner=$owner"
+                -F "name=$name"
+                -F "number=$number"
+            )
+            if [[ -n $after ]]; then
+                graphql_args+=(-F "after=$after")
+            fi
+            "$GH_BIN" "${graphql_args[@]}" \
+                >"$WORK_DIR/closing.json" 2>"$WORK_DIR/closing.err" || rc=$?
+            if ((rc != 0)); then
+                [[ ! -s $WORK_DIR/closing.err ]] || cat "$WORK_DIR/closing.err" >&2
+                die 'GitHub closing-reference re-fetch failed; linkage is unverified'
+            fi
+            if jq -e --arg expected "$EXPECT_CLOSING_ISSUE" '
+                (.data.repository.pullRequest.closingIssuesReferences.nodes // []) as $references
+                | any($references[]?; ((.number // "") | tostring) == $expected)
+            ' "$WORK_DIR/closing.json" >/dev/null; then
+                return 0
+            fi
+            has_next=$(jq -r '
+                .data.repository.pullRequest.closingIssuesReferences.pageInfo.hasNextPage // false
+            ' "$WORK_DIR/closing.json") ||
+                die 'closing-reference pageInfo was unreadable; linkage is unverified'
+            after=$(jq -r '
+                .data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor // ""
+            ' "$WORK_DIR/closing.json") ||
+                die 'closing-reference cursor was unreadable; linkage is unverified'
+            [[ $has_next != true || -n $after ]] ||
+                die 'closing-reference pagination reported another page with no cursor; linkage is unverified'
+        done
+        if ((attempt < CLOSING_REFERENCE_ATTEMPTS)); then
+            sleep "$CLOSING_REFERENCE_RETRY_DELAY"
         fi
-        "$GH_BIN" "${graphql_args[@]}" \
-            >"$WORK_DIR/closing.json" 2>"$WORK_DIR/closing.err" || rc=$?
-        if ((rc != 0)); then
-            [[ ! -s $WORK_DIR/closing.err ]] || cat "$WORK_DIR/closing.err" >&2
-            die 'GitHub closing-reference re-fetch failed; linkage is unverified'
-        fi
-        if jq -e --arg expected "$EXPECT_CLOSING_ISSUE" '
-            (.data.repository.pullRequest.closingIssuesReferences.nodes // []) as $references
-            | any($references[]?; ((.number // "") | tostring) == $expected)
-        ' "$WORK_DIR/closing.json" >/dev/null; then
-            return 0
-        fi
-        has_next=$(jq -r '
-            .data.repository.pullRequest.closingIssuesReferences.pageInfo.hasNextPage // false
-        ' "$WORK_DIR/closing.json") ||
-            die 'closing-reference pageInfo was unreadable; linkage is unverified'
-        after=$(jq -r '
-            .data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor // ""
-        ' "$WORK_DIR/closing.json") ||
-            die 'closing-reference cursor was unreadable; linkage is unverified'
-        [[ $has_next != true || -n $after ]] ||
-            die 'closing-reference pagination reported another page with no cursor; linkage is unverified'
     done
-    die "GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE"
+
+    if [[ $ACTION == create && -n $MUTATION_URL ]]; then
+        die "PR was created at $MUTATION_URL; body-side Closes #$EXPECT_CLOSING_ISSUE verification passed, but GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE after $CLOSING_REFERENCE_ATTEMPTS attempts"
+    fi
+    die "GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE after $CLOSING_REFERENCE_ATTEMPTS attempts"
 }
 
 main() {
