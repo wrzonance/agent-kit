@@ -557,13 +557,28 @@ assert_eq '' "$(pre_context "$out")" \
     'portable canonicalization keeps an in-scope nonexistent path quiet'
 
 # Command-derived cd/-C targets must never expand the filesystem allowlist.
+#
+# The derived ancestor is wherever the checkout happens to sit, and on a GitHub
+# runner that is $HOME/work/<repo>/<repo> -- so this target IS $HOME there and
+# the home-sweep denial above pre-empts the advisory. Both outcomes are the
+# guard refusing to let a command-derived target authorize itself, so assert
+# whichever refusal applies instead of pinning the runner's directory layout.
 scope_target_repo=$(cd "$root/../../.." && pwd)
+scope_target_is_home=0
+[[ $(cd "$scope_target_repo" && pwd -P) == "$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" ]] &&
+    scope_target_is_home=1
 for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
     "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
     out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
         "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
-        "command-derived target cannot self-authorize: $bypass"
+    if (( scope_target_is_home )); then
+        # shellcheck disable=SC2016  # $HOME is the literal text being matched
+        assert_contains "$out" 'walks $HOME' \
+            "command-derived target cannot self-authorize (denied as a home sweep): $bypass"
+    else
+        assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+            "command-derived target cannot self-authorize: $bypass"
+    fi
 done
 
 # --- work-destroying commands are refused, every time ---------------------
