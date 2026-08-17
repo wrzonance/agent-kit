@@ -257,6 +257,35 @@ printf '.agent/*\n' >> "$existing_exclude"
 assert_rc 0 'refresh accepts a fully-ignored declaration directory' -- env \
     PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 --force
 
+# Legacy tracked negation exceptions override the local exclude. Bootstrap must
+# refuse before moving either declaration and explain the matching rule.
+repo=$(make_repo)
+printf '.agent/*\n!.agent/config.env\n!.agent/board.json\n' > "$repo/.gitignore"
+out=$(run_bs --repo-root "$repo" --project 7 --force 2>&1 || true)
+assert_contains "$out" 'onboarding cannot establish local ignore' \
+    'legacy negations fail before an incomplete install'
+assert_contains "$out" '.gitignore' 'legacy ignore failure names its source file'
+assert_contains "$out" 'remove the negation' 'legacy ignore failure gives a remediation'
+assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
+    'legacy ignore failure writes no config.env'
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'legacy ignore failure writes no board.json'
+
+# A no-force refusal must not mutate the local exclude while checking the
+# existing declaration files.
+repo=$(make_repo)
+mkdir -p "$repo/.agent"
+printf 'existing config\n' > "$repo/.agent/config.env"
+printf '{}\n' > "$repo/.agent/board.json"
+exclude_before=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $exclude_before == /* ]] || exclude_before=$repo/$exclude_before
+exclude_before_bytes=$(sha256sum "$exclude_before")
+assert_rc 1 'without --force existing declarations are refused' -- \
+    env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7
+exclude_after_bytes=$(sha256sum "$exclude_before")
+assert_eq "$exclude_before_bytes" "$exclude_after_bytes" \
+    'a no-force refusal leaves the local exclude byte-identical'
+
 # Already-tracked working state is REPORTED, not silently removed: untracking is
 # a history decision and not this script's to make.
 repo=$(make_repo)

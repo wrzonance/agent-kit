@@ -443,8 +443,6 @@ ensure_local_ignore() {
 
 if ((dry_run)); then
     printf 'local ignore: %s (%s)\n' "${ignore_file:-unavailable}" "$IGNORE_RULE"
-else
-    ensure_local_ignore
 fi
 
 # --- emit or install --------------------------------------------------------
@@ -487,6 +485,25 @@ if ((reset)); then
     printf 'reset: archived %s existing declaration file(s); regenerated below\n' "$archived"
 fi
 
+assert_effective_ignore() {
+    local committed_path details
+    git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
+    for committed_path in .agent/config.env .agent/board.json; do
+        if ! git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1; then
+            details=$(git -C "$repo_root" check-ignore --no-index -v -- \
+                "$committed_path" 2> /dev/null || true)
+            printf 'ignore rule does not exclude %s:\n' "$repo_root/$committed_path" >&2
+            [[ -n $details ]] && printf '  %s\n' "$details" >&2
+            printf 'Remove legacy .gitignore negations for .agent/config.env and .agent/board.json;\n' >&2
+            die "onboarding cannot establish local ignore for $repo_root/$committed_path; remove the negation"
+        fi
+    done
+}
+
+# Install the local rule only after every no-force/archive guard has passed,
+# then prove Git's effective oracle before creating or moving declarations.
+ensure_local_ignore
+assert_effective_ignore
 mkdir -p -- "$repo_root/.agent"
 mv -- "$staging/.agent/config.env" "$repo_root/.agent/config.env"
 mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
@@ -504,10 +521,7 @@ printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-
 # so this remains a useful invariant for repositories migrating from tracked
 # declarations; the tracked-state note below tells the operator to untrack them.
 if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    for committed_path in .agent/config.env .agent/board.json; do
-        git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1 ||
-            die "onboarding cannot establish local ignore for $repo_root/$committed_path"
-    done
+    assert_effective_ignore
 fi
 
 tracked_declarations=$(git -C "$repo_root" ls-files -- \
