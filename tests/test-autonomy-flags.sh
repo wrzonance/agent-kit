@@ -81,6 +81,10 @@ assert_contains "$review" 'consent-bearing sends run in the consent-holding cont
     'review-remote-pr assigns sends to the consent holder'
 assert_contains "$review" 'Dispatched loop agents never stall waiting for consent' \
     'review-remote-pr names the no-stall behavior'
+assert_contains "$review" 'consent-holding root owns the send' \
+    'review-remote-pr assigns the send to the consent-holding root'
+assert_contains "$review" 'review loops do not receive or forward this flag' \
+    'review-remote-pr keeps the invocation flag out of dispatched loops'
 assert_contains "$review_adversarial" 'Consent is context-local' \
     'the consent reference rejects cross-context approval'
 assert_contains "$review_adversarial" 'root-owned reviewer launch' \
