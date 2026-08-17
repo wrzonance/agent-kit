@@ -316,10 +316,10 @@ wait for an explicit per-item decision before acting.
 
 Apply this gate once as the LAST step of Phase A, after CI is green and conflicts are resolved.
 Read [references/adversarial-review.md](references/adversarial-review.md) in full before running
-or skipping this gate — it carries the materiality criteria (run vs. document-a-skip), attribution,
-external-service authorization and cross-provider consent (including `--auto-review`), the
-exit-code table and one-shot `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR` contract
-(add `--peer-cli-absent` when the peer CLI is absent), and the blind same-harness fallback.
+or skipping — it carries materiality, attribution, external-service authorization/consent, the
+exit-code table and one-shot `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR` contract;
+the runner reads `harness=`/`peer-cli=` facts for selection and blind same-harness fallback. Pass
+`--peer-cli-absent` only with `peer-cli= ... absent`.
 
 **Spent-budget precheck (must precede launch).** Before starting any reviewer, run
 `post-receipt.sh precheck` against the Step 1 PR-conversation artifact:
