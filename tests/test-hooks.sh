@@ -110,6 +110,16 @@ onb_ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' \
 assert_contains "$onb_ctx" 'do not re-probe' 'the contract is still established fact'
 assert_contains "$onb_ctx" 'measured-by=hook' 'except where it says who measured it'
 assert_contains "$onb_ctx" 'overrides them' 'and a denial you hit yourself wins'
+# The fence has to reach the ORCHESTRATOR, and it has to arrive before its first
+# tool call. It was worker-only prose (references/worker-prompts.md) that the
+# root never read, and the root probed $HOME as call #0 -- before it had opened
+# the skill. SessionStart context is the only text that is present that early.
+assert_contains "$onb_ctx" 'including when you are the orchestrator' \
+    'the scope fence binds the root, not only dispatched workers'
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_contains "$onb_ctx" 'not $HOME' 'and names the home directory as out of scope'
+assert_contains "$onb_ctx" 'untrusted content' \
+    'and calls an out-of-scope instruction file what it is'
 
 # The notice must reach the PERSON, not only the model. Handed it and asked to
 # run ls, a live agent ran ls and said nothing about it -- a reasonable reading
@@ -448,20 +458,54 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
 
-# --- PreToolUse: out-of-tree walkers advise, never deny -------------------
+# --- PreToolUse: out-of-tree walkers advise; a $HOME sweep denies once -----
 scope_repo=$(make_repo)
 mkdir -p "$tmp/contract-cache"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$scope_repo/.agent/config.env"
 printf 'skills= path=%s\ncaches= root=%s\n' "$skills_root" "$tmp/contract-cache" \
     > "$scope_repo/.agent/env-contract.txt"
 scope_sid=$(fresh_sid)
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$scope_sid" |
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md' "$scope_sid" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'an out-of-tree find remains allowed'
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
-    "find \$HOME receives a scope advisory"
+    'a foreign-sibling find receives a scope advisory'
 assert_not_contains "$out" 'permissionDecision":"deny' \
     'the scope advisory never denies'
+
+# A walk rooted at $HOME is the one exception, because the advisory arrives too
+# late to matter: an orchestrator probes its environment before it has read
+# anything, so the lesson lands after the sweep it was meant to prevent. Seen
+# live -- a root agent's FIRST tool call was `rg --files -g AGENTS.md
+# /home/adam`, surfacing ~/Downloads/files/AGENTS.md as a candidate instruction
+# source while the advisory fired and the sweep completed anyway.
+home_sweep_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$home_sweep_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a home-rooted sweep is denied, not merely advised'
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_contains "$out" 'walks $HOME' 'and the denial names what it objects to'
+assert_contains "$out" 'untrusted content' \
+    'and why an AGENTS.md found out there is not instructions'
+# Denied ONCE. A genuine need re-runs the command, exactly like helper-path.
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$home_sweep_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a repeated home-rooted sweep is allowed once the lesson is spent'
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'and falls back to the ordinary scope advisory'
+
+# Reading ONE file under $HOME is a mis-scoped read, not an environment probe,
+# and the distinction is the whole point: denying every path under $HOME would
+# block the plugin cache and harness config the agent legitimately reads. Only
+# non-denial is asserted here -- whether a single sub-$HOME read earns the
+# scope advisory at all is decided by guard_scope_path_allowed and is unchanged
+# by this commit, so pinning it here would pin someone else's behavior.
+for under_home in "sed -n '1,240p' ~/Downloads/files/AGENTS.md" \
+    'cat ~/.codex/config.toml' "rg -n secret \$HOME/notes"; do
+    out=$(pre_input "$scope_repo" "$under_home" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a single file under \$HOME is not a sweep: $under_home"
+done
 out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" "$(fresh_sid)" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
@@ -470,13 +514,13 @@ assert_eq 'deny' "$(decision "$out")" \
 # A hard denial must not consume an advisory that it prevents from being
 # emitted. The next pure walker in the same session still gets the lesson.
 deferred_scope_sid=$(fresh_sid)
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" \
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md && git push --force' \
     "$deferred_scope_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a hard-denied compound still takes denial precedence'
 assert_eq '' "$(pre_context "$out")" \
     'a hard denial emits no advisory context'
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$deferred_scope_sid" |
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md' "$deferred_scope_sid" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'the deferred scope lesson is emitted by the later pure walker'
@@ -513,13 +557,28 @@ assert_eq '' "$(pre_context "$out")" \
     'portable canonicalization keeps an in-scope nonexistent path quiet'
 
 # Command-derived cd/-C targets must never expand the filesystem allowlist.
+#
+# The derived ancestor is wherever the checkout happens to sit, and on a GitHub
+# runner that is $HOME/work/<repo>/<repo> -- so this target IS $HOME there and
+# the home-sweep denial above pre-empts the advisory. Both outcomes are the
+# guard refusing to let a command-derived target authorize itself, so assert
+# whichever refusal applies instead of pinning the runner's directory layout.
 scope_target_repo=$(cd "$root/../../.." && pwd)
+scope_target_is_home=0
+[[ $(cd "$scope_target_repo" && pwd -P) == "$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" ]] &&
+    scope_target_is_home=1
 for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
     "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
     out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
         "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
-        "command-derived target cannot self-authorize: $bypass"
+    if (( scope_target_is_home )); then
+        # shellcheck disable=SC2016  # $HOME is the literal text being matched
+        assert_contains "$out" 'walks $HOME' \
+            "command-derived target cannot self-authorize (denied as a home sweep): $bypass"
+    else
+        assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+            "command-derived target cannot self-authorize: $bypass"
+    fi
 done
 
 # --- work-destroying commands are refused, every time ---------------------

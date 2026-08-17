@@ -466,6 +466,27 @@ guard_out_of_scope_target() {
     return 1
 }
 
+# Is an out-of-scope walker target $HOME itself, or something even broader?
+#
+# A read of one foreign path is a mis-scoped read; a walk rooted at $HOME is an
+# environment probe, and it is the worse of the two by a wide margin. It treats
+# every AGENTS.md and CLAUDE.md on the machine as a candidate instruction
+# source -- including whatever last landed in ~/Downloads, which is precisely
+# where untrusted files arrive. The contract's instructions= line already
+# answers that question for the worktree, so this class earns a denial rather
+# than the lesson guard_out_of_scope_target's caller emits for the rest.
+#
+# Ancestors of $HOME (/home, /) count too: sweeping them reaches $HOME on the
+# way past.
+guard_home_sweep_target() {
+    local target home
+    home=$(guard_scope_canonical "${HOME:-}") || return 1
+    [[ -n $home && $home != / ]] || return 1
+    target=$(guard_scope_canonical "$1") || return 1
+    [[ -n $target ]] || return 1
+    [[ $target == "$home" || $home == "$target"/* ]]
+}
+
 # Is this cached contract OURS, or did the repository supply it?
 #
 # The contract is read straight into model context and announced as established
