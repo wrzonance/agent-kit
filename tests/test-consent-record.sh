@@ -55,6 +55,46 @@ assert_contains "$missing_repo_error" 'Usage:' \
 assert_rc 2 'payload refuses a repository carrying the payload delimiter' -- \
     /bin/bash "$script" payload --repo 'acme/wid:get' --pr 24 --diff "$diff_one"
 
+# The consent helper and adversarial runner must hash one canonical renderer,
+# not two independently assembled diff commands. A base-ref payload derives
+# the bytes itself and rejects a caller-supplied diff that drifts from them.
+canonical_origin="$tmp/canonical-origin.git"
+canonical_repo="$tmp/canonical-repo"
+git init --bare --quiet "$canonical_origin"
+git init --quiet --initial-branch=main "$canonical_repo"
+git -C "$canonical_repo" config user.email test@example.invalid
+git -C "$canonical_repo" config user.name test
+git -C "$canonical_repo" remote add origin "$canonical_origin"
+printf '%s\n' canonical-base >"$canonical_repo/example.txt"
+git -C "$canonical_repo" add example.txt
+git -C "$canonical_repo" commit --quiet -m base
+git -C "$canonical_repo" push --quiet -u origin main
+git -C "$canonical_repo" switch --quiet -c feature
+printf '%s\n' canonical-head >"$canonical_repo/example.txt"
+git -C "$canonical_repo" commit --quiet -am change
+canonical_diff="$tmp/canonical.diff"
+git -C "$canonical_repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$canonical_diff"
+canonical_payload=$(
+    cd -- "$canonical_repo" || exit
+    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main --diff "$canonical_diff"
+)
+canonical_expected="acme/widget:24:$(sha256sum -- "$canonical_diff" | awk '{print $1}')"
+assert_eq "$canonical_expected" "$canonical_payload" \
+    'base-ref payload hashes the canonical adversarial renderer'
+derived_payload=$(
+    cd -- "$canonical_repo" || exit
+    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main
+)
+assert_eq "$canonical_payload" "$derived_payload" \
+    'base-ref payload derives the same identity without a caller-rendered diff'
+printf '%s\n' drifted >"$canonical_diff"
+drift_payload() {
+    cd -- "$canonical_repo" || return
+    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main --diff "$canonical_diff"
+}
+assert_rc 1 'base-ref payload rejects rendering drift' -- \
+    drift_payload
+
 # Disclosure is informational only and cannot create consent state.
 disclosure=$(/bin/bash "$script" disclose --payload "$payload_one" \
     --destination 'Anthropic via Claude' --purpose 'one adversarial review of that diff')

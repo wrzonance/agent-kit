@@ -225,6 +225,8 @@ cp -- "$script" "$malformed_script_dir/adversarial-run.sh"
 cp -- "$consent" "$malformed_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
+    "$malformed_root/skills/.shared/scripts/lib/canonical-diff.sh"
 cat >"$malformed_script_dir/claude-adversarial-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -284,6 +286,8 @@ cp -- "$script" "$verdict_script_dir/adversarial-run.sh"
 cp -- "$consent" "$verdict_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
+    "$verdict_root/skills/.shared/scripts/lib/canonical-diff.sh"
 cat >"$verdict_script_dir/claude-adversarial-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

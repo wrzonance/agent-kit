@@ -8,6 +8,8 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 COMMAND=${1:-}
 STATE_PATH=''
 PROVIDER=''
@@ -16,13 +18,14 @@ SOURCE=''
 REPO=''
 PR_NUMBER=''
 DIFF_PATH=''
+BASE_REF=''
 DESTINATION=''
 PURPOSE=''
 
 usage() {
     cat <<EOF
 Usage:
-  $PROGNAME payload --repo OWNER/NAME --pr N --diff PATH
+  $PROGNAME payload --repo OWNER/NAME --pr N [--base-ref BRANCH] [--diff PATH]
   $PROGNAME disclose --payload ID --destination TEXT --purpose TEXT
   $PROGNAME grant --state PATH --provider NAME --payload ID --source interactive|auto-review-flag
   $PROGNAME check --state PATH --provider NAME --payload ID
@@ -64,6 +67,8 @@ parse_options() {
         --pr=*) PR_NUMBER=${1#*=}; shift ;;
         --diff) require_value "$1" "${2:-}"; DIFF_PATH=$2; shift 2 ;;
         --diff=*) DIFF_PATH=${1#*=}; shift ;;
+        --base-ref) require_value "$1" "${2:-}"; BASE_REF=$2; shift 2 ;;
+        --base-ref=*) BASE_REF=${1#*=}; shift ;;
         --destination) require_value "$1" "${2:-}"; DESTINATION=$2; shift 2 ;;
         --destination=*) DESTINATION=${1#*=}; shift ;;
         --purpose) require_value "$1" "${2:-}"; PURPOSE=$2; shift 2 ;;
@@ -91,15 +96,37 @@ validate_payload_inputs() {
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die_usage '--repo must be OWNER/NAME using [A-Za-z0-9._-]'
     [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die_usage '--pr must be a positive integer'
-    [[ -f $DIFF_PATH && ! -L $DIFF_PATH && -O $DIFF_PATH ]] ||
-        die "diff must be an owned regular file, not a symlink: $DIFF_PATH" 2
+    if [[ -n $DIFF_PATH ]]; then
+        [[ -f $DIFF_PATH && ! -L $DIFF_PATH && -O $DIFF_PATH ]] ||
+            die "diff must be an owned regular file, not a symlink: $DIFF_PATH" 2
+    elif [[ -z $BASE_REF ]]; then
+        die_usage 'payload requires --base-ref or --diff'
+    fi
+    if [[ -n $BASE_REF ]]; then
+        git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+            die_usage '--base-ref must be a valid branch name'
+    fi
 }
 
 payload_command() {
     validate_payload_inputs
-    local digest
-    digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
-        die "could not hash diff: $DIFF_PATH"
+    local digest canonical_digest supplied_digest
+    if [[ -n $BASE_REF ]]; then
+        canonical_digest=$(canonical_diff "$BASE_REF" | sha256sum | awk '{print $1}') ||
+            die "could not render canonical diff from origin/$BASE_REF"
+        [[ $canonical_digest =~ ^[[:xdigit:]]{64}$ ]] ||
+            die 'canonical diff renderer returned an invalid digest'
+        if [[ -n $DIFF_PATH ]]; then
+            supplied_digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
+                die "could not hash diff: $DIFF_PATH"
+            [[ $supplied_digest == "$canonical_digest" ]] ||
+                die 'supplied diff does not match the canonical adversarial rendering'
+        fi
+        digest=$canonical_digest
+    else
+        digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
+            die "could not hash diff: $DIFF_PATH"
+    fi
     [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || die 'sha256sum returned an invalid digest'
     printf '%s:%s:%s\n' "$REPO" "$PR_NUMBER" "$digest"
 }

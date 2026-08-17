@@ -64,6 +64,7 @@ CODEX_RESOLVED=""
 MODEL=""
 EFFORT="xhigh"
 DIFF_PATH=""
+BASE_REF=""
 CONSENT_STATE_PATH=""
 CONSENT_PAYLOAD=""
 PR_NUMBER=""
@@ -195,6 +196,8 @@ parse_args() {
         --effort=*) EFFORT=${1#*=} && EFFORT=${EFFORT,,} && shift ;;
         --diff) require_value "$1" "${2:-}" && DIFF_PATH=$2 && shift 2 ;;
         --diff=*) DIFF_PATH=${1#*=} && shift ;;
+        --base-ref) require_value "$1" "${2:-}" && BASE_REF=$2 && shift 2 ;;
+        --base-ref=*) BASE_REF=${1#*=} && shift ;;
         --repo) require_value "$1" "${2:-}" && REPO_SLUG=$2 && shift 2 ;;
         --repo=*) REPO_SLUG=${1#*=} && shift ;;
         --pr) require_value "$1" "${2:-}" && PR_NUMBER=$2 && shift 2 ;;
@@ -250,6 +253,10 @@ validate_args() {
     fi
     if [[ $MODE == review ]]; then
         [[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
+        if [[ -n $BASE_REF ]]; then
+            git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+                die "--base-ref must be a valid branch name"
+        fi
         [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
         [[ $REPO_SLUG =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
             die "--repo OWNER/NAME is required in review mode"
@@ -262,7 +269,11 @@ verify_consent() {
     local consent_script payload
     consent_script="$SCRIPT_DIR/consent-record.sh"
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
-    payload=$("$consent_script" payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH") ||
+    local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
+    if [[ -n $BASE_REF ]]; then
+        payload_args+=(--base-ref "$BASE_REF")
+    fi
+    payload=$("$consent_script" "${payload_args[@]}") ||
         die 'cannot derive consent payload; refusing to launch review'
     if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
         die 'supplied consent payload does not match the exact review diff'
