@@ -244,8 +244,10 @@ assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]
 assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
     'root prints the selected boundary mode'
 dispatch_handoff=$(sed -n '/^Per-issue prompt:/,/^### Collect (per-completion/p' <<< "$text")
-assert_contains "$dispatch_handoff" 'Compose once; the spawn consumes the same file — never re-compose to re-read.' \
-    'dispatch pins one composition and prompt-file reuse per spawned worker'
+assert_contains "$dispatch_handoff" 'Compose once; the spawn consumes the bytes emitted by this block — never re-compose to re-read.' \
+    'dispatch pins one composition and emitted prompt bytes per spawned worker'
+assert_contains "$dispatch_handoff" 'REQUIRED for an issue lead' \
+    'dispatch marks write-set globs as required for issue leads'
 assert_contains "$dispatch_handoff" 'trap cleanup_prompt_file EXIT HUP INT TERM' \
     'dispatch handoff cleans its private prompt file on every exit path'
 assert_contains "$dispatch_handoff" 'if ! "$compose_script" "${compose_args[@]}"; then' \
