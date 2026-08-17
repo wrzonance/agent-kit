@@ -401,39 +401,51 @@ jq -e '.schemaVersion and .project.id and .statusField.id and
     (.statusField.options | length > 0)' < "$staging/.agent/board.json" > /dev/null ||
     die 'the generated board.json is incomplete'
 
-# Check the target repository's ignore oracle before creating .agent or moving
-# either declaration file. A directory rule in .git/info/exclude defeats the
-# later allowlist, and discovering that after "wrote" left a partial install
-# which forced operators to add --force before they could rerun the repair.
-readonly IGNORE_MARKER='# agentkit: .agent/ is working state; these two files are the declaration'
-ignore_file="$repo_root/.gitignore"
-ignore_conflict_gate() {
-    local defeated details blocking_rule fix_file
-    git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
-    if defeated=$(git -C "$repo_root" check-ignore --no-index -- \
-        .agent/config.env .agent/board.json 2> /dev/null) && [[ -n $defeated ]]; then
-        details=$(git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env 2> /dev/null || true)
-        blocking_rule=$(printf '%s\n' "$details" | awk -F '\t' 'NR == 1 { sub(/^.*:/, "", $1); print $1 }')
-        # A narrowed .agent/* rule is compatible with the allowlist this
-        # invocation will install. Only a directory rule is dead: git refuses
-        # to descend into .agent/ and therefore cannot reach the exceptions.
-        [[ $blocking_rule =~ ^[[:space:]]*\.agent/[[:space:]]*$ ]] || return 0
-        printf 'WARNING: the allowlist has no effect -- these files are still excluded:\n' >&2
-        git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env .agent/board.json 2> /dev/null | sed 's/^/  /' >&2
-        printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
-        printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
-        printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
-        fix_file=$(git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env 2> /dev/null | cut -d: -f1 | head -n 1 || true)
-        [[ -n $fix_file ]] || fix_file=$ignore_file
-        [[ $fix_file == /* ]] || fix_file=$repo_root/$fix_file
-        fix_file=$(readlink -f -- "$fix_file" 2> /dev/null || printf '%s' "$fix_file")
-        die "onboarding cannot complete while declaration files are ignored; repair the named rule, then rerun: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$fix_file'"
+# Declarations are per-machine state. Keep the blanket rule in the repository's
+# local exclude rather than creating tracked .gitignore exceptions: a fresh
+# clone can regenerate both files without dirtying the checkout on every board
+# move. The marker makes the generated local rule identifiable and idempotent.
+readonly IGNORE_MARKER='# agentkit: .agent/ is per-machine working state; onboarding owns this local rule'
+readonly IGNORE_RULE='.agent/*'
+ignore_file=''
+if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    ignore_file=$(git -C "$repo_root" rev-parse --git-path info/exclude 2> /dev/null || true)
+    if [[ -n $ignore_file && $ignore_file != /* ]]; then
+        ignore_file=$repo_root/$ignore_file
+    fi
+fi
+
+ensure_local_ignore() {
+    [[ -n $ignore_file ]] || return 0
+    local parent
+    parent=$(dirname -- "$ignore_file")
+    mkdir -p -- "$parent" || die "could not create git exclude directory: $parent"
+    [[ -e $ignore_file ]] || : > "$ignore_file" ||
+        die "could not create local git exclude: $ignore_file"
+
+    # Migrate the old directory spelling in local state to the explicit
+    # contents rule, which is equivalent for this fully-ignored model and does
+    # not rely on negation exceptions.
+    if grep -qE '^[[:space:]]*\.agent/[[:space:]]*$' "$ignore_file" 2> /dev/null; then
+        sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$ignore_file" ||
+            die "could not update local git exclude: $ignore_file"
+    fi
+    if ! grep -Fxq "$IGNORE_RULE" "$ignore_file" 2> /dev/null; then
+        {
+            [[ ! -s $ignore_file ]] || printf '\n'
+            printf '%s\n%s\n' "$IGNORE_MARKER" "$IGNORE_RULE"
+        } >> "$ignore_file" || die "could not update local git exclude: $ignore_file"
+    elif ! grep -Fxq "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
+        printf '%s\n' "$IGNORE_MARKER" >> "$ignore_file" ||
+            die "could not update local git exclude: $ignore_file"
     fi
 }
-ignore_conflict_gate
+
+if ((dry_run)); then
+    printf 'local ignore: %s (%s)\n' "${ignore_file:-unavailable}" "$IGNORE_RULE"
+else
+    ensure_local_ignore
+fi
 
 # --- emit or install --------------------------------------------------------
 if ((dry_run)); then
@@ -488,77 +500,22 @@ printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
 printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-contract.txt" | head -n 1); "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "%s" --report\n' \
     "$repo_root" "$repo_root"
 
-# Ignore rules are WRITTEN, not suggested.
-#
-# This printed "add to .gitignore: .agent/cache/" and left it at that, so a
-# bootstrapped repository could reach steady state with no rule at all -- which
-# is what happened in the first repository this was used on. And the suggested
-# pattern was too narrow: it left env-contract.txt stageable, and that file
-# carries the local home path, the CA bundle location, and the authenticated
-# account name.
-#
-# An allowlist states the intent directly: everything under .agent/ is working
-# state except the two declared files. With it in place, a blanket `git add`
-# is simply correct, enforced by git for every tool and every human rather than
-# by a guard that has to recognise a command shape.
-if grep -qF "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
-    printf 'ignore rules already present in .gitignore\n'
-elif grep -qE '^[[:space:]]*\.agent/[[:space:]]*$' "$ignore_file" 2> /dev/null; then
-    # A directory rule prevents git from descending far enough to reach the
-    # explicit exceptions. Repair the common dead exception in place, then add
-    # the marker and exceptions exactly once.
-    sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$ignore_file" ||
-        die "could not repair $ignore_file; run: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$ignore_file'"
-    printf 'repaired dead .agent/ ignore rule in %s\n' "$ignore_file"
-    {
-        printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
-    } >> "$ignore_file"
-elif {
-    [[ ! -s $ignore_file ]] || printf '\n'
-    printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
-} >> "$ignore_file" 2> /dev/null; then
-    printf 'added ignore rules to .gitignore\n'
-else
-    printf 'WARNING: could not write %s -- add these by hand:\n' "$ignore_file" >&2
-    printf '  .agent/*\n  !.agent/config.env\n  !.agent/board.json\n' >&2
+# The declarations must be ignored in the working tree. --no-index is required
+# so this remains a useful invariant for repositories migrating from tracked
+# declarations; the tracked-state note below tells the operator to untrack them.
+if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    for committed_path in .agent/config.env .agent/board.json; do
+        git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1 ||
+            die "onboarding cannot establish local ignore for $repo_root/$committed_path"
+    done
 fi
 
-# Having written the rule is not the same as the rule working, and only the
-# second is worth reporting. A repository carried the allowlist in .gitignore
-# and a broader `.agent/` in .git/info/exclude; git does not descend into an
-# excluded DIRECTORY, so the negation was never reached. This script said
-# "ignore rules already present" -- true of the text, false of the effect --
-# and onboarding then failed at `git add`, in a different tool, one step later.
-#
-# --no-index is required: check-ignore stays silent about a tracked path
-# otherwise, and these two files are normally tracked.
-#
-# The oracle is check-ignore WITHOUT -v: it lists only paths that are actually
-# excluded. With -v it reports the last matching pattern even when that pattern
-# is a negation, and exits 0 either way -- so a WORKING allowlist matches
-# `!.agent/config.env` and looks identical to a broken one. Decide plainly,
-# then re-ask with -v purely to name the rule.
-if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    if defeated=$(git -C "$repo_root" check-ignore --no-index -- \
-        .agent/config.env .agent/board.json 2> /dev/null) && [[ -n $defeated ]]; then
-        printf 'WARNING: the allowlist has no effect -- these files are still excluded:\n' >&2
-        git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env .agent/board.json 2> /dev/null | sed 's/^/  /' >&2
-        printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
-        printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
-        printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
-        fix_file=$(git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env 2> /dev/null | cut -d: -f1 | head -n 1 || true)
-        [[ -n $fix_file ]] || fix_file=$ignore_file
-        [[ $fix_file == /* ]] || fix_file=$repo_root/$fix_file
-        fix_file=$(readlink -f -- "$fix_file" 2> /dev/null || printf '%s' "$fix_file")
-        die "onboarding cannot complete while declaration files are ignored; repair the named rule, then rerun: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$fix_file'"
-    fi
-    for committed_path in .agent/config.env .agent/board.json; do
-        if git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1; then
-            die "onboarding cannot complete: git check-ignore still excludes $repo_root/$committed_path"
-        fi
-    done
+tracked_declarations=$(git -C "$repo_root" ls-files -- \
+    .agent/config.env .agent/board.json 2> /dev/null || true)
+if [[ -n $tracked_declarations ]]; then
+    printf 'NOTE: declaration files are tracked despite the local rules; untrack when convenient:\n' >&2
+    printf '%s\n' "$tracked_declarations" | sed 's/^/  /' >&2
+    printf '  git rm --cached .agent/config.env .agent/board.json\n' >&2
 fi
 
 # Files already in the index are not affected by an ignore rule. Report them

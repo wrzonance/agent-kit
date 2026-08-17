@@ -335,7 +335,7 @@ assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/boar
 assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
     'the board writer applies a private mode'
 
-# --- fresh clone: board.json committed, item cache absent -----------------
+# --- fresh clone: local board declaration, item cache absent ---------------
 # The discovery path is O(boards owned by the org), so an org with a dozen
 # boards would pay a dozen item-list calls to move one card. board.json names
 # the board, so go straight to it.
@@ -350,6 +350,17 @@ assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
 assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
     'and refreshes the cache with the live item id'
+
+# A runtime board refresh must not dirty a checkout using the blessed local
+# declaration model. The declaration is ignored in the repository-local
+# exclude, while the mover may still rewrite it atomically.
+repo=$(seed_repo)
+local_exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $local_exclude == /* ]] || local_exclude=$repo/$local_exclude
+printf '.agent/*\n' >> "$local_exclude"
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+assert_eq '' "$(git -C "$repo" status --short)" \
+    'a runtime board move leaves local ignored declarations out of tracked status'
 
 # --- invalid status never reaches gh (fail closed) ------------------------
 repo=$(seed_repo)
