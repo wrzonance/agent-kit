@@ -60,17 +60,15 @@ advise() {
 input=$(cat 2> /dev/null || true)
 tool_name=$(jq -r '.tool_name // empty' <<< "$input" 2> /dev/null || true)
 command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null || true)
+# Edit payloads are file content, not shell commands. Clear their optional
+# command-shaped field before any shell-write, repository, or trunk guard sees
+# it; Bash and unknown command-bearing tools retain the full command channel.
+case $tool_name in
+    Edit|Write|MultiEdit|NotebookEdit|apply_patch) command_line='';;
+esac
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 ADVISORY_CONTEXT=''
-
-# Edit payloads are file content, not shell commands. A code span in prose can
-# contain a guarded flag, so only command-bearing tools reach the destructive
-# command matcher below. Keep unknown tools guarded if they provide a command.
-content_bearing=0
-case $tool_name in
-    Edit|Write|MultiEdit|NotebookEdit|apply_patch) content_bearing=1;;
-esac
 
 # Files that decide whether other checks run. This hook used to see shell
 # commands only, so an agent could edit a CI workflow -- or the hook config
@@ -115,7 +113,7 @@ done < <(
 
 # Work-destroying commands. Denied every time, deliberately: unlike every other
 # rule here, the second attempt is exactly the one that must also be refused.
-if (( ! content_bearing )) && reason=$(guard_destructive_reason "$command_line"); then
+if reason=$(guard_destructive_reason "$command_line"); then
     deny "Refused -- $reason
 This denial does not lift on a retry. If it is genuinely what the task needs,
 the user should run it themselves."

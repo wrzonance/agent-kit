@@ -650,6 +650,14 @@ for content_tool in Edit Write MultiEdit NotebookEdit apply_patch; do
     assert_eq 'allow' "$(decision "$out")" "does not inspect content as a command: $content_tool"
 done
 
+# Shell-looking prose must not become a protected-path write target either.
+protected_content='printf x > .github/workflows/ci'
+protected_content+='.yml'
+out=$(content_input "$repo" "$protected_content" Edit protected-content |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'does not inspect content as a protected shell write'
+
 # The same payload shape remains a real shell command for Bash, including the
 # substitution-hidden force flag.
 shell_command='git push `echo --for'
@@ -851,6 +859,13 @@ assert_contains "$out" 'observed repository root:' 'and labels the observed repo
 assert_contains "$out" 'observed HEAD branch: main' 'and labels the observed HEAD'
 assert_contains "$out" 'inferred landing' 'and labels the inferred landing branch'
 assert_contains "$out" 'checkout -b' 'and says what to do instead'
+
+# A commit-shaped code example in an edit payload is prose, not a landing
+# command. It must not consume the trunk guard's deny-once refusal.
+out=$(content_input "$trunk_repo" 'git commit -m "prose example"' Edit trunk-content |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'does not inspect content as a trunk commit'
 
 # A hook receives the session cwd, which can be the main worktree even when the
 # command is executing in a linked feature worktree. With multiple worktrees,
