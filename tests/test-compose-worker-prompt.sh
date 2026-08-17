@@ -110,7 +110,9 @@ assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base
     'focused test selector receives chained yolo flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
 
-command_lines=$(printf '%s\n' "$prompt" | rg 'agent-run\.sh.*--cmd' || true)
+command_lines=$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')
+assert_contains "$command_lines" '--cmd verify' \
+    'generated command scan finds actual agent-run --cmd lines'
 assert_not_contains "$command_lines" "\$(" 'generated command lines have no command substitutions'
 assert_not_contains "$command_lines" '--cmd test-focus' 'focused selector is not emitted as a normal command'
 assert_not_contains "$command_lines" '[[' 'generated command lines have no Bash conditionals'
@@ -238,7 +240,9 @@ literal_shared_prompt=$(timeout 3 bash "$compose" --template issue-lead \
 assert_eq 0 "$literal_shared_rc" \
     "a literal \$shared marker in the trusted skills path does not loop"
 literal_shared_command=$(printf '%s\n' "$literal_shared_prompt" |
-    rg -m1 '^.*agent-run\.sh.*--cmd test' || true)
+    grep -E -m1 '^.*agent-run\.sh.*--cmd test')
+assert_contains "$literal_shared_command" 'agent-run.sh' \
+    "literal \$shared scan finds an emitted helper command"
 literal_shared_expected="'$literal_shared_skills/.shared/scripts/agent-run.sh'"
 assert_contains "$literal_shared_command" "$literal_shared_expected" \
     "literal \$shared bytes remain in a shell-safe emitted helper path"
@@ -260,7 +264,9 @@ make_repo "$metachar_repo" "$metachar_contract"
 metachar_prompt=$(bash "$compose" --template issue-lead --worktree "$metachar_repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
 metachar_reference_line=$(printf '%s\n' "$metachar_prompt" |
-    grep -F -m1 "$metachar_skills/.shared/scripts/contract-read.sh" || true)
+    grep -F -m1 "$metachar_skills/.shared/scripts/contract-read.sh")
+assert_contains "$metachar_reference_line" 'contract-read.sh' \
+    'metacharacter scan finds the resolved reference command'
 assert_contains "$metachar_reference_line" "$metachar_skills/.shared/scripts/contract-read.sh" \
     'metacharacters survive non-rescanning placeholder replacement'
 parse_helper_path() {
@@ -268,9 +274,13 @@ parse_helper_path() {
     bash -c 'set -- '"$command_line"'; printf %s "$1"'
 }
 metachar_command=$(printf '%s\n' "$metachar_prompt" |
-    rg -m1 '^.*agent-run\.sh.*--cmd test ' || true)
+    grep -E -m1 '^.*agent-run\.sh.*--cmd test ')
 metachar_focus_command=$(printf '%s\n' "$metachar_prompt" |
-    rg -m1 '^.*agent-run\.sh.*--cmd test --only ' || true)
+    grep -E -m1 '^.*agent-run\.sh.*--cmd test --only ')
+assert_contains "$metachar_command" 'agent-run.sh' \
+    'metacharacter scan finds an emitted normal helper command'
+assert_contains "$metachar_focus_command" 'agent-run.sh' \
+    'metacharacter scan finds an emitted focused helper command'
 assert_eq "$metachar_skills/.shared/scripts/agent-run.sh" \
     "$(parse_helper_path "$metachar_command")" \
     'metacharacter helper path parses as one normal command word'
