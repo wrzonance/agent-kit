@@ -301,6 +301,7 @@ assert_eq "$common_expected" "$common_actual" \
 linked_main=$tmp/linked-main
 linked_feature=$tmp/linked-feature
 mkdir -p "$linked_main"
+linked_main=$(cd -- "$linked_main" && pwd -P)
 git init -q -b main "$linked_main"
 git -C "$linked_main" config user.name test
 git -C "$linked_main" config user.email test@example.invalid
@@ -308,6 +309,7 @@ printf '%s\n' seed >"$linked_main/seed"
 git -C "$linked_main" add -- seed
 git -C "$linked_main" commit -qm base
 git -C "$linked_main" worktree add -q -b feat/linked "$linked_feature"
+linked_feature=$(cd -- "$linked_feature" && pwd -P)
 assert_eq file "$(if [[ -f $linked_feature/.git && ! -d $linked_feature/.git ]]; then printf file; else printf other; fi)" \
     'a linked worktree exposes .git as a metadata file, not a directory'
 assert_contains "$(<"$linked_feature/.git")" "gitdir: $linked_main/.git/worktrees/" \
@@ -316,7 +318,7 @@ mkdir_ok=yes
 mkdir -p "$linked_feature/.git/cache" >/dev/null 2>&1 || mkdir_ok=no
 assert_eq no "$mkdir_ok" \
     'the reproduced mkdir .git attempt fails only because worker context treats the file as a directory'
-linked_common=$(cd -- "$(git -C "$linked_feature" rev-parse --git-common-dir)" && pwd -P)
+linked_common=$(cd -- "$linked_feature" && cd -- "$(git rev-parse --git-common-dir)" && pwd -P)
 assert_eq "$linked_common" "$(worktree_setup_common_dir "$linked_feature")" \
     'linked worktree setup resolves the main repository common directory'
 linked_exclude=$(git -C "$linked_feature" rev-parse --git-path info/exclude)
@@ -329,11 +331,16 @@ assert_eq "$linked_exclude" "$(worktree_setup_exclude_path "$linked_feature")" \
 # Match path construction, not explanatory prose such as "a read-only .git".
 literal_pattern="(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\})/\.git([/\"]|$)|\"\.git([/\"]|$)"
 literal_git_paths=''
+scanned_helpers=0
 while IFS= read -r helper; do
-    [[ $helper == */lib/protected-paths.sh ]] && continue
+    if [[ $helper == */lib/protected-paths.sh ]]; then
+        continue
+    fi
+    scanned_helpers=$((scanned_helpers + 1))
     matches=$(grep -nHE "$literal_pattern" "$helper" | grep -vE ':[[:space:]]*#' || true)
     [[ -z $matches ]] || literal_git_paths+="$matches"$'\n'
 done < <(find "$root/agentkit" -type f -name '*.sh' -print | sort)
+assert_rc 0 'audit scans at least one shipped metadata helper' -- test "$scanned_helpers" -gt 0
 assert_eq '' "$literal_git_paths" \
     'shipped metadata helpers contain no literal .git/ path assumptions'
 

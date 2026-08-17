@@ -773,8 +773,8 @@ assert_contains "$out" 'checkout -b' 'and says what to do instead'
 # this commit will land, so the guard must stay silent rather than spend its
 # deny-once refusal on the wrong branch. The subshell's real cwd is the linked
 # worktree; only the hook input deliberately carries the stale session cwd.
-linked_main=$(mktemp -d "$tmp/linked-main.XXXXXX")
-linked_feature=$(mktemp -d "$tmp/linked-feature.XXXXXX")
+linked_main=$(cd -- "$(mktemp -d "$tmp/linked-main.XXXXXX")" && pwd -P)
+linked_feature=$(cd -- "$(mktemp -d "$tmp/linked-feature.XXXXXX")" && pwd -P)
 git -C "$linked_main" init -q -b main
 mkdir -p "$linked_main/.agent/cache"
 printf 'AGENT_BASE_BRANCH=main\n' > "$linked_main/.agent/config.env"
