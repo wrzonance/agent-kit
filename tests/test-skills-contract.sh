@@ -63,6 +63,15 @@ for skill in "$skills"/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
     assert_contains "$(<"$skill")" 'skills= path=' \
         "$name documents the contract field"
+    # $agentkit IS the skills tree root -- agent-preflight.sh publishes it as
+    # `skills= path=/abs/skills-tree`. So `$agentkit/skills/...` re-appends the
+    # directory and resolves to .../skills/skills/..., which never exists. The
+    # helpers themselves are covered by their own suites, but those invoke them
+    # by repository path; nothing else exercises the `$agentkit` form the skill
+    # bodies actually instruct agents to use, so a broken snippet reaches the
+    # field instead of the suite. Any occurrence is a defect by definition.
+    assert_not_contains "$(<"$skill")" '$agentkit/skills/' \
+        "$name does not re-append skills/ to the skills tree root"
     if [[ $name == onboard-repo ]]; then
         resolver_count=$(grep -c 'agentkit=\$(find ' "$skill" || true)
         assert_eq '1' "$resolver_count" \
