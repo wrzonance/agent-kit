@@ -159,11 +159,9 @@ digraph process {
 
 Run `agent-preflight.sh` once, in the repository you are about to work in, before any other command in this skill. Its stdout block is **the environment contract for the whole run**: resolved skills path, repo slug, branch, base, whether the repository declared its own facts in `.agent/config.env`, git writability, `gh` auth + scopes, sandbox state, CA bundle, cache directories, repo command runner, and adversarial-reviewer availability. Establish these facts once, here — never re-probe them later, and never let a dispatched agent discover them by failing.
 
-#### The resolver (prepend to EVERY shell call)
+#### The resolver (run once per session)
 
-Resolution only, and deliberately so: this is the block prepended to every later shell call, so it
-must stay free of anything that is supposed to happen once. Running the preflight lives in its own
-block below.
+The warm-up writes data-only `.agent/cache/contract-session.env`; it is never sourced. A changed input makes it stale until refreshed.
 
 ```bash
 # The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
@@ -183,18 +181,10 @@ if [[ -z $agentkit ]]; then
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-# Set only after the provenance checks above pass, so a guard below cannot
-# be satisfied by a stale or inherited $agentkit that merely happens to look
-# like a valid tree -- the sentinel proves THIS resolver ran, not just that
-# some directory exists. (Read only by the guard in a later block.)
-# shellcheck disable=SC2034
-agentkit_provenance=ok
+agentkit_provenance=ok; : "$agentkit_provenance"
 ```
 
-Shell state does not persist between an agent's tool calls, so every command block below that
-touches `$agentkit` assumes this resolver was prepended immediately before it ran. A block executed
-without it fails loudly on its own guard line — `agentkit unresolved: prepend the Step 0 resolver
-block` — instead of silently operating on an empty variable.
+Shell state does not persist; a missing or stale data record fails loudly.
 
 The guard also checks `agentkit_provenance=ok`, a sentinel the resolver sets only after its provenance checks pass — a stale or profile-inherited `agentkit` shell variable that merely resolves to a real directory does not carry that sentinel and still fails the guard.
 
@@ -216,14 +206,18 @@ contract; it is not a bootstrap.
 
 ```bash
 set -euo pipefail
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 
 if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
     printf '%s\n' 'Run this skill from a Git repository.' >&2
     exit 1
 fi
-"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path >/dev/null 2>&1 || exit 1; preflight="$agentkit/.shared/scripts/agent-preflight.sh"
+shared="$agentkit/.shared/scripts"
+[[ -x "$shared/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
+[[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
+"$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
+preflight="$shared/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
     printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
     exit 1
@@ -269,8 +263,7 @@ fi
 # here; anything it omits falls through to the live discovery below. Report a
 # missing resolver rather than swallowing it: silently skipping the config means
 # silently paying for every discovery call it would have saved.
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 if [[ -x $resolver ]]; then
     eval "$("$resolver" --export)"
@@ -320,8 +313,7 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 
 # Auto mode: the open backlog, most recently updated first.
 "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
@@ -494,8 +486,7 @@ if ! base="$(git remote show origin | sed -n 's/^.*HEAD branch:[[:space:]]*//p' 
     exit 1
 fi
 issue_number=123 # Replace with the approved issue number.
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 # For a chained issue, chain_base_sha is the root-published commit of its
 # predecessor (worktree-commit.sh printed it); empty means an independent
 # issue starting from trunk.
@@ -532,8 +523,7 @@ Role separation: the root/orchestrator must not implement when a real worker can
 Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap:
 
 ```bash
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 # `multi_agent` is supplied by the dispatch capability probe. No spawn means
 # the documented worker=self serial degradation and deliberately bypasses the
 # runtime config probe.
@@ -583,8 +573,7 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-numbers "$issue_numbers_csv" --status 'In progress' --repository "$repository"
 ```
@@ -627,8 +616,7 @@ printf 'boundary mode: %s\n' "$boundary_mode"
 ```
 
 ```bash
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
 
 # --prior-art is optional: pass it only when Step 2's prior-art adjudication
@@ -673,8 +661,7 @@ in full for the exact recipe (`agent-run.sh --approve --cmd <name>`) and its rul
 
 Per-issue prompt: compose through the repository-local helper; it fills the contract, persisted data, declared commands, trust flags, and placeholder gate.
 ```bash
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
 prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX") || exit 1
 cleanup_prompt_file() { rm -f -- "$prompt_file"; }
@@ -714,7 +701,7 @@ rewrite a completed report.
 Root preserves the raw command text for audit. Validator: parse into validated arguments without eval; validate expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected (the index ships too); emit NUL argv naming the canonical helper. Invoke returned argv once. Only after publication does the root inspect `base...HEAD`; never validate a base diff. Root pushes/opens a DRAFT PR with the canonical body composer: Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL feeds Collect and Step 3a.
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
@@ -766,8 +753,7 @@ if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/nu
     printf '%s\n' 'Could not resolve the GitHub repository.' >&2
     exit 1
 fi
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In review' --repository "$repository"
 ```
@@ -819,8 +805,7 @@ contract; this loop's own obligation is running precheck before launch and publi
 # The loop runs this before reviewer launch, using the Step 1 artifact.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 precheck_rc=0
 "$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
@@ -846,8 +831,7 @@ the pre-launch gate above, and the precheck must never fall through to a placeho
 # Run only after the finding-fix push; this is the final draft-phase action.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # After the runner returns 0, run the ledger command once per outcome:
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA

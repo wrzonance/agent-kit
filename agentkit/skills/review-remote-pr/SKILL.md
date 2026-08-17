@@ -88,11 +88,9 @@ recipes live there.
 - **Repo** — infer from `git remote get-url origin`; override with `owner/repo` arg
 - **Worktree** — reuse the PR branch worktree when present; otherwise the helper derives and prints `<worktree-root>/pr-<PR>`; `$PR_WORKTREE` is that output, not an input
 
-## The resolver (prepend to EVERY shell call that touches `$agentkit`)
+## Resolver (once per session)
 
-Fully self-contained: it only inspects the repository toplevel and its untracked
-`.agent/env-contract.txt`, so it is safe before the PR worktree exists (main repo) or after
-(inside the worktree) alike.
+The warm-up writes data-only `.agent/cache/contract-session.env`; it is never sourced. A changed input makes it stale until refreshed.
 
 ```bash
 # Resolve the skill tree from the environment contract at the repository
@@ -111,17 +109,10 @@ if [[ -z $agentkit ]]; then
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-# Set only after the provenance checks above pass -- the sentinel proves THIS
-# resolver ran, not just that some directory exists.
-# shellcheck disable=SC2034
-agentkit_provenance=ok
+agentkit_provenance=ok; : "$agentkit_provenance"
 ```
 
-Shell state does not persist between tool calls, so every later block that touches `$agentkit`
-assumes this resolver ran immediately before it. A block run without it fails loudly on its own
-guard line — `agentkit unresolved: prepend the Step 0 resolver block` — instead of silently
-operating on an empty variable. The guard also checks `agentkit_provenance=ok`, a sentinel set
-only after provenance passes, so a stale or profile-inherited `agentkit` still fails the guard.
+Shell state is not persistent; a missing or stale data record fails loudly.
 
 ## Implementation-worker gate (MANDATORY for every code change)
 
@@ -191,10 +182,15 @@ Reuse the worktree already checked out for the PR's head branch; otherwise creat
 Never switch branches in a worktree that may belong to another issue/PR.
 
 ```bash
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
 # At the TOP of the fence, not inside the create branch below: the reuse path
 # skips that branch and still runs agent-preflight.sh out of "$agentkit".
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+contract_root="$(git rev-parse --show-toplevel)" || exit 1
+shared="$agentkit/.shared/scripts"
+[[ -x "$shared/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
+[[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
+"$shared/lib/contract-cache.sh" --read-session-context --repo-root "$contract_root" > /dev/null || exit 1
 if ! command -v jq >/dev/null 2>&1; then printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; fi
 if ! setup_output=$("$agentkit/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
   printf '%s\n' "$setup_output" >&2
@@ -240,7 +236,7 @@ and verify via `agent-run.sh`:
 BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
 git fetch origin "$BASE_BRANCH" && git merge "origin/$BASE_BRANCH"
 git diff --name-only --diff-filter=U   # resolve each listed file, then:
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
 # Trailer from harness=; contract-read.sh performs provenance checks and model substitution.
 contract_root="$(git rev-parse --show-toplevel)"
@@ -294,7 +290,7 @@ if ! command -v jq >/dev/null 2>&1; then
     printf '%s\n' 'jq is not installed; evidence unavailable' >&2
     exit 1
 fi
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
@@ -326,7 +322,7 @@ exit-code table and one-shot `adversarial-run.sh --pr N --repo OWNER/REPO --run-
 
 ```bash
 # Step 1 already fetched this file; do not make a second comments query here.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 precheck_rc=0
@@ -354,7 +350,7 @@ run ID from the `gh pr checks` URL column), then run the **Implementation-worker
 Verify independently before the single cycle push, through `agent-run.sh`:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd lint --if-declared
 "$agent_run" --cmd test
@@ -391,8 +387,7 @@ result is missing or incomplete), and receipt publication consumes that ledger. 
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 : "${REPO:?re-set REPO to OWNER/REPO; shell state does not persist}"
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
@@ -436,7 +431,7 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 Wait in **bounded rounds** — never one unbounded wait:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
 ```
@@ -471,7 +466,7 @@ Refresh every artifact with the same single call as Step 1 — no separate `gh p
 hand-rolled GraphQL re-query:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"

@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # Suite: the skill tree locates itself under BOTH install layouts.
 #
-# Packaging moves the tree. Standalone it sits at $CODEX_HOME/skills; installed
-# as a plugin it sits at
-# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills. Before this
-# was fixed, every one of the 28 helper invocations in the SKILL.md files
-# resolved to the standalone path only, so a plugin-installed skill could not
-# find its own scripts -- and the plugin-install test did not catch it, because
-# it checked structure rather than execution.
+# Packaging installs the tree in a versioned plugin cache:
+# $CODEX_HOME/plugins/cache/<marketplace>/agentkit/<version>/skills. The
+# contract-absent bootstrap searches that cache rather than guessing a local
+# skills directory that may not be the installed plugin.
 #
 # The resolver is EXTRACTED FROM THE SHIPPED SKILL.md rather than copied here,
 # so this suite cannot drift from the text agents actually run.
@@ -25,9 +22,7 @@ source "$root/agentkit/hooks/lib/guard-lib.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-# Pull the single contract-absent fallback resolver out of the shipped
-# markdown: the `agentkit=$(find ...)` continuation and standalone fallback
-# inside the contract-absent branch.
+# Pull the contract-absent plugin-cache resolver out of the shipped markdown.
 extract_resolver() {
     awk '
         /^[[:space:]]*agentkit=\$\(find / { capture = 1 }
@@ -40,7 +35,12 @@ resolver=$(extract_resolver)
 printf '%s\n' "$resolver" > "$tmp/resolver.sh"
 assert_contains "$resolver" 'plugins/cache' 'the shipped resolver looks in the plugin location'
 assert_contains "$resolver" 'agentkit' 'and names the plugin directory'
-assert_eq '3' "$(printf '%s\n' "$resolver" | grep -c .)" 'the fallback resolver is three lines'
+assert_contains "$resolver" 'sort -V | tail -1' 'the resolver chooses the highest installed version'
+assert_contains "$resolver" 'agentkit is not installed in searched plugin caches' \
+    'an empty plugin-cache search fails explicitly'
+# shellcheck disable=SC2016 # this is the literal fallback spelling to reject
+assert_not_contains "$resolver" 'agentkit="${CODEX_HOME:-$HOME/.codex}/skills"' \
+    'the resolver has no standalone skills-path fallback'
 
 # Run the extracted resolver against synthetic harness homes and print what it
 # chose. BOTH are set every time: the resolver must not depend on one harness's
@@ -91,15 +91,23 @@ done
 assert_eq "$(plugin_layout "$cx" 0.2.0)" "$(resolve_with "$cx" "$cl")" \
     'the highest version wins when several are installed'
 
-# --- standalone layout (pre-plugin, still supported) -----------------------
-cx="$tmp/standalone"; cl="$tmp/standalone-cl"
-mkdir -p "$cx/skills/.shared/scripts" "$cl"
-assert_eq "$cx/skills" "$(resolve_with "$cx" "$cl")" 'a standalone install still resolves'
-
-# --- neither present: the documented default, not an error -----------------
+# --- neither cache present: explicit installation failure -------------------
 cx="$tmp/empty"; cl="$tmp/empty-cl"
 mkdir -p "$cx" "$cl"
-assert_eq "$cx/skills" "$(resolve_with "$cx" "$cl")" 'with nothing installed it names the standard path'
+empty_out=''
+empty_rc=0
+empty_out=$(CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$cl" bash -c "
+    set -uo pipefail
+    $(cat "$tmp/resolver.sh")
+    printf '%s' \"\$agentkit\"
+" 2>&1) || empty_rc=$?
+if ((empty_rc != 0)); then
+    _pass 'an empty plugin-cache search fails nonzero'
+else
+    _fail 'an empty plugin-cache search fails nonzero' "want nonzero rc" "got: $empty_rc"
+fi
+assert_contains "$empty_out" 'agentkit is not installed in searched plugin caches' \
+    'the empty plugin-cache failure explains remediation'
 
 # --- a missing harness home is not an error --------------------------------
 # Someone who has never run the other CLI has no directory for it at all. find
@@ -114,26 +122,21 @@ err=$(CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$tmp/does-not-exist" bash -c "
 " 2>&1 >/dev/null)
 assert_eq '' "$err" 'an absent harness home produces no error output'
 
-# A contract-absent checkout still has to keep the installed plugin path after
-# contract-read.sh reports that there is no contract to read. This is the
-# resolver boundary: the bootstrap path is valid even though the optional
-# contract-derived value is empty.
+# A contract-absent checkout discovers the highest installed plugin version.
 contract_repo="$tmp/contract-absent-repo"
 contract_home="$tmp/contract-absent-home"
-contract_plugin=$(plugin_layout "$contract_home")
-mkdir -p "$contract_repo/.agent" "$contract_plugin/.shared/scripts"
+contract_plugin=$(plugin_layout "$contract_home" 0.2.0)
+mkdir -p "$contract_repo/.agent" "$contract_plugin/.shared/scripts" \
+    "$(plugin_layout "$contract_home" 0.1.0)/.shared/scripts"
 git -C "$contract_repo" init -q
-cp -- "$root/agentkit/skills/.shared/scripts/contract-read.sh" \
-    "$contract_plugin/.shared/scripts/contract-read.sh"
-chmod +x -- "$contract_plugin/.shared/scripts/contract-read.sh"
 resolved=''
 rc=0
 resolved=$(cd "$contract_repo" && \
     CODEX_HOME="$contract_home" CLAUDE_CONFIG_DIR="$tmp/contract-absent-claude" \
-    bash -c "$RESOLVE_HINT; printf '%s' \"\$agentkit\"") || rc=$?
+    bash -c "$(cat "$tmp/resolver.sh"); printf '%s' \"\$agentkit\"") || rc=$?
 assert_eq '0' "$rc" 'contract-absent resolver exits successfully'
 assert_eq "$contract_plugin" "$resolved" \
-    'contract-absent resolver preserves the discovered plugin skills path'
+    'contract-absent resolver selects the highest discovered plugin path'
 
 # --- zsh safety ------------------------------------------------------------
 # Codex runs shell commands through $SHELL -lc, which is zsh on the target
@@ -148,9 +151,14 @@ if command -v zsh > /dev/null 2>&1; then
         printf '%s' \"\$agentkit\"
     " 2>&1)
     rc=$?
-    assert_eq '0' "$rc" 'the resolver runs cleanly under zsh with nothing installed'
+    if ((rc != 0)); then
+        _pass 'the zsh empty-cache resolver fails nonzero'
+    else
+        _fail 'the zsh empty-cache resolver fails nonzero' 'want nonzero rc' "got: $rc"
+    fi
     assert_not_contains "$out" 'no matches found' 'and never trips zsh nomatch'
-    assert_eq "$cx/skills" "$out" 'and resolves identically under zsh'
+    assert_contains "$out" 'agentkit is not installed in searched plugin caches' \
+        'and explains the empty-cache remediation under zsh'
 else
     printf '  skip zsh checks: zsh not installed\n'
 fi

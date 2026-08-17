@@ -51,20 +51,23 @@ Completion reports include this go-live checklist:
 
 ---
 
-## Step 0 — resolve the tree
+## Step 0 — resolve the tree once per session
+
+The warm-up writes data-only `.agent/cache/contract-session.env`; it is never sourced. A changed input makes it stale until refreshed.
 
 ```bash
 agentkit=''
+contract_ready=no
 contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
 contract="$contract_root/.agent/env-contract.txt"
 if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
     ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+    contract_ready=yes
 fi
-if [[ -z $agentkit ]]; then
-    agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d \
-        -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
-    [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+if [[ $contract_ready != yes ]]; then
+    agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 -type d -path '*/agentkit/*/skills' 2>/dev/null | sort -V | tail -1)
+    [ -n "$agentkit" ] || { printf '%s\n' 'agentkit is not installed in searched plugin caches' >&2; exit 1; }
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
 # shellcheck disable=SC2034  # used by later blocks. Env does NOT persist between
@@ -72,8 +75,11 @@ fi
 # $shared rather than silently building an empty path.
 shared="$agentkit/.shared/scripts"
 
-# shellcheck disable=SC2034
-contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path 2>/dev/null || true)
+if [[ $contract_ready == yes && -x "$shared/contract-read.sh" ]]; then
+    contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
+    [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
+    "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$contract_root" > /dev/null || exit 1
+fi
 "$shared/agent-preflight.sh" --ensure --worktree "$(git rev-parse --show-toplevel)" 2>/dev/null
 ```
 
@@ -234,7 +240,7 @@ shell can't answer the prompt, but a same-user process could still drive a pseud
 trust record directly.
 
 ```bash
-: "${agentkit:?re-run Step 0}"
+: "${shared:?re-run Step 0}"
 # A human, in an interactive terminal:
 "$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify
 # Any session, once approval exists:
@@ -280,7 +286,7 @@ exactly as you'd type it, unquoted, arguments and all. Then prove it parses. App
 a human step (above), so hand them off rather than running `--approve` yourself:
 
 ```bash
-: "${agentkit:?re-run Step 0}"
+: "${shared:?re-run Step 0}"
 "$agentkit/.shared/scripts/repo-config.sh" --list
 # ...then, once per name you declared, a human approves and runs it:
 "$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify   # human, interactive terminal
