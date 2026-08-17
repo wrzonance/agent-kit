@@ -83,6 +83,20 @@ answer has not been careful, it has just stalled.
 
 The rest of the gate stands unchanged:
 
+- **Both the root and dispatched agents hold the grant.** The flag authorizes the
+  *invocation*, not one process: the root orchestrator running the review itself (the
+  root-owned fallback) and a dispatched review agent launching the peer CLI act under the
+  same grant. Forward it explicitly on dispatch; a dispatched agent holding the forwarded
+  grant does not stop to re-ask, and the root does not need a worker to exercise it on its
+  behalf.
+- **Make the grant legible to harness approval layers.** A sandbox or approval reviewer
+  judges the launch command in front of it and cannot see the invocation line, so an
+  external send can read as unauthorized even when it is not. Carry the provenance inline
+  at the launch site — the session-ledger `RUN_ID`, the recorded `cross_provider_consent`
+  record, and the user's verbatim invocation quote carrying `--auto-review` — as a leading
+  comment or argument in the block that launches the reviewer, so "is this send
+  authorized?" is answerable from the command itself. A denial that still occurs is
+  surfaced to the user as a direct question, never routed around.
 - **Still disclose.** Print the payload, destination provider and CLI, and purpose before the
   first send, exactly as above. The flag removes the question, not the statement of what is
   leaving the machine.

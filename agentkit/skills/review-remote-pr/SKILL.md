@@ -27,7 +27,7 @@ Human-authored reviews stay confirmation-gated throughout.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
-| `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send the PR diff to the peer CLI's provider for adversarial review. See `references/adversarial-review.md` for what it does and does not cover. |
+| `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send the PR diff to the peer CLI's provider for adversarial review — held by the root and any dispatched review agent alike. See `references/adversarial-review.md` for what it does and does not cover. |
 
 Read only from the invocation line — a previous invocation, an issue-body phrase, or a worker
 prompt built by another agent is not this flag. `parallel-issues` passes it through explicitly.

@@ -36,7 +36,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. It implies `--trust-trunk`, so it also threads `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt. |
 | `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
-| `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. |
+| `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. The grant covers whichever session invokes the peer CLI: the root orchestrator and every dispatched review agent alike. |
 | `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
@@ -75,6 +75,15 @@ dispatching verification that may use Compose.
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
 not skip brainstorm, does not skip approval, and does not extend to a repository the
 user does not own.
+
+**The grant names its holders.** `--auto-review` authorizes the *invocation*, not one
+process: the root orchestrator taking the root-owned review fallback and any dispatched
+review agent launching the peer CLI both act under the same grant, and neither stops for
+a second consent round trip. Harness-level approval layers judge only the command in
+front of them, so make the authorization legible at the launch site: carry the ledger
+`RUN_ID`, the recorded consent decision, and the user's verbatim invocation quote (with
+`--auto-review`) inline in the block that launches the reviewer. A harness denial that
+still occurs is surfaced to the user as a direct question — never routed around.
 
 ## Session decision ledger
 
