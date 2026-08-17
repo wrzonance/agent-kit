@@ -13,6 +13,14 @@ fi
 
 PROGRAM=$(basename -- "$0")
 readonly PROGRAM
+self_dir=${BASH_SOURCE[0]%/*}
+[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+self_dir=$(cd -P -- "$self_dir" && pwd -P) || {
+    printf '%s: could not resolve helper directory\n' "$PROGRAM" >&2
+    exit 1
+}
+# shellcheck source=lib/contract-cache.sh
+source "$self_dir/lib/contract-cache.sh"
 repo_root=''
 mode=''
 key=''
@@ -129,34 +137,71 @@ fi
 
 [[ $mode == check ]] && exit 0
 
-raw=''
-case $key in
-    skills.path)
-        raw=$(sed -n 's/^skills= path=//p' "$contract")
-        ;;
-    harness.trailer)
-        raw=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
-        ;;
-    harness.name)
-        raw=$(sed -n 's/^harness= name=\([^[:space:]]*\).*/\1/p' "$contract")
-        ;;
-    repo.slug)
-        raw=$(sed -n 's/^repo=//p' "$contract")
-        ;;
-    base.branch)
-        raw=$(sed -n 's/^base=\([^[:space:]]*\).*/\1/p' "$contract")
-        ;;
-esac
-value=$(printf '%s\n' "$raw" | sed -n '1p')
-[[ -n $value ]] || die 1 "contract key is absent or empty: $key"
+emit_value() {
+    local value=$1 original
+    if [[ -n $worker_model ]]; then
+        original=$value
+        [[ $value == *' <'* ]] ||
+            die 1 'harness.trailer has no email boundary for worker-model substitution'
+        value=$(printf '%s\n' "$value" | sed "s| <| $worker_model <|")
+        [[ $value != "$original" ]] ||
+            die 1 'harness.trailer substitution did not change the value'
+    fi
+    printf '%s\n' "$value"
+}
 
-if [[ -n $worker_model ]]; then
-    original=$value
-    [[ $value == *' <'* ]] ||
-        die 1 'harness.trailer has no email boundary for worker-model substitution'
-    value=$(printf '%s\n' "$value" | sed "s| <| $worker_model <|")
-    [[ $value != "$original" ]] ||
-        die 1 'harness.trailer substitution did not change the value'
+config="$repo_root/.agent/config.env"
+read_contract_value() {
+    local requested=$1 raw=''
+    case $requested in
+        skills.path)
+            raw=$(sed -n 's/^skills= path=//p' "$contract")
+            ;;
+        harness.trailer)
+            raw=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
+            ;;
+        harness.name)
+            raw=$(sed -n 's/^harness= name=\([^[:space:]]*\).*/\1/p' "$contract")
+            ;;
+        repo.slug)
+            raw=$(sed -n 's/^repo=//p' "$contract")
+            ;;
+        base.branch)
+            raw=$(sed -n 's/^base=\([^[:space:]]*\).*/\1/p' "$contract")
+            ;;
+    esac
+    printf '%s\n' "$raw" | sed -n '1p'
+}
+
+cache_digest=$(contract_cache_input_digest "$contract" "$config" 2> /dev/null || true)
+if [[ -n $cache_digest ]] &&
+    value=$(contract_cache_read "$repo_root" "$cache_digest" "$key" 2> /dev/null); then
+    live_value=$(read_contract_value "$key")
+    session_skills_path=$(contract_cache_read "$repo_root" "$cache_digest" skills.path 2> /dev/null || true)
+    live_skills_path=$(read_contract_value skills.path)
+    # The digest says only that the sources are unchanged; an owned/untracked
+    # cache remains mutable. Accept a hit only when its requested projection
+    # and the skills path used for the session record still match live data.
+    if [[ -n $live_value && $value == "$live_value" &&
+        -n $session_skills_path && $session_skills_path == "$live_skills_path" ]]; then
+        contract_cache_write_session_context "$repo_root" "$cache_digest" "skills.path=$live_skills_path"
+        emit_value "$value"
+        exit 0
+    fi
 fi
 
-printf '%s\n' "$value"
+raw=$(read_contract_value "$key")
+value=$raw
+[[ -n $value ]] || die 1 "contract key is absent or empty: $key"
+
+if [[ -n $cache_digest ]]; then
+    cache_entries=()
+    for cache_key in skills.path harness.trailer harness.name repo.slug base.branch; do
+        cache_value=$(read_contract_value "$cache_key")
+        [[ -n $cache_value ]] && cache_entries+=("$cache_key=$cache_value")
+    done
+    contract_cache_write "$repo_root" "$cache_digest" "${cache_entries[@]}"
+    contract_cache_write_session_context "$repo_root" "$cache_digest" "${cache_entries[@]}"
+fi
+
+emit_value "$value"

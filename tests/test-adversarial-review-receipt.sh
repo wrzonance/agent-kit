@@ -60,7 +60,7 @@ assert_receipt_contract() {
     # a helper invocation path and the sentinel can occur in a comment, so
     # matching them independently would accept a block that executes no guard.
     assert_contains "$section" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' "$label publication executes the full provenance guard"
-    assert_contains "$section" 'agentkit unresolved: prepend the Step 0 resolver block' "$label publication fails loudly without the resolver"
+    assert_contains "$section" 'agentkit unresolved: prepend THE CACHE REHYDRATION block' "$label publication fails loudly without cache rehydration"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'

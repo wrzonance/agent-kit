@@ -88,11 +88,9 @@ recipes live there.
 - **Repo** — infer from `git remote get-url origin`; override with `owner/repo` arg
 - **Worktree** — reuse the PR branch worktree when present; otherwise the helper derives and prints `<worktree-root>/pr-<PR>`; `$PR_WORKTREE` is that output, not an input
 
-## The resolver (prepend to EVERY shell call that touches `$agentkit`)
+## Resolver (run once per session)
 
-Fully self-contained: it only inspects the repository toplevel and its untracked
-`.agent/env-contract.txt`, so it is safe before the PR worktree exists (main repo) or after
-(inside the worktree) alike.
+The warm-up writes data-only `.agent/cache/contract-session.env`; it is never sourced. A changed input makes it stale until refreshed.
 
 ```bash
 # Resolve the skill tree from the environment contract at the repository
@@ -111,32 +109,24 @@ if [[ -z $agentkit ]]; then
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-# Set only after the provenance checks above pass -- the sentinel proves THIS
-# resolver ran, not just that some directory exists.
-# shellcheck disable=SC2034
-agentkit_provenance=ok
+agentkit_provenance=ok; : "$agentkit_provenance"
 ```
 
-Shell state does not persist between tool calls, so every later block that touches `$agentkit`
-assumes this resolver ran immediately before it. A block run without it fails loudly on its own
-guard line — `agentkit unresolved: prepend the Step 0 resolver block` — instead of silently
-operating on an empty variable. The guard also checks `agentkit_provenance=ok`, a sentinel set
-only after provenance passes, so a stale or profile-inherited `agentkit` still fails the guard.
+Shell state is not persistent; later standalone blocks rehydrate the validated data record before their guard, and a missing or stale record fails loudly.
+
+#### THE CACHE REHYDRATION (prepend to each later guarded block)
+
+Replace `STEP_0_AGENTKIT` with Step 0's exact absolute `skills=` path; never read it from cache. The trusted reader rehydrates and validates current data.
+
+```bash
+agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$shared/lib/contract-cache.sh"
+[[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
+contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
+```
 
 ## Implementation-worker gate (MANDATORY for every code change)
 
-Role separation: PR-loop orchestrates; workers receive fresh fenced context and sole-writer isolation; root performs independent root validation. Dispatch one worker for CI/conflict/adversarial/automated or approved-human code fixes; the Step 1b reviewer never satisfies this gate. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort; read
-[../.shared/spawn-contract.md](../.shared/spawn-contract.md) for model/effort selection — this
-file is dispatcher-side guidance, never pasted into a worker prompt — and
-[../.shared/six-step-loop.md](../.shared/six-step-loop.md) for the required loop. Paste the
-six-step contract verbatim into the worker's prompt, alongside the accepted findings and
-worktree/branch rules, never as a pointer; `fork_context: false` leaves it no other way to see
-them.
-Read [references/worker-gate.md](references/worker-gate.md) in full before dispatching any worker
-— it carries the orchestrator/worker split and the full root-owned publication handback mechanics
-(validation, argv parsing, the REPO/PR setup recipe), pointing onward to
-[../.shared/spawn-contract.md](../.shared/spawn-contract.md) for the exact spawn call shape and
-degraded no-spawn path.
+The PR loop orchestrates; an implementation worker is the sole writer for any CI, conflict, review, or approved-human fix batch. Resolve its configured model/effort, then read [references/worker-gate.md](references/worker-gate.md), [../.shared/spawn-contract.md](../.shared/spawn-contract.md), and [../.shared/six-step-loop.md](../.shared/six-step-loop.md) in full before dispatch. Paste the six-step contract and accepted findings into the isolated worker prompt; root alone validates, commits, pushes, and posts.
 
 ## The Loop
 
@@ -191,10 +181,10 @@ Reuse the worktree already checked out for the PR's head branch; otherwise creat
 Never switch branches in a worktree that may belong to another issue/PR.
 
 ```bash
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+# >>> prepend THE RESOLVER (initial warm-up only) <<<
 # At the TOP of the fence, not inside the create branch below: the reuse path
 # skips that branch and still runs agent-preflight.sh out of "$agentkit".
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; fi
 if ! setup_output=$("$agentkit/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
   printf '%s\n' "$setup_output" >&2
@@ -205,16 +195,16 @@ printf '%s\n' "$setup_output"
 PR_WORKTREE=$(sed -n 's/^worktree=//p' <<<"$setup_output" | tail -n 1 | sed 's/ branch=.*//')
 [[ -n $PR_WORKTREE ]] || { echo 'STOP: worktree helper returned no worktree path'; exit 1; }
 cd "$PR_WORKTREE" || { echo "STOP: worktree missing at $PR_WORKTREE"; exit 1; }
+contract_root="$(git rev-parse --show-toplevel)" || exit 1
+shared="$agentkit/.shared/scripts"
+[[ -x "$shared/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
+[[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
+"$shared/lib/contract-cache.sh" --read-session-context --repo-root "$contract_root" > /dev/null || exit 1
 # The helper excludes .agent/* as local state; never git add -A.
 ```
 
-**Run all subsequent commands from `$PR_WORKTREE`.** All commits go to the PR head branch. The
-helper owns Step 0a's branch/exclude mutations, secure propagation of root-local ignored config,
-preflight, fork checkout, fast-forward pull, and declared setup dispatch. Carry the printed
-preflight block forward and paste it verbatim into every worker prompt; act on its decision lines:
-`project-scope=no` → fleet: verify App `Projects: write`; OAuth: `gh auth refresh -s project`; `peer-cli= <name> absent` →
-Step 1b skips the probe, goes straight to the blind same-harness fallback; `git= … writable=no` →
-expect `worktree-commit.sh` exit `2` on the first commit (a documented retry).
+**Run all later commands from `$PR_WORKTREE`; commits target its PR branch.** Carry the printed preflight block verbatim into workers. Follow its decision lines: `project-scope=no` → fix App/OAuth scope; `peer-cli= <name> absent` → blind same-harness fallback; `git=… writable=no` → expect commit-helper exit 2.
 
 ### 0b — Check for merge conflicts
 
@@ -240,7 +230,8 @@ and verify via `agent-run.sh`:
 BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
 git fetch origin "$BASE_BRANCH" && git merge "origin/$BASE_BRANCH"
 git diff --name-only --diff-filter=U   # resolve each listed file, then:
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
 # Trailer from harness=; contract-read.sh performs provenance checks and model substitution.
 contract_root="$(git rev-parse --show-toplevel)"
@@ -259,15 +250,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-`--cmd NAME` resolves through the repo's declaration; undeclared exits `1` naming the key.
-**Command-trust gate:** `--cmd` needs a recorded human approval (`--approve`, terminal-only); when
-the invocation carried `--yolo`/`--trust-trunk`, append `--yolo` to every `agent-run.sh --cmd` call
-(skips the gate loudly, records nothing, only when inputs match the remote trunk); a refusal
-reports BLOCKED — never forge the approval. Verification is cached per tree-state (`--force` for
-fresh); focused suites during red/green, full suite once before commit — after push, GitHub CI is
-authoritative. Exit `2` from the commit helper means "obtain write permission and re-run the
-identical command." **Never push without local verification passing.** Wait for GitHub to
-recalculate mergeability before Step 1.
+Run only declared `agent-run.sh --cmd` commands; approval/`--yolo` failures are BLOCKED, never forged. When the invocation carried `--yolo`/`--trust-trunk`, append `--yolo` to each command. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry.
 
 ### 0c — Create the private review-artifact directory
 
@@ -294,7 +277,8 @@ if ! command -v jq >/dev/null 2>&1; then
     printf '%s\n' 'jq is not installed; evidence unavailable' >&2
     exit 1
 fi
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
@@ -326,7 +310,8 @@ the runner reads `harness=`/`peer-cli=` facts for selection and blind same-harne
 
 ```bash
 # Step 1 already fetched this file; do not make a second comments query here.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 precheck_rc=0
@@ -354,7 +339,8 @@ run ID from the `gh pr checks` URL column), then run the **Implementation-worker
 Verify independently before the single cycle push, through `agent-run.sh`:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd lint --if-declared
 "$agent_run" --cmd test
@@ -391,8 +377,8 @@ result is missing or incomplete), and receipt publication consumes that ledger. 
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 : "${REPO:?re-set REPO to OWNER/REPO; shell state does not persist}"
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
@@ -436,7 +422,8 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 Wait in **bounded rounds** — never one unbounded wait:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
 ```
@@ -471,7 +458,8 @@ Refresh every artifact with the same single call as Step 1 — no separate `gh p
 hand-rolled GraphQL re-query:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
