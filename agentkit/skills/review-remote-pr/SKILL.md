@@ -196,7 +196,7 @@ Never switch branches in a worktree that may belong to another issue/PR.
 # skips that branch and still runs agent-preflight.sh out of "$agentkit".
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; fi
-if ! setup_output=$("$agentkit/skills/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
+if ! setup_output=$("$agentkit/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
   printf '%s\n' "$setup_output" >&2
   printf '%s\n' 'STOP: PR worktree helper failed; no worktree output will be parsed.' >&2
   exit 1
