@@ -295,6 +295,48 @@ common_actual=$(PATH="$no_readlink:$PATH" worktree_setup_common_dir "$repo")
 assert_eq "$common_expected" "$common_actual" \
     'common-dir resolution works without readlink -f'
 
+# A linked worktree carries a .git FILE whose gitdir points into the main
+# repository. mkdir .git is therefore the worker-only failure from the issue,
+# while the shipped helper must follow Git's resolved metadata paths instead.
+linked_main=$tmp/linked-main
+linked_feature=$tmp/linked-feature
+mkdir -p "$linked_main"
+git init -q -b main "$linked_main"
+git -C "$linked_main" config user.name test
+git -C "$linked_main" config user.email test@example.invalid
+printf '%s\n' seed >"$linked_main/seed"
+git -C "$linked_main" add -- seed
+git -C "$linked_main" commit -qm base
+git -C "$linked_main" worktree add -q -b feat/linked "$linked_feature"
+assert_eq file "$(if [[ -f $linked_feature/.git && ! -d $linked_feature/.git ]]; then printf file; else printf other; fi)" \
+    'a linked worktree exposes .git as a metadata file, not a directory'
+assert_contains "$(<"$linked_feature/.git")" "gitdir: $linked_main/.git/worktrees/" \
+    'the linked .git file points at per-worktree metadata under the common directory'
+mkdir_ok=yes
+mkdir -p "$linked_feature/.git/cache" >/dev/null 2>&1 || mkdir_ok=no
+assert_eq no "$mkdir_ok" \
+    'the reproduced mkdir .git attempt fails only because worker context treats the file as a directory'
+linked_common=$(cd -- "$(git -C "$linked_feature" rev-parse --git-common-dir)" && pwd -P)
+assert_eq "$linked_common" "$(worktree_setup_common_dir "$linked_feature")" \
+    'linked worktree setup resolves the main repository common directory'
+linked_exclude=$(git -C "$linked_feature" rev-parse --git-path info/exclude)
+assert_eq "$linked_exclude" "$(worktree_setup_exclude_path "$linked_feature")" \
+    'linked worktree setup resolves info/exclude through git-path'
+
+# Audit shipped metadata helpers for literal .git/ concatenation. The protected
+# path policy intentionally names user-facing paths such as .git/config, so it
+# is excluded; every helper that reads or writes metadata must use Git plumbing.
+# Match path construction, not explanatory prose such as "a read-only .git".
+literal_pattern="(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\})/\.git([/\"]|$)|\"\.git([/\"]|$)"
+literal_git_paths=''
+while IFS= read -r helper; do
+    [[ $helper == */lib/protected-paths.sh ]] && continue
+    matches=$(grep -nHE "$literal_pattern" "$helper" | grep -vE ':[[:space:]]*#' || true)
+    [[ -z $matches ]] || literal_git_paths+="$matches"$'\n'
+done < <(find "$root/agentkit" -type f -name '*.sh' -print | sort)
+assert_eq '' "$literal_git_paths" \
+    'shipped metadata helpers contain no literal .git/ path assumptions'
+
 if [[ -x $pr_sh ]]; then
     assert_rc 1 'PR setup rejects an invalid PR number before forge access' -- \
         "$pr_sh" --pr 0 --repo example/repo
