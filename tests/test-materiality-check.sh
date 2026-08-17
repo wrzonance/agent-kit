@@ -75,6 +75,18 @@ gitc commit -q -m 'feat: auth + workflow'
 out=$("$helper" --worktree "$repo" --base main)
 assert_contains "$out" 'verdict=material' 'auth/workflow diffs are material despite test files'
 
+# A rename of executable code INTO a test path must stay material: with rename
+# detection, --name-only would report only the destination and the relocated
+# logic would read as a test-only diff (CodeRabbit finding, PR #226).
+start_branch
+gitc mv src/app.sh tests/test-app-moved.sh
+gitc commit -q -m 'refactor: move logic into tests'
+out=$("$helper" --worktree "$repo" --base main)
+assert_contains "$out" 'verdict=material' \
+    'an executable-to-test rename is never skip-eligible'
+assert_contains "$out" 'first-material=src/app.sh' \
+    'the rename verdict names the removed source path'
+
 # Evidence failures are loud and fail closed: no verdict means no skip.
 start_branch
 assert_rc 2 'an empty diff refuses to classify' -- "$helper" --worktree "$repo" --base main

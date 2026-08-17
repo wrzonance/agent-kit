@@ -60,7 +60,10 @@ done
 git -C "$worktree" rev-parse --verify --quiet "$base^{commit}" > /dev/null ||
     die "--base does not resolve to a commit: $base"
 
-changed=$(git -C "$worktree" diff --name-only "$base...HEAD") ||
+# --no-renames: with rename detection, src/x.sh moved to tests/test-x.sh
+# reports only the destination path, and relocated executable code would read
+# as a test-only diff. The source path staying in the list keeps it material.
+changed=$(git -C "$worktree" diff --no-renames --name-only "$base...HEAD") ||
     die 'could not compute the changed-file list'
 
 # A test file lives under a test root or carries a test-name shape; a docs file

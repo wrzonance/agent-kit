@@ -62,8 +62,10 @@ done
     die '--write-set is required for the issue-lead template: pass the dispatch plan'"'"'s predictedWriteSet globs'
 for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
     # Repository-relative globs only, matching the dispatch-plan validator's
-    # own path policy: no absolute paths, no traversal, no control bytes.
-    [[ -n $glob && $glob != /* && $glob != *$'\n'* && $glob != *"\\"* ]] ||
+    # own path policy: no absolute paths, no traversal, no control bytes --
+    # ALL control characters, since these values render into the worker prompt
+    # where a CR, tab, or escape could hide or malform a declared entry.
+    [[ -n $glob && $glob != /* && $glob != *[[:cntrl:]]* && $glob != *"\\"* ]] ||
         die "--write-set glob is not a repository-relative pattern: $glob"
     case "/$glob/" in
         *'/../'* | *'//'* | *'/./'*) die "--write-set glob contains an unsafe path: $glob" ;;

@@ -59,7 +59,7 @@ declare -A KNOWN_OVERSIZE=(
 # waits, 9-10 root<->worker round trips per issue); ceilings re-measured
 # against the merged body, minimum that passes. Target unchanged.
 KNOWN_OVERSIZE[review-remote-pr]="511:7959:450"
-KNOWN_OVERSIZE[parallel-issues]="1050:17979:900"
+KNOWN_OVERSIZE[parallel-issues]="1051:17987:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

@@ -163,6 +163,15 @@ assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
 assert_contains "$err" 'repository-relative' \
     'the write-set refusal names the repository-relative rule'
 
+# Any control character is refused, not just newline: these values render into
+# the worker prompt, where a CR, tab, or escape hides or malforms an entry.
+for cntrl_glob in $'src/a\tb/**' $'src/a\rb/**' $'src/a\x1bb/**'; do
+    assert_rc 1 'a control-character write-set glob is refused' -- \
+        bash "$compose" --template issue-lead --write-set "$cntrl_glob" --worktree "$repo" \
+        --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
+        --worker-effort high
+done
+
 command_lines=$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')
 assert_contains "$command_lines" '--cmd verify' \
     'generated command scan finds actual agent-run --cmd lines'

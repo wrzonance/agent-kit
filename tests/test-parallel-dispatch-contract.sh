@@ -466,7 +466,17 @@ assert_contains "$prepare_script_text" 'issue_contents=$(jq -r' 'root owns issue
 assert_contains "$prepare_script_text" 'fence-untrusted-data.sh' 'root owns fence helper invocation'
 assert_contains "$prepare_script_text" 'mv -f -- "$tmp" "$target"' 'root atomically publishes the spec fence'
 assert_contains "$prepare_script_text" 'mv -f -- "$prior_tmp" "$prior_target"' 'root atomically publishes the prior-art fence'
-assert_contains "$normalized_text" 'push the branch' 'root pushes after executing the handback'
+# Scope the fallback-push oracle to the root publication section: the worker
+# primary flow also says "push the branch", so a whole-text search would stay
+# green even if the root fallback lost its push step.
+root_publication_section=$(sed -n '/^### Root review and draft PR after a worker push$/,/^### Polling discipline/p' "$skill")
+normalized_root_publication=$(tr '\n' ' ' <<<"$root_publication_section" | tr -s '[:space:]' ' ')
+assert_contains "$normalized_root_publication" 'Invoke returned argv once, then push the branch' \
+    'root fallback pushes only after executing the validated handback'
+assert_contains "$normalized_root_publication" 'Environment-refusal fallback only' \
+    'the root push step lives inside the environment-refusal fallback'
+assert_contains "$text" 'compose_args+=(--write-set "$glob")' \
+    'the dispatch recipe passes each write-set glob as its own repeated flag'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
 assert_contains "$normalized_text" 'Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line' \
     'root draft PR carries the required report fields'

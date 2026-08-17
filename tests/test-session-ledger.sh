@@ -212,32 +212,33 @@ assert_eq 'different' "$([[ $(review_run_id auto-review=false) != $(review_run_i
 # covers: the once-per-run authorization check (issue #224 WS6). A recorded
 # grant answers every later mutation of its class; an unrecorded one stops.
 covers_ledger="$state/covers-ledger.ndjson"
+covers_scope='worktree pushes, draft PRs, board moves'
 assert_rc 1 'covers refuses before any grant is recorded' -- "$script" covers \
     --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
-    --decision 'authorize:workflow-mutations'
+    --decision 'authorize:workflow-mutations' --scope "$covers_scope"
 assert_rc 0 'covers fixture grant appends' -- "$script" append \
     --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
     --skills-path "$skills_path" --procedure-set parallel-issues \
-    --decision 'authorize:workflow-mutations' --scope 'worktree pushes, draft PRs, board moves' \
+    --decision 'authorize:workflow-mutations' --scope "$covers_scope" \
     --quote 'yolo fast-mode: publish the drafts without re-asking.'
 covers_out=$("$script" covers --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
-    --decision 'authorize:workflow-mutations' 2>/dev/null)
+    --decision 'authorize:workflow-mutations' --scope "$covers_scope" 2>/dev/null)
 covers_rc=$?
-assert_eq 0 "$covers_rc" 'a recorded grant covers its mutation class'
+assert_eq 0 "$covers_rc" 'a recorded grant covers its exact decision and scope'
 assert_contains "$covers_out" 'covered= run-id=parallel-issues-fast decision=authorize:workflow-mutations records=1' \
     'covers reports the matched grant as evidence'
+assert_rc 2 'a scope-less covers check is a usage error, never a wildcard' -- "$script" covers \
+    --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
+    --decision 'authorize:workflow-mutations'
 assert_rc 1 'a different decision token is not covered' -- "$script" covers \
     --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
-    --decision 'authorize:ready-flip'
+    --decision 'authorize:ready-flip' --scope "$covers_scope"
 assert_rc 1 'another run cannot borrow the grant' -- "$script" covers \
     --ledger "$covers_ledger" --run-id 'parallel-issues-other' \
-    --decision 'authorize:workflow-mutations'
+    --decision 'authorize:workflow-mutations' --scope "$covers_scope"
 assert_rc 1 'a scope mismatch is not covered' -- "$script" covers \
     --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
     --decision 'authorize:workflow-mutations' --scope 'merges to trunk'
-assert_rc 0 'the exact recorded scope is covered' -- "$script" covers \
-    --ledger "$covers_ledger" --run-id 'parallel-issues-fast' \
-    --decision 'authorize:workflow-mutations' --scope 'worktree pushes, draft PRs, board moves'
 
 ledger_section=$(awk '/^## Session decision ledger/{capture=1} /^### Diff-size facts/{capture=0} capture' \
     "$root/agentkit/skills/parallel-issues/SKILL.md")

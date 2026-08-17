@@ -705,12 +705,13 @@ cleanup_prompt_file() { rm -f -- "$prompt_file"; }
 trap cleanup_prompt_file EXIT HUP INT TERM
 chmod 600 -- "$prompt_file" || exit 1
 # worker_effort is the per-issue value (the dispatch-plan workerEffort override
-# when present, else the AGENT_WORKER_EFFORT default). write_set_csv is the
-# issue's predictedWriteSet globs from the dispatch plan, comma-joined -- it
-# becomes the worker's declared write set and is REQUIRED for an issue lead.
-# For a glob that itself contains a comma, pass repeated --write-set flags
-# (one glob per flag) instead of the CSV form.
-compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --write-set "$write_set_csv" --output "$prompt_file")
+# when present, else the AGENT_WORKER_EFFORT default). write_set_globs is a
+# bash array holding the issue's predictedWriteSet globs from the dispatch
+# plan, one glob per element -- REQUIRED for an issue lead. Repeated flags,
+# never a comma-joined value: CSV would split a comma-bearing glob before it
+# ever reached the prompt.
+compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
+for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
 if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
 if ! "$compose_script" "${compose_args[@]}"; then
     exit 1
