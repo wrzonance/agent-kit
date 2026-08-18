@@ -1751,4 +1751,34 @@ assert_eq 'deny' "$(decision "$boundary_shell")" \
 assert_contains "$boundary_shell" "$boundary_feature/src/shell-file.txt" \
     'shell redirect denial supplies the corrected worktree path'
 
+# A lexical path inside the worker is not safe when a symlink component lands
+# outside it. The boundary resolves the actual target before allowing the edit.
+boundary_outside="$tmp/boundary-outside"
+mkdir -p "$boundary_outside"
+ln -s "$boundary_outside" "$boundary_feature/link"
+boundary_link_out=$(edit_input "$boundary_feature" \
+    "$boundary_feature/link/escape.txt" 'worktree-boundary-symlink' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_link_out")" \
+    'a worker symlink whose target escapes the worktree is denied'
+assert_contains "$boundary_link_out" 'resolves outside the contracted worktree' \
+    'symlink boundary denial explains the resolved escape'
+
+# Evidence is security-sensitive state: a symlinked evidence parent is refused
+# before mkdir/chmod/append, so a tool call cannot redirect the ledger outside
+# the worktree.
+evidence_dir="$boundary_feature/.agent/evidence"
+evidence_outside="$tmp/evidence-outside"
+mkdir -p "$evidence_outside"
+rm -f -- "$boundary_evidence"
+rmdir -- "$evidence_dir"
+ln -s "$evidence_outside" "$evidence_dir"
+evidence_symlink_out=$(edit_input "$boundary_feature" \
+    "$boundary_feature/src/evidence.txt" 'worktree-evidence-symlink' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$evidence_symlink_out")" \
+    'an evidence-parent symlink does not change the tool decision'
+assert_eq yes "$( [[ ! -e $evidence_outside/paths-touched.ndjson ]] && printf yes || printf no )" \
+    'a symlinked evidence parent receives no paths-touched record'
+
 finish

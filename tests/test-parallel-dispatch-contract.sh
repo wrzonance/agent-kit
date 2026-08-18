@@ -859,6 +859,52 @@ snapshot_out=$(
 assert_contains "$snapshot_out" 'snapshot=' \
     'dispatch snapshot reports its persisted path'
 
+# Porcelain -z must preserve spaces and non-ASCII path bytes instead of
+# silently dropping Git's quoted representation.
+printf 'worker space\n' > "$cross_worker/src/space café.txt"
+printf 'worker space\n' > "$cross_root/src/space café.txt"
+space_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start 1 --worker-end 2147483647 --write-set 'src/**' || true
+)
+assert_contains "$space_out" 'src/space café.txt' \
+    'Collect preserves a space and non-ASCII path from NUL-delimited status'
+rm -- "$cross_root/src/space café.txt"
+
+# A single-star component cannot cross a path separator; globstar remains
+# recursive. Both cases are exercised through the public Collect interface.
+mkdir -p "$cross_root/src/nested"
+mkdir -p "$cross_worker/src/nested"
+printf 'nested worker\n' > "$cross_worker/src/nested/deep.txt"
+printf 'nested worker\n' > "$cross_root/src/nested/deep.txt"
+single_star_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start 1 --worker-end 2147483647 --write-set 'src/*' || true
+)
+assert_not_contains "$single_star_out" 'src/nested/deep.txt' \
+    'a single-star write-set does not cross a directory component'
+recursive_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 --worker-start 1 \
+        --worker-end 2147483647 --write-set 'src/**' || true
+)
+assert_contains "$recursive_out" 'src/nested/deep.txt' \
+    'a recursive write-set matches nested paths'
+rm -- "$cross_root/src/nested/deep.txt"
+
+# Collect must never compare or dispose the observation checkout with itself.
+self_err=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_root" --issue 254 --write-set 'src/**' \
+        2>&1 >/dev/null
+)
+self_rc=$?
+assert_eq 2 "$self_rc" 'Collect rejects the root checkout as its worker worktree'
+assert_contains "$self_err" 'must differ from root' \
+    'self-worktree rejection explains the destructive hazard'
+
 # Plant the same bytes in the root checkout. Collect must attribute this to the
 # worker window, compare it to the matching branch worktree, and restore the
 # root to its exact pre-dispatch state when explicitly asked to dispose it.
@@ -893,6 +939,24 @@ assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
     'outside-window exact bytes remain for explicit disposition'
 git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
 
+# A path that was already dirty at snapshot time is never auto-disposed when a
+# worker overwrites those human bytes. The overwrite remains visible.
+printf 'human pre-dispatch bytes\n' > "$cross_root/src/data.txt"
+baseline_snapshot="$cross_root/.agent/cross-write-baseline.snapshot"
+"$cross_write" snapshot --root "$cross_root" --output "$baseline_snapshot" \
+    --write-set 'src/**' >/dev/null
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+baseline_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$baseline_snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 --worker-start 1 \
+        --worker-end 2147483647 --write-set 'src/**' --dispose-duplicates || true
+)
+assert_contains "$baseline_out" 'surface-overwrote-baseline' \
+    'a worker overwrite of pre-existing human bytes is surfaced'
+assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
+    'baseline-overwrite handling never auto-restores the root path'
+git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
+
 # A divergent root copy is still an incident, but must be surfaced rather than
 # silently overwritten by the matching worker branch.
 printf 'divergent root bytes\n' > "$cross_root/src/data.txt"
@@ -906,5 +970,24 @@ assert_contains "$divergent_out" 'disposition=surface-divergent' \
     'Collect surfaces a divergent cross-write for explicit human disposition'
 assert_eq 'divergent root bytes' "$(<"$cross_root/src/data.txt")" \
     'divergent disposal never overwrites the root copy'
+
+# Disposal resolves parent symlinks before hashing or removing anything. A
+# lexical path under the checkout that lands outside it is refused and leaves
+# the outside target untouched.
+dispose_outside="$tmp/cross-dispose-outside"
+mkdir -p "$dispose_outside" "$cross_worker/src/unsafe"
+printf 'outside bytes\n' > "$dispose_outside/escape.txt"
+ln -s "$dispose_outside" "$cross_root/src/unsafe"
+printf 'worker unsafe bytes\n' > "$cross_worker/src/unsafe/escape.txt"
+dispose_err=$(
+    "$cross_write" dispose --root "$cross_root" --worker-worktree "$cross_worker" \
+        --path src/unsafe/escape.txt 2>&1 >/dev/null
+)
+dispose_rc=$?
+assert_eq 2 "$dispose_rc" 'disposal rejects a symlinked parent outside the root'
+assert_contains "$dispose_err" 'escapes root' \
+    'symlink disposal refusal explains the containment failure'
+assert_eq 'outside bytes' "$(<"$dispose_outside/escape.txt")" \
+    'refused disposal does not touch the outside target'
 
 finish

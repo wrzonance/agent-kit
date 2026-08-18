@@ -355,6 +355,28 @@ guard_scope_canonical() {
     printf '%s\n' "${canonical:-/}"
 }
 
+# Resolve existing symlink components without trusting lexical containment.
+# For a missing leaf, resolve its parent and append only that leaf. A caller
+# that cannot resolve the parent must fail closed rather than treating the
+# spelling as proof that the target stays in the worker.
+guard_target_realpath() {
+    local candidate=$1 parent base resolved
+    if [[ -e $candidate || -L $candidate ]]; then
+        realpath -e -- "$candidate" 2> /dev/null || return 2
+    else
+        parent=${candidate%/*}
+        base=${candidate##*/}
+        [[ -n $parent ]] || parent=/
+        resolved=$(realpath -e -- "$parent" 2> /dev/null) || return 2
+        printf '%s/%s\n' "$resolved" "$base"
+    fi
+}
+
+guard_path_inside() {
+    local root=$1 candidate=$2
+    [[ $candidate == "$root" || $candidate == "$root"/* ]]
+}
+
 guard_scope_path_allowed() {
     local candidate root root_canonical
     candidate=$(guard_scope_canonical "$1") || return 1
@@ -577,12 +599,43 @@ guard_worktree_contract() {
 # sibling worktree remain ordinary targets; only the root checkout itself is
 # the silent-cross-write boundary this guard prevents.
 guard_worktree_boundary_reason() {
-    local target=$1 cwd=$2 command_line=${3:-} resolved base candidate relative
+    local target=$1 cwd=$2 command_line=${3:-} base candidate actual relative
     guard_worktree_contract "${workspace_root:-}" || return 1
     base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
-    resolved=$(guard_target_path "$target" "$base" 2> /dev/null) || return 1
-    candidate=${resolved#*$'\n'}
-    [[ -n $candidate && $candidate != "$resolved" ]] || return 1
+    case $target in
+        /*) candidate=$target;;
+        *) candidate="$base/$target";;
+    esac
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+
+    # A target lexically under the worker can still follow a symlink into the
+    # root checkout or an entirely foreign tree. Resolve it before allowing
+    # the edit; inability to resolve an existing parent is itself a refusal.
+    case $candidate in
+        "$GUARD_WORKTREE_CONTRACT_WORKTREE"|"$GUARD_WORKTREE_CONTRACT_WORKTREE"/*)
+            if ! actual=$(guard_target_realpath "$candidate"); then
+                GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+                relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
+                [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
+                [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+                printf 'Refused once -- could not securely resolve write target %s inside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+                    "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+                    "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+                return 0
+            fi
+            if ! guard_path_inside "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$actual"; then
+                GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+                relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
+                [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
+                [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+                printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+                    "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+                    "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+                return 0
+            fi
+            return 1
+            ;;
+    esac
     case $candidate in
         "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*) ;;
         *) return 1;;
@@ -610,22 +663,31 @@ guard_worktree_boundary_reason() {
 # must not turn an evidence filesystem hiccup into an invisible allow/deny loop.
 guard_record_write_targets() {
     local root=$1 payload=$2 cwd=$3 command_line=$4 tool_name=$5 session=$6 tool_call_id=${7:-}
-    local evidence_dir evidence_file targets_json record timestamp
+    local agent_dir evidence_dir evidence_file targets_json record timestamp
     local -a targets=()
-    [[ -n $root && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 0
+    agent_dir="$root/.agent"
+    [[ -n $root && -d $agent_dir && ! -L $agent_dir && -O $agent_dir ]] || return 0
     mapfile -t targets < <(
         guard_target_paths "$payload"
         [[ -z $command_line ]] || guard_shell_write_targets "$command_line"
     )
     ((${#targets[@]})) || return 0
-    evidence_dir="$root/.agent/evidence"
-    [[ ! -e $evidence_dir || -d $evidence_dir ]] || return 0
-    mkdir -p -- "$evidence_dir" 2> /dev/null || return 0
-    chmod 700 -- "$evidence_dir" 2> /dev/null || true
+    evidence_dir="$agent_dir/evidence"
+    if [[ -e $evidence_dir || -L $evidence_dir ]]; then
+        [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    else
+        mkdir -- "$evidence_dir" 2> /dev/null || return 0
+        [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    fi
+    chmod 700 -- "$evidence_dir" 2> /dev/null || return 0
     evidence_file="$evidence_dir/paths-touched.ndjson"
-    [[ ! -L $evidence_file ]] || return 0
-    touch -- "$evidence_file" 2> /dev/null || return 0
-    chmod 600 -- "$evidence_file" 2> /dev/null || true
+    if [[ -e $evidence_file || -L $evidence_file ]]; then
+        [[ -f $evidence_file && ! -L $evidence_file && -O $evidence_file ]] || return 0
+    else
+        touch -- "$evidence_file" 2> /dev/null || return 0
+        [[ -f $evidence_file && ! -L $evidence_file && -O $evidence_file ]] || return 0
+    fi
+    chmod 600 -- "$evidence_file" 2> /dev/null || return 0
     targets_json=$(jq -nc '$ARGS.positional' --args "${targets[@]}" 2> /dev/null) || return 0
     timestamp=$(date +%s)
     record=$(jq -nc \

@@ -64,6 +64,7 @@ git_common_dir() {
 
 require_matching_worktree() {
     local root=$1 worker=$2 root_common worker_common worker_root
+    [[ $root != "$worker" ]] || die 'worker worktree must differ from root'
     worker_root=$(git -C "$worker" rev-parse --show-toplevel 2>/dev/null) ||
         die "worker worktree is not a Git checkout: $worker"
     worker_root=$(canonical_dir "$worker_root") || die "cannot resolve worker root"
@@ -74,16 +75,31 @@ require_matching_worktree() {
         die "worker worktree belongs to a different repository: $worker"
 }
 
-require_inside_root() {
-    local root=$1 path=$2 candidate
-    case $path in
-        /*) candidate=$path;;
-        *) candidate=$root/$path;;
-    esac
-    case $candidate in
-        "$root"|"$root"/*) printf '%s\n' "$candidate";;
-        *) die "path escapes root: $path";;
-    esac
+path_is_inside() {
+    local root=$1 target=$2
+    [[ $target == "$root" || $target == "$root"/* ]]
+}
+
+# Resolve every existing component, including symlinks in the parent. A
+# missing leaf is safe to inspect only after its existing parent is proven to
+# remain inside the checkout. Return 3 for a resolved escape so callers can
+# report the containment failure rather than silently skipping it.
+resolve_inside_root() {
+    local root=$1 path=$2 candidate parent base resolved resolved_root
+    [[ -n $path && $path != /* && $path != . && $path != ../* &&
+        $path != */../* && $path != */.. ]] || return 2
+    resolved_root=$(canonical_dir "$root") || return 2
+    candidate="$resolved_root/$path"
+    if [[ -e $candidate || -L $candidate ]]; then
+        resolved=$(realpath -e -- "$candidate" 2>/dev/null) || return 2
+    else
+        parent=${candidate%/*}
+        base=${candidate##*/}
+        resolved=$(realpath -e -- "$parent" 2>/dev/null) || return 2
+        resolved="$resolved/$base"
+    fi
+    path_is_inside "$resolved_root" "$resolved" || return 3
+    printf '%s\n' "$candidate"
 }
 
 path_mtime() {
@@ -107,23 +123,34 @@ path_hash() {
     fi
 }
 
+status_record() {
+    local root=$1 path=$2 status=$3 safe_path
+    [[ -n $path && $path != *$'\t'* && $path != *$'\n'* ]] ||
+        die 'Git status path cannot be represented safely in the ledger'
+    safe_path=$(resolve_inside_root "$root" "$path") ||
+        die "Git status path resolves outside root: $path"
+    printf '%s\t%s\t%s\t%s\n' "$path" "$status" \
+        "$(path_mtime "$safe_path")" "$(path_hash "$safe_path")"
+}
+
 status_file() {
-    local root=$1 output=$2 line status path
-    git -C "$root" status --porcelain=v1 --untracked-files=all >"$output" ||
+    local root=$1 output=$2 entry status path old_path
+    git -C "$root" status --porcelain=v1 -z --untracked-files=all >"$output" ||
         die "could not snapshot Git status for $root"
-    while IFS= read -r line || [[ -n $line ]]; do
-        [[ -n $line ]] || continue
-        ((${#line} >= 4)) || continue
-        status=${line:0:2}
-        path=${line:3}
-        # Porcelain v1 quotes unusual paths.  The cross-write ledger is
-        # intentionally conservative: do not reinterpret escapes into a path
-        # that could identify a different file.
-        if [[ ${path:0:1} == '"' || ${path: -1} == '"' ]]; then
-            continue
-        fi
-        printf '%s\t%s\t%s\t%s\n' "$path" "$status" \
-            "$(path_mtime "$root/$path")" "$(path_hash "$root/$path")"
+    while IFS= read -r -d '' entry; do
+        ((${#entry} >= 4)) || die 'malformed NUL Git status record'
+        status=${entry:0:2}
+        [[ ${entry:2:1} == ' ' ]] || die 'malformed NUL Git status status field'
+        path=${entry:3}
+        status_record "$root" "$path" "$status"
+        # Porcelain v1 emits a second NUL record for rename/copy sources.
+        # Consume and retain it; dropping it would hide a write-set path.
+        case $status in
+            R*|C*|*R|*C)
+                IFS= read -r -d '' old_path || die 'truncated NUL rename record'
+                status_record "$root" "$old_path" "$status"
+                ;;
+        esac
     done <"$output"
 }
 
@@ -146,14 +173,46 @@ normalise_pattern() {
     printf '%s\n' "$pattern"
 }
 
+MATCH_PATTERN_PARTS=()
+MATCH_PATH_PARTS=()
+
+repo_path_match_at() {
+    local pattern_index=$1 path_index=$2 component
+    if ((pattern_index == ${#MATCH_PATTERN_PARTS[@]})); then
+        ((path_index == ${#MATCH_PATH_PARTS[@]}))
+        return
+    fi
+    component=${MATCH_PATTERN_PARTS[pattern_index]}
+    if [[ $component == '**' ]]; then
+        repo_path_match_at $((pattern_index + 1)) "$path_index" && return 0
+        ((path_index < ${#MATCH_PATH_PARTS[@]})) || return 1
+        repo_path_match_at "$pattern_index" $((path_index + 1))
+        return
+    fi
+    ((path_index < ${#MATCH_PATH_PARTS[@]})) || return 1
+    # A component is slash-free here, so ordinary shell component globs have
+    # the repository pathspec semantics: '*' cannot consume '/'.
+    # shellcheck disable=SC2053
+    [[ ${MATCH_PATH_PARTS[path_index]} == $component ]] || return 1
+    repo_path_match_at $((pattern_index + 1)) $((path_index + 1))
+}
+
+repo_path_match() {
+    local pattern=$1 path=$2
+    MATCH_PATTERN_PARTS=()
+    MATCH_PATH_PARTS=()
+    IFS=/ read -r -a MATCH_PATTERN_PARTS <<< "$pattern"
+    IFS=/ read -r -a MATCH_PATH_PARTS <<< "${path%/}"
+    repo_path_match_at 0 0
+}
+
 matches_write_set() {
     local root=$1 path=$2 pattern
     shift 2
     for pattern in "$@"; do
         pattern=$(normalise_pattern "$pattern" "$root")
         [[ -n $pattern ]] || continue
-        # shellcheck disable=SC2053  # write-set globs intentionally use [[ ]] patterns
-        [[ $path == $pattern ]] && return 0
+        repo_path_match "$pattern" "$path" && return 0
     done
     return 1
 }
@@ -164,28 +223,36 @@ tracked_path() {
 }
 
 restore_exact_duplicate() {
-    local root=$1 path=$2 expected_hash=${3:-} actual_hash
-    actual_hash=$(path_hash "$root/$path")
+    local root=$1 path=$2 expected_hash=${3:-} actual_hash root_file
+    root_file=$(resolve_inside_root "$root" "$path") ||
+        die "path escapes root during disposal: $path"
+    [[ ! -L $root_file ]] || die "symlink target cannot be disposed: $path"
+    actual_hash=$(path_hash "$root_file")
     [[ -z $expected_hash || $expected_hash == "$actual_hash" ]] ||
         die "root path changed during disposal: $path"
     if tracked_path "$root" "$path"; then
         git -C "$root" restore --source=HEAD --worktree -- "$path" ||
             die "could not restore tracked duplicate: $path"
     else
-        rm -- "$root/$path" || die "could not remove untracked duplicate: $path"
+        rm -- "$root_file" || die "could not remove untracked duplicate: $path"
     fi
 }
 
 dispose_path() {
     local root=$1 worker=$2 path=$3 expected_hash=${4:-}
     local worker_file root_file worker_hash
-    [[ -n $path && $path != /* && $path != .* && $path != */../* ]] ||
+    [[ -n $path && $path != /* && $path != . && $path != ../* &&
+        $path != */../* && $path != */.. ]] ||
         die "dispose path must be repository-relative: $path"
-    root_file=$(require_inside_root "$root" "$path")
+    root_file=$(resolve_inside_root "$root" "$path") ||
+        die "path escapes root during disposal: $path"
+    [[ ! -L $root_file ]] || die "symlink target cannot be disposed: $path"
     [[ -e $root_file || -L $root_file ]] || die "root path does not exist: $path"
     worker=$(canonical_dir "$worker") || die "cannot resolve worker worktree"
     require_matching_worktree "$root" "$worker"
-    worker_file=$worker/$path
+    worker_file=$(resolve_inside_root "$worker" "$path") ||
+        die "worker path escapes worktree: $path"
+    [[ ! -L $worker_file ]] || die "worker symlink target cannot be disposed: $path"
     [[ -e $worker_file || -L $worker_file ]] ||
         die "worker path does not exist for comparison: $path"
     worker_hash=$(path_hash "$worker_file")
@@ -240,7 +307,8 @@ snapshot_cmd() {
 
 collect_cmd() {
     local root='' snapshot='' worker='' issue='' worker_start='' worker_end='' dispose=no
-    local arg write_set line path status mtime hash issue_attr attribute branch_match disposition
+    local arg write_set path status mtime hash issue_attr attribute branch_match disposition
+    local baseline_value baseline_hash baseline_changed root_file worker_file
     local current_status current_raw captured now
     local -a write_sets=()
     declare -A baseline=()
@@ -288,7 +356,17 @@ collect_cmd() {
     local incidents=0
     while IFS=$'\t' read -r path status mtime hash; do
         [[ -n $path ]] || continue
-        [[ -n ${baseline[$path]+present} ]] && continue
+        baseline_changed=no
+        if [[ -n ${baseline[$path]+present} ]]; then
+            baseline_value=${baseline[$path]}
+            baseline_hash=${baseline_value##*$'\t'}
+            if [[ $hash == "$baseline_hash" ]]; then
+                # The bytes are unchanged from the immutable baseline; this is
+                # not a worker overwrite even if Git's status code changed.
+                continue
+            fi
+            baseline_changed=yes
+        fi
         matches_write_set "$root" "$path" "${write_sets[@]}" || continue
         incidents=$((incidents + 1))
         if ((mtime >= worker_start && mtime <= worker_end)); then
@@ -300,12 +378,19 @@ collect_cmd() {
             attribute='outside-mtime-window'
         fi
         branch_match=no
-        if [[ -e "$worker/$path" || -L "$worker/$path" ]] &&
-            cmp -s -- "$root/$path" "$worker/$path"; then
+        root_file=$(resolve_inside_root "$root" "$path") ||
+            die "current status path escapes root: $path"
+        worker_file=$(resolve_inside_root "$worker" "$path") ||
+            die "worker path escapes worktree: $path"
+        if [[ -e "$worker_file" || -L "$worker_file" ]] &&
+            [[ -e "$root_file" || -L "$root_file" ]] &&
+            cmp -s -- "$root_file" "$worker_file"; then
             branch_match=yes
         fi
         if [[ $branch_match == yes ]]; then
-            if [[ $attribute == mtime-window && $dispose == yes ]]; then
+            if [[ $baseline_changed == yes ]]; then
+                disposition=surface-overwrote-baseline
+            elif [[ $attribute == mtime-window && $dispose == yes ]]; then
                 restore_exact_duplicate "$root" "$path" "$hash"
                 disposition=restored-exact-duplicate
             elif [[ $attribute == mtime-window ]]; then
