@@ -58,7 +58,14 @@ advise() {
 }
 
 input=$(cat 2> /dev/null || true)
+tool_name=$(jq -r '.tool_name // empty' <<< "$input" 2> /dev/null || true)
 command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null || true)
+# Edit payloads are file content, not shell commands. Clear their optional
+# command-shaped field before any shell-write, repository, or trunk guard sees
+# it; Bash and unknown command-bearing tools retain the full command channel.
+case $tool_name in
+    Edit|Write|MultiEdit|NotebookEdit|apply_patch) command_line='';;
+esac
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 ADVISORY_CONTEXT=''
