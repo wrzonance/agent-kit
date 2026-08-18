@@ -213,7 +213,7 @@ root=$tmp/parallel-ratchet
 mkdir -p "$root/parallel-issues"
 {
     printf -- '---\nname: parallel-issues\ndescription: Use when an allowlisted skill grows past its stacked ceiling.\n---\n'
-    for ((i = 0; i < 1063; i++)); do
+    for ((i = 0; i < 1065; i++)); do
         printf 'body line %04d ' "$i"
         head -c 70 /dev/zero | tr '\0' x
         printf '\n'
