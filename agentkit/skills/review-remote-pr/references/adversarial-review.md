@@ -83,12 +83,14 @@ answer has not been careful, it has just stalled.
 
 The rest of the gate stands unchanged:
 
-- **Both the root and dispatched agents hold the grant.** The flag authorizes the
-  *invocation*, not one process: the root orchestrator running the review itself (the
-  root-owned fallback) and a dispatched review agent launching the peer CLI act under the
-  same grant. Forward it explicitly on dispatch; a dispatched agent holding the forwarded
-  grant does not stop to re-ask, and the root does not need a worker to exercise it on its
-  behalf.
+- **Consent is context-local.** A typed approval cannot cross an agent context boundary through
+  a forwarded prompt, ledger entry, or tool result. The **root-owned reviewer launch** is the
+  default: the root (or whichever context directly holds the typed approval) performs the one
+  consent-bearing send. Dispatched loop agents run the CI wait, spent-budget precheck, and finding
+  triage around that send; they do not launch the reviewer and never stall waiting for consent they
+  structurally cannot hold. Do not forward a consent record to manufacture approval in a child
+  context. If another context directly holds the approval, that context owns the launch and returns
+  the validated result to the loop.
 - **Make the grant legible to harness approval layers.** A sandbox or approval reviewer
   judges the launch command in front of it and cannot see the invocation line, so an
   external send can read as unauthorized even when it is not. Carry the provenance inline

@@ -36,8 +36,14 @@ die() {
     exit "${2:-1}"
 }
 
+die_usage() {
+    printf '%s: %s\n' "$PROGNAME" "$1" >&2
+    usage >&2
+    exit 2
+}
+
 require_value() {
-    [[ -n ${2:-} ]] || die "option $1 requires a value" 2
+    [[ -n ${2:-} ]] || die_usage "option $1 requires a value"
 }
 
 parse_options() {
@@ -63,7 +69,7 @@ parse_options() {
         --purpose) require_value "$1" "${2:-}"; PURPOSE=$2; shift 2 ;;
         --purpose=*) PURPOSE=${1#*=}; shift ;;
         -h|--help) usage; exit 0 ;;
-        *) die "unknown option: $1" 2 ;;
+        *) die_usage "unknown option: $1" ;;
         esac
     done
 }
@@ -83,8 +89,8 @@ validate_payload_inputs() {
     # GitHub's own -- it excludes the ':' payload delimiter and the ';'/'='
     # record delimiters, so no repository name can forge a payload or a field.
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-        die '--repo must be OWNER/NAME using [A-Za-z0-9._-]' 2
-    [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer' 2
+        die_usage '--repo must be OWNER/NAME using [A-Za-z0-9._-]'
+    [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die_usage '--pr must be a positive integer'
     [[ -f $DIFF_PATH && ! -L $DIFF_PATH && -O $DIFF_PATH ]] ||
         die "diff must be an owned regular file, not a symlink: $DIFF_PATH" 2
 }
@@ -99,8 +105,8 @@ payload_command() {
 }
 
 validate_record_fields() {
-    field_is_safe "$PROVIDER" || die 'provider contains a record delimiter' 2
-    field_is_safe "$PAYLOAD" || die 'payload contains a record delimiter' 2
+    field_is_safe "$PROVIDER" || die_usage 'provider contains a record delimiter'
+    field_is_safe "$PAYLOAD" || die_usage 'payload contains a record delimiter'
 }
 
 state_parent() {
@@ -144,17 +150,17 @@ write_record() {
 }
 
 disclose_command() {
-    field_is_safe "$PAYLOAD" || die 'payload contains a record delimiter' 2
+    field_is_safe "$PAYLOAD" || die_usage 'payload contains a record delimiter'
     [[ -n $DESTINATION && $DESTINATION != *$'\n'* && $DESTINATION != *$'\r'* ]] ||
-        die 'destination must be non-empty and single-line' 2
+        die_usage 'destination must be non-empty and single-line'
     [[ -n $PURPOSE && $PURPOSE != *$'\n'* && $PURPOSE != *$'\r'* ]] ||
-        die 'purpose must be non-empty and single-line' 2
+        die_usage 'purpose must be non-empty and single-line'
     printf 'payload=%s\ndestination=%s\npurpose=%s\n' "$PAYLOAD" "$DESTINATION" "$PURPOSE"
 }
 
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag ]] ||
-        die '--source must be interactive or auto-review-flag' 2
+        die_usage '--source must be interactive or auto-review-flag'
     validate_record_fields
     validate_state_for_write
     write_record || die "cannot persist consent state: $STATE_PATH"
@@ -182,8 +188,8 @@ main() {
     case $COMMAND in
     payload|disclose|grant|check) parse_options "$@" ;;
     -h|--help) usage; exit 0 ;;
-    '') usage >&2; exit 2 ;;
-    *) die "unknown subcommand: $COMMAND" 2 ;;
+    '') die_usage 'a subcommand is required: payload, disclose, grant, or check' ;;
+    *) die_usage "unknown subcommand: $COMMAND" ;;
     esac
 
     case $COMMAND in
