@@ -1033,22 +1033,57 @@ repo_relative_path() {
     fi
 }
 
+# Resolve a command-input token from BASE and prove where it physically lands.
+# Resolution follows symlinks, so a `..` traversal and a committed symlink that
+# leaves the tree are caught the same way: by where the path actually points,
+# never by how it is spelled. readlink -f needs every component to exist;
+# readlink -m keeps the same physical check for an input this branch has not
+# created yet, which is how a candidate join that does not exist still becomes a
+# pinned path instead of being dropped. Prints the repository-relative path.
+# Fails -- the caller emits the sentinel -- when the result is outside the
+# repository, or is the repository root itself, which names the whole tree and
+# is no more pinnable here than it is in hash_repo_input.
+resolve_command_input() {
+    local base=$1 value=$2 resolved
+    resolved=$(cd -- "$base" 2> /dev/null &&
+        (readlink -f -- "$value" 2> /dev/null || readlink -m -- "$value" 2> /dev/null)) || return 1
+    [[ -n $resolved && $resolved == "$git_top"/* ]] || return 1
+    printf '%s' "${resolved#"$git_top/"}"
+}
+
+emit_resolved_command_input() {
+    local rel
+    if rel=$(resolve_command_input "$1" "$2"); then
+        printf '%s\n' "$rel"
+    else
+        printf '__external-command-input__\n'
+    fi
+}
+
+# An argv token names a file the command reads, and the trust fingerprint pins
+# that file's content. Which file a token names depends on the directory it is
+# resolved from, so every base the token could plausibly use contributes a
+# candidate and each candidate must be provably inside the repository.
 emit_declared_path_input() {
     local input=$1
     if [[ -z $input ]]; then
         printf '__invalid-command-input__\n'
     elif [[ $input == /* ]]; then
-        if [[ $input == "$git_top"/* ]]; then
-            printf '%s\n' "${input#"$git_top/"}"
-        else
-            printf '__external-command-input__\n'
-        fi
+        # One base only: an absolute token names the same file from anywhere.
+        emit_resolved_command_input "$git_top" "$input"
     elif [[ $input == .. || $input == ../* || $input == */../* || $input == */.. ]]; then
-        printf '__external-command-input__\n'
+        # A `..` token only makes sense from the directory the command runs in;
+        # from the repository root it could only climb out. Root tooling invoked
+        # from a component rundir is exactly this shape, and refusing it on the
+        # spelling alone made every unattended run of such a command impossible.
+        emit_resolved_command_input "$work_dir" "$input"
     else
-        printf '%s\n' "$input"
+        # Genuinely ambiguous: an ad-hoc argv may be written against the
+        # repository root even where a rundir is declared, so both bases stay
+        # pinned and a file appearing at either one changes the fingerprint.
+        emit_resolved_command_input "$git_top" "$input"
         [[ $work_dir == "$git_top" ]] ||
-            printf '%s/%s\n' "${work_dir#"$git_top/"}" "$input"
+            emit_resolved_command_input "$work_dir" "$input"
     fi
 }
 
