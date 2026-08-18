@@ -65,6 +65,13 @@ After reviewing that evidence, the root has exactly two sanctioned outcomes:
   input-diff digest, the shared-input merge-risk note when applicable, and the exact
   `agent-run.sh --approve --cmd NAME` remediation command.
 
+After `approve-with-record`, resume the parked workstream with its **exact original threaded
+invocation, `--yolo` included** -- do not drop the flag or substitute a literal command.
+`agent-run.sh` consults the recorded approval before falling back to the trunk-comparison gate,
+so a matching record satisfies that same `--yolo` call instead of refusing it again. Both stderr
+and the run log distinguish this outcome as `trust gate satisfied by approval record; --yolo not
+exercised`, never as an ordinary `--yolo` skip -- an audit must be able to tell the two apart.
+
 Literal command invocations remain caller-supplied and do not satisfy this gate. Running one to
 obtain green evidence is evasion, not remediation.
 
