@@ -29,6 +29,10 @@ case "\$*" in
             {"id":"PVTI_example57","project":{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}},
             {"id":"PVTI_example58b","project":{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
           ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      elif [[ -n \${CROSS_OWNER_COLLISION:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
+            {"id":"PVTI_otherowner57","project":{"number":7,"id":"PVT_kwDOOtherOwner","title":"Other Owner Board","owner":{"login":"other-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
+          ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
       else
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
       fi
@@ -345,6 +349,16 @@ assert_not_contains "$out" 'Warning: could not list items for project' \
     'a declared-board miss suppresses unrelated-project warnings'
 assert_contains "$out" 'no-op: issue #58 is not on any project board' \
     'a declared-board miss reports one terminal no-op'
+
+# Numeric project numbers are only a fallback within the declared project
+# owner. A same-number project owned by another organization is unrelated.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CROSS_OWNER_COLLISION=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'a cross-owner project-number collision never edits the declared board'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'a cross-owner project-number collision reports a terminal no-op'
 
 # --- discovery warms the cache for next time -------------------------------
 repo=$(seed_repo)

@@ -589,9 +589,13 @@ try_declared_memberships() {
     for issue_number in "${issue_numbers[@]}"; do
         [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         memberships=$(issue_project_items "$issue_number") || return 2
-        item_id=$(jq -r --arg project "$project_id" --arg number "$project_number" '
-            first(.[] | select((.project.id // "") == $project or
-                               ((.project.number // "") | tostring == $number)) | .id) // empty
+        item_id=$(jq -r --arg project "$project_id" --arg number "$project_number" \
+            --arg owner "$project_owner" '
+            first(.[] | select(
+                ((.project.id // "") == $project) or
+                (((.project.number // "") | tostring) == $number and
+                 ((.project.owner.login // "") | ascii_downcase) == ($owner | ascii_downcase))
+            ) | .id) // empty
         ' <<< "$memberships")
         if [[ -z $item_id ]]; then
             ((cached_mutation_rejected == 0)) || return 2
