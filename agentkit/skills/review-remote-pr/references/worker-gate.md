@@ -43,11 +43,12 @@ is clean: report the full commit SHA and the exact ready-to-run `git push -u ori
 the root runs that push once and does not retry a commit. Never use an unstaged handback for a
 normal worker result.
 
-For the normal path, the root inspects `base...HEAD` only after the worker push and then opens a
-DRAFT PR through the canonical composer (Why/What/Decisions/checkbox Testing/signature/separate
-Closes #NNN). For stacked chains, use `chain-advance.sh` to re-read `baseRefName` and prove
-`base...head` before merging a successor; stale approval residue remains a human judgment. A dirty
-tree not authored by the worker is surfaced before validation and never adopted.
+For the normal path, the root inspects `base...HEAD` only after the worker push. After reviewing
+that pushed diff, it continues the existing PR's CI, reply, review, and metadata cycle; it does
+not create a DRAFT PR. Draft creation remains in parallel-issues' own root publication flow. For
+stacked chains, use `chain-advance.sh` to re-read `baseRefName` and prove `base...head` before
+merging a successor; stale approval residue remains a human judgment. A dirty tree not authored
+by the worker is surfaced before validation and never adopted.
 
 For a correction cycle, resume the same worker with `followup_task` when possible rather than
 spawning a new one; never create concurrent writers in one PR worktree.

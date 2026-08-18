@@ -688,6 +688,12 @@ assert_not_contains "$worker_gate_flat" 'leave progress unstaged' \
     'worker-gate.md removes unstaged handback from the primary flow'
 assert_not_contains "$worker_gate_flat" 'root-owned publication handback' \
     'worker-gate.md no longer presents root publication as the primary flow'
+assert_contains "$worker_gate_flat" 'continues the existing PR' \
+    'worker-gate.md keeps review-remote-pr on the existing PR'
+assert_contains "$worker_gate_flat" 'CI, reply, review, and metadata cycle' \
+    'worker-gate.md names the existing PR follow-up responsibilities'
+assert_not_contains "$worker_gate_flat" 'opens a DRAFT PR' \
+    'worker-gate.md does not create a draft PR for an existing review'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \
