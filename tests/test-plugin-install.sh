@@ -65,8 +65,21 @@ assert_eq 'yes' "$([[ -x $stage/agentkit/skills/.shared/scripts/agent-run.sh ]] 
     'preserves the executable bit on scripts'
 assert_eq 'yes' "$([[ -x $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \
     'packages the hooks the manifest points at, executable'
-assert_contains "$(jq -r '.plugins[0].source.path' < "$stage/.claude-plugin/marketplace.json")" \
-    './' 'plugin source paths start with ./ as codex requires'
+assert_contains "$(jq -r '.plugins[0].source' < "$stage/.claude-plugin/marketplace.json")" \
+    './' 'plugin source paths start with ./ as both harnesses require'
+
+# --- claude validates it ---------------------------------------------------
+# The string source form is the one shape both schemas accept: claude rejects
+# the {"source":"local","path":...} object outright, and codex installs the
+# string form (proven below). Guarded like the codex half: absence skips, it
+# never fails the suite.
+if command -v claude > /dev/null 2>&1; then
+    validate_out=$(claude plugin validate "$stage" 2>&1 || true)
+    assert_contains "$validate_out" 'Validation passed' \
+        'claude accepts the marketplace manifest'
+else
+    printf '%s: claude not installed, skipping claude validation\n' "$TEST_NAME"
+fi
 
 # --- no test material ships ------------------------------------------------
 found=$(find "$stage" \( -name 'test-*' -o -name fixtures -o -name stub \) | head -1)
