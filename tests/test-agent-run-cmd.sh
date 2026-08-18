@@ -301,6 +301,91 @@ assert_eq '1' "$rc" 'multiple changed command inputs refuse yolo'
 assert_contains "$out" 'inputs/one.txt' 'multiple-input refusal names the first changed input'
 assert_contains "$out" 'inputs/two.txt' 'multiple-input refusal names every changed input'
 
+# A changed command input inside the dispatch-declared write set is admitted,
+# while an input outside it remains a refusal. Admissions must be visible both
+# in the process verdict and in the durable verification log.
+repo=$tmp/write-set-yolo
+make_yolo_repo "$repo"
+mkdir -p "$repo/inputs"
+printf 'owned-base\n' > "$repo/inputs/owned.txt"
+printf 'external-base\n' > "$repo/inputs/external.txt"
+printf 'comma-base\n' > "$repo/inputs/odd,name.txt"
+printf '#!/bin/sh\ntouch "%s/write-set-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner --require=inputs/owned.txt --require=inputs/external.txt --require=inputs/odd,name.txt\n' \
+    > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'owned-changed\n' > "$repo/inputs/owned.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/owned.txt' --yolo-write-set 'inputs/odd,name.txt' 2>&1) || rc=$?
+assert_eq '0' "$rc" 'a changed input inside the write set passes yolo'
+assert_eq 'yes' "$([[ -e $tmp/write-set-ran ]] && echo yes || echo no)" \
+    'the write-set-admitted command executes'
+assert_contains "$out" 'write-set admission: inputs/owned.txt' \
+    'the yolo verdict records the admitted input'
+write_set_log=$(printf '%s\n' "$out" | sed -n 's/^PASS:.* -> //p' | tail -1)
+write_set_log=${write_set_log%")"}
+assert_contains "$(cat -- "$write_set_log")" \
+    'trust gate write-set admission: inputs/owned.txt' \
+    'the durable log records the admitted input'
+printf 'owned-base\n' > "$repo/inputs/owned.txt"
+printf 'comma-changed\n' > "$repo/inputs/odd,name.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/odd,name.txt' 2>&1) || rc=$?
+assert_eq '0' "$rc" 'a single comma-bearing write-set flag admits its exact glob'
+assert_contains "$out" 'write-set admission: inputs/odd,name.txt' \
+    'the single comma-bearing admission is recorded'
+printf 'owned-changed\n' > "$repo/inputs/owned.txt"
+printf 'external-changed\n' > "$repo/inputs/external.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/owned.txt' 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a changed input outside the write set refuses yolo'
+assert_contains "$out" 'inputs/external.txt' \
+    'the outside-write-set refusal names the changed input'
+assert_contains "$out" 'write-set admission: inputs/owned.txt' \
+    'a mixed verdict records the admitted input before refusing the outside input'
+
+# A single comma-bearing flag is one glob, not a CSV list. Ordinary wildcard
+# segments must not cross `/`, while trailing `/**` admits descendants.
+repo=$tmp/write-set-depth-yolo
+make_yolo_repo "$repo"
+mkdir -p "$repo/inputs/child"
+printf 'depth-base\n' > "$repo/inputs/child/payload.txt"
+printf '#!/bin/sh\ntouch "%s/write-set-depth-ran"\n' "$tmp" > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner --require=inputs/child/payload.txt\n' \
+    > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+printf 'depth-changed\n' > "$repo/inputs/child/payload.txt"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/*' 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a shallow wildcard does not admit a nested input'
+assert_contains "$out" 'inputs/child/payload.txt' \
+    'the shallow wildcard refusal names the nested input'
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo \
+    --yolo-write-set 'inputs/**' 2>&1) || rc=$?
+assert_eq '0' "$rc" 'a trailing recursive wildcard admits nested input'
+assert_contains "$out" 'write-set admission: inputs/child/payload.txt' \
+    'recursive admission records the nested input'
+
+# The carve-out is only meaningful for unattended named commands.
+repo=$tmp/write-set-usage
+make_yolo_repo "$repo"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/runner"
+chmod +x "$repo/tools/runner"
+printf 'AGENT_CMD_TEST=tools/runner\n' > "$repo/.agent/config.env"
+commit_yolo_base "$repo"
+rc=0
+out=$(cd "$repo" && "$real_run_sh" --cmd test --yolo-write-set 'inputs/**' 2>&1) || rc=$?
+assert_eq '1' "$rc" 'write-set without yolo is refused'
+assert_contains "$out" '--yolo-write-set requires --yolo' \
+    'write-set usage refusal names the yolo dependency'
+
 # Repository-relative inputs beginning with `__` are ordinary paths, not
 # sentinels. Track a directory passed through --require and refuse it only
 # after its payload changes.

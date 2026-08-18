@@ -47,6 +47,10 @@ Output (stdout carries only these lines):
   no-op: issue #42 is not on any project board
   no-op: project #3 "Example Board" has no Status field
   no-op: project #3 "Example Board" has no matching Status option "In review"
+  moved=1 no-op=0 of=1
+
+Successful runs end with a summary of terminal evidence lines. Compare its
+`of` count with the captured issue-result lines to detect truncated output.
 
 The "(board.json, 1 call)" warm path deliberately skips reading the card's
 current status before mutating it -- that read is the API call this path
@@ -61,6 +65,26 @@ EOF
 die() {
     printf 'Error: %s\n' "$1" >&2
     exit 1
+}
+
+moved_count=0
+noop_count=0
+
+report_moved() {
+    moved_count=$((moved_count + 1))
+    printf '%s\n' "$1"
+}
+
+report_noop() {
+    noop_count=$((noop_count + 1))
+    printf '%s\n' "$1"
+}
+
+# Keep the documented terminal shape: no-op: issue #%s already "%s".
+
+report_summary() {
+    printf 'moved=%d no-op=%d of=%d\n' "$moved_count" "$noop_count" \
+        "$((moved_count + noop_count))"
 }
 
 issue_numbers=()
@@ -447,8 +471,7 @@ try_fast_path() {
             }
         cache_item_id "$project_id" "$issue_number" "$item_id" "$project_owner" "$project_number"
         completed_issues[$issue_number]=1
-        printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 1 call)\n' \
-            "$issue_number" "$status" "$project_number" "$project_title"
+        report_moved "moved #$issue_number -> \"$status\" on project #$project_number \"$project_title\" (board.json, 1 call)"
     done
     return 0
 }
@@ -485,7 +508,7 @@ try_known_board() {
         [[ -n $item_id ]] || continue
         current_status=$(select_item_status "$item_id" "$items_json")
         if [[ -n $current_status && $current_status == "$status" ]]; then
-            printf 'no-op: issue #%s already "%s"\n' "$issue_number" "$current_status"
+            report_noop "no-op: issue #$issue_number already \"$current_status\""
             completed_issues[$issue_number]=1
             continue
         fi
@@ -499,8 +522,7 @@ try_known_board() {
             }
         cache_item_id "$project_id" "$issue_number" "$item_id" "$project_owner" "$project_number"
         completed_issues[$issue_number]=1
-        printf 'moved #%s -> "%s" on project #%s "%s" (board.json, 2 calls)\n' \
-            "$issue_number" "$status" "$project_number" "$project_title"
+        report_moved "moved #$issue_number -> \"$status\" on project #$project_number \"$project_title\" (board.json, 2 calls)"
     done
     for issue_number in "${issue_numbers[@]}"; do
         [[ ${completed_issues[$issue_number]+yes} == yes ]] || return 1
@@ -511,12 +533,14 @@ try_known_board() {
 fast_rc=0
 try_fast_path || fast_rc=$?
 if ((fast_rc == 0)); then
+    report_summary
     exit 0
 fi
 if ((fast_rc == 1)); then
     known_rc=0
     try_known_board || known_rc=$?
     if ((known_rc == 0)); then
+        report_summary
         exit 0
     fi
     if ((known_rc == 2)); then
@@ -566,8 +590,7 @@ process_project() {
         <<< "$fields_json")
     if [[ -z $status_field_id ]]; then
         for issue_number in "${board_issues[@]}"; do
-            printf 'no-op: project #%s "%s" has no Status field\n' \
-                "$project_number" "$project_title"
+            report_noop "no-op: project #$project_number \"$project_title\" has no Status field"
             completed_issues[$issue_number]=1
         done
         return 4
@@ -578,8 +601,7 @@ process_project() {
         <<< "$fields_json")
     if [[ -z $option_id ]]; then
         for issue_number in "${board_issues[@]}"; do
-            printf 'no-op: project #%s "%s" has no matching Status option "%s"\n' \
-                "$project_number" "$project_title" "$status"
+            report_noop "no-op: project #$project_number \"$project_title\" has no matching Status option \"$status\""
             completed_issues[$issue_number]=1
         done
         return 4
@@ -589,7 +611,7 @@ process_project() {
         item_id=$(select_item_id "$issue_number" "$items_json")
         current_status=$(select_item_status "$item_id" "$items_json")
         if [[ -n $current_status && $current_status == "$status" ]]; then
-            printf 'no-op: issue #%s already "%s"\n' "$issue_number" "$current_status"
+            report_noop "no-op: issue #$issue_number already \"$current_status\""
             completed_issues[$issue_number]=1
             continue
         fi
@@ -602,8 +624,7 @@ process_project() {
         fi
         cache_item_id "$project_id" "$issue_number" "$item_id" "$owner" "$project_number"
         completed_issues[$issue_number]=1
-        printf 'moved #%s -> "%s" on project #%s "%s"\n' \
-            "$issue_number" "$status" "$project_number" "$project_title"
+        report_moved "moved #$issue_number -> \"$status\" on project #$project_number \"$project_title\""
     done
 
     if ! refresh_board_metadata "$owner" "$project_number" "$project_id" "$project_title" \
@@ -619,8 +640,9 @@ if ! projects_json=$(gh project list --owner "$owner" \
 fi
 if [[ -z $projects_json ]]; then
     for issue_number in "${issue_numbers[@]}"; do
-        printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
+        report_noop "no-op: issue #$issue_number is not on any project board"
     done
+    report_summary
     exit 0
 fi
 
@@ -643,5 +665,6 @@ done < <(jq -r '.projects[]? | [.number, .id, (.title // "")] | @tsv' <<< "$proj
 
 for issue_number in "${issue_numbers[@]}"; do
     [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
-    printf 'no-op: issue #%s is not on any project board\n' "$issue_number"
+    report_noop "no-op: issue #$issue_number is not on any project board"
 done
+report_summary

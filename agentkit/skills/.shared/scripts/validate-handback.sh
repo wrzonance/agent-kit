@@ -37,6 +37,10 @@ REPO_CONFIG = Path(sys.argv[2])
 ARGS = sys.argv[3:]
 PROGRAM = "validate-handback.sh"
 SHIPPED_HELPER = PROTECTED_LIB.parent.parent / "worktree-commit.sh"
+HAND_BACK_PARSE_ERROR = (
+    "handback argv is empty or not parseable as a command; "
+    "materialize the exact command into the handback file"
+)
 
 
 class InvalidHandback(Exception):
@@ -144,8 +148,8 @@ def read_handback(path):
         invalid("handback contains NUL bytes")
     try:
         return shlex.split(data, comments=False, posix=True)
-    except ValueError as error:
-        invalid(f"handback is not parseable shell-like argv: {error}")
+    except ValueError:
+        invalid(HAND_BACK_PARSE_ERROR)
 
 
 DISPOSITION_KINDS = {"chain-conversion", "merge-down", "prediction-expansion"}
@@ -305,7 +309,7 @@ def read_dispatch_plan(path, issue):
 
 def parse_handback(argv):
     if not argv:
-        invalid("expected worktree-commit.sh as the only helper")
+        invalid(HAND_BACK_PARSE_ERROR)
     try:
         helper = Path(argv[0]).resolve(strict=False)
         shipped_helper = SHIPPED_HELPER.resolve(strict=True)

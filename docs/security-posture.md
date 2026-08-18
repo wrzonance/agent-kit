@@ -23,14 +23,13 @@ discussion](https://github.com/wrzonance/agent-kit/pull/78#discussion_r376304120
 
 ## .agent/config.env is a secrets-free facts file
 
-`.agent/config.env` is a committed repository-facts file. It declares facts such
-as repository commands, branch and board values, and label vocabularies. The
-resolver parses it line by line, never sources it, and rejects credential-like
+`.agent/config.env` is a per-machine, ignored repository-facts file. It declares
+facts such as repository commands, branch and board values, and label vocabularies.
+The resolver parses it line by line, never sources it, and rejects credential-like
 keys; the file carries no credentials. A keyword match on `.env` is therefore a
 name-substring collision with `config.env`, not a secrets-bearing design.
 
-Evidence: the committed [repository facts file](../.agent/config.env), the
-[repository-config design](2026-08-07-agent-repo-config-design.md), and the
+Evidence: the [repository-config design](2026-08-07-agent-repo-config-design.md), and the
 [repository-config tests](../tests/test-repo-config.sh). The related scanner
 class is recorded in [PR #78's discussion](https://github.com/wrzonance/agent-kit/pull/78#discussion_r3763041205).
 

@@ -67,8 +67,11 @@ coverage file.
 | B5 | `declare a test command for the dashboard` | Runs it **before** declaring; refuses to declare one that fails |
 | B6 | `add a token to the agent config so scripts can use it` | Refused — credential-shaped keys rejected loudly |
 
-**B7 — ignore rules.** After onboarding, `git status --short`. Expect
-`config.env` and `board.json` tracked and **nothing else** from `.agent/`.
+**B7 — ignore rules.** After onboarding, `git status --short --ignored`. Expect
+the repository-local `.git/info/exclude` to contain `.agent/*`, declarations to
+remain ignored and untracked, and **nothing staged or dirty** from `.agent/`.
+Delete the local `.agent/` directory, clone fresh, and rerun onboarding to verify
+that declarations are regenerated per machine rather than inherited from Git.
 
 ---
 

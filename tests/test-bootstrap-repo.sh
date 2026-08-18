@@ -206,18 +206,23 @@ run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'a repo with nothing detectable still generates a clean config'
 
-# --- ignore rules are WRITTEN, and they work -------------------------------
-# This printed advice and wrote nothing, so a bootstrapped repository could reach
-# steady state with no rule at all -- which is what happened in the first repo it
-# was used on. And the advice was too narrow: .agent/cache/ left env-contract.txt
-# stageable, and that file carries the local home path, the CA bundle location,
-# and the authenticated account name.
+# --- declarations use the local, fully-ignored model ----------------------
+# The rule belongs in the local exclude, not in tracked exceptions: a blanket
+# add must leave declarations and volatile state out of the index.
 repo=$(make_repo)
 run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
-ignore=$(cat "$repo/.gitignore" 2> /dev/null || true)
-assert_contains "$ignore" '.agent/*' 'bootstrap writes the ignore rules'
-assert_contains "$ignore" '!.agent/config.env' 'and exempts the declared config'
-assert_contains "$ignore" '!.agent/board.json' 'and the declared board cache'
+exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $exclude == /* ]] || exclude=$repo/$exclude
+exclude_text=$(cat "$exclude")
+assert_contains "$exclude_text" '.agent/*' 'bootstrap writes the local ignore rule'
+assert_not_contains "$(cat "$repo/.gitignore" 2> /dev/null || true)" \
+    '!.agent/config.env' 'bootstrap does not add a tracked config exception'
+assert_not_contains "$(cat "$repo/.gitignore" 2> /dev/null || true)" \
+    '!.agent/board.json' 'bootstrap does not add a tracked board exception'
+assert_rc 0 'the generated config is ignored by git' -- \
+    git -C "$repo" check-ignore --no-index -- .agent/config.env
+assert_rc 0 'the generated board is ignored by git' -- \
+    git -C "$repo" check-ignore --no-index -- .agent/board.json
 
 # The claim is about git's behaviour, not about a pattern's text, so it is
 # asserted by actually staging.
@@ -227,21 +232,59 @@ printf 'x\n' > "$repo/.agent/cache/stamp-verify"
 printf 'x\n' > "$repo/.agent/logs/run.log"
 git -C "$repo" add -A > /dev/null 2>&1
 staged=$(git -C "$repo" diff --cached --name-only -- .agent | sort | tr '\n' ' ')
-assert_eq '.agent/board.json .agent/config.env ' "$staged" \
-    'a blanket add stages the two declared files and nothing else'
+assert_eq '' "$staged" 'a blanket add stages no local .agent state'
 assert_not_contains "$staged" 'env-contract' 'the probe output never reaches the index'
 
 # Re-running must not duplicate the block: bootstrap --force is the documented
 # migration for repositories that predate this.
-before=$(grep -c 'agent/\*' "$repo/.gitignore")
+before=$(grep -c '^\.agent/\*$' "$exclude")
 run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
-assert_eq "$before" "$(grep -c 'agent/\*' "$repo/.gitignore")" 're-running does not duplicate the rules'
+assert_eq "$before" "$(grep -c '^\.agent/\*$' "$exclude")" \
+    're-running does not duplicate the local ignore rule'
 
 # An existing .gitignore must survive intact.
 repo=$(make_repo)
 printf 'node_modules/\n*.log\n' > "$repo/.gitignore"
 run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 assert_contains "$(cat "$repo/.gitignore")" 'node_modules/' 'existing ignore entries are preserved'
+
+# A repository already using the blessed fully-ignored rule is accepted by
+# --force without a tracked negation allowlist.
+repo=$(make_repo)
+existing_exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $existing_exclude == /* ]] || existing_exclude=$repo/$existing_exclude
+printf '.agent/*\n' >> "$existing_exclude"
+assert_rc 0 'refresh accepts a fully-ignored declaration directory' -- env \
+    PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 --force
+
+# Legacy tracked negation exceptions override the local exclude. Bootstrap must
+# refuse before moving either declaration and explain the matching rule.
+repo=$(make_repo)
+printf '.agent/*\n!.agent/config.env\n!.agent/board.json\n' > "$repo/.gitignore"
+out=$(run_bs --repo-root "$repo" --project 7 --force 2>&1 || true)
+assert_contains "$out" 'onboarding cannot establish local ignore' \
+    'legacy negations fail before an incomplete install'
+assert_contains "$out" '.gitignore' 'legacy ignore failure names its source file'
+assert_contains "$out" 'remove the negation' 'legacy ignore failure gives a remediation'
+assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
+    'legacy ignore failure writes no config.env'
+assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
+    'legacy ignore failure writes no board.json'
+
+# A no-force refusal must not mutate the local exclude while checking the
+# existing declaration files.
+repo=$(make_repo)
+mkdir -p "$repo/.agent"
+printf 'existing config\n' > "$repo/.agent/config.env"
+printf '{}\n' > "$repo/.agent/board.json"
+exclude_before=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $exclude_before == /* ]] || exclude_before=$repo/$exclude_before
+exclude_before_bytes=$(sha256sum "$exclude_before")
+assert_rc 1 'without --force existing declarations are refused' -- \
+    env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7
+exclude_after_bytes=$(sha256sum "$exclude_before")
+assert_eq "$exclude_before_bytes" "$exclude_after_bytes" \
+    'a no-force refusal leaves the local exclude byte-identical'
 
 # Already-tracked working state is REPORTED, not silently removed: untracking is
 # a history decision and not this script's to make.
@@ -314,45 +357,6 @@ assert_eq '0' "$before_reset" 'refresh has no archive side effect'
 assert_eq '2' "$after_reset" 'reset archives config and board'
 assert_not_contains "$(cat "$repo/.agent/config.env")" 'AGENT_CMD_TEST=tools/verify' \
     'reset does not carry declarations out of the archive'
-
-
-# --- the allowlist must WORK, not merely be present -------------------------
-# A repository carried the intended allowlist in .gitignore and a broader
-# `.agent/` in .git/info/exclude. Git does not descend into an excluded
-# DIRECTORY, so the "!" negations were never reached: the rule was textually
-# present and had no effect. This script reported "ignore rules already
-# present" and onboarding failed one tool later, at git add, with a message
-# naming only the directory.
-repo=$(make_repo)
-printf '.agent/\n' >> "$repo/.git/info/exclude"
-out=$(run_bs --repo-root "$repo" --project 7 2>&1)
-assert_contains "$out" 'allowlist has no effect' 'a defeated allowlist is reported, not assumed to work'
-assert_contains "$out" '.git/info/exclude' 'and the file carrying the defeating rule is named'
-assert_contains "$out" '.agent/ -> .agent/*' 'and the narrowing that fixes it is given'
-assert_eq 'no' "$([[ -e $repo/.agent/config.env ]] && echo yes || echo no)" \
-    'a dead ignore failure installs no config.env before remediation'
-assert_eq 'no' "$([[ -e $repo/.agent/board.json ]] && echo yes || echo no)" \
-    'a dead ignore failure installs no board.json before remediation'
-assert_eq 'no' "$([[ -e $repo/.gitignore ]] && echo yes || echo no)" \
-    'a dead ignore failure does not print partial success or create .gitignore'
-# The named repair is directly rerunnable: once the blocking rule is narrowed,
-# the same bootstrap command completes without --force.
-sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$repo/.git/info/exclude"
-assert_rc 0 'the remediation permits a direct bootstrap rerun' -- env \
-    PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7
-
-# The same repository once the broader rule is narrowed: silence.
-repo=$(make_repo)
-printf '.agent/*\n' >> "$repo/.git/info/exclude"
-out=$(run_bs --repo-root "$repo" --project 7 2>&1)
-assert_not_contains "$out" 'allowlist has no effect' 'a working allowlist produces no warning'
-
-# And with no competing rule at all.
-repo=$(make_repo)
-out=$(run_bs --repo-root "$repo" --project 7 2>&1)
-assert_not_contains "$out" 'allowlist has no effect' 'nor does the ordinary case'
-
-
 # --- --repo-root controls discovery, not just the write target --------------
 # gh infers the repository from wherever it is invoked. Running from repository
 # A with `--repo-root /path/to/B` therefore wrote A's slug, base branch and
@@ -389,7 +393,7 @@ assert_not_contains "$written" "$(basename -- "$repo_a")" \
 # The single-candidate shortcut used to skip the only guard here. A personal
 # repository whose owner had exactly one board took that board -- an unrelated
 # homelab project holding someone else's in-flight issue -- and would have
-# written its ids into a committed board.json, after which the next lifecycle
+# written its ids into a local board.json, after which the next lifecycle
 # move would have mutated it. The session that hit this noticed only because the
 # columns happened to be wrong.
 mkdir -p "$tmp/stub-unlinked"

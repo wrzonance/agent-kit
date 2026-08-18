@@ -267,6 +267,28 @@ expect_invalid() {
         "$name did not execute shell syntax"
 }
 
+expect_invalid_message() {
+    local name=$1 contents=$2 expected=$3
+    local handback="$tmp/$name.handback" rc=0
+    printf '%s\n' "$contents" >"$handback"
+    validate "$repo" "$handback" >"$tmp/$name.out" 2>"$tmp/$name.err" || rc=$?
+    assert_eq '1' "$rc" "$name is invalid"
+    assert_contains "$(cat -- "$tmp/$name.err")" "$expected" \
+        "$name names the actionable diagnostic"
+}
+
+empty_handback="$tmp/empty.handback"
+: >"$empty_handback"
+empty_rc=0
+validate "$repo" "$empty_handback" >"$tmp/empty.out" 2>"$tmp/empty.err" || empty_rc=$?
+assert_eq '1' "$empty_rc" 'empty handback is invalid'
+assert_contains "$(cat -- "$tmp/empty.err")" \
+    'handback argv is empty or not parseable as a command; materialize the exact command into the handback file' \
+    'empty handback names the materialization remedy'
+
+expect_invalid_message unparseable "'unterminated" \
+    'handback argv is empty or not parseable as a command; materialize the exact command into the handback file'
+
 expect_invalid bad-trailer \
     "\"$helper\" --message 'feat(skills): bad trailer' --trailer 'Codex gpt-5.6-luna <noreply@openai.com>' -- src/tracked.txt"
 expect_invalid wrong-model \
@@ -279,8 +301,9 @@ expect_invalid unchanged-file \
     "\"$helper\" --message 'feat(skills): unchanged' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- .agent/config.env"
 expect_invalid protected-file \
     "\"$helper\" --message 'feat(skills): protected' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- secrets/config.txt"
-expect_invalid wrong-helper \
-    "\"$root/agentkit/skills/.shared/scripts/agent-run.sh\" --message 'feat(skills): wrong helper' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- src/tracked.txt"
+expect_invalid_message wrong-helper \
+    "\"$root/agentkit/skills/.shared/scripts/agent-run.sh\" --message 'feat(skills): wrong helper' --trailer 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' -- src/tracked.txt" \
+    'expected worktree-commit.sh as the only helper'
 
 attacker_helper_dir="$tmp/attacker/bin"
 attacker_helper="$attacker_helper_dir/worktree-commit.sh"

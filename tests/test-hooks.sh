@@ -441,6 +441,13 @@ pre_input() {
 decision() { jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$1"; }
 pre_context() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
 
+content_input() {
+    jq -nc --arg cwd "$1" --arg content "$2" --arg tool "$3" --arg sid "${4:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:$tool,tool_use_id:"t",transcript_path:null,
+          tool_input:{file_path:"notes.md",command:$content}}'
+}
+
 repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 printf '{"schemaVersion":1,"project":{"id":"PVT_x","number":7}}\n' > "$repo/.agent/board.json"
@@ -631,6 +638,33 @@ for hidden in 'git push $(echo --force)' 'git push `echo --force`' \
     assert_eq 'deny' "$(decision "$out")" "sees through the substitution: $hidden"
     assert_contains "$out" 'inside a substitution' 'and says why it could not be read as written'
 done
+
+# Content-bearing tools carry prose, not shell commands. Substitution flattening
+# must not turn a code span mentioning the no-verify flag into a command.
+content='Markdown mentions `--no-ver'
+# shellcheck disable=SC2016 # backticks are literal fixture content.
+content+='ify` and `--for'
+content+='ce` as ordinary prose.'
+for content_tool in Edit Write MultiEdit NotebookEdit apply_patch; do
+    out=$(content_input "$repo" "$content" "$content_tool" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "does not inspect content as a command: $content_tool"
+done
+
+# Shell-looking prose must not become a protected-path write target either.
+protected_content='printf x > .github/workflows/ci'
+protected_content+='.yml'
+out=$(content_input "$repo" "$protected_content" Edit protected-content |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'does not inspect content as a protected shell write'
+
+# The same payload shape remains a real shell command for Bash, including the
+# substitution-hidden force flag.
+shell_command='git push `echo --for'
+shell_command+='ce`'
+out=$(content_input "$repo" "$shell_command" Bash | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'still catches substitution-hidden force-push commands'
+assert_contains "$out" 'inside a substitution' 'and preserves the shell-command explanation'
 
 # Substitution is NOT itself suspicious. Flattening leaves a legitimate dynamic
 # value as harmless words, so the ordinary uses survive -- banning them outright
@@ -825,6 +859,13 @@ assert_contains "$out" 'observed repository root:' 'and labels the observed repo
 assert_contains "$out" 'observed HEAD branch: main' 'and labels the observed HEAD'
 assert_contains "$out" 'inferred landing' 'and labels the inferred landing branch'
 assert_contains "$out" 'checkout -b' 'and says what to do instead'
+
+# A commit-shaped code example in an edit payload is prose, not a landing
+# command. It must not consume the trunk guard's deny-once refusal.
+out=$(content_input "$trunk_repo" 'git commit -m "prose example"' Edit trunk-content |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'does not inspect content as a trunk commit'
 
 # A hook receives the session cwd, which can be the main worktree even when the
 # command is executing in a linked feature worktree. With multiple worktrees,
