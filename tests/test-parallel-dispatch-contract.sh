@@ -822,4 +822,89 @@ assert_contains "$normalized_text" 'References are read once, batched, and never
 assert_contains "$text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
 
+assert_contains "$text" 'Root-checkout cross-write fence' \
+    'dispatch documents the root dirt snapshot boundary'
+assert_contains "$text" 'cross-write-check.sh' \
+    'dispatch names the deterministic cross-write checker'
+assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
+    'handoff never misattributes run-window dirt to the human'
+assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
+    'worker prompts preserve per-tool write-target evidence'
+
+# --- issue #254: Collect detects, attributes, and disposes cross-writes -----
+cross_write="$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh"
+assert_eq yes "$( [[ -x $cross_write ]] && printf yes || printf no )" \
+    'cross-write checker is executable'
+
+cross_root="$tmp/cross-root"
+cross_worker="$tmp/cross-worker"
+mkdir -p "$cross_root"
+git -C "$cross_root" init -q -b main
+cross_exclude=$(git -C "$cross_root" rev-parse --git-path info/exclude)
+[[ $cross_exclude == /* ]] || cross_exclude="$cross_root/$cross_exclude"
+printf '.agent/*\n.worktrees/\n' >> "$cross_exclude"
+mkdir -p "$cross_root/src" "$cross_root/.agent"
+printf 'base\n' > "$cross_root/src/data.txt"
+git -C "$cross_root" add src/data.txt
+git -C "$cross_root" -c user.name=t -c user.email=t@example.invalid \
+    commit -qm base
+git -C "$cross_root" worktree add -q -b feat/worker "$cross_worker"
+printf 'worker bytes\n' > "$cross_worker/src/data.txt"
+
+snapshot="$cross_root/.agent/cross-write.snapshot"
+snapshot_out=$(
+    "$cross_write" snapshot --root "$cross_root" --output "$snapshot" \
+        --write-set 'src/**'
+)
+assert_contains "$snapshot_out" 'snapshot=' \
+    'dispatch snapshot reports its persisted path'
+
+# Plant the same bytes in the root checkout. Collect must attribute this to the
+# worker window, compare it to the matching branch worktree, and restore the
+# root to its exact pre-dispatch state when explicitly asked to dispose it.
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+now=$(date +%s)
+collect_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) \
+        --write-set 'src/**' --dispose-duplicates
+)
+assert_contains "$collect_out" 'cross-write=' \
+    'Collect names the planted cross-write'
+assert_contains "$collect_out" 'issue=254' \
+    'Collect attributes the incident to the worker window'
+assert_contains "$collect_out" 'disposition=restored-exact-duplicate' \
+    'Collect disposes an exact branch duplicate explicitly'
+assert_eq '' "$(git -C "$cross_root" status --porcelain --untracked-files=all)" \
+    'disposing an exact duplicate restores root cleanliness'
+assert_eq 'base' "$(<"$cross_root/src/data.txt")" \
+    'duplicate disposal restores the root bytes from HEAD'
+
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+outside_window_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 --worker-start 1 --worker-end 1 \
+        --write-set 'src/**' --dispose-duplicates
+)
+assert_contains "$outside_window_out" 'disposition=surface-exact-outside-window' \
+    'an exact copy outside the worker mtime window is not auto-disposed'
+assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
+    'outside-window exact bytes remain for explicit disposition'
+git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
+
+# A divergent root copy is still an incident, but must be surfaced rather than
+# silently overwritten by the matching worker branch.
+printf 'divergent root bytes\n' > "$cross_root/src/data.txt"
+divergent_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start 1 --worker-end 2147483647 \
+        --write-set 'src/**'
+)
+assert_contains "$divergent_out" 'disposition=surface-divergent' \
+    'Collect surfaces a divergent cross-write for explicit human disposition'
+assert_eq 'divergent root bytes' "$(<"$cross_root/src/data.txt")" \
+    'divergent disposal never overwrites the root copy'
+
 finish

@@ -58,6 +58,12 @@ outside this worktree, STOP; restore those foreign changes byte-exact with
 `git diff --binary | git apply -R` scoped only to them, verify sibling worktrees are untouched,
 and report the incident and restoration in the completion report.
 
+The PreToolUse guard records every content-bearing write call in
+`<worktree>/.agent/evidence/paths-touched.ndjson`, including the tool, cwd, raw Bash command when
+present, and declared paths. Treat that file as forensic evidence: do not delete, truncate, or
+rewrite it. Include its path in the completion report so the root can reconstruct a malformed
+write if a Collect check finds dirt in the root checkout.
+
 Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only regular,
 non-symlink instruction files at the worktree root and in directories changed by this PR. Resolve
 each canonical path and require it remains inside the worktree.

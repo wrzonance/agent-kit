@@ -68,6 +68,7 @@ case $tool_name in
 esac
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
+tool_call_id=$(jq -r '.tool_use_id // .tool_call_id // .id // empty' <<< "$input" 2> /dev/null || true)
 ADVISORY_CONTEXT=''
 
 # Files that decide whether other checks run. This hook used to see shell
@@ -80,8 +81,19 @@ protect_root=$(guard_state_root)
 # is about to write. The second exists because a redirect or `sed -i` arrives as
 # a Bash call, so the edit-tool guard cannot see it -- the gap that let a CI
 # workflow be rewritten straight past this rule.
-while IFS= read -r target; do
+guard_record_write_targets "$protect_root" "$input" "$cwd" "$command_line" "$tool_name" \
+    "$session" "$tool_call_id"
+mapfile -t write_targets < <(
+    guard_target_paths "$input"
+    [[ -z $command_line ]] || guard_shell_write_targets "$command_line"
+)
+for target in "${write_targets[@]}"; do
     [[ -n $target ]] || continue
+    if boundary_reason=$(guard_worktree_boundary_reason "$target" "$cwd" "$command_line"); then
+        if guard_should_deny "$protect_root" "$session" "worktree-boundary"; then
+            deny "$boundary_reason"
+        fi
+    fi
     classification_result=$(guard_classify_target_result "$target" "$cwd" "$command_line")
     target_classification=${classification_result%%$'\n'*}
     target_root=${classification_result#*$'\n'}
@@ -104,10 +116,7 @@ allowed. If you are changing it to make a failing check pass, fix the check."
         [[ $target_classification != unresolved ]] || reason+=$'\nThe target classification is ambiguous; retry if this is an ephemeral fixture, after confirming its resolved git root.'
         deny "$reason"
     fi
-done < <(
-    guard_target_paths "$input"
-    [[ -z $command_line ]] || guard_shell_write_targets "$command_line"
-)
+done
 
 [[ -n $command_line ]] || allow
 

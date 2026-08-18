@@ -1700,4 +1700,55 @@ assert_eq 'deny' "$(decision "$broken_out")" \
 assert_contains "$broken_out" 'load status 2' \
     'the missing guard-library denial preserves the failure status'
 
+# --- contracted worktree boundary and write-target evidence -----------------
+boundary_repo="$tmp/boundary-repo"
+boundary_feature="$boundary_repo/.worktrees/feat/worker"
+mkdir -p "$boundary_repo/.agent" "$boundary_repo/src"
+git -C "$boundary_repo" init -q -b main
+printf 'base\n' > "$boundary_repo/src/file.txt"
+git -C "$boundary_repo" add src/file.txt
+git -C "$boundary_repo" -c user.name=t -c user.email=t@example.invalid \
+    commit -qm base
+mkdir -p "$boundary_repo/.worktrees/feat"
+git -C "$boundary_repo" worktree add -q -b feat/worker "$boundary_feature"
+mkdir -p "$boundary_feature/.agent/cache"
+printf 'worktree=%s\n' "$boundary_feature" > "$boundary_feature/.agent/env-contract.txt"
+
+boundary_sid='worktree-boundary-once'
+boundary_out=$(edit_input "$boundary_feature" "$boundary_repo/src/file.txt" "$boundary_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_out")" \
+    'a contracted worker denies a root-checkout edit target'
+assert_contains "$boundary_out" 'outside the contracted worktree' \
+    'the boundary denial explains the escape'
+assert_contains "$boundary_out" "$boundary_feature/src/file.txt" \
+    'the boundary denial supplies the corrected worktree path'
+
+boundary_evidence="$boundary_feature/.agent/evidence/paths-touched.ndjson"
+assert_eq yes "$( [[ -f $boundary_evidence ]] && printf yes || printf no )" \
+    'the hook persists per-tool-call write-target evidence'
+assert_contains "$(<"$boundary_evidence")" "$boundary_repo/src/file.txt" \
+    'evidence retains the attempted root target'
+assert_contains "$(<"$boundary_evidence")" 'Edit' \
+    'evidence identifies the content-bearing tool'
+
+# Deny-once remains recoverable, while a target inside the contracted worktree
+# is ordinary work and does not consume a second boundary refusal.
+boundary_retry=$(edit_input "$boundary_feature" "$boundary_repo/src/file.txt" "$boundary_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_retry")" \
+    'the contracted boundary denial is deny-once'
+boundary_inside=$(edit_input "$boundary_feature" "$boundary_feature/src/file.txt" \
+    'worktree-boundary-inside' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_inside")" \
+    'an edit inside the contracted worktree is allowed'
+
+boundary_shell=$(pre_input "$boundary_feature" \
+    "printf x > $boundary_repo/src/shell-file.txt" 'worktree-boundary-shell' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_shell")" \
+    'the contracted boundary also denies a shell redirect into the root checkout'
+assert_contains "$boundary_shell" "$boundary_feature/src/shell-file.txt" \
+    'shell redirect denial supplies the corrected worktree path'
+
 finish
