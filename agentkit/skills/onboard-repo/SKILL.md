@@ -154,9 +154,9 @@ Anything still commented is a blank the script would not guess:
 - **`AGENT_CMD_*`** — root-runnable commands only.
 - **`AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES`** — real, unclassified labels.
 - **`AGENT_ADR_DIR`** — decision records only; **`AGENT_PROTECTED_PATHS`** — repo-specific gated files.
-- **`AGENT_REVIEW_PROVIDERS`** — ask installed: `coderabbit` triggerable, `github-code-quality`
-  observe-only, or exclusive `none`; the pair is comma-separated. Missing/invalid warns and uses effective
-  `none` without disabling unrelated workflows.
+- **`AGENT_REVIEW_PROVIDERS`** — ask which providers are installed: `coderabbit` triggerable,
+  `github-code-quality` observe-only, or exclusive `none`; pair is comma-separated. Missing/invalid
+  declarations warn, use effective `none`, and do not block other workflows.
 
 Declare it in proposed/committed `.agent/config.env`; bootstrap comments it until chosen. Config is
 parsed line-by-line, never sourced.
@@ -245,9 +245,9 @@ contract, and `Stop` blocks turns on it.
 
 ## Step 5 — propose everything at once
 
-Give the user one message with additions — commands, provider choice, labels, and ADR directory — with
-reasons. Ask which supported providers are installed, including `none`. State unknowns: "no test command runs from the root, so `Stop` will not gate on tests until a
-dispatcher exists" is useful; report it
+Give the user a message of additions — commands, provider choice, labels, and ADR directory — with reasons.
+Ask which supported providers are installed, including `none`. State unknowns and consequences; e.g., "no
+root test command means `Stop` cannot gate tests until a dispatcher exists."
 
 ## Step 6 — write and validate
 
