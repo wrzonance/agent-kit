@@ -63,6 +63,18 @@ if [[ ${1-} == api ]]; then
             fi
             exit 0
         fi
+        if [[ ${GH_CLOSING_LATE:-0} == 1 ]]; then
+            attempts=0
+            [[ ! -f ${GH_CLOSING_STATE_FILE:?} ]] || attempts=$(<"$GH_CLOSING_STATE_FILE")
+            attempts=$((attempts + 1))
+            printf '%s\n' "$attempts" >"$GH_CLOSING_STATE_FILE"
+            if ((attempts >= 3)); then
+                jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: [{number: 42}]}}}}}'
+            else
+                jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: []}}}}}'
+            fi
+            exit 0
+        fi
         if [[ ${GH_INCLUDE_CLOSING:-0} == 1 ]]; then
             jq -n '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: [{number: 42}]}}}}}'
         else
@@ -114,6 +126,9 @@ run_body() {
         GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
         GH_INCLUDE_CLOSING="${GH_INCLUDE_CLOSING:-0}" \
         GH_CLOSING_PAGE2="${GH_CLOSING_PAGE2:-0}" \
+        GH_CLOSING_LATE="${GH_CLOSING_LATE:-0}" \
+        GH_CLOSING_STATE_FILE="$tmp/closing-attempts" \
+        GH_BODY_CLOSING_RETRY_DELAY="${GH_BODY_CLOSING_RETRY_DELAY:-0}" \
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
 }
 
@@ -185,6 +200,31 @@ output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical")
 assert_contains "$output" 'updated pr #41' \
     'canonical separate signature and closing line pass byte verification'
 
+wrong_link="$tmp/wrong-link.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    'body has the wrong closing issue' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' \
+    '' \
+    'Closes #99' >"$wrong_link"
+gh_calls_before=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+set +e
+wrong_link_output=$(run_body pr create --repo owner/repo --body-file "$wrong_link" \
+    --expect-closing-issue 42 2>"$tmp/wrong-link.err")
+wrong_link_rc=$?
+set -e
+assert_eq '1' "$wrong_link_rc" \
+    'body with a different closing issue fails before mutation'
+assert_eq '' "$wrong_link_output" \
+    'wrong body-side closing issue emits no success output'
+assert_contains "$(cat "$tmp/wrong-link.err")" \
+    'expected closing keyword for #42' \
+    'wrong body-side closing issue names the expected issue'
+gh_calls_after=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+assert_eq "$gh_calls_before" "$gh_calls_after" \
+    'wrong body-side closing issue never calls gh'
+
 export GH_INCLUDE_CLOSING=1
 output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
     --expect-closing-issue 42)
@@ -193,6 +233,16 @@ assert_contains "$output" 'updated pr #41' \
     'explicit closing-reference verification passes when GitHub registers the issue'
 assert_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
     'explicit closing-reference verification queries GitHub GraphQL'
+
+rm -f -- "$tmp/closing-attempts"
+export GH_CLOSING_LATE=1
+late_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42)
+unset GH_CLOSING_LATE
+assert_contains "$late_output" 'updated pr #41' \
+    'late-populated closing linkage succeeds within the bounded retry'
+assert_eq '3' "$(cat "$tmp/closing-attempts")" \
+    'late-populated closing linkage uses three bounded attempts'
 
 set +e
 missing_link_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
@@ -205,6 +255,22 @@ assert_eq '' "$missing_link_output" \
     'missing linkage emits no success output'
 assert_contains "$(cat "$tmp/missing-link.err")" 'closingIssuesReferences' \
     'missing linkage failure names the machine evidence'
+
+set +e
+missing_create_output=$(run_body pr create --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42 2>"$tmp/missing-create.err")
+missing_create_rc=$?
+set -e
+assert_eq '1' "$missing_create_rc" \
+    'created PR with genuinely missing linkage still fails after retries'
+assert_contains "$missing_create_output" 'https://github.com/owner/repo/pull/41' \
+    'missing-link create preserves the created PR URL for the ledger'
+assert_contains "$(cat "$tmp/missing-create.err")" \
+    'PR was created at https://github.com/owner/repo/pull/41' \
+    'missing-link failure identifies the created PR URL'
+assert_contains "$(cat "$tmp/missing-create.err")" \
+    'body-side Closes #42 verification passed' \
+    'missing-link failure states that body-side linkage passed'
 
 invalid="$tmp/invalid.md"
 printf '%s\n' 'body without the required front banner' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$invalid"
