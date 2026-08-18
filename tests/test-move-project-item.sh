@@ -39,7 +39,9 @@ case "\$*" in
       ;;
   *"project item-list"*)
       [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1
-      if [[ -n "\${CURRENT_STATUS:-}" ]]; then
+      if [[ -n \${LARGE_BATCH:-} ]]; then
+          jq '.items += [range(1; 10) as \$n | {id: ("PVTI_large" + (\$n | tostring)), content: {type: "Issue", number: \$n, repository: "example-org/example-repo", url: ("https://github.com/example-org/example-repo/issues/" + (\$n | tostring))}}]' "$here/fixtures/gh-item-list.json"
+      elif [[ -n "\${CURRENT_STATUS:-}" ]]; then
           case \${STATUS_SHAPE:-direct} in
             direct)
               jq --arg status "\${CURRENT_STATUS:-}" '.items |= map(if .id == "PVTI_example57" then .status = \$status else . end)' "$here/fixtures/gh-item-list.json"
@@ -436,6 +438,19 @@ assert_eq '0' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
     'batch avoids project validation reads'
 assert_eq '0' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
     'batch avoids Status validation reads'
+
+# A large batch must preserve every terminal evidence line when stdout is
+# captured through a pipe, and the summary makes any short capture visible.
+repo=$(seed_repo)
+: > "$tmp/large-batch.out"
+LARGE_BATCH=1 run_mv "$repo" --issue-numbers 1,2,3,4,5,6,7,8,9 --status Ready 2>&1 |
+    tee "$tmp/large-batch.out" > /dev/null
+pipe_lines=$(awk 'END { print NR + 0 }' "$tmp/large-batch.out")
+assert_eq '10' "$pipe_lines" 'a 9-issue batch emits nine evidence lines plus its summary through a pipe'
+assert_eq '9' "$(grep -c '^moved #' "$tmp/large-batch.out" || true)" \
+    'a piped large batch emits one moved line per issue'
+assert_eq 'moved=9 no-op=0 of=9' "$(tail -n 1 "$tmp/large-batch.out")" \
+    'a piped large batch ends with a completeness summary'
 
 # A moved/no-op mixture terminates the moved issue and emits one terminal
 # no-op for the issue absent from every board.
