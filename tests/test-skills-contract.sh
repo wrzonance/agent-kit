@@ -268,6 +268,24 @@ assert_contains "$review_wait_contract" 'runner completion marker' \
     'review wait rule names the runner completion bound'
 assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'review wait rule rejects sleep and re-check tool churn'
+assert_contains "$review_wait_contract" 'A bounded wait must be silent until its terminal condition.' \
+    'review wait rule is silent until terminal'
+assert_contains "$review_wait_contract" 'every line of background output wakes the orchestrator for a turn' \
+    'review wait rule explains why background output is forbidden'
+assert_contains "$review_wait_contract" 'target_epoch - $(date +%s)' \
+    'review wait rule provides a known-epoch sleep recipe'
+assert_contains "$review_wait_contract" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'review wait recipe calculates remaining time safely'
+assert_contains "$review_wait_contract" 'if (( remaining > 0 )); then' \
+    'review wait recipe guards an expired target epoch'
+assert_contains "$review_wait_contract" 'sleep "$remaining"' \
+    'review wait recipe sleeps only for a nonnegative duration'
+assert_contains "$review_wait_contract" 'progress heartbeat' \
+    'review wait rule names progress heartbeats'
+assert_contains "$review_wait_contract" 'log file, not stdout' \
+    'review wait rule redirects heartbeats away from stdout'
+assert_contains "$(<"$review_skill")" 'silent until terminal' \
+    'review polling section points at silent-until-terminal guidance'
 assert_eq '' "$(scan_skill_recipes "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'review skill has no sleep polling recipe'
 

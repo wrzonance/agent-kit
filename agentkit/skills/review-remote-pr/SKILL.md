@@ -356,11 +356,11 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 
 ### Wait contract: one turn-free wait
 
-Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before issuing any wait in
-this loop — it is the single detailed home for the no-model-turn wait rule, every named bound
-(adversarial max-duration-seconds, the CI round cap, the worker/runner completion marker), and the
-durable-state recipe. Step 4 below adds this loop's own CI round-cap specifics (bounds, settlement
-rules); it does not restate the general rule.
+Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before waits: it owns the
+no-model-turn, bounds, and durable-state rules; Step 4 adds CI settlement specifics.
+
+This loop keeps waits silent until terminal: background output wakes the orchestrator for a turn; log
+heartbeats and emit one completion/expiry line.
 
 ### Adversarial-review receipt:
 
