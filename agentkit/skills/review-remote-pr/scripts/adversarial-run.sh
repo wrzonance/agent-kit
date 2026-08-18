@@ -11,6 +11,8 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 
 PR=''
 REPO=''
@@ -217,7 +219,7 @@ build_diff() {
     prepare_owned_artifact "$diff_path"
     [[ ! -L $tmp ]] || die "refusing to use an adversarial diff temp symlink: $tmp"
     git fetch --quiet origin "$BASE_REF" || die "could not fetch origin/$BASE_REF"
-    git --no-pager diff --find-renames --unified=25 "origin/$BASE_REF...HEAD" >"$tmp" ||
+    canonical_diff "$BASE_REF" >"$tmp" ||
         die 'could not build the adversarial diff'
     chmod 600 -- "$tmp" || die "could not secure the adversarial diff: $tmp"
     mv -f -- "$tmp" "$diff_path" || die "could not publish the adversarial diff: $diff_path"
@@ -230,7 +232,8 @@ verify_consent() {
     local payload state=$RUN_DIR/state/cross-provider-consent
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     payload=$(
-        "$consent_script" payload --repo "$REPO" --pr "$PR" --diff "$RUN_DIR/adversarial.diff"
+        "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
+            --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
     "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
         >/dev/null 2>&1 || die 'valid consent-record.sh check is required; refusing to launch review'
@@ -314,7 +317,8 @@ run_provider() {
     local -a helper_args=(
         --mode review --model "$MODEL" --effort "$EFFORT" --pr "$PR" --repo "$REPO"
         --consent-state "$RUN_DIR/state/cross-provider-consent"
-        --diff "$RUN_DIR/adversarial.diff" --transcript "$transcript" --output "$result"
+        --base-ref "$BASE_REF" --diff "$RUN_DIR/adversarial.diff"
+        --transcript "$transcript" --output "$result"
         --max-duration-seconds 900
     )
     if [[ $PROVIDER == anthropic ]]; then

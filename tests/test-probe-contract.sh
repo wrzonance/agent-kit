@@ -74,6 +74,21 @@ for helper in "$claude" "$codex"; do
     assert_contains "$(<"$metadata_err")" 'cannot include PR review arguments' \
         "$name explains that probes cannot be PR-bound"
 
+    base_ref_err="$tmp/$name.base-ref.err"
+    base_ref_rc=0
+    if [[ $name == *claude* ]]; then
+        bash "$helper" --mode probe --no-payload --model claude-test \
+            --transcript "$probe_dir/base-ref" --base-ref anything \
+            --claude /definitely/missing/claude >/dev/null 2>"$base_ref_err" || base_ref_rc=$?
+    else
+        bash "$helper" --mode probe --no-payload --model gpt-test \
+            --transcript "$probe_dir/base-ref" --base-ref anything \
+            --codex /definitely/missing/codex >/dev/null 2>"$base_ref_err" || base_ref_rc=$?
+    fi
+    assert_eq 1 "$base_ref_rc" "$name rejects a base ref attached to a probe"
+    assert_contains "$(<"$base_ref_err")" 'cannot include PR review arguments' \
+        "$name explains that probes cannot carry a base ref"
+
     review_err="$tmp/$name.review.err"
     review_rc=0
     if [[ $name == *claude* ]]; then
