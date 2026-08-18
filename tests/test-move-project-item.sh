@@ -39,7 +39,9 @@ case "\$*" in
       ;;
   *"project item-list"*)
       [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1
-      if [[ -n "\${CURRENT_STATUS:-}" ]]; then
+      if [[ -n \${LARGE_BATCH:-} ]]; then
+          jq '.items += [range(1; 10) as \$n | {id: ("PVTI_large" + (\$n | tostring)), content: {type: "Issue", number: \$n, repository: "example-org/example-repo", url: ("https://github.com/example-org/example-repo/issues/" + (\$n | tostring))}}]' "$here/fixtures/gh-item-list.json"
+      elif [[ -n "\${CURRENT_STATUS:-}" ]]; then
           case \${STATUS_SHAPE:-direct} in
             direct)
               jq --arg status "\${CURRENT_STATUS:-}" '.items |= map(if .id == "PVTI_example57" then .status = \$status else . end)' "$here/fixtures/gh-item-list.json"
@@ -335,7 +337,7 @@ assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/boar
 assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
     'the board writer applies a private mode'
 
-# --- fresh clone: board.json committed, item cache absent -----------------
+# --- fresh clone: local board declaration, item cache absent ---------------
 # The discovery path is O(boards owned by the org), so an org with a dozen
 # boards would pay a dozen item-list calls to move one card. board.json names
 # the board, so go straight to it.
@@ -350,6 +352,17 @@ assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
 assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
     'and refreshes the cache with the live item id'
+
+# A runtime board refresh must not dirty a checkout using the blessed local
+# declaration model. The declaration is ignored in the repository-local
+# exclude, while the mover may still rewrite it atomically.
+repo=$(seed_repo)
+local_exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $local_exclude == /* ]] || local_exclude=$repo/$local_exclude
+printf '.agent/*\n' >> "$local_exclude"
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+assert_eq '' "$(git -C "$repo" status --short)" \
+    'a runtime board move leaves local ignored declarations out of tracked status'
 
 # --- invalid status never reaches gh (fail closed) ------------------------
 repo=$(seed_repo)
@@ -436,6 +449,19 @@ assert_eq '0' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
     'batch avoids project validation reads'
 assert_eq '0' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
     'batch avoids Status validation reads'
+
+# A large batch must preserve every terminal evidence line when stdout is
+# captured through a pipe, and the summary makes any short capture visible.
+repo=$(seed_repo)
+: > "$tmp/large-batch.out"
+LARGE_BATCH=1 run_mv "$repo" --issue-numbers 1,2,3,4,5,6,7,8,9 --status Ready 2>&1 |
+    tee "$tmp/large-batch.out" > /dev/null
+pipe_lines=$(awk 'END { print NR + 0 }' "$tmp/large-batch.out")
+assert_eq '10' "$pipe_lines" 'a 9-issue batch emits nine evidence lines plus its summary through a pipe'
+assert_eq '9' "$(grep -c '^moved #' "$tmp/large-batch.out" || true)" \
+    'a piped large batch emits one moved line per issue'
+assert_eq 'moved=9 no-op=0 of=9' "$(tail -n 1 "$tmp/large-batch.out")" \
+    'a piped large batch ends with a completeness summary'
 
 # A moved/no-op mixture terminates the moved issue and emits one terminal
 # no-op for the issue absent from every board.

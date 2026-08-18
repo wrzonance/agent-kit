@@ -39,7 +39,7 @@ used). GitHub CLI commands inherit that process identity, including the
 one-call helpers. The token is runtime state, not repository configuration:
 
 - Never put the token, a token command, or a credential-shaped value in
-  `.agent/config.env`, a committed file, a prompt, or a log.
+  `.agent/config.env`, any other repository file, a prompt, or a log.
 - Do not run `gh auth login` inside an unattended orchestrator session. It can
   replace the intended fleet identity with a human credential.
 - Keep the token lifetime bounded to the session and rotate/revoke the App

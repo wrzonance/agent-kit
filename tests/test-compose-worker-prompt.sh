@@ -114,6 +114,8 @@ assert_contains "$prompt" '--cmd backend-test --yolo --yolo-base ' 'multi-word d
 assert_contains "$prompt" '--cmd test --yolo --yolo-base ' 'test receives chained yolo flags'
 assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]' --yolo --yolo-base $chain_base" \
     'focused test selector receives chained yolo flags'
+assert_contains "$prompt" "--yolo-write-set 'src/**'" \
+    'generated verification commands receive the declared write-set carve-out'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
 
 # Declared write set (issue #224 WS2a): the token always renders as pinned
@@ -136,11 +138,15 @@ assert_contains "$err" '--write-set is required' \
 
 write_set_prompt=$(bash "$compose" --template issue-lead --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
-    --worker-effort high --write-set 'src/parser/**,tests/test-*.sh')
+    --worker-effort high --yolo --write-set 'src/parser/**,tests/test-*.sh')
 assert_contains "$write_set_prompt" '- src/parser/**' \
     'a pinned write set renders each glob'
 assert_contains "$write_set_prompt" '- tests/test-*.sh' \
     'a pinned write set renders every glob'
+assert_contains "$write_set_prompt" "--yolo-write-set 'src/parser/**'" \
+    'each generated command receives the first declared write-set glob'
+assert_contains "$write_set_prompt" "--yolo-write-set 'tests/test-*.sh'" \
+    'each generated command receives every declared write-set glob'
 assert_not_contains "$write_set_prompt" 'no write set pinned' \
     'a pinned write set replaces the default boundary line'
 

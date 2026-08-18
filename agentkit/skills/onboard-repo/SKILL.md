@@ -10,7 +10,7 @@ description: >-
 
 # Onboard a repository
 
-`bootstrap-repo.sh` leaves uncertain commands and labels commented rather than guessing: a wrong declaration gets invoked. This skill records the resulting one-time decisions.
+`bootstrap-repo.sh` leaves uncertain commands and labels commented rather than guessing. This skill records the decisions.
 
 ## Resumable stage contract
 
@@ -22,7 +22,7 @@ Before `verified`, preflight and report its exact runtime/setup/toolchain findin
 
 Operator approvals, Stop remediation, and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
 
-Completion reports say to PR `.agent/config.env`, `.agent/board.json`, and `.gitignore`; approvals remain per-machine until merge; then run the resolved `agent-run.sh --cmd <declared name> --yolo`. A repo without a declared command has no `Stop` gate.
+Completion reports say declarations are per-machine `.agent/` state and onboarding records `.agent/*` in `.git/info/exclude`; approvals remain per-machine, then run the resolved `agent-run.sh --cmd <declared name> --yolo`. A repo without a declared command has no `Stop` gate.
 
 ---
 
@@ -122,7 +122,7 @@ Before bootstrap, inspect `AGENTS.md`, `CLAUDE.md`, and discover equivalents. Re
 - **Duplicated** — propose, do not edit, a removal candidate.
 - **Repo-specific** — keep it with why.
 
-Output one proposed diff/report — conflicts first, duplicates second, repo-specific guidance explicitly retained. **Propose, never apply**: must not delete, rewrite, or modify instruction files. Stop; only a later, explicitly approved onboarding pass may continue to Step 2 with the proposed `.agent/config.env`, `.agent/board.json`, and `.gitignore` additions.
+Output one proposed diff/report — conflicts first, duplicates second, repo-specific guidance explicitly retained. **Propose, never apply**: must not delete, rewrite, or modify instruction files. Stop; only a later, explicitly approved onboarding pass may continue to Step 2 with the proposed local `.agent/config.env` and `.agent/board.json` declarations.
 
 ## Step 2 — write the files
 
@@ -135,7 +135,7 @@ run:
 "$shared/bootstrap-repo.sh"
 ```
 
-This writes `.agent/config.env`, `.agent/board.json`, and ignore rules. Surface tracked state; untracking is the user's history decision.
+This writes per-machine `.agent/config.env` and `.agent/board.json`, and verifies `.agent/*` in `.git/info/exclude`. It does not add tracked `.gitignore` exceptions. Surface legacy tracked declarations; untracking is the user's history decision.
 
 ## Step 3 — find what it left blank
 
@@ -269,18 +269,17 @@ just because it would eventually pass; say so in Step 9.
 
 ## Step 7 — commit
 
-Onboarding changes `.gitignore` and adds two files everyone in the repository inherits, so it goes through
-whatever review the repository already uses — committing straight to `main` skips it, so check where you're
-standing first:
+Onboarding writes local declarations and a local exclude entry; they are not committed or shared:
 
 ```bash
 git branch --show-current
 git checkout -b chore/agentkit-onboarding     # unless the repo commits to trunk
-git add .agent/config.env .agent/board.json .gitignore
+# The declarations remain ignored local state; do not stage them.
+git status --short --ignored -- .agent
 ```
 
-Commit with the trailer from the contract's `harness=` line. `.agent/config.env` and `.agent/board.json` are
-meant to be committed; everything else under `.agent/` is working state the new ignore rules exclude.
+If the repository carries tracked legacy declarations, remove them from the index as a separate migration.
+Fresh clones re-run onboarding to regenerate them; `.agent/` is excluded locally.
 
 ## Step 8 — check the harness itself
 
@@ -324,7 +323,7 @@ became active, and what `Stop` will now enforce.
 
 Named repository commands require explicit approval before their first run and after a declaration or
 repository-backed input changes (`agent-run.sh --approve --cmd <name>`); the approval record is owner-only
-state outside the checkout, not a committed key a pull request could change.
+state outside the checkout, and the declaration itself is local ignored state rather than a committed key.
 
 Shared helpers require Bash 4+ for associative arrays. Invoke them with Bash; zsh calls fail fast.
 
@@ -336,7 +335,7 @@ make it a stated choice, not an accident. Only `Stop` falls back like that: `age
 resolves nothing in a TEST-only repo, so substitute the name you declared in every `--cmd` example here.
 
 **Nothing secret belongs in `config.env`.** Tokens, proxies, and CA paths are refused by the resolver: the
-file is committed, and anyone who can open a pull request can influence it.
+file is readable local state and may still be copied into logs or shared accidentally.
 
 For the incidents behind these rules — what actually went wrong the times they were skipped — see
 `docs/onboarding-lessons.md` in the agent-kit source repository (not packaged with the plugin).

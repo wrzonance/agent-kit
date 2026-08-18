@@ -4,9 +4,9 @@ Keep your sub-agents in check while systematically working through a GitHub Proj
 
 Agent Kit is a plugin for Codex CLI and Claude Code. It ships three skills, a set of bash
 helper scripts, and five lifecycle hooks. A repository you onboard declares its own facts
-once, in a committed `.agent/` directory: the trunk branch, the Projects board, the label
+once, in a per-machine `.agent/` directory: the trunk branch, the Projects board, the label
 taxonomy, and the commands that verify it. The skills and hooks read those declarations
-instead of rediscovering them on every run.
+instead of rediscovering them on every run; onboarding regenerates them after a fresh clone.
 
 ## What it does
 
@@ -64,12 +64,15 @@ agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR
 "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write
 ```
 
-This writes two committed files, plus the `.gitignore` rules that keep everything else
-under `.agent/` out of your history:
+This writes two per-machine files and records `.agent/*` in the repository-local
+`.git/info/exclude`, keeping all onboarding state out of the checkout's history:
 
 - `.agent/config.env` holds the repo slug, trunk branch, board number, Status column
   names, generator stamp, and commented suggestions for your verify commands.
 - `.agent/board.json` caches the board's node IDs, so a status move costs one API call.
+
+These declarations are intentionally untracked. A fresh clone has no board or repository
+facts until onboarding runs; repeat the bootstrap command above to regenerate them locally.
 
 On later sessions, `"$agentkit/.shared/scripts/onboard-state.sh" --report` includes a cheap drift
 summary. Inspect named findings with `"$agentkit/.shared/scripts/onboard-refresh.sh" --report`; when
@@ -77,7 +80,7 @@ the operator chooses to regenerate proposals, use
 `"$agentkit/.shared/scripts/bootstrap-repo.sh" --refresh`. Refresh preserves declared values and
 never activates a proposal.
 
-Both files are committed and readable, so secrets are refused outright: tokens, proxies,
+Both files are readable local state, so secrets are refused outright: tokens, proxies,
 and CA paths never belong in either.
 
 Then open `.agent/config.env` and uncomment the commands your repository runs:

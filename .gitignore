@@ -1,10 +1,8 @@
 tests/tmp/
 plugin/
 
-# agentkit: .agent/ is working state; these two files are the declaration
+# agentkit: .agent/ is per-machine working state; onboarding regenerates declarations
 .agent/*
-!.agent/config.env
-!.agent/board.json
 .worktrees/
 .claude/
 .codex/
