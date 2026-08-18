@@ -76,7 +76,8 @@ listed=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$listed" 'AGENT_PROJECT_NUMBER=7' 'generated config carries the project number'
 assert_contains "$listed" 'AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done' \
     'status vocabulary comes from the discovered option order'
-assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' \
+expected_generator=$(jq -r .version "$root/agentkit/.codex-plugin/plugin.json")
+assert_contains "$(cat "$repo/.agent/config.env")" "AGENT_ONBOARDED_BY=agentkit/$expected_generator" \
     'generated config records the installed generator version'
 
 # --- a repo linked to exactly one board needs no --project -----------------
