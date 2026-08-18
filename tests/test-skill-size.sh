@@ -213,7 +213,7 @@ root=$tmp/parallel-ratchet
 mkdir -p "$root/parallel-issues"
 {
     printf -- '---\nname: parallel-issues\ndescription: Use when an allowlisted skill grows past its stacked ceiling.\n---\n'
-    for ((i = 0; i < 1126; i++)); do
+    for ((i = 0; i < 1131; i++)); do
         printf 'body line %04d ' "$i"
         head -c 80 /dev/zero | tr '\0' x
         printf '\n'
@@ -221,9 +221,9 @@ mkdir -p "$root/parallel-issues"
 } > "$root/parallel-issues/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1125 lines' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1130 lines' \
     'the parallel-issues line ratchet pins the stacked ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 19163 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 19255 tokens' \
     'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these

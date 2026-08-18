@@ -3,6 +3,7 @@
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
+- [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
 - [Fix-batch worker prompt](#fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker
 
 Read this before dispatching any worker in `parallel-issues`, or before the root publishes a
@@ -320,6 +321,22 @@ For a chained issue, pass the predecessor branch as the PR base (`--base feat/is
 of `--base "$base"`) and keep the `Stacked on #<PR>` disclosure in the approved Why or Decisions
 section. GitHub's closing keyword is dormant while the PR is stacked; after the predecessor
 merges, use `chain-advance.sh --retarget` and require its linkage proof before merging.
+
+### Diff-size disclosure
+
+Before composing the Decisions section, run `diff-facts.sh` against the pushed branch's base
+(the chain base for a chained issue) and fold its full output into the Decisions file
+verbatim:
+
+```bash
+"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
+    --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
+```
+
+This is disclosure, not a gate: a packet whose `operational.lines` exceeds any guideline
+still gets the same draft PR a small one gets. Re-cutting or trimming a finished, review-clear
+workstream is never an unattended default — it is an attended decision, or an explicit
+follow-up instruction from the human reviewing the draft.
 
 ```text
 Stacked on #__BASE_PR__ — merge that PR first. Agent-driven merges run

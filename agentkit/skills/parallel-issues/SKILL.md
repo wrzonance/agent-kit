@@ -126,11 +126,15 @@ mutation no recorded decision covers still stops — scope stays; permission cer
 
 ### Diff-size facts
 
-When a chunk-size discussion needs evidence, use the shared `diff-facts.sh` helper with
-the relevant base ref. Its `operational.lines` fact reports the operational lines in the
-diff; generated, lockfile, fixture, and aggregate facts remain visible alongside it.
-These are facts only, not a triviality or size verdict, so they never authorize skipping
-review or chunking.
+Before any size judgment, use the shared `diff-facts.sh` helper with the relevant base ref.
+Its `operational.lines` fact reports the operational lines in the diff; generated, lockfile,
+fixture, and aggregate facts remain visible alongside it. These are facts only, not a
+triviality or size verdict, so they never authorize skipping review or chunking.
+
+**Size facts never park an unattended run:** an over-guideline packet still opens its draft
+PR with the facts disclosed in the body — trimming is an attended or explicit follow-up
+decision, never a default.
+See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure) for the recipe.
 
 Announce which flags are active in the opening line, so the transcript records what was
 authorised rather than leaving it to be reconstructed later.
@@ -796,7 +800,8 @@ Act on each lead result as soon as it arrives:
   review and draft PR after a worker push"), opens the draft PR, moves the issue to
   `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
-  the PR, the board move, or the ledger write.
+  the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
+  PR — see Diff-size facts.
 - **BLOCKED** → report the reason and preserved worktree; do not blindly restart. When the blocker clears, use `collaboration.followup_task` on the same lead if it remains available, otherwise spawn a fresh lead with the completed state and exact remaining step.
 - **Queued issue** → spawn it immediately into the freed slot.
 

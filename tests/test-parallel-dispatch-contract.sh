@@ -818,6 +818,36 @@ out=$("$cap_helper" --config "$codex_home/config.toml" 2>/dev/null)
 assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
 
+# --- issue #273: size facts never park an unattended run --------------------
+# The 2026-08-18 cable-tool incident: a worker finished (implemented,
+# committed, pushed, tests green) and the root dead-ended one step short of
+# the draft PR, inventing a "fastlane" size gate the kit never declared. The
+# fix states the unattended default at both places the incident touched: the
+# Diff-size facts section (the flag/fact contract) and the Collect
+# completion-report bullet (the exact spine point between a finished worker
+# and PR creation). The disclosure recipe itself lives in worker-prompts.md,
+# not the body, per the strong preference to land detail in references.
+assert_contains "$text" 'Size facts never park an unattended run' \
+    'diff-size facts state the unattended default explicitly'
+assert_contains "$text" 'never authorize skipping' \
+    'diff-size facts still forbid skipping review or chunking on facts alone'
+assert_contains "$text" 'references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure)' \
+    'diff-size facts point at the worker-prompts disclosure recipe'
+assert_contains "$text" 'Diff size is never a reason to withhold this' \
+    'the Collect completion-report bullet carries the same no-park rule'
+assert_contains "$worker_prompts_text" '### Diff-size disclosure' \
+    'worker-prompts.md carries the diff-size disclosure subsection'
+assert_contains "$worker_prompts_text" '"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"' \
+    'the disclosure recipe runs diff-facts.sh against the worktree'
+assert_contains "$worker_prompts_text" '--base "${chain_base_sha:-origin/$base}"' \
+    'the disclosure recipe pins the chain base for a chained issue'
+assert_contains "$worker_prompts_text" '>> "$pr_decisions_file"' \
+    'the disclosure recipe folds facts into the Decisions section, not a separate gate'
+assert_contains "$worker_prompts_text" 'still gets the same draft PR a small one gets' \
+    'the disclosure recipe states parity between over-guideline and small packets'
+assert_contains "$worker_prompts_text" 'is never an unattended default' \
+    'the disclosure recipe states trimming is attended-only, never automatic'
+
 v1_home="$tmp/v1-home"
 mkdir -p "$v1_home"
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' 'max_depth = 2' \
