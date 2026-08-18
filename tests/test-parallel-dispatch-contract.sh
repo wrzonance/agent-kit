@@ -51,7 +51,13 @@ six_step_loop_text=$(<"$shared_six_step_loop")
 trust_and_fencing_text=$(<"$trust_and_fencing")
 verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
-root_review_section=$(sed -n '/^### Root review and draft PR after a worker push$/,/^### Polling discipline/p' "$skill")
+root_review_section=$(awk '
+    $0 == "### Root review and draft PR after a worker push" { capture=1; next }
+    capture && $0 == "### Polling discipline (applies to every wait in this skill)" { exit }
+    capture { print }
+' "$skill")
+assert_not_contains "$root_review_section" '### Polling discipline (applies to every wait in this skill)' \
+    'root review extraction stops before the following polling section'
 provider_rules_text=$(<"$root/agentkit/skills/review-remote-pr/references/provider-rules.md")
 grooming_text=$(<"$root/agentkit/skills/review-remote-pr/references/grooming.md")
 issue_lead_prompt=$(awk '
@@ -709,6 +715,10 @@ assert_contains "$root_review_section" 'inline correction' \
     'root review names the inline-correction decision at the correction call site'
 assert_contains "$root_review_section" 'zero dispatches' \
     'root review records that qualifying inline corrections cost zero dispatches'
+assert_contains "$text" 'two allowed implementation exceptions' \
+    'parallel preflight names the complete implementation exception set'
+assert_contains "$text" 'qualifying bounded inline correction' \
+    'parallel preflight names bounded inline correction as an implementation exception'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \

@@ -6,10 +6,13 @@ restating it.
 ## Implementation-worker gate
 
 The PR-loop agent orchestrates — inspects state, evaluates findings, owns human-confirmation
-gates — and does **not** generate a fix batch on its own model. This is role separation: each worker receives fresh fenced context
-and sole-writer isolation, while the root performs independent root validation before publication. Whenever CI, conflicts, adversarial findings, CodeRabbit, Code
-Quality, or approved human feedback requires a code change, dispatch one real worker as the sole
-writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
+gates — and does **not** generate a fix batch on its own model except for a qualifying bounded
+inline correction. This is role separation: each worker receives fresh fenced context and
+sole-writer isolation, while the root performs independent root validation before publication.
+The two allowed implementation exceptions are a genuinely spawn unavailable path and a
+qualifying bounded inline correction; all other CI, conflict, adversarial, CodeRabbit, Code
+Quality, or approved human feedback requiring a code change dispatches one real worker as the
+sole writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
 `AGENT_WORKER_EFFORT` for the worker model and effort from the repository declarations, not from a
 model tier or the orchestrator's pricing. The Step 1b reviewer (read-only) **never** satisfies this
 gate.

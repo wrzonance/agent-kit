@@ -127,9 +127,11 @@ agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]
 contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
 ```
 
-## Implementation-worker gate (MANDATORY for every code change)
+## Implementation-worker gate (MANDATORY for every non-exempt code change)
 
-The PR loop orchestrates; an implementation worker is the sole writer for any CI, conflict, review, or approved-human fix batch. Resolve its configured model/effort, then read [references/worker-gate.md](references/worker-gate.md), [../.shared/spawn-contract.md](../.shared/spawn-contract.md), and [../.shared/six-step-loop.md](../.shared/six-step-loop.md) in full before dispatch. Paste the six-step contract and accepted findings into the isolated worker prompt; worker validates, commits, pushes; root reviews diff and owns PR metadata/posts.
+The PR loop orchestrates; implementation workers are sole writers for fix batches. The two allowed
+exceptions are spawn unavailable and qualifying bounded inline correction. Resolve model/effort,
+then read [references/worker-gate.md](references/worker-gate.md), [../.shared/spawn-contract.md](../.shared/spawn-contract.md), and [../.shared/six-step-loop.md](../.shared/six-step-loop.md) in full before dispatch; workers validate, commit, push; root owns PR metadata/posts.
 
 ## The Loop
 
