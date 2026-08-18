@@ -1011,6 +1011,14 @@ hash_repo_input() {
         return 0
     }
     rel=${resolved#"$git_top/"}
+    # Only stdout is fingerprint material here, and the caller's stderr is not
+    # this function's to write on: the --yolo approval-record probe runs the
+    # whole chain in a captured subshell and reads ANY stderr as the reason the
+    # trust store was unusable. An unreadable input directory or file would make
+    # find or sha256sum explain a perfectly good approval store as broken. The
+    # input still goes unhashed, which changes the fingerprint, and the trunk
+    # gate refuses what it cannot read -- so dropping the diagnostics costs no
+    # safety, it just stops one subsystem from answering for another.
     if [[ -d $resolved ]]; then
         find "$resolved" -type f -o -type l | sort | while IFS= read -r path; do
             [[ -e $path || -L $path ]] || continue
@@ -1026,7 +1034,7 @@ hash_repo_input() {
     else
         printf 'path=%s\n' "$rel"
         sha256sum -- "$resolved" | awk '{print $1}'
-    fi
+    fi 2> /dev/null
 }
 
 repo_relative_path() {

@@ -311,6 +311,39 @@ out=$(cd "$repo" && AGENT_TRUST_ROOT="$broken_trust_root" "$run_sh" --cmd verify
 assert_contains "$out" 'refusing unapproved repository command' \
     'a plain --cmd run with an unusable trust store still refuses'
 
+# That note means the trust STORE is unusable. An input the fingerprint cannot
+# read is a different thing with a perfectly good store, and the probe captures
+# hash_repo_input's stderr too -- so walking a declared input directory over an
+# unreadable subdirectory or file reported the approval store as broken and
+# explained the fallback with somebody else's permission warning. Both inodes
+# are covered here because find and sha256sum are separate mouths on the same
+# stream. The run still refuses: the trunk gate cannot read the input either,
+# and failing closed is the right answer -- it just has to be its own answer.
+repo=$(make_published_repo)
+mkdir -p "$repo/tools/dev/locked"
+printf 'ok\n' > "$repo/tools/dev/readable.txt"
+printf 'locked\n' > "$repo/tools/dev/locked/f"
+printf 'private\n' > "$repo/tools/dev/private.txt"
+printf 'AGENT_CMD_VERIFY=ls tools/dev\n' > "$repo/.agent/config.env"
+git -C "$repo" add -A
+git -C "$repo" -c user.email=t@example.invalid -c user.name=t commit -qm inputs
+git -C "$repo" push -q origin HEAD:main
+git -C "$repo" fetch -q origin
+chmod 000 "$repo/tools/dev/locked" "$repo/tools/dev/private.txt"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$tmp/trust-unreadable-input" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+# Restored before the assertions so a failure here cannot leave the temporary
+# tree undeletable.
+chmod 755 "$repo/tools/dev/locked"
+chmod 644 "$repo/tools/dev/private.txt"
+assert_eq '1' "$rc" 'an unreadable command input fails closed under --yolo'
+assert_contains "$out" 'refusing --yolo' \
+    'and it is the trunk gate that refuses it'
+assert_not_contains "$out" 'approval-record lookup unavailable' \
+    'an unreadable command input is never reported as an unusable approval store'
+assert_not_contains "$out" 'Permission denied' \
+    'the fingerprint walk keeps its own diagnostics out of the run stream'
+
 # --- the approval record is scoped to the repository, not the checkout -----
 # Onboarding writes `.agent/config.env` per-machine and untracked, so on such a
 # repository the trunk can never carry the declaration `--yolo` validates
