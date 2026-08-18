@@ -26,6 +26,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+review_skill_text=$(<"$review_skill")
+normalized_review_text=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
 assert_contains "$normalized_text" 'worker=<model> <effort>' \
     'completion table records the selected worker model and effort'
 assert_not_contains "$normalized_text" 'worker=gpt-5.6-luna high' \
@@ -497,12 +499,16 @@ assert_contains "$normalized_text" 'Design review runs **after** the push' \
     'root design review runs post-push, not as a worker-blocking gate'
 assert_contains "$normalized_text" 'Environment-refusal fallback only' \
     'the validator flow is scoped to the environment-refusal fallback'
-assert_not_contains "$normalized_text" 'root publication stages only the explicit handback' \
+assert_not_contains "$normalized_review_text" 'root publication stages only the explicit handback' \
     'review workflow no longer stages a worker handback as root publication'
+assert_contains "$normalized_review_text" "review the worker's pushed diff and re-check CI and review state" \
+    'review Phase A re-checks state after the worker push'
+assert_not_contains "$normalized_review_text" 'verify its fix, commit/push once' \
+    'review Phase A does not republish the worker fix from root'
 assert_contains "$text" 'Step 3b workers receive only root-approved fix batches' \
     'Step 3b restricts workers to root-approved mechanical batches'
 fix_batch_flat=$(tr '\n' ' ' <<<"$fix_batch_prompt" | tr -s '[:space:]' ' ')
-assert_contains "$fix_batch_flat" 'commit and push the assigned branch' \
+assert_contains "$fix_batch_flat" 'Committing and pushing the assigned branch is yours' \
     'fix-batch workers publish their own branch'
 assert_contains "$fix_batch_flat" 'RED: WAIVED' \
     'fix-batch workers declare a red-phase waiver when no test seam exists'
@@ -663,8 +669,8 @@ root_sections=$(
     sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill"
     sed -n '/^### Root review and draft PR after a worker push$/,/^### Polling discipline/p' "$skill"
     sed -n '/^## Runtime and provider neutrality$/,/^## Automated review provider rules/p' "$review_skill"
-    sed -n '/^## Implementation-worker gate$/,/^## Root-owned publication handback$/p' "$worker_gate"
-    sed -n '/^## Root-owned publication handback$/,$p' "$worker_gate"
+    sed -n '/^## Implementation-worker gate$/,/^## Worker-owned publication$/p' "$worker_gate"
+    sed -n '/^## Worker-owned publication$/,$p' "$worker_gate"
     sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill"
 )
 assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
