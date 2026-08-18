@@ -967,6 +967,9 @@ apply_test_focus() {
 trust_root=''
 trust_file=''
 trust_fingerprint=''
+# Set to 'yes' when a --yolo run is satisfied by a matching approval record
+# instead of the trunk-comparison gate; the log-bracket writer below reads it.
+yolo_trust_satisfied=''
 
 sha256_text() {
     printf '%s' "$1" | sha256sum | awk '{print $1}'
@@ -1534,19 +1537,36 @@ require_human_approval() {
     esac
 }
 
-trust_command() {
-    local trust_id current recorded temp
-    [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 0
+# Populates trust_root/trust_file/trust_fingerprint for the current command and
+# focus. No side effects beyond those globals -- both the --approve write path
+# and the plain-run/--yolo compare paths share this instead of each deriving
+# the trust identity separately.
+resolve_trust_state() {
+    local trust_id
+    [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 1
     trust_root=$(trust_state_root)
     trust_id=$(sha256_text "$git_top\n$cmd_name\nfocus=$focus_opt")
     trust_file=$trust_root/$trust_id.trust
     trust_fingerprint=$(compute_trust_fingerprint)
-    current=$trust_fingerprint
+}
+
+# Requires resolve_trust_state to have populated trust_file/trust_fingerprint
+# first. True only when a previously recorded approval's fingerprint still
+# matches the command's current inputs.
+trust_record_matches() {
+    local recorded
+    recorded=$(cat -- "$trust_file" 2>/dev/null || true)
+    [[ -n $recorded && $recorded == "$trust_fingerprint" ]]
+}
+
+trust_command() {
+    local temp
+    resolve_trust_state || return 0
 
     if ((approve_cmd)); then
         require_human_approval "$cmd_name"
         temp=$trust_file.$$
-        if ! printf '%s\n' "$current" > "$temp" 2>/dev/null; then
+        if ! printf '%s\n' "$trust_fingerprint" > "$temp" 2>/dev/null; then
             die "cannot write temporary trust file: $temp"
         fi
         if ! chmod 600 -- "$temp" 2>/dev/null; then
@@ -1561,8 +1581,7 @@ trust_command() {
         exit 0
     fi
 
-    recorded=$(cat -- "$trust_file" 2>/dev/null || true)
-    [[ $recorded == "$current" ]] && return 0
+    trust_record_matches && return 0
     printf 'agent-run: refusing unapproved repository command: %s\n' "$cmd_name" >&2
     printf '  The declaration or a repository-backed command input is new or changed.\n' >&2
     printf '  A human reviews the change and approves it from a terminal with --approve;\n' >&2
@@ -1833,7 +1852,18 @@ resolve_literal_executable
 # flag was threaded down from -- and it covers trunk-reviewed inputs only.
 if [[ -n $cmd_name ]]; then
     if ((yolo_cmd)); then
-        yolo_gate
+        # A matching approval record is a stronger, human-anchored grant than
+        # the trunk-comparison gate --yolo falls back to, so it is consulted
+        # first: approve-then-resume must not re-refuse the identical
+        # threaded --yolo call that hit the approval handoff in the first
+        # place (see the parked/approved workflow in trust-and-fencing.md).
+        if resolve_trust_state && trust_record_matches; then
+            yolo_trust_satisfied=yes
+            printf 'agent-run: trust gate satisfied by approval record; --yolo not exercised\n' >&2
+            add_note 'trust gate satisfied by approval record; --yolo not exercised'
+        else
+            yolo_gate
+        fi
     else
         trust_command || die "command '$cmd_name' is not approved"
     fi
@@ -1923,16 +1953,21 @@ readonly LOG_HEADER_LINES
     printf '=== agent-run %s\n' "$cmd_str"
     printf '=== started %s  pid=%s  cwd=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir"
-    # The skip must survive in the durable artifact, not only on the process's
-    # stderr -- an after-the-fact audit reads logs, and a bypassed run must not
-    # read as an approved one.
+    # The skip (or the record-satisfied grant) must survive in the durable
+    # artifact, not only on the process's stderr -- an after-the-fact audit
+    # reads logs, and a bypassed run must not read as an approved one, nor the
+    # reverse. The two brackets share no substring for exactly that reason.
     if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
-        printf '=== trust gate skipped (--yolo): no approval record\n'
-        if ((${#yolo_admitted_inputs[@]})); then
-            for admitted_input in "${yolo_admitted_inputs[@]}"; do
-                printf '=== trust gate write-set admission: %s (inside declared write set)\n' \
-                    "$admitted_input"
-            done
+        if [[ $yolo_trust_satisfied == yes ]]; then
+            printf '=== trust gate satisfied by approval record; --yolo not exercised\n'
+        else
+            printf '=== trust gate skipped (--yolo): no approval record\n'
+            if ((${#yolo_admitted_inputs[@]})); then
+                for admitted_input in "${yolo_admitted_inputs[@]}"; do
+                    printf '=== trust gate write-set admission: %s (inside declared write set)\n' \
+                        "$admitted_input"
+                done
+            fi
         fi
     fi
 } > "$log_file"

@@ -225,6 +225,48 @@ assert_eq '1' "$rc" 'an untracked runner is refused under --yolo'
 assert_contains "$out" '.agent/runner' 'the refusal names the introduced runner'
 rm -f "$repo/.agent/runner"
 
+# --- approve-with-record composes with a resumed --yolo call --------------
+# trust-and-fencing.md's parked-workstream remediation hands back the exact
+# original threaded invocation, --yolo included, after an interactive
+# --approve. It must not re-refuse: a matching approval record is consulted
+# before the trunk-comparison gate, so the identical resumed call now passes
+# with a distinct, log-durable audit note -- never mistaken for an ordinary
+# --yolo skip (see the log-bracket assertions below).
+repo=$(make_published_repo)
+# A dedicated root -- never reassigning the shared trust_root above, which
+# later cases in this file still rely on staying at its prior value to
+# assert an empty directory persists no trust.
+approve_then_yolo_trust_root="$tmp/trust-approve-then-yolo"
+printf 'AGENT_CMD_VERIFY=echo resumed-ok\n' > "$repo/.agent/config.env"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$approve_then_yolo_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'the first --yolo attempt on a changed declaration still refuses'
+assert_eq '' "$(trust_files "$approve_then_yolo_trust_root")" 'the initial refusal persists no trust'
+
+(cd "$repo" && AGENT_TRUST_ROOT="$approve_then_yolo_trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd verify) > /dev/null 2>&1
+assert_contains "$(trust_files "$approve_then_yolo_trust_root")" '.trust' \
+    'the interactive approval records trust for the changed declaration'
+
+resume_err="$tmp/resume-stderr"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$approve_then_yolo_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2> "$resume_err") && rc=0 || rc=$?
+err=$(cat -- "$resume_err")
+assert_eq '0' "$rc" 'the identical threaded --yolo call now passes on the approval record'
+assert_contains "$out" 'PASS: echo resumed-ok' \
+    'the resumed run actually executed the changed declaration'
+assert_contains "$err" 'trust gate satisfied by approval record' \
+    'the resumed run announces the record-satisfied grant on stderr'
+assert_not_contains "$err" 'trust gate skipped (--yolo)' \
+    'the record-satisfied note is not the ordinary yolo-skip note'
+
+resume_log=$(find "$repo/.agent/logs" -name '*.log' -print -quit)
+resume_log_text=$(cat -- "$resume_log")
+assert_contains "$resume_log_text" 'trust gate satisfied by approval record' \
+    'the run log distinguishes the record-satisfied grant'
+assert_not_contains "$resume_log_text" 'trust gate skipped (--yolo)' \
+    'the record-satisfied log bracket is never read as an ordinary yolo skip'
+
 # Without a remote trunk to validate against, --yolo refuses rather than guesses.
 repo=$(make_repo)
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
