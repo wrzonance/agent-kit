@@ -91,4 +91,23 @@ EOF
 out=$(bash "$refresh_sh" --repo-root "$repo" --summary 2>&1)
 assert_eq 'drift= none' "$out" 'a current inventory with no uncovered gates is quiet'
 
+# Provider resolution remains reportable when the helper loses its executable
+# bit, and when an installation is incomplete. onboard-refresh must invoke a
+# present regular helper through bash rather than silently dropping the drift.
+provider_scripts="$tmp/provider-scripts"
+cp -a "$root/agentkit/skills/.shared/scripts" "$provider_scripts"
+chmod 644 "$provider_scripts/review-provider-config.sh"
+out=$(bash "$provider_scripts/onboard-refresh.sh" --repo-root "$repo" --summary 2>&1)
+assert_eq 'drift= none' "$out" \
+    'present but non-executable provider helper runs through bash'
+rm -- "$provider_scripts/review-provider-config.sh"
+out=$(bash "$provider_scripts/onboard-refresh.sh" --repo-root "$repo" --summary 2>&1)
+assert_contains "$out" 'review-providers=unavailable' \
+    'report identifies a missing provider helper'
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$provider_scripts/review-provider-config.sh"
+chmod 644 "$provider_scripts/review-provider-config.sh"
+out=$(bash "$provider_scripts/onboard-refresh.sh" --repo-root "$repo" --summary 2>&1)
+assert_contains "$out" 'review-providers=unavailable' \
+    'report identifies a provider helper that fails to run'
+
 finish

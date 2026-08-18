@@ -289,15 +289,21 @@ if [[ -x $detector ]]; then
     path_drift=$("$detector" --repo-root "$repo_root" --format drift 2> /dev/null || true)
 fi
 
-review_provider_status=''
+review_provider_status=unavailable
 review_provider_config=$self_dir/review-provider-config.sh
-if [[ -x $review_provider_config ]]; then
-    provider_plan=$("$review_provider_config" --repo-root "$repo_root" 2> /dev/null || true)
-    provider_source=$(sed -n 's/^provider=[^ ]* mode=[^ ]* source=\([^[:space:]]*\)$/\1/p' <<< "$provider_plan" | tail -n 1)
-    case $provider_source in
-        missing) review_provider_status=undeclared ;;
-        invalid) review_provider_status=invalid ;;
-    esac
+if [[ -f $review_provider_config ]]; then
+    provider_plan=''
+    provider_plan_rc=0
+    provider_plan=$(bash "$review_provider_config" --repo-root "$repo_root" 2> /dev/null) ||
+        provider_plan_rc=$?
+    if ((provider_plan_rc == 0)); then
+        provider_source=$(sed -n 's/^provider=[^ ]* mode=[^ ]* source=\([^[:space:]]*\)$/\1/p' <<< "$provider_plan" | tail -n 1)
+        case $provider_source in
+            missing) review_provider_status=undeclared ;;
+            invalid) review_provider_status=invalid ;;
+            declared) review_provider_status='' ;;
+        esac
+    fi
 fi
 
 parts=()
