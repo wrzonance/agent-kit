@@ -52,6 +52,16 @@ tree not authored by the worker is surfaced before validation and never adopted.
 For a correction cycle, resume the same worker with `followup_task` when possible rather than
 spawning a new one; never create concurrent writers in one PR worktree.
 
+### Bounded inline corrections
+
+The root may skip dispatch for an inline correction only when all four conditions hold: the diff
+is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed
+lines; the root authored the exact diff during review; and the full declared verification is rerun.
+Record the inline decision and its recorded reason, and use root harness attribution for its
+commit. Anything else must resume the same worker with `collaboration.followup_task` first; a fresh
+worker is only the fallback when follow-up is unavailable. A qualifying correction costs zero
+dispatches, and the skip is never silent.
+
 Every worker file operation uses an absolute path rooted in its worktree — cwd is not an ownership
 boundary; a discovered write outside it is restored (`git diff --binary | git apply -R`) and
 reported in the handback. Tier mapping (root/Luna/Terra) is the same as

@@ -766,7 +766,12 @@ against its recorded chain base) — through the correctness, repo-rule/security
 lenses: every changed path must fall inside the dispatch plan's pinned predictedWriteSet for
 this issue, or the root records one of the sanctioned `chain-conversion`, `merge-down`, or
 `prediction-expansion` dispositions with an evidence-based reason before opening the PR.
-Confirmed findings go back to the same worker as one batch (`followup_task`); a follow-up
+Confirmed findings go back to the same worker as one batch (`followup_task`); at every correction
+call site, resume the same worker with `followup_task` first and make a fresh dispatch the exception.
+A root may apply an inline correction only when it is purely mechanical, has no new behavior, data
+shape, or control flow, is at most five changed lines, and the root authored the exact diff during
+review; it must rerun the full declared verification, use root harness attribution, and record the
+reason it skipped dispatch. A qualifying two-line correction costs zero dispatches. A follow-up
 commit on a pushed branch is cheap, a blocked worker is not. When the review clears, root
 must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL

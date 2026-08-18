@@ -60,9 +60,12 @@ declare -A KNOWN_OVERSIZE=(
 # against the merged body, minimum that passes. Target unchanged.
 # Issue #239 moves review-remote-pr fix-batch publication to the worker-owned
 # commit+push model and adds the explicit no-test-seam red waiver, raising its
-# measured token ceiling while keeping the line target unchanged.
+# measured token ceiling while keeping the line target unchanged. Issue #240
+# adds the bounded inline-correction exception and same-worker-first correction
+# call-site rule to the root review spine; its measured 1062:18258 ceiling is
+# the minimum that admits that deliberate contract text.
 KNOWN_OVERSIZE[review-remote-pr]="511:7979:450"
-KNOWN_OVERSIZE[parallel-issues]="1060:18191:900"
+KNOWN_OVERSIZE[parallel-issues]="1062:18258:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

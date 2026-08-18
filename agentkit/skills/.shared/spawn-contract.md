@@ -149,6 +149,15 @@ For a follow-up correction on work already dispatched, resume the same worker wi
 never create two concurrent writers in one worktree. When `followup_task` is unavailable,
 spawn a fresh worker carrying the completed state and the exact remaining step.
 
+## Bounded inline corrections
+
+The root may apply a correction inline, at zero dispatches, only when **all** four conditions
+hold: the diff is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed lines; the root authored the exact diff
+during review; and the full declared verification is rerun afterward. The root records the decision and its recorded reason, and the commit uses
+root harness attribution rather than the worker's. Anything past this bar resumes
+the same worker with `collaboration.followup_task` first; a fresh worker is the exception when
+follow-up is unavailable. The inline/dispatch decision is never silent.
+
 ## Tier mapping
 
 Root = trust/judgment and every privileged or forge-facing action. Luna = mechanical
