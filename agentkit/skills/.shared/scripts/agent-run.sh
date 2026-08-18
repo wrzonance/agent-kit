@@ -970,6 +970,11 @@ trust_fingerprint=''
 # Set to 'yes' when a --yolo run is satisfied by a matching approval record
 # instead of the trunk-comparison gate; the log-bracket writer below reads it.
 yolo_trust_satisfied=''
+# Set to the underlying reason when the approval-record lookup itself could
+# not run (unusable trust-state directory), so --yolo degraded straight to
+# the trunk gate instead of hard-failing; the log-bracket writer below reads
+# this too.
+yolo_trust_degrade_note=''
 
 sha256_text() {
     printf '%s' "$1" | sha256sum | awk '{print $1}'
@@ -1904,11 +1909,28 @@ if [[ -n $cmd_name ]]; then
         # first: approve-then-resume must not re-refuse the identical
         # threaded --yolo call that hit the approval handoff in the first
         # place (see the parked/approved workflow in trust-and-fencing.md).
-        if resolve_trust_state && trust_record_matches; then
+        #
+        # The lookup is best-effort, not a second gate: resolve_trust_state
+        # reaches assert_private_dir, which calls die() -- exiting the whole
+        # process -- on an unusable trust-state directory (unwritable
+        # AGENT_TRUST_ROOT, a symlink, not owned by this user). --yolo must
+        # degrade to the trunk-only gate on that failure, never hard-fail a
+        # run the trunk gate itself would have allowed; a plain --cmd/
+        # --approve run still reaches assert_private_dir directly and stays
+        # fatal. Command substitution below forks its own subshell, so a die
+        # inside it kills only the probe and its message is captured instead
+        # of propagating.
+        if yolo_trust_probe_die=$( (resolve_trust_state && trust_record_matches) 2>&1 ); then
             yolo_trust_satisfied=yes
             printf 'agent-run: trust gate satisfied by approval record; --yolo not exercised\n' >&2
             add_note 'trust gate satisfied by approval record; --yolo not exercised'
         else
+            if [[ -n $yolo_trust_probe_die ]]; then
+                yolo_trust_degrade_note=${yolo_trust_probe_die#'agent-run: error: '}
+                printf 'agent-run: approval-record lookup unavailable (%s); --yolo falling back to the trunk gate\n' \
+                    "$yolo_trust_degrade_note" >&2
+                add_note "approval-record lookup unavailable ($yolo_trust_degrade_note); --yolo falling back to the trunk gate"
+            fi
             yolo_gate
         fi
     else
@@ -1993,7 +2015,9 @@ if ((yolo_cmd)) && [[ -n $cmd_name ]]; then
     if ((${#yolo_admitted_inputs[@]})); then
         admission_count=${#yolo_admitted_inputs[@]}
     fi
-    LOG_HEADER_LINES=$((3 + admission_count))
+    degrade_count=0
+    [[ -n $yolo_trust_degrade_note ]] && degrade_count=1
+    LOG_HEADER_LINES=$((3 + admission_count + degrade_count))
 fi
 readonly LOG_HEADER_LINES
 {
@@ -2009,6 +2033,9 @@ readonly LOG_HEADER_LINES
             printf '=== trust gate satisfied by approval record; --yolo not exercised\n'
         else
             printf '=== trust gate skipped (--yolo): no approval record\n'
+            if [[ -n $yolo_trust_degrade_note ]]; then
+                printf '=== approval-record lookup unavailable: %s\n' "$yolo_trust_degrade_note"
+            fi
             if ((${#yolo_admitted_inputs[@]})); then
                 for admitted_input in "${yolo_admitted_inputs[@]}"; do
                     printf '=== trust gate write-set admission: %s (inside declared write set)\n' \
