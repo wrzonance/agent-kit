@@ -144,8 +144,8 @@ PHASE A — DRAFT (all mechanical work happens here; do not initiate provider re
                body nitpicks + provider state, as one digest plus durable artifacts
   1a. HUMAN  — surface human-authored content; gate every action/reply on per-item user confirmation
   2. FIX CI  — diagnose failures, dispatch the Luna ultracode implementation worker (or take the
-               documented degraded path when spawn_agent is unavailable), verify its fix,
-               commit/push once; re-check CI and review state after the push; repeat 1–2 until CI is green
+               documented degraded path when spawn_agent is unavailable); review the worker's pushed
+               diff and re-check CI and review state after its push; repeat 1–2 until CI is green
   2b. ADVERSARIAL — as the LAST draft step (CI green, conflicts resolved): apply the materiality
                gate; for a material diff run one cross-harness review, then verify + fix confirmed
                findings; for a trivial mechanical diff document the verified skip
