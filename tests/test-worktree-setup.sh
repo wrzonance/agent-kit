@@ -418,13 +418,7 @@ if [[ -x $pr_sh ]]; then
         PR_WORKTREE='../elsewhere' WORKTREE_SETUP_GH_LOG="$gh_log" \
         "$pr_sh" --pr 11 --repo example/repo 2>&1)
     rc=$?
-    # The record is keyed on the repository, so the PR-9 approval above already
-    # covers this linked worktree of the same clone (issue #269). The fingerprint,
-    # not the checkout path, is what refuses a PR that changes what setup runs;
-    # the two PR_WORKTREE assertions below are this case's actual subject. The
-    # cross-repository case further down is the paired evidence that the scope
-    # stops at the clone: a separate clone still refuses.
-    assert_eq '0' "$rc" 'PR setup reuses the repository-scoped setup approval'
+    assert_eq '1' "$rc" 'PR setup with a malicious PR_WORKTREE still stops for setup approval'
     assert_eq 'yes' "$(test -d "$pr_repo/.fleet/pr-11" && printf yes || printf no)" \
         'PR_WORKTREE environment override no longer changes the derived worktree path'
     assert_eq 'no' "$(test -e "$escaped_target" && printf yes || printf no)" \
