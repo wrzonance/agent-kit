@@ -3,6 +3,7 @@
 ## Contents
 
 - Building the chain graph
+- Publishing a locally-built chain base
 - Deferred dispatch
 - Merge-down after a predecessor advances
 - Merge order and the stacked-PR retarget
@@ -38,13 +39,47 @@ down: create C's branch from the first predecessor's SHA, then for each remainin
 predecessor's SHA in turn run `git merge --no-ff` (inspect with `--no-commit` first when
 caution is warranted, but **commit each merge before starting the next** — one pending
 merge blocks another, and an uncommitted merge has no SHA). The final integration commit's
-full 40-character SHA is C's `chain_base_sha`. A conflict at any step parks exactly C by
+full 40-character SHA is C's `chain_base_sha`. Push that integration commit to
+`origin/feat/issue-C` before C's lead is dispatched: `create-issue-worktree.sh` pushes a
+branch exactly once, at creation, from whichever single SHA it started at, and never
+re-pushes a merge commit added afterward. A join's dispatch gate is therefore two-part —
+**predecessors pushed AND join base pushed** — because an unpushed join base fails
+`agent-run.sh`'s `--yolo-base` pin by construction (see "Publishing a locally-built chain
+base" below). A conflict at any step parks exactly C by
 name for human resolution — never pick one predecessor and silently drop the other's
 commits, and never invent a merge base by hand.
 Report the join, its predecessors, and the merged base in the chain plan so a five-issue set
 dispatches five issues. Chains respect a hard depth cap of 4; an issue that would extend a
 chain past that depth is dropped from the chain with a named report rather than silently
 truncated or silently included.
+
+## Publishing a locally-built chain base
+
+Any commit built locally on top of a predecessor — a join's integration commit above, or a
+linear successor's own merge-down of an advanced predecessor (below) — is invisible to
+`origin` until it is pushed. `agent-run.sh`'s `--yolo-base` pin (`yolo_pinned_base`,
+`agent-run.sh:1372-1403`) accepts only a SHA that is itself server-advertised or an ancestor
+of one, so a locally-committed merge that has not been pushed fails that check by
+construction, regardless of whether it came from a join or an ordinary two-parent
+merge-down. `create-issue-worktree.sh` pushes a branch exactly once, at creation, from
+whichever single SHA it started at — it never re-pushes a merge commit added afterward, so a
+branch that started from a single predecessor lands in exactly the same unpushed-base
+position as a join the moment either one gains a local merge commit of its own; a linear
+chain is not protected from this just because it only had one predecessor.
+
+Two ways to satisfy the pin — pick the one that matches who is about to rely on the commit:
+
+- **Push the local commit.** Use this whenever the merge commit itself is what gets handed
+  to a successor or dispatched against — a join's integration commit before its lead is
+  dispatched, and any cascade step below where the successor is about to be re-verified or
+  handed off. Push before composing the next prompt or running the next check.
+- **Pin `--yolo-base` to the predecessor's already-published SHA instead of your own merge
+  commit.** Use this for a worker's own *interim* verification mid-task, before its single
+  end-of-task push — the predecessor's SHA is already origin-advertised and is an ancestor
+  of the local merge commit, so the pin succeeds without publishing unreviewed work early.
+  This is also the more honest anchor of the two: pinning trust to your own not-yet-reviewed
+  commit makes your own changes the trust base, while the predecessor's SHA was already
+  root-published before you built on top of it.
 
 Chains gate on the predecessor's **pushed commit**, never on PR state (open, draft, or
 merged) and never on the root's publication ceremony — a successor starts from the exact
@@ -83,7 +118,10 @@ rebase and not a promise that the old checks still describe the child:
 3. Commit and publish the resolved successor, then re-verify it against that exact new full
    SHA before moving to the next descendant. Repeat the merge, publish, and verification for
    every descendant in order. A successful old check or approval is not evidence for the new
-   tree.
+   tree. Publishing here is what makes that re-verification's `--yolo-base` pin valid in the
+   first place — see "Publishing a locally-built chain base" above for the mechanism and the
+   interim-verification alternative when a worker needs to check its own merge before its
+   final push.
 4. Record the refreshed base for every stacked PR in the handoff. The record names the full
    SHA used for the merge and the new PR base, so the next operator can distinguish a checked
    cascade from a branch that merely moved.
