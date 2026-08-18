@@ -1,10 +1,12 @@
 {
   "name": "agent-kit",
+  "description": "Board-aware parallel issue and PR review skills, with lifecycle hooks and a per-repository contract.",
+  "owner": { "name": "wrzonance", "url": "https://github.com/wrzonance" },
   "interface": { "displayName": "Agent Kit" },
   "plugins": [
     {
       "name": "agentkit",
-      "source": { "source": "local", "path": "./agentkit" },
+      "source": "./agentkit",
       "policy": { "installation": "AVAILABLE" }
     }
   ]
