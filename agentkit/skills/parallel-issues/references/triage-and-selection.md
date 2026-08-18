@@ -6,7 +6,7 @@
 - [Conflict analysis and dispatch-plan write sets](#conflict-analysis-and-dispatch-plan-write-sets) — pinning predicted operands and recording revisions
 - [Board adjudication](#board-adjudication) — same-board STOP rationale, the `--fast-mode` decision rule, and pickup order
 - [Optional: fuzzy prior art](#optional-fuzzy-prior-art) — the opt-in low-yield search
-- [Step 2b: Choose the set yourself — `--fast-mode` only](#step-2b-choose-the-set-yourself----fast-mode-only) — the mechanical selection procedure `--fast-mode` uses in place of the approval gate
+- [Step 2b: Choose the set yourself](#step-2b-choose-the-set-yourself) — the mechanical selection procedure for a thin Ready column, `--fast-mode`, and thematic Backlog matching, in place of the approval gate
 
 This is the detail behind SKILL.md's Step 2 triage digest: read the section you were pointed at
 for the verdict(s) the digest actually flagged, or the `--fast-mode` set-selection procedure when
@@ -248,7 +248,7 @@ reason, not asked about. Without `--fast-mode`, ask as above.
 
 **Pickup order (auto mode).** Take from **Ready** first, top of column first. **A thin Ready
 column is an invitation, not a blocker**: when eligible Ready issues are fewer than the slot
-cap, run [Step 2b's procedure](#step-2b-choose-the-set-yourself----fast-mode-only) to promote
+cap, run [Step 2b's procedure](#step-2b-choose-the-set-yourself) to promote
 unblocked Backlog issues and fill the cap — `--fast-mode` proceeds and discloses the promotion;
 an attended run surfaces the promoted candidates and asks instead of refusing to start on a thin
 set. Issues on no board are fair game; rank them after Ready and promoted-Backlog items.
@@ -267,7 +267,7 @@ opt-in per issue rather than automatic:
 "$agentkit/.shared/scripts/triage-issues.sh" --issues 57 --fuzzy 57
 ```
 
-## Step 2b: Choose the set yourself — `--fast-mode` only
+## Step 2b: Choose the set yourself
 
 Invoked with issue numbers and no thematic Backlog instruction, use them; this step also runs
 for `/parallel-issues --yolo --fast-mode` with none, for an attended automatic invocation whose
