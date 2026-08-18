@@ -2,6 +2,11 @@
 # Shared exact forge-provider identity predicates for shell callers and jq.
 # shellcheck disable=SC2034  # consumed by the jq callers that source this file
 
+PROVIDER_IDENTITY_DIR=${BASH_SOURCE[0]%/*}
+[[ $PROVIDER_IDENTITY_DIR != "${BASH_SOURCE[0]}" ]] || PROVIDER_IDENTITY_DIR=.
+# shellcheck source=review-provider-catalog.sh
+source "$PROVIDER_IDENTITY_DIR/review-provider-catalog.sh"
+
 readonly PROVIDER_IDENTITY_JQ='
   def is_coderabbit_login:
     . == "coderabbitai" or . == "coderabbitai[bot]";
@@ -12,15 +17,9 @@ readonly PROVIDER_IDENTITY_JQ='
 '
 
 is_coderabbit_login() {
-    case ${1,,} in
-        coderabbitai|coderabbitai\[bot\]) return 0;;
-        *) return 1;;
-    esac
+    [[ $(review_provider_from_login "$1" 2>/dev/null) == coderabbit ]]
 }
 
 is_code_quality_login() {
-    case ${1,,} in
-        github-code-quality|github-code-quality\[bot\]) return 0;;
-        *) return 1;;
-    esac
+    [[ $(review_provider_from_login "$1" 2>/dev/null) == github-code-quality ]]
 }

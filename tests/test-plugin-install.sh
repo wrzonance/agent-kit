@@ -57,6 +57,10 @@ assert_eq './hooks/hooks.json' \
     'and the declared hooks path points at it'
 assert_eq 'yes' "$([[ -d $stage/agentkit/skills/parallel-issues ]] && echo yes || echo no)" \
     'carries the skills'
+assert_eq 'yes' "$([[ -f $stage/agentkit/skills/pr-to-green/SKILL.md ]] && echo yes || echo no)" \
+    'packages pr-to-green for both harness manifests'
+assert_eq 'yes' "$([[ -x $stage/agentkit/skills/pr-to-green/scripts/review-transition.sh ]] && echo yes || echo no)" \
+    'preserves the pr-to-green transition executable'
 assert_eq 'yes' "$([[ -x $stage/agentkit/skills/.shared/scripts/agent-run.sh ]] && echo yes || echo no)" \
     'preserves the executable bit on scripts'
 assert_eq 'yes' "$([[ -x $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \

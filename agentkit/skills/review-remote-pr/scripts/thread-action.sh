@@ -1,247 +1,246 @@
 #!/usr/bin/env bash
-# Safely reply to a review thread and resolve it after an exact verified post.
+# Post canonical bot replies and settle them only after a fresh bot response.
 set -euo pipefail
+umask 077
 
-readonly PROGNAME=${0##*/}
+readonly PROGRAM=${0##*/}
 readonly UINT_RE='^[1-9][0-9]*$'
 readonly SHA_RE='^[0-9a-fA-F]{7,64}$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
-readonly AGENT_MARKER_RE='(^|\r?\n)<!-- review-remote-pr:agent-'
+readonly AGENT_MARKER='<!-- review-remote-pr:agent-reply '
 
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 GH_BIN=${THREAD_ACTION_GH:-gh}
 COMMENT_HELPER=${THREAD_ACTION_COMMENT:-$SCRIPT_DIR/gh-comment.sh}
+COMPOSER=${THREAD_ACTION_COMPOSER:-$SCRIPT_DIR/compose-review-reply.sh}
+# shellcheck source=../../.shared/scripts/lib/review-provider-catalog.sh
+source "$SCRIPT_DIR/../../.shared/scripts/lib/review-provider-catalog.sh"
 
-PR=''
-REPO=''
-THREADS_ARTIFACT=''
-THREAD_ID=''
-COMMENT_ID=''
-KIND=''
-TEXT=''
-SHA=''
-AGENT_IDENTITY=${THREAD_ACTION_AGENT_IDENTITY:-'Codex gpt-5.6-luna'}
-ANCHOR_PATH=''
-ANCHOR_LINE=''
-SIDE='RIGHT'
-START_LINE=''
-WORK_DIR=''
-
-usage() {
-    cat <<EOF
-Usage: $PROGNAME --pr N --repo OWNER/REPO --threads-artifact FILE
-                 (--thread-id ID | --comment-id N)
-                 --kind fixed|declined --text TEXT --sha SHA
-                 [--agent-identity ID] [--anchor PATH:LINE]
-                 [--side RIGHT|LEFT] [--start-line N]
-
-Re-derives the target human lane from FILE, posts a verified reply, then
-resolves the thread. An anchor 422 is retried as a top-level comment.
-EOF
-}
+pr=''
+repo=''
+artifact=''
+thread_id=''
+comment_id=''
+settle=0
+disposition=''
+reasoning_file=''
+sha=''
+agent_identity=${THREAD_ACTION_AGENT_IDENTITY:-'Codex gpt-5.6-luna'}
+work_dir=''
 
 die() {
-    printf '%s: %s\n' "$PROGNAME" "$*" >&2
+    printf '%s: %s\n' "$PROGRAM" "$*" >&2
     exit 1
 }
 
-require_value() {
-    [[ -n ${2:-} ]] || die "$1 requires a value"
+usage() {
+    cat >&2 <<EOF
+usage: $PROGRAM --pr N --repo OWNER/REPO --threads-artifact FILE
+       (--thread-id ID | --comment-id N)
+       [--settle | --disposition fixed|dismissed|deferred
+        --reasoning-file FILE --sha SHA [--agent-identity ID]]
+EOF
+    exit "${1:-2}"
 }
 
-require_uint() {
-    [[ $2 =~ $UINT_RE ]] || die "$1 expects a positive integer, got: $2"
-}
+while (($#)); do
+    case $1 in
+        --pr) (($# >= 2)) || usage; pr=$2; shift 2 ;;
+        --repo) (($# >= 2)) || usage; repo=$2; shift 2 ;;
+        --threads-artifact|--artifact) (($# >= 2)) || usage; artifact=$2; shift 2 ;;
+        --thread-id) (($# >= 2)) || usage; thread_id=$2; shift 2 ;;
+        --comment-id) (($# >= 2)) || usage; comment_id=$2; shift 2 ;;
+        --settle) settle=1; shift ;;
+        --disposition) (($# >= 2)) || usage; disposition=$2; shift 2 ;;
+        --reasoning-file) (($# >= 2)) || usage; reasoning_file=$2; shift 2 ;;
+        --sha) (($# >= 2)) || usage; sha=$2; shift 2 ;;
+        --agent-identity) (($# >= 2)) || usage; agent_identity=$2; shift 2 ;;
+        -h|--help) usage 0 ;;
+        *) usage ;;
+    esac
+done
 
-split_anchor() {
-    local spec=$1
-    [[ $spec == *:* ]] || die "--anchor expects PATH:LINE, got: $spec"
-    ANCHOR_PATH=${spec%:*}
-    ANCHOR_LINE=${spec##*:}
-    [[ -n $ANCHOR_PATH ]] || die '--anchor has an empty path'
-    require_uint '--anchor line' "$ANCHOR_LINE"
-}
+[[ $pr =~ $UINT_RE ]] || die '--pr must be a positive integer'
+[[ $repo =~ $SLUG_RE ]] || die '--repo must have the form OWNER/REPO'
+[[ -n $thread_id || -n $comment_id ]] || die '--thread-id or --comment-id is required'
+[[ -z $comment_id || $comment_id =~ $UINT_RE ]] || die '--comment-id must be a positive integer'
+[[ -f $artifact && ! -L $artifact && -O $artifact ]] ||
+    die '--threads-artifact must be an owned regular file, not a symlink'
+command -v jq >/dev/null 2>&1 || die 'jq is required; settlement evidence unavailable'
+command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 
-parse_args() {
-    while (($#)); do
-        case $1 in
-        --pr) require_value "$1" "${2:-}"; PR=$2; shift 2 ;;
-        --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
-        --threads-artifact|--artifact)
-            require_value "$1" "${2:-}"; THREADS_ARTIFACT=$2; shift 2 ;;
-        --thread-id) require_value "$1" "${2:-}"; THREAD_ID=$2; shift 2 ;;
-        --comment-id) require_value "$1" "${2:-}"; COMMENT_ID=$2; shift 2 ;;
-        --kind) require_value "$1" "${2:-}"; KIND=$2; shift 2 ;;
-        --text) require_value "$1" "${2:-}"; TEXT=$2; shift 2 ;;
-        --sha) require_value "$1" "${2:-}"; SHA=$2; shift 2 ;;
-        --agent-identity) require_value "$1" "${2:-}"; AGENT_IDENTITY=$2; shift 2 ;;
-        --anchor) require_value "$1" "${2:-}"; split_anchor "$2"; shift 2 ;;
-        --side) require_value "$1" "${2:-}"; SIDE=$2; shift 2 ;;
-        --start-line) require_value "$1" "${2:-}"; START_LINE=$2; shift 2 ;;
-        -h|--help) usage; exit 0 ;;
-        --) shift; (($# == 0)) || die "unexpected argument: $1" ;;
-        -*) die "unknown option: $1" ;;
-        *) die "unexpected argument: $1" ;;
-        esac
-    done
-}
+if ((settle)); then
+    [[ -z $disposition && -z $reasoning_file && -z $sha ]] ||
+        die '--settle cannot be combined with reply composition options'
+else
+    case $disposition in fixed|dismissed|deferred) ;; *) die 'unsupported disposition' ;; esac
+    [[ $sha =~ $SHA_RE ]] || die '--sha must be 7-64 hexadecimal characters'
+    [[ -f $reasoning_file && ! -L $reasoning_file && -O $reasoning_file ]] ||
+        die '--reasoning-file must be an owned regular file, not a symlink'
+    [[ -x $COMPOSER ]] || die "canonical reply composer is not executable: $COMPOSER"
+    [[ -x $COMMENT_HELPER ]] || die "comment transport is not executable: $COMMENT_HELPER"
+fi
 
-validate_args() {
-    require_uint '--pr' "$PR"
-    [[ $REPO =~ $SLUG_RE ]] || die "--repo must look like OWNER/REPO, got: $REPO"
-    [[ -n $THREAD_ID || -n $COMMENT_ID ]] ||
-        die '--thread-id or --comment-id is required'
-    [[ -z $COMMENT_ID ]] || require_uint '--comment-id' "$COMMENT_ID"
-    [[ $KIND == fixed || $KIND == declined ]] ||
-        die "--kind must be fixed or declined, got: $KIND"
-    [[ $TEXT =~ [^[:space:]] ]] || die '--text must contain non-whitespace text'
-    [[ $SHA =~ $SHA_RE ]] || die "--sha must be a 7-64 character hexadecimal SHA, got: $SHA"
-    [[ -n $AGENT_IDENTITY && $AGENT_IDENTITY != *$'\n'* && $AGENT_IDENTITY != *$'\r'* ]] ||
-        die '--agent-identity must be a single non-empty line'
-    [[ $SIDE == RIGHT || $SIDE == LEFT ]] || die '--side must be RIGHT or LEFT'
-    if [[ -n $START_LINE ]]; then
-        require_uint '--start-line' "$START_LINE"
-        [[ -n $ANCHOR_PATH ]] || die '--start-line requires --anchor'
-        ((START_LINE <= ANCHOR_LINE)) ||
-            die "--start-line ($START_LINE) must not exceed --anchor line ($ANCHOR_LINE)"
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/thread-action.XXXXXX") ||
+    die 'could not create work directory'
+chmod 700 "$work_dir"
+cleanup() { rm -rf -- "$work_dir"; }
+trap cleanup EXIT HUP INT TERM
+
+jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' \
+    "$artifact" >/dev/null 2>&1 || die 'artifact has no reviewThreads.nodes array'
+
+# The artifact's identity is never implicit: an evidence file gathered for a
+# different PR or repo must never settle or reply to this one.
+artifact_repo=$(jq -er '.data.repository.nameWithOwner | select(type == "string" and length > 0)' \
+    "$artifact" 2>/dev/null) || die 'artifact has no repository.nameWithOwner identity'
+artifact_pr=$(jq -er '.data.repository.pullRequest.number | select(type == "number" and . > 0)' \
+    "$artifact" 2>/dev/null) || die 'artifact has no pull request number identity'
+[[ $artifact_repo == "$repo" ]] || die 'artifact repository does not match --repo'
+[[ $artifact_pr == "$pr" ]] || die 'artifact pull request number does not match --pr'
+
+# A first(100) page that is not actually complete is partial evidence: never
+# settle or reply from a thread list (or a thread's own comments) that GitHub
+# reports as truncated.
+jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false) == false' \
+    "$artifact" >/dev/null 2>&1 ||
+    die 'artifact is truncated; refusing settlement from partial evidence'
+
+count=$(jq -r --arg thread "$thread_id" --arg comment "$comment_id" '
+  [.data.repository.pullRequest.reviewThreads.nodes[] |
+   select((($thread == "") or ((.id // "") | tostring == $thread)) and
+          (($comment == "") or
+           any(.comments.nodes[]?; ((.databaseId // "") | tostring) == $comment)))] |
+  length
+' "$artifact") || die 'could not inspect threads artifact'
+[[ $count == 1 ]] || die 'selector does not identify exactly one artifact thread'
+jq -c --arg thread "$thread_id" --arg comment "$comment_id" '
+  [.data.repository.pullRequest.reviewThreads.nodes[] |
+   select((($thread == "") or ((.id // "") | tostring == $thread)) and
+          (($comment == "") or
+           any(.comments.nodes[]?; ((.databaseId // "") | tostring) == $comment)))] | .[0]
+' "$artifact" >"$work_dir/target.json"
+target_thread=$(jq -er '.id | select(type == "string" and length > 0)' "$work_dir/target.json") ||
+    die 'selected thread has no node ID'
+
+jq -e '(.comments.pageInfo.hasNextPage // false) == false' "$work_dir/target.json" >/dev/null 2>&1 ||
+    die 'artifact is truncated; refusing settlement from partial evidence'
+
+if jq -e '.isResolved == true' "$work_dir/target.json" >/dev/null; then
+    if ((settle)); then
+        printf 'thread=%s settlement=SETTLED already-resolved=true\n' "$target_thread"
+        exit 0
     fi
-    [[ -f $THREADS_ARTIFACT && ! -L $THREADS_ARTIFACT && -O $THREADS_ARTIFACT ]] ||
-        die "--threads-artifact must be an owned regular file, not a symlink: $THREADS_ARTIFACT"
-    command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
-    command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
-    [[ -x $COMMENT_HELPER ]] || die "gh-comment.sh is not executable: $COMMENT_HELPER"
-}
+    die 'target thread is already resolved'
+fi
 
-cleanup() {
-    [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
-}
+original_login=$(jq -r '.comments.nodes[0].author.login // "" | ascii_downcase' \
+    "$work_dir/target.json")
+original_type=$(jq -r '.comments.nodes[0].author.__typename // .comments.nodes[0].author.type // ""' \
+    "$work_dir/target.json")
+if provider=$(review_provider_from_login "$original_login" 2>/dev/null); then
+    :
+elif [[ $original_login == *'[bot]' || $original_type == Bot ]]; then
+    provider=generic
+else
+    provider=human
+fi
 
-read_target() {
-    local schema count human_count original_author
-    schema=$(jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' \
-        "$THREADS_ARTIFACT" 2>/dev/null) ||
-        die 'threads artifact has no usable reviewThreads.nodes array'
-    [[ $schema == true ]] || die 'threads artifact has no usable reviewThreads.nodes array'
-    count=$(jq -r --arg thread "$THREAD_ID" --arg comment "$COMMENT_ID" '
-        [.data.repository.pullRequest.reviewThreads.nodes[]
-         | select((($thread == "") or ((.id // "") | tostring == $thread)) and
-                  (($comment == "") or
-                   any(.comments.nodes[]?; ((.databaseId // "") | tostring) == $comment)))]
-        | length' "$THREADS_ARTIFACT") || die 'could not inspect threads artifact'
-    [[ $count == 1 ]] || {
-        if [[ -n $THREAD_ID && -n $COMMENT_ID ]]; then
-            die 'thread-id does not match comment-id in one artifact thread'
-        fi
-        die 'selector does not identify exactly one artifact thread'
-    }
-    jq -c --arg thread "$THREAD_ID" --arg comment "$COMMENT_ID" '
-        [.data.repository.pullRequest.reviewThreads.nodes[]
-         | select((($thread == "") or ((.id // "") | tostring == $thread)) and
-                  (($comment == "") or
-                   any(.comments.nodes[]?; ((.databaseId // "") | tostring) == $comment)))]
-        | .[0]' "$THREADS_ARTIFACT" >"$WORK_DIR/target.json" ||
-        die 'could not read selected artifact thread'
-    TARGET_THREAD_ID=$(jq -r '.id // empty' "$WORK_DIR/target.json")
-    [[ -n $TARGET_THREAD_ID ]] || die 'selected artifact thread has no node ID'
-    [[ $(jq -r 'if (.isResolved // false) then "resolved" else "open" end' \
-        "$WORK_DIR/target.json") == open ]] || die 'target thread is already resolved'
-    original_author=$(jq -r '(.comments.nodes[0].author.login // "") | ascii_downcase' \
-        "$WORK_DIR/target.json") || die 'could not identify the original thread author'
-    if [[ $original_author == github-code-quality ||
-        $original_author == 'github-code-quality[bot]' ]]; then
-        die 'target thread is an original github-code-quality[bot] finding; it must auto-clear or be dismissed with a reason'
-    fi
-    human_count=$(jq -r --arg re "$AGENT_MARKER_RE" '
-        [.comments.nodes[]? | select(
-          (
-            (((.author.login // "") | ascii_downcase) == "coderabbitai" or
-             ((.author.login // "") | ascii_downcase) == "coderabbitai[bot]" or
-             ((.author.login // "") | ascii_downcase) == "github-code-quality" or
-             ((.author.login // "") | ascii_downcase) == "github-code-quality[bot]") | not
-          ) and (
-            (((.author.type // "") == "Bot") or
-             ((.author.__typename // "") == "Bot") or
-             (((.author.login // "") | ascii_downcase) | test("\\[bot\\]$"))) | not
-          ) and (
-            (((.body // "") | test($re)) | not)
-          )
-        )] | length' "$WORK_DIR/target.json") ||
-        die 'could not classify target thread human lane'
-    ((human_count == 0)) || die 'target thread is human-touched; refusing to resolve'
-    if [[ -z $COMMENT_ID && -z $ANCHOR_PATH ]]; then
-        COMMENT_ID=$(jq -r '.comments.nodes[0].databaseId // empty' "$WORK_DIR/target.json")
-        require_uint 'derived comment ID' "$COMMENT_ID"
-    fi
-}
+# An agent marker identifies only that individual comment -- and only when
+# posted by the authenticated workflow account. A human quoting the marker
+# does not get to exempt their own comment from the human-touched gate.
+workflow_login=$("$GH_BIN" api user 2>"$work_dir/api.err" | jq -er '.login | select(type == "string" and length > 0)' 2>/dev/null) ||
+    die "authenticated workflow identity unavailable: $(head -n 1 "$work_dir/api.err" 2>/dev/null)"
 
-build_body() {
-    # shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
-    {
-        printf '%s\n' 'This was written agentically; verify its assertions:'
-        printf '%s\n' '<!-- review-remote-pr:agent-reply -->'
-        if [[ $KIND == fixed ]]; then
-            printf 'Fixed in commit `%s`. %s\n' "$SHA" "$TEXT"
-        else
-            printf 'Declining — %s (commit `%s`).\n' "$TEXT" "$SHA"
-        fi
-        printf '🤖 Co-authored by %s.\n' "$AGENT_IDENTITY"
-    } >"$WORK_DIR/body.md"
-}
-
-post_comment() {
-    local -a args=(--pr "$PR" --repo "$REPO" --body-file "$WORK_DIR/body.md")
-    local post_rc=0
-    if [[ -n $COMMENT_ID ]]; then
-        args+=(--reply-to "$COMMENT_ID")
-    elif [[ -n $ANCHOR_PATH ]]; then
-        args+=(--anchor "$ANCHOR_PATH:$ANCHOR_LINE" --side "$SIDE")
-        [[ -n $START_LINE ]] && args+=(--start-line "$START_LINE")
-    fi
-    POST_OUTPUT=$(bash "$COMMENT_HELPER" "${args[@]}" 2>"$WORK_DIR/comment.err") || post_rc=$?
-    if ((post_rc != 0)) && [[ -n $ANCHOR_PATH ]] && \
-        grep -Eq '(^|[^[:digit:]])422([^[:digit:]]|$)' "$WORK_DIR/comment.err"; then
-        # Anchor failures are a routine API outcome. Retry once as the
-        # documented top-level fallback, preserving the exact body.
-        post_rc=0
-        POST_OUTPUT=$(bash "$COMMENT_HELPER" --pr "$PR" --repo "$REPO" \
-            --body-file "$WORK_DIR/body.md" 2>"$WORK_DIR/comment-fallback.err") || post_rc=$?
-    fi
-    ((post_rc == 0)) || {
-        [[ -s $WORK_DIR/comment.err ]] && sed -n '1,10p' "$WORK_DIR/comment.err" >&2
-        [[ -s $WORK_DIR/comment-fallback.err ]] && sed -n '1,10p' "$WORK_DIR/comment-fallback.err" >&2
-        die 'gh-comment.sh did not verify the reply; thread was not resolved'
-    }
-    [[ $POST_OUTPUT == *'verified=exact'* ]] ||
-        die 'gh-comment.sh returned no verified=exact result; thread was not resolved'
-}
+human_count=$(jq -r --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
+  [.comments.nodes[]? | select(
+    ((((.body // "") | contains($marker)) and
+      (((.author.login // "") | ascii_downcase) == ($login | ascii_downcase))) | not) and
+    (((.author.login // "") | ascii_downcase) as $c_login |
+      (($c_login == "coderabbitai") or ($c_login == "coderabbitai[bot]") or
+       ($c_login == "github-code-quality") or ($c_login == "github-code-quality[bot]") or
+       (($c_login | test("\\[bot\\]$"))) or
+       ((.author.__typename // .author.type // "") == "Bot")) | not)
+  )] | length
+' "$work_dir/target.json") || die 'could not classify thread authors'
+((human_count == 0)) || die 'target thread is human-touched; refusing automated handling'
+[[ $provider != human ]] || die 'target thread is human-authored'
 
 resolve_thread() {
-    local query response rc=0
-    # shellcheck disable=SC2016  # GraphQL variables are bound by -F below.
+    local query response
+    # shellcheck disable=SC2016 # GraphQL variables are literal API syntax.
     query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}'
-    response=$("$GH_BIN" api graphql -F "threadId=$TARGET_THREAD_ID" -f "query=$query" \
-        2>"$WORK_DIR/resolve.err") || rc=$?
-    ((rc == 0)) || {
-        [[ -s $WORK_DIR/resolve.err ]] && sed -n '1,10p' "$WORK_DIR/resolve.err" >&2
-        die 'resolveReviewThread failed; the verified reply remains posted'
-    }
+    response=$("$GH_BIN" api graphql -F "threadId=$target_thread" -f "query=$query") ||
+        die 'resolveReviewThread failed after settlement'
     jq -e '.data.resolveReviewThread.thread.isResolved == true' <<<"$response" >/dev/null ||
         die 'resolveReviewThread did not prove isResolved=true'
 }
 
-main() {
-    parse_args "$@"
-    validate_args
-    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/thread-action.XXXXXX") || die 'could not create work directory'
-    chmod 700 -- "$WORK_DIR"
-    trap cleanup EXIT
-    read_target
-    build_body
-    post_comment
-    resolve_thread
-    printf '%s\n' "$POST_OUTPUT"
-    printf 'resolved thread=%s\n' "$TARGET_THREAD_ID"
-}
+if ((settle)); then
+    # The marker alone is forgeable: only a marker posted by the authenticated
+    # workflow account counts as the canonical agent reply that settlement
+    # evidence is measured from.
+    marker_index=$(jq -r --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
+      [.comments.nodes | to_entries[] |
+       select(((.value.body // "") | contains($marker)) and
+              (((.value.author.login // "") | ascii_downcase) == ($login | ascii_downcase))) |
+       .key] | last // -1
+    ' "$work_dir/target.json")
+    ((marker_index >= 0)) || die 'thread has no canonical agent reply to settle'
 
-main "$@"
+    # An unrelated authoritative account replying after the agent's reply is
+    # not acknowledgement evidence: only a response from the thread's own
+    # provider (or, for the generic lane, its own recorded original author)
+    # can settle or push back.
+    if [[ $provider == generic ]]; then
+        expected_login=$original_login
+    else
+        expected_login=$(review_provider_login "$provider") ||
+            die "settle mode has no expected login for provider: $provider"
+    fi
+    jq --argjson marker "$marker_index" --arg login "$expected_login" '
+      [.comments.nodes | to_entries[] | select(.key > $marker) | .value] |
+      map(select((((.author.login // "") | ascii_downcase) == ($login | ascii_downcase)) or
+                  (((.author.login // "") | ascii_downcase) == (($login | ascii_downcase) + "[bot]"))))
+    ' "$work_dir/target.json" >"$work_dir/responses.json"
+    response_count=$(jq 'length' "$work_dir/responses.json")
+    if ((response_count == 0)); then
+        printf 'thread=%s settlement=AWAITING_BOT_RESPONSE\n' "$target_thread"
+        exit 0
+    fi
+    latest_body=$(jq -r '.[-1].body // ""' "$work_dir/responses.json")
+    latest_id=$(jq -r '.[-1].databaseId // "unknown"' "$work_dir/responses.json")
+    # Checked first, and fail-closed: a negated positive term ("not addressed",
+    # "never verified") must never fall through to the positive-signal match
+    # below, which would otherwise settle a thread the bot just pushed back on.
+    if grep -Eiq '(^|[^a-z])(still|remain|not fixed|not resolved|incorrect|fails?|however|but)([^a-z]|$)' \
+        <<<"$latest_body" ||
+        grep -Eiq "(^|[^a-z])(not|never|isn'?t|wasn'?t|hasn'?t|un)-? ?(yet )?(fixed|resolved|verified|addressed|correct|sufficient|good)([^a-z]|\$)" \
+        <<<"$latest_body"; then
+        printf 'thread=%s settlement=PUSHBACK response=%s\n' "$target_thread" "$latest_id"
+        exit 3
+    fi
+    if grep -Eiq '(^|[^a-z])(verified|resolved|looks good|addressed|acknowledged|no further action|thanks?)([^a-z]|$)' \
+        <<<"$latest_body"; then
+        resolve_thread
+        printf 'thread=%s settlement=SETTLED response=%s\n' "$target_thread" "$latest_id"
+        exit 0
+    fi
+    printf 'thread=%s settlement=PUSHBACK response=%s\n' "$target_thread" "$latest_id"
+    exit 3
+fi
+
+[[ $provider != github-code-quality ]] ||
+    die 'github-code-quality findings must auto-clear or use the supported dismissal workflow'
+[[ $provider != human ]] || die 'human threads require per-item confirmation and are never resolved here'
+if [[ -z $comment_id ]]; then
+    comment_id=$(jq -er '.comments.nodes[0].databaseId | select(type == "number" and . > 0)' \
+        "$work_dir/target.json") || die 'original thread comment has no database ID'
+fi
+
+args=(--pr "$pr" --repo "$repo" --reply-to "$comment_id" --provider "$provider"
+      --disposition "$disposition" --sha "$sha" --reasoning-file "$reasoning_file"
+      --agent-identity "$agent_identity")
+[[ $provider != generic ]] || args+=(--provider-login "$original_login")
+COMPOSE_REVIEW_COMMENT="$COMMENT_HELPER" bash "$COMPOSER" "${args[@]}"

@@ -327,7 +327,9 @@ fetch_threads() {
     # the -F flags below; the shell must NOT expand them.
     query='query($owner:String!,$name:String!,$pr:Int!){
   repository(owner:$owner,name:$name){
+    nameWithOwner
     pullRequest(number:$pr){
+      number
       reviewThreads(first:100){
         pageInfo{hasNextPage}
         nodes{
@@ -351,7 +353,8 @@ fetch_threads() {
                 "review-thread data unavailable for $REPO#$PR; --full cannot publish durable artifacts without GraphQL evidence: $(first_error)"
         fi
         note "review-thread data unavailable for $REPO#$PR (named wait: GraphQL review-thread reset; continuing without thread data): $(first_error)"
-        jq -cn '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}' \
+        jq -cn --arg repo "$REPO" --argjson pr "$PR" \
+            '{data:{repository:{nameWithOwner:$repo,pullRequest:{number:$pr,reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}' \
             >"$WORK_DIR/threads.json" || die 'could not write unavailable thread evidence'
         return 0
     fi
@@ -626,7 +629,7 @@ print_thread_lines() {
 # no line at all -- silence, not a "next: none", is the "nothing to do" signal.
 print_next_lines() {
     local cr=$1 cq=$2 human=$3 generic=$4 nits=$5 eligible=$6
-    ((cr)) && printf 'next: coderabbit=%s -> reply then resolve last (Step 5)\n' "$cr"
+    ((cr)) && printf 'next: coderabbit=%s -> canonical reply then settle (Step 5)\n' "$cr"
     ((cq)) && printf 'next: code-quality=%s -> verbatim fix or reasoned dismiss (Step 5)\n' "$cq"
     ((human)) && printf 'next: human=%s -> per-item confirmation gate (Step 1a)\n' "$human"
     ((generic)) && printf 'next: generic=%s -> smallest fix or decline reply (Step 5)\n' "$generic"

@@ -2,7 +2,7 @@
 
 Keep your sub-agents in check while systematically working through a GitHub Projects board.
 
-Agent Kit is a plugin for Codex CLI and Claude Code. It ships three skills, a set of bash
+Agent Kit is a plugin for Codex CLI and Claude Code. It ships four skills, a set of bash
 helper scripts, and five lifecycle hooks. A repository you onboard declares its own facts
 once, in a per-machine `.agent/` directory: the trunk branch, the Projects board, the label
 taxonomy, and the commands that verify it. The skills and hooks read those declarations
@@ -15,6 +15,7 @@ instead of rediscovering them on every run; onboarding regenerates them after a 
 | `onboard-repo` skill | Walks a repository through setup. Runs the bootstrap script, audits existing instruction files, fills in verify commands and label meanings, and hands command approval to a human |
 | `parallel-issues` skill | Triages the Projects board, picks 2-5 independent issues, runs each in an isolated git worktree with its own sub-agent, and drives each to a draft PR |
 | `review-remote-pr` skill | Takes a draft PR to green: CI, merge conflicts, one adversarial cross-review by the peer CLI, review-bot threads, and the board move |
+| `pr-to-green` skill | Serializes a confirmed draft-PR queue, performs authorized ready/provider transitions, and handles stacks without merging |
 | Helper scripts | Deterministic one-call operations: environment preflight, command runner, board reader and mover, one-request issue triage, worktree commits, PR state digests, verified comment posting |
 | Hooks | Inject the environment contract at session start, refuse a short list of destructive commands, teach cheaper commands after wasteful ones, and block the end of a turn until the declared verify command has covered the changes |
 
@@ -228,6 +229,7 @@ agentkit/
   skills/
     onboard-repo/
     parallel-issues/                scripts/ holds the board mover and data fencing
+    pr-to-green/                    serial queue and authorized transition helpers
     review-remote-pr/               scripts/ holds PR digests, comment posting, reviewers
     .shared/
       schema/config.env.example     every AGENT_* key, documented

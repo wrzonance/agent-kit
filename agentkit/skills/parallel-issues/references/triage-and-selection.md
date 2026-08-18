@@ -155,6 +155,40 @@ conflict analysis. The plan uses this schema:
 }
 ```
 
+The dispatch-time artifact stays at schema version 1 while PR numbers and
+pushed heads do not exist. At the ready-flip handoff, write those verified
+facts to an owner-only merge-plan input and pass both files through
+`scripts/write-merge-plan.sh`. The helper validates that every selected issue
+appears exactly once, upgrades the dispatch plan atomically, and preserves the
+existing entries and conflict audit. The resulting shape is:
+
+```json
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-17T20:00:00Z",
+  "entries": [
+    {"issue": 164, "predictedWriteSet": ["src/a/**"]},
+    {"issue": 167, "predictedWriteSet": ["src/b/**"]}
+  ],
+  "conflictMap": {"pairs": [], "revisions": []},
+  "independent": [],
+  "chains": [[
+    {"issue": 164, "pr": 301, "branch": "feat/root", "chainBaseSha": null,
+     "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"issue": 167, "pr": 302, "branch": "feat/child",
+     "chainBaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ]]
+}
+```
+
+`independent` uses the same record shape, with null `chainBaseSha`. Each
+`chains` array is ordered base-to-tip; each successor pins its immediate
+predecessor's recorded head. `pr-to-green` verifies every recorded PR and head
+but performs no discovery graph walk while the artifact is current. An absent
+artifact or recorded-head drift activates forge derivation; malformed records,
+duplicates, or an unsafe live base fail closed.
+
 `workerEffort` is the optional per-issue effort override — **effort follows the issue, not
 the run**. Omitted, the issue dispatches at the `AGENT_WORKER_EFFORT` default; present, it
 must carry an `effortReason`, and the value is what the prompt composer receives for that
