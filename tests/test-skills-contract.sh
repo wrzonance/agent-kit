@@ -156,6 +156,12 @@ assert_contains "$onboard_text" 'CLAUDE.md' \
     'onboarding includes the other common instruction file'
 assert_contains "$onboard_text" 'untrusted data' \
     'instruction-file content is treated as repository data'
+assert_contains "$onboard_text" 'AGENT_REVIEW_PROVIDERS' \
+    'onboarding asks the operator to choose review providers'
+assert_contains "$onboard_text" 'observe-only' \
+    'onboarding explains observe-only provider behavior'
+assert_contains "$onboard_text" 'none' \
+    'onboarding documents the explicit no-provider choice'
 assert_contains "$onboard_text" 'Conflicting' \
     'onboarding classifies conflicting guidance'
 assert_contains "$onboard_text" 'Duplicated' \

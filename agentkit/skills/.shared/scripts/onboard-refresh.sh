@@ -289,6 +289,17 @@ if [[ -x $detector ]]; then
     path_drift=$("$detector" --repo-root "$repo_root" --format drift 2> /dev/null || true)
 fi
 
+review_provider_status=''
+review_provider_config=$self_dir/review-provider-config.sh
+if [[ -x $review_provider_config ]]; then
+    provider_plan=$("$review_provider_config" --repo-root "$repo_root" 2> /dev/null || true)
+    provider_source=$(sed -n 's/^provider=[^ ]* mode=[^ ]* source=\([^[:space:]]*\)$/\1/p' <<< "$provider_plan" | tail -n 1)
+    case $provider_source in
+        missing) review_provider_status=undeclared ;;
+        invalid) review_provider_status=invalid ;;
+    esac
+fi
+
 parts=()
 if ((added_components || removed_components)); then
     parts+=("components=$(format_delta "$added_components" "$removed_components")")
@@ -297,6 +308,7 @@ if ((tool_plus || tool_minus)); then
     parts+=("toolchains=$(format_delta "$tool_plus" "$tool_minus")")
 fi
 ((generator_stale)) && parts+=("generator=stale")
+[[ -n $review_provider_status ]] && parts+=("review-providers=$review_provider_status")
 if [[ ${ci_uncovered:-0} =~ ^[1-9][0-9]*$ ]]; then
     parts+=("ci-gaps=$ci_uncovered")
 fi

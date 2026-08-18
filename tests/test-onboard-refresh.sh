@@ -27,13 +27,16 @@ AGENT_REPO_SLUG=example-org/example-repo
 AGENT_ONBOARDED_BY=agentkit/0.0.0
 AGENT_CMD_VERIFY=tools/verify
 AGENT_RUNDIR_VERIFY=dashboard
+# AGENT_REVIEW_PROVIDERS=
 # proposal-component|old|node|package.json
 # proposal-command|AGENT_CMD_VERIFY|tools/verify|missing|
 EOF
 
 out=$(bash "$refresh_sh" --repo-root "$repo" --report 2>&1)
-assert_contains "$out" 'drift= components=+1/-1 toolchains=+1 generator=stale ci-gaps=2' \
+assert_contains "$out" 'drift= components=+1/-1 toolchains=+1 generator=stale review-providers=undeclared ci-gaps=2' \
     'report summarizes all non-trivial drift axes on one line'
+assert_contains "$out" 'review-providers=undeclared' \
+    'report identifies an undecided review provider without blocking other drift'
 assert_contains "$out" 'component= added path=new' \
     'report names a newly detected component'
 assert_contains "$out" 'component= removed path=old' \
@@ -63,6 +66,11 @@ assert_contains "$out" 'toolchains=-1' \
 assert_contains "$out" 'paths=drift' \
     'summary preserves path drift alongside generator drift'
 
+printf '%s\n' 'AGENT_REVIEW_PROVIDERS=not-a-provider' >> "$repo/.agent/config.env"
+out=$(bash "$refresh_sh" --repo-root "$repo" --summary 2>&1)
+assert_contains "$out" 'review-providers=invalid' \
+    'report identifies an invalid provider choice as an advisory gap'
+
 current=$(
     jq -r '.version' < "$root/agentkit/.codex-plugin/plugin.json"
 )
@@ -76,6 +84,7 @@ cat > "$repo/.agent/config.env" <<EOF
 AGENT_REPO_SLUG=example-org/example-repo
 AGENT_ONBOARDED_BY=agentkit/$current
 AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
 # proposal-component|new|node|package.json
 # proposal-command|AGENT_CMD_VERIFY|tools/verify|present|
 EOF
