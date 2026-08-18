@@ -76,6 +76,11 @@ listed=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$listed" 'AGENT_PROJECT_NUMBER=7' 'generated config carries the project number'
 assert_contains "$listed" 'AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done' \
     'status vocabulary comes from the discovered option order'
+assert_contains "$(cat "$repo/.agent/config.env")" '# AGENT_REVIEW_PROVIDERS=' \
+    'generated config proposes an explicit automated review provider choice'
+assert_contains "$(cat "$repo/.agent/config.env")" \
+    'coderabbit, github-code-quality, or none' \
+    'provider proposal explains the supported choices'
 expected_generator=$(jq -r .version "$root/agentkit/.codex-plugin/plugin.json")
 assert_contains "$(cat "$repo/.agent/config.env")" "AGENT_ONBOARDED_BY=agentkit/$expected_generator" \
     'generated config records the installed generator version'
@@ -315,6 +320,16 @@ assert_contains "$after" 'AGENT_CMD_TEST=true' 'a declared command survives --fo
 assert_contains "$after" 'AGENT_LABEL_TYPES=bug,enhancement' 'and a label classification'
 assert_contains "$after" 'AGENT_PROTECTED_PATHS=migrations/' 'and declared protected paths'
 assert_contains "$out" 'carried forward' 'and the run says what it preserved'
+
+# A selected provider is a declaration, not a proposal: refresh carries it
+# forward as an active value and does not duplicate the commented choice.
+printf '%s\n' 'AGENT_REVIEW_PROVIDERS=none' >> "$repo/.agent/config.env"
+assert_rc 0 'refresh accepts the explicit disabled provider choice' -- run_bs \
+    --repo-root "$repo" --project 7 --force
+assert_eq '1' "$(grep -c '^AGENT_REVIEW_PROVIDERS=none$' "$repo/.agent/config.env")" \
+    'refresh preserves one selected provider declaration'
+assert_eq '0' "$(grep -c '^# AGENT_REVIEW_PROVIDERS=' "$repo/.agent/config.env" || true)" \
+    'refresh does not leave a proposal beside a selected provider'
 
 declared_before=$(grep -E '^AGENT_(CMD_TEST|LABEL_TYPES|PROTECTED_PATHS)=' "$repo/.agent/config.env")
 assert_rc 0 'refresh is an explicit force refresh' -- run_bs --repo-root "$repo" --project 7 --refresh
