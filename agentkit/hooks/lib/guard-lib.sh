@@ -355,6 +355,28 @@ guard_scope_canonical() {
     printf '%s\n' "${canonical:-/}"
 }
 
+# Resolve existing symlink components without trusting lexical containment.
+# For a missing leaf, resolve its parent and append only that leaf. A caller
+# that cannot resolve the parent must fail closed rather than treating the
+# spelling as proof that the target stays in the worker.
+guard_target_realpath() {
+    local candidate=$1 parent base resolved
+    if [[ -e $candidate || -L $candidate ]]; then
+        realpath -e -- "$candidate" 2> /dev/null || return 2
+    else
+        parent=${candidate%/*}
+        base=${candidate##*/}
+        [[ -n $parent ]] || parent=/
+        resolved=$(realpath -e -- "$parent" 2> /dev/null) || return 2
+        printf '%s/%s\n' "$resolved" "$base"
+    fi
+}
+
+guard_path_inside() {
+    local root=$1 candidate=$2
+    [[ $candidate == "$root" || $candidate == "$root"/* ]]
+}
+
 guard_scope_path_allowed() {
     local candidate root root_canonical
     candidate=$(guard_scope_canonical "$1") || return 1
@@ -541,6 +563,157 @@ guard_state_root() {
         fi
     done
     printf '%s' "${roots[0]-}"
+}
+
+# A dispatched worker's contract names the linked worktree it is allowed to
+# edit.  The contract is accepted only when it is an untracked regular file
+# owned by this user, and only when its worktree is the current Git root under
+# the repository's conventional .worktrees/ directory.  This keeps a stale or
+# repository-supplied declaration from becoming an escape hatch.
+guard_worktree_contract() {
+    local root=$1 contract worktree main_worktree rc
+    GUARD_WORKTREE_CONTRACT_WORKTREE=''
+    GUARD_WORKTREE_CONTRACT_REPO=''
+    [[ -n $root && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 1
+    contract="$root/.agent/env-contract.txt"
+    [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] || return 1
+    rc=0
+    git -C "$root" ls-files --error-unmatch -- .agent/env-contract.txt >/dev/null 2>&1 || rc=$?
+    ((rc == 1)) || return 1
+    worktree=$(sed -n 's/^worktree=//p' "$contract" 2> /dev/null | head -n 1)
+    [[ -n $worktree && $worktree == /*/.worktrees/* ]] || return 1
+    worktree=$(guard_scope_canonical "$worktree") || return 1
+    [[ $worktree == "$root" ]] || return 1
+    main_worktree=$(git -C "$root" worktree list --porcelain 2> /dev/null |
+        sed -n 's/^worktree //p' | head -n 1) || return 1
+    [[ -n $main_worktree ]] || return 1
+    main_worktree=$(guard_scope_canonical "$main_worktree") || return 1
+    [[ $worktree == "$main_worktree/.worktrees/"* ]] || return 1
+    GUARD_WORKTREE_CONTRACT_WORKTREE=$worktree
+    GUARD_WORKTREE_CONTRACT_REPO=$main_worktree
+    return 0
+}
+
+# If a write target resolves into the main checkout while the session is
+# contracted to a linked worktree, print a corrective denial reason.  Paths in a
+# sibling worktree remain ordinary targets; only the root checkout itself is
+# the silent-cross-write boundary this guard prevents.
+guard_worktree_boundary_reason() {
+    local target=$1 cwd=$2 command_line=${3:-} base candidate actual relative source
+    local lexical_worker=no lexical_repo=no
+    guard_worktree_contract "${workspace_root:-}" || return 1
+    base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
+    case $target in
+        /*) candidate=$target;;
+        *) candidate="$base/$target";;
+    esac
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+
+    # Resolve every candidate before classifying it. An alias outside both
+    # checkout prefixes can still land in the main checkout, so lexical prefix
+    # checks must never decide whether realpath resolution happens.
+    case $candidate in
+        "$GUARD_WORKTREE_CONTRACT_WORKTREE"|"$GUARD_WORKTREE_CONTRACT_WORKTREE"/*)
+            lexical_worker=yes
+            ;;
+    esac
+    if ! actual=$(guard_target_realpath "$candidate"); then
+        [[ $lexical_worker == yes ]] || return 1
+        GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+        printf 'Refused once -- could not securely resolve write target %s while enforcing the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+            "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+            "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+        return 0
+    fi
+
+    case $candidate in
+        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*)
+            lexical_repo=yes
+            ;;
+    esac
+
+    if guard_path_inside "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$actual"; then
+        return 1
+    fi
+    if [[ $lexical_worker == yes ]]; then
+        GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+        relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
+        [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
+        [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+        printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+            "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+            "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+        return 0
+    fi
+
+    # A sibling linked worktree remains an ordinary target. A lexical root
+    # target is retained as a denial even if a symlink happens to point at a
+    # sibling; the worker contract cannot authorize that spelling.
+    case $actual in
+        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"|\
+        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"/*)
+            [[ $lexical_repo == yes ]] || return 1
+            source=$candidate
+            ;;
+        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*)
+            source=$actual
+            ;;
+        *)
+            [[ $lexical_repo == yes ]] || return 1
+            source=$candidate
+            ;;
+    esac
+    relative=${source#"$GUARD_WORKTREE_CONTRACT_REPO"/}
+    [[ $source != "$GUARD_WORKTREE_CONTRACT_REPO" ]] || relative=''
+    GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+    [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+    printf 'Refused once -- write target %s resolves inside the repository root %s but outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+        "$source" "$GUARD_WORKTREE_CONTRACT_REPO" \
+        "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+}
+
+# Persist one JSONL record for each content-bearing tool call that exposes a
+# write target.  The raw command is retained for Bash calls because a target
+# alone cannot distinguish a redirect, sed -i, tee, or an edit payload during
+# post-hoc incident reconstruction.  Evidence is local .agent state, secured
+# as a private file, and every failure is deliberately non-blocking: the hook
+# must not turn an evidence filesystem hiccup into an invisible allow/deny loop.
+guard_record_write_targets() {
+    local root=$1 payload=$2 cwd=$3 command_line=$4 tool_name=$5 session=$6 tool_call_id=${7:-}
+    local agent_dir evidence_dir evidence_file targets_json record timestamp
+    local -a targets=()
+    agent_dir="$root/.agent"
+    [[ -n $root && -d $agent_dir && ! -L $agent_dir && -O $agent_dir ]] || return 0
+    mapfile -t targets < <(
+        guard_target_paths "$payload"
+        [[ -z $command_line ]] || guard_shell_write_targets "$command_line"
+    )
+    ((${#targets[@]})) || return 0
+    evidence_dir="$agent_dir/evidence"
+    if [[ -e $evidence_dir || -L $evidence_dir ]]; then
+        [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    else
+        mkdir -- "$evidence_dir" 2> /dev/null || return 0
+        [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    fi
+    chmod 700 -- "$evidence_dir" 2> /dev/null || return 0
+    evidence_file="$evidence_dir/paths-touched.ndjson"
+    if [[ -e $evidence_file || -L $evidence_file ]]; then
+        [[ -f $evidence_file && ! -L $evidence_file && -O $evidence_file ]] || return 0
+    else
+        touch -- "$evidence_file" 2> /dev/null || return 0
+        [[ -f $evidence_file && ! -L $evidence_file && -O $evidence_file ]] || return 0
+    fi
+    chmod 600 -- "$evidence_file" 2> /dev/null || return 0
+    targets_json=$(jq -nc '$ARGS.positional' --args "${targets[@]}" 2> /dev/null) || return 0
+    timestamp=$(date +%s)
+    record=$(jq -nc \
+        --arg timestamp "$timestamp" --arg session "$session" \
+        --arg tool "$tool_name" --arg call_id "$tool_call_id" --arg cwd "$cwd" \
+        --arg command "$command_line" --argjson paths "$targets_json" \
+        '{timestamp:($timestamp|tonumber),session:$session,tool:$tool,tool_call_id:$call_id,cwd:$cwd,command:$command,paths_touched:$paths}' \
+        2> /dev/null) || return 0
+    printf '%s\n' "$record" >>"$evidence_file" 2> /dev/null || true
 }
 
 # Claim "this lesson, this session" exactly once.

@@ -905,4 +905,196 @@ assert_contains "$normalized_text" 'References are read once, batched, and never
 assert_contains "$text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
 
+assert_contains "$text" 'Root-checkout cross-write fence' \
+    'dispatch documents the root dirt snapshot boundary'
+assert_contains "$text" 'cross-write-check.sh' \
+    'dispatch names the deterministic cross-write checker'
+assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
+    'handoff never misattributes run-window dirt to the human'
+assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
+    'worker prompts preserve per-tool write-target evidence'
+
+# --- issue #254: Collect detects, attributes, and disposes cross-writes -----
+cross_write="$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh"
+assert_eq yes "$( [[ -x $cross_write ]] && printf yes || printf no )" \
+    'cross-write checker is executable'
+
+cross_root="$tmp/cross-root"
+cross_worker="$tmp/cross-worker"
+mkdir -p "$cross_root"
+git -C "$cross_root" init -q -b main
+cross_exclude=$(git -C "$cross_root" rev-parse --git-path info/exclude)
+[[ $cross_exclude == /* ]] || cross_exclude="$cross_root/$cross_exclude"
+printf '.agent/*\n.worktrees/\n' >> "$cross_exclude"
+mkdir -p "$cross_root/src" "$cross_root/.agent"
+printf 'base\n' > "$cross_root/src/data.txt"
+git -C "$cross_root" add src/data.txt
+git -C "$cross_root" -c user.name=t -c user.email=t@example.invalid \
+    commit -qm base
+git -C "$cross_root" worktree add -q -b feat/worker "$cross_worker"
+printf 'worker bytes\n' > "$cross_worker/src/data.txt"
+
+snapshot="$cross_root/.agent/cross-write.snapshot"
+snapshot_out=$(
+    "$cross_write" snapshot --root "$cross_root" --output "$snapshot" \
+        --write-set 'src/**'
+)
+assert_contains "$snapshot_out" 'snapshot=' \
+    'dispatch snapshot reports its persisted path'
+
+# Porcelain -z must preserve spaces and non-ASCII path bytes instead of
+# silently dropping Git's quoted representation.
+printf 'worker space\n' > "$cross_worker/src/space café.txt"
+printf 'worker space\n' > "$cross_root/src/space café.txt"
+space_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start 1 --worker-end 2147483647 --write-set 'src/**' || true
+)
+assert_contains "$space_out" 'src/space café.txt' \
+    'Collect preserves a space and non-ASCII path from NUL-delimited status'
+rm -- "$cross_root/src/space café.txt"
+
+# A single-star component cannot cross a path separator; globstar remains
+# recursive. Both cases are exercised through the public Collect interface.
+mkdir -p "$cross_root/src/nested"
+mkdir -p "$cross_worker/src/nested"
+printf 'nested worker\n' > "$cross_worker/src/nested/deep.txt"
+printf 'nested worker\n' > "$cross_root/src/nested/deep.txt"
+single_star_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start 1 --worker-end 2147483647 --write-set 'src/*' || true
+)
+assert_not_contains "$single_star_out" 'src/nested/deep.txt' \
+    'a single-star write-set does not cross a directory component'
+recursive_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 --worker-start 1 \
+        --worker-end 2147483647 --write-set 'src/**' || true
+)
+assert_contains "$recursive_out" 'src/nested/deep.txt' \
+    'a recursive write-set matches nested paths'
+rm -- "$cross_root/src/nested/deep.txt"
+
+# Collect must never compare or dispose the observation checkout with itself.
+self_err=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_root" --issue 254 --write-set 'src/**' \
+        2>&1 >/dev/null
+)
+self_rc=$?
+assert_eq 2 "$self_rc" 'Collect rejects the root checkout as its worker worktree'
+assert_contains "$self_err" 'must differ from root' \
+    'self-worktree rejection explains the destructive hazard'
+
+# Plant the same bytes in the root checkout. Collect must attribute this to the
+# worker window, compare it to the matching branch worktree, and restore the
+# root to its exact pre-dispatch state when explicitly asked to dispose it.
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+now=$(date +%s)
+collect_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) \
+        --write-set 'src/**' --dispose-duplicates
+)
+assert_contains "$collect_out" 'cross-write=' \
+    'Collect names the planted cross-write'
+assert_contains "$collect_out" 'issue=254' \
+    'Collect attributes the incident to the worker window'
+assert_contains "$collect_out" 'disposition=restored-exact-duplicate' \
+    'Collect disposes an exact branch duplicate explicitly'
+assert_eq '' "$(git -C "$cross_root" status --porcelain --untracked-files=all)" \
+    'disposing an exact duplicate restores root cleanliness'
+assert_eq 'base' "$(<"$cross_root/src/data.txt")" \
+    'duplicate disposal restores the root bytes from HEAD'
+
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+outside_window_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 --worker-start 1 --worker-end 1 \
+        --write-set 'src/**' --dispose-duplicates
+)
+assert_contains "$outside_window_out" 'disposition=surface-exact-outside-window' \
+    'an exact copy outside the worker mtime window is not auto-disposed'
+assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
+    'outside-window exact bytes remain for explicit disposition'
+git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
+
+# A path that was already dirty at snapshot time is never auto-disposed when a
+# worker overwrites those human bytes. The overwrite remains visible.
+printf 'human pre-dispatch bytes\n' > "$cross_root/src/data.txt"
+baseline_snapshot="$cross_root/.agent/cross-write-baseline.snapshot"
+"$cross_write" snapshot --root "$cross_root" --output "$baseline_snapshot" \
+    --write-set 'src/**' >/dev/null
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+baseline_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$baseline_snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 --worker-start 1 \
+        --worker-end 2147483647 --write-set 'src/**' --dispose-duplicates || true
+)
+assert_contains "$baseline_out" 'surface-overwrote-baseline' \
+    'a worker overwrite of pre-existing human bytes is surfaced'
+assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
+    'baseline-overwrite handling never auto-restores the root path'
+git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
+
+# An unreadable hash sentinel is not a stable byte value. Even when baseline
+# and current both report "unreadable", Collect must surface the incident and
+# leave the root bytes untouched rather than auto-disposing an alleged match.
+hash_stub="$tmp/hash-stub"
+mkdir -p "$hash_stub"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$hash_stub/sha256sum"
+chmod 700 -- "$hash_stub/sha256sum"
+printf 'human unreadable baseline\n' > "$cross_root/src/data.txt"
+unreadable_snapshot="$cross_root/.agent/cross-write-unreadable.snapshot"
+PATH="$hash_stub:$PATH" "$cross_write" snapshot --root "$cross_root" \
+    --output "$unreadable_snapshot" --write-set 'src/**' >/dev/null
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+unreadable_out=$(
+    PATH="$hash_stub:$PATH" "$cross_write" collect --root "$cross_root" \
+        --snapshot "$unreadable_snapshot" --worker-worktree "$cross_worker" \
+        --issue 254 --worker-start 1 --worker-end 2147483647 \
+        --write-set 'src/**' --dispose-duplicates || true
+)
+assert_contains "$unreadable_out" 'surface-unreadable' \
+    'unreadable baseline/current hashes are surfaced as an incident'
+assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
+    'unreadable hash handling never auto-disposes the root path'
+git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
+
+# A divergent root copy is still an incident, but must be surfaced rather than
+# silently overwritten by the matching worker branch.
+printf 'divergent root bytes\n' > "$cross_root/src/data.txt"
+divergent_out=$(
+    "$cross_write" collect --root "$cross_root" --snapshot "$snapshot" \
+        --worker-worktree "$cross_worker" --issue 254 \
+        --worker-start 1 --worker-end 2147483647 \
+        --write-set 'src/**'
+)
+assert_contains "$divergent_out" 'disposition=surface-divergent' \
+    'Collect surfaces a divergent cross-write for explicit human disposition'
+assert_eq 'divergent root bytes' "$(<"$cross_root/src/data.txt")" \
+    'divergent disposal never overwrites the root copy'
+
+# Disposal resolves parent symlinks before hashing or removing anything. A
+# lexical path under the checkout that lands outside it is refused and leaves
+# the outside target untouched.
+dispose_outside="$tmp/cross-dispose-outside"
+mkdir -p "$dispose_outside" "$cross_worker/src/unsafe"
+printf 'outside bytes\n' > "$dispose_outside/escape.txt"
+ln -s "$dispose_outside" "$cross_root/src/unsafe"
+printf 'worker unsafe bytes\n' > "$cross_worker/src/unsafe/escape.txt"
+dispose_err=$(
+    "$cross_write" dispose --root "$cross_root" --worker-worktree "$cross_worker" \
+        --path src/unsafe/escape.txt 2>&1 >/dev/null
+)
+dispose_rc=$?
+assert_eq 2 "$dispose_rc" 'disposal rejects a symlinked parent outside the root'
+assert_contains "$dispose_err" 'escapes root' \
+    'symlink disposal refusal explains the containment failure'
+assert_eq 'outside bytes' "$(<"$dispose_outside/escape.txt")" \
+    'refused disposal does not touch the outside target'
+
 finish

@@ -63,11 +63,13 @@ declare -A KNOWN_OVERSIZE=(
 # publication to the worker-owned commit+push model and adds the explicit
 # no-test-seam red waiver; issue #240 adds the bounded inline-correction
 # exception and same-worker-first correction call-site rule to the root review
+# spine; issue #254 adds the cross-write fence contract (worker write-set
+# boundary, disposal containment, fail-closed collection) to the dispatch
 # spine. The merged tree carries ALL chains' content while each ceiling was
 # measured against its own, so both are re-measured against the merged body
 # and set to the minimum that passes. Line targets unchanged.
 KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
-KNOWN_OVERSIZE[parallel-issues]="1064:18312:900"
+KNOWN_OVERSIZE[parallel-issues]="1120:19050:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

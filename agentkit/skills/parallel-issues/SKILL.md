@@ -696,6 +696,55 @@ persisted bytes verbatim. Re-running the script for an existing complete set is 
 `12`); delete the affected file deliberately before re-fencing. The selected mode is
 disclosed immediately above those persisted bytes.
 
+### Root-checkout cross-write fence
+
+The root checkout gets one dirt snapshot immediately before dispatch. The snapshot is the
+baseline for every Collect check; it is not a worker worktree artifact and it is never replaced
+after a worker starts. Pass every selected issue's `predictedWriteSet` as a separate `--write-set`
+argument, preserving globs byte-for-byte:
+
+```bash
+cross_write="$agentkit/parallel-issues/scripts/cross-write-check.sh"
+cross_snapshot="$repository_root/.agent/cross-write-dispatch.snapshot"
+cross_snapshot_args=(snapshot --root "$repository_root" --output "$cross_snapshot")
+for write_set in "${all_dispatched_write_sets[@]}"; do
+    cross_snapshot_args+=(--write-set "$write_set")
+done
+"$cross_write" "${cross_snapshot_args[@]}"
+```
+
+The root re-checks that same snapshot immediately after each worker completion and once again
+before handoff. A check that returns `cross-write=none` is clean. A `cross-write=` line is a named
+incident: its mtime is compared with the worker's completion window, its bytes are compared with
+the matching worker worktree, and the output must be recorded before the next phase. Exact branch
+duplicates attributed to that mtime window may be disposed explicitly with
+`--dispose-duplicates`, which restores a tracked root path from `HEAD` (or removes an untracked
+duplicate); divergent or outside-window bytes are always surfaced for an explicit human
+disposition. Never fold dirt first observed inside a dispatch window into the
+handoff's "unrelated local changes" list.
+
+```bash
+collect_rc=0
+worker_write_set_args=()
+for write_set in "${worker_write_sets[@]}"; do
+    worker_write_set_args+=(--write-set "$write_set")
+done
+"$cross_write" collect --root "$repository_root" --snapshot "$cross_snapshot" \
+    --worker-worktree "$worktree" --issue "$issue_number" \
+    --worker-start "$worker_started_at" --worker-end "$worker_finished_at" \
+    --dispose-duplicates "${worker_write_set_args[@]}" || collect_rc=$?
+case "$collect_rc" in
+    0) : ;; # cross-write=none
+    10) : ;; # named incident output is the evidence; handle divergent paths explicitly
+    *) exit 1 ;;
+esac
+```
+
+At handoff, repeat the Collect check for every dispatched worker (or one equivalent batched
+check) and preserve each `cross-write=` line with the run evidence. A divergent incident blocks
+the clean-handoff claim until the root names its disposition; it is never attributed to the
+human merely because the root checkout is dirty.
+
 ### Attended command-approval handoff
 
 When an attended invocation carries neither `--yolo` nor `--trust-trunk`, prepare one batched,
@@ -730,6 +779,13 @@ On a `--yolo` changed-input refusal, root parks that workstream only;
 continues every other workstream. See [input-diff digest](references/trust-and-fencing.md).
 
 Act on each lead result as soon as it arrives:
+
+- **Cross-write check first** → run the root-checkout Collect check against the immutable
+  dispatch snapshot before reading the worker's handback as a clean result. Keep the helper's
+  incident line, mtime-window attribution, branch byte-compare, and explicit duplicate/divergent
+  disposition with that worker's evidence. A dirty path in a dispatched write set is never an
+  "unrelated local change" until the check proves it predates dispatch or names a divergent
+  disposition.
 
 - **Completion report (branch + pushed SHA)** → the root reviews the pushed diff ("Root
   review and draft PR after a worker push"), opens the draft PR, moves the issue to
