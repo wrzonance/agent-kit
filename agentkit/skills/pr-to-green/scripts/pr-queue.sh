@@ -95,6 +95,7 @@ validate_prs() {
         ((.state == "open") or (.state == "closed")) and
         ((.draft | type) == "boolean") and
         ((.merged | type) == "boolean") and
+        ((.mergeable == null) or ((.mergeable | type) == "boolean")) and
         ((.created_at | type) == "string") and
         ((.head.ref | type) == "string" and (.head.ref | length) > 0) and
         ((.head.sha | type) == "string" and (.head.sha | test("^[0-9a-f]{40}$"))) and
@@ -174,13 +175,25 @@ if ((plan_active == 0)); then
             done
             jq -s '.' "$work_dir"/explicit-*.json >"$work_dir/live.json"
         else
+            # The list representation omits fields (.merged, .mergeable) that
+            # validate_prs and the classifier require. Use it only to enumerate
+            # candidate numbers, then fetch each candidate's full representation.
             api "repos/$repo/pulls?state=open&per_page=100" --paginate --slurp \
                 >"$work_dir/list.json" \
                 2>"$work_dir/api.err" ||
                 die "open pull request discovery failed: $(head -n 1 "$work_dir/api.err")"
             jq 'if type == "array" and length > 0 and all(.[]; type == "array") then add else . end |
-                map(select(.draft == true))' "$work_dir/list.json" >"$work_dir/live.json" \
-                2>/dev/null || die 'open pull request discovery returned malformed JSON'
+                map(select(.draft == true)) | map(.number)' \
+                "$work_dir/list.json" >"$work_dir/candidate-numbers.json" 2>/dev/null ||
+                die 'open pull request discovery returned malformed JSON'
+            if [[ $(jq 'length' "$work_dir/candidate-numbers.json") -eq 0 ]]; then
+                printf '[]' >"$work_dir/live.json"
+            else
+                while IFS= read -r number; do
+                    fetch_one "$number" "$work_dir/discovered-$number.json"
+                done < <(jq -r '.[]' "$work_dir/candidate-numbers.json")
+                jq -s '.' "$work_dir"/discovered-*.json >"$work_dir/live.json"
+            fi
         fi
     fi
     validate_prs "$work_dir/live.json" || die 'pull request discovery returned malformed records'
@@ -215,9 +228,10 @@ if ((plan_active == 0)); then
       if ($ordered | length) != ($prs | length) then error("cycle") else
         $ordered | map({
           pr:.number, issue:issue_for(.number),
-          state:(if .mergeable == false then "BLOCKED"
-                 elif .base.ref == $base then "RUNNABLE"
-                 else "WAITING_FOR_MERGE" end),
+          state:(if .mergeable == true then
+                   (if .base.ref == $base then "RUNNABLE" else "WAITING_FOR_MERGE" end)
+                 elif .mergeable == false then "BLOCKED"
+                 else "MERGEABLE_UNKNOWN" end),
           source:$source, base:.base.ref, head:.head.ref, sha:.head.sha
         })
       end
@@ -261,11 +275,13 @@ else
         (if .position == 0 then null else predecessor($item) end) as $pred |
         {
           pr:.pr, issue:.issue,
-          state:(if .live.mergeable == false then "BLOCKED"
-                 elif $pred == null then "RUNNABLE"
-                 elif $pred.live.merged == true and .live.base.ref != $base then "RETARGET_REQUIRED"
-                 elif $pred.live.merged == true then "RUNNABLE"
-                 else "WAITING_FOR_MERGE" end),
+          state:(if .live.mergeable == true then
+                   (if $pred == null then "RUNNABLE"
+                    elif $pred.live.merged == true and .live.base.ref != $base then "RETARGET_REQUIRED"
+                    elif $pred.live.merged == true then "RUNNABLE"
+                    else "WAITING_FOR_MERGE" end)
+                 elif .live.mergeable == false then "BLOCKED"
+                 else "MERGEABLE_UNKNOWN" end),
           source:"plan", base:.live.base.ref, head:.live.head.ref, sha:.live.head.sha
         })
     ' "$work_dir/planned-live.json" >"$work_dir/queue.json"

@@ -109,7 +109,8 @@ jq -e --arg repo "$repo" --argjson pr "$pr" '
   ((.providers | type) == "array") and all(.providers[]; type == "string") and
   ((.queue | type) == "array") and
   ([.queue[] | select(.pr == $pr and .state == "RUNNABLE" and
-    (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")))] | length) == 1
+    (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")) and
+    (.base | type) == "string" and (.base | length) > 0)] | length) == 1
 ' "$authorization_file" >/dev/null 2>&1 ||
     die 'authorization does not confirm this repository, runnable PR, and ready transition'
 
@@ -136,6 +137,11 @@ head_sha=$(jq -r '.head.sha' "$work_dir/pr.json")
 authorized_head=$(jq -r --argjson pr "$pr" '.queue[] | select(.pr == $pr) | .headSha' \
     "$authorization_file")
 [[ $head_sha == "$authorized_head" ]] || die 'pull request head changed after queue confirmation'
+
+live_base=$(jq -r '.base.ref' "$work_dir/pr.json")
+authorized_base=$(jq -r --argjson pr "$pr" '.queue[] | select(.pr == $pr) | .base' \
+    "$authorization_file")
+[[ $live_base == "$authorized_base" ]] || die 'pull request base changed after queue confirmation'
 
 if [[ $(jq -r '.draft' "$work_dir/pr.json") == true ]]; then
     node_id=$(jq -r '.node_id' "$work_dir/pr.json")
@@ -186,11 +192,26 @@ provider_current_activity() {
     ' "$work_dir/comments.json" >/dev/null
 }
 
+workflow_login=''
+fetch_workflow_login() {
+    [[ -z $workflow_login ]] || return 0
+    "$GH_BIN" api user >"$work_dir/user.json" 2>"$work_dir/api.err" ||
+        die "authenticated workflow identity unavailable: $(head -n 1 "$work_dir/api.err")"
+    workflow_login=$(jq -er '.login | select(type == "string" and length > 0)' \
+        "$work_dir/user.json" 2>/dev/null) ||
+        die 'authenticated workflow identity response was malformed'
+}
+
+# A marker alone is forgeable by any commenter; only a marker posted by the
+# authenticated workflow account proves the request was already spent.
 provider_spent() {
     local marker
     marker=$(review_provider_request_marker "$1") || return 1
-    jq -e --arg marker "$marker" '
-      any(.[]; (.body // "") | contains($marker))
+    fetch_workflow_login
+    jq -e --arg marker "$marker" --arg login "$workflow_login" '
+      any(.[];
+        ((.body // "") | contains($marker)) and
+        (((.user.login // "") | ascii_downcase) == ($login | ascii_downcase)))
     ' "$work_dir/issue-comments.json" >/dev/null
 }
 

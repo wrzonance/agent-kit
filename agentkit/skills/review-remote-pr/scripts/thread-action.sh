@@ -90,6 +90,23 @@ trap cleanup EXIT HUP INT TERM
 
 jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' \
     "$artifact" >/dev/null 2>&1 || die 'artifact has no reviewThreads.nodes array'
+
+# The artifact's identity is never implicit: an evidence file gathered for a
+# different PR or repo must never settle or reply to this one.
+artifact_repo=$(jq -er '.data.repository.nameWithOwner | select(type == "string" and length > 0)' \
+    "$artifact" 2>/dev/null) || die 'artifact has no repository.nameWithOwner identity'
+artifact_pr=$(jq -er '.data.repository.pullRequest.number | select(type == "number" and . > 0)' \
+    "$artifact" 2>/dev/null) || die 'artifact has no pull request number identity'
+[[ $artifact_repo == "$repo" ]] || die 'artifact repository does not match --repo'
+[[ $artifact_pr == "$pr" ]] || die 'artifact pull request number does not match --pr'
+
+# A first(100) page that is not actually complete is partial evidence: never
+# settle or reply from a thread list (or a thread's own comments) that GitHub
+# reports as truncated.
+jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false) == false' \
+    "$artifact" >/dev/null 2>&1 ||
+    die 'artifact is truncated; refusing settlement from partial evidence'
+
 count=$(jq -r --arg thread "$thread_id" --arg comment "$comment_id" '
   [.data.repository.pullRequest.reviewThreads.nodes[] |
    select((($thread == "") or ((.id // "") | tostring == $thread)) and
@@ -106,6 +123,9 @@ jq -c --arg thread "$thread_id" --arg comment "$comment_id" '
 ' "$artifact" >"$work_dir/target.json"
 target_thread=$(jq -er '.id | select(type == "string" and length > 0)' "$work_dir/target.json") ||
     die 'selected thread has no node ID'
+
+jq -e '(.comments.pageInfo.hasNextPage // false) == false' "$work_dir/target.json" >/dev/null 2>&1 ||
+    die 'artifact is truncated; refusing settlement from partial evidence'
 
 if jq -e '.isResolved == true' "$work_dir/target.json" >/dev/null; then
     if ((settle)); then
@@ -127,15 +147,20 @@ else
     provider=human
 fi
 
-# An agent marker identifies only that individual comment. Any other user-lane
-# comment anywhere in the thread makes resolution a human decision.
-human_count=$(jq -r --arg marker "$AGENT_MARKER" '
+# An agent marker identifies only that individual comment -- and only when
+# posted by the authenticated workflow account. A human quoting the marker
+# does not get to exempt their own comment from the human-touched gate.
+workflow_login=$("$GH_BIN" api user 2>"$work_dir/api.err" | jq -er '.login | select(type == "string" and length > 0)' 2>/dev/null) ||
+    die "authenticated workflow identity unavailable: $(head -n 1 "$work_dir/api.err" 2>/dev/null)"
+
+human_count=$(jq -r --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
   [.comments.nodes[]? | select(
-    (((.body // "") | contains($marker)) | not) and
-    (((.author.login // "") | ascii_downcase) as $login |
-      (($login == "coderabbitai") or ($login == "coderabbitai[bot]") or
-       ($login == "github-code-quality") or ($login == "github-code-quality[bot]") or
-       (($login | test("\\[bot\\]$"))) or
+    ((((.body // "") | contains($marker)) and
+      (((.author.login // "") | ascii_downcase) == ($login | ascii_downcase))) | not) and
+    (((.author.login // "") | ascii_downcase) as $c_login |
+      (($c_login == "coderabbitai") or ($c_login == "coderabbitai[bot]") or
+       ($c_login == "github-code-quality") or ($c_login == "github-code-quality[bot]") or
+       (($c_login | test("\\[bot\\]$"))) or
        ((.author.__typename // .author.type // "") == "Bot")) | not)
   )] | length
 ' "$work_dir/target.json") || die 'could not classify thread authors'
@@ -168,7 +193,12 @@ if ((settle)); then
     fi
     latest_body=$(jq -r '.[-1].body // ""' "$work_dir/responses.json")
     latest_id=$(jq -r '.[-1].databaseId // "unknown"' "$work_dir/responses.json")
+    # Checked first, and fail-closed: a negated positive term ("not addressed",
+    # "never verified") must never fall through to the positive-signal match
+    # below, which would otherwise settle a thread the bot just pushed back on.
     if grep -Eiq '(^|[^a-z])(still|remain|not fixed|not resolved|incorrect|fails?|however|but)([^a-z]|$)' \
+        <<<"$latest_body" ||
+        grep -Eiq "(^|[^a-z])(not|never|isn'?t|wasn'?t|hasn'?t|un)-? ?(yet )?(fixed|resolved|verified|addressed|correct|sufficient|good)([^a-z]|\$)" \
         <<<"$latest_body"; then
         printf 'thread=%s settlement=PUSHBACK response=%s\n' "$target_thread" "$latest_id"
         exit 3

@@ -38,10 +38,31 @@ repos/owner/repo/pulls/13)
 repos/owner/repo/pulls/14)
     printf '%s\n' '{"number":14,"state":"open","draft":false,"merged":false,"mergeable":true,"created_at":"2026-08-04T00:00:00Z","head":{"ref":"feat/ready","sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"base":{"ref":"main"}}'
     ;;
+repos/owner/repo/pulls/15)
+    printf '%s\n' '{"number":15,"state":"open","draft":false,"merged":false,"mergeable":null,"created_at":"2026-08-05T00:00:00Z","head":{"ref":"feat/unknown","sha":"ffffffffffffffffffffffffffffffffffffffff"},"base":{"ref":"main"}}'
+    ;;
+repos/owner/repo/pulls/21)
+    printf '%s\n' '{"number":21,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"feat/b"}}'
+    ;;
+repos/owner/repo/pulls/22)
+    printf '%s\n' '{"number":22,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/b","sha":"2222222222222222222222222222222222222222"},"base":{"ref":"feat/a"}}'
+    ;;
+repos/owner/repo/pulls/31)
+    printf '%s\n' '{"number":31,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"main"}}'
+    ;;
+repos/owner/repo/pulls/32)
+    printf '%s\n' '{"number":32,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/a","sha":"2222222222222222222222222222222222222222"},"base":{"ref":"feat/root"}}'
+    ;;
+repos/owner/repo/pulls/33)
+    printf '%s\n' '{"number":33,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/b","sha":"3333333333333333333333333333333333333333"},"base":{"ref":"feat/root"}}'
+    ;;
+repos/owner/repo/pulls/41)
+    printf '%s\n' '{"number":41,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"release"}}'
+    ;;
 repos/owner/repo/pulls\?state=open*)
     case ${QUEUE_MODE:-normal} in
     normal)
-        printf '%s\n' '[{"number":14,"state":"open","draft":false,"merged":false,"mergeable":true,"created_at":"2026-08-04T00:00:00Z","head":{"ref":"feat/ready","sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"base":{"ref":"main"}},{"number":13,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/independent","sha":"cccccccccccccccccccccccccccccccccccccccc"},"base":{"ref":"main"}},{"number":12,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/root"}},{"number":11,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main"}}]'
+        printf '%s\n' '[{"number":14,"state":"open","draft":false,"created_at":"2026-08-04T00:00:00Z","head":{"ref":"feat/ready"},"base":{"ref":"main"}},{"number":13,"state":"open","draft":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/independent"},"base":{"ref":"main"}},{"number":12,"state":"open","draft":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child"},"base":{"ref":"feat/root"}},{"number":11,"state":"open","draft":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root"},"base":{"ref":"main"}}]'
         ;;
     cycle)
         printf '%s\n' '[{"number":21,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"feat/b"}},{"number":22,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/b","sha":"2222222222222222222222222222222222222222"},"base":{"ref":"feat/a"}}]'
@@ -107,10 +128,18 @@ out=$(run_queue --format records)
 assert_not_contains "$out" 'pr=14' 'automatic discovery excludes already-ready PRs'
 assert_contains "$out" 'pr=12 issue=0 state=WAITING_FOR_MERGE source=forge' \
     'automatic discovery derives the selected stack from live base refs'
+assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
+    'discovery succeeds through per-PR fetches when the list omits merged/mergeable'
 
 out=$(run_queue --pr 14 --format records)
 assert_contains "$out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
     'an explicitly named ready PR can resume'
+
+out=$(run_queue --pr 15 --format records)
+assert_contains "$out" 'pr=15 issue=0 state=MERGEABLE_UNKNOWN source=forge' \
+    'a PR with unresolved mergeability never yields RUNNABLE'
+assert_not_contains "$out" 'state=RUNNABLE' \
+    'unknown mergeability fails closed rather than open'
 
 for mode in cycle fork wrong-base malformed; do
     assert_rc 1 "$mode forge data fails closed" -- env QUEUE_MODE="$mode" \

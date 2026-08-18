@@ -55,6 +55,8 @@ repos/owner/repo/pulls/14/comments*) printf '%s\n' '[]' ;;
 repos/owner/repo/issues/14/comments*)
     if [[ ${REVIEW_ACTIVITY:-none} == spent ]]; then
         printf '%s\n' '[{"user":{"login":"workflow-account","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review"}]'
+    elif [[ ${REVIEW_ACTIVITY:-none} == spent-forged ]]; then
+        printf '%s\n' '[{"user":{"login":"mallory","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review"}]'
     else
         printf '%s\n' '[]'
     fi
@@ -62,6 +64,8 @@ repos/owner/repo/issues/14/comments*)
 '')
     if [[ " $* " == *' api graphql '* ]]; then
         printf '%s\n' '{"data":{"markPullRequestReadyForReview":{"pullRequest":{"isDraft":false}}}}'
+    elif [[ " $* " == *' user'* && " $* " != *'repos/'* ]]; then
+        printf '%s\n' '{"login":"workflow-account"}'
     else
         printf '%s\n' '{}'
     fi
@@ -86,7 +90,15 @@ write_auth() {
     local providers=$1
     jq -n --argjson providers "$providers" '{
       repository:"owner/repo", readyTransition:true, providers:$providers,
-      queue:[{pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+      queue:[{pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base:"main"}]
+    }' >"$tmp/auth.json"
+}
+
+write_auth_wrong_base() {
+    local providers=$1
+    jq -n --argjson providers "$providers" '{
+      repository:"owner/repo", readyTransition:true, providers:$providers,
+      queue:[{pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base:"feat/other"}]
     }' >"$tmp/auth.json"
 }
 
@@ -129,6 +141,25 @@ assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
 out=$(REVIEW_ACTIVITY=old run_transition)
 assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
     'old-head provider activity does not suppress a current-head request'
+
+: >"$tmp/transition.log"
+out=$(REVIEW_ACTIVITY=spent-forged run_transition)
+assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
+    'a spent marker forged by another author does not suppress the request'
+assert_eq '1' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
+    'a forged marker still allows the real request to post'
+
+write_auth_wrong_base '["coderabbit"]'
+: >"$tmp/transition.log"
+set +e
+out=$(run_transition 2>"$tmp/base-mismatch.err")
+base_mismatch_rc=$?
+set -e
+assert_eq '1' "$base_mismatch_rc" 'a retargeted base after queue confirmation blocks the transition'
+assert_contains "$(cat "$tmp/base-mismatch.err")" 'pull request base changed after queue confirmation' \
+    'base mismatch names the retarget boundary'
+assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
+    'a base mismatch is caught before any provider spend'
 
 write_auth '[]'
 : >"$tmp/transition.log"
