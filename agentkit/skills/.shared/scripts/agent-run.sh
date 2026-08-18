@@ -1368,6 +1368,23 @@ yolo_refusal_remediation() {
     printf '  no approval record is created; approval is not implied by --yolo. Do not strip the input or retry with a literal command.\n' >&2
 }
 
+# The base carries no .agent/config.env at all. That is not a changed input to
+# adjudicate -- it is the onboarding contract, which writes declarations
+# per-machine and untracked, so NO declared command can ever satisfy the trunk
+# comparison on this repository. Left to the generic remediation above, the
+# operator re-adjudicates a change nobody made, once per command, forever. Name
+# the cause and both durable fixes instead.
+yolo_untracked_config_remediation() {
+    local base=$1
+    printf '  cause: .agent/config.env is not carried by %s, so no declared command can satisfy the trunk comparison here.\n' \
+        "$base" >&2
+    printf '  durable fix (recommended for repositories meant to run unattended): commit .agent/config.env to the trunk.\n' >&2
+    printf '    It holds declarations only -- the resolver refuses secrets -- and a trunk-reviewed declaration is exactly what --yolo authorizes.\n' >&2
+    printf '    The trade: later declaration edits need a trunk PR before an unattended run picks them up.\n' >&2
+    printf '  durable fix (per-machine escape hatch): approve once per command with --approve, from an interactive terminal.\n' >&2
+    printf '    The record is scoped to this repository, so one approval covers every worktree of this clone until a declaration or command input changes.\n' >&2
+}
+
 # A pinned base substitutes for the trunk anchor. Root-published only: the SHA
 # must sit behind some origin ref (workers cannot push, so only the root can
 # put a commit there) and be an ancestor of this worktree's HEAD. Same
@@ -1435,6 +1452,7 @@ yolo_gate() {
             [[ -n $key && -n ${resolved_config_present[$key]+yes} ]] || continue
             printf 'agent-run: refusing --yolo for %s: %s is declared on this checkout but missing from %s\n' \
                 "$cmd_name" "$key" "$base_desc" >&2
+            yolo_untracked_config_remediation "$base_desc"
             yolo_refusal_remediation "$base" ".agent/config.env (declaration $key)"
             exit 1
         done < <(printf '%s\n' "${relevant_config_keys[@]}" | LC_ALL=C sort -u)
@@ -1537,6 +1555,35 @@ require_human_approval() {
     esac
 }
 
+# The scope an approval covers. It is the repository -- the clone's shared git
+# directory -- and deliberately not the checkout path, because the fingerprint
+# below is already the security boundary: it pins the declaration values, argv,
+# the content hash of every repository-backed command input, the runner, and the
+# nearby manifests, all repository-relatively. A linked worktree whose inputs
+# hash identically IS the command the human reviewed, so keying the record on
+# the checkout bought no protection while costing one terminal confirmation per
+# worktree per command -- on a repository whose declarations are per-machine and
+# untracked, an unbounded number of them, since the trunk gate can never be
+# satisfied there. That is approval fatigue, which is what produces rubber
+# stamps and forged gates. A separate clone stays a separate scope, and nothing
+# inside a checkout can move this value.
+trust_scope_id() {
+    local common resolved
+    common=$(git -C "$git_top" rev-parse --git-common-dir 2> /dev/null) || common=''
+    [[ -n $common ]] || { printf '%s' "$git_top"; return 0; }
+    # git resolves this against its own -C directory, and answers a linked
+    # worktree absolutely but the main checkout relatively ('.git'). Both
+    # spellings must land on one value or the widening silently does nothing.
+    [[ $common == /* ]] || common=$git_top/$common
+    resolved=$(readlink -f -- "$common" 2> /dev/null) || resolved=''
+    # Every degraded path falls back to a value that still names THIS clone. An
+    # empty one would key every repository on the machine identically, turning
+    # one approval into a machine-wide grant -- the one widening this must never
+    # make.
+    [[ -n $resolved ]] || resolved=$common
+    printf '%s' "$resolved"
+}
+
 # Populates trust_root/trust_file/trust_fingerprint for the current command and
 # focus. No side effects beyond those globals -- both the --approve write path
 # and the plain-run/--yolo compare paths share this instead of each deriving
@@ -1545,7 +1592,7 @@ resolve_trust_state() {
     local trust_id
     [[ -n ${cmd_name:-} && -n ${git_top:-} ]] || return 1
     trust_root=$(trust_state_root)
-    trust_id=$(sha256_text "$git_top\n$cmd_name\nfocus=$focus_opt")
+    trust_id=$(sha256_text "repo=$(trust_scope_id)\n$cmd_name\nfocus=$focus_opt")
     trust_file=$trust_root/$trust_id.trust
     trust_fingerprint=$(compute_trust_fingerprint)
 }

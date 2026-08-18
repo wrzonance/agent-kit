@@ -3,6 +3,7 @@
 ## Contents
 
 - Why `--yolo` must thread through to every dispatched verification call
+- How far one approval reaches, and repositories whose declarations are per-machine
 - Never forge the command-trust gate, under any flag or mode
 - Verification cache and suite cadence
 - Attended command-approval handoff
@@ -75,6 +76,53 @@ exercised`, never as an ordinary `--yolo` skip -- an audit must be able to tell 
 Literal command invocations remain caller-supplied and do not satisfy this gate. Running one to
 obtain green evidence is evasion, not remediation.
 
+## How far one approval reaches
+
+An approval record is scoped to the **repository** — the clone's shared git directory — not to
+the checkout it was made from. One `--approve` per command therefore covers every worktree of
+that clone, until a declaration or a repository-backed command input changes and the fingerprint
+stops matching. Nothing about *what* is approved changed with that scope: the fingerprint still
+pins the declaration values, argv, the content of every repository-backed input, the runner, and
+the nearby build manifests, so a sibling worktree that edits any of them is refused exactly as
+before. Approve from any checkout of the clone; the record is the same either way.
+
+**Every worktree includes the PR-checkout ones.** `worktree-setup.sh --pr N` checks a pull
+request's head out into a linked worktree, so once `setup` is approved for the repository it runs
+there too, on a contributor's branch. The fingerprint is what holds that line, and it is the
+right control: a PR that touches the declaration, the runner, the declared command's own argv
+paths, or a nearby build manifest changes it and is refused, while a per-worktree prompt only
+ever asked a yes/no question about a command name — it never showed anyone the PR's diff, so
+answering it per PR was rubber-stamping rather than review. What neither scope covers is the
+wrapped command's deeper transitive inputs; that is the same boundary every verification run
+draws, and reviewing the branch is what addresses it.
+
+### Repositories whose declarations are per-machine
+
+`onboard-repo` writes `.agent/config.env` untracked by default, and `--yolo` validates
+declarations against the trunk — which then carries none of them. On such a repository the trunk
+grant is **structurally void**: every declared command refuses in every worktree, and retrying
+never changes that. `agent-run.sh` names the cause (`.agent/config.env is not carried by <base>`)
+and the two durable fixes, which are not mutually exclusive:
+
+- **Trunk-carried declarations** — commit `.agent/config.env`. Recommended for any repository
+  meant to run unattended: it is what the gate's authorization model actually says, since
+  `--yolo` executes what the trunk reviewed, and it holds declarations only (the resolver refuses
+  secrets). The trade is that later declaration edits need a trunk PR before an unattended run
+  picks them up. agent-kit does this to itself.
+- **Approve once per config-state** — the per-machine escape hatch. One interactive `--approve`
+  per command, after which every worktree of the clone is covered.
+
+**`--yolo` does not excuse the approval handoff here.** Before dispatch, check whether the trunk
+carries the declarations at all:
+
+```bash
+git cat-file -e "origin/${AGENT_BASE_BRANCH:-main}:.agent/config.env" 2> /dev/null &&
+    echo trunk-carried || echo per-machine
+```
+
+`per-machine` means the dispatched prompts carry a grant that will refuse, so prepare the batched
+approval block anyway — see the handoff section below.
+
 ## Never forge the gate — any flag, any mode
 
 A worker that hits `refusing unapproved repository command` on a prompt without `--yolo`
@@ -128,5 +176,13 @@ Use the actual absolute worktree and runner paths and include focused selectors 
 are part of the exact invocation. This is one batched handoff for the entire predictable
 approval burden: workers block until it runs, and predictable refusals are never surfaced
 serially. Every recipe must start with `cd <worktree>`; never hand off the main checkout
-or substitute its path for a worker worktree. If `--trust-trunk` or `--yolo` is present,
-do not print this approval block because the dispatched prompts carry the trunk grant.
+or substitute its path for a worker worktree. Because the record is repository-scoped, one
+worktree's lines cover the clone — the remaining per-worktree lines are idempotent no-ops,
+so a shorter block is not a missing one.
+
+Print this block whenever the approvals are actually needed, which is **not** the same as
+"no autonomy flag was given". Suppress it only when `--trust-trunk` or `--yolo` is present
+**and** the trunk carries `.agent/config.env`: then the dispatched prompts carry a grant that
+works. When the declarations are per-machine, that grant is structurally void (see *How far one
+approval reaches*), so print the block regardless of the flag — suppressing it there is what
+turns one predictable batch into one serial stall per command.
