@@ -41,6 +41,15 @@ out=$("$state_sh" --repo-root "$repo" --report)
 assert_contains "$out" 'stage=verified' 'a command plus verify evidence reaches verified'
 assert_contains "$out" 'next=commit' 'verified reports commit as next'
 
+# The blessed local model arms after verification once both declarations are
+# ignored by the repository-local exclude; no tracked onboarding PR is needed.
+local_exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $local_exclude == /* ]] || local_exclude=$repo/$local_exclude
+printf '.agent/*\n' >> "$local_exclude"
+out=$($state_sh --repo-root "$repo" --report)
+assert_contains "$out" 'stage=armed' 'ignored local declarations arm after verification'
+assert_contains "$out" 'next=none' 'the local model has no commit step'
+
 printf '.agent/*\n!.agent/config.env\n!.agent/board.json\n' > "$repo/.gitignore"
 git -C "$repo" add -- .agent/config.env .agent/board.json .gitignore
 out=$("$state_sh" --repo-root "$repo" --report)
