@@ -193,6 +193,24 @@ assert_contains "$text" 'references/worker-prompts.md' \
     'parallel skill points at the worker-prompts reference'
 assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
+assert_contains "$wait_discipline_text" 'A bounded wait must be silent until its terminal condition.' \
+    'parallel wait rule is silent until terminal'
+assert_contains "$wait_discipline_text" 'every line of background output wakes the orchestrator for a turn' \
+    'parallel wait rule explains why background output is forbidden'
+assert_contains "$wait_discipline_text" 'target_epoch - $(date +%s)' \
+    'parallel wait rule provides a known-epoch sleep recipe'
+assert_contains "$wait_discipline_text" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'parallel wait recipe calculates remaining time safely'
+assert_contains "$wait_discipline_text" 'if (( remaining > 0 )); then' \
+    'parallel wait recipe guards an expired target epoch'
+assert_contains "$wait_discipline_text" 'sleep "$remaining"' \
+    'parallel wait recipe sleeps only for a nonnegative duration'
+assert_contains "$wait_discipline_text" 'progress heartbeat' \
+    'parallel wait rule names progress heartbeats'
+assert_contains "$wait_discipline_text" 'log file, not stdout' \
+    'parallel wait rule redirects heartbeats away from stdout'
+assert_contains "$text" 'silent until terminal' \
+    'parallel polling section points at silent-until-terminal guidance'
 assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'parallel skill has no sleep polling recipe'
 assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \

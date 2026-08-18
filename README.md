@@ -68,7 +68,8 @@ This writes two per-machine files and records `.agent/*` in the repository-local
 `.git/info/exclude`, keeping all onboarding state out of the checkout's history:
 
 - `.agent/config.env` holds the repo slug, trunk branch, board number, Status column
-  names, generator stamp, and commented suggestions for your verify commands.
+  names, generator stamp, the automated review provider choice, and commented suggestions for your
+  verify commands.
 - `.agent/board.json` caches the board's node IDs, so a status move costs one API call.
 
 These declarations are intentionally untracked. A fresh clone has no board or repository
@@ -89,6 +90,17 @@ Then open `.agent/config.env` and uncomment the commands your repository runs:
 AGENT_CMD_VERIFY=tools/verify
 AGENT_CMD_TEST=<whatever this repo runs for tests>
 ```
+
+During onboarding, also choose the providers installed for pull-request review:
+
+```ini
+AGENT_REVIEW_PROVIDERS=coderabbit
+```
+
+Use `coderabbit` for triggerable review, `github-code-quality` for observe-only findings (never a
+manual trigger), either supported provider as a comma-separated pair, or the exclusive `none` choice.
+Missing or invalid declarations warn, use effective `none`, and leave the rest of onboarding active;
+the config is parsed line-by-line and never sourced.
 
 Command values are argv lists rather than shell strings: unquoted spaces separate
 arguments, quotes keep spaces inside one argument, and shell operators are rejected. If

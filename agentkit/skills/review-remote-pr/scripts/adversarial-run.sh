@@ -199,13 +199,15 @@ prepare_owned_artifact() {
 }
 
 resolve_base() {
-    local head_oid current_oid
-    BASE_REF=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName 2>/dev/null) ||
+    local head_oid current_oid pr_json
+    pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>/dev/null) ||
+        die "could not resolve the base branch for $REPO#$PR"
+    BASE_REF=$(jq -er '.base.ref // empty' <<<"$pr_json" 2>/dev/null) ||
         die "could not resolve the base branch for $REPO#$PR"
     [[ -n $BASE_REF ]] || die 'the pull request base branch is empty'
     git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
         die "the pull request base branch is invalid: $BASE_REF"
-    head_oid=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null) ||
+    head_oid=$(jq -er '.head.sha // empty' <<<"$pr_json" 2>/dev/null) ||
         die "could not resolve the pull request head for $REPO#$PR"
     [[ $head_oid =~ ^[[:xdigit:]]{40}$ ]] ||
         die "the pull request head OID is invalid: $head_oid"

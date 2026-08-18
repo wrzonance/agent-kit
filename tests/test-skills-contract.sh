@@ -186,6 +186,12 @@ assert_contains "$onboard_text" 'CLAUDE.md' \
     'onboarding includes the other common instruction file'
 assert_contains "$onboard_text" 'untrusted data' \
     'instruction-file content is treated as repository data'
+assert_contains "$onboard_text" 'AGENT_REVIEW_PROVIDERS' \
+    'onboarding asks the operator to choose review providers'
+assert_contains "$onboard_text" 'observe-only' \
+    'onboarding explains observe-only provider behavior'
+assert_contains "$onboard_text" 'none' \
+    'onboarding documents the explicit no-provider choice'
 assert_contains "$onboard_text" 'Conflicting' \
     'onboarding classifies conflicting guidance'
 assert_contains "$onboard_text" 'Duplicated' \
@@ -247,6 +253,10 @@ assert_line_order 'Duplicated is classified before Repo-specific' \
 
 review_skill="$skills/review-remote-pr/SKILL.md"
 parallel_skill="$skills/parallel-issues/SKILL.md"
+review_skill_text=$(<"$review_skill")
+review_skill_normalized=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
+review_reference_contract=$(sed -n '/^\*\*References are read once, batched, and never sized first\.\*\*/,/^$/p' "$review_skill")
+review_reference_contract_normalized=$(tr '\n' ' ' <<<"$review_reference_contract" | tr -s '[:space:]' ' ')
 review_refs=("$skills"/review-remote-pr/references/*.md)
 parallel_refs=("$skills"/parallel-issues/references/*.md)
 shared_refs=("$skills"/.shared/*.md)
@@ -258,6 +268,28 @@ assert_line_order 'review helper status is checked before parsing its worktree o
     "$review_setup_status_line" "$review_setup_parse_line"
 assert_contains "$(<"$review_skill")" 'if ! setup_output=' \
     'review helper setup captures failure before output parsing'
+assert_contains "$review_reference_contract_normalized" 'References are read once, batched, and never sized first' \
+    'review skill forbids per-file reference sizing'
+assert_contains "$review_reference_contract" 'wc -l' \
+    'review skill no-sizing rule names the observed probe explicitly'
+assert_contains "$review_reference_contract" 'stat' \
+    'review skill no-sizing rule names stat explicitly'
+assert_contains "$review_reference_contract" 'head' \
+    'review skill no-sizing rule names head explicitly'
+assert_contains "$review_reference_contract_normalized" 'do not re-read it later in the same uninterrupted context' \
+    'review skill forbids duplicate reference reads'
+assert_contains "$review_reference_contract_normalized" 'Read each reference once per uninterrupted context' \
+    'review skill scopes read-once behavior to an uninterrupted context'
+assert_contains "$review_reference_contract_normalized" 'If compaction/resume occurs since Step 1a and the loaded provider-rules content is not preserved in the resumable artifact/context' \
+    'review skill names the missing resumable-content condition'
+assert_contains "$review_reference_contract_normalized" 're-read provider-rules.md exactly once before Phase C' \
+    'review skill permits one bounded post-compaction reread before Phase C'
+assert_contains "$review_reference_contract_normalized" 'sole exception to the ordinary no-re-read rule' \
+    'review skill keeps the post-compaction reread as the sole exception'
+assert_contains "$review_skill_normalized" 'Reuse that loaded content in Step 5; do not re-read it' \
+    'review skill reuses provider rules instead of reading them again'
+assert_not_contains "$review_skill_text" 'in full before Step 1a and' \
+    'review skill does not schedule a second full provider-rules read'
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
     'review recipes name jq parser failures as unavailable evidence'
 # The former inline python3 thread-classification recipe was absorbed into
@@ -292,6 +324,24 @@ assert_contains "$review_wait_contract" 'runner completion marker' \
     'review wait rule names the runner completion bound'
 assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'review wait rule rejects sleep and re-check tool churn'
+assert_contains "$review_wait_contract" 'A bounded wait must be silent until its terminal condition.' \
+    'review wait rule is silent until terminal'
+assert_contains "$review_wait_contract" 'every line of background output wakes the orchestrator for a turn' \
+    'review wait rule explains why background output is forbidden'
+assert_contains "$review_wait_contract" 'target_epoch - $(date +%s)' \
+    'review wait rule provides a known-epoch sleep recipe'
+assert_contains "$review_wait_contract" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'review wait recipe calculates remaining time safely'
+assert_contains "$review_wait_contract" 'if (( remaining > 0 )); then' \
+    'review wait recipe guards an expired target epoch'
+assert_contains "$review_wait_contract" 'sleep "$remaining"' \
+    'review wait recipe sleeps only for a nonnegative duration'
+assert_contains "$review_wait_contract" 'progress heartbeat' \
+    'review wait rule names progress heartbeats'
+assert_contains "$review_wait_contract" 'log file, not stdout' \
+    'review wait rule redirects heartbeats away from stdout'
+assert_contains "$(<"$review_skill")" 'silent until terminal' \
+    'review polling section points at silent-until-terminal guidance'
 assert_eq '' "$(scan_skill_recipes "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'review skill has no sleep polling recipe'
 
