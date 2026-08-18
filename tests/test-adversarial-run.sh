@@ -46,11 +46,8 @@ mkdir -- "$fake_bin"
 cat >"$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ ${1:-} == pr && ${2:-} == view ]] || exit 1
-case " $* " in
-    *' headRefOid '*) printf '%s\n' "$FAKE_HEAD_OID" ;;
-    *) printf '%s\n' main ;;
-esac
+[[ ${1:-} == api && ${2:-} == repos/acme/widget/pulls/42 ]] || exit 1
+printf '%s\n' "{\"base\":{\"ref\":\"main\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
 EOF
 chmod +x "$fake_bin/gh"
 
