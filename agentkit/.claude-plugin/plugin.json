@@ -1,6 +1,6 @@
 {
   "name": "agentkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Board-aware parallel issue and PR review skills, with lifecycle hooks and a per-repository contract.",
   "license": "MIT",
   "keywords": [
