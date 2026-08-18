@@ -11,15 +11,19 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/worktree-setup.sh"
 WORKTREE_SETUP_PROGNAME=$PROGNAME
 PR=''
 REPO=''
+YOLO=0
 
 usage() {
     cat <<'EOF'
-Usage: pr-worktree.sh --pr N --repo OWNER/REPO
+Usage: pr-worktree.sh --pr N --repo OWNER/REPO [--yolo]
 
 Reuse the worktree carrying a pull request's head branch, or create one below
 the configured AGENT_WORKTREE_ROOT (default .worktrees). Fork pull requests use
 gh pr checkout from a detached worktree. The worktree is preflighted and gets
 the declared setup command through agent-run.sh when AGENT_CMD_SETUP is present.
+--yolo carries the caller's own unattended trust onto that setup call, the same
+way it carries onto every other declared agent-run.sh --cmd invocation; it does
+not weaken agent-run.sh's own trunk trust gate.
 EOF
 }
 
@@ -46,6 +50,10 @@ parse_args() {
             --repo=*)
                 [[ -z $REPO ]] || { worktree_setup_fail '--repo given more than once'; exit 1; }
                 REPO=${1#*=}
+                shift
+                ;;
+            --yolo)
+                YOLO=1
                 shift
                 ;;
             -h|--help)
@@ -183,7 +191,7 @@ main() {
         }
     fi
     setup_declared=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || setup_declared=''
-    worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree" || {
+    worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree" "$YOLO" || {
         worktree_setup_fail "setup failed in $worktree"
         exit 1
     }

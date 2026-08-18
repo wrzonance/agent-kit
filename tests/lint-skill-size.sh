@@ -69,7 +69,11 @@ declare -A KNOWN_OVERSIZE=(
 # measured against its own, so both are re-measured against the merged body
 # and set to the minimum that passes. Line targets unchanged.
 KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
-KNOWN_OVERSIZE[parallel-issues]="1120:19050:900"
+# Issue #268 threads --yolo onto the Step 5 create-issue-worktree.sh call (the
+# same condition the compose-args line already uses), so the first declared
+# setup in an unattended run no longer burns a guaranteed approval refusal.
+# One spine line, minimum that passes. Line target unchanged.
+KNOWN_OVERSIZE[parallel-issues]="1121:19076:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
