@@ -41,6 +41,15 @@ for invalid_id in 'slash/id' 'space id' $'line\nbreak'; do
         'rejected plan does not create a ledger'
 done
 
+invalid_plan_error=''
+invalid_plan_rc=0
+invalid_plan_error=$(run_ledger init --ledger "$tmp/invalid-schema-ledger.json" \
+    --plan "$invalid_plan" 2>&1) || invalid_plan_rc=$?
+assert_eq '1' "$invalid_plan_rc" 'invalid plan remains a semantic validation failure'
+assert_contains "$invalid_plan_error" \
+    'valid example: {"planId":"batch-v1","entries":[{"id":"entry-1"}]}' \
+    'invalid plan explains the copyable plan schema in its rejection'
+
 assert_rc 0 'init creates a ledger' -- run_ledger init --ledger "$ledger" --plan "$plan"
 assert_eq '1' "$(jq -r '.schemaVersion' <"$ledger")" 'ledger schema is version 1'
 assert_eq 'fixture-batch-v1' "$(jq -r '.planId' <"$ledger")" 'ledger retains the planning id'
