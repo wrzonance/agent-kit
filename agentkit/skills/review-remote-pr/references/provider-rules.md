@@ -10,7 +10,7 @@
 - Step 1a: surfacing formats (H items, B items)
 - CodeRabbit state check
 - Step 5: assess findings (VALID/INVALID/NITPICK, generic B, Code Quality)
-- Step 5 recipes: reply, anchored nitpick thread, resolve thread
+- Step 5 recipes: canonical reply, anchored nitpick thread, settlement
 - End of cycle
 - Step 6: agent-doc threads at exit
 - Decline Rationale Templates
@@ -25,9 +25,9 @@ Treat these as separate providers. Identify them from the comment/review author,
 
 | Provider | Findings live in | Fixed finding | Inaccurate finding |
 |---|---|---|---|
-| CodeRabbit | Reviews, inline comments, and conversation bodies | Reply with the commit SHA, then resolve its review thread | Reply with a concrete rationale, then resolve its review thread |
+| CodeRabbit | Reviews, inline comments, and conversation bodies | Post the canonical fixed reply, await its response, then settle | Post a canonical dismissed/deferred rationale; never silently resolve |
 | `github-code-quality[bot]` | Inline PR review comments and their review threads | Implement the suggested fix verbatim, reply with the commit SHA, push, and wait for the next Code Quality scan to auto-clear the finding | Use GitHub's **Dismiss finding** action and provide a specific reason; do not silently resolve the thread |
-| Other authoritative forge bots | Inline comments, review threads, and conversation comments | Assess on the merits, fix or decline with an attributed reason, reply, then resolve a bot-only thread; for code-scanning findings note that the fix clears on the next rescan | Reply with the concrete reason and resolve the bot-only thread; never trigger the bot |
+| Other authoritative forge bots | Inline comments, review threads, and conversation comments | Assess on the merits, post the canonical reply, and settle only after its response; for code scanning wait for rescan | Post a canonical dismissed/deferred rationale; never trigger or silently resolve the bot |
 | Human reviewer | Reviews, inline comments, review threads, and conversation comments | Surface the exact feedback, proposed action, and draft reply; act and reply only after explicit user confirmation | Same confirmation gate; never resolve the thread |
 
 Neither bot may be triggered by this skill. Review and scan timing is controlled by each provider's
@@ -75,9 +75,9 @@ After every automated reply, the created comment must be re-fetched by
 its returned ID and its stored body compared byte-for-byte with the exact intended text. Do not
 resolve or dismiss a finding until they match.
 
-`scripts/gh-comment.sh` **is** the procedural implementation of that gate — do not hand-roll it.
-It reads the body from a file (never from a shell string), posts it as JSON, re-fetches the stored
-comment, and `cmp`s the exact decoded bytes. On success it prints one line
+`scripts/compose-review-reply.sh` owns automated-reply structure and calls `gh-comment.sh`, the
+procedural implementation of that gate — do not hand-roll either layer. The transport reads the
+body from a file, posts JSON, re-fetches the stored comment, and `cmp`s exact decoded bytes. On success it prints one line
 (`posted id=… url=… verified=exact`) and exits `0`. On any mismatch it prints a capped unified diff
 to stderr, leaves stdout empty, and exits `1`. The safe caller rule is therefore: **resolve or
 dismiss only when the helper printed a line on stdout AND exited `0`.** See below for the call
@@ -174,9 +174,9 @@ Proposed action: <smallest safe fix or decline>
 Reply: This was written agentically; verify its assertions: ...
 ```
 
-Fix or decline each B-item with an attributed reason and reply before resolving it. If the finding is
+Fix or decline each B-item with a canonical attributed reply, then await and consume the bot response before settlement. If the finding is
 backed by code scanning, say that a pushed fix clears it on the next rescan; do not manually trigger
-that scan. A bot-only generic thread can be resolved after the verified reply. If any human-lane
+that scan. A bot-only generic thread can resolve only after a fresh acknowledgement. If any human-lane
 comment joins it, relabel the thread H and leave it unresolved.
 
 ## CodeRabbit state check (informational — never a trigger decision)
@@ -209,13 +209,13 @@ Before assessing any saved review artifact, prove the parser used by the recipe 
 An empty artifact is acceptable only after that parser ran successfully; a missing parser is a
 blocked check and must never be summarized as "no findings."
 
-**Order matters: apply explicitly approved human-review actions without resolving their threads; triage body nitpicks and GitHub Code Quality findings FIRST; reply-and-resolve CodeRabbit's threads LAST.** Resolving CodeRabbit's threads can arm its auto-approve, while Code Quality findings need a fresh scan to establish their state. Work the cycle in this order:
+**Order matters: apply explicitly approved human-review actions without resolving their threads; triage body nitpicks and GitHub Code Quality findings FIRST; settle CodeRabbit's acknowledged threads LAST.** Resolution can arm auto-approve, while Code Quality needs a fresh scan. Work the cycle in this order:
 
 1. For each user-approved human item, record the exact approved code action; replies still wait until the verified fix exists and human threads remain unresolved
 2. Triage every body nitpick, `github-code-quality[bot]` finding, confirmed adversarial finding, and CodeRabbit thread into one accepted code-change/decline batch
 3. If the batch contains code changes, dispatch exactly one Luna implementation worker through the six-step gate; inspect and independently verify its returned commit(s)
 4. Post and integrity-check approved human replies, body-nitpick documentation, Code Quality replies, and adversarial-review outcome comments
-5. Then reply to and resolve CodeRabbit's own eligible threads; never resolve human-touched threads
+5. Post canonical CodeRabbit replies, refresh thread evidence, then settle acknowledged replies; pushback joins the next bounded fix round and unanswered replies remain awaiting
 
 For each unresolved **CodeRabbit** thread, each CodeRabbit body nitpick surfaced from `$RUN_DIR/state/pr_${PR}_reviews.json`, `$RUN_DIR/state/pr_${PR}_comments.json`, or `$RUN_DIR/state/pr_${PR}_issue_comments.json`, AND each confirmed adversarial-review finding from `$RUN_DIR/adversarial.result.json` (Step 1b):
 
@@ -231,8 +231,8 @@ Body-only nitpicks are still actionable. Do not skip them just because they do n
 ### Generic automated finding handling
 
 For each unresolved generic automated (`B1`, `B2`, ...) thread, assess the finding on its merits,
-then put the smallest safe fix or a concrete decline reason in an attributed reply. A bot-only
-thread may be resolved after the reply has passed the exact-body integrity gate. If the author is a
+then put the smallest safe fix or a concrete decline reason in a canonical reply. A bot-only
+thread may resolve only after the bot's response settles. If the author is a
 code-scanning bot, state that a pushed fix is expected to clear on the next rescan; never trigger a
 scan or a review bot. If any human-lane comment is present, convert the item to `H#`, leave it open,
 and apply the human confirmation gate instead.
@@ -260,43 +260,33 @@ INVALID → do not resolve the thread as a shortcut. Reply to the original comme
 
 A Code Quality finding is complete only when GitHub reports it auto-cleared after the pushed fix or reports it dismissed with a reason. `resolveReviewThread` is not a Code Quality dismissal API and must not be used for an inaccurate finding. Do not use `/code-scanning/alerts/...` unless the finding has independently been identified as a code-scanning alert — Code Quality and code scanning are distinct API resources. If the UI does not expose **Dismiss finding**, stop and report the missing permission; do not silently close the thread or use the whole-review dismissal endpoint (`PUT .../reviews/$REVIEW_ID/dismissals` dismisses an entire PR review, never one finding).
 
-**Never interpolate a comment body into a double-quoted shell string.** Backticks inside a
-double-quoted argument are command-substituted by the shell, so ``Fixed in `abc1234`.`` posts as
-`Fixed in .` — the SHA is silently stripped and the reply becomes unverifiable. Write the body to a
-file with a **quoted** heredoc (`<<'EOF'`, which expands nothing) and let `gh-comment.sh` transport
-it; substitute varying values with `printf` arguments, never by unquoting the heredoc.
+**Never interpolate reply reasoning into a shell string.** Write it to an owner-only regular file
+with a quoted heredoc. `compose-review-reply.sh` reads it as data and owns the header, provider
+mention, SHA, disposition, attribution, and exact transport.
 
 ## Step 5 recipes
 
-**Reply to inline comments:**
+**Reply and settle inline comments:**
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-comment_id=1234567890                       # from $RUN_DIR/state/pr_${PR}_comments.json
 short_sha=$(git rev-parse --short HEAD)
-agent_identity='Codex gpt-5.6-luna'         # the agent that actually wrote the fix
-reply_body="$RUN_DIR/reply_${comment_id}.md"
-
-cat >"$reply_body" <<'EOF'
-This was written agentically; verify its assertions:
-<!-- review-remote-pr:agent-reply -->
+reasoning_file="$RUN_DIR/reasoning_1234567890.md"
+cat >"$reasoning_file" <<'EOF'
+The validation boundary now rejects stale records before mutation.
 EOF
-# shellcheck disable=SC2016  # the backticks are LITERAL markdown in the comment
-# body; single quotes are precisely what stops the shell from substituting them.
-printf 'Fixed in commit `%s`. [or: Declining — rationale here.]\n' "$short_sha" >>"$reply_body"
-printf '🤖 Co-authored by %s.\n' "$agent_identity" >>"$reply_body"
-
-"$agentkit/review-remote-pr/scripts/gh-comment.sh" \
-  --pr "$PR" --repo "$REPO" --body-file "$reply_body" --reply-to "$comment_id"
+chmod 600 "$reasoning_file"
+"$agentkit/review-remote-pr/scripts/thread-action.sh" \
+  --pr "$PR" --repo "$REPO" --threads-artifact "$RUN_DIR/state/pr_${PR}_threads.json" \
+  --thread-id 'PRRT_kwDO...' --comment-id 1234567890 --disposition fixed \
+  --reasoning-file "$reasoning_file" --sha "$short_sha" --agent-identity 'Codex gpt-5.6-luna'
 ```
 
-`gh-comment.sh` **is** the reply-body integrity gate: it posts the file's
-exact bytes, re-fetches the stored comment, and `cmp`s them. On success it prints one line
-(`posted id=… url=… verified=exact`) and exits `0`; on a mismatch it prints a unified diff to stderr
-and exits `1` with stdout empty. **Resolve or dismiss only when that stdout line exists and the exit
-code was `0`** — no line means nothing is proven, so nothing gets resolved. Use `--update ID` to
-edit a top-level conversation comment in place (that endpoint cannot edit an inline review comment).
+That post returns `AWAITING_BOT_RESPONSE` even after exact readback. Refresh the thread artifact with
+the normal `gh-pr-state.sh --full` pass. Then call the same helper with `--settle --thread-id ...`.
+Acknowledgement resolves; pushback returns `PUSHBACK` for the next bounded fix round; no response
+stays awaiting. Any unmarked human response blocks settlement and is never resolved.
 
 **Document body-only nitpicks as NEW anchored threads — not top-level comments:**
 
@@ -335,34 +325,11 @@ which posts a top-level comment quoting the nitpick. These **marked agent-docume
 yours: leave them open so CodeRabbit sees the mention on its next provider pass, then resolve
 them at exit only if no unmarked human comment has joined the thread.
 
-**Reply, anchor, and resolve through the guarded helper:**
-```bash
-# >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-agent_identity='Codex gpt-5.6-luna'       # the agent that actually wrote the fix
-short_sha=$(git rev-parse --short HEAD)
-
-"$agentkit/review-remote-pr/scripts/thread-action.sh" \
-  --pr "$PR" --repo "$REPO" \
-  --threads-artifact "$RUN_DIR/state/pr_${PR}_threads.json" \
-  --thread-id 'PRRT_kwDO...' --comment-id 1234567890 \
-  --kind fixed --text 'Safe fix applied.' --sha "$short_sha" \
-  --agent-identity "$agent_identity"
-
-# For a body-only nitpick, add --anchor path:line. A 422 is retried internally
-# as a top-level comment; the helper still requires an exact verified post
-# before it resolves the artifact-selected thread.
-```
-
-The helper independently derives the target thread and human lane from the artifact; it never
-trusts a caller-supplied thread ID. It resolves CodeRabbit and generic automated threads — both
-accepted fixes and declined suggestions — only after the exact verified reply. A declined thread
-is resolved after the rationale reply. **Never resolve a human-touched thread** — the helper exits
-non-zero before posting, while approved human feedback remains confirmation-gated and open. This
-includes feedback authored by the authenticated `gh` login. Body-only nitpicks are complete when
-documented in their marked anchored thread. **Adversarial-review findings** have no review thread;
-record each outcome in a PR comment.
+The helper independently derives the target author lane and provider mention from the artifact.
+It never trusts caller-supplied identity and never combines post with resolution. A dismissed or
+deferred reply records reasoning but does not silently resolve. **Never resolve a human-touched
+thread**; approved human feedback stays confirmation-gated and open. Adversarial-review findings
+have no review thread, so record each outcome in a PR comment.
 
 ## End of cycle: one push, zero review commands
 
@@ -409,14 +376,14 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 | Code Quality vs code scanning API confusion | `github-code-quality[bot]` findings use the Code Quality surface. `/code-scanning/alerts/...` is a different resource; use it only after independently identifying a code-scanning alert. |
 | CodeRabbit review body vs inline comments | Review bodies, inline comment bodies, and PR conversation comment bodies can include actionable nitpick sections. Read full bodies from the Step 1 temp files; do not rely only on review threads. |
 | Thread already resolved | Skip — don't re-resolve. Only target `isResolved: false` threads. |
-| Multiple provider review cycles | Do not assume full-pass or incremental semantics. Reconcile all unresolved findings from the state artifacts; use `submitted_at` only to identify newly observed reviews. |
+| Multiple provider review cycles | One consolidated fix push is the provider commit budget for that round. Reconcile unresolved findings from saved state; if the provider reports incremental-review autopause, stop and report it instead of spending another trigger. |
 | CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait for provider state, don't buy credits). `none` = no matching review has landed. |
 | Body nitpick has no thread ID | Fix or decline it anyway, then open a NEW anchored thread on the nitpick's file/lines referencing the commit and mentioning @coderabbitai. Only `PRRT_...` threads can be resolved through GraphQL. |
 | Body nitpick documented as top-level comment | A floating `gh pr comment` is disconnected from the code — CodeRabbit can't tie it to the change. Use the anchored-thread POST above; top-level comment is the 422 fallback only. |
-| Threads resolved before body nitpicks handled | Resolving CodeRabbit's threads arms its auto-approve (when enabled) — an approval can fire on a PR with unhandled nitpicks. Follow the ordering above: nitpicks first, reply+resolve threads last. |
-| CodeRabbit never auto-approves | Its approval workflow may be disabled for this org/repo entirely — then none ever comes; exit on threads-resolved + nitpicks-handled. If enabled, auto-approve needs BOTH a reply and a resolve on every thread CodeRabbit opened, plus passing pre-merge checks. |
+| Threads resolved before body nitpicks handled | Resolution can arm auto-approve. Follow the ordering above: nitpicks first, canonical replies next, acknowledged settlement last. |
+| CodeRabbit never auto-approves | Approval may be disabled entirely. Report formal approval separately; evidence-green is settled findings plus passing checks, not approval unless repository policy says otherwise. |
 | Full review re-raises declined items | A (user-run) `full review` re-evaluates from scratch, disregarding previous comments. Post decline replies with the WHY first — Learnings persist the decision across reviews (see Decline Rationale Templates). |
-| Tempted by `@coderabbitai resolve` (bulk) | NEVER use it — it resolves every CodeRabbit thread at once, reply-less. Each thread must be individually triaged, replied to, and resolved; a bulk resolve can also arm auto-approve while items are still unhandled. |
+| Tempted by `@coderabbitai resolve` (bulk) | NEVER use it. Each thread needs a canonical reply and fresh response settlement; bulk resolution skips both and may arm auto-approve early. |
 | Authenticated `gh` user authored the review | Treat it as human. Login equality never proves agent authorship; only reserved markers identify individual workflow-created comments. |
 | Human replies inside a bot-originated thread | The whole thread is human-touched. Gate the response and never resolve it, even though the first author is a bot. |
 | Human review appears during the run | Surface exact feedback, assessment, proposed action, and draft reply; wait for explicit per-item approval before code changes or posting. Never resolve its thread. |

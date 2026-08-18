@@ -626,7 +626,7 @@ print_thread_lines() {
 # no line at all -- silence, not a "next: none", is the "nothing to do" signal.
 print_next_lines() {
     local cr=$1 cq=$2 human=$3 generic=$4 nits=$5 eligible=$6
-    ((cr)) && printf 'next: coderabbit=%s -> reply then resolve last (Step 5)\n' "$cr"
+    ((cr)) && printf 'next: coderabbit=%s -> canonical reply then settle (Step 5)\n' "$cr"
     ((cq)) && printf 'next: code-quality=%s -> verbatim fix or reasoned dismiss (Step 5)\n' "$cq"
     ((human)) && printf 'next: human=%s -> per-item confirmation gate (Step 1a)\n' "$human"
     ((generic)) && printf 'next: generic=%s -> smallest fix or decline reply (Step 5)\n' "$generic"

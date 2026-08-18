@@ -53,7 +53,7 @@ assert_contains "$output" 'provider: coderabbit=none' \
     'no coderabbit issue comment reports provider state none'
 assert_contains "$output" 'agent-docs: 0 eligible' \
     'no unresolved marked-first-comment thread reports zero agent-docs'
-assert_contains "$output" 'next: coderabbit=1 -> reply then resolve last (Step 5)' \
+assert_contains "$output" 'next: coderabbit=1 -> canonical reply then settle (Step 5)' \
     'a non-zero coderabbit lane prints its next hint'
 assert_contains "$output" 'next: human=2 -> per-item confirmation gate (Step 1a)' \
     'a non-zero human lane prints its next hint'

@@ -142,6 +142,18 @@ assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
+assert_contains "$triage_and_selection_text" '"schemaVersion": 2' \
+    'dispatch-plan schema carries the ready-flip merge plan'
+assert_contains "$triage_and_selection_text" '"chains"' \
+    'dispatch-plan records ordered base-to-tip chains'
+assert_contains "$triage_and_selection_text" '"independent"' \
+    'dispatch-plan records the independent PR set'
+assert_contains "$triage_and_selection_text" 'chainBaseSha' \
+    'merge-plan records pin each successor base SHA'
+assert_contains "$triage_and_selection_text" 'headSha' \
+    'merge-plan records pin live head verification evidence'
+assert_contains "$text" 'write-merge-plan.sh' \
+    'ready-flip handoff persists the machine-readable merge plan'
 assert_contains "$triage_and_selection_text" 'shared root files' \
     'conflict analysis includes shared root files by default'
 assert_contains "$triage_and_selection_text" 'chain-conversion' \

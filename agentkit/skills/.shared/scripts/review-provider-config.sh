@@ -10,6 +10,8 @@ readonly PROGRAM=${0##*/}
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
 readonly SCRIPT_DIR
 readonly RESOLVER=$SCRIPT_DIR/repo-config.sh
+# shellcheck source=lib/review-provider-catalog.sh
+source "$SCRIPT_DIR/lib/review-provider-catalog.sh"
 
 usage() {
     printf 'usage: %s [--repo-root DIR]\n' "$PROGRAM" >&2
@@ -99,25 +101,15 @@ fi
 
 IFS=, read -r -a providers <<< "$declared"
 for provider in "${providers[@]}"; do
-    case $provider in
-        coderabbit)
-            printf 'provider=coderabbit mode=triggerable source=declared\n'
-            ;;
-        github-code-quality)
-            printf 'provider=github-code-quality mode=observe-only source=declared\n'
-            ;;
-        none)
-            if ((${#providers[@]} != 1)); then
-                warn 'provider capability plan is invalid; using effective none'
-                emit_none invalid
-                exit 0
-            fi
-            printf 'provider=none mode=disabled source=declared\n'
-            ;;
-        *)
-            warn "unknown provider '$provider'; using effective none"
-            emit_none invalid
-            exit 0
-            ;;
-    esac
+    if [[ $provider == none && ${#providers[@]} -ne 1 ]]; then
+        warn 'provider capability plan is invalid; using effective none'
+        emit_none invalid
+        exit 0
+    fi
+    mode=$(review_provider_mode "$provider" 2>/dev/null) || {
+        warn "unknown provider '$provider'; using effective none"
+        emit_none invalid
+        exit 0
+    }
+    printf 'provider=%s mode=%s source=declared\n' "$provider" "$mode"
 done

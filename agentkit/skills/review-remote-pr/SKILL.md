@@ -91,7 +91,7 @@ H; H labels are human-only. Every automated reply must pass the reply-body integ
 human-touched thread.**
 
 Read [references/provider-rules.md](references/provider-rules.md) in full before Step 1a — the
-provider table, classifier, human-confirmation-gate procedure, and reply/resolve recipes live
+provider table, classifier, human-confirmation gate, and reply-settlement recipes live
 there. Reuse that loaded content in Step 5; do not re-read it.
 
 ## Inputs
@@ -168,7 +168,7 @@ PHASE C — REVIEW (runs when relevant provider findings land)
                bounded rounds; escalate rather than wait forever)
   5. FIX     — apply approved human-review actions first (their threads stay unresolved); then triage
                body nitpicks and github-code-quality[bot] findings; then assess each CodeRabbit
-               thread, fix or decline, reply AND resolve; batch all fixes into ONE push
+               thread, fix or decline, reply, await its response, then settle; ONE push per batch
   6. REPEAT  — while CI failures, unresolved automated threads, or unhandled findings remain
                (cap: 3 cycles). A later provider pass may depend on repository configuration or a
                user trigger — report that the fixes are pushed and let the user decide.
@@ -181,8 +181,8 @@ finding fixed or declined with a PR comment; every human-lane item has an explic
 (replies posted+verified, threads left unresolved). A deferred item blocks `Ready to merge` unless
 the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base line means checks are not green, and any pre-retarget provider approval must be surfaced as knowing acceptance, not silently inherited or re-pinged.
 
-CodeRabbit's auto-approve (when enabled) needs a reply AND a resolve on every thread it opened, no
-failing checks — reply first, then resolve, nitpicks before threads (Step 5 ordering). Disabled →
+CodeRabbit's auto-approve (when enabled) needs settled replies on every thread it opened and no
+failing checks — never resolve before its fresh acknowledgement. Disabled →
 no formal approval ever comes; "green" is threads resolved + nitpicks handled.
 
 ---
@@ -456,8 +456,8 @@ blocked check and must never be summarized as “no findings.”
 
 Use the provider-rules.md content loaded in Step 1a for the full cycle order (approved human
 actions first → body nitpicks + Code Quality → one implementation-worker batch → post/verify
-replies → CodeRabbit reply-then-resolve LAST), the VALID/INVALID/NITPICK recipes, the generic-B
-and Code Quality handling, and the reply/anchored-thread/resolve command shapes.
+replies → CodeRabbit reply-settlement LAST), the VALID/INVALID/NITPICK recipes, the generic-B
+and Code Quality handling, and the canonical reply/settlement command shapes.
 Adversarial-review findings from `$RUN_DIR/adversarial.result.json` route through the same
 assess → fix → document logic, documented in a **PR comment** (no thread to resolve). The cycle
 ends with its single batched push (Step 1c); post declines before that push — a later full review

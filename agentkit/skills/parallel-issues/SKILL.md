@@ -170,8 +170,8 @@ digraph process {
     "Dispatch issue leads\n(up to available slots)" -> "Collect results\n(PR URL or BLOCKED)";
     "Collect results\n(PR URL or BLOCKED)" -> "Dispatch N draft-phase\nreview-remote-pr agents (parallel)";
     "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER decides ready transition";
-    "Report: drafts ready\nUSER decides ready transition" -> "Provider findings land\n-> continue fix/reply/resolve";
-    "Provider findings land\n-> continue fix/reply/resolve" -> "Surface human reviews\n-> user confirms each response";
+    "Report: drafts ready\nUSER decides ready transition" -> "Provider findings land\n-> continue fix/reply/settle";
+    "Provider findings land\n-> continue fix/reply/settle" -> "Surface human reviews\n-> user confirms each response";
     "Surface human reviews\n-> user confirms each response" -> "Print PR table\n+ worktree handoff (no cleanup)";
 }
 ```
@@ -1059,7 +1059,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-When chains exist, the ready-flip handoff lists merge order (base first). After each predecessor, the agent path runs `chain-advance.sh --retarget --pr <N> --base <default>`; it must verify the successor's baseRefName, `base...head`, CI/approval, and closing-linkage proof before merge. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, persist PRs, heads, roots, and chains with `scripts/write-merge-plan.sh`; state merge order (base first). After each predecessor, run `chain-advance.sh --retarget --pr <N> --base <default>`; verify the successor's baseRefName, `base...head`, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
