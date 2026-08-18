@@ -60,6 +60,15 @@ cat >"$artifact" <<'EOF'
     ]}},
     {"id":"PRRT_truncated","isResolved":false,"comments":{"pageInfo":{"hasNextPage":true},"nodes":[
       {"databaseId":1111,"body":"bot finding","author":{"login":"coderabbitai[bot]","__typename":"Bot"}}
+    ]}},
+    {"id":"PRRT_unrelated_ack","isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[
+      {"databaseId":1211,"body":"bot finding","author":{"login":"coderabbitai[bot]","__typename":"Bot"}},
+      {"databaseId":1212,"body":"<!-- review-remote-pr:agent-reply disposition=fixed provider=coderabbit -->\nfixed","author":{"login":"workflow-account","__typename":"User"}},
+      {"databaseId":1213,"body":"Verified. Resolved.","author":{"login":"other-bot[bot]","__typename":"Bot"}}
+    ]}},
+    {"id":"PRRT_marker_unrelated_bot","isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[
+      {"databaseId":1311,"body":"bot finding","author":{"login":"coderabbitai[bot]","__typename":"Bot"}},
+      {"databaseId":1312,"body":"<!-- review-remote-pr:agent-reply disposition=fixed provider=coderabbit -->\nfixed","author":{"login":"other-bot[bot]","__typename":"Bot"}}
     ]}}
   ]}}}}
 }
@@ -212,5 +221,50 @@ assert_rc 1 'a truncated thread comments page is refused (reply)' -- \
     bash "$action" --pr 14 --repo owner/repo --threads-artifact "$artifact" \
     --thread-id PRRT_truncated --disposition fixed --reasoning-file "$reason" --sha abc1234
 assert_eq '' "$(cat "$tmp/action.log")" 'truncated reply never posts'
+
+# An unrelated authoritative account's response is not acknowledgement
+# evidence: only the thread's own provider can settle or push back.
+: >"$tmp/action.log"
+out=$(run_action --settle --thread-id PRRT_unrelated_ack)
+assert_contains "$out" 'settlement=AWAITING_BOT_RESPONSE' \
+    'an unrelated bot response after the agent reply is not settlement evidence'
+assert_eq '' "$(cat "$tmp/action.log")" \
+    'an unrelated bot acknowledgement never resolves the thread'
+
+# The marker itself must be actor-bound too: a marker posted by an unrelated
+# bot is not a canonical agent reply to settle from.
+: >"$tmp/action.log"
+set +e
+err=$(run_action --settle --thread-id PRRT_marker_unrelated_bot 2>&1 >/dev/null)
+marker_bot_rc=$?
+set -e
+assert_eq '1' "$marker_bot_rc" 'a marker posted by an unrelated bot is refused'
+assert_contains "$err" 'no canonical agent reply' \
+    'the refusal names the missing canonical agent reply'
+assert_eq '' "$(cat "$tmp/action.log")" \
+    'an unrelated marker never resolves the thread'
+
+# Nitpick: a repository mismatch is refused before any action, mirroring the
+# already-covered PR-number mismatch.
+jq '.data.repository.nameWithOwner = "owner/other"' "$artifact" >"$tmp/repo-mismatch.json"
+: >"$tmp/action.log"
+assert_rc 1 'an artifact identifying a different repository is refused before any action' -- \
+    env ACTION_LOG="$tmp/action.log" CAPTURED_BODY="$tmp/body.md" \
+    THREAD_ACTION_COMMENT="$tmp/gh-comment" THREAD_ACTION_GH="$tmp/gh" \
+    bash "$action" --pr 14 --repo owner/repo --threads-artifact "$tmp/repo-mismatch.json" \
+    --settle --thread-id PRRT_ack
+assert_eq '' "$(cat "$tmp/action.log")" 'repository mismatch happens before any action'
+
+# Nitpick: a truncated thread LIST (not just a truncated thread's own
+# comments page) is refused the same way.
+jq '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage = true' "$artifact" \
+    >"$tmp/list-truncated.json"
+: >"$tmp/action.log"
+assert_rc 1 'a truncated thread list is refused (settle)' -- \
+    env ACTION_LOG="$tmp/action.log" CAPTURED_BODY="$tmp/body.md" \
+    THREAD_ACTION_COMMENT="$tmp/gh-comment" THREAD_ACTION_GH="$tmp/gh" \
+    bash "$action" --pr 14 --repo owner/repo --threads-artifact "$tmp/list-truncated.json" \
+    --settle --thread-id PRRT_ack
+assert_eq '' "$(cat "$tmp/action.log")" 'truncated-list settlement never resolves'
 
 finish

@@ -65,16 +65,24 @@ run_compose --provider generic --provider-login 'security-scan[bot]' \
 assert_contains "$(cat "$tmp/body.md")" '@security-scan' \
     'generic authoritative bots retain their exact mention without the suffix'
 
+: >"$tmp/comment.args.injection"
 assert_rc 1 'generic provider logins reject mention injection' -- env \
+    COMMENT_ARGS="$tmp/comment.args.injection" CAPTURED_BODY="$tmp/body.injection" \
     COMPOSE_REVIEW_COMMENT="$tmp/gh-comment" bash "$composer" \
     --pr 14 --repo owner/repo --reply-to 111 --provider generic \
     --provider-login '@bad newline' --disposition fixed --sha abc1234 \
     --reasoning-file "$reason"
+assert_eq '' "$(cat "$tmp/comment.args.injection")" \
+    'mention-injection validation precedes posting -- the transport is never invoked'
 
 ln -s "$reason" "$tmp/reason-link"
+: >"$tmp/comment.args.symlink"
 assert_rc 1 'reasoning input rejects symlinks' -- env \
+    COMMENT_ARGS="$tmp/comment.args.symlink" CAPTURED_BODY="$tmp/body.symlink" \
     COMPOSE_REVIEW_COMMENT="$tmp/gh-comment" bash "$composer" \
     --pr 14 --repo owner/repo --reply-to 111 --provider coderabbit \
     --disposition fixed --sha abc1234 --reasoning-file "$tmp/reason-link"
+assert_eq '' "$(cat "$tmp/comment.args.symlink")" \
+    'symlinked-reasoning validation precedes posting -- the transport is never invoked'
 
 finish

@@ -117,7 +117,12 @@ After confirmation, write an owner-only authorization JSON file containing:
 
 - `repository` and `readyTransition: true`;
 - `providers`, containing exactly the displayed triggerable providers;
-- `queue`, with each confirmed PR's number, current state, and full head SHA.
+- `queue`, with each confirmed PR's number, current state, full head SHA, and
+  confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`).
+
+`review-transition.sh` compares both the live head SHA and the live base ref
+against this record before any ready-flip or provider spend, so an omitted
+`base` fails authorization outright.
 
 That file is narrow evidence for `review-transition.sh`, not reusable consent
 after a head, provider plan, or queue change. Re-display and reconfirm changed

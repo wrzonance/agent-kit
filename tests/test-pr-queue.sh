@@ -41,6 +41,12 @@ repos/owner/repo/pulls/14)
 repos/owner/repo/pulls/15)
     printf '%s\n' '{"number":15,"state":"open","draft":false,"merged":false,"mergeable":null,"created_at":"2026-08-05T00:00:00Z","head":{"ref":"feat/unknown","sha":"ffffffffffffffffffffffffffffffffffffffff"},"base":{"ref":"main"}}'
     ;;
+repos/owner/repo/pulls/16)
+    printf '%s\n' '{"number":16,"state":"closed","draft":false,"merged":false,"mergeable":true,"created_at":"2026-08-06T00:00:00Z","head":{"ref":"feat/closed","sha":"1616161616161616161616161616161616161616"},"base":{"ref":"main"}}'
+    ;;
+repos/owner/repo/pulls/61)
+    printf '%s\n' '{"number":61,"state":"closed","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-07T00:00:00Z","head":{"ref":"feat/race-closed","sha":"6161616161616161616161616161616161616161"},"base":{"ref":"main"}}'
+    ;;
 repos/owner/repo/pulls/21)
     printf '%s\n' '{"number":21,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"feat/b"}}'
     ;;
@@ -72,6 +78,9 @@ repos/owner/repo/pulls\?state=open*)
         ;;
     wrong-base)
         printf '%s\n' '[{"number":41,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"release"}}]'
+        ;;
+    closed-race)
+        printf '%s\n' '[{"number":61,"state":"open","draft":true,"created_at":"2026-08-07T00:00:00Z","head":{"ref":"feat/race-closed"},"base":{"ref":"main"}}]'
         ;;
     malformed) printf '%s\n' 'not-json' ;;
     esac
@@ -140,6 +149,20 @@ assert_contains "$out" 'pr=15 issue=0 state=MERGEABLE_UNKNOWN source=forge' \
     'a PR with unresolved mergeability never yields RUNNABLE'
 assert_not_contains "$out" 'state=RUNNABLE' \
     'unknown mergeability fails closed rather than open'
+
+closed_err="$tmp/closed.err"
+assert_rc 1 'an explicitly named closed PR is refused before classification' -- \
+    env GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --pr 16 --format records
+env GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --pr 16 --format records >/dev/null 2>"$closed_err" || true
+assert_contains "$(cat "$closed_err")" 'pull request #16 is not open' \
+    'the closed-PR refusal names the PR and the reason'
+
+: >"$tmp/gh.log"
+out=$(QUEUE_MODE=closed-race run_queue --format records)
+assert_eq '' "$out" \
+    'a PR that closed between listing and fetch is dropped, never classified RUNNABLE'
 
 for mode in cycle fork wrong-base malformed; do
     assert_rc 1 "$mode forge data fails closed" -- env QUEUE_MODE="$mode" \

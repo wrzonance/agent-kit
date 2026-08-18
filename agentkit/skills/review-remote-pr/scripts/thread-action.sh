@@ -178,13 +178,31 @@ resolve_thread() {
 }
 
 if ((settle)); then
-    marker_index=$(jq -r --arg marker "$AGENT_MARKER" '
+    # The marker alone is forgeable: only a marker posted by the authenticated
+    # workflow account counts as the canonical agent reply that settlement
+    # evidence is measured from.
+    marker_index=$(jq -r --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
       [.comments.nodes | to_entries[] |
-       select((.value.body // "") | contains($marker)) | .key] | last // -1
+       select(((.value.body // "") | contains($marker)) and
+              (((.value.author.login // "") | ascii_downcase) == ($login | ascii_downcase))) |
+       .key] | last // -1
     ' "$work_dir/target.json")
     ((marker_index >= 0)) || die 'thread has no canonical agent reply to settle'
-    jq --argjson marker "$marker_index" '
-      [.comments.nodes | to_entries[] | select(.key > $marker) | .value]
+
+    # An unrelated authoritative account replying after the agent's reply is
+    # not acknowledgement evidence: only a response from the thread's own
+    # provider (or, for the generic lane, its own recorded original author)
+    # can settle or push back.
+    if [[ $provider == generic ]]; then
+        expected_login=$original_login
+    else
+        expected_login=$(review_provider_login "$provider") ||
+            die "settle mode has no expected login for provider: $provider"
+    fi
+    jq --argjson marker "$marker_index" --arg login "$expected_login" '
+      [.comments.nodes | to_entries[] | select(.key > $marker) | .value] |
+      map(select((((.author.login // "") | ascii_downcase) == ($login | ascii_downcase)) or
+                  (((.author.login // "") | ascii_downcase) == (($login | ascii_downcase) + "[bot]"))))
     ' "$work_dir/target.json" >"$work_dir/responses.json"
     response_count=$(jq 'length' "$work_dir/responses.json")
     if ((response_count == 0)); then

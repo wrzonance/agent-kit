@@ -112,6 +112,14 @@ fetch_one() {
         die "pull request #$number returned malformed JSON"
 }
 
+# An explicitly named PR is queued by number alone; a closed PR must never
+# reach classification, where a stale mergeable:true could still read RUNNABLE.
+fetch_open_one() {
+    local number=$1 out=$2
+    fetch_one "$number" "$out"
+    [[ $(jq -r '.state' "$out") == open ]] || die "pull request #$number is not open"
+}
+
 plan_active=0
 plan_drift=0
 if [[ -n $merge_plan ]]; then
@@ -171,7 +179,7 @@ if ((plan_active == 0)); then
     if [[ -z $merge_plan || ${#explicit_prs[@]} -gt 0 ]]; then
         if ((${#explicit_prs[@]})); then
             for number in "${explicit_prs[@]}"; do
-                fetch_one "$number" "$work_dir/explicit-$number.json"
+                fetch_open_one "$number" "$work_dir/explicit-$number.json"
             done
             jq -s '.' "$work_dir"/explicit-*.json >"$work_dir/live.json"
         else
@@ -192,7 +200,10 @@ if ((plan_active == 0)); then
                 while IFS= read -r number; do
                     fetch_one "$number" "$work_dir/discovered-$number.json"
                 done < <(jq -r '.[]' "$work_dir/candidate-numbers.json")
-                jq -s '.' "$work_dir"/discovered-*.json >"$work_dir/live.json"
+                # Defensive: the list query already selected state=open, but a
+                # candidate can close between that read and this fetch.
+                jq -s 'map(select(.state == "open"))' "$work_dir"/discovered-*.json \
+                    >"$work_dir/live.json"
             fi
         fi
     fi

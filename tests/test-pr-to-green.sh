@@ -52,8 +52,14 @@ assert_not_contains "$text" '@coderabbitai full review' \
     'coordinator contains no raw provider trigger'
 assert_not_contains "$text" 'gh pr ready' 'coordinator contains no raw ready transition'
 
-invokers=$(rg -l 'review-transition\.sh' "$skills" --glob '!pr-to-green/scripts/review-transition.sh' || true)
-assert_eq "$skill" "$invokers" 'only pr-to-green invokes the transition engine'
+if command -v rg >/dev/null 2>&1; then
+    invokers=$(rg -l 'review-transition\.sh' "$skills" --glob '!pr-to-green/scripts/review-transition.sh' || true)
+    assert_eq "$skill" "$invokers" 'only pr-to-green invokes the transition engine'
+else
+    invokers=$(grep -rl 'review-transition\.sh' "$skills" 2>/dev/null |
+        grep -v '/pr-to-green/scripts/review-transition\.sh$' || true)
+    assert_eq "$skill" "$invokers" 'only pr-to-green invokes the transition engine (grep fallback: rg unavailable)'
+fi
 
 assert_eq yes "$(test -x "$skills/pr-to-green/scripts/pr-queue.sh" && printf yes || printf no)" \
     'queue helper ships executable'

@@ -3,8 +3,12 @@
 set -euo pipefail
 umask 077
 
-if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
-    printf '%s: requires Bash >= 4\n' "${0##*/}" >&2
+# Empty-array "${arr[@]}" expansions under `set -u` (used throughout below)
+# error before Bash 4.4, not just before 4.
+if [[ -z ${BASH_VERSION:-} ]] ||
+    ! { (( ${BASH_VERSINFO[0]:-0} > 4 )) ||
+        { (( ${BASH_VERSINFO[0]:-0} == 4 )) && (( ${BASH_VERSINFO[1]:-0} >= 4 )); }; }; then
+    printf '%s: requires Bash >= 4.4\n' "${0##*/}" >&2
     exit 2
 fi
 
@@ -29,11 +33,14 @@ work_dir=''
 plan_resolved=0
 declare -a providers=()
 declare -A modes=()
+declare -A emitted=()
 
 die() {
     if ((plan_resolved)); then
         local blocked_provider
         for blocked_provider in "${providers[@]}"; do
+            [[ -z ${emitted[$blocked_provider]+set} ]] ||
+                continue
             printf 'provider=%s result=BLOCKED\n' "$blocked_provider"
         done
     fi
@@ -218,9 +225,11 @@ provider_spent() {
 for provider in "${providers[@]}"; do
     case ${modes[$provider]} in
         disabled)
+            emitted[$provider]=1
             printf 'provider=%s result=DISABLED\n' "$provider"
             ;;
         observe-only)
+            emitted[$provider]=1
             printf 'provider=%s result=OBSERVE_ONLY\n' "$provider"
             ;;
         triggerable)
@@ -228,9 +237,18 @@ for provider in "${providers[@]}"; do
                 die "triggerable provider has no request marker: $provider"
             request_body=$(review_provider_request "$provider") ||
                 die "triggerable provider has no request body: $provider"
+            # Checked against the first fetch, before any bounded wait: a
+            # provider whose budget is already spent has nothing left to poll
+            # for, so this must not burn rounds*interval finding that out.
+            fetch_provider_evidence
+            if provider_spent "$provider"; then
+                emitted[$provider]=1
+                printf 'provider=%s result=ALREADY_SPENT\n' "$provider"
+                continue
+            fi
             saw_activity=0
             for ((round = 1; round <= rounds; round++)); do
-                fetch_provider_evidence
+                ((round == 1)) || fetch_provider_evidence
                 if provider_current_activity "$provider"; then
                     saw_activity=1
                     break
@@ -238,11 +256,8 @@ for provider in "${providers[@]}"; do
                 ((round == rounds)) || sleep "$interval"
             done
             if ((saw_activity)); then
+                emitted[$provider]=1
                 printf 'provider=%s result=AUTO_REVIEW\n' "$provider"
-                continue
-            fi
-            if provider_spent "$provider"; then
-                printf 'provider=%s result=ALREADY_SPENT\n' "$provider"
                 continue
             fi
             body_file=$work_dir/provider-request.md
@@ -255,6 +270,7 @@ for provider in "${providers[@]}"; do
                 --body-file "$body_file") || die 'provider request posting failed'
             [[ $post_output == *'verified=exact'* ]] ||
                 die 'provider request returned no exact readback proof'
+            emitted[$provider]=1
             printf 'provider=%s result=TRIGGERED\n' "$provider"
             ;;
     esac
