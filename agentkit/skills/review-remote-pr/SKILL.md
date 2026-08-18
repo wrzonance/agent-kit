@@ -18,9 +18,12 @@ context-local. Dispatched loop agents never stall waiting for consent; root/hold
 
 **References are read once, batched, and never sized first.** When a step names a reference
 file, read it in full at that step — one batched read covering several files is ideal — and do
-not re-read it later in the run. Never probe a reference's size before reading it (`wc -l`,
-`stat`, `head`): nothing in this skill consumes a line count, and per-file sizing spends one
-root turn per file before any real work starts.
+not re-read it later in the same uninterrupted context. Read each reference once per
+uninterrupted context. If compaction/resume occurs since Step 1a and the loaded provider-rules
+content is not preserved in the resumable artifact/context, re-read provider-rules.md exactly
+once before Phase C; this is the sole exception to the ordinary no-re-read rule. Never probe a
+reference's size before reading it (`wc -l`, `stat`, `head`): nothing in this skill consumes a
+line count, and per-file sizing spends one root turn per file before any real work starts.
 
 ## Non-negotiables
 

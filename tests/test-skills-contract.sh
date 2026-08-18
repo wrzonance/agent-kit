@@ -240,8 +240,16 @@ assert_contains "$review_reference_contract" 'stat' \
     'review skill no-sizing rule names stat explicitly'
 assert_contains "$review_reference_contract" 'head' \
     'review skill no-sizing rule names head explicitly'
-assert_contains "$review_reference_contract_normalized" 'do not re-read it later in the run' \
+assert_contains "$review_reference_contract_normalized" 'do not re-read it later in the same uninterrupted context' \
     'review skill forbids duplicate reference reads'
+assert_contains "$review_reference_contract_normalized" 'Read each reference once per uninterrupted context' \
+    'review skill scopes read-once behavior to an uninterrupted context'
+assert_contains "$review_reference_contract_normalized" 'If compaction/resume occurs since Step 1a and the loaded provider-rules content is not preserved in the resumable artifact/context' \
+    'review skill names the missing resumable-content condition'
+assert_contains "$review_reference_contract_normalized" 're-read provider-rules.md exactly once before Phase C' \
+    'review skill permits one bounded post-compaction reread before Phase C'
+assert_contains "$review_reference_contract_normalized" 'sole exception to the ordinary no-re-read rule' \
+    'review skill keeps the post-compaction reread as the sole exception'
 assert_contains "$review_skill_normalized" 'Reuse that loaded content in Step 5; do not re-read it' \
     'review skill reuses provider rules instead of reading them again'
 assert_not_contains "$review_skill_text" 'in full before Step 1a and' \
