@@ -1046,31 +1046,89 @@ repo_relative_path() {
     fi
 }
 
-# Resolve a command-input token from BASE and prove where it physically lands.
-# Resolution follows symlinks, so a `..` traversal and a committed symlink that
-# leaves the tree are caught the same way: by where the path actually points,
-# never by how it is spelled. readlink -f needs every component to exist;
-# readlink -m keeps the same physical check for an input this branch has not
-# created yet, which is how a candidate join that does not exist still becomes a
-# pinned path instead of being dropped. Prints the repository-relative path.
-# Fails -- the caller emits the sentinel -- when the result is outside the
-# repository, or is the repository root itself, which names the whole tree and
-# is no more pinnable here than it is in hash_repo_input.
-resolve_command_input() {
-    local base=$1 value=$2 resolved
-    resolved=$(cd -- "$base" 2> /dev/null &&
-        (readlink -f -- "$value" 2> /dev/null || readlink -m -- "$value" 2> /dev/null)) || return 1
-    [[ -n $resolved && $resolved == "$git_top"/* ]] || return 1
-    printf '%s' "${resolved#"$git_top/"}"
-}
-
-emit_resolved_command_input() {
-    local rel
-    if rel=$(resolve_command_input "$1" "$2"); then
-        printf '%s\n' "$rel"
+# Emit a repository path, or the sentinel when it cannot be one. A path outside
+# the repository has no trunk to be compared against, and so does the repository
+# root itself: it names the whole tree, and is no more pinnable here than it is
+# in hash_repo_input.
+emit_repo_path_or_sentinel() {
+    if [[ $1 == "$git_top"/* ]]; then
+        printf '%s\n' "${1#"$git_top/"}"
     else
         printf '__external-command-input__\n'
     fi
+}
+
+# Resolve VALUE from BASE the way the kernel does, emitting every repository
+# path the resolution depends on.
+#
+# Two kinds of file decide what a command reads: the one it ends at, and every
+# symlink followed to reach it. Retarget one of those links from a tracked file
+# to another tracked file and both endpoints stay byte-identical to the trunk
+# while the command reads something else entirely -- so emitting only the final
+# target leaves the trunk gate diffing a file the command no longer opens. Every
+# link traversed is therefore emitted alongside the target.
+#
+# Links are followed ONE hop at a time, by pushing the link's own components
+# back onto the pending list. Resolving straight to the final target would skip
+# the middle of a chain, which is a tracked file an unreviewed branch can edit.
+# `..` climbs the parent of the physical path built so far, never the parent of
+# the spelling, which is what makes containment provable instead of textual --
+# and it is why the walk cannot be replaced by lexical normalisation.
+emit_command_input_path() {
+    local base=$1 value=$2 cur next comp link hops=0 cursor=0
+    local -a pending=() expansion=()
+    # The base is physical for an ordinary run, but a declared rundir may itself
+    # be spelled through a symlink, and a `..` from a logical base would climb
+    # the wrong parent.
+    cur=$(readlink -m -- "$base" 2> /dev/null) || cur=$base
+    [[ -n $cur ]] || cur=$base
+    IFS='/' read -r -a pending <<< "$value"
+    [[ $value == /* ]] && cur=/
+    # A cursor rather than a shift, and every array expansion below is reached
+    # only when that array is non-empty: Bash 4.2 under nounset treats an
+    # initialized empty array as unset while expanding it.
+    while ((cursor < ${#pending[@]})); do
+        comp=${pending[cursor]}
+        cursor=$((cursor + 1))
+        case $comp in
+            '' | .) continue ;;
+            ..)
+                cur=${cur%/*}
+                [[ -n $cur ]] || cur=/
+                continue
+                ;;
+        esac
+        if [[ $cur == / ]]; then
+            next=/$comp
+        else
+            next=$cur/$comp
+        fi
+        if [[ ! -L $next ]]; then
+            cur=$next
+            continue
+        fi
+        # A link inside the repository is pinned like any other input. One
+        # outside it decides where this input lands with content no trunk
+        # carries, which is exactly what the sentinel is for.
+        emit_repo_path_or_sentinel "$next"
+        if ((++hops > 40)) || ! link=$(readlink -- "$next" 2> /dev/null); then
+            printf '__external-command-input__\n'
+            return 0
+        fi
+        IFS='/' read -r -a expansion <<< "$link"
+        if ((${#expansion[@]})); then
+            if ((cursor < ${#pending[@]})); then
+                pending=("${expansion[@]}" "${pending[@]:cursor}")
+            else
+                pending=("${expansion[@]}")
+            fi
+            cursor=0
+        fi
+        # A relative target resolves from the link's own directory, which is the
+        # base the walk is already standing on.
+        [[ $link == /* ]] && cur=/
+    done
+    emit_repo_path_or_sentinel "$cur"
 }
 
 # An argv token names a file the command reads, and the trust fingerprint pins
@@ -1083,20 +1141,20 @@ emit_declared_path_input() {
         printf '__invalid-command-input__\n'
     elif [[ $input == /* ]]; then
         # One base only: an absolute token names the same file from anywhere.
-        emit_resolved_command_input "$git_top" "$input"
+        emit_command_input_path "$git_top" "$input"
     elif [[ $input == .. || $input == ../* || $input == */../* || $input == */.. ]]; then
         # A `..` token only makes sense from the directory the command runs in;
         # from the repository root it could only climb out. Root tooling invoked
         # from a component rundir is exactly this shape, and refusing it on the
         # spelling alone made every unattended run of such a command impossible.
-        emit_resolved_command_input "$work_dir" "$input"
+        emit_command_input_path "$work_dir" "$input"
     else
         # Genuinely ambiguous: an ad-hoc argv may be written against the
         # repository root even where a rundir is declared, so both bases stay
         # pinned and a file appearing at either one changes the fingerprint.
-        emit_resolved_command_input "$git_top" "$input"
+        emit_command_input_path "$git_top" "$input"
         [[ $work_dir == "$git_top" ]] ||
-            emit_resolved_command_input "$work_dir" "$input"
+            emit_command_input_path "$work_dir" "$input"
     fi
 }
 
