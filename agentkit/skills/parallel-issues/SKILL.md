@@ -36,7 +36,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. It implies `--trust-trunk`, so it also threads `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt. |
 | `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
-| `--auto-review` | `--auto-approve` | Standing consent, for this invocation, to send diffs to the peer CLI's provider for adversarial review. The grant covers whichever session invokes the peer CLI: the root orchestrator and every dispatched review agent alike. |
+| `--auto-review` | `--auto-approve` | Standing consent for this invocation's diff review. The consent-bearing review launch stays in the consent-holding context (root by default); dispatched loops do not launch it. |
 | `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
@@ -76,14 +76,13 @@ grants nothing beyond the cross-provider send described in `review-remote-pr`. I
 not skip brainstorm, does not skip approval, and does not extend to a repository the
 user does not own.
 
-**The grant names its holders.** `--auto-review` authorizes the *invocation*, not one
-process: the root orchestrator taking the root-owned review fallback and any dispatched
-review agent launching the peer CLI both act under the same grant, and neither stops for
-a second consent round trip. Harness-level approval layers judge only the command in
-front of them, so make the authorization legible at the launch site: carry the ledger
-`RUN_ID`, the recorded consent decision, and the user's verbatim invocation quote (with
-`--auto-review`) inline in the block that launches the reviewer. A harness denial that
-still occurs is surfaced to the user as a direct question — never routed around.
+**Consent-bearing review launch stays in the consent-holding context.** Typed approval is
+context-local and cannot cross a prompt, ledger, or tool boundary. Root is the default holder;
+dispatched review agents do not launch the reviewer and dispatched loop agents never stall waiting
+for consent they structurally cannot hold. They run CI, precheck, and triage around the root-owned
+send; another holder launches and returns the result. Keep `RUN_ID`, the consent record, and the
+verbatim `--auto-review` quote at the launch site so harness denials surface directly, never via a
+workaround.
 
 ## Session decision ledger
 
@@ -871,9 +870,10 @@ oracle line, and launch no reviewer. `verdict=material` — any file touching ex
 logic, workflow, authorization, or persistence — proceeds to the full review. Either way the
 decision is recorded; a skip records *why*, never silence.
 
-When forwarding launch grants to a root-owned review orchestration, pass `--auto-review` ONLY
-when this parallel-issues invocation carried it; otherwise pass no review grant. A dispatched
-worker cannot see the outer invocation, so adding the grant without it has manufactured their consent.
+The root-owned orchestration uses `--auto-review` ONLY when this invocation carried it; otherwise it
+obtains interactive approval in the consent-holding context. Do not forward the flag or record to a
+loop: a relayed grant manufactures child-context consent. The loop prechecks, hands launch-ready
+state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
 
@@ -899,18 +899,18 @@ This dispatch-time counter is the enforcement point, not a post-hoc report.
 
 ### Adversarial-review receipt:
 
-Every dispatched `review-remote-pr` loop must run `post-receipt.sh precheck` before launching
-either reviewer, against the fetched PR conversation artifact
+Every dispatched `review-remote-pr` loop must run `post-receipt.sh precheck` before handing off to
+the consent-holding context, against the fetched PR conversation artifact
 `$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker already present means
 `adversarial review budget spent`, do not rerun. A missing/unreadable artifact is evidence
 unavailable, not an empty comment set — a completed review or verified skip without the receipt
 below is a **no-silent-skip** failure and cannot be handed off as draft-phase-complete. Materiality,
-consent, exit codes, monitoring, and the blind fallback are
+consent-holder ownership, exit codes, monitoring, and the blind fallback are
 `review-remote-pr`'s [references/adversarial-review.md](../review-remote-pr/references/adversarial-review.md)
-contract; this loop's own obligation is running precheck before launch and publish after fixes.
+contract; this loop runs precheck before root launch and publishes after root returns the result.
 
 ```bash
-# The loop runs this before reviewer launch, using the Step 1 artifact.
+# The loop runs this before handing the launch to root, using the Step 1 artifact.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
