@@ -3,8 +3,7 @@
 # gh-pr-state.sh — one dense command reporting everything the PR-review loop
 # needs to know about a pull request.
 #
-# It replaces the repeated poll cluster
-#   gh pr view N --json commits,isDraft,mergeable && gh pr checks N || true
+# It replaces the repeated poll cluster of PR metadata plus checks calls
 # which was run over and over. That cluster dumped a full commits array (author
 # emails, node ids, message bodies) that nothing consumed, and cost two separate
 # command approvals per poll. This makes one pass and prints a fixed-shape
@@ -75,6 +74,7 @@ HEAD_REF=""
 BASE_REF=""
 BASE_BEHIND=""
 BASE_STATUS=unknown
+THREADS_AVAILABLE=1
 
 usage() {
     cat <<EOF
@@ -89,7 +89,7 @@ Required:
 
 Options:
   --repo OWNER/REPO      Repository. Default: derived from the current checkout
-                         via 'gh repo view'.
+                         from the current checkout's origin remote.
   --digest               Print the digest only (default).
   --full                 Also write the durable artifacts later steps read, as
                          DIR/pr_N_{reviews,comments,issue_comments,threads,
@@ -208,9 +208,23 @@ validate_args() {
 
 resolve_repo() {
     [[ -n $REPO ]] && return 0
-    REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) ||
+    local remote
+    remote=$(git remote get-url origin 2>/dev/null) ||
         die "could not derive OWNER/REPO from the current directory; pass --repo OWNER/REPO"
-    [[ -n $REPO ]] || die "gh repo view returned an empty repository name; pass --repo OWNER/REPO"
+    case $remote in
+        https://github.com/*|http://github.com/*|ssh://git@github.com/*)
+            REPO=${remote#*github.com/}
+            ;;
+        git@github.com:*)
+            REPO=${remote#git@github.com:}
+            ;;
+        *)
+            die "could not derive OWNER/REPO from the current directory; pass --repo OWNER/REPO"
+            ;;
+    esac
+    REPO=${REPO%.git}
+    [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+        die "could not derive OWNER/REPO from the current directory; pass --repo OWNER/REPO"
     return 0
 }
 
@@ -220,13 +234,35 @@ first_error() {
     tr '\n' ' ' <"$WORK_DIR/err" | cut -c1-300
 }
 
-# Deliberately does NOT request 'commits': it dumps author emails, node ids and
-# message bodies on every poll and nothing downstream consumes them.
+# REST pull-request metadata and check runs are normalized to the internal
+# digest shape. The former gh pr view call used GraphQL for data REST already
+# serves, and statusCheckRollup mixed check-run and status-context objects.
 fetch_meta() {
-    gh pr view "$PR" --repo "$REPO" \
-        --json number,isDraft,mergeable,headRefName,headRefOid,baseRefName,statusCheckRollup \
-        >"$WORK_DIR/pr.json" 2>"$WORK_DIR/err" ||
-        die "gh pr view failed for $REPO#$PR: $(first_error)"
+    local head_sha
+    gh api "repos/$REPO/pulls/$PR" \
+        >"$WORK_DIR/pr-raw.json" 2>"$WORK_DIR/err" ||
+        die "gh api pull request failed for $REPO#$PR: $(first_error)"
+    head_sha=$(jq -er '.head.sha // empty' <"$WORK_DIR/pr-raw.json" 2>/dev/null) ||
+        die "REST pull request metadata has no head SHA for $REPO#$PR"
+    gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" --paginate \
+        >"$WORK_DIR/check-runs.raw" 2>"$WORK_DIR/err" ||
+        die "gh api check runs failed for $REPO#$PR: $(first_error)"
+    if ! jq -n --slurpfile pr "$WORK_DIR/pr-raw.json" \
+        --slurpfile pages "$WORK_DIR/check-runs.raw" '
+        $pr[0] as $p
+        | {
+            number: $p.number,
+            isDraft: ($p.draft // false),
+            mergeable: (if $p.mergeable == true then "MERGEABLE"
+                        elif $p.mergeable == false then "CONFLICTING"
+                        else "UNKNOWN" end),
+            headRefName: ($p.head.ref // ""),
+            headRefOid: ($p.head.sha // ""),
+            baseRefName: ($p.base.ref // ""),
+            statusCheckRollup: [$pages[]? | .check_runs[]?]
+          }' >"$WORK_DIR/pr.json"; then
+        preserve_raw_and_die "could not normalize REST pull-request metadata for $REPO#$PR"
+    fi
     return 0
 }
 
@@ -247,7 +283,7 @@ fetch_base_state() {
         note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): $(first_error)"
         return 0
     fi
-    BASE_BEHIND=$(jq -r '.behind_by // empty' <"$WORK_DIR/base.json") || {
+    BASE_BEHIND=$(jq -r '.behind_by? // empty' <"$WORK_DIR/base.json") || {
         note "base comparison unavailable for $REPO ($BASE_REF...$head_ref): invalid JSON"
         BASE_BEHIND=""
         return 0
@@ -298,12 +334,20 @@ fetch_threads() {
     }
   }
 }'
-    gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query="$query" \
-        >"$WORK_DIR/threads.json" 2>"$WORK_DIR/err" ||
-        die "GraphQL reviewThreads query failed for $REPO#$PR: $(first_error)"
+    # routing-allow: review-threads -- isResolved and thread comments have no REST equivalent
+    if ! gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query="$query" \
+        >"$WORK_DIR/threads.json" 2>"$WORK_DIR/err"; then
+        THREADS_AVAILABLE=0
+        note "review-thread data unavailable for $REPO#$PR (named wait: GraphQL review-thread reset; continuing without thread data): $(first_error)"
+        jq -cn '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}' \
+            >"$WORK_DIR/threads.json" || die 'could not write unavailable thread evidence'
+        return 0
+    fi
     if ! jq -e '.data.repository.pullRequest.reviewThreads' <"$WORK_DIR/threads.json" >/dev/null; then
-        preserve_raw_and_die \
-            "GraphQL returned no reviewThreads for $REPO#$PR (check the PR number and gh auth)"
+        THREADS_AVAILABLE=0
+        note "review-thread data unavailable for $REPO#$PR (named wait: GraphQL review-thread reset; response had no reviewThreads; continuing without thread data)"
+        jq -cn '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}' \
+            >"$WORK_DIR/threads.json" || die 'could not write unavailable thread evidence'
     fi
     return 0
 }
@@ -538,6 +582,17 @@ print_base_line() {
 print_thread_lines() {
     local cq cr human generic known type_bot suffix human_signal trunc doc eligible
     local nits reviews_n issues_n unhandled
+    if ((THREADS_AVAILABLE == 0)); then
+        printf 'threads: unavailable (GraphQL review-thread capability)\n'
+        printf 'classification: unavailable (GraphQL review-thread capability)\n'
+        reviews_n=$(nitpick_count "$WORK_DIR/reviews.json")
+        issues_n=$(nitpick_count "$WORK_DIR/issue_comments.json")
+        nits=$((reviews_n + issues_n))
+        printf 'nitpicks: %s unhandled\n' "$nits"
+        printf 'agent-docs: unavailable (GraphQL review-thread capability)\n'
+        ((nits)) && printf 'next: nitpicks=%s -> fix if trivial or decline (Step 5)\n' "$nits"
+        return 0
+    fi
     IFS=$'\t' read -r cq cr human generic known type_bot suffix human_signal trunc doc eligible \
         < <(thread_counts)
     if ((trunc)); then

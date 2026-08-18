@@ -408,8 +408,10 @@ assert_eq 1 "$state_rc" 'gh-pr-state rejects shared /tmp for durable artifacts'
 assert_contains "$(cat -- "$state_err")" '0700' 'gh-pr-state names the private directory requirement'
 
 gh() {
-    if [[ ${1:-} == pr && ${2:-} == view ]]; then
-        printf '%s\n' '{"number":1,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/test","headRefOid":"deadbeef","statusCheckRollup":[]}'
+    if [[ ${1:-} == api && ${2:-} == repos/owner/repo/pulls/1 ]]; then
+        printf '%s\n' '{"number":1,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"deadbeef"},"base":{"ref":"main"}}'
+    elif [[ ${1:-} == api && ${2:-} == repos/owner/repo/commits/deadbeef/check-runs* ]]; then
+        printf '%s\n' '{"check_runs":[]}'
     elif [[ ${1:-} == api && ${2:-} == graphql ]]; then
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
     else

@@ -13,8 +13,11 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":14,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/test","headRefOid":"abcdef0123456789","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"coderabbitai","status":"IN_PROGRESS"},{"name":"lint","status":"COMPLETED","conclusion":"FAILURE"}]}'
+    *" api repos/owner/repo/pulls/14 "*)
+        printf '%s\n' '{"number":14,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"abcdef0123456789"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/abcdef0123456789/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"},{"name":"coderabbitai","status":"in_progress"},{"name":"lint","status":"completed","conclusion":"failure"}]}'
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
@@ -67,8 +70,11 @@ cat >"$tmp/case-stale-base/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":77,"isDraft":false,"mergeable":"MERGEABLE","headRefName":"feat/child","headRefOid":"childsha","baseRefName":"main","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+    *" api repos/owner/repo/pulls/77 "*)
+        printf '%s\n' '{"number":77,"draft":false,"mergeable":true,"head":{"ref":"feat/child","sha":"childsha"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/childsha/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
         ;;
     *"compare/main...feat/child"*)
         printf '%s\n' '{"status":"behind","ahead_by":1,"behind_by":1,"total_commits":2,"commits":[]}'
@@ -91,7 +97,7 @@ assert_contains "$stale_base_output" 'base: ref=main behind=1 stale=yes' \
 # A stale ancestry signal must not mask a pending check.
 mkdir -p "$tmp/case-stale-pending"
 cp "$tmp/case-stale-base/gh" "$tmp/case-stale-pending/gh"
-sed -i 's/"status":"COMPLETED","conclusion":"SUCCESS"/"status":"IN_PROGRESS"/' "$tmp/case-stale-pending/gh"
+sed -i 's/"status":"completed","conclusion":"success"/"status":"in_progress"/' "$tmp/case-stale-pending/gh"
 stale_pending_output=$(PATH="$tmp/case-stale-pending:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 77 --repo owner/repo)
 assert_contains "$stale_pending_output" 'ci=0/1 pending pending=1 failing=0' \
@@ -103,8 +109,11 @@ cat >"$tmp/case-base-unavailable/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":78,"isDraft":false,"mergeable":"UNKNOWN","headRefName":"feat/child","headRefOid":"childsha","baseRefName":"deleted-parent","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+    *" api repos/owner/repo/pulls/78 "*)
+        printf '%s\n' '{"number":78,"draft":false,"mergeable":null,"head":{"ref":"feat/child","sha":"childsha"},"base":{"ref":"deleted-parent"}}'
+        ;;
+    *" api repos/owner/repo/commits/childsha/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
         ;;
     *"compare/deleted-parent...feat/child"*)
         printf '%s\n' 'base branch not found' >&2
@@ -135,8 +144,11 @@ cat >"$tmp/case-reviewed/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":99,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/x","headRefOid":"1111111111","statusCheckRollup":[]}'
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
@@ -159,8 +171,11 @@ cat >"$tmp/case-rate-limited/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":99,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/x","headRefOid":"1111111111","statusCheckRollup":[]}'
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
@@ -183,8 +198,11 @@ cat >"$tmp/case-stale-then-rate-limited/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":99,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/x","headRefOid":"1111111111","statusCheckRollup":[]}'
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
@@ -209,8 +227,11 @@ cat >"$tmp/case-agent-docs/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":99,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/x","headRefOid":"1111111111","statusCheckRollup":[]}'
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
@@ -257,8 +278,11 @@ cat >"$tmp/case-all-zero/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-    *" pr view "*)
-        printf '%s\n' '{"number":99,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/x","headRefOid":"1111111111","statusCheckRollup":[]}'
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
@@ -300,5 +324,41 @@ assert_eq '' "$missing_parser_output" 'missing jq emits no empty digest'
 assert_contains "$(cat "$tmp/missing-parser.err")" 'jq' 'missing parser error names jq'
 assert_contains "$(cat "$tmp/missing-parser.err")" 'evidence unavailable' \
     'missing parser error says evidence is unavailable'
+
+# A depleted GraphQL pool must only remove thread data; REST metadata, checks,
+# comments, and the digest remain available.
+mkdir -p "$tmp/case-graphql-dead"
+cat >"$tmp/case-graphql-dead/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/404 "*)
+        printf '%s\n' '{"number":404,"draft":true,"mergeable":true,"head":{"ref":"feat/rest","sha":"2222222222"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/2222222222/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api graphql "*)
+        printf '%s\n' 'API rate limit exceeded: graphql remaining=0' >&2
+        exit 1
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-graphql-dead/gh"
+graphql_dead_err="$tmp/graphql-dead.err"
+graphql_dead_output=$(PATH="$tmp/case-graphql-dead:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 404 --repo owner/repo 2>"$graphql_dead_err")
+assert_contains "$graphql_dead_output" 'pr=404 draft=true mergeable=MERGEABLE head=feat/rest sha=2222222' \
+    'REST metadata still produces a digest when GraphQL is depleted'
+assert_contains "$graphql_dead_output" 'ci=1/1 green pending=0 failing=0' \
+    'REST check runs still produce CI counts when GraphQL is depleted'
+assert_contains "$graphql_dead_output" 'threads: unavailable' \
+    'thread data is explicitly marked unavailable when GraphQL is depleted'
+assert_contains "$(cat "$graphql_dead_err")" 'review-thread data unavailable' \
+    'GraphQL depletion names the isolated review-thread capability'
+assert_contains "$(cat "$graphql_dead_err")" 'named wait: GraphQL review-thread reset' \
+    'GraphQL depletion reports the bounded named wait for that capability'
 
 finish
