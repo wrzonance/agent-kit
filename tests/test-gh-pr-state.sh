@@ -19,6 +19,9 @@ case " $* " in
     *" api repos/owner/repo/commits/abcdef0123456789/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"},{"name":"coderabbitai","status":"in_progress"},{"name":"lint","status":"completed","conclusion":"failure"}]}'
         ;;
+    *" api repos/owner/repo/commits/abcdef0123456789/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"advanced security","author":{"login":"github-advanced-security[bot]","__typename":"Bot"}}]}},
@@ -360,5 +363,32 @@ assert_contains "$(cat "$graphql_dead_err")" 'review-thread data unavailable' \
     'GraphQL depletion names the isolated review-thread capability'
 assert_contains "$(cat "$graphql_dead_err")" 'named wait: GraphQL review-thread reset' \
     'GraphQL depletion reports the bounded named wait for that capability'
+
+# Legacy commit-status contexts are part of the CI contract too. A failing and
+# pending context must survive REST normalization and affect the digest.
+mkdir -p "$tmp/case-legacy-status"
+cat >"$tmp/case-legacy-status/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/505 "*)
+        printf '%s\n' '{"number":505,"draft":false,"mergeable":true,"head":{"ref":"feat/status","sha":"5050505050"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/5050505050/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
+        ;;
+    *" api repos/owner/repo/commits/5050505050/status"*)
+        printf '%s\n' '{"statuses":[{"context":"required/legacy","state":"failure"},{"context":"deploy/pending","state":"pending"}]}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *" graphql "*) printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-legacy-status/gh"
+legacy_status_output=$(PATH="$tmp/case-legacy-status:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 505 --repo owner/repo)
+assert_contains "$legacy_status_output" 'ci=0/2 failing pending=1 failing=1' \
+    'failing and pending legacy commit statuses affect CI counts'
 
 finish

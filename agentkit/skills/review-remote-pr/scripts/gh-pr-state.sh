@@ -247,8 +247,12 @@ fetch_meta() {
     gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" --paginate \
         >"$WORK_DIR/check-runs.raw" 2>"$WORK_DIR/err" ||
         die "gh api check runs failed for $REPO#$PR: $(first_error)"
+    gh api "repos/$REPO/commits/$head_sha/status?per_page=100" --paginate \
+        >"$WORK_DIR/status.raw" 2>"$WORK_DIR/err" ||
+        die "gh api commit statuses failed for $REPO#$PR: $(first_error)"
     if ! jq -n --slurpfile pr "$WORK_DIR/pr-raw.json" \
-        --slurpfile pages "$WORK_DIR/check-runs.raw" '
+        --slurpfile pages "$WORK_DIR/check-runs.raw" \
+        --slurpfile status_pages "$WORK_DIR/status.raw" '
         $pr[0] as $p
         | {
             number: $p.number,
@@ -259,7 +263,11 @@ fetch_meta() {
             headRefName: ($p.head.ref // ""),
             headRefOid: ($p.head.sha // ""),
             baseRefName: ($p.base.ref // ""),
-            statusCheckRollup: [$pages[]? | .check_runs[]?]
+            statusCheckRollup: (
+              [$pages[]? | select(type == "object") | .check_runs[]?]
+              + [$status_pages[]? | select(type == "object") | .statuses[]?
+                 | {name: (.context // ""), state: (.state // "")}]
+            )
           }' >"$WORK_DIR/pr.json"; then
         preserve_raw_and_die "could not normalize REST pull-request metadata for $REPO#$PR"
     fi
