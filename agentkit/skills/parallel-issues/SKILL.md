@@ -533,6 +533,7 @@ chain_base_sha="${chain_base_sha:-}"
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
 setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
+if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then setup_args+=(--yolo); fi
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
