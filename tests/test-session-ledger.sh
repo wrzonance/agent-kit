@@ -58,10 +58,18 @@ assert_rc 0 'append preserves JSON punctuation in a quote' -- "$script" append \
     --skills-path "$skills_path" --procedure-set parallel-issues \
     --scope 'board adjudication' --quote 'Use "Ready" -> "In progress".'
 assert_eq '2' "$(wc -l < "$ledger" | tr -d ' ')" 'the punctuation quote remains one record'
-assert_rc 2 'append rejects a multiline quote' -- "$script" append \
+multiline_error=''
+multiline_rc=0
+multiline_error=$("$script" append \
     --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
     --skills-path "$skills_path" --procedure-set parallel-issues \
-    --scope 'board adjudication' --quote $'line one\nline two'
+    --scope 'board adjudication' --quote $'line one\nline two' 2>&1) || multiline_rc=$?
+assert_eq 2 "$multiline_rc" 'append rejects a multiline quote'
+assert_contains "$multiline_error" \
+    'collapse to one line, preserving the words verbatim' \
+    'multiline quote rejection tells the caller how to preserve its wording'
+assert_contains "$multiline_error" 'Usage:' \
+    'multiline quote rejection includes the append usage recipe'
 assert_eq '2' "$(wc -l < "$ledger" | tr -d ' ')" 'rejected input does not alter the ledger'
 
 # A ledger is not a secret store. Reject common credential-shaped material in

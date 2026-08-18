@@ -96,7 +96,7 @@ EOF
 
 die_usage() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    printf 'run "%s --help" for usage\n' "$PROGNAME" >&2
+    usage >&2
     exit 2
 }
 

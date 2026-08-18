@@ -46,8 +46,12 @@ cross_state="$state_dir/cross-repo-record"
 assert_rc 10 'consent granted for one repository does not check out for another' -- \
     /bin/bash "$script" check --state "$cross_state" --provider anthropic \
     --payload "$other_repo_payload"
-assert_rc 2 'payload refuses a missing repository' -- \
-    /bin/bash "$script" payload --pr 24 --diff "$diff_one"
+missing_repo_error=''
+missing_repo_rc=0
+missing_repo_error=$(/bin/bash "$script" payload --pr 24 --diff "$diff_one" 2>&1) || missing_repo_rc=$?
+assert_eq 2 "$missing_repo_rc" 'payload refuses a missing repository'
+assert_contains "$missing_repo_error" 'Usage:' \
+    'missing repository rejection includes a copyable payload recipe'
 assert_rc 2 'payload refuses a repository carrying the payload delimiter' -- \
     /bin/bash "$script" payload --repo 'acme/wid:get' --pr 24 --diff "$diff_one"
 
@@ -87,9 +91,13 @@ assert_rc 10 'the prior payload is not reusable after replacement' -- \
 # There is no implicit yes/auto-grant path, and invalid source values do not
 # alter an existing record.
 before=$(<"$state")
-assert_rc 2 'grant rejects an unrecognized source' -- \
-    /bin/bash "$script" grant --state "$state" --provider anthropic \
-    --payload "$payload_one" --source yes
+invalid_source_error=''
+invalid_source_rc=0
+invalid_source_error=$(/bin/bash "$script" grant --state "$state" --provider anthropic \
+    --payload "$payload_one" --source yes 2>&1) || invalid_source_rc=$?
+assert_eq 2 "$invalid_source_rc" 'grant rejects an unrecognized source'
+assert_contains "$invalid_source_error" 'Usage:' \
+    'invalid source rejection includes a copyable grant recipe'
 assert_eq "$before" "$(<"$state")" 'invalid source leaves the existing record unchanged'
 assert_rc 2 'grant rejects a --yes shortcut' -- \
     /bin/bash "$script" grant --state "$state" --provider anthropic \

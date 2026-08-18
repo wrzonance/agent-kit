@@ -39,7 +39,15 @@ die() {
     exit "${2:-1}"
 }
 
-die_usage() { die "$1" 2; }
+die_usage() {
+    local message=$1
+    if [[ $message == '--quote must be a single line' ]]; then
+        message="$message; collapse to one line, preserving the words verbatim"
+    fi
+    printf '%s: %s\n' "$PROGRAM" "$message" >&2
+    usage >&2
+    exit 2
+}
 die_evidence() { die "$1" 1; }
 
 require_value() {
