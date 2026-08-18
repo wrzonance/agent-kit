@@ -346,16 +346,18 @@ fetch_threads() {
     if ! gh api graphql -F owner="$owner" -F name="$name" -F pr="$PR" -f query="$query" \
         >"$WORK_DIR/threads.json" 2>"$WORK_DIR/err"; then
         THREADS_AVAILABLE=0
+        if ((WANT_FULL)); then
+            preserve_raw_and_die \
+                "review-thread data unavailable for $REPO#$PR; --full cannot publish durable artifacts without GraphQL evidence: $(first_error)"
+        fi
         note "review-thread data unavailable for $REPO#$PR (named wait: GraphQL review-thread reset; continuing without thread data): $(first_error)"
         jq -cn '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}' \
             >"$WORK_DIR/threads.json" || die 'could not write unavailable thread evidence'
         return 0
     fi
     if ! jq -e '.data.repository.pullRequest.reviewThreads' <"$WORK_DIR/threads.json" >/dev/null; then
-        THREADS_AVAILABLE=0
-        note "review-thread data unavailable for $REPO#$PR (named wait: GraphQL review-thread reset; response had no reviewThreads; continuing without thread data)"
-        jq -cn '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}' \
-            >"$WORK_DIR/threads.json" || die 'could not write unavailable thread evidence'
+        preserve_raw_and_die \
+            "GraphQL returned no reviewThreads for $REPO#$PR (check the PR number and gh auth)"
     fi
     return 0
 }
@@ -593,12 +595,8 @@ print_thread_lines() {
     if ((THREADS_AVAILABLE == 0)); then
         printf 'threads: unavailable (GraphQL review-thread capability)\n'
         printf 'classification: unavailable (GraphQL review-thread capability)\n'
-        reviews_n=$(nitpick_count "$WORK_DIR/reviews.json")
-        issues_n=$(nitpick_count "$WORK_DIR/issue_comments.json")
-        nits=$((reviews_n + issues_n))
-        printf 'nitpicks: %s unhandled\n' "$nits"
+        printf 'nitpicks: unavailable (GraphQL review-thread capability; de-duplication unknown)\n'
         printf 'agent-docs: unavailable (GraphQL review-thread capability)\n'
-        ((nits)) && printf 'next: nitpicks=%s -> fix if trivial or decline (Step 5)\n' "$nits"
         return 0
     fi
     IFS=$'\t' read -r cq cr human generic known type_bot suffix human_signal trunc doc eligible \

@@ -363,6 +363,57 @@ assert_contains "$(cat "$graphql_dead_err")" 'review-thread data unavailable' \
     'GraphQL depletion names the isolated review-thread capability'
 assert_contains "$(cat "$graphql_dead_err")" 'named wait: GraphQL review-thread reset' \
     'GraphQL depletion reports the bounded named wait for that capability'
+assert_contains "$graphql_dead_output" 'nitpicks: unavailable' \
+    'unavailable thread data makes nitpick de-duplication explicitly unavailable'
+assert_not_contains "$graphql_dead_output" 'next: nitpicks' \
+    'unavailable thread data never emits an actionable nitpick hint'
+
+# Durable --full artifacts must fail closed when the GraphQL capability is
+# unavailable; a synthetic empty threads artifact would be ambiguous downstream.
+full_dead_root="$tmp/full-dead"
+mkdir -- "$full_dead_root"
+chmod 700 -- "$full_dead_root"
+full_dead_err="$tmp/full-dead.err"
+set +e
+full_dead_output=$(PATH="$tmp/case-graphql-dead:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 404 --repo owner/repo --full --tmpdir "$full_dead_root" 2>"$full_dead_err")
+full_dead_rc=$?
+set -e
+assert_eq 1 "$full_dead_rc" '--full fails closed when GraphQL thread data is unavailable'
+assert_not_contains "$full_dead_output" 'saved:' '--full does not report durable artifacts after thread failure'
+assert_eq no "$( [[ -e "$full_dead_root/pr_404_threads.json" ]] && printf yes || printf no )" \
+    '--full never publishes a synthetic empty threads artifact'
+
+# A successful GraphQL response with a missing reviewThreads field is malformed,
+# not a rate-limit capability outage, and must preserve raw evidence.
+mkdir -p "$tmp/case-graphql-malformed"
+cat >"$tmp/case-graphql-malformed/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/707 "*)
+        printf '%s\n' '{"number":707,"draft":true,"mergeable":true,"head":{"ref":"feat/malformed","sha":"7070707070"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/7070707070/check-runs"*) printf '%s\n' '{"check_runs":[]}' ;;
+    *" api repos/owner/repo/commits/7070707070/status"*) printf '%s\n' '{"statuses":[]}' ;;
+    *" graphql "*) printf '%s\n' '{"data":{"repository":{"pullRequest":{}}}}' ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-graphql-malformed/gh"
+malformed_err="$tmp/graphql-malformed.err"
+set +e
+malformed_output=$(PATH="$tmp/case-graphql-malformed:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 707 --repo owner/repo 2>"$malformed_err")
+malformed_rc=$?
+set -e
+assert_eq 1 "$malformed_rc" 'a malformed successful GraphQL response fails closed'
+assert_eq '' "$malformed_output" 'a malformed GraphQL response emits no digest'
+assert_contains "$(cat "$malformed_err")" 'no reviewThreads' \
+    'malformed GraphQL evidence names the missing reviewThreads field'
+assert_contains "$(cat "$malformed_err")" 'raw evidence preserved' \
+    'malformed GraphQL evidence preserves the raw response for diagnosis'
 
 # Legacy commit-status contexts are part of the CI contract too. A failing and
 # pending context must survive REST normalization and affect the digest.
