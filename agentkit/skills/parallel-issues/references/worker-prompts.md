@@ -3,6 +3,7 @@
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
+- [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
 - [Fix-batch worker prompt](#fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker
 
 Read this before dispatching any worker in `parallel-issues`, or before the root publishes a
@@ -321,6 +322,18 @@ of `--base "$base"`) and keep the `Stacked on #<PR>` disclosure in the approved 
 section. GitHub's closing keyword is dormant while the PR is stacked; after the predecessor
 merges, use `chain-advance.sh --retarget` and require its linkage proof before merging.
 
+### Diff-size disclosure
+
+Before composing the Decisions section, fold `diff-facts.sh`'s full output for the pushed
+branch's base (the chain base for a chained issue) into the Decisions file verbatim — the
+call is folded into the composition recipe below, immediately after `pr_decisions_file` and
+the resolver are established, so it never runs ahead of the variables it reads.
+
+This is disclosure, not a gate: a packet whose `operational.lines` exceeds any guideline
+still gets the same draft PR a small one gets. Re-cutting or trimming a finished, review-clear
+workstream is never an unattended default — it is an attended decision, or an explicit
+follow-up instruction from the human reviewing the draft.
+
 ```text
 Stacked on #__BASE_PR__ — merge that PR first. Agent-driven merges run
 `chain-advance.sh --retarget --pr <this-PR> --base <default>` and require its full proof before
@@ -340,6 +353,8 @@ pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
 default_branch=${default_branch:?set the repository default branch}
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
+    --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
 "$agentkit/parallel-issues/scripts/compose-pr-body.sh" \
   --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
   --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \

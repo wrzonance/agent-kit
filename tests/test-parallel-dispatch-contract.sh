@@ -818,6 +818,68 @@ out=$("$cap_helper" --config "$codex_home/config.toml" 2>/dev/null)
 assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
 
+# --- issue #273: size facts never park an unattended run --------------------
+# The 2026-08-18 cable-tool incident: a worker finished (implemented,
+# committed, pushed, tests green) and the root dead-ended one step short of
+# the draft PR, inventing a "fastlane" size gate the kit never declared. The
+# fix states the unattended default at both places the incident touched: the
+# Diff-size facts section (the flag/fact contract) and the Collect
+# completion-report bullet (the exact spine point between a finished worker
+# and PR creation). The disclosure recipe itself lives in worker-prompts.md,
+# not the body, per the strong preference to land detail in references.
+assert_contains "$text" 'Size facts never park an unattended run' \
+    'diff-size facts state the unattended default explicitly'
+assert_contains "$text" 'never authorize skipping' \
+    'diff-size facts still forbid skipping review or chunking on facts alone'
+assert_contains "$text" 'references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure)' \
+    'diff-size facts point at the worker-prompts disclosure recipe'
+assert_contains "$text" 'Diff size is never a reason to withhold this' \
+    'the Collect completion-report bullet carries the same no-park rule'
+assert_contains "$worker_prompts_text" '### Diff-size disclosure' \
+    'worker-prompts.md carries the diff-size disclosure subsection'
+assert_contains "$worker_prompts_text" '"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"' \
+    'the disclosure recipe runs diff-facts.sh against the worktree'
+assert_contains "$worker_prompts_text" '--base "${chain_base_sha:-origin/$base}"' \
+    'the disclosure recipe pins the chain base for a chained issue'
+assert_contains "$worker_prompts_text" '>> "$pr_decisions_file"' \
+    'the disclosure recipe folds facts into the Decisions section, not a separate gate'
+assert_contains "$worker_prompts_text" 'still gets the same draft PR a small one gets' \
+    'the disclosure recipe states parity between over-guideline and small packets'
+assert_contains "$worker_prompts_text" 'is never an unattended default' \
+    'the disclosure recipe states trimming is attended-only, never automatic'
+
+# The end-of-draft adversarial review on PR #280 confirmed a P2: the first
+# draft of the disclosure recipe stood alone as its own code fence, ahead of
+# the block that establishes $pr_decisions_file and $agentkit -- under
+# `set -euo pipefail` that aborts the whole draft-PR recipe on an unbound
+# variable, for every workstream, which is worse than the stall this issue
+# exists to prevent. The fix folds the diff-facts.sh call into the existing
+# recipe, after both prerequisites are established. Pin the ordering
+# directly so a future edit cannot silently pull it back out ahead of them.
+mapfile -t pub_lines <<< "$publication_section"
+decisions_guard_idx=-1 resolver_guard_idx=-1 diff_facts_idx=-1 compose_idx=-1
+for _pub_i in "${!pub_lines[@]}"; do
+    _pub_line=${pub_lines[$_pub_i]}
+    if ((decisions_guard_idx < 0)) && [[ $_pub_line == *'pr_decisions_file=${pr_decisions_file:?'* ]]; then
+        decisions_guard_idx=$_pub_i
+    fi
+    if ((resolver_guard_idx < 0)) && [[ $_pub_line == *'agentkit unresolved: prepend the Step 0 resolver block'* ]]; then
+        resolver_guard_idx=$_pub_i
+    fi
+    if ((diff_facts_idx < 0)) && [[ $_pub_line == *'"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"'* ]]; then
+        diff_facts_idx=$_pub_i
+    fi
+    if ((compose_idx < 0)) && [[ $_pub_line == *'"$agentkit/parallel-issues/scripts/compose-pr-body.sh"'* ]]; then
+        compose_idx=$_pub_i
+    fi
+done
+assert_eq yes "$([[ $decisions_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -gt $decisions_guard_idx ]] && printf yes || printf no)" \
+    'the disclosure recipe runs after $pr_decisions_file is guarded, never before'
+assert_eq yes "$([[ $resolver_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -gt $resolver_guard_idx ]] && printf yes || printf no)" \
+    'the disclosure recipe runs after the resolver establishes $agentkit, never before'
+assert_eq yes "$([[ $compose_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -lt $compose_idx ]] && printf yes || printf no)" \
+    'the disclosure recipe runs before compose-pr-body.sh consumes the Decisions file'
+
 v1_home="$tmp/v1-home"
 mkdir -p "$v1_home"
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' 'max_depth = 2' \

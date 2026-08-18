@@ -82,7 +82,17 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # its own broadened body, reading "--fast-mode only") and repointed all three
 # anchor references, trimming TOKENS. Minimum that passes. Line target
 # unchanged.
-KNOWN_OVERSIZE[parallel-issues]="1125:19163:900"
+# Issue #273 states the unattended default for an over-guideline packet: the
+# Diff-size facts section now says a run never parks on size ("Size facts
+# never park an unattended run"), and the Collect completion-report bullet
+# carries the same one-line reminder at the exact spine point the incident
+# happened (a finished worker, before the draft PR opens). The disclosure
+# recipe itself (running diff-facts.sh into the PR's Decisions section) is
+# kept out of the body, in references/worker-prompts.md's new Diff-size
+# disclosure subsection, per the strong preference to land detail in
+# references rather than ratchet the body again. Minimum that passes. Line
+# target unchanged.
+KNOWN_OVERSIZE[parallel-issues]="1130:19255:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
