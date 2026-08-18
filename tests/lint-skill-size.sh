@@ -58,10 +58,13 @@ declare -A KNOWN_OVERSIZE=(
 # chain-on-commit scheduling. Each buys a measured cost back (2h of timed-out
 # waits, 9-10 root<->worker round trips per issue); ceilings re-measured
 # against the merged body, minimum that passes. Target unchanged.
-# Issue #239 moves review-remote-pr fix-batch publication to the worker-owned
-# commit+push model and adds the explicit no-test-seam red waiver, raising its
-# measured token ceiling while keeping the line target unchanged.
-KNOWN_OVERSIZE[review-remote-pr]="511:7979:450"
+# Issue #238 ports the references-read-once/no-sizing rule and removes the
+# provider-rules Step 5 re-read; issue #239 moves review-remote-pr fix-batch
+# publication to the worker-owned commit+push model and adds the explicit
+# no-test-seam red waiver. The merged tree carries BOTH chains' content while
+# each ceiling was measured against its own, so this is re-measured against
+# the merged body and set to the minimum that passes. Line target unchanged.
+KNOWN_OVERSIZE[review-remote-pr]="511:8144:450"
 KNOWN_OVERSIZE[parallel-issues]="1060:18191:900"
 
 readonly MAX_BODY_LINES=500
