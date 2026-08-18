@@ -572,7 +572,10 @@ assert_contains "$out" 'pinned base' 'skip message names the pinned anchor'
 # keyed to the approving process's own PID so the collision is deterministic.
 repo=$(make_repo)
 printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
-trust_id=$(printf '%s' "$repo\ntest\nfocus=" | sha256sum | awk '{print $1}')
+# The record is keyed on the repository -- the clone's shared git directory --
+# not on the checkout path, so every linked worktree resolves to one record.
+trust_id=$(printf '%s' "repo=$(readlink -f -- "$repo/.git")\ntest\nfocus=" |
+    sha256sum | awk '{print $1}')
 rc=0
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
     "$tty_approve" --mkdir-before "$trust_root/$trust_id.trust" y -- \

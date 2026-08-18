@@ -180,6 +180,38 @@ main() {
     fi
 
     worktree_setup_ensure_exclude "$root" '.agent/*' || exit 1
+    # Mark this checkout as carrying a pull request's head. agent-run.sh reads
+    # the marker and keeps command approvals scoped to THIS checkout rather than
+    # reusing the clone's record: a contributor's branch can change what a
+    # declared command transitively runs -- a declaration naming a task runner
+    # and a task carries no path in argv, so the script it resolves is not
+    # something the trust fingerprint hashes -- so a PR checkout must earn its
+    # own approval.
+    # Written on every run, not only on creation, because a reused worktree is
+    # still carrying a pull request's head.
+    # The pull request's own content is already checked out at this point, so
+    # both of these paths are contributor-controlled: `.agent/*` sits in the
+    # local exclude, but that governs UNTRACKED files only, and a pull request
+    # can track whatever it likes. A plain redirect follows a symlink, so a
+    # tracked symlink here would make this write land wherever it points --
+    # arbitrary file write as the reviewing maintainer, from the one command
+    # whose whole job is handling untrusted branches. Refuse a symlinked
+    # directory, and replace the marker path rather than writing through it.
+    if [[ -L $worktree/.agent ]]; then
+        worktree_setup_fail "$worktree/.agent is a symlink; refusing to mark this checkout"
+        exit 1
+    fi
+    mkdir -p -- "$worktree/.agent" 2> /dev/null || true
+    # rm -f removes a symlink itself rather than its target, and fails on a
+    # directory -- which the write below then reports.
+    rm -f -- "$worktree/.agent/pr-checkout" 2> /dev/null || true
+    if [[ -e $worktree/.agent/pr-checkout || -L $worktree/.agent/pr-checkout ]] ||
+        ! printf 'pr=%s\nrepo=%s\n' "$PR" "$REPO" > "$worktree/.agent/pr-checkout" 2> /dev/null; then
+        # Continuing unmarked would hand this checkout the wider repository
+        # scope, which is the exact failure the marker exists to prevent.
+        worktree_setup_fail "could not mark $worktree as a pull-request checkout"
+        exit 1
+    fi
     if ((created_worktree)); then
         worktree_setup_propagate_config "$root" "$worktree" || exit 1
     fi

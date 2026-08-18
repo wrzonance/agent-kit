@@ -311,6 +311,146 @@ out=$(cd "$repo" && AGENT_TRUST_ROOT="$broken_trust_root" "$run_sh" --cmd verify
 assert_contains "$out" 'refusing unapproved repository command' \
     'a plain --cmd run with an unusable trust store still refuses'
 
+# --- the approval record is scoped to the repository, not the checkout -----
+# Onboarding writes `.agent/config.env` per-machine and untracked, so on such a
+# repository the trunk can never carry the declaration `--yolo` validates
+# against: every declared command refuses in every worktree, forever, and the
+# operator answers one terminal prompt per command per worktree. Keying the
+# record on the clone's shared git directory instead of the checkout path makes
+# one approval per command per config-state cover every worktree of that clone.
+# The record's fingerprint -- declaration values plus the content of every
+# repository-backed input -- is what still refuses anything nobody reviewed, so
+# the three cases below pin the grant AND both of its edges.
+make_permachine_repo() {
+    local dir origin
+    dir=$(mktemp -d "$tmp/permachine.XXXXXX")
+    origin=$(mktemp -d "$tmp/permachine-origin.XXXXXX")
+    git -C "$dir" init -q
+    git init -q --bare "$origin"
+    mkdir -p "$dir/.agent/cache"
+    printf 'seed\n' > "$dir/README"
+    git -C "$dir" add README
+    git -C "$dir" -c user.email=t@example.invalid -c user.name=t commit -qm init
+    git -C "$dir" remote add origin "$origin"
+    git -C "$dir" push -q origin HEAD:main
+    git -C "$dir" fetch -q origin
+    printf '.agent/*\n' >> "$dir/.git/info/exclude"
+    printf 'AGENT_CMD_SETUP=true\n' > "$dir/.agent/config.env"
+    printf '%s' "$dir"
+}
+count_trust_files() { trust_files "$1" | grep -c . || true; }
+
+repo=$(make_permachine_repo)
+scoped_trust_root="$tmp/trust-repo-scoped"
+scoped_worktree="$tmp/permachine-worktree"
+git -C "$repo" worktree add -q -b feat/scoped "$scoped_worktree"
+mkdir -p "$scoped_worktree/.agent/cache"
+cp "$repo/.agent/config.env" "$scoped_worktree/.agent/config.env"
+
+out=$(cd "$scoped_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a per-machine declaration refuses --yolo before any approval'
+assert_eq '0' "$(count_trust_files "$scoped_trust_root")" \
+    'the per-machine refusal persists no trust'
+
+(cd "$repo" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd setup) > /dev/null 2>&1
+assert_eq '1' "$(count_trust_files "$scoped_trust_root")" \
+    'one approval in the main checkout records exactly one repository-scoped record'
+
+scoped_err="$tmp/scoped-stderr"
+out=$(cd "$scoped_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2> "$scoped_err") && rc=0 || rc=$?
+err=$(cat -- "$scoped_err")
+assert_eq '0' "$rc" 'the main-checkout approval satisfies --yolo in a linked worktree'
+assert_contains "$out" 'PASS: true' 'the worktree run actually executed the declared command'
+assert_contains "$err" 'trust gate satisfied by approval record' \
+    'the worktree run reports the record-satisfied grant'
+assert_eq '1' "$(count_trust_files "$scoped_trust_root")" \
+    'satisfying the record in a second checkout writes no second record'
+
+# A PULL-REQUEST CHECKOUT is the exception, and it is the security-carrying one.
+# The fingerprint only reaches inputs this command contract can identify: a
+# declaration naming a task runner and a task has no path in argv at all, so a
+# contributor can rewrite the script it ultimately runs without changing one
+# byte the fingerprint hashes. A repository-wide record would execute that on a
+# maintainer approval granted in another checkout entirely, so a checkout
+# carrying a PR head keys on its own path and earns its own approval.
+# pr-worktree.sh writes this marker; test-worktree-setup.sh covers that writer
+# end to end, while these cases pin the reader.
+pr_worktree="$tmp/permachine-pr-worktree"
+git -C "$repo" worktree add -q -b feat/pr-scoped "$pr_worktree"
+mkdir -p "$pr_worktree/.agent/cache"
+cp "$repo/.agent/config.env" "$pr_worktree/.agent/config.env"
+printf 'pr=11\nrepo=example/repo\n' > "$pr_worktree/.agent/pr-checkout"
+
+pr_err="$tmp/pr-scoped-stderr"
+out=$(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2> "$pr_err") && rc=0 || rc=$?
+err=$(cat -- "$pr_err")
+assert_eq '1' "$rc" 'a PR checkout does not inherit the clone-wide approval'
+assert_not_contains "$err" 'trust gate satisfied by approval record' \
+    'a PR checkout is never reported as record-approved on someone else approval'
+assert_eq '1' "$(count_trust_files "$scoped_trust_root")" \
+    'the refused PR checkout persists no trust'
+
+# Ambiguity resolves the same way: anything marker-shaped, even a marker that
+# cannot be read, keys on the checkout rather than assuming an ordinary worktree.
+rm -f -- "$pr_worktree/.agent/pr-checkout"
+ln -s /nonexistent-target "$pr_worktree/.agent/pr-checkout"
+out=$(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an unreadable PR marker fails closed to the checkout scope'
+rm -f -- "$pr_worktree/.agent/pr-checkout"
+printf 'pr=11\nrepo=example/repo\n' > "$pr_worktree/.agent/pr-checkout"
+
+# It is a separate scope, not a permanently refused one: approving it there
+# works, and records a SECOND file rather than reusing the clone's.
+(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd setup) > /dev/null 2>&1
+assert_eq '2' "$(count_trust_files "$scoped_trust_root")" \
+    'approving a PR checkout records its own scope beside the clone record'
+out=$(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'the PR checkout runs on its own approval'
+
+# ...and the maintainer's ordinary worktree is untouched by any of that.
+out=$(cd "$scoped_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'an ordinary linked worktree still reuses the clone approval'
+
+# Edge one: the repository is the scope, but the reviewed CONTENT is still what
+# was approved. A declaration nobody reviewed must not inherit the record.
+printf 'AGENT_CMD_SETUP=echo unreviewed\n' > "$scoped_worktree/.agent/config.env"
+out=$(cd "$scoped_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a changed declaration in a sibling checkout does not inherit the record'
+assert_not_contains "$out" 'trust gate satisfied by approval record' \
+    'an unreviewed declaration is never reported as record-approved'
+cp "$repo/.agent/config.env" "$scoped_worktree/.agent/config.env"
+
+# Edge two: a separate clone is a separate repository, byte-identical
+# declaration or not -- the widening stops at the clone boundary.
+other_repo=$(make_permachine_repo)
+out=$(cd "$other_repo" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an identical declaration in another clone is still unapproved'
+assert_contains "$out" 'refusing unapproved repository command' \
+    'the other clone gets the ordinary unapproved refusal'
+
+# The refusal itself must name the per-machine cause rather than implying an
+# input changed, and must name both durable fixes -- otherwise it reads as a
+# one-off adjudication of a change nobody made, once per command, forever.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$tmp/trust-permachine-text" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an untracked declaration refuses --yolo'
+assert_contains "$out" 'not carried by' \
+    'the refusal names the untracked-declaration cause'
+assert_contains "$out" 'commit .agent/config.env' \
+    'the refusal offers trunk-carried declarations as a durable fix'
+assert_contains "$out" 'every worktree of this clone' \
+    'the refusal states how far one approval reaches'
+
 # Without a remote trunk to validate against, --yolo refuses rather than guesses.
 repo=$(make_repo)
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
