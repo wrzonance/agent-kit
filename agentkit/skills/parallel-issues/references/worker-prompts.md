@@ -324,14 +324,10 @@ merges, use `chain-advance.sh --retarget` and require its linkage proof before m
 
 ### Diff-size disclosure
 
-Before composing the Decisions section, run `diff-facts.sh` against the pushed branch's base
-(the chain base for a chained issue) and fold its full output into the Decisions file
-verbatim:
-
-```bash
-"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
-    --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
-```
+Before composing the Decisions section, fold `diff-facts.sh`'s full output for the pushed
+branch's base (the chain base for a chained issue) into the Decisions file verbatim — the
+call is folded into the composition recipe below, immediately after `pr_decisions_file` and
+the resolver are established, so it never runs ahead of the variables it reads.
 
 This is disclosure, not a gate: a packet whose `operational.lines` exceeds any guideline
 still gets the same draft PR a small one gets. Re-cutting or trimming a finished, review-clear
@@ -357,6 +353,8 @@ pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
 default_branch=${default_branch:?set the repository default branch}
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
+    --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
 "$agentkit/parallel-issues/scripts/compose-pr-body.sh" \
   --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
   --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
