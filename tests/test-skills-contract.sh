@@ -217,6 +217,8 @@ assert_line_order 'Duplicated is classified before Repo-specific' \
 
 review_skill="$skills/review-remote-pr/SKILL.md"
 parallel_skill="$skills/parallel-issues/SKILL.md"
+review_skill_text=$(<"$review_skill")
+review_skill_normalized=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
 review_refs=("$skills"/review-remote-pr/references/*.md)
 parallel_refs=("$skills"/parallel-issues/references/*.md)
 shared_refs=("$skills"/.shared/*.md)
@@ -228,6 +230,20 @@ assert_line_order 'review helper status is checked before parsing its worktree o
     "$review_setup_status_line" "$review_setup_parse_line"
 assert_contains "$(<"$review_skill")" 'if ! setup_output=' \
     'review helper setup captures failure before output parsing'
+assert_contains "$review_skill_normalized" 'References are read once, batched, and never sized first' \
+    'review skill forbids per-file reference sizing'
+assert_contains "$review_skill_text" 'wc -l' \
+    'review skill no-sizing rule names the observed probe explicitly'
+assert_contains "$review_skill_text" 'stat' \
+    'review skill no-sizing rule names stat explicitly'
+assert_contains "$review_skill_text" 'head' \
+    'review skill no-sizing rule names head explicitly'
+assert_contains "$review_skill_normalized" 'do not re-read it later in the run' \
+    'review skill forbids duplicate reference reads'
+assert_contains "$review_skill_normalized" 'Reuse that loaded content in Step 5; do not re-read it' \
+    'review skill reuses provider rules instead of reading them again'
+assert_not_contains "$review_skill_text" 'in full before Step 1a and' \
+    'review skill does not schedule a second full provider-rules read'
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
     'review recipes name jq parser failures as unavailable evidence'
 # The former inline python3 thread-classification recipe was absorbed into

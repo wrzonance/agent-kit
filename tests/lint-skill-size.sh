@@ -58,7 +58,10 @@ declare -A KNOWN_OVERSIZE=(
 # chain-on-commit scheduling. Each buys a measured cost back (2h of timed-out
 # waits, 9-10 root<->worker round trips per issue); ceilings re-measured
 # against the merged body, minimum that passes. Target unchanged.
-KNOWN_OVERSIZE[review-remote-pr]="511:7959:450"
+# Issue #238 ports the references-read-once/no-sizing rule and removes the
+# provider-rules Step 5 re-read, adding the measured prose needed to enforce
+# that boundary. The 8062-token ceiling is the minimum that passes this tree.
+KNOWN_OVERSIZE[review-remote-pr]="511:8062:450"
 KNOWN_OVERSIZE[parallel-issues]="1060:18191:900"
 
 readonly MAX_BODY_LINES=500
