@@ -88,13 +88,23 @@ before. Approve from any checkout of the clone; the record is the same either wa
 
 **Every worktree includes the PR-checkout ones.** `worktree-setup.sh --pr N` checks a pull
 request's head out into a linked worktree, so once `setup` is approved for the repository it runs
-there too, on a contributor's branch. The fingerprint is what holds that line, and it is the
-right control: a PR that touches the declaration, the runner, the declared command's own argv
-paths, or a nearby build manifest changes it and is refused, while a per-worktree prompt only
-ever asked a yes/no question about a command name — it never showed anyone the PR's diff, so
-answering it per PR was rubber-stamping rather than review. What neither scope covers is the
-wrapped command's deeper transitive inputs; that is the same boundary every verification run
-draws, and reviewing the branch is what addresses it.
+there too — on a contributor's branch, which is a wider blast radius than the parallel-worktree
+case this scope was argued from. Say plainly what changed: a per-worktree record used to force a
+fresh prompt for each PR checkout, and that layer is gone.
+
+**Why the fingerprint carries that load.** It is not a hash of the checkout; it is a hash of what
+the command will actually execute — the declaration values, the argv, the content of every
+repository-backed path in that argv, the runner, and the nearby build manifests, each recorded by
+content rather than by path. A pull request cannot change what `setup` runs without changing one
+of them, and any one of them refuses the record. The layer that was removed could not do that
+job: `--approve` prints one line, `Approve repository command <name> for this repository state?
+[y/N]`, and never shows a diff — so answering it per PR authenticated nothing about the PR. It
+raised a prompt, not a review.
+
+The honest residual: neither scope covers the wrapped command's deeper transitive inputs — a file
+`tools/setup` reads that is not itself declared argv or a manifest. That boundary is the same one
+every verification run has always drawn, and reading the branch before checking it out is what
+addresses it.
 
 ### Repositories whose declarations are per-machine
 
