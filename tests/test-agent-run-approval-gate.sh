@@ -311,6 +311,39 @@ out=$(cd "$repo" && AGENT_TRUST_ROOT="$broken_trust_root" "$run_sh" --cmd verify
 assert_contains "$out" 'refusing unapproved repository command' \
     'a plain --cmd run with an unusable trust store still refuses'
 
+# That note means the trust STORE is unusable. An input the fingerprint cannot
+# read is a different thing with a perfectly good store, and the probe captures
+# hash_repo_input's stderr too -- so walking a declared input directory over an
+# unreadable subdirectory or file reported the approval store as broken and
+# explained the fallback with somebody else's permission warning. Both inodes
+# are covered here because find and sha256sum are separate mouths on the same
+# stream. The run still refuses: the trunk gate cannot read the input either,
+# and failing closed is the right answer -- it just has to be its own answer.
+repo=$(make_published_repo)
+mkdir -p "$repo/tools/dev/locked"
+printf 'ok\n' > "$repo/tools/dev/readable.txt"
+printf 'locked\n' > "$repo/tools/dev/locked/f"
+printf 'private\n' > "$repo/tools/dev/private.txt"
+printf 'AGENT_CMD_VERIFY=ls tools/dev\n' > "$repo/.agent/config.env"
+git -C "$repo" add -A
+git -C "$repo" -c user.email=t@example.invalid -c user.name=t commit -qm inputs
+git -C "$repo" push -q origin HEAD:main
+git -C "$repo" fetch -q origin
+chmod 000 "$repo/tools/dev/locked" "$repo/tools/dev/private.txt"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$tmp/trust-unreadable-input" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+# Restored before the assertions so a failure here cannot leave the temporary
+# tree undeletable.
+chmod 755 "$repo/tools/dev/locked"
+chmod 644 "$repo/tools/dev/private.txt"
+assert_eq '1' "$rc" 'an unreadable command input fails closed under --yolo'
+assert_contains "$out" 'refusing --yolo' \
+    'and it is the trunk gate that refuses it'
+assert_not_contains "$out" 'approval-record lookup unavailable' \
+    'an unreadable command input is never reported as an unusable approval store'
+assert_not_contains "$out" 'Permission denied' \
+    'the fingerprint walk keeps its own diagnostics out of the run stream'
+
 # --- the approval record is scoped to the repository, not the checkout -----
 # Onboarding writes `.agent/config.env` per-machine and untracked, so on such a
 # repository the trunk can never carry the declaration `--yolo` validates
@@ -450,6 +483,224 @@ assert_contains "$out" 'commit .agent/config.env' \
     'the refusal offers trunk-carried declarations as a durable fix'
 assert_contains "$out" 'every worktree of this clone' \
     'the refusal states how far one approval reaches'
+
+# --- a command input is classified by where it lands, not how it is spelled ---
+# Monorepo tooling sits at the repository root while the command runs in a
+# component, so `../../../tools/dev/q.sh` from `src/hosts/portal` is the natural
+# shape. The classifier used to read the `..` in the spelling and refuse
+# outright, so every --yolo run of such a command refused forever and demanded a
+# terminal approval for an input the gate could have proven contained itself.
+# Resolution is physical now, from the directory the command actually runs in:
+# a token that lands inside is pinned by content like any other, and one that
+# lands outside -- by `..`, by a committed symlink, or by both -- is still the
+# sentinel that refuses the run.
+make_rundir_repo() {
+    local argv=$1 dir origin outside
+    dir=$(mktemp -d "$tmp/monorepo.XXXXXX")
+    origin=$(mktemp -d "$tmp/monorepo-origin.XXXXXX")
+    outside=$(mktemp -d "$tmp/monorepo-outside.XXXXXX")
+    git -C "$dir" init -q
+    git init -q --bare "$origin"
+    mkdir -p "$dir/.agent/cache" "$dir/src/hosts/portal" "$dir/tools/dev"
+    printf '#!/bin/sh\necho root-tool-ran\n' > "$dir/tools/dev/q.sh"
+    chmod +x "$dir/tools/dev/q.sh"
+    # The payload records that it ran, so a refusal that leaks execution anyway
+    # is caught rather than assumed.
+    printf '#!/bin/sh\ntouch "%s/EXECUTED"\n' "$outside" > "$outside/payload.sh"
+    chmod +x "$outside/payload.sh"
+    ln -sfn "$outside" "$dir/tools/link-out"
+    printf 'AGENT_CMD_PORTAL=%s\nAGENT_RUNDIR_PORTAL=src/hosts/portal\n' "$argv" \
+        > "$dir/.agent/config.env"
+    git -C "$dir" add -A
+    git -C "$dir" -c user.email=t@example.invalid -c user.name=t commit -qm init
+    git -C "$dir" remote add origin "$origin"
+    git -C "$dir" push -q origin HEAD:main
+    git -C "$dir" fetch -q origin
+    printf '%s' "$dir"
+}
+# Dedicated roots throughout: the shared trust_root above is still asserted
+# empty by later cases in this file.
+rundir_trust_root="$tmp/trust-rundir"
+
+repo=$(make_rundir_repo 'sh ../../../tools/dev/q.sh')
+rundir_err="$tmp/rundir-stderr"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2> "$rundir_err") && rc=0 || rc=$?
+assert_eq '0' "$rc" 'a rundir-relative .. input resolving inside the repository passes --yolo'
+assert_contains "$out" 'PASS: sh ../../../tools/dev/q.sh' \
+    'root tooling invoked from a component rundir actually ran unattended'
+assert_eq '' "$(trust_files "$rundir_trust_root")" \
+    'and it needed no approval record to do it'
+
+# Accepting the path is only safe because it is pinned like any other declared
+# input: same command, changed content, still refused -- by its repository
+# path, never as an unprovable external input.
+printf '#!/bin/sh\necho tampered\n' > "$repo/tools/dev/q.sh"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a tampered .. input is refused under --yolo'
+assert_contains "$out" 'tools/dev/q.sh differs from origin/main' \
+    'the refusal names the repository-relative path the token resolved to'
+assert_not_contains "$out" '__external-command-input__' \
+    'a repository-contained .. input is never sentinel-refused'
+git -C "$repo" checkout -q -- tools/dev/q.sh
+
+# A token that climbs past the repository root still cannot be pinned.
+printf '#!/bin/sh\necho escaped\n' > "$tmp/escape-target.sh"
+repo=$(make_rundir_repo 'sh ../../../../escape-target.sh')
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a .. input resolving outside the repository is refused'
+assert_contains "$out" '__external-command-input__' \
+    'and it is refused as an input that cannot be proven repository-contained'
+
+# The case textual classification gets wrong: after collapsing `..` the path
+# reads as repository-contained, and only following the symlink shows it is not.
+repo=$(make_rundir_repo 'sh ../../../tools/link-out/payload.sh')
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a .. input escaping through a symlink is refused'
+assert_contains "$out" '__external-command-input__' \
+    'a symlink escape classifies by its physical resolution, not its textual prefix'
+
+# The repository root is inside the repository and still unpinnable: it names
+# the whole tree, so it stays a sentinel rather than becoming an input whose
+# fingerprint walks every file in the repository.
+repo=$(make_rundir_repo 'ls ../../..')
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an input resolving to the repository root is refused'
+assert_contains "$out" '__external-command-input__' \
+    'the repository root is not a pinnable command input'
+
+# The same physical rule on the other two spellings, so no branch of the
+# classifier can be routed around by rewriting the path.
+repo=$(make_rundir_repo 'sh tools/link-out/payload.sh')
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a relative input escaping through a symlink is refused'
+assert_contains "$out" '__external-command-input__' \
+    'the relative branch classifies by physical resolution too'
+
+repo=$(make_rundir_repo 'placeholder')
+printf 'AGENT_CMD_PORTAL=sh %s/tools/link-out/payload.sh\nAGENT_RUNDIR_PORTAL=src/hosts/portal\n' \
+    "$repo" > "$repo/.agent/config.env"
+git -C "$repo" add .agent/config.env
+git -C "$repo" -c user.email=t@example.invalid -c user.name=t commit -qm absolute
+git -C "$repo" push -q origin HEAD:main
+git -C "$repo" fetch -q origin
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an absolute input escaping through a symlink is refused'
+assert_contains "$out" '__external-command-input__' \
+    'an absolute path under the repository is judged by where it resolves'
+
+assert_eq '' "$(find "$tmp" -name EXECUTED 2> /dev/null)" \
+    'no refused escape ever executed its out-of-repository payload'
+
+# A path with no `..` is genuinely ambiguous under a declared rundir -- an
+# ad-hoc argv may be written against either base -- so both joins stay pinned.
+# Resolving the token must not collapse that ambiguity to one candidate.
+# The command itself exits 127 here -- the token names a file that exists at the
+# repository root and not under the rundir, which is the ambiguity -- so what is
+# asserted is the gate's verdict, not the command's.
+repo=$(make_rundir_repo 'sh tools/dev/q.sh')
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) || true
+assert_not_contains "$out" 'refusing --yolo' \
+    'the repository-root join of an ambiguous input is admitted when it matches the trunk'
+mkdir -p "$repo/src/hosts/portal/tools/dev"
+printf '#!/bin/sh\necho component-twin\n' > "$repo/src/hosts/portal/tools/dev/q.sh"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$rundir_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd portal < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a twin appearing at the rundir join is refused'
+assert_contains "$out" 'src/hosts/portal/tools/dev/q.sh' \
+    'the rundir candidate is still pinned even before the file exists'
+
+# --- every symlink followed to reach an input is an input ------------------
+# What a command reads is decided by two kinds of file: the one it ends at, and
+# every symlink followed to get there. Retarget one of those from a tracked file
+# to another tracked file and BOTH endpoints stay byte-identical to the trunk
+# while the command reads something else entirely -- so pinning only the final
+# target diffs a file the command no longer opens. Each case retargets a
+# different link in the path: the leaf, a directory in the middle of the path,
+# and the middle of a symlink chain, which is the one a resolver that jumps
+# straight to the final target cannot see.
+make_symlink_repo() {
+    local dir origin
+    dir=$(mktemp -d "$tmp/symlink.XXXXXX")
+    origin=$(mktemp -d "$tmp/symlink-origin.XXXXXX")
+    git -C "$dir" init -q
+    git init -q --bare "$origin"
+    mkdir -p "$dir/.agent/cache" "$dir/tools/real" "$dir/tools/other"
+    printf '#!/bin/sh\necho safe\n' > "$dir/tools/safe.sh"
+    printf '#!/bin/sh\necho evil\n' > "$dir/tools/evil.sh"
+    printf '#!/bin/sh\necho real-dir\n' > "$dir/tools/real/run.sh"
+    printf '#!/bin/sh\necho other-dir\n' > "$dir/tools/other/run.sh"
+    ln -sfn safe.sh "$dir/tools/entry.sh"
+    ln -sfn entry.sh "$dir/tools/front.sh"
+    ln -sfn real "$dir/tools/dir-link"
+    printf 'AGENT_CMD_VERIFY=%s\n' "$1" > "$dir/.agent/config.env"
+    git -C "$dir" add -A
+    git -C "$dir" -c user.email=t@example.invalid -c user.name=t commit -qm init
+    git -C "$dir" remote add origin "$origin"
+    git -C "$dir" push -q origin HEAD:main
+    git -C "$dir" fetch -q origin
+    printf '%s' "$dir"
+}
+symlink_trust_root="$tmp/trust-symlink-input"
+run_symlink_repo() {
+    (cd "$1" && AGENT_TRUST_ROOT="$symlink_trust_root" \
+        setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1)
+}
+
+# The leaf the declaration names.
+repo=$(make_symlink_repo 'sh tools/entry.sh')
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '0' "$rc" 'a symlinked command input matching the trunk still runs'
+assert_contains "$out" 'PASS: sh tools/entry.sh' 'the symlinked input actually ran'
+ln -sfn evil.sh "$repo/tools/entry.sh"
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '1' "$rc" 'retargeting the input symlink to another tracked file is refused'
+assert_contains "$out" 'tools/entry.sh differs from origin/main' \
+    'the refusal names the retargeted symlink itself'
+
+# A directory link in the middle of the path: same swap, one level up.
+repo=$(make_symlink_repo 'sh tools/dir-link/run.sh')
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '0' "$rc" 'an input reached through a directory symlink still runs'
+ln -sfn other "$repo/tools/dir-link"
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '1' "$rc" 'retargeting a traversed directory symlink is refused'
+assert_contains "$out" 'tools/dir-link differs from origin/main' \
+    'the refusal names the traversed directory symlink'
+
+# The middle of a chain: front -> entry -> safe. Neither the declaration nor the
+# final target changes, so only a resolver that follows one hop at a time sees
+# which file moved.
+repo=$(make_symlink_repo 'sh tools/front.sh')
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '0' "$rc" 'a chain of symlinks matching the trunk still runs'
+ln -sfn evil.sh "$repo/tools/entry.sh"
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '1' "$rc" 'retargeting the middle of a symlink chain is refused'
+assert_contains "$out" 'tools/entry.sh differs from origin/main' \
+    'the refusal names the chain link that moved'
+
+# Following links one hop at a time is what makes a loop possible, so the walk
+# is bounded: a link that never terminates is an input that cannot be proven,
+# not a gate that hangs on every command for the rest of the run.
+repo=$(make_symlink_repo 'sh tools/ping.sh')
+ln -sfn pong.sh "$repo/tools/ping.sh"
+ln -sfn ping.sh "$repo/tools/pong.sh"
+git -C "$repo" add -A
+git -C "$repo" -c user.email=t@example.invalid -c user.name=t commit -qm loop
+git -C "$repo" push -q origin HEAD:main
+git -C "$repo" fetch -q origin
+out=$(run_symlink_repo "$repo") && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a symlink loop is refused rather than followed forever'
+assert_contains "$out" '__external-command-input__' \
+    'a loop resolves to nothing that can be pinned'
 
 # Without a remote trunk to validate against, --yolo refuses rather than guesses.
 repo=$(make_repo)
