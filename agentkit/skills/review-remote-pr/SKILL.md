@@ -7,8 +7,8 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 Draft-first automated loop. **Phase A (draft):** root-orchestrated — watches CI, resolves forge
 conflicts, applies the Step 1b materiality gate, owns consent/replies/adversarial review/
-publication; a worker receives only a root-approved mechanical fix batch and returns an unstaged
-handback. **Phase B (handoff):** report draft-phase complete, wait for the **user** to mark it
+publication; a worker receives only a root-approved mechanical fix batch, commits and pushes its
+branch, and returns a completion report. **Phase B (handoff):** report draft-phase complete, wait for the **user** to mark it
 ready — never trigger a provider review. **Phase C (review):** once a relevant review lands,
 assess CodeRabbit/`github-code-quality[bot]` findings, batching fixes into one push per cycle.
 Human-authored reviews stay confirmation-gated throughout.
@@ -138,7 +138,7 @@ contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$con
 
 ## Implementation-worker gate (MANDATORY for every code change)
 
-The PR loop orchestrates; an implementation worker is the sole writer for any CI, conflict, review, or approved-human fix batch. Resolve its configured model/effort, then read [references/worker-gate.md](references/worker-gate.md), [../.shared/spawn-contract.md](../.shared/spawn-contract.md), and [../.shared/six-step-loop.md](../.shared/six-step-loop.md) in full before dispatch. Paste the six-step contract and accepted findings into the isolated worker prompt; root alone validates, commits, pushes, and posts.
+The PR loop orchestrates; an implementation worker is the sole writer for any CI, conflict, review, or approved-human fix batch. Resolve its configured model/effort, then read [references/worker-gate.md](references/worker-gate.md), [../.shared/spawn-contract.md](../.shared/spawn-contract.md), and [../.shared/six-step-loop.md](../.shared/six-step-loop.md) in full before dispatch. Paste the six-step contract and accepted findings into the isolated worker prompt; worker validates, commits, pushes; root reviews diff and owns PR metadata/posts.
 
 ## The Loop
 
@@ -151,8 +151,8 @@ PHASE A — DRAFT (all mechanical work happens here; do not initiate provider re
                body nitpicks + provider state, as one digest plus durable artifacts
   1a. HUMAN  — surface human-authored content; gate every action/reply on per-item user confirmation
   2. FIX CI  — diagnose failures, dispatch the Luna ultracode implementation worker (or take the
-               documented degraded path when spawn_agent is unavailable), verify its fix,
-               commit/push once; re-check CI and review state after the push; repeat 1–2 until CI is green
+               documented degraded path when spawn_agent is unavailable); review the worker's pushed
+               diff and re-check CI and review state after its push; repeat 1–2 until CI is green
   2b. ADVERSARIAL — as the LAST draft step (CI green, conflicts resolved): apply the materiality
                gate; for a material diff run one cross-harness review, then verify + fix confirmed
                findings; for a trivial mechanical diff document the verified skip
@@ -348,7 +348,7 @@ workflow guarantee — still batch each cycle's fixes into **one** push; never p
 
 Diagnose the causal failure (`gh run view --log-failed "$run_id" | grep -E "FAIL|error|Error"`,
 run ID from the `gh pr checks` URL column), then run the **Implementation-worker gate** above.
-Verify independently before the single cycle push, through `agent-run.sh`:
+The worker verifies independently before its cycle push, through `agent-run.sh`:
 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
@@ -358,9 +358,9 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd test
 ```
 
-For red/green iterations use `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
-repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
-before publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
+For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
+repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
+before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
 context, `note:` lines, matched errors, and the log path. **Never push without local verification passing.**
 
 ### Wait contract: one turn-free wait
@@ -459,8 +459,8 @@ and Code Quality handling, and the reply/anchored-thread/resolve command shapes.
 Adversarial-review findings from `$RUN_DIR/adversarial.result.json` route through the same
 assess → fix → document logic, documented in a **PR comment** (no thread to resolve). The cycle
 ends with its single batched push (Step 1c); post declines before that push — a later full review
-re-evaluates from scratch and can re-raise them. Root publication stages only the explicit handback
-files; never `git add -A` (`.agent/` is untracked working state).
+re-evaluates from scratch and can re-raise them. Root reviews pushed diff; never stages worker
+handback files or uses `git add -A` (`.agent/` is untracked working state).
 
 ---
 
