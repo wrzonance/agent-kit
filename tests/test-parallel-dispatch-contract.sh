@@ -53,6 +53,13 @@ six_step_loop_text=$(<"$shared_six_step_loop")
 trust_and_fencing_text=$(<"$trust_and_fencing")
 verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
+root_review_section=$(awk '
+    $0 == "### Root review and draft PR after a worker push" { capture=1; next }
+    capture && $0 == "### Polling discipline (applies to every wait in this skill)" { exit }
+    capture { print }
+' "$skill")
+assert_not_contains "$root_review_section" '### Polling discipline (applies to every wait in this skill)' \
+    'root review extraction stops before the following polling section'
 provider_rules_text=$(<"$root/agentkit/skills/review-remote-pr/references/provider-rules.md")
 grooming_text=$(<"$root/agentkit/skills/review-remote-pr/references/grooming.md")
 issue_lead_prompt=$(awk '
@@ -712,6 +719,30 @@ assert_not_contains "$worker_gate_flat" 'leave progress unstaged' \
     'worker-gate.md removes unstaged handback from the primary flow'
 assert_not_contains "$worker_gate_flat" 'root-owned publication handback' \
     'worker-gate.md no longer presents root publication as the primary flow'
+assert_contains "$worker_gate_flat" 'purely mechanical' \
+    'worker-gate.md limits inline corrections to mechanical changes'
+assert_contains "$worker_gate_flat" 'no new behavior, data shape, or control flow' \
+    'worker-gate.md excludes behavioral inline corrections'
+assert_contains "$worker_gate_flat" 'at most five changed lines' \
+    'worker-gate.md bounds inline corrections to five lines'
+assert_contains "$worker_gate_flat" 'root authored the exact diff' \
+    'worker-gate.md requires root-authored inline diffs'
+assert_contains "$worker_gate_flat" 'full declared verification' \
+    'worker-gate.md requires verification after inline corrections'
+assert_contains "$worker_gate_flat" 'root harness attribution' \
+    'worker-gate.md requires root attribution for inline corrections'
+assert_contains "$worker_gate_flat" 'recorded reason' \
+    'worker-gate.md requires recording why the worker gate was skipped'
+assert_contains "$root_review_section" 'resume the same worker with `followup_task` first' \
+    'root review resumes the same worker before considering a fresh dispatch'
+assert_contains "$root_review_section" 'inline correction' \
+    'root review names the inline-correction decision at the correction call site'
+assert_contains "$root_review_section" 'zero dispatches' \
+    'root review records that qualifying inline corrections cost zero dispatches'
+assert_contains "$text" 'two allowed implementation exceptions' \
+    'parallel preflight names the complete implementation exception set'
+assert_contains "$text" 'qualifying bounded inline correction' \
+    'parallel preflight names bounded inline correction as an implementation exception'
 assert_contains "$worker_gate_flat" 'continues the existing PR' \
     'worker-gate.md keeps review-remote-pr on the existing PR'
 assert_contains "$worker_gate_flat" 'CI, reply, review, and metadata cycle' \

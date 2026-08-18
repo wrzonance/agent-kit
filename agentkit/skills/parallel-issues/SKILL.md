@@ -552,7 +552,7 @@ worktrees provide isolation.
 
 ### Implementation-model preflight (MANDATORY — before worktrees or board mutations)
 
-Role separation: the root/orchestrator must not implement when a real worker can be dispatched; workers get fresh fenced context, sole-writer isolation, and independent root validation. `worker=self` is only the documented spawn-unavailable degraded path. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort. **Effort follows the issue, not the run:** `AGENT_WORKER_EFFORT` is the per-run default; a dispatch-plan entry may raise it for one genuinely hard issue via `workerEffort` with a recorded reason, and that per-issue value is what the composer receives. Root design review and adversarial review keep their own effort setting regardless. Read
+Role separation: the root/orchestrator must not implement when a real worker can be dispatched except for two allowed implementation exceptions: spawn unavailable or qualifying bounded inline correction. Workers get fresh context and sole-writer isolation. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort. **Effort follows the issue, not the run:** `AGENT_WORKER_EFFORT` is the per-run default; a dispatch-plan entry may raise it for one genuinely hard issue via `workerEffort` with a recorded reason, and that per-issue value is what the composer receives. Root design review and adversarial review keep their own effort setting regardless. Read
 [.shared/spawn-contract.md](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
 [.shared/six-step-loop.md](../.shared/six-step-loop.md).
 
@@ -766,7 +766,12 @@ against its recorded chain base) — through the correctness, repo-rule/security
 lenses: every changed path must fall inside the dispatch plan's pinned predictedWriteSet for
 this issue, or the root records one of the sanctioned `chain-conversion`, `merge-down`, or
 `prediction-expansion` dispositions with an evidence-based reason before opening the PR.
-Confirmed findings go back to the same worker as one batch (`followup_task`); a follow-up
+Confirmed findings go back to the same worker as one batch (`followup_task`); at every correction
+call site, resume the same worker with `followup_task` first and make a fresh dispatch the exception.
+A root may apply an inline correction only when it is purely mechanical, has no new behavior, data
+shape, or control flow, is at most five changed lines, and the root authored the exact diff during
+review; it must rerun the full declared verification, use root harness attribution, and record the
+reason it skipped dispatch. A qualifying two-line correction costs zero dispatches. A follow-up
 commit on a pushed branch is cheap, a blocked worker is not. When the review clears, root
 must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL

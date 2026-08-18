@@ -88,6 +88,8 @@ onboard_text=$(<"$onboard")
 worker_tier_text=$(<"$skills/.shared/schema/config.env.example")
 spawn_contract="$skills/.shared/spawn-contract.md"
 spawn_contract_text=$(<"$spawn_contract")
+worker_gate="$skills/review-remote-pr/references/worker-gate.md"
+worker_gate_text=$(<"$worker_gate")
 parallel_dispatch="$skills/parallel-issues/SKILL.md"
 parallel_dispatch_text=$(<"$parallel_dispatch")
 for dispatch_text_name in spawn_contract parallel_dispatch; do
@@ -98,8 +100,8 @@ for dispatch_text_name in spawn_contract parallel_dispatch; do
     fi
     assert_contains "$dispatch_text" 'must not implement when a real worker can be dispatched' \
         "$dispatch_text_name forbids orchestrator-side implementation when spawning is available"
-    assert_contains "$dispatch_text" '`worker=self` is only the documented spawn-unavailable degraded path' \
-        "$dispatch_text_name limits worker=self to the degraded path"
+    assert_contains "$dispatch_text" 'two allowed implementation exceptions' \
+        "$dispatch_text_name names both implementation exceptions"
     assert_contains "$dispatch_text" 'AGENT_WORKER_MODEL' \
         "$dispatch_text_name names the resolved worker model declaration"
     assert_contains "$dispatch_text" 'AGENT_WORKER_EFFORT' \
@@ -150,6 +152,34 @@ assert_contains "$spawn_contract_text" 'Validate both resolved `worker_model` an
     'spawn contract validates preferred and fallback models'
 assert_contains "$spawn_contract_text" 'Any other syntactically safe configured preferred or fallback model' \
     'spawn contract gates every unsupported configured model'
+assert_contains "$spawn_contract_text" '## Bounded inline corrections' \
+    'spawn contract names the bounded inline-correction exception'
+assert_contains "$spawn_contract_text" 'purely mechanical' \
+    'spawn contract limits inline corrections to mechanical changes'
+assert_contains "$spawn_contract_text" 'no new behavior, data shape, or control flow' \
+    'spawn contract excludes behavioral inline corrections'
+assert_contains "$spawn_contract_text" 'at most five changed lines' \
+    'spawn contract bounds inline corrections to five lines'
+assert_contains "$spawn_contract_text" 'root authored the exact diff' \
+    'spawn contract requires root-authored inline diffs'
+assert_contains "$spawn_contract_text" 'full declared verification' \
+    'spawn contract requires verification after inline corrections'
+assert_contains "$spawn_contract_text" 'root harness attribution' \
+    'spawn contract requires root attribution for inline corrections'
+assert_contains "$spawn_contract_text" 'recorded reason' \
+    'spawn contract requires recording why the worker gate was skipped'
+assert_contains "$spawn_contract_text" 'two allowed implementation exceptions' \
+    'spawn contract names the complete implementation exception set'
+assert_contains "$spawn_contract_text" 'spawn unavailable' \
+    'spawn contract names spawn unavailability as an implementation exception'
+assert_contains "$spawn_contract_text" 'qualifying bounded inline correction' \
+    'spawn contract names bounded inline correction as an implementation exception'
+assert_contains "$worker_gate_text" '## Bounded inline corrections' \
+    'worker gate documents the bounded inline-correction exception'
+assert_contains "$worker_gate_text" 'two allowed implementation exceptions' \
+    'worker gate names the complete implementation exception set'
+assert_contains "$worker_gate_text" 'resume the same worker with `collaboration.followup_task` first' \
+    'worker gate prefers resuming the same worker for non-inline corrections'
 assert_contains "$onboard_text" 'AGENTS.md' \
     'onboarding reviews the repository instruction files'
 assert_contains "$onboard_text" 'CLAUDE.md' \

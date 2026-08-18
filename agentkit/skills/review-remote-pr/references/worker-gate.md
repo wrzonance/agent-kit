@@ -6,10 +6,13 @@ restating it.
 ## Implementation-worker gate
 
 The PR-loop agent orchestrates — inspects state, evaluates findings, owns human-confirmation
-gates — and does **not** generate a fix batch on its own model. This is role separation: each worker receives fresh fenced context
-and sole-writer isolation, while the root performs independent root validation before publication. Whenever CI, conflicts, adversarial findings, CodeRabbit, Code
-Quality, or approved human feedback requires a code change, dispatch one real worker as the sole
-writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
+gates — and does **not** generate a fix batch on its own model except for a qualifying bounded
+inline correction. This is role separation: each worker receives fresh fenced context and
+sole-writer isolation, while the root performs independent root validation before publication.
+The two allowed implementation exceptions are a genuinely spawn unavailable path and a
+qualifying bounded inline correction; all other CI, conflict, adversarial, CodeRabbit, Code
+Quality, or approved human feedback requiring a code change dispatches one real worker as the
+sole writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
 `AGENT_WORKER_EFFORT` for the worker model and effort from the repository declarations, not from a
 model tier or the orchestrator's pricing. The Step 1b reviewer (read-only) **never** satisfies this
 gate.
@@ -52,6 +55,16 @@ by the worker is surfaced before validation and never adopted.
 
 For a correction cycle, resume the same worker with `followup_task` when possible rather than
 spawning a new one; never create concurrent writers in one PR worktree.
+
+### Bounded inline corrections
+
+The root may skip dispatch for an inline correction only when all four conditions hold: the diff
+is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed
+lines; the root authored the exact diff during review; and the full declared verification is rerun.
+Record the inline decision and its recorded reason, and use root harness attribution for its
+commit. Anything else must resume the same worker with `collaboration.followup_task` first; a fresh
+worker is only the fallback when follow-up is unavailable. A qualifying correction costs zero
+dispatches, and the skip is never silent.
 
 Every worker file operation uses an absolute path rooted in its worktree — cwd is not an ownership
 boundary; a discovered write outside it is restored (`git diff --binary | git apply -R`) and

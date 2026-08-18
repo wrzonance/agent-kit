@@ -61,11 +61,13 @@ declare -A KNOWN_OVERSIZE=(
 # Issue #238 ports the references-read-once/no-sizing rule and removes the
 # provider-rules Step 5 re-read; issue #239 moves review-remote-pr fix-batch
 # publication to the worker-owned commit+push model and adds the explicit
-# no-test-seam red waiver. The merged tree carries BOTH chains' content while
-# each ceiling was measured against its own, so this is re-measured against
-# the merged body and set to the minimum that passes. Line target unchanged.
-KNOWN_OVERSIZE[review-remote-pr]="511:8144:450"
-KNOWN_OVERSIZE[parallel-issues]="1060:18191:900"
+# no-test-seam red waiver; issue #240 adds the bounded inline-correction
+# exception and same-worker-first correction call-site rule to the root review
+# spine. The merged tree carries ALL chains' content while each ceiling was
+# measured against its own, so both are re-measured against the merged body
+# and set to the minimum that passes. Line targets unchanged.
+KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
+KNOWN_OVERSIZE[parallel-issues]="1064:18312:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
