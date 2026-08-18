@@ -26,6 +26,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+review_skill_text=$(<"$review_skill")
+normalized_review_text=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
 assert_contains "$normalized_text" 'worker=<model> <effort>' \
     'completion table records the selected worker model and effort'
 assert_not_contains "$normalized_text" 'worker=gpt-5.6-luna high' \
@@ -51,6 +53,13 @@ six_step_loop_text=$(<"$shared_six_step_loop")
 trust_and_fencing_text=$(<"$trust_and_fencing")
 verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
+root_review_section=$(awk '
+    $0 == "### Root review and draft PR after a worker push" { capture=1; next }
+    capture && $0 == "### Polling discipline (applies to every wait in this skill)" { exit }
+    capture { print }
+' "$skill")
+assert_not_contains "$root_review_section" '### Polling discipline (applies to every wait in this skill)' \
+    'root review extraction stops before the following polling section'
 provider_rules_text=$(<"$root/agentkit/skills/review-remote-pr/references/provider-rules.md")
 grooming_text=$(<"$root/agentkit/skills/review-remote-pr/references/grooming.md")
 issue_lead_prompt=$(awk '
@@ -184,6 +193,24 @@ assert_contains "$text" 'references/worker-prompts.md' \
     'parallel skill points at the worker-prompts reference'
 assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
+assert_contains "$wait_discipline_text" 'A bounded wait must be silent until its terminal condition.' \
+    'parallel wait rule is silent until terminal'
+assert_contains "$wait_discipline_text" 'every line of background output wakes the orchestrator for a turn' \
+    'parallel wait rule explains why background output is forbidden'
+assert_contains "$wait_discipline_text" 'target_epoch - $(date +%s)' \
+    'parallel wait rule provides a known-epoch sleep recipe'
+assert_contains "$wait_discipline_text" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'parallel wait recipe calculates remaining time safely'
+assert_contains "$wait_discipline_text" 'if (( remaining > 0 )); then' \
+    'parallel wait recipe guards an expired target epoch'
+assert_contains "$wait_discipline_text" 'sleep "$remaining"' \
+    'parallel wait recipe sleeps only for a nonnegative duration'
+assert_contains "$wait_discipline_text" 'progress heartbeat' \
+    'parallel wait rule names progress heartbeats'
+assert_contains "$wait_discipline_text" 'log file, not stdout' \
+    'parallel wait rule redirects heartbeats away from stdout'
+assert_contains "$text" 'silent until terminal' \
+    'parallel polling section points at silent-until-terminal guidance'
 assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'parallel skill has no sleep polling recipe'
 assert_eq '' "$(scan_skill_recipes "$skill" "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep -E 'gh pr ready|provider review trigger' || true)" \
@@ -497,8 +524,23 @@ assert_contains "$normalized_text" 'Design review runs **after** the push' \
     'root design review runs post-push, not as a worker-blocking gate'
 assert_contains "$normalized_text" 'Environment-refusal fallback only' \
     'the validator flow is scoped to the environment-refusal fallback'
+assert_not_contains "$normalized_review_text" 'root publication stages only the explicit handback' \
+    'review workflow no longer stages a worker handback as root publication'
+assert_contains "$normalized_review_text" "review the worker's pushed diff and re-check CI and review state" \
+    'review Phase A re-checks state after the worker push'
+assert_not_contains "$normalized_review_text" 'verify its fix, commit/push once' \
+    'review Phase A does not republish the worker fix from root'
 assert_contains "$text" 'Step 3b workers receive only root-approved fix batches' \
     'Step 3b restricts workers to root-approved mechanical batches'
+fix_batch_flat=$(tr '\n' ' ' <<<"$fix_batch_prompt" | tr -s '[:space:]' ' ')
+assert_contains "$fix_batch_flat" 'Committing and pushing the assigned branch is yours' \
+    'fix-batch workers publish their own branch'
+assert_contains "$fix_batch_flat" 'RED: WAIVED' \
+    'fix-batch workers declare a red-phase waiver when no test seam exists'
+assert_contains "$fix_batch_flat" 'write set excludes tests' \
+    'fix-batch red-phase waiver names test-excluded batches'
+assert_not_contains "$fix_batch_flat" 'simulate a failing check' \
+    'fix-batch workers never simulate a failing check for the TDD contract'
 assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
     'Phase A orchestration remains root-owned'
 assert_contains "$normalized_text" 'preserves the raw command text for audit' \
@@ -652,20 +694,61 @@ root_sections=$(
     sed -n '/^### Root canonical issue fetch and fence preparation$/,/^Per-issue prompt:$/p' "$skill"
     sed -n '/^### Root review and draft PR after a worker push$/,/^### Polling discipline/p' "$skill"
     sed -n '/^## Runtime and provider neutrality$/,/^## Automated review provider rules/p' "$review_skill"
-    sed -n '/^## Implementation-worker gate$/,/^## Root-owned publication handback$/p' "$worker_gate"
-    sed -n '/^## Root-owned publication handback$/,$p' "$worker_gate"
+    sed -n '/^## Implementation-worker gate$/,/^## Worker-owned publication$/p' "$worker_gate"
+    sed -n '/^## Worker-owned publication$/,$p' "$worker_gate"
     sed -n '/^## Step 0: Setup/,/^## Step 3 (Phase B)/p' "$review_skill"
 )
 assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves merge-never-rebase guard'
 assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
 assert_contains "$root_sections" 'peer-cli= <name> absent' 'root-facing prose owns peer availability'
 assert_contains "$root_sections" 'blind same-harness fallback' 'root-facing prose owns blind fallback'
-assert_contains "$worker_gate_text" 'Workers are turn-and-burn' \
-    'worker-gate.md pins the turn-and-burn handback contract'
-assert_contains "$worker_gate_text" 'preserves the raw handback command text for audit' \
-    'worker-gate.md pins the raw-command-text audit guard'
-assert_contains "$worker_gate_text" 'validated argv without `eval`' \
-    'worker-gate.md pins argv-without-eval parsing'
+worker_gate_flat=$(tr '\n' ' ' <<<"$worker_gate_text" | tr -s '[:space:]' ' ')
+assert_contains "$worker_gate_flat" 'Workers commit and push their own branch' \
+    'worker-gate.md pins worker-owned publication'
+assert_contains "$worker_gate_flat" 'completion report' \
+    'worker-gate.md pins the worker completion report'
+assert_contains "$worker_gate_flat" 'Environment-refusal fallback' \
+    'worker-gate.md keeps handback only for environment refusal'
+assert_contains "$worker_gate_flat" 'worktree-commit.sh` exits 2' \
+    'worker-gate.md distinguishes commit refusal'
+assert_contains "$worker_gate_flat" 'push was refused after the commit succeeded' \
+    'worker-gate.md distinguishes push refusal after commit'
+assert_not_contains "$worker_gate_flat" 'Workers are turn-and-burn' \
+    'worker-gate.md removes the turn-and-burn handback contract'
+assert_not_contains "$worker_gate_flat" 'leave progress unstaged' \
+    'worker-gate.md removes unstaged handback from the primary flow'
+assert_not_contains "$worker_gate_flat" 'root-owned publication handback' \
+    'worker-gate.md no longer presents root publication as the primary flow'
+assert_contains "$worker_gate_flat" 'purely mechanical' \
+    'worker-gate.md limits inline corrections to mechanical changes'
+assert_contains "$worker_gate_flat" 'no new behavior, data shape, or control flow' \
+    'worker-gate.md excludes behavioral inline corrections'
+assert_contains "$worker_gate_flat" 'at most five changed lines' \
+    'worker-gate.md bounds inline corrections to five lines'
+assert_contains "$worker_gate_flat" 'root authored the exact diff' \
+    'worker-gate.md requires root-authored inline diffs'
+assert_contains "$worker_gate_flat" 'full declared verification' \
+    'worker-gate.md requires verification after inline corrections'
+assert_contains "$worker_gate_flat" 'root harness attribution' \
+    'worker-gate.md requires root attribution for inline corrections'
+assert_contains "$worker_gate_flat" 'recorded reason' \
+    'worker-gate.md requires recording why the worker gate was skipped'
+assert_contains "$root_review_section" 'resume the same worker with `followup_task` first' \
+    'root review resumes the same worker before considering a fresh dispatch'
+assert_contains "$root_review_section" 'inline correction' \
+    'root review names the inline-correction decision at the correction call site'
+assert_contains "$root_review_section" 'zero dispatches' \
+    'root review records that qualifying inline corrections cost zero dispatches'
+assert_contains "$text" 'two allowed implementation exceptions' \
+    'parallel preflight names the complete implementation exception set'
+assert_contains "$text" 'qualifying bounded inline correction' \
+    'parallel preflight names bounded inline correction as an implementation exception'
+assert_contains "$worker_gate_flat" 'continues the existing PR' \
+    'worker-gate.md keeps review-remote-pr on the existing PR'
+assert_contains "$worker_gate_flat" 'CI, reply, review, and metadata cycle' \
+    'worker-gate.md names the existing PR follow-up responsibilities'
+assert_not_contains "$worker_gate_flat" 'opens a DRAFT PR' \
+    'worker-gate.md does not create a draft PR for an existing review'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \

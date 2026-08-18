@@ -166,6 +166,42 @@ issue_numbers=("${requested_issues[@]}")
 declare -A completed_issues=()
 
 owner=${repository%%/*}
+repository_name=${repository#*/}
+cached_mutation_rejected=0
+
+# Query the issue's own project memberships instead of enumerating every
+# project in the organization. --paginate follows projectItems connections
+# past the first page; jq -s combines the page responses into one item array.
+issue_project_items() {
+    local issue_number=$1 query memberships
+    # shellcheck disable=SC2016
+    query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
+      repository(owner:$owner, name:$name) {
+        issue(number:$number) {
+          projectItems(first:100, after:$endCursor) {
+            nodes {
+              id
+              project { id number title owner { login } }
+              fieldValueByName(name:"Status") {
+                ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+              }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }'
+    memberships=$(gh api graphql --paginate \
+        -f "owner=$owner" -f "name=$repository_name" -F "number=$issue_number" \
+        -f "query=$query" 2>/dev/null) || return 1
+    [[ -n $memberships ]] || return 1
+    jq -s -c '
+        if all(.[]; .data.repository.issue.projectItems? | type == "object")
+        then [.[].data.repository.issue.projectItems.nodes[]?]
+        else error("issue project membership response is malformed")
+        end
+    ' <<< "$memberships"
+}
 
 # ---------------------------------------------------------------- .agent/ ---
 # Static board facts a repository declared for itself. Every lookup below
@@ -530,6 +566,135 @@ try_known_board() {
     return 0
 }
 
+# Resolve issues that were absent from the declared board item listing by
+# reading their own project memberships. This is deliberately the final
+# default path when board.json is trusted: an issue on another board is a
+# terminal no-op, not permission to scan every project in the organization.
+try_declared_memberships() {
+    local project_number project_id project_title field_id option_id project_owner
+    local memberships membership_count item_id current_status issue_number
+
+    ((all_boards == 0)) || return 1
+    board_readable || return 1
+    project_number=$(jq -r '.project.number // empty' <"$board_file" 2>/dev/null) || return 1
+    project_id=$(jq -r '.project.id // empty' <"$board_file" 2>/dev/null) || return 1
+    project_title=$(jq -r '.project.title // "?"' <"$board_file" 2>/dev/null) || return 1
+    field_id=$(jq -r '.statusField.id // empty' <"$board_file" 2>/dev/null) || return 1
+    option_id=$(board_option_id "$status") || return 1
+    project_owner=$(jq -r '.owner // empty' <"$board_file" 2>/dev/null) || return 1
+    [[ -n $project_number && -n $project_id && -n $field_id && -n $option_id &&
+        -n $project_owner ]] || return 1
+    board_provenance_matches "$project_number" "$project_id" "$project_owner" || return 1
+
+    for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+        memberships=$(issue_project_items "$issue_number") || return 2
+        membership_count=$(jq 'length' <<< "$memberships") || return 2
+        item_id=$(jq -r --arg project "$project_id" --arg number "$project_number" \
+            --arg owner "$project_owner" '
+            first(.[] | select(
+                ((.project.id // "") == $project) or
+                (((.project.number // "") | tostring) == $number and
+                 ((.project.owner.login // "") | ascii_downcase) == ($owner | ascii_downcase))
+            ) | .id) // empty
+        ' <<< "$memberships")
+        if [[ -z $item_id ]]; then
+            ((cached_mutation_rejected == 0)) || return 2
+            if ((membership_count > 0)); then
+                report_noop "no-op: issue #$issue_number is not on declared project #$project_number \"$project_title\"; use --all-boards to inspect all project boards"
+            else
+                report_noop "no-op: issue #$issue_number is not on any project board"
+            fi
+            completed_issues[$issue_number]=1
+            continue
+        fi
+
+        current_status=$(jq -r --arg item "$item_id" '
+            first(.[] | select(.id == $item)
+                  | (.fieldValueByName.name // empty)) // empty
+        ' <<< "$memberships")
+        if [[ -n $current_status && $current_status == "$status" ]]; then
+            report_noop "no-op: issue #$issue_number already \"$current_status\""
+            completed_issues[$issue_number]=1
+            continue
+        fi
+        gh project item-edit \
+            --id "$item_id" \
+            --project-id "$project_id" \
+            --field-id "$field_id" \
+            --single-select-option-id "$option_id" >/dev/null 2>&1 || {
+                invalidate_cached_item "$project_id" "$issue_number" "$project_owner" "$project_number"
+                return 2
+            }
+        cache_item_id "$project_id" "$issue_number" "$item_id" "$project_owner" "$project_number"
+        completed_issues[$issue_number]=1
+        report_moved "moved #$issue_number -> \"$status\" on project #$project_number \"$project_title\" (projectItems)"
+    done
+    return 0
+}
+
+# --all-boards is the only mode allowed to inspect boards beyond board.json.
+# It walks the issue's paginated projectItems connection, then resolves each
+# matching board's Status field without listing that board's cards.
+process_project_memberships() {
+    local memberships issue_number item_id project_number project_id project_title project_owner
+    local current_status fields_json status_field_id option_id
+
+    ((all_boards == 1)) || return 1
+    for issue_number in "${issue_numbers[@]}"; do
+        memberships=$(issue_project_items "$issue_number") || return 2
+        if [[ $(jq 'length' <<< "$memberships") == 0 ]]; then
+            report_noop "no-op: issue #$issue_number is not on any project board"
+            completed_issues[$issue_number]=1
+            continue
+        fi
+        while IFS=$'\t' read -r item_id project_number project_id project_title project_owner current_status; do
+            [[ -n $item_id && -n $project_number && -n $project_id ]] || continue
+            [[ -n $project_title ]] || project_title='(untitled)'
+            [[ -n $project_owner ]] || project_owner=$owner
+            if ! fields_json=$(gh project field-list "$project_number" --owner "$project_owner" \
+                --limit "$FIELD_LIMIT" --format json 2>/dev/null); then
+                printf 'Warning: could not list fields for project #%s; skipping it.\n' \
+                    "$project_number" >&2
+                continue
+            fi
+            status_field_id=$(jq -r \
+                'first(.fields[]? | select((.name | ascii_downcase) == "status") | .id) // empty' \
+                <<< "$fields_json")
+            if [[ -z $status_field_id ]]; then
+                report_noop "no-op: project #$project_number \"$project_title\" has no Status field"
+                completed_issues[$issue_number]=1
+                continue
+            fi
+            option_id=$(jq -r --arg wanted "$status" \
+                'first(.fields[]? | select((.name | ascii_downcase) == "status") |
+                 .options[]? | select((.name | ascii_downcase) == ($wanted | ascii_downcase)) | .id) // empty' \
+                <<< "$fields_json")
+            if [[ -z $option_id ]]; then
+                report_noop "no-op: project #$project_number \"$project_title\" has no matching Status option \"$status\""
+                completed_issues[$issue_number]=1
+                continue
+            fi
+            if [[ -n $current_status && $current_status == "$status" ]]; then
+                report_noop "no-op: issue #$issue_number already \"$current_status\""
+                completed_issues[$issue_number]=1
+                continue
+            fi
+            gh project item-edit \
+                --id "$item_id" \
+                --project-id "$project_id" \
+                --field-id "$status_field_id" \
+                --single-select-option-id "$option_id" >/dev/null 2>&1 ||
+                die "Could not move issue #$issue_number to '$status'."
+            completed_issues[$issue_number]=1
+            report_moved "moved #$issue_number -> \"$status\" on project #$project_number \"$project_title\""
+        done < <(jq -r '.[] | [(.id // ""), (.project.number // ""), (.project.id // ""),
+            (.project.title // ""), (.project.owner.login // ""),
+            (.fieldValueByName.name // "")] | @tsv' <<< "$memberships")
+    done
+    return 0
+}
+
 fast_rc=0
 try_fast_path || fast_rc=$?
 if ((fast_rc == 0)); then
@@ -552,6 +717,35 @@ if ((fast_rc == 2)); then
     # is a real error and must surface rather than be papered over by a loop.
     printf 'board changed - the cached ids were rejected; rediscovering once\n' >&2
     printf 'board changed - commit the regenerated .agent/board.json\n' >&2
+    cached_mutation_rejected=1
+fi
+
+# A trusted declaration closes the default search boundary. Only an invalid
+# or absent declaration may use the legacy organization-wide fallback.
+if ((all_boards == 0)) && board_readable; then
+    declared_rc=0
+    try_declared_memberships || declared_rc=$?
+    if ((declared_rc == 0)); then
+        report_summary
+        exit 0
+    fi
+    if ((declared_rc == 2)); then
+        die 'Could not list issue project memberships.'
+    fi
+fi
+
+# Explicit --all-boards is driven by each issue's own paginated memberships;
+# it never needs to enumerate the organization's unrelated projects.
+if ((all_boards == 1)); then
+    memberships_rc=0
+    process_project_memberships || memberships_rc=$?
+    ((memberships_rc == 0)) || die 'Could not list issue project memberships.'
+    for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+        report_noop "no-op: issue #$issue_number is not on any project board"
+    done
+    report_summary
+    exit 0
 fi
 
 # Handles one project board. Prints its own stdout line, except when the issue

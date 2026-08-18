@@ -17,7 +17,9 @@ current `collaboration.spawn_agent` capability; worker model and effort are conf
 model-tier or pricing judgment. The resolver reads `.agent/config.env` line-wise and never
 sources it:
 
-The root/orchestrator must not implement when a real worker can be dispatched; `worker=self` is only the documented spawn-unavailable degraded path.
+The root/orchestrator must not implement when a real worker can be dispatched except for the two
+allowed implementation exceptions: a genuinely spawn unavailable degraded path (`worker=self`)
+or a qualifying bounded inline correction.
 
 ```bash
 worker_model_default='gpt-5.6-luna'
@@ -149,6 +151,15 @@ For a follow-up correction on work already dispatched, resume the same worker wi
 never create two concurrent writers in one worktree. When `followup_task` is unavailable,
 spawn a fresh worker carrying the completed state and the exact remaining step.
 
+## Bounded inline corrections
+
+The root may apply a correction inline, at zero dispatches, only when **all** four conditions
+hold: the diff is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed lines; the root authored the exact diff
+during review; and the full declared verification is rerun afterward. The root records the decision and its recorded reason, and the commit uses
+root harness attribution rather than the worker's. Anything past this bar resumes
+the same worker with `collaboration.followup_task` first; a fresh worker is the exception when
+follow-up is unavailable. The inline/dispatch decision is never silent.
+
 ## Tier mapping
 
 Root = trust/judgment and every privileged or forge-facing action. Luna = mechanical
@@ -158,7 +169,8 @@ fallback. Terra `xhigh` is reserved for the context-free blind same-harness adve
 fallback only. A single clean unit of work may be handled by the root without a dispatched
 **lead** — that is, without an intermediate orchestration tier. It is not permission to skip the
 **implementation worker**: any code change still goes through one dispatched worker as its sole
-writer, and the only exception is a genuinely unavailable spawn (each consuming skill's degraded
-path, which must be labelled `worker=self` with the reason). Root omitting a lead is an
+writer, except for the two allowed implementation exceptions: a genuinely spawn unavailable path
+(each consuming skill's degraded path must be labelled `worker=self` with the reason) or a
+qualifying bounded inline correction. Root omitting a lead is an
 org-chart shortcut; root writing the code itself bypasses the isolated model, the six-step gate,
 and the audited handback.

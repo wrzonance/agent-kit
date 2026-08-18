@@ -508,6 +508,10 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
    performed spike must use `SPIKE + REVERT: PERFORMED — transcript evidence: ...` naming
    both the spike edit and the revert; a no-code batch may use `SPIKE + REVERT: N/A —
    <concrete reason>`.
+   When the accepted batch's write set excludes tests, or the target has no test seam, declare
+   `RED: WAIVED — <named existing oracle, e.g. focused suite X>` instead of simulating a failing
+   check or using a tautological grep for the fix's own text. The waiver is explicit and never
+   silent.
 3. Run every focused and full verification command through `agent-run.sh`; retain the fresh
    green marker-bearing log path and do not rerun a failed command outside the wrapper.
 4. When verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file

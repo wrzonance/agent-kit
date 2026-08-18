@@ -23,6 +23,12 @@ EOF
 chmod +x "$tmp/compliant/routes.sh"
 assert_rc 0 'REST and the two named GraphQL surfaces pass' -- "$scanner" "$tmp/compliant"
 
+helper_root="$tmp/review-helpers"
+mkdir -- "$helper_root"
+cp -- "$here/../agentkit/skills/review-remote-pr/scripts/adversarial-run.sh" \
+    "$here/../agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" "$helper_root/"
+assert_rc 0 'review helpers keep REST-first routing' -- "$scanner" "$helper_root"
+
 cat >"$tmp/violating/routes.sh" <<'EOF'
 #!/usr/bin/env bash
 gh issue view "$NUMBER" --json body,labels
