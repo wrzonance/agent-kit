@@ -268,6 +268,12 @@ assert_contains "$review_wait_contract" 'every line of background output wakes t
     'review wait rule explains why background output is forbidden'
 assert_contains "$review_wait_contract" 'target_epoch - $(date +%s)' \
     'review wait rule provides a known-epoch sleep recipe'
+assert_contains "$review_wait_contract" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'review wait recipe calculates remaining time safely'
+assert_contains "$review_wait_contract" 'if (( remaining > 0 )); then' \
+    'review wait recipe guards an expired target epoch'
+assert_contains "$review_wait_contract" 'sleep "$remaining"' \
+    'review wait recipe sleeps only for a nonnegative duration'
 assert_contains "$review_wait_contract" 'progress heartbeat' \
     'review wait rule names progress heartbeats'
 assert_contains "$review_wait_contract" 'log file, not stdout' \

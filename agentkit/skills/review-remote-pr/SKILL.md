@@ -359,8 +359,8 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before waits: it owns the
 no-model-turn, bounds, and durable-state rules; Step 4 adds CI settlement specifics.
 
-silent until terminal: background output wakes the orchestrator for a turn; log heartbeats and emit
-one completion/expiry line.
+This loop keeps waits silent until terminal: background output wakes the orchestrator for a turn; log
+heartbeats and emit one completion/expiry line.
 
 ### Adversarial-review receipt:
 

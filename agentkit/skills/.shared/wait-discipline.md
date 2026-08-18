@@ -21,7 +21,10 @@ For a wait to a known epoch, calculate the target and sleep once. The following 
 
 ```text
 target_epoch=$(( $(date +%s) + 300 ))
-sleep $(( target_epoch - $(date +%s) ))
+remaining=$(( target_epoch - $(date +%s) ))
+if (( remaining > 0 )); then
+  sleep "$remaining"
+fi
 printf 'wait complete\n'
 ```
 

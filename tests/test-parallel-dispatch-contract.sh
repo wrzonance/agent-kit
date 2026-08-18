@@ -190,6 +190,12 @@ assert_contains "$wait_discipline_text" 'every line of background output wakes t
     'parallel wait rule explains why background output is forbidden'
 assert_contains "$wait_discipline_text" 'target_epoch - $(date +%s)' \
     'parallel wait rule provides a known-epoch sleep recipe'
+assert_contains "$wait_discipline_text" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'parallel wait recipe calculates remaining time safely'
+assert_contains "$wait_discipline_text" 'if (( remaining > 0 )); then' \
+    'parallel wait recipe guards an expired target epoch'
+assert_contains "$wait_discipline_text" 'sleep "$remaining"' \
+    'parallel wait recipe sleeps only for a nonnegative duration'
 assert_contains "$wait_discipline_text" 'progress heartbeat' \
     'parallel wait rule names progress heartbeats'
 assert_contains "$wait_discipline_text" 'log file, not stdout' \
