@@ -138,6 +138,24 @@ assert_contains "$parallel_with_refs" 'Ready before Backlog' \
 assert_contains "$parallel" 'An empty selection is an answer' \
     'nothing eligible is a stop, not a reason to widen the query'
 
+# --- a thin Ready column promotes Backlog instead of refusing to start ------
+# Issue #270: invoked with no numbers and a single Ready issue, a run refused
+# to start -- the --fast-mode flag row promised Backlog promotion while the
+# board-adjudication prose read as a universal "never auto-pull Backlog", so
+# an agent took the conservative reading and stopped instead of promoting.
+# This procedure now runs for a thin Ready set whether or not --fast-mode is
+# set, and for a numbered invocation carrying a thematic Backlog instruction.
+assert_contains "$parallel_with_refs" 'is an invitation, not a blocker' \
+    'a thin Ready column promotes Backlog rather than refusing to start'
+assert_contains "$parallel_with_refs" 'asks instead of refusing to start' \
+    'an attended run pitches the promoted set instead of stopping'
+assert_contains "$parallel_with_refs" 'shared-area interrelation' \
+    'promoted Backlog candidates are ranked by dependency edges and shared-area overlap'
+assert_contains "$parallel_with_refs" 'thematic promotion instruction' \
+    'a numbered invocation can still carry a thematic Backlog instruction'
+assert_contains "$parallel_with_refs" 'never a reason to drop them silently' \
+    'a thematic-instruction match is never silently dropped from the plan'
+
 # --- --auto-review is bounded ------------------------------------------------
 # The consent-gate detail lives in references/adversarial-review.md; the two
 # gate-boundary phrases below are location-sensitive (they assert the BODY,

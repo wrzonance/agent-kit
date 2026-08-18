@@ -246,10 +246,14 @@ finding (which Project, which issues) in the disclosure where an attended run wo
 have asked. A candidate in a "Blocked"-style column is dropped with a printed
 reason, not asked about. Without `--fast-mode`, ask as above.
 
-**Pickup order (auto mode).** Take from **Ready** first, top of column first; **Backlog**
-is not auto-pulled — surface it and ask. Issues on no board are fair game; rank them after
-Ready items. `active`/`done` are already excluded by triage. Present the proposed set in
-board order, one line per issue, with the prior-art verdicts.
+**Pickup order (auto mode).** Take from **Ready** first, top of column first. **A thin Ready
+column is an invitation, not a blocker**: when eligible Ready issues are fewer than the slot
+cap, run [Step 2b's procedure](#step-2b-choose-the-set-yourself----fast-mode-only) to promote
+unblocked Backlog issues and fill the cap — `--fast-mode` proceeds and discloses the promotion;
+an attended run surfaces the promoted candidates and asks instead of refusing to start on a thin
+set. Issues on no board are fair game; rank them after Ready and promoted-Backlog items.
+`active`/`done` are already excluded by triage. Present the proposed set in board order, one line
+per issue, with the prior-art verdicts.
 
 ## Optional: fuzzy prior art
 
@@ -265,9 +269,14 @@ opt-in per issue rather than automatic:
 
 ## Step 2b: Choose the set yourself — `--fast-mode` only
 
-Invoked with issue numbers, use them; this step is for `/parallel-issues --yolo --fast-mode`
-with none. The board decides, and one script answers the mechanical half so an issue body
-cannot argue its way into a dispatch.
+Invoked with issue numbers and no thematic Backlog instruction, use them; this step also runs
+for `/parallel-issues --yolo --fast-mode` with none, for an attended automatic invocation whose
+eligible Ready set is thinner than the slot cap, and for a numbered invocation that names a
+thematic promotion instruction (e.g. "move issues out of backlog associated with logging and the
+revit add-in") — that last case runs the procedure filtered to the theme and adds the matches
+beside the given numbers; a thematic instruction is explicit authorization to include them, never
+a reason to drop them silently. The board decides, and one script answers the mechanical half so
+an issue body cannot argue its way into a dispatch.
 
 ```bash
 set -euo pipefail
@@ -293,8 +302,14 @@ would have reported `#11` as ready to start.
 
 Then apply, in order:
 
-1. **Ready before Backlog.** Exhaust vetted work before promoting unvetted work. Take
-   Backlog only when Ready is empty or too small for the slot count.
+1. **Ready before Backlog, promoted to fill a thin cap.** Exhaust vetted Ready work first; a
+   thin Ready column (fewer eligible issues than the slot cap) is normal, not a reason to stop.
+   Rank Backlog candidates by native blocked-by edges (an issue blocking or blocked by an
+   already-selected issue ranks higher) and shared-area interrelation (touches the same
+   files/modules/labels as an already-selected issue), then take top-ranked candidates until the
+   cap is filled or Backlog is exhausted. For a numbered invocation with a thematic promotion
+   instruction, restrict this ranking to Backlog issues matching the named theme (title/label
+   token overlap).
 2. **Run Step 3's conflict analysis over the eligible set**, and drop the later issue from
    every colliding pair. This is the part no script can do — it is a judgement about which
    files each issue will touch.
@@ -308,8 +323,12 @@ Then apply, in order:
    appears, that issue/status/phase is complete; never re-invoke the helper merely to verify or
    interleave a second move.
 
-Announce the chosen set, the dropped-for-conflict set, and the skipped-as-blocked set
-before dispatching. `--fast-mode` removes the approval gate, not the disclosure.
+Announce the chosen set, every promoted-from-Backlog issue with its ranking reason, the
+dropped-for-conflict set, and the skipped-as-blocked set before dispatching. `--fast-mode`
+removes the approval gate, not the disclosure — it proceeds straight to dispatch on that
+disclosure. An attended run (with or without given issue numbers) surfaces the same disclosure
+and asks instead of refusing to start on a thin Ready set or silently leaving thematic Backlog
+matches out of a numbered set.
 
 If nothing is eligible, say so and stop. An empty selection is an answer; it is never a
 reason to widen the query, ignore a blocker, or reach for `Done`.

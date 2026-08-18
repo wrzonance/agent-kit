@@ -73,7 +73,13 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # same condition the compose-args line already uses), so the first declared
 # setup in an unattended run no longer burns a guaranteed approval refusal.
 # One spine line, minimum that passes. Line target unchanged.
-KNOWN_OVERSIZE[parallel-issues]="1121:19076:900"
+# Issue #270 resolves the thin-Ready-column contradiction (the --fast-mode row
+# promised Backlog promotion while the board-adjudication prose read as a
+# universal "never auto-pull Backlog"): Step 2b's intro paragraph in the body
+# now states the promotion/pitch fork in one place, with the ranking and
+# numbered+thematic detail moved into references/triage-and-selection.md.
+# Minimum that passes. Line target unchanged.
+KNOWN_OVERSIZE[parallel-issues]="1125:19173:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
