@@ -1,5 +1,5 @@
 Read this before dispatching any implementation worker — it carries the full orchestrator/worker
-split and the root-owned publication mechanics behind the MANDATORY "Implementation-worker gate"
+split and the worker-owned publication mechanics behind the MANDATORY "Implementation-worker gate"
 section `SKILL.md` states ahead of "The Loop"; Step 2 points back to that gate rather than
 restating it.
 
@@ -23,20 +23,30 @@ verbatim into the worker's prompt, alongside the accepted findings, worktree/bra
 the Step 0a environment contract — never as a pointer** — `fork_context: false` leaves it no
 other way to see them.
 
-## Root-owned publication handback
+## Worker-owned publication
 
-Workers are turn-and-burn: edit only the assigned worktree, leave progress unstaged, and finish
-with a handback naming the dirty files, the green log, and one exact `worktree-commit.sh`
-invocation with the worker trailer and explicit files. Workers never invoke that helper, stage,
-commit, stash, push, call forge/board helpers, create PRs, launch reviews, or request escalation.
-Before execution, the root preserves the raw handback command text for audit, then parses it into
-validated argv without `eval`, verifies the expected helper/trailer/paths, and inspects
-`git status --short` + `git diff -- <paths>` (incl. unstaged) before publication. It invokes the
-command as argv exactly once, and only afterward inspects `base...HEAD`; it then republishes the
-handback command verbatim once before the single cycle push and any forge replies. It then pushes
-and opens a DRAFT PR through the canonical composer (Why/What/Decisions/checkbox Testing/signature/separate Closes #NNN). For
-stacked chains, use `chain-advance.sh` to re-read `baseRefName` and prove `base...head` before
-merging a successor; stale approval residue remains a human judgment. A dirty
+Workers commit and push their own branch: edit only the assigned worktree, run the required
+focused and full verification, then finish with a completion report naming the branch, full commit
+SHA, diffstat, and green verification log. Commit with `worktree-commit.sh` using explicit file
+operands and the expanded contract-derived worker trailer; never stage or publish unrelated dirt.
+Workers never call forge/board helpers, create PRs, launch reviews, or request escalation. The root
+reviews the pushed `base...HEAD` diff independently and owns PR metadata, board moves, replies,
+and the next review cycle.
+
+## Environment-refusal fallback
+
+The unstaged publication handback survives only as an environment-refusal fallback. If
+`worktree-commit.sh` exits 2, nothing is committed: stop and return the scoped dirty files,
+diffstat, green log, branch, and one exact ready-to-run commit invocation with the expanded trailer;
+the root runs it once and then pushes. If the push was refused after the commit succeeded, the tree
+is clean: report the full commit SHA and the exact ready-to-run `git push -u origin BRANCH` command;
+the root runs that push once and does not retry a commit. Never use an unstaged handback for a
+normal worker result.
+
+For the normal path, the root inspects `base...HEAD` only after the worker push and then opens a
+DRAFT PR through the canonical composer (Why/What/Decisions/checkbox Testing/signature/separate
+Closes #NNN). For stacked chains, use `chain-advance.sh` to re-read `baseRefName` and prove
+`base...head` before merging a successor; stale approval residue remains a human judgment. A dirty
 tree not authored by the worker is surfaced before validation and never adopted.
 
 For a correction cycle, resume the same worker with `followup_task` when possible rather than

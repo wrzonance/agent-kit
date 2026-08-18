@@ -497,8 +497,19 @@ assert_contains "$normalized_text" 'Design review runs **after** the push' \
     'root design review runs post-push, not as a worker-blocking gate'
 assert_contains "$normalized_text" 'Environment-refusal fallback only' \
     'the validator flow is scoped to the environment-refusal fallback'
+assert_not_contains "$normalized_text" 'root publication stages only the explicit handback' \
+    'review workflow no longer stages a worker handback as root publication'
 assert_contains "$text" 'Step 3b workers receive only root-approved fix batches' \
     'Step 3b restricts workers to root-approved mechanical batches'
+fix_batch_flat=$(tr '\n' ' ' <<<"$fix_batch_prompt" | tr -s '[:space:]' ' ')
+assert_contains "$fix_batch_flat" 'commit and push the assigned branch' \
+    'fix-batch workers publish their own branch'
+assert_contains "$fix_batch_flat" 'RED: WAIVED' \
+    'fix-batch workers declare a red-phase waiver when no test seam exists'
+assert_contains "$fix_batch_flat" 'write set excludes tests' \
+    'fix-batch red-phase waiver names test-excluded batches'
+assert_not_contains "$fix_batch_flat" 'simulate a failing check' \
+    'fix-batch workers never simulate a failing check for the TDD contract'
 assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
     'Phase A orchestration remains root-owned'
 assert_contains "$normalized_text" 'preserves the raw command text for audit' \
@@ -660,12 +671,23 @@ assert_contains "$root_sections" 'never rebase' 'root-facing prose preserves mer
 assert_contains "$root_sections" 'git add -A' 'root-facing prose preserves explicit staging guard'
 assert_contains "$root_sections" 'peer-cli= <name> absent' 'root-facing prose owns peer availability'
 assert_contains "$root_sections" 'blind same-harness fallback' 'root-facing prose owns blind fallback'
-assert_contains "$worker_gate_text" 'Workers are turn-and-burn' \
-    'worker-gate.md pins the turn-and-burn handback contract'
-assert_contains "$worker_gate_text" 'preserves the raw handback command text for audit' \
-    'worker-gate.md pins the raw-command-text audit guard'
-assert_contains "$worker_gate_text" 'validated argv without `eval`' \
-    'worker-gate.md pins argv-without-eval parsing'
+worker_gate_flat=$(tr '\n' ' ' <<<"$worker_gate_text" | tr -s '[:space:]' ' ')
+assert_contains "$worker_gate_flat" 'Workers commit and push their own branch' \
+    'worker-gate.md pins worker-owned publication'
+assert_contains "$worker_gate_flat" 'completion report' \
+    'worker-gate.md pins the worker completion report'
+assert_contains "$worker_gate_flat" 'Environment-refusal fallback' \
+    'worker-gate.md keeps handback only for environment refusal'
+assert_contains "$worker_gate_flat" 'worktree-commit.sh` exits 2' \
+    'worker-gate.md distinguishes commit refusal'
+assert_contains "$worker_gate_flat" 'push was refused after the commit succeeded' \
+    'worker-gate.md distinguishes push refusal after commit'
+assert_not_contains "$worker_gate_flat" 'Workers are turn-and-burn' \
+    'worker-gate.md removes the turn-and-burn handback contract'
+assert_not_contains "$worker_gate_flat" 'leave progress unstaged' \
+    'worker-gate.md removes unstaged handback from the primary flow'
+assert_not_contains "$worker_gate_flat" 'root-owned publication handback' \
+    'worker-gate.md no longer presents root publication as the primary flow'
 assert_contains "$issue_lead_prompt" 'Read the authoritative `instructions=` line from `.agent/env-contract.txt`' \
     'issue leads use the preflight instruction contract'
 assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only' \
