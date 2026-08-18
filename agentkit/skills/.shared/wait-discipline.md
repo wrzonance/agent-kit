@@ -15,6 +15,19 @@ progress.
 
 Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial max-duration-seconds, the CI round cap, the worker completion marker/contract, or the runner completion marker/contract. Background a worker or producer only when useful work can continue concurrently; when it is the last task standing, rejoin once with a harness-level terminal wait. This rule covers adversarial verdicts, CI, worker waits, and test-runner logs. For logs, run `agent-run.sh --cmd test` in the foreground or poll the log only from inside one bounded harness cell; never issue separate sleep and tail/re-check tool calls.
 
+**A bounded wait must be silent until its terminal condition.** The waiting process emits nothing while waiting and exactly one line on completion or expiry: every line of background output wakes the orchestrator for a turn. A progress heartbeat, if genuinely needed, goes to a log file, not stdout.
+
+For a wait to a known epoch, calculate the target and sleep once. The following copy/paste recipe is silent until its final line:
+
+```text
+target_epoch=$(( $(date +%s) + 300 ))
+sleep $(( target_epoch - $(date +%s) ))
+printf 'wait complete\n'
+```
+
+If a bounded loop is genuinely necessary, redirect each heartbeat with `>>"$log"` and reserve
+stdout for the single completion or expiry line.
+
 - **One wait per interval.** Issue at most one blocking wait per polling interval, and only while a task is genuinely outstanding. Re-issuing a wait the instant it returns empty is the failure mode: it produces nothing and costs a turn every time.
 - **Between waits, wait again; read durable state only when a wait reports an actual completion.** A running lead leaves evidence on disk and on the forge; inspect it after completion rather than asking the runtime again.
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
