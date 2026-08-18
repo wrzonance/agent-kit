@@ -23,6 +23,16 @@ cat > "$tmp/stub/gh" << EOF
 set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
+  *"api graphql"*)
+      if [[ -n \${MULTI_BOARD:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
+            {"id":"PVTI_example57","project":{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}},
+            {"id":"PVTI_example58b","project":{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
+          ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      else
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      fi
+      ;;
   *"item-edit"*)
       [[ -n \${FAIL_EDIT:-} ]] && exit 1
       if [[ -n \${FAIL_STALE_ITEM:-} && "\$*" == *"PVTI_stale57"* ]]; then exit 1; fi
@@ -320,7 +330,25 @@ run_mv "$repo" --issue-number 99 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'item-list' 'an uncached issue falls back to discovery'
 
+# A declared board is the default discovery boundary. An issue absent from
+# that board may be on no board (or another board), but it must not trigger an
+# org-wide project scan; inspect the issue's own memberships and terminate.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'projectItems' \
+    'a declared-board miss checks the issue-owned project memberships'
+assert_not_contains "$log" 'project list' \
+    'a declared-board miss never scans unrelated organization projects'
+assert_not_contains "$out" 'Warning: could not list items for project' \
+    'a declared-board miss suppresses unrelated-project warnings'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'a declared-board miss reports one terminal no-op'
+
 # --- discovery warms the cache for next time -------------------------------
+repo=$(seed_repo)
+run_mv "$repo" --issue-number 99 --status Ready > /dev/null 2>&1
 cache="$repo/.agent/cache/board-items.json"
 assert_eq 'PVTI_example99' "$(jq -r '.items["99"] // "absent"' < "$cache")" \
     'a discovered item id is written back to the cache'
@@ -373,17 +401,18 @@ assert_rc 1 'an unknown status is rejected' -- \
     --issue-number 57 --status 'Nonexistent Column'
 assert_eq '0' "$(wc -l < "$tmp/gh.log")" 'an invalid status makes no gh call at all'
 
-# --- self-heal on a rejected edit -----------------------------------------
+# --- rejected cached edit fails closed without an organization walk --------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(FAIL_EDIT=1 GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
     "$mv_sh" --repo-root "$repo" --repository example-org/example-repo \
     --issue-number 57 --status Done 2>&1 || true)
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'field-list' 'a rejected edit triggers rediscovery'
+assert_contains "$log" 'api graphql' 'a rejected edit checks issue-owned memberships'
+assert_not_contains "$log" 'project list' 'a rejected edit never scans unrelated projects'
 assert_contains "$out" 'board changed' 'prints the regenerate-and-commit notice'
 edits=$(grep -c 'item-edit' "$tmp/gh.log" || true)
-assert_eq '2' "$edits" 'retries exactly once, never loops'
+assert_eq '1' "$edits" 'a rejected cached edit is never retried blindly'
 
 # --- no cache at all behaves exactly as before ----------------------------
 repo=$(bare_repo)
@@ -497,6 +526,12 @@ repo=$(seed_repo)
 out=$(MULTI_BOARD=1 run_mv "$repo" --issue-number 57 --status Ready --all-boards 2>&1)
 assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
     'all-boards updates the requested card on every board'
+assert_contains "$(cat "$tmp/gh.log")" 'api graphql --paginate' \
+    'all-boards paginates the issue-owned project memberships'
+assert_not_contains "$(cat "$tmp/gh.log")" 'project list' \
+    'all-boards never scans the organization project list'
+assert_not_contains "$(cat "$tmp/gh.log")" 'item-list' \
+    'all-boards never lists every board card'
 assert_contains "$out" 'project #7 "Example Board"' \
     'all-boards reports the first board move'
 assert_contains "$out" 'project #8 "Second Board"' \
