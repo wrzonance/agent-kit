@@ -192,7 +192,7 @@ issue_project_items() {
       }
     }'
     memberships=$(gh api graphql --paginate \
-        -F "owner=$owner" -F "name=$repository_name" -F "number=$issue_number" \
+        -f "owner=$owner" -f "name=$repository_name" -F "number=$issue_number" \
         -f "query=$query" 2>/dev/null) || return 1
     [[ -n $memberships ]] || return 1
     jq -s -c '
@@ -572,7 +572,7 @@ try_known_board() {
 # terminal no-op, not permission to scan every project in the organization.
 try_declared_memberships() {
     local project_number project_id project_title field_id option_id project_owner
-    local memberships item_id current_status issue_number
+    local memberships membership_count item_id current_status issue_number
 
     ((all_boards == 0)) || return 1
     board_readable || return 1
@@ -589,6 +589,7 @@ try_declared_memberships() {
     for issue_number in "${issue_numbers[@]}"; do
         [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         memberships=$(issue_project_items "$issue_number") || return 2
+        membership_count=$(jq 'length' <<< "$memberships") || return 2
         item_id=$(jq -r --arg project "$project_id" --arg number "$project_number" \
             --arg owner "$project_owner" '
             first(.[] | select(
@@ -599,7 +600,11 @@ try_declared_memberships() {
         ' <<< "$memberships")
         if [[ -z $item_id ]]; then
             ((cached_mutation_rejected == 0)) || return 2
-            report_noop "no-op: issue #$issue_number is not on any project board"
+            if ((membership_count > 0)); then
+                report_noop "no-op: issue #$issue_number is not on declared project #$project_number \"$project_title\"; use --all-boards to inspect all project boards"
+            else
+                report_noop "no-op: issue #$issue_number is not on any project board"
+            fi
             completed_issues[$issue_number]=1
             continue
         fi

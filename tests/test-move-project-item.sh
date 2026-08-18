@@ -33,6 +33,10 @@ case "\$*" in
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
             {"id":"PVTI_otherowner57","project":{"number":7,"id":"PVT_kwDOOtherOwner","title":"Other Owner Board","owner":{"login":"other-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
           ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      elif [[ -n \${CROSS_BOARD_MEMBERSHIP:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
+            {"id":"PVTI_otherboard58","project":{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
+          ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
       else
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
       fi
@@ -118,9 +122,10 @@ bare_repo() {
 
 run_mv() {
     local repo=$1
+    local requested_repository=${TEST_REPOSITORY:-example-org/example-repo}
     shift
     GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
-        "$mv_sh" --repo-root "$repo" --repository example-org/example-repo "$@"
+        "$mv_sh" --repo-root "$repo" --repository "$requested_repository" "$@"
 }
 
 # The board helper parses live evidence with jq; a stripped parser must block
@@ -357,8 +362,40 @@ repo=$(seed_repo)
 out=$(CROSS_OWNER_COLLISION=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
 assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
     'a cross-owner project-number collision never edits the declared board'
-assert_contains "$out" 'no-op: issue #58 is not on any project board' \
-    'a cross-owner project-number collision reports a terminal no-op'
+assert_contains "$out" 'not on declared project #7' \
+    'a cross-owner project-number collision reports the declared-board boundary'
+assert_contains "$out" '--all-boards' \
+    'a cross-owner project-number collision points to all-boards discovery'
+
+# A membership on another accessible board is not an unboarded issue. The
+# default mode must name the declared-board boundary and point to --all-boards.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CROSS_BOARD_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'a membership on another board never edits the declared board'
+assert_contains "$out" 'not on declared project #7' \
+    'a membership on another board reports the declared-board boundary'
+assert_contains "$out" '--all-boards' \
+    'a membership on another board points to all-boards discovery'
+
+# Numeric repository and owner segments must remain GraphQL strings. gh
+# coerces digit-only values passed via -F, while -f preserves the String! type.
+repo=$(seed_repo)
+jq '.repository = "123/456" | .owner = "123"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+jq '.repository = "123/456" | .owner = "123"' \
+    < "$repo/.agent/cache/board-items.json" > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/board.json" "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+TEST_REPOSITORY=123/456 run_mv "$repo" --issue-number 58 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '-f owner=123 -f name=456 -F number=58' \
+    'digit-only repository segments use raw GraphQL string variables'
+assert_not_contains "$log" '-F owner=123 -F name=456' \
+    'digit-only repository segments are not passed through gh numeric coercion'
 
 # --- discovery warms the cache for next time -------------------------------
 repo=$(seed_repo)
