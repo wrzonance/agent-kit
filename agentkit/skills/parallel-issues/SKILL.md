@@ -809,7 +809,9 @@ adversarial review, consent, replies, and publication.
 Waiting is not work, and narrating a wait is not a status report. Read
 [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before issuing any wait in this
 skill — it is the single detailed home for the no-model-turn wait rule, the one-wait-per-interval
-and completion-only-read bullets, and the durable-state recipe below.
+and completion-only-read bullets, the silent-until-terminal rule, and the durable-state recipe
+below. A bounded wait is silent until terminal: background output wakes the orchestrator for a
+turn, so emit only the one completion or expiry line and redirect any genuine heartbeat to a log.
 
 Every wait names its numeric bound at the call site: worker implementation waits are
 **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's

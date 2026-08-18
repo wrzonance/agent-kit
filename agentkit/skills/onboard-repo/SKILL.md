@@ -147,13 +147,19 @@ grep -n '^# AGENT_' .agent/config.env
 "$shared/detect-toolchains.sh" --format gaps
 ```
 
-Run the detector even when config looks complete: it inspects the repo, not just old onboarding. Report "nothing NEW was found" rather than treating quiet as proof.
+Run the detector even when config looks complete; report "nothing NEW was found" rather than treating quiet as proof.
 
 Anything still commented is a blank the script would not guess:
 
 - **`AGENT_CMD_*`** — root-runnable commands only.
 - **`AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES`** — real, unclassified labels.
 - **`AGENT_ADR_DIR`** — decision records only; **`AGENT_PROTECTED_PATHS`** — repo-specific gated files.
+- **`AGENT_REVIEW_PROVIDERS`** — ask which providers are installed: `coderabbit` triggerable,
+  `github-code-quality` observe-only, or exclusive `none`; pair is comma-separated. Missing/invalid
+  declarations warn, use effective `none`, and do not block other workflows.
+
+Declare it in proposed/committed `.agent/config.env`; bootstrap comments it until chosen. Config is
+parsed line-by-line, never sourced.
 
 Protected paths are a handoff boundary, not a suggestion to disable a guard. When a base merge carries one
 of these paths, retain its staged bytes and use the shared commit helper's explicit named-base affordance;
@@ -239,15 +245,14 @@ contract, and `Stop` blocks turns on it.
 
 ## Step 5 — propose everything at once
 
-Give the user **one message** containing the complete proposed additions — commands, label classification,
-ADR directory — with a one-line reason for each, not a question per line. Say plainly what you could not
-determine and its consequence: "no test command runs from the root, so `Stop` will not gate on tests until a
-dispatcher exists" is useful; silently omitting it is not.
+Give the user a message of additions — commands, provider choice, labels, and ADR directory — with reasons.
+Ask which supported providers are installed, including `none`. State unknowns and consequences; e.g., "no
+root test command means `Stop` cannot gate tests until a dispatcher exists."
 
 ## Step 6 — write and validate
 
-Edit `.agent/config.env` directly — values are read line-wise and never sourced, so write the command
-exactly as you'd type it, unquoted, arguments and all. Then prove it parses. Approval and the first run are
+Edit `.agent/config.env` directly — values are line-wise and never sourced. Write active
+`AGENT_REVIEW_PROVIDERS=...` and each command unquoted, then prove parsing. Approval and the first run are
 a human step (above), so hand them off rather than running `--approve` yourself:
 
 ```bash
@@ -262,10 +267,7 @@ a human step (above), so hand them off rather than running `--approve` yourself:
 `--list` prints warnings for values the resolver rejects — a declared command that doesn't pass it isn't
 finished work.
 
-**This is the only place a candidate gets run.** A declaration you withdraw costs one edit; running
-everything twice costs the whole suite's runtime, every time this skill is used. A command too slow to wait
-on here — a release build with LTO, a suite measured in tens of minutes — is left to CI rather than declared
-just because it would eventually pass; say so in Step 9.
+Run each candidate only here; leave commands too slow for this gate to CI and explain that in Step 9.
 
 ## Step 7 — commit
 
@@ -296,8 +298,7 @@ weigh.
 
 ## Step 9 — report
 
-Tell the user what is now declared, what you left blank and why, and what changed as a result: which guards
-became active, and what `Stop` will now enforce.
+Report declarations, blanks and reasons, plus the resulting guards and `Stop` behavior.
 
 ---
 
@@ -315,6 +316,7 @@ became active, and what `Stop` will now enforce.
 | `AGENT_REPO_RUNNER` | command dispatcher |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
 | `AGENT_GENERATED_PATHS` | generated path prefixes |
+| `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
 | `AGENT_TRUST_ROOT` | runtime-only; overrides the command-trust state root |
 | `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |
