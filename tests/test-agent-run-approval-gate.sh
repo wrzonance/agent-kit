@@ -225,6 +225,92 @@ assert_eq '1' "$rc" 'an untracked runner is refused under --yolo'
 assert_contains "$out" '.agent/runner' 'the refusal names the introduced runner'
 rm -f "$repo/.agent/runner"
 
+# --- approve-with-record composes with a resumed --yolo call --------------
+# trust-and-fencing.md's parked-workstream remediation hands back the exact
+# original threaded invocation, --yolo included, after an interactive
+# --approve. It must not re-refuse: a matching approval record is consulted
+# before the trunk-comparison gate, so the identical resumed call now passes
+# with a distinct, log-durable audit note -- never mistaken for an ordinary
+# --yolo skip (see the log-bracket assertions below).
+repo=$(make_published_repo)
+# A dedicated root -- never reassigning the shared trust_root above, which
+# later cases in this file still rely on staying at its prior value to
+# assert an empty directory persists no trust.
+approve_then_yolo_trust_root="$tmp/trust-approve-then-yolo"
+printf 'AGENT_CMD_VERIFY=echo resumed-ok\n' > "$repo/.agent/config.env"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$approve_then_yolo_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'the first --yolo attempt on a changed declaration still refuses'
+assert_eq '' "$(trust_files "$approve_then_yolo_trust_root")" 'the initial refusal persists no trust'
+
+(cd "$repo" && AGENT_TRUST_ROOT="$approve_then_yolo_trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd verify) > /dev/null 2>&1
+assert_contains "$(trust_files "$approve_then_yolo_trust_root")" '.trust' \
+    'the interactive approval records trust for the changed declaration'
+
+resume_err="$tmp/resume-stderr"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$approve_then_yolo_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2> "$resume_err") && rc=0 || rc=$?
+err=$(cat -- "$resume_err")
+assert_eq '0' "$rc" 'the identical threaded --yolo call now passes on the approval record'
+assert_contains "$out" 'PASS: echo resumed-ok' \
+    'the resumed run actually executed the changed declaration'
+assert_contains "$err" 'trust gate satisfied by approval record' \
+    'the resumed run announces the record-satisfied grant on stderr'
+assert_not_contains "$err" 'trust gate skipped (--yolo)' \
+    'the record-satisfied note is not the ordinary yolo-skip note'
+
+resume_log=$(find "$repo/.agent/logs" -name '*.log' -print -quit)
+resume_log_text=$(cat -- "$resume_log")
+assert_contains "$resume_log_text" 'trust gate satisfied by approval record' \
+    'the run log distinguishes the record-satisfied grant'
+assert_not_contains "$resume_log_text" 'trust gate skipped (--yolo)' \
+    'the record-satisfied log bracket is never read as an ordinary yolo skip'
+
+# --- --yolo degrades gracefully when the trust store itself is unusable ---
+# assert_private_dir calls die() on an unwritable, symlinked, or foreign-owned
+# trust-state directory, and die() exits a process outright -- but the
+# approval-record lookup runs inside a forked subshell (the command
+# substitution below), so that exit is contained to the probe rather than
+# killing the run. A trunk-clean --yolo command must still pass through the
+# ordinary trunk-comparison gate, never hard-refuse over a lookup failure the
+# trunk gate itself does not care about. A plain, non-yolo --cmd run is not
+# this lookup's business to soften: it still reaches assert_private_dir
+# directly and must stay refused.
+repo=$(make_published_repo)
+broken_trust_root="$tmp/trust-symlink-broken"
+ln -s /nonexistent-target "$broken_trust_root"
+
+degrade_err="$tmp/degrade-stderr"
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$broken_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd verify < /dev/null 2> "$degrade_err") && rc=0 || rc=$?
+err=$(cat -- "$degrade_err")
+assert_eq '0' "$rc" 'a trunk-clean --yolo run still passes when the trust store is unusable'
+assert_contains "$out" 'PASS: true' \
+    '--yolo actually ran the declared command despite the unusable trust store'
+assert_contains "$err" 'approval-record lookup unavailable' \
+    'the degrade note explains why the record lookup was skipped'
+assert_contains "$err" 'falling back to the trunk gate' \
+    'the degrade note frames this as a fallback, not a refusal'
+assert_not_contains "$err" 'refusing' \
+    'the degrade note never reads as a refusal'
+assert_contains "$err" 'trust gate skipped (--yolo)' \
+    'the ordinary yolo-skip note still fires after the degrade'
+
+degrade_log=$(find "$repo/.agent/logs" -name '*.log' -print -quit)
+degrade_log_text=$(cat -- "$degrade_log")
+assert_contains "$degrade_log_text" 'trust gate skipped (--yolo)' \
+    'the log bracket reads as an ordinary yolo skip'
+assert_not_contains "$degrade_log_text" 'trust gate satisfied by approval record' \
+    'the log bracket never misreads the degrade as record-satisfied'
+assert_contains "$degrade_log_text" 'approval-record lookup unavailable' \
+    'the log bracket records why the lookup degraded'
+
+# A plain --cmd run is not softened by the --yolo probe: it still refuses.
+out=$(cd "$repo" && AGENT_TRUST_ROOT="$broken_trust_root" "$run_sh" --cmd verify 2>&1) || true
+assert_contains "$out" 'refusing unapproved repository command' \
+    'a plain --cmd run with an unusable trust store still refuses'
+
 # Without a remote trunk to validate against, --yolo refuses rather than guesses.
 repo=$(make_repo)
 out=$(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
