@@ -132,6 +132,20 @@ assert_contains "$normalized_chains_text" 'A join is scheduled, not dropped' \
     'a multi-predecessor join is scheduled instead of dropped'
 assert_contains "$normalized_chains_text" 'a five-issue set dispatches five issues' \
     'join scheduling keeps every selected issue dispatched'
+assert_contains "$normalized_chains_text" 'Push that integration commit to' \
+    'the join recipe pushes the merged base before dispatch'
+assert_contains "$normalized_chains_text" 'predecessors pushed AND join base pushed' \
+    "a join's dispatch gate is stated as two-part"
+assert_contains "$normalized_chains_text" 'Publishing a locally-built chain base' \
+    'chains reference documents the general pushed-base requirement'
+assert_contains "$normalized_chains_text" 'a linear chain is not protected from this just because it only had one predecessor' \
+    'the pushed-base requirement is generalized past the join case'
+assert_contains "$normalized_chains_text" 'Pin `--yolo-base` to the predecessor'"'"'s already-published SHA instead of your own merge' \
+    'chains reference documents the interim-verification pinning alternative'
+assert_contains "$normalized_text" 'an unpushed join base fails `--yolo-base` by construction' \
+    'the parallel skill body states the join push requirement'
+assert_contains "$normalized_text" 'for a join, this means every predecessor pushed AND the merged join base itself pushed' \
+    'the deferred-dispatch gate names the join-specific push requirement'
 assert_contains "$normalized_chains_text" 'interface dependency' \
     'chain edges require an interface dependency'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \

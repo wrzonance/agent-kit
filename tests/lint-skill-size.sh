@@ -92,7 +92,18 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # disclosure subsection, per the strong preference to land detail in
 # references rather than ratchet the body again. Minimum that passes. Line
 # target unchanged.
-KNOWN_OVERSIZE[parallel-issues]="1130:19255:900"
+# Issue #274 fixes the join dispatch gate: a locally-built join integration
+# commit (or an ordinary linear merge-down) is invisible to origin until
+# pushed, so an unpushed chain base fails agent-run.sh's --yolo-base pin by
+# construction. The body's two touch points (the Step 3 join sentence and the
+# deferred-dispatch gate description) each gain one clause naming the push
+# requirement; the substantive recipe -- including the linear-merge-down
+# generalization and the predecessor-SHA pinning alternative for interim
+# worker verification -- lands in references/chains.md's new "Publishing a
+# locally-built chain base" subsection instead, per the standing preference
+# to keep body growth to a pointer. Minimum that passes. Line target
+# unchanged.
+KNOWN_OVERSIZE[parallel-issues]="1132:19312:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

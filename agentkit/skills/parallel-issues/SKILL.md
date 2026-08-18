@@ -476,12 +476,13 @@ blocked-by edges inside the selected set, decompose it into linear chains, and p
 chain plan next to the conflict table (attended: get approval; `--fast-mode`: proceed). A
 cycle cannot be chained — report the cyclic members and fall back to drop/ask for exactly
 those. A multi-predecessor join is **scheduled, not dropped**: defer it until every
-predecessor's commit is pushed, then merge those commits down into its start point (a
-conflict parks the join by name). Chains respect a chain depth cap: 4; deeper tails are
-dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
+predecessor's commit is pushed, then merge those commits down into its start point and push
+that merged result before dispatch (a conflict parks the join by name) — an unpushed join
+base fails `--yolo-base` by construction. Chains respect a chain depth cap: 4; deeper tails
+are dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
 state or publication. See [references/chains.md](references/chains.md) for the walkthrough
-behind these rules — building the graph, deferred dispatch, the join merge-down, and the
-merge-order retarget.
+behind these rules — building the graph, publishing a locally-built base, deferred dispatch,
+the join merge-down, and the merge-order retarget.
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -586,7 +587,8 @@ When the runtime advertises a cap, include the root in that cap, start the remai
 
 **Chained issues defer — but only on the commit, not the publication.** A chain successor's
 worktree is created and its lead dispatched as soon as the predecessor's worker has
-committed and pushed its branch: record the full 40-character lowercase `chain_base_sha`
+committed and pushed its branch — for a join, this means every predecessor pushed AND the
+merged join base itself pushed: record the full 40-character lowercase `chain_base_sha`
 from the completion report (worktree-commit.sh printed it). The root's post-push review, PR
 creation, board move, and ledger writes are **not** on the successor's critical path — a
 post-review fix on the predecessor becomes an ordinary merge-down. Deferred issues hold no
