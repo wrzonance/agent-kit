@@ -1764,6 +1764,18 @@ assert_eq 'deny' "$(decision "$boundary_link_out")" \
 assert_contains "$boundary_link_out" 'resolves outside the contracted worktree' \
     'symlink boundary denial explains the resolved escape'
 
+# The alias itself is outside both lexical checkout prefixes, but its resolved
+# target is the main checkout and must receive the same boundary denial.
+boundary_alias="$tmp/boundary-alias"
+ln -s "$boundary_repo" "$boundary_alias"
+boundary_alias_out=$(edit_input "$boundary_feature" \
+    "$boundary_alias/src/file.txt" 'worktree-boundary-external-alias' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_alias_out")" \
+    'an external alias resolving into the root checkout is denied'
+assert_contains "$boundary_alias_out" "$boundary_feature/src/file.txt" \
+    'external-alias denial supplies the contracted worktree correction'
+
 # Evidence is security-sensitive state: a symlinked evidence parent is refused
 # before mkdir/chmod/append, so a tool call cannot redirect the ledger outside
 # the worktree.

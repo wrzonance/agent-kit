@@ -957,6 +957,30 @@ assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
     'baseline-overwrite handling never auto-restores the root path'
 git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
 
+# An unreadable hash sentinel is not a stable byte value. Even when baseline
+# and current both report "unreadable", Collect must surface the incident and
+# leave the root bytes untouched rather than auto-disposing an alleged match.
+hash_stub="$tmp/hash-stub"
+mkdir -p "$hash_stub"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$hash_stub/sha256sum"
+chmod 700 -- "$hash_stub/sha256sum"
+printf 'human unreadable baseline\n' > "$cross_root/src/data.txt"
+unreadable_snapshot="$cross_root/.agent/cross-write-unreadable.snapshot"
+PATH="$hash_stub:$PATH" "$cross_write" snapshot --root "$cross_root" \
+    --output "$unreadable_snapshot" --write-set 'src/**' >/dev/null
+printf 'worker bytes\n' > "$cross_root/src/data.txt"
+unreadable_out=$(
+    PATH="$hash_stub:$PATH" "$cross_write" collect --root "$cross_root" \
+        --snapshot "$unreadable_snapshot" --worker-worktree "$cross_worker" \
+        --issue 254 --worker-start 1 --worker-end 2147483647 \
+        --write-set 'src/**' --dispose-duplicates || true
+)
+assert_contains "$unreadable_out" 'surface-unreadable' \
+    'unreadable baseline/current hashes are surfaced as an incident'
+assert_eq 'worker bytes' "$(<"$cross_root/src/data.txt")" \
+    'unreadable hash handling never auto-disposes the root path'
+git -C "$cross_root" restore --source=HEAD --worktree -- src/data.txt
+
 # A divergent root copy is still an incident, but must be surfaced rather than
 # silently overwritten by the matching worker branch.
 printf 'divergent root bytes\n' > "$cross_root/src/data.txt"

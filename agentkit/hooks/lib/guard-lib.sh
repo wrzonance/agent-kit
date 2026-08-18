@@ -599,7 +599,8 @@ guard_worktree_contract() {
 # sibling worktree remain ordinary targets; only the root checkout itself is
 # the silent-cross-write boundary this guard prevents.
 guard_worktree_boundary_reason() {
-    local target=$1 cwd=$2 command_line=${3:-} base candidate actual relative
+    local target=$1 cwd=$2 command_line=${3:-} base candidate actual relative source
+    local lexical_worker=no lexical_repo=no
     guard_worktree_contract "${workspace_root:-}" || return 1
     base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
     case $target in
@@ -608,50 +609,66 @@ guard_worktree_boundary_reason() {
     esac
     candidate=$(guard_scope_canonical "$candidate") || return 1
 
-    # A target lexically under the worker can still follow a symlink into the
-    # root checkout or an entirely foreign tree. Resolve it before allowing
-    # the edit; inability to resolve an existing parent is itself a refusal.
+    # Resolve every candidate before classifying it. An alias outside both
+    # checkout prefixes can still land in the main checkout, so lexical prefix
+    # checks must never decide whether realpath resolution happens.
     case $candidate in
         "$GUARD_WORKTREE_CONTRACT_WORKTREE"|"$GUARD_WORKTREE_CONTRACT_WORKTREE"/*)
-            if ! actual=$(guard_target_realpath "$candidate"); then
-                GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
-                relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
-                [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
-                [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
-                printf 'Refused once -- could not securely resolve write target %s inside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
-                    "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
-                    "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
-                return 0
-            fi
-            if ! guard_path_inside "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$actual"; then
-                GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
-                relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
-                [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
-                [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
-                printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
-                    "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
-                    "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
-                return 0
-            fi
-            return 1
+            lexical_worker=yes
             ;;
     esac
+    if ! actual=$(guard_target_realpath "$candidate"); then
+        [[ $lexical_worker == yes ]] || return 1
+        GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+        printf 'Refused once -- could not securely resolve write target %s while enforcing the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+            "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+            "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+        return 0
+    fi
+
     case $candidate in
-        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*) ;;
-        *) return 1;;
-    esac
-    case $candidate in
-        "$GUARD_WORKTREE_CONTRACT_WORKTREE"|"$GUARD_WORKTREE_CONTRACT_WORKTREE"/*|\
-        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"|"$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"/*)
-            return 1
+        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*)
+            lexical_repo=yes
             ;;
     esac
-    relative=${candidate#"$GUARD_WORKTREE_CONTRACT_REPO"/}
-    [[ $candidate != "$GUARD_WORKTREE_CONTRACT_REPO" ]] || relative=''
+
+    if guard_path_inside "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$actual"; then
+        return 1
+    fi
+    if [[ $lexical_worker == yes ]]; then
+        GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+        relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
+        [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
+        [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+        printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+            "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+            "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+        return 0
+    fi
+
+    # A sibling linked worktree remains an ordinary target. A lexical root
+    # target is retained as a denial even if a symlink happens to point at a
+    # sibling; the worker contract cannot authorize that spelling.
+    case $actual in
+        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"|\
+        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"/*)
+            [[ $lexical_repo == yes ]] || return 1
+            source=$candidate
+            ;;
+        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*)
+            source=$actual
+            ;;
+        *)
+            [[ $lexical_repo == yes ]] || return 1
+            source=$candidate
+            ;;
+    esac
+    relative=${source#"$GUARD_WORKTREE_CONTRACT_REPO"/}
+    [[ $source != "$GUARD_WORKTREE_CONTRACT_REPO" ]] || relative=''
     GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
     [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
     printf 'Refused once -- write target %s resolves inside the repository root %s but outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
-        "$candidate" "$GUARD_WORKTREE_CONTRACT_REPO" \
+        "$source" "$GUARD_WORKTREE_CONTRACT_REPO" \
         "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
 }
 

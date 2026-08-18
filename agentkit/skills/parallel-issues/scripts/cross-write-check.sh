@@ -360,6 +360,17 @@ collect_cmd() {
         if [[ -n ${baseline[$path]+present} ]]; then
             baseline_value=${baseline[$path]}
             baseline_hash=${baseline_value##*$'\t'}
+        else
+            baseline_hash=''
+        fi
+        if [[ $hash == unreadable || $baseline_hash == unreadable ]]; then
+            matches_write_set "$root" "$path" "${write_sets[@]}" || continue
+            incidents=$((incidents + 1))
+            printf 'cross-write=path=%s issue=unknown attribute=unreadable-hash status=%s mtime=%s branch-match=unknown disposition=surface-unreadable\n' \
+                "$path" "$status" "$mtime"
+            continue
+        fi
+        if [[ -n ${baseline[$path]+present} ]]; then
             if [[ $hash == "$baseline_hash" ]]; then
                 # The bytes are unchanged from the immutable baseline; this is
                 # not a worker overwrite even if Git's status code changed.
