@@ -78,33 +78,36 @@ obtain green evidence is evasion, not remediation.
 
 ## How far one approval reaches
 
-An approval record is scoped to the **repository** — the clone's shared git directory — not to
-the checkout it was made from. One `--approve` per command therefore covers every worktree of
-that clone, until a declaration or a repository-backed command input changes and the fingerprint
+An approval record for an ordinary worktree is scoped to the **repository** — the clone's shared
+git directory — not to the checkout it was made from. One `--approve` per command therefore
+covers every ordinary worktree of that clone (a pull-request checkout is the exception, below),
+until a declaration or a repository-backed command input changes and the fingerprint
 stops matching. Nothing about *what* is approved changed with that scope: the fingerprint still
 pins the declaration values, argv, the content of every repository-backed input, the runner, and
 the nearby build manifests, so a sibling worktree that edits any of them is refused exactly as
 before. Approve from any checkout of the clone; the record is the same either way.
 
-**Every worktree includes the PR-checkout ones.** `worktree-setup.sh --pr N` checks a pull
-request's head out into a linked worktree, so once `setup` is approved for the repository it runs
-there too — on a contributor's branch, which is a wider blast radius than the parallel-worktree
-case this scope was argued from. Say plainly what changed: a per-worktree record used to force a
-fresh prompt for each PR checkout, and that layer is gone.
+**A pull-request checkout is the exception, and it keeps its own approval.** `pr-worktree.sh`
+marks the worktree it creates for a PR, and `agent-run.sh` keys that checkout on its own path
+instead of the clone's. So a maintainer's parallel worktrees share one approval, and a
+contributor's branch never inherits it.
 
-**Why the fingerprint carries that load.** It is not a hash of the checkout; it is a hash of what
-the command will actually execute — the declaration values, the argv, the content of every
-repository-backed path in that argv, the runner, and the nearby build manifests, each recorded by
-content rather than by path. A pull request cannot change what `setup` runs without changing one
-of them, and any one of them refuses the record. The layer that was removed could not do that
-job: `--approve` prints one line, `Approve repository command <name> for this repository state?
-[y/N]`, and never shows a diff — so answering it per PR authenticated nothing about the PR. It
-raised a prompt, not a review.
+That exception is not tidiness — it closes a real hole. The fingerprint reaches only the inputs
+this command contract can identify by name: a declaration naming a task runner and a task carries
+no path in argv at all, so the script it ultimately resolves is not something the fingerprint
+hashes. A pull request can rewrite that script without changing one byte of the record. Under a
+clone-wide scope that would run contributor-controlled code on an approval a maintainer granted
+in a different checkout entirely. The per-checkout prompt is the only thing standing there, so a
+PR checkout earns its own.
 
-The honest residual: neither scope covers the wrapped command's deeper transitive inputs — a file
-`tools/setup` reads that is not itself declared argv or a manifest. That boundary is the same one
-every verification run has always drawn, and reading the branch before checking it out is what
-addresses it.
+Detection fails closed. Anything marker-shaped — present, unreadable, malformed — resolves to the
+checkout scope, because absence of proof that a worktree is ordinary is not proof that it is.
+`pr-worktree.sh` refuses to create a worktree it could not mark, rather than leaving one that
+would silently take the wider scope.
+
+The honest residual is now the ordinary one: for a maintainer's own worktrees the record still
+does not cover the wrapped command's deeper transitive inputs. That is the boundary every
+verification run has always drawn, on branches the maintainer wrote.
 
 ### Repositories whose declarations are per-machine
 
@@ -120,7 +123,8 @@ and the two durable fixes, which are not mutually exclusive:
   secrets). The trade is that later declaration edits need a trunk PR before an unattended run
   picks them up. agent-kit does this to itself.
 - **Approve once per config-state** — the per-machine escape hatch. One interactive `--approve`
-  per command, after which every worktree of the clone is covered.
+  per command, after which every ordinary worktree of the clone is covered; a PR checkout still
+  approves separately.
 
 **`--yolo` does not excuse the approval handoff here.** Before dispatch, check whether the trunk
 carries the declarations at all:

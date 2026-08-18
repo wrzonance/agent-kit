@@ -402,6 +402,56 @@ assert_contains "$err" 'trust gate satisfied by approval record' \
 assert_eq '1' "$(count_trust_files "$scoped_trust_root")" \
     'satisfying the record in a second checkout writes no second record'
 
+# A PULL-REQUEST CHECKOUT is the exception, and it is the security-carrying one.
+# The fingerprint only reaches inputs this command contract can identify: a
+# declaration naming a task runner and a task has no path in argv at all, so a
+# contributor can rewrite the script it ultimately runs without changing one
+# byte the fingerprint hashes. A repository-wide record would execute that on a
+# maintainer approval granted in another checkout entirely, so a checkout
+# carrying a PR head keys on its own path and earns its own approval.
+# pr-worktree.sh writes this marker; test-worktree-setup.sh covers that writer
+# end to end, while these cases pin the reader.
+pr_worktree="$tmp/permachine-pr-worktree"
+git -C "$repo" worktree add -q -b feat/pr-scoped "$pr_worktree"
+mkdir -p "$pr_worktree/.agent/cache"
+cp "$repo/.agent/config.env" "$pr_worktree/.agent/config.env"
+printf 'pr=11\nrepo=example/repo\n' > "$pr_worktree/.agent/pr-checkout"
+
+pr_err="$tmp/pr-scoped-stderr"
+out=$(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2> "$pr_err") && rc=0 || rc=$?
+err=$(cat -- "$pr_err")
+assert_eq '1' "$rc" 'a PR checkout does not inherit the clone-wide approval'
+assert_not_contains "$err" 'trust gate satisfied by approval record' \
+    'a PR checkout is never reported as record-approved on someone else approval'
+assert_eq '1' "$(count_trust_files "$scoped_trust_root")" \
+    'the refused PR checkout persists no trust'
+
+# Ambiguity resolves the same way: anything marker-shaped, even a marker that
+# cannot be read, keys on the checkout rather than assuming an ordinary worktree.
+rm -f -- "$pr_worktree/.agent/pr-checkout"
+ln -s /nonexistent-target "$pr_worktree/.agent/pr-checkout"
+out=$(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'an unreadable PR marker fails closed to the checkout scope'
+rm -f -- "$pr_worktree/.agent/pr-checkout"
+printf 'pr=11\nrepo=example/repo\n' > "$pr_worktree/.agent/pr-checkout"
+
+# It is a separate scope, not a permanently refused one: approving it there
+# works, and records a SECOND file rather than reusing the clone's.
+(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    "$tty_approve" y -- "$run_sh" --approve --cmd setup) > /dev/null 2>&1
+assert_eq '2' "$(count_trust_files "$scoped_trust_root")" \
+    'approving a PR checkout records its own scope beside the clone record'
+out=$(cd "$pr_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'the PR checkout runs on its own approval'
+
+# ...and the maintainer's ordinary worktree is untouched by any of that.
+out=$(cd "$scoped_worktree" && AGENT_TRUST_ROOT="$scoped_trust_root" \
+    setsid -w "$run_sh" --yolo --cmd setup < /dev/null 2>&1) && rc=0 || rc=$?
+assert_eq '0' "$rc" 'an ordinary linked worktree still reuses the clone approval'
+
 # Edge one: the repository is the scope, but the reviewed CONTENT is still what
 # was approved. A declaration nobody reviewed must not inherit the record.
 printf 'AGENT_CMD_SETUP=echo unreviewed\n' > "$scoped_worktree/.agent/config.env"

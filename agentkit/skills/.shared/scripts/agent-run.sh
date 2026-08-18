@@ -1431,6 +1431,7 @@ yolo_untracked_config_remediation() {
     printf '    The trade: later declaration edits need a trunk PR before an unattended run picks them up.\n' >&2
     printf '  durable fix (per-machine escape hatch): approve once per command with --approve, from an interactive terminal.\n' >&2
     printf '    The record is scoped to this repository, so one approval covers every worktree of this clone until a declaration or command input changes.\n' >&2
+    printf '    A pull-request checkout is deliberately excluded and approved separately: a contributor branch can change what a declared command transitively runs.\n' >&2
 }
 
 # A pinned base substitutes for the trunk anchor. Root-published only: the SHA
@@ -1603,20 +1604,48 @@ require_human_approval() {
     esac
 }
 
-# The scope an approval covers. It is the repository -- the clone's shared git
-# directory -- and deliberately not the checkout path, because the fingerprint
-# below is already the security boundary: it pins the declaration values, argv,
-# the content hash of every repository-backed command input, the runner, and the
-# nearby manifests, all repository-relatively. A linked worktree whose inputs
-# hash identically IS the command the human reviewed, so keying the record on
-# the checkout bought no protection while costing one terminal confirmation per
-# worktree per command -- on a repository whose declarations are per-machine and
-# untracked, an unbounded number of them, since the trunk gate can never be
-# satisfied there. That is approval fatigue, which is what produces rubber
-# stamps and forged gates. A separate clone stays a separate scope, and nothing
-# inside a checkout can move this value.
+# The scope an approval covers. Two cases, and the fallbacks point in OPPOSITE
+# directions on purpose -- read this before changing either.
+#
+# For a maintainer's own worktrees the scope is the REPOSITORY (the clone's
+# shared git directory). The fingerprint already pins what the command executes:
+# declaration values, argv, the content hash of every repository-backed argv
+# path, the runner, and the nearby manifests, all repository-relatively. A
+# linked worktree whose inputs hash identically IS the command the human
+# reviewed, so keying on the checkout bought no protection while costing one
+# terminal confirmation per worktree per command -- on a repository whose
+# declarations are per-machine and untracked, an unbounded number of them, since
+# the trunk gate can never be satisfied there. That is approval fatigue, which
+# is what produces rubber stamps and forged gates.
+#
+# A PULL-REQUEST CHECKOUT is the exception, and it is not a small one. The
+# fingerprint stops at inputs this command contract can identify. A declaration
+# that names a task runner and a task -- no path token anywhere in argv --
+# resolves the script it actually executes through that runner's own config, so
+# a pull request can rewrite that script without changing one byte the
+# fingerprint hashes. Under a repository-wide record that executes a
+# contributor's code on a maintainer approval granted somewhere else entirely.
+# So a checkout carrying a pull request's head keys on its own path and earns
+# its own approval. pr-worktree.sh writes the marker, and refuses to create the
+# worktree at all if it cannot.
+#
+# The fallbacks:
+#   - PR-checkout detection uncertain -> the CHECKOUT path, the narrow scope.
+#     Absence of proof that this is an ordinary worktree is not proof that it is
+#     one, so anything marker-shaped resolves toward less reuse.
+#   - git-common-dir unavailable -> $git_top, which still names THIS clone.
+#     Never an empty value, which would key every repository on the machine
+#     alike and turn one approval into a machine-wide grant.
+# Narrow is the safe failure in the first; naming this clone is the safe failure
+# in the second. Neither ever resolves toward more reuse.
 trust_scope_id() {
-    local common resolved
+    local common resolved marker=$git_top/.agent/pr-checkout
+    # -e alone would miss a dangling symlink; a marker that exists but cannot be
+    # read is precisely the ambiguity this refuses to resolve generously.
+    if [[ -e $marker || -L $marker ]]; then
+        printf '%s' "$git_top"
+        return 0
+    fi
     common=$(git -C "$git_top" rev-parse --git-common-dir 2> /dev/null) || common=''
     [[ -n $common ]] || { printf '%s' "$git_top"; return 0; }
     # git resolves this against its own -C directory, and answers a linked
@@ -1624,10 +1653,6 @@ trust_scope_id() {
     # spellings must land on one value or the widening silently does nothing.
     [[ $common == /* ]] || common=$git_top/$common
     resolved=$(readlink -f -- "$common" 2> /dev/null) || resolved=''
-    # Every degraded path falls back to a value that still names THIS clone. An
-    # empty one would key every repository on the machine identically, turning
-    # one approval into a machine-wide grant -- the one widening this must never
-    # make.
     [[ -n $resolved ]] || resolved=$common
     printf '%s' "$resolved"
 }
