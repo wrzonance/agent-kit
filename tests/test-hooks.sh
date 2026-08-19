@@ -634,7 +634,7 @@ done
 # A flag hidden inside a substitution read as ordinary text to every pattern:
 # `git reset $(printf -- --hard) HEAD~1` matched nothing literally. The model
 # refused it on its own judgement, which is not a guard.
-# shellcheck disable=SC2016  # the UNEXPANDED substitution is the fixture: these
+# shellcheck disable=SC2016,SC2041  # the UNEXPANDED substitution is the fixture: these
 # assert what the guard sees, so expanding them would test nothing.
 for hidden in 'git reset $(printf -- --hard) HEAD~1'; do
     out=$(pre_input "$repo" "$hidden" | "$hooks/pre-tool-use.sh" 2>/dev/null)
