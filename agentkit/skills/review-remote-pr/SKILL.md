@@ -384,7 +384,7 @@ effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total co
 or the `verified-skip rationale` + oracle. The order is executable: `adversarial-run.sh` must
 return `0` before `finding-ledger.sh add` records any disposition (exit `13` means the review
 result is missing or incomplete), and receipt publication consumes that ledger. Create an empty
-`$RUN_DIR/findings.ndjson` for a clean review or verified skip. Run `post-receipt.sh publish`
+`$RUN_DIR/findings.ndjson` for a clean review or verified skip. `post-receipt.sh publish` derives it from RUN_DIR the same way `finding-ledger.sh` does, refusing evidence-unavailable and naming the expected path if RUN_DIR is bad. Run it
 (only after the finding-fix push — this is the final Phase A action):
 
 ```bash
@@ -398,14 +398,13 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
 publish_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" \
-    --findings-file "$RUN_DIR/findings.ndjson" --require-pushed \
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
+    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
 # The ledger owns titles, dispositions, SHAs, and rationales; the script owns
-# every receipt byte. Pass --skip-rationale S --oracle S for a verified skip.
+# every receipt byte, deriving findings.ndjson from RUN_DIR (--findings-file PATH overrides it). Pass --skip-rationale S --oracle S for a verified skip.
 case "$publish_rc" in
     0)  : ;; # posted and byte-verified
     11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;

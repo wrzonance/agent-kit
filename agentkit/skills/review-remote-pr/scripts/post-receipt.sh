@@ -17,7 +17,7 @@
 #       A missing parser, unreadable artifact, or invalid JSON never reports
 #       either word; it fails closed (see Exit status).
 #
-#   publish --pr N --repo OWNER/REPO --comments FILE --findings-file FILE
+#   publish --pr N --repo OWNER/REPO --comments FILE [--findings-file FILE]
 #           --provider S --model S --effort S
 #           --mode cross-provider|blind-fallback [--mode-reason S]
 #           --p1 N --p2 N
@@ -29,6 +29,16 @@
 #       0600 temp file and posts it through the sibling gh-comment.sh, which
 #       byte-verifies the stored body. Runs its own precheck against --comments
 #       first and refuses to double-spend.
+#
+#       The findings ledger is addressed the same way finding-ledger.sh
+#       addresses it: via the RUN_DIR environment variable, which must name an
+#       owned, non-symlink, mode-0700 directory (the same checks finding-
+#       ledger.sh applies to RUN_DIR itself), and findings.ndjson is derived as
+#       $RUN_DIR/findings.ndjson. Pass --findings-file to override with an
+#       explicit path instead; when both are absent this is a usage error. A
+#       findings file that fails validation names the RUN_DIR-derived path it
+#       expected, since a wrong root is the far more common failure than a
+#       missing file.
 #
 # Exit status:
 #   0   success (precheck: spent; publish: comment posted and verified)
@@ -62,7 +72,7 @@ usage() {
 Usage: $PROGNAME precheck --comments FILE
        $PROGNAME --require-pushed publish ...
        $PROGNAME publish --pr N --repo OWNER/REPO --comments FILE \\
-                 --findings-file FILE \\
+                 [--findings-file FILE] \\
                  --provider S --model S --effort S \\
                  --mode cross-provider|blind-fallback [--mode-reason S] \\
                  --p1 N --p2 N \\
@@ -80,6 +90,11 @@ and posts it via gh-comment.sh's byte-verified transport. Runs the same
 precheck against --comments first and refuses (exit 11) when the marker is
 already present. --require-pushed additionally requires a clean tree whose HEAD
 is reachable from an origin/* remote-tracking ref.
+
+The findings ledger is found the same way finding-ledger.sh finds it: via the
+RUN_DIR environment variable (an owned, non-symlink, mode-0700 directory),
+deriving \$RUN_DIR/findings.ndjson. Pass --findings-file for an explicit
+override; one of RUN_DIR or --findings-file is required.
 
 Capability probes are not receipts: probe invocations send only a synthetic
 snippet, no PR diff, and never count against the one-review-per-PR budget.
@@ -199,6 +214,9 @@ PR=''
 REPO=''
 COMMENTS=''
 FINDINGS_FILE=''
+# Same addressing convention as finding-ledger.sh's RUN_DIR: an environment
+# variable naming the private run directory, not a CLI flag.
+RUN_DIR=${RUN_DIR:-}
 PROVIDER=''
 MODEL=''
 EFFORT=''
@@ -246,7 +264,8 @@ validate_publish_args() {
     [[ -n $REPO ]] || die_usage '--repo is required'
     [[ $REPO =~ $SLUG_RE ]] || die_usage "--repo must look like OWNER/REPO, got: $REPO"
     [[ -n $COMMENTS ]] || die_usage '--comments is required'
-    [[ -n $FINDINGS_FILE ]] || die_usage '--findings-file is required'
+    [[ -n $FINDINGS_FILE || -n $RUN_DIR ]] ||
+        die_usage '--findings-file or RUN_DIR is required'
     [[ -n $PROVIDER ]] || die_usage '--provider is required'
     [[ -n $MODEL ]] || die_usage '--model is required'
     [[ -n $EFFORT ]] || die_usage '--effort is required'
@@ -306,9 +325,51 @@ validate_runner_provenance() {
 }
 
 
+# Mirrors finding-ledger.sh's own RUN_DIR checks exactly: RUN_DIR is the
+# private review-artifact directory, so an unowned, symlinked, or loosely
+# permissioned one is refused the same way finding-ledger.sh refuses it,
+# before this script ever looks for a findings.ndjson inside it.
+run_dir_mode() {
+    local mode
+    if mode=$(stat -c %a -- "$RUN_DIR" 2>/dev/null) &&
+        [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$RUN_DIR" 2>/dev/null) &&
+        [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
+validate_run_dir() {
+    [[ -d $RUN_DIR && ! -L $RUN_DIR && -O $RUN_DIR ]] ||
+        evidence_unavailable "RUN_DIR is not an owned directory: $RUN_DIR"
+    local mode
+    mode=$(run_dir_mode) || evidence_unavailable "could not inspect RUN_DIR mode: $RUN_DIR"
+    (( (8#$mode & 0777) == 0700 )) ||
+        evidence_unavailable "RUN_DIR must have mode 0700: $RUN_DIR"
+}
+
+# Resolves FINDINGS_FILE when --findings-file was not given: RUN_DIR must
+# already be present (validate_publish_args enforced that one of the two is
+# set) and must pass the same ownership/symlink/mode checks finding-ledger.sh
+# applies before it will trust a directory as the private run directory.
+resolve_findings_file() {
+    [[ -z $FINDINGS_FILE ]] || return 0
+    validate_run_dir
+    FINDINGS_FILE=$RUN_DIR/findings.ndjson
+}
+
 validate_findings_file() {
+    local expected=''
+    if [[ -n $RUN_DIR && $FINDINGS_FILE != "$RUN_DIR/findings.ndjson" ]]; then
+        expected=" (RUN_DIR expects $RUN_DIR/findings.ndjson)"
+    fi
     [[ -f $FINDINGS_FILE && ! -L $FINDINGS_FILE && -O $FINDINGS_FILE && -r $FINDINGS_FILE ]] ||
-        evidence_unavailable "findings file is not an owned readable regular file: $FINDINGS_FILE"
+        evidence_unavailable "findings file is not an owned readable regular file: $FINDINGS_FILE${expected}"
     command -v jq >/dev/null 2>&1 || evidence_unavailable 'jq is not installed'
     jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" '
         all(.[];
@@ -471,6 +532,7 @@ recover_after_failed_publish() {
 cmd_publish() {
     parse_publish_args "$@"
     validate_publish_args
+    resolve_findings_file
     validate_findings_file
     validate_runner_provenance
     ((REQUIRE_PUSHED == 0)) || require_pushed_state
