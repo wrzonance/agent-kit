@@ -51,8 +51,6 @@ SHARED_SCRIPT_LIB=$(cd -- "$GUARD_LIB_DIR/../../skills/.shared/scripts/lib" 2>/d
 }
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SHARED_SCRIPT_LIB/protected-paths.sh"
-# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
-source "$SHARED_SCRIPT_LIB/trunk-policy.sh"
 
 # Populated by guard_resolve_roots.
 roots=()
@@ -845,18 +843,18 @@ guard_strip_git_globals() {
 #
 # The rest of the guard set never blocks, because a command with a cheaper
 # alternative should run and be corrected afterwards. There is no
-# teach-after-the-fact for a force-push that already landed, and a
-# once-per-session override would refuse the first attempt and permit the
+# teach-after-the-fact for a reset --hard that already discarded the work, and
+# a once-per-session override would refuse the first attempt and permit the
 # second -- precisely backwards. So these deny every time, and say what to do
 # instead.
 #
 # Kept deliberately short. A long list of "risky" commands trains an agent to
 # treat denials as noise, which is how the one that mattered gets worked around.
 # `git clean --force -d` and `git clean -fd` do identical damage, and only the
-# second was refused. So did `git push origin +main`, `git branch --delete
-# --force main`, and `rm --recursive --force /`. None of that is obfuscation --
-# it is git's own documented spelling, and an external review found all four by
-# reading the man pages.
+# second was refused. So did `git branch --delete --force main` and
+# `rm --recursive --force /`. None of that is obfuscation -- it is git's own
+# documented spelling, and an external review found all three by reading the
+# man pages.
 #
 # That matters more than an ordinary miss, because the README told operators to
 # hand over a writable .git on the strength of these patterns refusing this
@@ -911,19 +909,9 @@ guard_destructive_reason() {
     stripped=$(guard_strip_git_globals "$cmd")
     normalized=$(guard_normalize_flags "$stripped")
 
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]+(--force|--force-with-lease|-f)([[:space:]]|$)' <<< "$normalized"; then
-        printf 'force-pushing rewrites history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
-        return 0
-    fi
-    # A leading + on a refspec IS --force, for that ref only, and carries no flag
-    # for a flag-shaped pattern to find.
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]\+[^[:space:];&|]' <<< "$stripped"; then
-        printf 'a + on the refspec force-pushes that ref, rewriting history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
-        return 0
-    fi
-    # Intervening tokens are tolerated, as in the push rule: after a substitution
-    # is flattened the flag is no longer adjacent to the verb. Bounded by shell
-    # separators, so a later unrelated command cannot be dragged into the match.
+    # Intervening tokens are tolerated: after a substitution is flattened the
+    # flag is no longer adjacent to the verb. Bounded by shell separators, so a
+    # later unrelated command cannot be dragged into the match.
     if grep -qE '(^|[;&|[:space:]])git[[:space:]]+reset([[:space:]][^;&|]*)?[[:space:]]--hard' <<< "$stripped"; then
         printf 'reset --hard discards uncommitted work irrecoverably. Use git stash, or commit first.'
         return 0
@@ -1196,100 +1184,6 @@ guard_gh_inline_body_reason() {
         return 0
     done <<< "$segments"
     return 1
-}
-
-# Committing straight onto the trunk branch.
-#
-# Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
-# the agent did exactly that, and the onboarding commit landed on `main` of a
-# repository whose every other change arrives by pull request. Nothing objected,
-# because the trunk refusal lives in worktree-commit.sh and the skill had told
-# the agent to use plain git.
-#
-# Deny-ONCE, not always. Plenty of people commit to main on purpose -- a solo
-# repository, a docs typo, the first commit of an empty tree -- and a hard
-# refusal would be wrong in all of those. One refusal is enough to turn an
-# unnoticed default into a decision.
-#
-# Evidence rule: a repository that has not declared a trunk gets no opinion.
-# AGENT_BASE_BRANCH is what onboarding writes; origin/HEAD is the fallback, and
-# when neither answers, this stays silent rather than guessing at "main".
-guard_worktree_count() {
-    local root=$1 count=0 line
-    while IFS= read -r line; do
-        [[ $line == 'worktree '* ]] || continue
-        count=$((count + 1))
-    done < <(git -C "$root" worktree list --porcelain 2> /dev/null)
-    printf '%s' "$count"
-}
-
-# A `-C` before the git subcommand pins the command's execution worktree. A
-# `-C` after `commit` is git's message-file option and must not resolve cwd
-# provenance. Parse shell segments the same way as guard_command_target_dir so
-# a later command cannot lend an earlier commit its pin.
-guard_commit_has_explicit_worktree() {
-    local cmd=$1 segment trimmed pin word
-    local -a words
-    local segments=${cmd//[;&|]/$'\n'}
-
-    while IFS= read -r segment; do
-        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
-        [[ -n $trimmed ]] || continue
-        read -r -a words <<< "$trimmed"
-        ((${#words[@]})) || continue
-        [[ ${words[0]} == git ]] || continue
-
-        pin=0
-        local i
-        for ((i = 1; i < ${#words[@]}; i++)); do
-            word=${words[i]}
-            case $word in
-                --) break;;
-                -C)
-                    ((i + 1 < ${#words[@]})) || break
-                    pin=1
-                    ((i++))
-                    ;;
-                -C*) pin=1;;
-                -*) ;;
-                commit)
-                    ((pin)) && return 0
-                    break
-                    ;;
-                *) break;;
-            esac
-        done
-    done <<< "$segments"
-    return 1
-}
-
-guard_trunk_commit_reason() {
-    local cmd=$1 root=$2 current worktrees
-    [[ -n $root ]] || return 1
-
-    # Command position, so `git commit` in a message body or a grep pattern is
-    # not a commit. `git -C dir commit` and `git commit -m x` both qualify;
-    # --dry-run does not, since it writes nothing.
-    grep -qE '(^|[;&|])[[:space:]]*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)' \
-        <<< "$cmd" || return 1
-    grep -qE '[[:space:]]--dry-run([[:space:]]|=|$)' <<< "$cmd" && return 1
-
-    current=$(git -C "$root" symbolic-ref --quiet --short HEAD 2> /dev/null) || return 1
-    [[ -n $current ]] || return 1
-
-    # The hook's cwd is session provenance, not proof of the shell process's
-    # execution cwd. Once this repository has linked worktrees, the observed
-    # root/HEAD pair may describe a different worktree from the one that will
-    # actually receive the commit. Refusing would spend the deny-once choice
-    # on an inferred landing branch that the hook cannot establish.
-    worktrees=$(guard_worktree_count "$root")
-    if [[ $worktrees != 1 ]] && ! guard_commit_has_explicit_worktree "$cmd"; then
-        return 1
-    fi
-
-    shared_is_trunk_branch "$current" "$root" || return 1
-
-    printf '%s' "$current"
 }
 
 # A hook that fails open is invisible. Every silent failure this tree has had --

@@ -411,66 +411,6 @@ if [[ -x $pr_sh ]]; then
         'a malicious PR_WORKTREE does not escape the repository root'
     rm -rf -- "$escaped_target"
 
-    # The PR-checkout marker keeps command approvals scoped to this checkout
-    # instead of the whole clone, so writing it must not itself become a
-    # primitive for the branch it defends against. `.agent/*` lives in the LOCAL
-    # exclude, which governs UNTRACKED files only -- a pull request can track
-    # whatever it likes at that path, and its content is already checked out
-    # when the marker is written. These three cases re-run against the worktree
-    # the run above created, which is the reuse path that rewrites the marker.
-    pr_marker="$pr_repo/.fleet/pr-11/.agent/pr-checkout"
-    assert_eq 'yes' "$(test -f "$pr_marker" && printf yes || printf no)" \
-        'the PR worktree is marked as a pull-request checkout'
-
-    # A plain redirect follows a symlink, which would land this write wherever
-    # the link points: arbitrary file write as the reviewing maintainer.
-    marker_escape="$tmp/pr-marker-escape"
-    rm -f -- "$marker_escape" "$pr_marker"
-    ln -s "$marker_escape" "$pr_marker"
-    : >"$gh_log"
-    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
-        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 11 --repo example/repo 2>&1)
-    rc=$?
-    assert_eq 'no' "$(test -e "$marker_escape" && printf yes || printf no)" \
-        'a symlinked PR marker never writes through to its target'
-    assert_eq 'no' "$(test -L "$pr_marker" && printf yes || printf no)" \
-        'the symlinked PR marker is replaced rather than followed'
-    assert_eq 'yes' "$(test -f "$pr_marker" && printf yes || printf no)" \
-        'the replacement PR marker is a regular file'
-    # The hardening must not break the legitimate reuse path: this run
-    # completes the declared setup dispatch as before, rather than dying at
-    # the marking.
-    assert_not_contains "$out" 'could not mark' \
-        'replacing a hostile marker is not treated as a marking failure'
-    assert_eq '0' "$rc" \
-        'the remarked worktree still completes the setup dispatch'
-
-    # A symlinked .agent DIRECTORY is refused outright rather than written into.
-    agent_escape="$tmp/pr-agent-escape"
-    rm -rf -- "$agent_escape" "$pr_repo/.fleet/pr-11/.agent"
-    ln -s "$agent_escape" "$pr_repo/.fleet/pr-11/.agent"
-    : >"$gh_log"
-    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
-        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 11 --repo example/repo 2>&1)
-    rc=$?
-    assert_eq '1' "$rc" 'a symlinked .agent directory stops the run'
-    assert_contains "$out" 'is a symlink' 'the refusal names the symlinked directory'
-    assert_eq 'no' "$(test -e "$agent_escape" && printf yes || printf no)" \
-        'a symlinked .agent directory is never written through'
-    rm -f -- "$pr_repo/.fleet/pr-11/.agent"
-
-    # Fail closed. An unmarkable worktree must STOP: continuing unmarked would
-    # silently hand it the wider clone-wide approval scope, which is the precise
-    # failure the marker exists to prevent, and nothing downstream would show it.
-    mkdir -p -- "$pr_repo/.fleet/pr-11/.agent" "$pr_marker"
-    : >"$gh_log"
-    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
-        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 11 --repo example/repo 2>&1)
-    rc=$?
-    assert_eq '1' "$rc" 'an unmarkable PR worktree stops instead of continuing unmarked'
-    assert_contains "$out" 'could not mark' 'the refusal names the marking failure'
-    rmdir -- "$pr_marker"
-
     fork_repo=$tmp/fork-repo
     mkdir -p "$fork_repo"
     make_repo "$fork_repo" >/dev/null

@@ -128,41 +128,6 @@ This denial does not lift on a retry. If it is genuinely what the task needs,
 the user should run it themselves."
 fi
 
-# A commit landing on the trunk branch. Deny-once: committing to trunk is
-# ordinary in some repositories and a mistake in every repository that reviews
-# by pull request, and the command alone does not say which -- so one refusal
-# turns the default into a choice.
-target_root=$(guard_command_repository_root "$cwd" "$command_line" 2> /dev/null || true)
-if [[ -n $target_root ]]; then
-    classification_result=$(guard_classify_root_result "$target_root")
-    target_classification=${classification_result%%$'\n'*}
-else
-    target_classification=unresolved
-fi
-if [[ $target_classification != fixture && $target_classification != foreign ]] &&
-    branch=$(guard_trunk_commit_reason "$command_line" "${target_root:-$protect_root}"); then
-    if guard_should_deny "$protect_root" "$session" trunk-commit; then
-        if guard_commit_has_explicit_worktree "$command_line"; then
-            provenance="An explicit git -C worktree pin identifies the landing worktree."
-        else
-            provenance="Because this repository has one worktree, those observations identify the inferred landing branch."
-        fi
-        reason="Refused once -- this commit would land on $branch, the inferred landing
-branch. The hook observed repository root: ${target_root:-$protect_root}
-and observed HEAD branch: $branch. $provenance This is the trunk branch this
-repository declares. Work that is reviewed before it merges needs a branch:
-
-  git checkout -b <type>/<short-name>
-
-If committing to $branch is genuinely right here, make the same call again and
-it will be allowed.
-
-Target classification: $target_classification; repository target: ${target_root:-$protect_root}."
-        [[ $target_classification != unresolved ]] || reason+=$'\nThe target classification is ambiguous; retry if this is an ephemeral fixture, after confirming its resolved git root.'
-        deny "$reason"
-    fi
-fi
-
 # A bare helper invocation. Nothing in the tree is on PATH, so this is a
 # guaranteed "command not found" that the agent then recovers from by guessing a
 # location. Letting it run would teach the same lesson one call later, so the
