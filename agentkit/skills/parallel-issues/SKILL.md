@@ -1011,12 +1011,10 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
 publish_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" \
-    --findings-file "$RUN_DIR/findings.ndjson" --require-pushed \
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
+    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
-    --mode "$MODE" --mode-reason "$MODE_REASON" \
-    --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
+    --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
 case "$publish_rc" in
     0)  : ;; # post-receipt.sh posted and byte-verified the receipt
@@ -1029,7 +1027,8 @@ esac
 # Never retry against receipt_comments until the fresh live comments are reviewed.
 ```
 
-The ledger owns titles, dispositions, SHAs, and rationales; the script owns every receipt byte.
+The ledger owns titles, dispositions, SHAs, and rationales; the script owns every receipt byte,
+deriving `findings.ndjson` from `RUN_DIR` (`--findings-file PATH` overrides it).
 Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.

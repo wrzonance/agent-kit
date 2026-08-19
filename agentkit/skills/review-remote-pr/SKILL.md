@@ -5,16 +5,10 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 # Review Remote PR
 
-Draft-first automated loop. **Phase A (draft):** root-orchestrated — watches CI, resolves forge
-conflicts, applies the Step 1b materiality gate, owns consent/replies/adversarial review/
-publication; a worker receives only a root-approved mechanical fix batch, commits and pushes its
-branch, and returns a completion report. **Phase B (handoff):** report draft-phase complete, wait for the **user** to mark it
-ready — never trigger a provider review. **Phase C (review):** once a relevant review lands,
-assess CodeRabbit/`github-code-quality[bot]` findings, batching fixes into one push per cycle.
-Human-authored reviews stay confirmation-gated throughout.
+Draft-first automated loop. **Phase A (draft):** root-orchestrated — watches CI, resolves forge conflicts, applies the materiality gate, owns consent/replies/adversarial review/publication; a worker gets only a root-approved fix batch, commits, pushes, and reports.
+**Phase B (handoff):** report draft-phase complete, wait for the **user** to mark it ready — never trigger a review. **Phase C (review):** once review lands, assess CodeRabbit/`github-code-quality[bot]` findings, one push per cycle. Human reviews stay confirmation-gated throughout.
 
-**Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is
-context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
+**Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
 
 **References are read once, batched, and never sized first.** When a step names a reference
 file, read it in full at that step — one batched read covering several files is ideal — and do
@@ -30,9 +24,9 @@ line count, and per-file sizing spends one root turn per file before any real wo
 - Never run `gh pr ready` — the draft-to-ready flip is always the user's call.
 - Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command) — ever, in any phase.
 - Never resolve a human-touched thread, including content from the account `gh api user` returns.
-- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push and before draft-phase-complete handoff — a review or verified skip without a receipt is incomplete.
+- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push, before handoff — a review or skip without a receipt is incomplete.
 - Never bypass a repository hook (no `--no-verify`, `core.hooksPath`, piped `y`).
-- Batch each cycle's fixes into ONE push; iteration cap 3 full cycles, then escalate instead of iterating.
+- Batch each cycle's fixes into ONE push; cap 3 cycles, then escalate.
 - Every wait is bounded (rounds/duration/marker) and spends no model turns on `sleep` + re-check.
 
 ## Flags
@@ -64,11 +58,9 @@ RUN_ID="review-pr-$(printf '%s' "$review_run_inputs" | sha256sum | cut -c1-32)"
 : "$RUN_ID"
 ```
 
-This keeps a later invocation without `--auto-review` from replaying a grant recorded for an
-earlier invocation that carried it. Append every human grant, steer, or review adjudication
-immediately on receipt with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
-`QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
-After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
+This stops replay across differently-flagged invocations. Append every human grant, steer, or review adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+`QUOTE` is the verbatim quote; never put secrets in any field.
+After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as durable.
 
 ## Runtime and provider neutrality
 
@@ -155,15 +147,17 @@ PHASE A — DRAFT (all mechanical work happens here; do not initiate provider re
   2. FIX CI  — diagnose failures, dispatch the Luna ultracode implementation worker (or take the
                documented degraded path when spawn_agent is unavailable); review the worker's pushed
                diff and re-check CI and review state after its push; repeat 1–2 until CI is green
-  2b. ADVERSARIAL — as the LAST draft step (CI green, conflicts resolved): apply the materiality
-               gate; for a material diff run one cross-harness review, then verify + fix confirmed
-               findings; for a trivial mechanical diff document the verified skip
+  2a. FRESHEN — digest's `base:` stale=yes? run 0b's merge recipe now, before the review below
+  2b. ADVERSARIAL — as the LAST draft step (CI green, conflicts resolved, base current): apply the
+               materiality gate; for a material diff run one cross-harness review, then verify +
+               fix confirmed findings; for a trivial mechanical diff document the verified skip
 
 PHASE B — HANDOFF (user-gated)
   3. WAIT-READY — report draft-phase complete, then wait for the USER to mark the PR ready. NEVER
                   flip it or trigger a provider review yourself; provider automation is external state.
 
 PHASE C — REVIEW (runs when relevant provider findings land)
+  3a. FRESHEN — re-check `base:`; if still stale, rerun 0b's merge recipe once before Step 4's wait
   4. WAIT    — wait for CI and any relevant review to land (gh-pr-state.sh --wait-ci,
                bounded rounds; escalate rather than wait forever)
   5. FIX     — apply approved human-review actions first (their threads stay unresolved); then triage
@@ -264,7 +258,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-Run only declared `agent-run.sh --cmd` commands — they run directly, with no approval step. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry.
+Run only declared `agent-run.sh --cmd` commands — they run directly, with no approval step. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry. 2a/3a reuse this recipe whenever `base:` reads `stale=yes`, conflicting or not; a clean merge auto-commits — skip straight to `agent-run.sh --cmd test` then `git push`.
 
 ### 0c — Create the private review-artifact directory
 
