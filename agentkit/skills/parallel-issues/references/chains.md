@@ -113,7 +113,17 @@ rebase and not a promise that the old checks still describe the child:
    every descendant in order. A successful old check or approval is not evidence for the new
    tree — re-verify on the merged tree itself. Publish before handing the commit to the next
    descendant or to review; see "Publishing a locally-built chain base" above for why a
-   worker's own interim check does not need this.
+   worker's own interim check does not need this. If the merge carries a protected path
+   forward unchanged, commit it with `worktree-commit.sh --yolo --allow-base-inherited
+   <full-SHA>` — the same full SHA from step 1. Nothing has to carry that SHA in the dispatch
+   prompt for this: `--allow-base-inherited` only ever applies while a merge is active, and
+   its `verify_base_inherited` check requires the named commit to equal the worktree's own
+   `MERGE_HEAD`, which the worker can read straight back with `git rev-parse MERGE_HEAD` at
+   commit time. A worktree created from a chain base (`create-issue-worktree.sh
+   --chain-base`) commits its own ordinary, non-merge changes exactly like a trunk-based
+   worktree does — the protected-path guard never engages outside an active merge, so that
+   initial base commit is never needed by `worktree-commit.sh` either, named in a prompt or
+   otherwise.
 4. Record the refreshed base for every stacked PR in the handoff. The record names the full
    SHA used for the merge and the new PR base, so the next operator can distinguish a checked
    cascade from a branch that merely moved.
