@@ -562,13 +562,22 @@ assert_eq '' "$(pre_context "$out")" \
 #
 # The derived ancestor is wherever the checkout happens to sit, and on a GitHub
 # runner that is $HOME/work/<repo>/<repo> -- so this target IS $HOME there and
-# the home-sweep denial above pre-empts the advisory. Both outcomes are the
-# guard refusing to let a command-derived target authorize itself, so assert
-# whichever refusal applies instead of pinning the runner's directory layout.
+# the home-sweep denial above pre-empts the advisory. The same pre-emption
+# also fires when the derived ancestor is merely an ANCESTOR of $HOME (e.g. a
+# checkout three directory levels under /home/<user> derives /home itself) --
+# guard_home_sweep_target treats ancestors of $HOME as home sweeps too (see
+# its docstring), on purpose: sweeping /home reaches $HOME on the way past.
+# So mirror that same ancestor-inclusive check here rather than pinning the
+# runner's directory layout with plain equality.
 scope_target_repo=$(cd "$root/../../.." && pwd)
 scope_target_is_home=0
-[[ $(cd "$scope_target_repo" && pwd -P) == "$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" ]] &&
+scope_target_canon=$(cd "$scope_target_repo" && pwd -P)
+scope_home_canon=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P) || scope_home_canon=''
+if [[ -n $scope_home_canon ]] &&
+    { [[ $scope_target_canon == "$scope_home_canon" ]] ||
+        [[ $scope_home_canon == "$scope_target_canon"/* ]]; }; then
     scope_target_is_home=1
+fi
 for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
     "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
     out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
