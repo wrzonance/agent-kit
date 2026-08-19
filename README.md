@@ -3,7 +3,7 @@
 Keep your sub-agents in check while systematically working through a GitHub Projects board.
 
 Agent Kit is a plugin for Codex CLI and Claude Code. It ships four skills, a set of bash
-helper scripts, and five lifecycle hooks. A repository you onboard declares its own facts
+helper scripts, and four lifecycle hooks. A repository you onboard declares its own facts
 once, in a per-machine `.agent/` directory: the trunk branch, the Projects board, the label
 taxonomy, and the commands that verify it. The skills and hooks read those declarations
 instead of rediscovering them on every run; onboarding regenerates them after a fresh clone.
@@ -17,7 +17,7 @@ instead of rediscovering them on every run; onboarding regenerates them after a 
 | `review-remote-pr` skill | Takes a draft PR to green: CI, merge conflicts, one adversarial cross-review by the peer CLI, review-bot threads, and the board move |
 | `pr-to-green` skill | Serializes a confirmed draft-PR queue, performs authorized ready/provider transitions, and handles stacks without merging |
 | Helper scripts | Deterministic one-call operations: environment preflight, command runner, board reader and mover, one-request issue triage, worktree commits, PR state digests, verified comment posting |
-| Hooks | Inject the environment contract at session start, refuse a short list of destructive commands, teach cheaper commands after wasteful ones, and block the end of a turn until the declared verify command has covered the changes |
+| Hooks | Inject the environment contract at session start, refuse a short list of destructive commands, and teach cheaper commands after wasteful ones |
 
 ## Install
 
@@ -92,6 +92,9 @@ AGENT_CMD_VERIFY=tools/verify
 AGENT_CMD_TEST=<whatever this repo runs for tests>
 ```
 
+Declaring these makes them runnable by name (`agent-run.sh --cmd verify`, `--cmd test`); no
+hook blocks a turn on them. Run them yourself when you want the evidence.
+
 During onboarding, also choose the providers installed for pull-request review:
 
 ```ini
@@ -154,13 +157,16 @@ input, retry with a literal equivalent, or treat `--yolo` as an approval record.
 | `SubagentStart` | Codex-only event. Injects the tooling curriculum into spawned workers; each worker's per-worktree contract travels in the dispatcher's prompt |
 | `PreToolUse` | Refuses work-destroying commands every time; refuses once for a bare helper name, a trunk commit, or an edit to a file that gates other checks |
 | `PostToolUse` | Teaches the cheaper command after a wasteful call returned real data |
-| `Stop` | Blocks the end of a turn when the declared verify command has no run covering the current changes |
 
-Three rules govern all five. Hooks always exit 0 and state what they want in JSON, because
-a nonzero exit halts an autonomous worker instead of informing it. Guards act only on
-declared evidence: a repository with no `.agent/` directory gets nothing, and the `Stop`
-check fires only when a verify command is declared. Anything with a usable alternative is
-allowed to run and corrected afterwards, so a single denial cannot end a line of work.
+There is no `Stop` hook: nothing blocks the end of a turn on a declared verify/test
+command. Declaring `AGENT_CMD_VERIFY`/`AGENT_CMD_TEST` only makes them runnable by name
+(`agent-run.sh --cmd NAME`); running them is on you, not an automated gate.
+
+Three rules govern the remaining four. Hooks always exit 0 and state what they want in
+JSON, because a nonzero exit halts an autonomous worker instead of informing it. Guards act
+only on declared evidence: a repository with no `.agent/` directory gets nothing. Anything
+with a usable alternative is allowed to run and corrected afterwards, so a single denial
+cannot end a line of work.
 
 The permanent deny list is short: force-push, `reset --hard`, `clean -f`, deleting the
 trunk branch, `gh pr merge`, `--no-verify`, and recursive deletes of `~` or `/`. A second
@@ -225,7 +231,7 @@ agentkit/
   hooks/
     hooks.json                      where both harnesses look for it
     lib/guard-lib.sh                logic the hooks must agree on
-    *.sh                            the five dispatchers
+    *.sh                            the four dispatchers
   skills/
     onboard-repo/
     parallel-issues/                scripts/ holds the board mover and data fencing

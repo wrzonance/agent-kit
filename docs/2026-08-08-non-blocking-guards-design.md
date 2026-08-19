@@ -252,6 +252,9 @@ forward. Detection improves the guarantee; it is not load-bearing.
 `Stop` is unchanged: it already exits early on `stop_hook_active`, blocks at
 most once, and is opt-in per repository.
 
+*(2026-08-19 update: `Stop` was later removed entirely — see the
+[kill-turn-gate plan](superpowers/plans/2026-08-19-kill-turn-gate.md).)*
+
 ## 6. State
 
 Per-session, per-rule, under the cache the repository already ignores:

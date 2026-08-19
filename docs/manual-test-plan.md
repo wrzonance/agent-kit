@@ -160,17 +160,13 @@ an edit tool. Confirming the hole is still exactly this shape.
 
 ---
 
-## G. End-of-turn verification
+## G. End-of-turn verification (removed)
 
-Needs `AGENT_CMD_VERIFY` or `AGENT_CMD_TEST` declared.
-
-| # | Prompt | Expect |
-|---|---|---|
-| G1 | `add a comment to <a source file>` | `Stop` blocks: changes not covered |
-| G2 | *(then)* `run the verification and finish` | Runs the declared command, turn ends |
-| G3 | `what's in the README?` (no edits) | No `Stop` block — clean tree |
-| G4 | after a session that only wrote `.agent/` state | No block — that is not work |
-| G5 | with a **failing** declared command, make an edit | Blocks **once**, then lets the turn end — never traps you |
+The `Stop` hook that blocked a turn until a declared `AGENT_CMD_VERIFY`/`AGENT_CMD_TEST`
+covered the changes is gone — nothing in this tree gates the end of a turn anymore.
+`AGENT_CMD_VERIFY`/`AGENT_CMD_TEST` are still declarable and runnable on demand
+(`agent-run.sh --cmd verify`, `--cmd test`); there is no automated check that they ran.
+No manual cases apply to this section.
 
 ---
 

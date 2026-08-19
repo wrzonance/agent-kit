@@ -18,11 +18,11 @@ fi
 
 # $HOME is not always writable, and that is not a failure of this tree.
 #
-# This suite is the declared VERIFY command for agent-kit itself, so Stop runs
-# it at the end of every turn. Under a workspace-scoped sandbox $HOME is
-# read-only, and a live onboarding session watched the whole suite fail here and
-# then re-ran it with elevation -- a permission escalation per turn, to satisfy
-# an integration test that was never the point of the turn.
+# This suite is the declared VERIFY command for agent-kit itself. Under a
+# workspace-scoped sandbox $HOME is read-only, and a live onboarding session
+# watched the whole suite fail here and then re-ran it with elevation -- a
+# permission escalation per turn, to satisfy an integration test that was
+# never the point of the turn.
 #
 # Probed by trying, not by checking permission bits: a read-only mount reports
 # the same bits as a writable one, and a read-only mount is the case at issue.
@@ -63,8 +63,8 @@ assert_eq 'yes' "$([[ -x $stage/agentkit/skills/pr-to-green/scripts/review-trans
     'preserves the pr-to-green transition executable'
 assert_eq 'yes' "$([[ -x $stage/agentkit/skills/.shared/scripts/agent-run.sh ]] && echo yes || echo no)" \
     'preserves the executable bit on scripts'
-assert_eq 'yes' "$([[ -x $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \
-    'packages the hooks the manifest points at, executable'
+assert_eq 'no' "$([[ -e $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \
+    'does not package the removed stop.sh turn-gate hook'
 assert_contains "$(jq -r '.plugins[0].source' < "$stage/.claude-plugin/marketplace.json")" \
     './' 'plugin source paths start with ./ as both harnesses require'
 

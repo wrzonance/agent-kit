@@ -5,6 +5,10 @@
 **Scope:** the agent skill tree (`parallel-issues`, `review-remote-pr`, `.shared`)
 **Predecessors:** Task 1 (bash conversion), Task 2 (`.agent/` config + single-call triage)
 
+> **2026-08-19 update:** the `Stop` hook and `stop.sh` described below were later removed
+> entirely (see the [kill-turn-gate plan](superpowers/plans/2026-08-19-kill-turn-gate.md));
+> the rest of this design stands as originally approved.
+
 ## Problem
 
 Three separate gaps, one root cause: the tree has no way to be *told* things, so it

@@ -49,6 +49,11 @@ of splitting a fast lint/typecheck out as `VERIFY` and keeping the full suite
 as `TEST`) charged five minutes of suite runtime for adding one line to a YAML
 file — every single turn, forever, until someone noticed and re-declared it.
 
+*(The `Stop` hook this lesson describes was later removed — see the
+[kill-turn-gate plan](superpowers/plans/2026-08-19-kill-turn-gate.md) — but
+splitting `VERIFY` from `TEST` still keeps whichever command you run by hand
+fast.)*
+
 ## Component commands forced to run from the repo root
 
 A command declared to run from the repository root instead of getting its own
@@ -69,6 +74,10 @@ the push failed. This is why `ci-gap.sh` and "read plainly which CI gates
 nothing declared covers" is worth saying even when the gap can't be closed
 during onboarding itself — a stated gap is a known risk; a silent one is a
 surprise at push time.
+
+*(`Stop` no longer exists — nothing runs `AGENT_CMD_VERIFY` automatically — so
+this gap now applies to whatever you run by hand, not just what a hook ran for
+you.)*
 
 ## Onboarding commit landed on `main`
 
