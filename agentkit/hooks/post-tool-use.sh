@@ -46,6 +46,15 @@ guard_strip_heredoc_bodies() {
     printf '%s' "$out"
 }
 
+# A double-quoted value containing $( or a backtick is not provably inert --
+# bash executes a command substitution inside a double-quoted string, so
+# redacting it wholesale could hide a path the shell genuinely resolves
+# (adversarial review, issue #299). The bracket expressions below exclude $
+# and ` from what a redactable run of characters may contain, so a match
+# simply fails -- and the value passes through unredacted -- the moment either
+# appears; a single-quoted value is always inert regardless of content and
+# keeps no such exclusion.
+#
 # Blank the QUOTED value attached to a known body-bearing flag: --body/-b, or
 # the body= value handed to -f/-F/--field/--raw-field. An unquoted value or a
 # file-backed one (body=@file) is left alone -- this only covers what a
@@ -54,8 +63,8 @@ guard_strip_heredoc_bodies() {
 guard_strip_body_flag_values() {
     local text
     text=$(sed -E '
-        s/(--body|-b)([[:space:]]+)"([^"\\]|\\.)*"/\1\2"[REDACTED]"/g
-        s/((-f|-F|--field|--raw-field)[[:space:]]+body=)"([^"\\]|\\.)*"/\1"[REDACTED]"/g
+        s/(--body|-b)([[:space:]]+)"([^"\\$`]|\\.)*"/\1\2"[REDACTED]"/g
+        s/((-f|-F|--field|--raw-field)[[:space:]]+body=)"([^"\\$`]|\\.)*"/\1"[REDACTED]"/g
     ' <<< "$1" 2> /dev/null) || text=$1
     sed -E "
         s/(--body|-b)([[:space:]]+)'[^']*'/\1\2'[REDACTED]'/g
@@ -63,13 +72,34 @@ guard_strip_body_flag_values() {
     " <<< "$text" 2> /dev/null || printf '%s' "$text"
 }
 
+# True when a command carries the syntax that runs a nested command: $( or a
+# backtick. Used to tell a heredoc body that is genuinely inert (a
+# quoted-delimiter heredoc, or one with no such syntax at all) from one that
+# is not provably so.
+guard_command_has_expansion() {
+    # shellcheck disable=SC2016  # the $( glob literal is intentional, not expansion
+    [[ $1 == *'$('* || $1 == *'`'* ]]
+}
+
 # The text the pinned-plugin-path lesson (below) may judge. A raw command_line
 # cannot tell a path being EXECUTED from one merely QUOTED as data -- inside a
 # heredoc body building an issue/PR description, or as the value of a
 # body-bearing gh flag -- so this narrows the match text to what a shell would
 # actually try to resolve before that lesson's pattern runs against it.
+#
+# guard_strip_heredoc_bodies drops every heredoc body regardless of whether
+# its delimiter was quoted, so it cannot tell an inert body from an EXPANDABLE
+# one (<<EOF, unquoted delimiter) whose $(...) the shell actually runs. If
+# stripping removed the only $(/backtick evidence in the command, that body is
+# not provably inert -- fall back to the untouched text so a path inside it
+# still reaches the matcher (adversarial review, issue #299).
 guard_pinned_path_probe_text() {
-    guard_strip_body_flag_values "$(guard_strip_heredoc_bodies "$1")"
+    local raw=$1 stripped
+    stripped=$(guard_strip_heredoc_bodies "$raw")
+    if guard_command_has_expansion "$raw" && ! guard_command_has_expansion "$stripped"; then
+        stripped=$raw
+    fi
+    guard_strip_body_flag_values "$stripped"
 }
 
 input=$(cat 2> /dev/null || true)
