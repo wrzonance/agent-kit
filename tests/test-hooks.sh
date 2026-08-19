@@ -1248,6 +1248,21 @@ out=$(post_input "$repo" "$rawfield_cmd" "$rawfield_sid" | "$hooks/post-tool-use
 assert_eq '' "$(ctx_of "$out")" \
     'a pinned path quoted in an -f body= value does not trigger the lesson'
 
+# The same path quoted as data AND then genuinely executed in one command must
+# still fire the lesson -- guard_strip_heredoc_bodies only drops heredoc BODY
+# lines, never text outside them, so a state-machine bug that swallowed too
+# much here would silently stop the lesson firing while every negative test
+# above stayed green.
+mixed_sid=$(fresh_sid)
+mixed_cmd="cat <<'EOF' > /tmp/b.txt
+Evidence: $pinned
+EOF
+$pinned"
+out=$(post_input "$repo" "$mixed_cmd" "$mixed_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'version directory' \
+    'an executed path still corrects even after the same path was quoted in a heredoc body'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+
 # The resolver itself contains plugins/cache and must not trip its own rule --
 # an advisory that fires on the correct form teaches that the advice is noise.
 # shellcheck disable=SC2016  # a command line for the hook to read, not to run
