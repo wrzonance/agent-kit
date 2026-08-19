@@ -277,6 +277,7 @@ contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repos
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Answers Step 1's questions locally, with no forge round trip (`base=` carries a `source=` token — read the leading token). Reuse these values in your reasoning; the Bash blocks below re-derive them only because each block is self-contained. `repo=none` or `base=none` is the one case where Step 1 is doing real work. |
+| `protected= patterns=` | Check every planned write set, and every accepted review finding's target path, against this before dispatching a worker. A collision means that worker structurally cannot land its own fix — hand it to the operator instead of spending a verification pass and only then hitting `worktree-commit.sh`'s refusal. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |

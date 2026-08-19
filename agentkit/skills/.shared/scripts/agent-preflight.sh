@@ -19,7 +19,7 @@
 #   the origin URL, and the only writes are under <worktree>/.agent/.
 #
 # OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
-#   skills= path= repo= branch= worktree= base= config= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= path= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 #   The first record is `skills= path=/abs/skills-tree` -- the literal "skills=" key
 #   followed by a separate "path=" field; consumers parse the exact "skills= path="
 #   prefix, so the run-together form "skills=/abs/path" is incompatible.
@@ -61,6 +61,17 @@ SYSTEM_BUNDLES=(
 SYSTEM_CERT_DIRS=(/etc/ssl/certs /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem)
 CA_ENV_VARS=(SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS)
 
+# Shared with worktree-commit.sh's commit-time guard: sourcing SHARED_PROTECTED_DEFAULTS
+# from here rather than re-listing it means the two can never drift apart. Guarded, never
+# fatal: this script reports missing facts rather than blocking (see BEHAVIOUR above), so
+# a caller that copies agent-preflight.sh without its lib/ sibling still runs --
+# probe_protected() reports the gap instead of crashing the whole probe.
+PROTECTED_PATHS_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/protected-paths.sh"
+if [[ -r "$PROTECTED_PATHS_LIB" ]]; then
+    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+    source "$PROTECTED_PATHS_LIB"
+fi
+
 usage() {
     cat <<'EOF'
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
@@ -83,7 +94,7 @@ Options:
                      outside the agent sandbox and can only report its own.
   -h, --help         Print this help and exit 0.
 
-Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
 Exit: 0 always, including when tools or facts are missing (they are reported as missing);
       2 only for invalid usage.
@@ -292,8 +303,30 @@ probe_identity() {
     else
         slug='none origin=absent'
     fi
-    branch="$(git -C "$WORKTREE" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown')"
-    if [[ "$branch" == "HEAD" ]]; then branch="detached"; fi
+    # A repository with no commits yet (an unborn checkout) makes
+    # `rev-parse --abbrev-ref HEAD` FAIL (exit 128) while still echoing the
+    # literal "HEAD" to stdout as part of its diagnostic -- distinct from a
+    # genuinely detached HEAD, which prints the same "HEAD" but SUCCEEDS
+    # (exit 0). The old `2>/dev/null || printf 'unknown'` one-liner ran both
+    # halves of the `||` inside the same command substitution on failure, so
+    # git's stray "HEAD" stdout and the fallback's "unknown" were BOTH
+    # captured, corrupting the one-line-per-key contract with an embedded
+    # newline ("HEAD\nunknown" -> two physical output lines instead of one).
+    # Capturing rc separately keeps the three cases apart: success (real
+    # branch, or detached normalized below), failure-with-stdout (unborn --
+    # reported as literal "HEAD", session-start.sh's freshness check keys off
+    # this to distinguish it from a stale cached branch name), and
+    # failure-with-no-stdout (truly unknown).
+    local git_branch_out git_rc=0
+    git_branch_out="$(git -C "$WORKTREE" rev-parse --abbrev-ref HEAD 2>/dev/null)" || git_rc=$?
+    if (( git_rc == 0 )); then
+        branch="$git_branch_out"
+        if [[ "$branch" == "HEAD" ]]; then branch="detached"; fi
+    elif [[ -n "$git_branch_out" ]]; then
+        branch="$git_branch_out"
+    else
+        branch="unknown"
+    fi
     emit "repo=$slug"
     emit "branch=$branch"
     emit "worktree=$WORKTREE"
@@ -325,6 +358,36 @@ probe_config() {
     keys="$shown"
     if (( extra > 0 )); then keys="$shown,+$extra more"; fi
     emit "config= present=yes keys=$count supplied=\"$keys\""
+}
+
+# The effective protected-path set, computable up front so a colliding write set is
+# knowable before work starts rather than discovered at commit time by
+# guard_staged_protected_paths in worktree-commit.sh (issue #296). Computed exactly the
+# way that guard computes it: lib/protected-paths.sh's SHARED_PROTECTED_DEFAULTS plus
+# this repository's additive AGENT_PROTECTED_PATHS declaration (repo-config.sh) --
+# never a re-derivation that could drift from the enforcement it describes.
+probe_protected() {
+    if [[ -z "${SHARED_PROTECTED_DEFAULTS+x}" ]]; then
+        emit 'protected= patterns=unavailable repo-declared=unknown note="lib/protected-paths.sh missing alongside this script"'
+        return 0
+    fi
+    local self_dir resolver declared="" repo_declared="none"
+    self_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+    resolver="$self_dir/repo-config.sh"
+    if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
+        declared="$("$resolver" --repo-root "$WORKTREE" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)"
+    fi
+    local -a effective=("${SHARED_PROTECTED_DEFAULTS[@]}")
+    if [[ -n "$declared" ]]; then
+        local IFS=,
+        local -a extra
+        read -r -a extra <<< "$declared"
+        effective+=("${extra[@]}")
+        repo_declared="$(join_by , "${extra[@]}")"
+    fi
+    # Capped like py-roots/node-roots: a misconfigured repo cannot flood the block, and
+    # the count is never silently understated -- join_capped names how many were dropped.
+    emit "protected= patterns=\"$(join_capped 24 "${effective[@]}")\" repo-declared=\"$repo_declared\""
 }
 
 # Root instruction files are the only instruction files preflight reports. The
@@ -783,6 +846,7 @@ main() {
     resolve_worktree
     probe_identity
     probe_config
+    probe_protected
     probe_instructions
     probe_git
     probe_gh
