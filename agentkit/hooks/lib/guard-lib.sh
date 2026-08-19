@@ -909,9 +909,9 @@ guard_destructive_reason() {
     stripped=$(guard_strip_git_globals "$cmd")
     normalized=$(guard_normalize_flags "$stripped")
 
-    # Intervening tokens are tolerated, as in the push rule: after a substitution
-    # is flattened the flag is no longer adjacent to the verb. Bounded by shell
-    # separators, so a later unrelated command cannot be dragged into the match.
+    # Intervening tokens are tolerated: after a substitution is flattened the
+    # flag is no longer adjacent to the verb. Bounded by shell separators, so a
+    # later unrelated command cannot be dragged into the match.
     if grep -qE '(^|[;&|[:space:]])git[[:space:]]+reset([[:space:]][^;&|]*)?[[:space:]]--hard' <<< "$stripped"; then
         printf 'reset --hard discards uncommitted work irrecoverably. Use git stash, or commit first.'
         return 0

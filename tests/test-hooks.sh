@@ -838,8 +838,7 @@ assert_contains "$out" 'fix the check' 'and names the failure mode it exists for
 # --- a commit landing on trunk is allowed -----------------------------------
 # git is recoverable, so committing straight onto the declared trunk branch is
 # not the destructive work this guard set exists to block. The trunk-commit
-# guard (and its deny-once state) is removed; confirm the ordinary path stays
-# clear, including on repeated attempts.
+# guard is removed entirely; confirm the ordinary path stays clear.
 trunk_repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=main\n' \
     > "$trunk_repo/.agent/config.env"
@@ -855,7 +854,7 @@ assert_eq 'allow' "$(decision "$out")" 'a commit on the declared trunk branch is
 
 out=$(pre_input "$trunk_repo" 'git commit -m "onboard again"' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
-    'a second trunk commit in a later session is allowed too -- there is no deny-once state left to spend'
+    'a second trunk commit is allowed too, since the guard is gone'
 
 # `git -C dir commit` is the same commit with the repository named up front.
 out=$(pre_input "$tmp" "git -C $trunk_repo commit -m x" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
