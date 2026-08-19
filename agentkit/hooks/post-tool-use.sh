@@ -33,6 +33,75 @@ teach() {
     exit 0
 }
 
+# Reconstruct command text with heredoc BODY LINES removed, keeping everything
+# else -- including the << token and the delimiter word -- so a match outside a
+# heredoc is unaffected. Reuses guard_gh_command_segments' quote/heredoc state
+# machine (sourced above from guard-lib.sh) instead of re-deriving one, so the
+# two can never disagree on what counts as "inside a heredoc" (issue #299).
+guard_strip_heredoc_bodies() {
+    local segment out=''
+    while IFS= read -r segment; do
+        out+="$segment"$'\n'
+    done < <(guard_gh_command_segments "$1")
+    printf '%s' "$out"
+}
+
+# A double-quoted value containing $( or a backtick is not provably inert --
+# bash executes a command substitution inside a double-quoted string, so
+# redacting it wholesale could hide a path the shell genuinely resolves
+# (adversarial review, issue #299). The bracket expressions below exclude $
+# and ` from what a redactable run of characters may contain, so a match
+# simply fails -- and the value passes through unredacted -- the moment either
+# appears; a single-quoted value is always inert regardless of content and
+# keeps no such exclusion.
+#
+# Blank the QUOTED value attached to a known body-bearing flag: --body/-b, or
+# the body= value handed to -f/-F/--field/--raw-field. An unquoted value or a
+# file-backed one (body=@file) is left alone -- this only covers what a
+# command carries as an inline quoted payload, such as an issue/PR body under
+# construction, never a path spelled without quotes.
+guard_strip_body_flag_values() {
+    local text
+    text=$(sed -E '
+        s/(--body|-b)([[:space:]]+)"([^"\\$`]|\\.)*"/\1\2"[REDACTED]"/g
+        s/((-f|-F|--field|--raw-field)[[:space:]]+body=)"([^"\\$`]|\\.)*"/\1"[REDACTED]"/g
+    ' <<< "$1" 2> /dev/null) || text=$1
+    sed -E "
+        s/(--body|-b)([[:space:]]+)'[^']*'/\1\2'[REDACTED]'/g
+        s/((-f|-F|--field|--raw-field)[[:space:]]+body=)'[^']*'/\1'[REDACTED]'/g
+    " <<< "$text" 2> /dev/null || printf '%s' "$text"
+}
+
+# True when a command carries the syntax that runs a nested command: $( or a
+# backtick. Used to tell a heredoc body that is genuinely inert (a
+# quoted-delimiter heredoc, or one with no such syntax at all) from one that
+# is not provably so.
+guard_command_has_expansion() {
+    # shellcheck disable=SC2016  # the $( glob literal is intentional, not expansion
+    [[ $1 == *'$('* || $1 == *'`'* ]]
+}
+
+# The text the pinned-plugin-path lesson (below) may judge. A raw command_line
+# cannot tell a path being EXECUTED from one merely QUOTED as data -- inside a
+# heredoc body building an issue/PR description, or as the value of a
+# body-bearing gh flag -- so this narrows the match text to what a shell would
+# actually try to resolve before that lesson's pattern runs against it.
+#
+# guard_strip_heredoc_bodies drops every heredoc body regardless of whether
+# its delimiter was quoted, so it cannot tell an inert body from an EXPANDABLE
+# one (<<EOF, unquoted delimiter) whose $(...) the shell actually runs. If
+# stripping removed the only $(/backtick evidence in the command, that body is
+# not provably inert -- fall back to the untouched text so a path inside it
+# still reaches the matcher (adversarial review, issue #299).
+guard_pinned_path_probe_text() {
+    local raw=$1 stripped
+    stripped=$(guard_strip_heredoc_bodies "$raw")
+    if guard_command_has_expansion "$raw" && ! guard_command_has_expansion "$stripped"; then
+        stripped=$raw
+    fi
+    guard_strip_body_flag_values "$stripped"
+}
+
 input=$(cat 2> /dev/null || true)
 command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
@@ -116,7 +185,15 @@ fi
 # path that no longer exists rather than as anything that names the cause. The
 # tree moving is the whole reason the resolver exists, so this is the one place
 # a working command still earns a correction.
-if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' <<< "$command_line" &&
+#
+# $command_line is the WHOLE command, so matching it directly cannot tell a
+# path being EXECUTED from one merely QUOTED as data -- a heredoc body writing
+# an issue description, or the value of a --body/-f body= flag, both of which
+# were observed tripping this on prose that documented the hazard rather than
+# committing it (issue #299). guard_pinned_path_probe_text narrows the match
+# text to what the command would actually resolve before this pattern runs.
+if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' \
+        <<< "$(guard_pinned_path_probe_text "$command_line")" &&
     guard_should_advise "$state_root" "$session" pinned-plugin-path; then
     # A lesson that only names the hazard leaves the model to improvise a
     # remedy, and the one observed improvisation hand-deleted path segments
