@@ -204,6 +204,13 @@ base_merge_contains() {
     return 1
 }
 
+# base_merge_contains requires BASE_INHERITED_REF to equal an entry in the
+# worktree's own MERGE_HEAD -- so the caller never has to be TOLD that value
+# in advance (e.g. threaded into a dispatch prompt). Whoever is about to
+# commit can always read it straight back with `git rev-parse MERGE_HEAD` at
+# commit time, since it names the exact merge the caller is mid-way through.
+# See parallel-issues/references/chains.md#merge-down-after-a-predecessor-advances
+# for the chained-worker walkthrough this backs (issue #289).
 verify_base_inherited() {
     local paths=$1 base_commit path
     base_commit=$(git rev-parse --verify "$BASE_INHERITED_REF^{commit}" 2>/dev/null) ||

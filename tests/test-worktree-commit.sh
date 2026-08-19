@@ -316,4 +316,64 @@ assert_eq '3' "$quoted_rc" 'quoted protected paths park from a subdirectory'
 assert_contains "$quoted_out" 'migrations/001_init.sql' \
     'subdirectory config resolution names the quoted protected path'
 
+# Issue #289: a chained worker's worktree is created off a non-trunk commit
+# (create-issue-worktree.sh's --chain-base), but that fact never reaches this
+# helper's decision. Its own ordinary, non-merge commits are indistinguishable
+# from a trunk-based worktree's -- no active merge means the protected-path
+# guard never engages, so the chain-base SHA is never needed to commit here,
+# named in a prompt or otherwise.
+chained_repo="$tmp/chained-repo"
+git init -q -b main "$chained_repo"
+git -C "$chained_repo" config user.name test
+git -C "$chained_repo" config user.email test@example.invalid
+mkdir -p "$chained_repo/.agent" "$chained_repo/.github/workflows"
+printf 'AGENT_BASE_BRANCH=main\nAGENT_PROTECTED_PATHS=.github/workflows/\n' \
+    > "$chained_repo/.agent/config.env"
+printf 'workflow-v1\n' > "$chained_repo/.github/workflows/ci.yml"
+git -C "$chained_repo" add -- .
+git -C "$chained_repo" commit -qm main-init
+# A predecessor issue's branch, pushed and diverged from main -- this commit
+# is the chain_base_sha a successor's worktree would start from.
+git -C "$chained_repo" checkout -qb feat/issue-predecessor
+printf 'workflow-v2-from-predecessor\n' > "$chained_repo/.github/workflows/ci.yml"
+git -C "$chained_repo" add -- .github/workflows/ci.yml
+git -C "$chained_repo" commit -qm 'predecessor: bump workflow'
+chain_base_sha=$(git -C "$chained_repo" rev-parse HEAD)
+# The successor's worktree, as create-issue-worktree.sh builds it: a fresh
+# branch starting at chain_base_sha, never at origin/main.
+git -C "$chained_repo" checkout -qb feat/issue-successor "$chain_base_sha"
+printf 'successor change\n' > "$chained_repo/successor.txt"
+chained_rc=0
+chained_out=$(cd "$chained_repo" && "$script" --message 'feat: successor change' \
+    -- successor.txt 2>&1) || chained_rc=$?
+assert_eq '0' "$chained_rc" \
+    'a chained successor commits with no active merge and no named base'
+assert_contains "$chained_out" 'committed' \
+    'the chained successor commit succeeds unconditionally'
+
+# When a chained worker DOES need --allow-base-inherited -- the merge-down
+# cascade in references/chains.md, after a predecessor advances -- the exact
+# BASE it must name is not something a prompt has to carry either: git itself
+# requires the named commit to be the active MERGE_HEAD (verify_base_inherited
+# in worktree-commit.sh), and MERGE_HEAD is local worktree state the worker
+# can always read back with `git rev-parse MERGE_HEAD` the moment it needs the
+# value -- immediately after the same `git merge --no-commit --no-ff` that put
+# it there. Nothing here is captured ahead of time from an external source.
+git -C "$chained_repo" checkout -q feat/issue-predecessor
+printf 'workflow-v3-from-predecessor\n' > "$chained_repo/.github/workflows/ci.yml"
+git -C "$chained_repo" add -- .github/workflows/ci.yml
+git -C "$chained_repo" commit -qm 'predecessor: advance again'
+git -C "$chained_repo" checkout -q feat/issue-successor
+git -C "$chained_repo" merge --no-commit --no-ff -q feat/issue-predecessor
+derived_base=$(git -C "$chained_repo" rev-parse MERGE_HEAD)
+assert_eq "$(git -C "$chained_repo" rev-parse feat/issue-predecessor)" "$derived_base" \
+    'MERGE_HEAD alone names the exact predecessor commit, with no prior knowledge'
+printf 'more successor change\n' > "$chained_repo/successor2.txt"
+derive_rc=0
+derive_out=$(cd "$chained_repo" && "$script" --yolo --message 'fix: merge-down predecessor' \
+    --allow-base-inherited "$derived_base" -- successor2.txt 2>&1) || derive_rc=$?
+assert_eq '0' "$derive_rc" \
+    'a base derived from MERGE_HEAD alone authorizes the inherited protected content'
+assert_contains "$derive_out" 'committed' 'the derived-base authorization reports its commit'
+
 finish
