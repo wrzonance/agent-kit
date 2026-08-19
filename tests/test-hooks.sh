@@ -1222,6 +1222,32 @@ assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'and only once per session'
 
+# $command_line is the WHOLE command, so a raw pattern match cannot tell a path
+# being EXECUTED (above) from one merely QUOTED as data -- a heredoc body
+# writing an issue description, or the value of a gh body flag. Both were
+# observed live tripping the lesson on prose that documented the hazard
+# instead of committing it (issue #299).
+heredoc_sid=$(fresh_sid)
+heredoc_cmd="cat <<'EOF' > /tmp/issue-body.txt
+Evidence: $pinned
+EOF
+gh issue create --body-file /tmp/issue-body.txt"
+out=$(post_input "$repo" "$heredoc_cmd" "$heredoc_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path quoted inside a heredoc body does not trigger the lesson'
+
+bodyflag_sid=$(fresh_sid)
+bodyflag_cmd="gh issue create --title 'Fix hazard' --body \"Evidence: $pinned\""
+out=$(post_input "$repo" "$bodyflag_cmd" "$bodyflag_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path quoted in a --body flag value does not trigger the lesson'
+
+rawfield_sid=$(fresh_sid)
+rawfield_cmd="gh api repos/o/r/issues -f title=x -f body='Evidence: $pinned'"
+out=$(post_input "$repo" "$rawfield_cmd" "$rawfield_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path quoted in an -f body= value does not trigger the lesson'
+
 # The resolver itself contains plugins/cache and must not trip its own rule --
 # an advisory that fires on the correct form teaches that the advice is noise.
 # shellcheck disable=SC2016  # a command line for the hook to read, not to run
