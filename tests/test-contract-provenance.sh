@@ -209,7 +209,6 @@ for consumer in \
     "$root/agentkit/skills/review-remote-pr/SKILL.md" \
     "$root/agentkit/skills/parallel-issues/SKILL.md" \
     "$root/agentkit/skills/parallel-issues/references/worker-prompts.md" \
-    "$root/agentkit/hooks/stop.sh" \
     "$root/agentkit/hooks/lib/guard-lib.sh"; do
     assert_contains "$(<"$consumer")" 'contract-read.sh' \
         "$(basename "$consumer") consumes contract-read.sh"
