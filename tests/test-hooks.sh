@@ -614,6 +614,8 @@ for root_sweep in 'find / -name AGENTS.md' 'cd / && find / -name AGENTS.md'; do
         "a root sweep is denied as a home sweep, not merely advised: $root_sweep"
     assert_eq '' "$(pre_context "$out")" \
         "a root sweep's denial pre-empts the softer advisory: $root_sweep"
+    assert_eq 'deny' "$(decision "$out")" \
+        "a root sweep returns a deny permission decision: $root_sweep"
 done
 
 # --- work-destroying commands are refused, every time ---------------------
