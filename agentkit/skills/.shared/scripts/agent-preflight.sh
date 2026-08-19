@@ -836,10 +836,21 @@ main() {
         contract_reader="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/contract-read.sh"
         if [[ -x $contract_reader ]] &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
-            if cat -- "$WORKTREE/.agent/env-contract.txt"; then
-                return 0
+            # A provenance-trusted contract can still predate protected= (issue #296
+            # follow-up): --check only validates ownership/tracked-state, not which
+            # keys the file happens to carry, so a contract written before this key
+            # existed would otherwise be served forever without it. Fall through to
+            # the same fresh-preflight path a failed provenance re-read already uses,
+            # rather than adding a second return path.
+            if existing="$(cat -- "$WORKTREE/.agent/env-contract.txt")"; then
+                if grep -q '^protected=' <<< "$existing"; then
+                    printf '%s\n' "$existing"
+                    return 0
+                fi
+                note 'trusted contract predates protected= -- continuing with a fresh preflight'
+            else
+                note 'trusted contract changed while it was being read -- continuing with a fresh preflight'
             fi
-            note 'trusted contract changed while it was being read -- continuing with a fresh preflight'
         fi
     fi
     probe_skills_path

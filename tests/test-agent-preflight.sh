@@ -274,6 +274,39 @@ done <<< "$out"
 assert_eq "${expected_line_keys[*]}" "${actual_line_keys[*]}" \
     'the documented OUTPUT key order matches every line the script actually emits'
 
+# --- --ensure must not serve a contract that predates protected= (issue #296) -
+# --check only validates ownership/tracked-state provenance, not which keys the
+# cached file happens to carry. A contract written before protected= existed is
+# still provenance-trusted, so without this check --ensure would keep serving
+# it forever on an otherwise-untouched worktree -- exactly the checkouts most
+# likely to have one already.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+grep -v '^protected=' "$repo/.agent/env-contract.txt" > "$tmp/stale-contract"
+mv "$tmp/stale-contract" "$repo/.agent/env-contract.txt"
+chmod 600 "$repo/.agent/env-contract.txt"
+assert_eq '0' "$(grep -c '^protected=' "$repo/.agent/env-contract.txt")" \
+    'fixture setup: the stale contract really has no protected= line'
+out=$("$script" --ensure --worktree "$repo" 2> "$tmp/ensure-stderr")
+assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
+    '--ensure regenerates a contract that predates protected= rather than serving it'
+assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected=' \
+    'and says why it fell through to a fresh preflight'
+assert_eq '1' "$(grep -c '^protected=' "$repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries protected= too'
+
+# The caching behaviour --ensure exists for must not regress: a contract that
+# already carries protected= is served as-is, not silently rewritten.
+"$script" --worktree "$repo" > /dev/null 2>&1
+before_mtime=$(stat -c %Y "$repo/.agent/env-contract.txt")
+sleep 1
+out=$("$script" --ensure --worktree "$repo" 2> /dev/null)
+after_mtime=$(stat -c %Y "$repo/.agent/env-contract.txt")
+assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
+    '--ensure still reports protected= for an up-to-date contract'
+assert_eq "$before_mtime" "$after_mtime" \
+    '--ensure reuses an up-to-date contract instead of rewriting it'
+
 # Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
 # with a named requirement before doing any work instead of exposing a cryptic
 # `declare: -A: invalid option` error. Running the file through zsh reproduces
