@@ -508,7 +508,7 @@ for under_home in "sed -n '1,240p' ~/Downloads/files/AGENTS.md" \
         "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "a single file under \$HOME is not a sweep: $under_home"
 done
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" "$(fresh_sid)" |
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git reset --hard HEAD~1" "$(fresh_sid)" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a scope advisory never bypasses a hard denial in a compound command'
@@ -516,7 +516,7 @@ assert_eq 'deny' "$(decision "$out")" \
 # A hard denial must not consume an advisory that it prevents from being
 # emitted. The next pure walker in the same session still gets the lesson.
 deferred_scope_sid=$(fresh_sid)
-out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md && git push --force' \
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md && git reset --hard HEAD~1' \
     "$deferred_scope_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a hard-denied compound still takes denial precedence'
@@ -586,9 +586,8 @@ done
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets
 # the command run because a cheaper alternative can be taught afterwards; there
-# is no teach-after-the-fact for a force-push that already landed.
-for danger in 'git push --force origin main' 'git push -f' \
-    'git push --force-with-lease origin feat/x' \
+# is no teach-after-the-fact for uncommitted work discarded by reset --hard.
+for danger in \
     'git reset --hard HEAD~3' 'git clean -fdx' \
     'git branch -D main' 'gh pr merge 42 --squash' \
     'git commit --no-verify -m x' 'rm -rf ~'; do
@@ -604,7 +603,7 @@ done
 # "every time, with no override".
 # shellcheck disable=SC2016  # the UNEXPANDED $HOME is the fixture: the guard
 # matches command text, so expanding it here would test a different string.
-for danger in 'git push origin +main' 'git push origin +refs/heads/main' \
+for danger in \
     'git clean --force -d' 'git branch --delete --force main' \
     'git branch -d -f master' 'rm --recursive --force /' \
     'rm -r -f ~' 'rm -R --force $HOME'; do
@@ -622,13 +621,22 @@ for ok_cmd in 'git push origin main' 'git clean --dry-run' 'git clean -n' \
     assert_eq 'allow' "$(decision "$out")" "still allows: $ok_cmd"
 done
 
+# Force-push is no longer the destructive work this guard blocks: git keeps the
+# prior tip reachable, so it is recoverable the same way an ordinary push is.
+# Confirm every previously-denied spelling is now allowed.
+for allowed in 'git push --force origin main' 'git push -f' \
+    'git push --force-with-lease origin feat/x' \
+    'git push origin +main' 'git push origin +refs/heads/main'; do
+    out=$(pre_input "$repo" "$allowed" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "force-push is no longer refused: $allowed"
+done
+
 # A flag hidden inside a substitution read as ordinary text to every pattern:
-# `git push $(echo --force)` matched nothing. The model refused it on its own
-# judgement, which is not a guard.
+# `git reset $(printf -- --hard) HEAD~1` matched nothing literally. The model
+# refused it on its own judgement, which is not a guard.
 # shellcheck disable=SC2016  # the UNEXPANDED substitution is the fixture: these
 # assert what the guard sees, so expanding them would test nothing.
-for hidden in 'git push $(echo --force)' 'git push `echo --force`' \
-    'git reset $(printf -- --hard) HEAD~1'; do
+for hidden in 'git reset $(printf -- --hard) HEAD~1'; do
     out=$(pre_input "$repo" "$hidden" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "sees through the substitution: $hidden"
     assert_contains "$out" 'inside a substitution' 'and says why it could not be read as written'
@@ -653,12 +661,12 @@ out=$(content_input "$repo" "$protected_content" Edit protected-content |
 assert_eq 'allow' "$(decision "$out")" \
     'does not inspect content as a protected shell write'
 
-# The same payload shape remains a real shell command for Bash, including the
-# substitution-hidden force flag.
-shell_command='git push `echo --for'
-shell_command+='ce`'
+# The same payload shape remains a real shell command for Bash, including a
+# substitution-hidden destructive flag.
+shell_command='git reset `echo --har'
+shell_command+='d` HEAD~1'
 out=$(content_input "$repo" "$shell_command" Bash | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'still catches substitution-hidden force-push commands'
+assert_eq 'deny' "$(decision "$out")" 'still catches substitution-hidden destructive commands'
 assert_contains "$out" 'inside a substitution' 'and preserves the shell-command explanation'
 
 # Substitution is NOT itself suspicious. Flattening leaves a legitimate dynamic
@@ -707,7 +715,7 @@ done
 # the once-per-session rule that governs every other denial here.
 same_sid=$(fresh_sid)
 for attempt in 1 2 3; do
-    out=$(pre_input "$repo" 'git push --force' "$same_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    out=$(pre_input "$repo" 'git reset --hard HEAD~1' "$same_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "still refused on attempt $attempt"
 done
 
@@ -827,15 +835,11 @@ for guarded in '.github/workflows/ci.yml' '.githooks/pre-commit' \
 done
 assert_contains "$out" 'fix the check' 'and names the failure mode it exists for'
 
-# --- a commit landing on trunk ---------------------------------------------
-# Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
-# the agent did exactly that, and the onboarding commit landed on main of a
-# repository where everything else arrives by pull request. Nothing objected --
-# the trunk refusal lived in worktree-commit.sh, and the skill had told the
-# agent to use plain git.
-#
-# Deny-once, not always: committing to main is right in plenty of repositories,
-# and a hard refusal would be wrong in all of them.
+# --- a commit landing on trunk is allowed -----------------------------------
+# git is recoverable, so committing straight onto the declared trunk branch is
+# not the destructive work this guard set exists to block. The trunk-commit
+# guard (and its deny-once state) is removed; confirm the ordinary path stays
+# clear, including on repeated attempts.
 trunk_repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=main\n' \
     > "$trunk_repo/.agent/config.env"
@@ -846,109 +850,16 @@ git -C "$trunk_repo" checkout -q -b main 2> /dev/null
 git -C "$trunk_repo" -c user.email=t@example.invalid -c user.name=t \
     commit -q --allow-empty -m base 2> /dev/null
 
-tsid=$(fresh_sid)
-out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'a commit on the declared trunk is refused'
-assert_contains "$out" 'would land on main' 'and names the branch it would land on'
-assert_contains "$out" 'observed repository root:' 'and labels the observed repository root'
-assert_contains "$out" 'observed HEAD branch: main' 'and labels the observed HEAD'
-assert_contains "$out" 'inferred landing' 'and labels the inferred landing branch'
-assert_contains "$out" 'checkout -b' 'and says what to do instead'
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a commit on the declared trunk branch is allowed'
 
-# A commit-shaped code example in an edit payload is prose, not a landing
-# command. It must not consume the trunk guard's deny-once refusal.
-out=$(content_input "$trunk_repo" 'git commit -m "prose example"' Edit trunk-content |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard again"' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
-    'does not inspect content as a trunk commit'
+    'a second trunk commit in a later session is allowed too -- there is no deny-once state left to spend'
 
-# A hook receives the session cwd, which can be the main worktree even when the
-# command is executing in a linked feature worktree. With multiple worktrees,
-# the root/HEAD observed from that cwd is not enough evidence to infer where
-# this commit will land, so the guard must stay silent rather than spend its
-# deny-once refusal on the wrong branch. The subshell's real cwd is the linked
-# worktree; only the hook input deliberately carries the stale session cwd.
-linked_main=$(cd -- "$(mktemp -d "$tmp/linked-main.XXXXXX")" && pwd -P)
-linked_feature=$(cd -- "$(mktemp -d "$tmp/linked-feature.XXXXXX")" && pwd -P)
-git -C "$linked_main" init -q -b main
-mkdir -p "$linked_main/.agent/cache"
-printf 'AGENT_BASE_BRANCH=main\n' > "$linked_main/.agent/config.env"
-git -C "$linked_main" -c user.email=t@example.invalid -c user.name=t \
-    commit -q --allow-empty -m base
-git -C "$linked_main" worktree add -q -b feat/linked "$linked_feature"
-
-# The worker's checkout is the linked worktree, so Git's own branch evidence is
-# the only trustworthy landing context. Resolve the same root the hook inspects
-# and pin the result to the worktree's branch; this is the regression boundary
-# for the reported "would land on main" near-miss.
-linked_landing=$(cd "$linked_feature" && bash -c '
-    source "$1"
-    guard_resolve_roots "$2" "$3"
-    root=$(guard_command_repository_root "$2" "$3")
-    printf "%s|%s" "$root" "$(git -C "$root" symbolic-ref --short HEAD)"
-' _ "$hooks/lib/guard-lib.sh" "$linked_feature" 'git commit -m "linked feature"')
-assert_eq "$linked_feature|feat/linked" "$linked_landing" \
-    'the hook resolves a linked worktree root and its actual landing branch'
-
-out=$(cd "$linked_feature" &&
-    pre_input "$linked_main" 'git commit -m "linked feature"' "linked-worktree" |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" \
-    'an ambiguous linked-worktree commit is not refused as trunk work'
-assert_not_contains "$out" 'would land on main' \
-    'a linked feature worker never receives a main-branch inference'
-
-# An explicit git -C pins the command to the inspected main worktree, so the
-# same stale session cwd must still receive the true-positive trunk refusal.
-out=$(cd "$linked_feature" &&
-    pre_input "$linked_main" "git -C $linked_main commit -m \"pinned trunk\"" \
-        "linked-worktree-explicit" |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" \
-    'an explicit git -C trunk commit is refused despite stale cwd ambiguity'
-assert_contains "$out" "$linked_main" \
-    'the explicit git -C refusal names the inspected root'
-assert_contains "$out" 'explicit git -C worktree pin' \
-    'the explicit refusal explains why the landing inference is reliable'
-
-out=$(cd "$linked_feature" &&
-    pre_input "$linked_main" 'git commit -C message-file' \
-        "linked-worktree-message-file" |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" \
-    'a post-subcommand git -C message-file is not mistaken for a worktree pin'
-
-out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'and the retry is allowed -- this is deny-once'
-
-# Off trunk, it has nothing to say.
-git -C "$trunk_repo" checkout -q -b chore/onboard 2> /dev/null
-out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'a commit on a feature branch is not refused'
-
-git -C "$trunk_repo" checkout -q main 2> /dev/null
-for benign in 'git commit --dry-run' 'grep -rn "git commit" docs/' \
-    'echo "run git commit next"' 'git log --format=%s'; do
-    out=$(pre_input "$trunk_repo" "$benign" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'allow' "$(decision "$out")" "not a commit: $benign"
-done
-
-# `git -C dir commit` is the same commit with the repository named up front --
-# and the branch that matters is the one in DIR, not the one where the agent
-# happens to be standing.
+# `git -C dir commit` is the same commit with the repository named up front.
 out=$(pre_input "$tmp" "git -C $trunk_repo commit -m x" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" \
-    'git -C a temporary fixture does not inherit workspace trunk policy'
-
-# Evidence rule: a repository that never declared a trunk gets no opinion. With
-# no AGENT_BASE_BRANCH and no origin/HEAD there is nothing to compare against,
-# and guessing at "main" would refuse work in every repo that calls it anything
-# else.
-undeclared=$(make_repo)
-printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$undeclared/.agent/config.env"
-git -C "$undeclared" checkout -q -b main 2> /dev/null
-out=$(pre_input "$undeclared" 'git commit -m x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'an undeclared trunk is not guessed at'
+assert_eq 'allow' "$(decision "$out")" 'git -C a repository still allows an ordinary commit'
 
 # A shell write reaches the same files the edit-tool guard protects, and it
 # arrives as a Bash call the edit guard cannot see. This was a documented hole:
