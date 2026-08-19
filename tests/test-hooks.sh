@@ -562,13 +562,27 @@ assert_eq '' "$(pre_context "$out")" \
 #
 # The derived ancestor is wherever the checkout happens to sit, and on a GitHub
 # runner that is $HOME/work/<repo>/<repo> -- so this target IS $HOME there and
-# the home-sweep denial above pre-empts the advisory. Both outcomes are the
-# guard refusing to let a command-derived target authorize itself, so assert
-# whichever refusal applies instead of pinning the runner's directory layout.
+# the home-sweep denial above pre-empts the advisory. The same pre-emption
+# also fires when the derived ancestor is merely an ANCESTOR of $HOME (e.g. a
+# checkout three directory levels under /home/<user> derives /home itself) --
+# guard_home_sweep_target treats ancestors of $HOME as home sweeps too (see
+# its docstring), on purpose: sweeping /home reaches $HOME on the way past.
+# So mirror that same ancestor-inclusive check here rather than pinning the
+# runner's directory layout with plain equality.
 scope_target_repo=$(cd "$root/../../.." && pwd)
 scope_target_is_home=0
-[[ $(cd "$scope_target_repo" && pwd -P) == "$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" ]] &&
+scope_target_canon=$(cd "$scope_target_repo" && pwd -P)
+scope_home_canon=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P) || scope_home_canon=''
+# Root (/) is an ancestor of every absolute path, $HOME included -- mirror
+# guard_home_sweep_target's own root disjunct here too, or this comparison
+# inherits the same blind spot the guard had (root: cannot self-authorize
+# below pins the guard side; this pins the test oracle side).
+if [[ -n $scope_home_canon ]] &&
+    { [[ $scope_target_canon == "$scope_home_canon" ]] ||
+        [[ $scope_target_canon == / ]] ||
+        [[ $scope_home_canon == "$scope_target_canon"/* ]]; }; then
     scope_target_is_home=1
+fi
 for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
     "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
     out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
@@ -581,6 +595,27 @@ for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md"
         assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
             "command-derived target cannot self-authorize: $bypass"
     fi
+done
+
+# Root (/) is an ancestor of every absolute path, $HOME included --
+# guard_home_sweep_target's own docstring says "Ancestors of $HOME (/home, /)
+# count too". But its ancestor check was a component-boundary match against
+# "$target"/*, and for target=/ that literally becomes //* -- a doubled
+# leading slash that $HOME (e.g. /home/adam) never matches. So a bare `find /`
+# fell through to the soft "reads outside the workspace" advisory instead of
+# the hard home-sweep denial, silently contradicting the guard's own
+# documented policy. Pin the root case directly, independent of wherever this
+# checkout happens to sit.
+for root_sweep in 'find / -name AGENTS.md' 'cd / && find / -name AGENTS.md'; do
+    out=$(pre_input "$scope_repo" "$root_sweep" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    # shellcheck disable=SC2016  # $HOME is the literal text being matched
+    assert_contains "$out" 'walks $HOME' \
+        "a root sweep is denied as a home sweep, not merely advised: $root_sweep"
+    assert_eq '' "$(pre_context "$out")" \
+        "a root sweep's denial pre-empts the softer advisory: $root_sweep"
+    assert_eq 'deny' "$(decision "$out")" \
+        "a root sweep returns a deny permission decision: $root_sweep"
 done
 
 # --- work-destroying commands are refused, every time ---------------------
