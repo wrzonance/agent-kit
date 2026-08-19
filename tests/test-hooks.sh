@@ -13,7 +13,6 @@ hooks="$root/agentkit/hooks"
 skills_root="$root/agentkit/skills"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
-export AGENT_TRUST_ROOT="$tmp/trust"
 
 # The hooks resolve their helpers as <plugin-root>/skills/.shared/scripts/, the
 # layout build-plugin.sh produces. plugin-src/skills is a symlink onto the skill

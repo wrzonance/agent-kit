@@ -54,7 +54,7 @@ assert_contains "$(awk '/config\.env/ { print }' <<< "$config_consumer_probe")" 
 # These are read by agent-run.sh straight from the environment as runtime
 # assertions, never as a persistent config.env declaration. Their documentation
 # is still part of the onboarding contract so operators can discover them.
-runtime_keys=(AGENT_CACHE_ROOT AGENT_COMPOSE_SERIALIZED AGENT_TRUST_ROOT)
+runtime_keys=(AGENT_CACHE_ROOT AGENT_COMPOSE_SERIALIZED)
 consumed_keys+=("${runtime_keys[@]}")
 
 # Guard runtime_keys itself against drift: derive every AGENT_* environment
@@ -97,7 +97,6 @@ cmd_row="| ${tick}AGENT_CMD_<NAME>${tick} |"
 rundir_row="| ${tick}AGENT_RUNDIR_<NAME>${tick} |"
 generated_row="| ${tick}AGENT_GENERATED_PATHS${tick} |"
 compose_row="| ${tick}AGENT_COMPOSE_SERIALIZED${tick} |"
-trust_root_row="| ${tick}AGENT_TRUST_ROOT${tick} |"
 cache_root_row="| ${tick}AGENT_CACHE_ROOT${tick} |"
 
 for key in "${config_keys[@]}"; do
@@ -133,8 +132,6 @@ assert_contains "$variable_table" "$generated_row" \
     'the onboarding table documents generated artifact paths'
 assert_contains "$variable_table" "$compose_row" \
     'the onboarding table documents runtime-only compose serialization'
-assert_contains "$variable_table" "$trust_root_row" \
-    'the onboarding table documents the runtime-only trust root override'
 assert_contains "$variable_table" "$cache_root_row" \
     'the onboarding table documents the runtime-only cache root override'
 
