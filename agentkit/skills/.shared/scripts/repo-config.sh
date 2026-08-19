@@ -568,8 +568,8 @@ declare -A value_by_key=() seen_by_key=()
 declare -A invalid_command_keys=() checked_command_keys=()
 # Canonical comparison is strict for every parse error. Resolve mode keeps the
 # established warn/drop behavior, but records errors for requested keys so the
-# yolo gate can fail closed without treating unrelated config as invocation
-# input.
+# invocation gate can fail closed without treating unrelated config as
+# invocation input.
 parse_failed=0
 rundir_mismatch_requested=0
 lineno=0
@@ -757,8 +757,9 @@ case $mode in
             fi
         done
         # Resolution remains warn/drop/fall-through for ordinary callers. The
-        # invocation gate consumes this marker to fail closed under --yolo
-        # without turning unrelated config mistakes into usage errors.
+        # invocation gate consumes this marker to fail closed on any config
+        # parse error, unconditionally, without turning unrelated config
+        # mistakes into usage errors.
         printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
         ((rundir_mismatch_requested)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
         ;;

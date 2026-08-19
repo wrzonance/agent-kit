@@ -4,7 +4,7 @@ set -euo pipefail
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] [--yolo] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
     printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
@@ -18,7 +18,6 @@ worker_effort=
 chain_base=
 declare -a write_set_args=()
 output=
-yolo=0
 while (($#)); do
     case $1 in
         --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--chain-base|--output|-o)
@@ -36,7 +35,6 @@ while (($#)); do
             esac
             shift 2
             ;;
-        --yolo) yolo=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage; die "unknown argument: $1" ;;
     esac
@@ -72,7 +70,6 @@ for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
     esac
 done
 if [[ -n $chain_base ]]; then
-    ((yolo)) || die '--chain-base requires --yolo'
     [[ $chain_base =~ ^[0-9a-f]{40}$ ]] || die '--chain-base requires a full 40-character lowercase commit SHA'
 fi
 
@@ -160,12 +157,6 @@ if ((focus_declared)) && ((test_declared == 0)) && ! query_test_resolution; then
     die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
-command_flags=
-if ((yolo)); then
-    command_flags=' --yolo'
-    [[ -z $chain_base ]] || command_flags+=" --yolo-base $chain_base"
-fi
-
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'
 cleanup() { rm -f -- "$temporary"; }
 trap cleanup EXIT HUP INT TERM
@@ -177,31 +168,19 @@ shell_quote() {
 }
 
 emit_commands() {
-    local name helper_path flags glob
+    local name helper_path
     helper_path=$(shell_quote "$shared_path/agent-run.sh")
-    flags=$command_flags
-    if ((yolo)) && ((${#write_set_globs[@]})); then
-        for glob in "${write_set_globs[@]}"; do
-            flags+=" --yolo-write-set $(shell_quote "$glob")"
-        done
-    fi
     for name in "${command_names[@]}"; do
-        printf '%s --dir %s --cmd %s%s\n' "$helper_path" "\"\$worktree\"" "$name" "$flags"
+        printf '%s --dir %s --cmd %s\n' "$helper_path" "\"\$worktree\"" "$name"
     done
 }
 
 emit_focus() {
     if ((focus_declared)); then
-        local helper_path flags glob
+        local helper_path
         helper_path=$(shell_quote "$shared_path/agent-run.sh")
-        flags=$command_flags
-        if ((yolo)) && ((${#write_set_globs[@]})); then
-            for glob in "${write_set_globs[@]}"; do
-                flags+=" --yolo-write-set $(shell_quote "$glob")"
-            done
-        fi
         printf 'During red/green iteration, use the repository-declared focused selector:\n'
-        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''%s\n' "$helper_path" "\"\$worktree\"" "$flags"
+        printf '%s --dir %s --cmd test --only '\''NAME[,NAME...]'\''\n' "$helper_path" "\"\$worktree\""
         printf 'It requires AGENT_CMD_TEST_FOCUS and captures evidence only for the named suites; it never claims that skipped suites passed. Run the full declared test command once against the final tree state before handback.\n'
     else
         printf 'No focused selector is declared; use the full declared command for scoped checks and once against the final tree state before handback.\n'
@@ -220,15 +199,7 @@ emit_write_set() {
 }
 
 emit_trust_rule() {
-    if ((yolo)); then
-        if [[ -n $chain_base ]]; then
-            printf '# Every generated agent-run.sh command carries --yolo --yolo-base %s.\n' "$chain_base"
-        else
-            printf '# Every generated agent-run.sh command carries --yolo.\n'
-        fi
-    else
-        printf '# This invocation is attended; generated commands carry no unattended trust flags.\n'
-    fi
+    printf '# Generated agent-run.sh commands carry no unattended trust flags.\n'
 }
 
 capture=0

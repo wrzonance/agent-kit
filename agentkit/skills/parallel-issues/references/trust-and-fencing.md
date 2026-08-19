@@ -6,7 +6,6 @@
 - How far one approval reaches, and repositories whose declarations are per-machine
 - Never forge the command-trust gate, under any flag or mode
 - Verification cache and suite cadence
-- Attended command-approval handoff
 
 Read this when constructing dispatched worker prompts under `--yolo` or `--trust-trunk`, or
 when deciding how often to re-run verification during red/green iteration. `SKILL.md` keeps
@@ -168,35 +167,3 @@ and `migrate` are always executed and never cached. After push, GitHub CI is aut
 for that SHA; an unchanged local full-suite request is evidence-backed by the cache rather
 than a new run.
 
-## Attended command-approval handoff
-
-When an attended invocation carries neither `--yolo` nor `--trust-trunk`, prepare one
-batched, copy-pasteable approval block **before or at dispatch**: one `cd <worktree> &&
-agent-run.sh --approve --cmd <name>` line per worktree per needed command. Collect the exact
-verification invocations the prompts will use, then print one line per worktree per needed
-command using the absolute runner path resolved by Step 0:
-
-```bash
-"$agentkit/parallel-issues/scripts/print-approval-handoff.sh" \
-  --worktree /ABS/PATH/.worktrees/feat/issue-123 --cmd test --cmd lint \
-  --worktree /ABS/PATH/.worktrees/feat/issue-124 --cmd test
-```
-
-It prints the heading and one `cd <worktree> && <absolute agent-run.sh>
---approve --cmd <name>` line per worktree and command. The helper refuses the
-main checkout, so never hand off that path in a manually assembled recipe.
-
-Use the actual absolute worktree and runner paths and include focused selectors when they
-are part of the exact invocation. This is one batched handoff for the entire predictable
-approval burden: workers block until it runs, and predictable refusals are never surfaced
-serially. Every recipe must start with `cd <worktree>`; never hand off the main checkout
-or substitute its path for a worker worktree. Because the record is repository-scoped, one
-worktree's lines cover the clone — the remaining per-worktree lines are idempotent no-ops,
-so a shorter block is not a missing one.
-
-Print this block whenever the approvals are actually needed, which is **not** the same as
-"no autonomy flag was given". Suppress it only when `--trust-trunk` or `--yolo` is present
-**and** the trunk carries `.agent/config.env`: then the dispatched prompts carry a grant that
-works. When the declarations are per-machine, that grant is structurally void (see *How far one
-approval reaches*), so print the block regardless of the flag — suppressing it there is what
-turns one predictable batch into one serial stall per command.
