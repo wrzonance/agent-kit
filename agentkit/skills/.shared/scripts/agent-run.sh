@@ -912,7 +912,7 @@ report_failure() {
         printf '  retry guidance: rerun the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
     fi
     if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
-        printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around approval.\n' \
+        printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around the resolved execution base.\n' \
             "$literal_token" "$literal_repository_base" "$literal_execution_base"
     fi
     excerpt=$(grep -iE 'error|fail|traceback|assert|refused|denied' "$log" 2>/dev/null | head -n 20 || true)
