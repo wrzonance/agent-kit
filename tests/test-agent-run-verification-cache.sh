@@ -187,4 +187,38 @@ out=$(run_focus '')
 assert_not_contains "$out" 'verification current:' \
     'the unfocused full run does not reuse focused evidence'
 
+# --- a gitignored declaration change invalidates cached evidence -----------
+# .agent/config.env is conventionally gitignored, so editing the value of a
+# declared command changes NOTHING that compute_tree_hash currently observes
+# (HEAD, tracked diff, and non-ignored untracked files): the resolved command
+# itself was never part of the cache key. That let a prior green entry for
+# "AGENT_CMD_TEST=true" be served back after the declaration changed to
+# "AGENT_CMD_TEST=false" -- a false green. Regression for issue #287.
+ignored_repo=$(mktemp -d "$tmp/repo-ignored.XXXXXX")
+git -C "$ignored_repo" init -q -b main
+git -C "$ignored_repo" config user.name test
+git -C "$ignored_repo" config user.email test@example.invalid
+mkdir -p "$ignored_repo/.agent"
+printf '.agent/\n' > "$ignored_repo/.gitignore"
+printf 'base\n' > "$ignored_repo/tracked.txt"
+git -C "$ignored_repo" add -- .gitignore tracked.txt
+git -C "$ignored_repo" commit -qm base
+printf 'AGENT_CMD_TEST=true\n' > "$ignored_repo/.agent/config.env"
+ignore_rc=0
+git -C "$ignored_repo" check-ignore -q -- .agent/config.env || ignore_rc=$?
+assert_eq '0' "$ignore_rc" 'fixture sanity: .agent/config.env is actually gitignored here'
+
+out=$(cd "$ignored_repo" && "$real_run_sh" --cmd test 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'the first run with AGENT_CMD_TEST=true passes'
+assert_contains "$out" 'PASS: true' 'the first run executed the declared true command'
+
+printf 'AGENT_CMD_TEST=false\n' > "$ignored_repo/.agent/config.env"
+out=$(cd "$ignored_repo" && "$real_run_sh" --cmd test 2>&1)
+rc=$?
+assert_not_contains "$out" 'verification current:' \
+    'changing a gitignored declared command value is not served from stale cache'
+assert_eq '1' "$rc" 'the changed declaration actually re-runs and reports the new failure'
+assert_contains "$out" 'FAIL(rc=1)' 'the re-run reports the false command failing'
+
 finish

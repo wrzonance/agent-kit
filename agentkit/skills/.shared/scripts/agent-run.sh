@@ -986,6 +986,14 @@ hash_untracked_files() {
 # NUL-delimited manifest, so same-path edits cannot reuse stale evidence and
 # unusual filenames cannot be split by shell text parsing. Cache state is
 # ignored by git, so it does not feed back into this hash.
+#
+# The resolved argv is folded in too, NUL-delimited per token: `cmd` is already
+# fully resolved by the time this runs (AGENT_CMD_<NAME> read from
+# .agent/config.env, or the runner invocation). That file is conventionally
+# gitignored, so its bytes never appear in HEAD, the tracked diff, or the
+# untracked-file manifest above -- only the resolved argv observes a changed
+# declared value. Without this, editing AGENT_CMD_TEST from `true` to `false`
+# left the tree hash unchanged and served the old green evidence back (#287).
 compute_tree_hash() {
     local hash_input digest
     [[ -n ${git_top:-} ]] || return 1
@@ -994,6 +1002,8 @@ compute_tree_hash() {
         ! git -C "$git_top" rev-parse HEAD >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
         ! printf 'command\0%s\0focus\0%s\0' "$cmd_name" "$focus_opt" >>"$hash_input" ||
+        ! printf 'resolved\0' >>"$hash_input" ||
+        ! printf '%s\0' "${cmd[@]}" >>"$hash_input" ||
         ! git -C "$git_top" diff HEAD >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
         ! git -C "$git_top" status --porcelain=v2 -z --untracked-files=all >>"$hash_input" ||
