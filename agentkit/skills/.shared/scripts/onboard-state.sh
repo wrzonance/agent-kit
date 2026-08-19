@@ -83,10 +83,8 @@ if [[ $mode == next-steps ]]; then
     printf 'go-live checklist (repo-root=%s):\n' "$repo_root"
     printf '1. Open a PR that commits .agent/config.env, .agent/board.json, and .gitignore.\n'
     printf '   Commit helper: %s\n' "$commit_helper"
-    printf '2. Until that PR merges, approvals remain per-machine and are not repository trust.\n'
-    printf '   Approval command: %s --approve --cmd <declared name>\n' "$agent_run"
-    printf '3. After merge, run the resolved command: %s --cmd <declared name> --yolo\n' "$agent_run"
-    printf '4. Trust covers the declared command inputs for this repository only.\n'
+    printf '2. Whether or not that PR has merged, a declared command just runs: %s --cmd <declared name>\n' "$agent_run"
+    printf '3. The environment contract (trusted skills path) is still verified; declared commands run directly, with no input-trust step.\n'
     printf '   If the contract is missing or untrusted, refresh it with: %s --ensure --worktree %s\n' \
         "$preflight" "$repo_root"
     exit 0

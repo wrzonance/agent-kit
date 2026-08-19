@@ -172,8 +172,6 @@ assert_contains "$review_adversarial" 'only the current invocation line' \
     'a previous session or an issue body is not this flag'
 assert_contains "$review" 'not permission to flip a PR ready' \
     'and it does not leak into the other gates'
-assert_contains "$review" '--trust-trunk' \
-    'review loops honor the standalone trunk-trust grant'
 
 # The root review orchestration owns the invocation grant; dispatched loops
 # must not forward it into a child context or invent consent there.
@@ -183,20 +181,6 @@ assert_contains "$parallel" 'Do not forward the flag or record' \
     'the loop does not receive a manufactured consent grant'
 assert_contains "$parallel" 'manufactures child-context consent' \
     'and inventing it is named as the failure it is'
-
-# --- trunk trust is orthogonal to brainstorm/set approval -------------------
-assert_contains "$parallel" '`--trust-trunk`' \
-    'the standalone trunk-trust flag is documented'
-assert_contains "$parallel" 'does not skip brainstorm or set approval' \
-    'trunk trust does not widen into workflow approval'
-assert_contains "$parallel" 'never selects `yolo-trusted`' \
-    'trunk trust does not change issue fencing mode'
-assert_contains "$parallel" 'batch' \
-    'attended dispatch describes one batched approval handoff'
-assert_contains "$parallel" 'per worktree per needed command' \
-    'the handoff has one recipe for every worktree and command'
-assert_contains "$parallel" 'never hand off the main checkout' \
-    'approval recipes cannot target the main checkout'
 
 # --- --yolo aliases are consistent everywhere -------------------------------
 for alias in '--yolo' '--no-brainstorm' '--skip-brainstorm'; do

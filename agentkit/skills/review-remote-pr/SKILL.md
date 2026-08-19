@@ -31,7 +31,7 @@ line count, and per-file sizing spends one root turn per file before any real wo
 - Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command) — ever, in any phase.
 - Never resolve a human-touched thread, including content from the account `gh api user` returns.
 - Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push and before draft-phase-complete handoff — a review or verified skip without a receipt is incomplete.
-- Never bypass a repository hook or forge the command-trust gate (no `--no-verify`, `core.hooksPath`, piped `y`, hand-written approvals).
+- Never bypass a repository hook (no `--no-verify`, `core.hooksPath`, piped `y`).
 - Batch each cycle's fixes into ONE push; iteration cap 3 full cycles, then escalate instead of iterating.
 - Every wait is bounded (rounds/duration/marker) and spends no model turns on `sleep` + re-check.
 
@@ -264,7 +264,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-Run only declared `agent-run.sh --cmd` commands; approval/`--yolo` failures are BLOCKED, never forged. When the invocation carried `--yolo`/`--trust-trunk`, append `--yolo` to each command. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry.
+Run only declared `agent-run.sh --cmd` commands — they run directly, with no approval step. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry.
 
 ### 0c — Create the private review-artifact directory
 

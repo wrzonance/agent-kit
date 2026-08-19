@@ -48,17 +48,6 @@ implementation begins only at Stage 6.
    actually fails, make it pass minimally (green), refactor, and run scoped checks through
    `agent-run.sh`. Run the full suite the same way at the final task.
 
-### Changed-input trust-gate handoff
-
-If `agent-run.sh --yolo` refuses because a named command input differs from the trust base, the
-worker reports BLOCKED for that workstream and stops. The root treats the refusal as an
-adjudication request: preserve the workstream, produce an input-diff digest with every changed
-input, its diffstat, and each complete input diff, then choose `approve-with-record` through the
-harness's interactive `agent-run.sh --approve --cmd NAME` flow or `park-and-hand-off`. The root
-continues other workstreams. No trust record is forged, approval is not implied by `--yolo`, and a literal
-command retry is not verification. If a changed input is a shared repo-root file, the handoff
-notes the sibling PR merge conflict risk.
-
 ## Reporting format (must be explicit)
 
 Report the checklist and its status; do not collapse the first five steps into "design" or

@@ -11,7 +11,6 @@ source "$here/lib/assert.sh"
 create_sh="$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh"
 pr_sh="$root/agentkit/skills/review-remote-pr/scripts/pr-worktree.sh"
 shared_sh="$root/agentkit/skills/.shared/scripts/lib/worktree-setup.sh"
-tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 # shellcheck source=../agentkit/skills/.shared/scripts/lib/worktree-setup.sh
@@ -74,46 +73,15 @@ make_repo() {
     printf '%s\n' "$repo"
 }
 
-# Same shape as make_repo, but .agent/config.env is committed to origin/main
-# instead of excluded. --yolo's trust gate compares declared-command inputs
-# against origin/main, so only a tracked declaration can ever pass it; the
-# root-local, ignored config used elsewhere in this suite is deliberately
-# never in that trusted state.
-make_repo_tracked_config() {
-    local repo=$1 origin
-    origin=$tmp/"$(basename "$1")-origin"
-    git init -q --bare "$origin"
-    git init -q -b main "$repo"
-    git -C "$repo" config user.name test
-    git -C "$repo" config user.email test@example.invalid
-    mkdir -p "$repo/.agent" "$repo/tools"
-    printf '%s\n' \
-        'AGENT_BASE_BRANCH=main' \
-        'AGENT_WORKTREE_ROOT=.fleet' \
-        'AGENT_CMD_SETUP=tools/setup' \
-        >"$repo/.agent/config.env"
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'printf setup-ran > setup.marker' >"$repo/tools/setup"
-    chmod +x "$repo/tools/setup"
-    git -C "$repo" add -- tools/setup .agent/config.env
-    git -C "$repo" commit -qm base
-    git -C "$repo" remote add origin "$origin"
-    git -C "$repo" push -q origin main
-    git -C "$repo" fetch -q origin
-    printf '%s\n' "$repo"
-}
 
 repo=$tmp/repo
 mkdir -p "$repo"
 if [[ -x $create_sh ]]; then
     make_repo "$repo" >/dev/null
-    trust=$tmp/trust
-    mkdir -p "$trust"
-    out=$($tty_approve y -- env AGENT_TRUST_ROOT="$trust" "$create_sh" \
+    out=$("$create_sh" \
         --repo-root "$repo" --issue 7 --base main 2>&1)
     rc=$?
-    assert_eq '1' "$rc" 'issue setup stops for setup approval'
+    assert_eq '0' "$rc" 'issue setup completes without an approval step'
     issue_worktree="$repo/.fleet/feat/issue-7"
     assert_eq 'yes' "$([[ -d $issue_worktree ]] && printf yes || printf no)" \
         'issue setup creates the configured worktree path'
@@ -127,52 +95,14 @@ if [[ -x $create_sh ]]; then
         'root-local config remains ignored'
     assert_eq '!! .agent/config.env' "$(git -C "$repo" status --porcelain --ignored -- .agent/config.env)" \
         'root-local config remains untracked'
-    assert_contains "$out" 'setup failed' 'issue setup reports the setup approval boundary'
-
-    # Approve the exact propagated target once, then exercise the same shared
-    # declared-setup dispatch used by the entry point through agent-run.sh.
-    export AGENT_TRUST_ROOT=$trust
-    $tty_approve y -- \
-        "$root/agentkit/skills/.shared/scripts/agent-run.sh" \
-        --dir "$issue_worktree" --approve --cmd setup >/dev/null 2>&1
-    worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
-        "$root/agentkit/skills/.shared/scripts/agent-run.sh" "$issue_worktree"
+    assert_not_contains "$out" 'setup failed' 'issue setup does not report a setup failure'
     assert_eq 'setup-ran' "$(<"$issue_worktree/setup.marker")" \
-        'declared issue setup runs through agent-run after approval'
-
-    # Issue #268: --yolo threads onto the declared setup dispatch itself. A
-    # repository whose declared-setup inputs are unchanged from origin/main
-    # (config.env tracked, not the root-local ignored file above) lets the
-    # real agent-run.sh trust gate skip cleanly, so the entry point completes
-    # end-to-end with no interactive approval turn.
-    yolo_repo=$tmp/yolo-repo
-    mkdir -p "$yolo_repo"
-    make_repo_tracked_config "$yolo_repo" >/dev/null
-    yolo_trust=$tmp/yolo-trust
-    mkdir -p "$yolo_trust"
-    yolo_out=$(env AGENT_TRUST_ROOT="$yolo_trust" "$create_sh" \
-        --repo-root "$yolo_repo" --issue 20 --base main --yolo 2>&1)
-    yolo_rc=$?
-    yolo_worktree="$yolo_repo/.fleet/feat/issue-20"
-    assert_eq '0' "$yolo_rc" 'issue setup with --yolo completes without an interactive approval'
-    assert_eq 'setup-ran' "$(<"$yolo_worktree/setup.marker")" \
-        'issue setup with --yolo actually runs the declared setup command'
-    assert_not_contains "$yolo_out" 'setup failed' \
-        'issue setup with --yolo does not hit the setup approval boundary'
-
-    # Without --yolo, behavior is unchanged: the same trusted repository still
-    # stops for an explicit human approval on a different issue branch.
-    unyolo_out=$(env AGENT_TRUST_ROOT="$yolo_trust" "$create_sh" \
-        --repo-root "$yolo_repo" --issue 21 --base main 2>&1)
-    unyolo_rc=$?
-    assert_eq '1' "$unyolo_rc" 'issue setup without --yolo still stops for setup approval'
-    assert_contains "$unyolo_out" 'setup failed' \
-        'issue setup without --yolo still reports the setup approval boundary'
+        'issue setup runs the declared setup command directly, with no approval step'
 fi
 
 # The entry points pass a declared setup through the shared command runner
-# boundary. A fake runner keeps this focused test independent of the interactive
-# approval record owned by agent-run.sh itself.
+# boundary. A fake runner keeps this focused test independent of agent-run.sh
+# itself.
 dispatch_root=$tmp/dispatch
 dispatch_worktree=$dispatch_root/worktree
 mkdir -p "$dispatch_worktree/.agent" "$dispatch_root/tools"
@@ -188,21 +118,6 @@ worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config
     "$fake_runner" "$dispatch_worktree"
 assert_eq "--dir $dispatch_worktree --cmd setup" "$(<"$WORKTREE_SETUP_TEST_ARGS")" \
     'shared setup dispatch uses agent-run with the named setup command'
-
-# Issue #268: a 4th "yolo" argument threads --yolo onto the same dispatch, and
-# an omitted or falsy value keeps the prior behavior exactly as pinned above.
-worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
-    "$fake_runner" "$dispatch_worktree" 1
-assert_eq "--dir $dispatch_worktree --cmd setup --yolo" "$(<"$WORKTREE_SETUP_TEST_ARGS")" \
-    'shared setup dispatch threads --yolo when the 4th argument is 1'
-worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
-    "$fake_runner" "$dispatch_worktree" true
-assert_eq "--dir $dispatch_worktree --cmd setup --yolo" "$(<"$WORKTREE_SETUP_TEST_ARGS")" \
-    'shared setup dispatch threads --yolo when the 4th argument is true'
-worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
-    "$fake_runner" "$dispatch_worktree" 0
-assert_eq "--dir $dispatch_worktree --cmd setup" "$(<"$WORKTREE_SETUP_TEST_ARGS")" \
-    'shared setup dispatch omits --yolo when the 4th argument is falsy'
 
 # Root-local state is copied only into a safe, empty target. Existing regular
 # targets are preserved, while either side of a symlink boundary fails closed.
@@ -462,7 +377,7 @@ if [[ -x $pr_sh ]]; then
         AGENT_WORKTREE_ROOT=wrong-root WORKTREE_SETUP_GH_LOG="$gh_log" \
         "$pr_sh" --pr 9 --repo example/repo 2>&1)
     rc=$?
-    assert_eq '1' "$rc" 'same-repository PR setup stops for setup approval'
+    assert_eq '0' "$rc" 'same-repository PR setup completes without an approval step'
     assert_eq 'yes' "$(test -d "$pr_repo/.fleet/pr-9" && printf yes || printf no)" \
         'same-repository PR setup uses the configured root after export'
     assert_eq 'yes' "$(grep -Fxq '.fleet/' "$pr_repo/.git/info/exclude" && printf yes || printf no)" \
@@ -471,15 +386,10 @@ if [[ -x $pr_sh ]]; then
         'same-repository PR setup does not use a stale inherited root'
     assert_eq "$(<"$pr_repo/.agent/config.env")" "$(<"$pr_repo/.fleet/pr-9/.agent/config.env")" \
         'same-repository PR setup propagates the ignored root-local config'
-    assert_contains "$out" 'setup failed' \
-        'same-repository PR setup reports the setup approval boundary'
-    $tty_approve y -- \
-        "$root/agentkit/skills/.shared/scripts/agent-run.sh" \
-        --dir "$pr_repo/.fleet/pr-9" --approve --cmd setup >/dev/null 2>&1
-    worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
-        "$root/agentkit/skills/.shared/scripts/agent-run.sh" "$pr_repo/.fleet/pr-9"
+    assert_not_contains "$out" 'setup failed' \
+        'same-repository PR setup does not report a setup failure'
     assert_eq 'setup-ran' "$(<"$pr_repo/.fleet/pr-9/setup.marker")" \
-        'same-repository PR setup runs through agent-run after approval'
+        'same-repository PR setup runs the declared setup command directly'
 
     # An inherited PR_WORKTREE must never steer worktree creation outside the
     # repository: the worktree path is always derived from the validated
@@ -494,7 +404,7 @@ if [[ -x $pr_sh ]]; then
         PR_WORKTREE='../elsewhere' WORKTREE_SETUP_GH_LOG="$gh_log" \
         "$pr_sh" --pr 11 --repo example/repo 2>&1)
     rc=$?
-    assert_eq '1' "$rc" 'PR setup with a malicious PR_WORKTREE still stops for setup approval'
+    assert_eq '0' "$rc" 'PR setup with a malicious PR_WORKTREE still completes normally'
     assert_eq 'yes' "$(test -d "$pr_repo/.fleet/pr-11" && printf yes || printf no)" \
         'PR_WORKTREE environment override no longer changes the derived worktree path'
     assert_eq 'no' "$(test -e "$escaped_target" && printf yes || printf no)" \
@@ -520,18 +430,20 @@ if [[ -x $pr_sh ]]; then
     : >"$gh_log"
     out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
         WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 11 --repo example/repo 2>&1)
+    rc=$?
     assert_eq 'no' "$(test -e "$marker_escape" && printf yes || printf no)" \
         'a symlinked PR marker never writes through to its target'
     assert_eq 'no' "$(test -L "$pr_marker" && printf yes || printf no)" \
         'the symlinked PR marker is replaced rather than followed'
     assert_eq 'yes' "$(test -f "$pr_marker" && printf yes || printf no)" \
         'the replacement PR marker is a regular file'
-    # The hardening must not break the legitimate reuse path: this run reaches
-    # the setup approval boundary as before, rather than dying at the marking.
+    # The hardening must not break the legitimate reuse path: this run
+    # completes the declared setup dispatch as before, rather than dying at
+    # the marking.
     assert_not_contains "$out" 'could not mark' \
         'replacing a hostile marker is not treated as a marking failure'
-    assert_contains "$out" 'setup failed' \
-        'the remarked worktree still reaches the setup approval boundary'
+    assert_eq '0' "$rc" \
+        'the remarked worktree still completes the setup dispatch'
 
     # A symlinked .agent DIRECTORY is refused outright rather than written into.
     agent_escape="$tmp/pr-agent-escape"
@@ -566,42 +478,17 @@ if [[ -x $pr_sh ]]; then
     out=$(cd "$fork_repo" && PATH="$fake_bin:$PATH" \
         WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 10 --repo example/repo 2>&1)
     rc=$?
-    assert_eq '1' "$rc" 'cross-repository PR setup stops for setup approval'
+    assert_eq '0' "$rc" 'cross-repository PR setup completes without an approval step'
     assert_eq 'yes' "$(test -d "$fork_repo/.fleet/pr-10" && printf yes || printf no)" \
         'cross-repository PR setup creates the configured worktree'
     assert_eq "$(<"$fork_repo/.agent/config.env")" "$(<"$fork_repo/.fleet/pr-10/.agent/config.env")" \
         'cross-repository PR setup propagates the ignored root-local config'
     assert_contains "$(<"$gh_log")" 'pr checkout 10 --repo example/repo' \
         'cross-repository PR setup delegates checkout to gh'
-    assert_contains "$out" 'setup failed' \
-        'cross-repository PR setup reports the setup approval boundary'
-    $tty_approve y -- \
-        "$root/agentkit/skills/.shared/scripts/agent-run.sh" \
-        --dir "$fork_repo/.fleet/pr-10" --approve --cmd setup >/dev/null 2>&1
-    worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
-        "$root/agentkit/skills/.shared/scripts/agent-run.sh" "$fork_repo/.fleet/pr-10"
+    assert_not_contains "$out" 'setup failed' \
+        'cross-repository PR setup does not report a setup failure'
     assert_eq 'setup-ran' "$(<"$fork_repo/.fleet/pr-10/setup.marker")" \
-        'cross-repository PR setup runs through agent-run after approval'
-
-    # Issue #268: pr-worktree.sh sources the same shared setup dispatch as the
-    # issue entry point, and audits the same way -- --yolo threads onto its
-    # declared setup call, and completes end-to-end when the repository's
-    # declared-setup inputs are unchanged from origin/main.
-    pr_yolo_repo=$tmp/pr-yolo-repo
-    mkdir -p "$pr_yolo_repo"
-    make_repo_tracked_config "$pr_yolo_repo" >/dev/null
-    git -C "$pr_yolo_repo" switch -q -c 'feat/pr-12-head'
-    git -C "$pr_yolo_repo" push -q origin 'feat/pr-12-head'
-    git -C "$pr_yolo_repo" switch -q main
-    : >"$gh_log"
-    pr_yolo_out=$(cd "$pr_yolo_repo" && PATH="$fake_bin:$PATH" \
-        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 12 --repo example/repo --yolo 2>&1)
-    pr_yolo_rc=$?
-    assert_eq '0' "$pr_yolo_rc" 'PR setup with --yolo completes without an interactive approval'
-    assert_eq 'setup-ran' "$(<"$pr_yolo_repo/.fleet/pr-12/setup.marker")" \
-        'PR setup with --yolo actually runs the declared setup command'
-    assert_not_contains "$pr_yolo_out" 'setup failed' \
-        'PR setup with --yolo does not hit the setup approval boundary'
+        'cross-repository PR setup runs the declared setup command directly'
 fi
 
 finish

@@ -28,16 +28,22 @@ root turn per file before any real work starts.
 
 ## Flags
 
-Five flags decide how much this skill stops to ask. They are read from the invocation
+Four flags decide how much this skill stops to ask. They are read from the invocation
 line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
-| `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. It implies `--trust-trunk`, so it also threads `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt. |
-| `--trust-trunk` | — | Thread `--yolo` onto **every** `agent-run.sh --cmd` invocation in every dispatched prompt, while brainstorm and set approval remain interactive. This never selects `yolo-trusted`; issue visibility rules still select the fencing mode. |
+| `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. |
 | `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent for this invocation's diff review. The consent-bearing review launch stays in the consent-holding context (root by default); dispatched loops do not launch it. |
 | `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
+
+`--trust-trunk` no longer exists: its only job was threading `--yolo` onto every dispatched
+`agent-run.sh --cmd` invocation, which the command-approval fence removal made moot 2026-08-19
+(`agent-run.sh` has no approval step left to thread past — a declared command just runs). The
+session ledger's `invocation_flags` string below keeps the `trust-trunk=` field name for run-ID
+hash-format stability with earlier runs; it always reads `false` now, since nothing parses that
+flag any more.
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
 
@@ -51,22 +57,17 @@ Do not infer one from the other. Someone who asked for unattended dispatch *and*
 steer every design has asked for two things that cannot both happen, and picking one
 for them is worse than the extra round trip.
 
-**`--trust-trunk` is orthogonal to workflow approval.** It grants only the trunk-bounded
-command trust needed by dispatched verification. It does not skip brainstorm or set approval;
-issue-body review remains interactive too, and it never changes `yolo_invocation`: only an explicit
-`--yolo` (or one of its aliases) selects `yolo-trusted` fencing.
-
-**`--yolo` threads through to verification.** When this invocation carries `--yolo` (any alias) or
-`--trust-trunk`, append `--yolo` to **every** `agent-run.sh` line in every prompt you assemble —
-issue leads and review loops alike. Never forge the gate under any flag or mode.
-Read [references/trust-and-fencing.md](references/trust-and-fencing.md) in full for why the gate needs this, the trunk-bounded refusal detail, and the never-forge rationale.
+**Declared commands run directly.** `agent-run.sh --cmd NAME` runs a repository's declared
+command with no approval step and no trust record — `--yolo` only ever governed Step 4's
+issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
+commands run.
 
 **Verification cache and suite cadence.** `agent-run.sh` caches a green eligible
 verification (`test`, `lint`, `typecheck`, `coverage`, `verify`, `check`) per
-command/directory/tree-state; `--force` bypasses the cache, and the trust gate still runs on
-a hit. Run focused suites during red/green iteration, the full suite once per tree state
-before commit; `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is
-authoritative for that SHA. Detail: [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence).
+command/directory/tree-state; `--force` bypasses the cache. Run focused suites during
+red/green iteration, the full suite once per tree state before commit;
+`build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
+that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
 Read [references/verification-isolation.md](references/verification-isolation.md) in full before
 dispatching verification that may use Compose.
@@ -478,7 +479,8 @@ cycle cannot be chained — report the cyclic members and fall back to drop/ask 
 those. A multi-predecessor join is **scheduled, not dropped**: defer it until every
 predecessor's commit is pushed, then merge those commits down into its start point and push
 that merged result before dispatch (a conflict parks the join by name) — an unpushed join
-base fails `--yolo-base` by construction. Chains respect a chain depth cap: 4; deeper tails
+base lives only in local git objects and can be lost if the session or worktree that built
+it is torn down first. Chains respect a chain depth cap: 4; deeper tails
 are dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
 state or publication. See [references/chains.md](references/chains.md) for the walkthrough
 behind these rules — building the graph, publishing a locally-built base, deferred dispatch,
@@ -542,11 +544,10 @@ chain_base_sha="${chain_base_sha:-}"
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
 setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
-if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then setup_args+=(--yolo); fi
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns the mutating branch/exclude operations and keeps their approval boundary intact. Before preflight it excludes `.agent/*` and securely carries a root-local, ignored `.agent/config.env` into a new worktree when present; symlinked or non-regular state fails closed, while an existing regular target is preserved. It also performs the per-worktree preflight and runs the repository-declared `AGENT_CMD_SETUP` through `agent-run.sh` when present. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
+The helper owns the mutating branch/exclude operations. Before preflight it excludes `.agent/*` and securely carries a root-local, ignored `.agent/config.env` into a new worktree when present; symlinked or non-regular state fails closed, while an existing regular target is preserved. It also performs the per-worktree preflight and runs the repository-declared `AGENT_CMD_SETUP` through `agent-run.sh` when present. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -756,12 +757,7 @@ check) and preserve each `cross-write=` line with the run evidence. A divergent 
 the clean-handoff claim until the root names its disposition; it is never attributed to the
 human merely because the root checkout is dirty.
 
-### Attended command-approval handoff
-
-When an attended invocation carries neither `--yolo` nor `--trust-trunk`, prepare one batched,
-copy-pasteable approval block **before or at dispatch**, one line per worktree per needed command.
-Read [references/trust-and-fencing.md](references/trust-and-fencing.md#attended-command-approval-handoff)
-in full for the exact recipe (`agent-run.sh --approve --cmd <name>`) and its rules — recipes never hand off the main checkout, and the block is skipped entirely when `--trust-trunk` or `--yolo` is present.
+### Compose the issue-lead prompt
 
 Per-issue prompt: helper fills inputs. **Compose once; the spawn consumes the bytes emitted by this block — never re-compose to re-read.**
 ```bash
@@ -777,7 +773,6 @@ chmod 600 -- "$prompt_file" || exit 1
 # REQUIRED for an issue lead; never CSV (comma-bearing globs split).
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
-if [[ ${yolo_invocation:-false} == true || ${trust_trunk:-false} == true ]]; then compose_args+=(--yolo); [[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha"); fi
 if ! "$compose_script" "${compose_args[@]}"; then
     exit 1
 fi
@@ -785,9 +780,6 @@ cat -- "$prompt_file"
 ```
 
 ### Collect (per-completion — never wait for the slowest issue)
-
-On a `--yolo` changed-input refusal, root parks that workstream only;
-continues every other workstream. See [input-diff digest](references/trust-and-fencing.md).
 
 Act on each lead result as soon as it arrives:
 
@@ -1125,8 +1117,8 @@ confirmation). Cross-cutting classes of mistake have their detailed fix in the r
 that owns them: model/spawn/degraded-path mistakes in
 [.shared/spawn-contract.md](../.shared/spawn-contract.md), six-step-loop skips in
 [.shared/six-step-loop.md](../.shared/six-step-loop.md), wait/poll mistakes in
-[.shared/wait-discipline.md](../.shared/wait-discipline.md), trust-gate and fencing
-mistakes in [references/trust-and-fencing.md](references/trust-and-fencing.md), and chain
+[.shared/wait-discipline.md](../.shared/wait-discipline.md), verification-cache mistakes
+in [references/trust-and-fencing.md](references/trust-and-fencing.md), and chain
 mistakes in [references/chains.md](references/chains.md). Provider/human-feedback mistakes
 (bot commands, resolving human threads, Code Quality dismissal) are owned by
 [review-remote-pr/references/provider-rules.md](../review-remote-pr/references/provider-rules.md).

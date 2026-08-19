@@ -94,8 +94,12 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # target unchanged.
 # Issue #274 fixes the join dispatch gate: a locally-built join integration
 # commit (or an ordinary linear merge-down) is invisible to origin until
-# pushed, so an unpushed chain base fails agent-run.sh's --yolo-base pin by
-# construction. The body's two touch points (the Step 3 join sentence and the
+# pushed, and an unpushed commit lives only in this session's local git
+# objects -- a torn-down session or pruned worktree can lose it before a
+# successor or reviewer ever reads it (see chains.md's "Publishing a
+# locally-built chain base"; agent-run.sh itself has no base-pin check to
+# fail -- that gate was part of the command-approval fence removed
+# 2026-08-19). The body's two touch points (the Step 3 join sentence and the
 # deferred-dispatch gate description) each gain one clause naming the push
 # requirement; the substantive recipe -- including the linear-merge-down
 # generalization and the predecessor-SHA pinning alternative for interim

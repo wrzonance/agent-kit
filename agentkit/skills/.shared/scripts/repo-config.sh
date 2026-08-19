@@ -567,9 +567,10 @@ declare -a out_keys=() out_values=()
 declare -A value_by_key=() seen_by_key=()
 declare -A invalid_command_keys=() checked_command_keys=()
 # Canonical comparison is strict for every parse error. Resolve mode keeps the
-# established warn/drop behavior, but records errors for requested keys so the
-# yolo gate can fail closed without treating unrelated config as invocation
-# input.
+# established warn/drop behavior for the file as a whole, but tracks whether a
+# parse error occurred so a caller reading __AGENT_CONFIG_PARSE_STATUS__ below
+# (e.g. review-provider-config.sh) can tell "this failed to parse" apart from
+# "this was never declared" without a second read of the config file.
 parse_failed=0
 rundir_mismatch_requested=0
 lineno=0
@@ -756,9 +757,16 @@ case $mode in
                 printf '%s\0%s\0%s\0' "$local_key" "$value" 0
             fi
         done
-        # Resolution remains warn/drop/fall-through for ordinary callers. The
-        # invocation gate consumes this marker to fail closed under --yolo
-        # without turning unrelated config mistakes into usage errors.
+        # Resolution remains warn/drop/fall-through for ordinary callers. This
+        # marker lets a caller such as review-provider-config.sh distinguish a
+        # parse failure from an undeclared key and fail closed accordingly.
+        # agent-run.sh has no invocation gate over this marker any more (that
+        # gate governed command approval and was removed with the fence): it
+        # validates the marker's format and discards it. Its own fail-closed
+        # behavior for the REQUESTED command instead falls out of
+        # resolved_config_present staying unset when that command's config
+        # line failed to parse, since resolve mode never emits a key it
+        # could not parse.
         printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
         ((rundir_mismatch_requested)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
         ;;

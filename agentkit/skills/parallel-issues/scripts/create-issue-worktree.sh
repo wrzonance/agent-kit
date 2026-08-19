@@ -13,19 +13,15 @@ REPO_ROOT=''
 ISSUE=''
 BASE=''
 CHAIN_BASE=''
-YOLO=0
 
 usage() {
     cat <<'EOF'
-Usage: create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH [--chain-base SHA] [--yolo]
+Usage: create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH [--chain-base SHA]
 
 Create feat/issue-N below the configured AGENT_WORKTREE_ROOT (default
 .worktrees), starting at origin/BRANCH or the supplied full chain-base SHA.
 The branch is pushed upstream, preflighted, and receives the declared setup
-command through agent-run.sh when AGENT_CMD_SETUP is present. --yolo carries
-the caller's own unattended trust onto that setup call, the same way it
-carries onto every other declared agent-run.sh --cmd invocation; it does not
-weaken agent-run.sh's own trunk trust gate.
+command through agent-run.sh when AGENT_CMD_SETUP is present.
 EOF
 }
 
@@ -74,10 +70,6 @@ parse_args() {
             --chain-base=*)
                 [[ -z $CHAIN_BASE ]] || { worktree_setup_fail '--chain-base given more than once'; exit 1; }
                 CHAIN_BASE=${1#*=}
-                shift
-                ;;
-            --yolo)
-                YOLO=1
                 shift
                 ;;
             -h|--help)
@@ -145,7 +137,7 @@ main() {
     worktree_setup_propagate_config "$root" "$worktree" || exit 1
     worktree_setup_preflight "$preflight" "$worktree" || exit 1
     setup_declared=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || setup_declared=''
-    worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree" "$YOLO" || {
+    worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree" || {
         worktree_setup_fail "setup failed in $worktree"
         exit 1
     }

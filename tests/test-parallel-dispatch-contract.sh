@@ -17,8 +17,6 @@ parallel_refs=("$root/agentkit/skills/parallel-issues/references"/*.md)
 shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
-shared_six_step_loop="$root/agentkit/skills/.shared/six-step-loop.md"
-trust_and_fencing="$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md"
 verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
@@ -49,8 +47,6 @@ worker_prompts_text=$(<"$worker_prompts")
 triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 triage_and_selection_text=$(<"$triage_and_selection")
 wait_discipline_text=$(<"$shared_wait_discipline")
-six_step_loop_text=$(<"$shared_six_step_loop")
-trust_and_fencing_text=$(<"$trust_and_fencing")
 verification_isolation_text=$(<"$verification_isolation")
 worker_gate_text=$(<"$worker_gate")
 root_review_section=$(awk '
@@ -118,8 +114,6 @@ assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
 assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
     'worktree recipe parameterizes its start point'
-assert_contains "$worker_prompts_text" '--yolo --yolo-base $chain_base_sha' \
-    'chained WHEN-yolo threading pins the base'
 assert_contains "$normalized_text" "as soon as the predecessor's worker has committed and pushed its branch" \
     'chain successors gate on the pushed commit, not root publication'
 assert_not_contains "$normalized_text" 'only after the root has validated, committed, and pushed' \
@@ -140,10 +134,6 @@ assert_contains "$normalized_chains_text" 'Publishing a locally-built chain base
     'chains reference documents the general pushed-base requirement'
 assert_contains "$normalized_chains_text" 'a linear chain is not protected from this just because it only had one predecessor' \
     'the pushed-base requirement is generalized past the join case'
-assert_contains "$normalized_chains_text" 'Pin `--yolo-base` to the predecessor'"'"'s already-published SHA instead of your own merge' \
-    'chains reference documents the interim-verification pinning alternative'
-assert_contains "$normalized_text" 'an unpushed join base fails `--yolo-base` by construction' \
-    'the parallel skill body states the join push requirement'
 assert_contains "$normalized_text" 'for a join, this means every predecessor pushed AND the merged join base itself pushed' \
     'the deferred-dispatch gate names the join-specific push requirement'
 assert_contains "$normalized_chains_text" 'interface dependency' \
@@ -335,16 +325,6 @@ assert_contains "$issue_lead_prompt" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
 assert_contains "$issue_lead_prompt" 'once against the final tree state' \
     'the final tree receives one unfocused full-suite run'
-assert_contains "$text" '`--trust-trunk`' \
-    'dispatch contract documents the standalone trunk-trust flag'
-assert_contains "$text" 'Attended command-approval handoff' \
-    'attended dispatch has one approval handoff section'
-assert_contains "$text" 'one line per worktree per needed' \
-    'approval handoff batches every predictable command approval'
-assert_contains "$text" 'agent-run.sh --approve --cmd <name>' \
-    'approval handoff carries a copy-pasteable command recipe'
-assert_contains "$text" 'never hand off the main checkout' \
-    'approval recipes reject the main checkout'
 assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
     'Code Quality evidence failure stops before no-findings processing'
 assert_contains "$provider_rules_text" 'Code Quality findings unavailable' \
@@ -353,24 +333,6 @@ assert_contains "$grooming_text" 'REPO_ROOT=$(git rev-parse --show-toplevel' \
     'backlog grooming resolves its repository root explicitly'
 assert_contains "$grooming_text" 'git -C "$REPO_ROOT" rev-parse --show-toplevel' \
     'backlog grooming validates its repository root'
-assert_contains "$text" 'parks that workstream only' \
-    'trust-gate refusal parks only the refused workstream'
-assert_contains "$text" 'continues every other workstream' \
-    'trust-gate refusal allows sibling workstreams to continue'
-assert_contains "$text" 'input-diff digest' \
-    'trust-gate handoff requires an input-diff digest'
-assert_contains "$trust_and_fencing_text" 'approve-with-record' \
-    'trust-gate handoff names approval remediation'
-assert_contains "$trust_and_fencing_text" 'park-and-hand-off' \
-    'trust-gate handoff names parking remediation'
-assert_contains "$trust_and_fencing_text" 'shared input' \
-    'trust-gate handoff surfaces shared-input ripple'
-assert_contains "$trust_and_fencing_text" 'sibling PRs' \
-    'trust-gate handoff warns about sibling PR conflicts'
-assert_contains "$worker_prompts_text" 'reports BLOCKED for that workstream' \
-    'worker contract blocks only the refused workstream'
-assert_contains "$worker_prompts_text" 'literal command' \
-    'worker contract rejects literal-command evasion'
 assert_contains "$worker_prompts_text" 'extends existing pattern <name>' \
     'worker contract makes the spike exemption novelty-based, naming the pattern'
 assert_not_contains "$worker_prompts_text" 'at most 10 changed implementation lines' \
@@ -391,16 +353,6 @@ assert_contains "$normalized_text" 'Do not request a post-hoc report rewrite' \
     'root validation does not request post-hoc spike report rewrites'
 assert_contains "$normalized_text" 'bounces only absent or unjustified' \
     'root validation bounces only absent or unjustified spike reports'
-assert_contains "$six_step_loop_text" 'input-diff digest' \
-    'shared six-step contract carries trust-gate digest handoff'
-assert_contains "$six_step_loop_text" 'not implied by `--yolo`' \
-    'shared six-step contract denies implicit yolo approval'
-assert_contains "$trust_and_fencing_text" 'git diff --stat' \
-    'trust reference documents diffstat evidence'
-assert_contains "$trust_and_fencing_text" 'git diff --binary' \
-    'trust reference documents per-input diff evidence'
-assert_contains "$trust_and_fencing_text" 'untracked' \
-    'trust reference covers untracked changed inputs'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
 assert_contains "$(<"$review_skill")" 'full-suite verdict' \
@@ -473,8 +425,6 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_not_contains "$prompt_text" 'gpt-5.6-terra' "$prompt_label has no blind reviewer fallback"
     assert_contains "$prompt_text" '<PASTE, verbatim, the agent-preflight.sh contract' \
         "$prompt_label carries the environment-contract paste placeholder"
-    assert_contains "$prompt_text" '<WHEN this parallel-issues invocation carried --yolo' \
-        "$prompt_label carries the --yolo WHEN placeholder"
 done
 assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
@@ -710,8 +660,6 @@ inline_body_recipes=$(sed -nE '/^[[:space:]]*gh[[:space:]]/ {
 }' "$skill" "$review_skill")
 assert_eq '' "$inline_body_recipes" \
     'skill recipes never pass multiline GitHub bodies inline'
-assert_not_contains "$text" '` --yolo`' \
-    'parallel dispatch has no MD038-leading-space code span'
 
 # Root safeguards are asserted only in bounded orchestration/publication
 # sections. Worker prompt prose may mention the same words with different

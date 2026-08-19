@@ -18,7 +18,6 @@ cap="$parallel/concurrency-cap.sh"
 boundary="$parallel/select-boundary-mode.sh"
 groom="$review/groom-backlog.sh"
 quality="$review/code-quality-state.sh"
-handoff="$parallel/print-approval-handoff.sh"
 
 # --- concurrency-cap -------------------------------------------------------
 config="$tmp/config.toml"
@@ -92,7 +91,7 @@ out=$(PATH="$tmp/bin:$PATH" "$groom" --board-helper "$tmp/bin/board-list.sh" 2>/
 assert_contains "$out" '#42' 'groom helper reports issue numbers from Backlog JSON'
 assert_not_contains "$out" 'move-github-project-item' 'groom helper does not auto-promote'
 
-# --- onboarding next steps and approval handoff ---------------------------
+# --- onboarding next steps -------------------------------------------------
 repo="$tmp/repo"
 mkdir -p "$repo/.agent"
 git -C "$repo" init -q
@@ -126,14 +125,5 @@ rm -f -- "$contract_repo/.agent/env-contract.txt"
 "$shared/agent-preflight.sh" --ensure --worktree "$contract_repo" >/dev/null 2>&1
 assert_eq yes "$( [[ -f $contract_repo/.agent/env-contract.txt ]] && printf yes || printf no )" \
     'preflight ensure writes a missing contract'
-
-worktree="$tmp/worktree"
-git -C "$repo" worktree add -q -b feat/test "$worktree" HEAD
-out=$("$handoff" --worktree "$worktree" --cmd test --runner "$shared/agent-run.sh" 2>/dev/null)
-assert_contains "$out" "cd $worktree" 'approval handoff starts with the assigned worktree'
-assert_contains "$out" '--approve --cmd test' 'approval handoff renders the requested command'
-main=$(git -C "$repo" rev-parse --show-toplevel)
-assert_rc 1 'approval handoff refuses the main checkout' -- \
-    "$handoff" --worktree "$main" --cmd test --runner "$shared/agent-run.sh"
 
 finish

@@ -12,7 +12,7 @@ instead of rediscovering them on every run; onboarding regenerates them after a 
 
 | Piece | Purpose |
 |---|---|
-| `onboard-repo` skill | Walks a repository through setup. Runs the bootstrap script, audits existing instruction files, fills in verify commands and label meanings, and hands command approval to a human |
+| `onboard-repo` skill | Walks a repository through setup. Runs the bootstrap script, audits existing instruction files, fills in verify commands and label meanings, and hands the first run of each command to a human |
 | `parallel-issues` skill | Triages the Projects board, picks 2-5 independent issues, runs each in an isolated git worktree with its own sub-agent, and drives each to a draft PR |
 | `review-remote-pr` skill | Takes a draft PR to green: CI, merge conflicts, one adversarial cross-review by the peer CLI, review-bot threads, and the board move |
 | `pr-to-green` skill | Serializes a confirmed draft-PR queue, performs authorized ready/provider transitions, and handles stacks without merging |
@@ -112,17 +112,16 @@ your repository drives everything through one dispatcher, point `AGENT_REPO_RUNN
 Skills run commands by name (`agent-run.sh --cmd test`), so no skill hardcodes an
 ecosystem.
 
-### Command approval
+### Declared commands run directly
 
-Declaring a command does not let the agent run it. Review the declaration, then approve it
-once with `agent-run.sh --approve --cmd NAME`; the confirmation is read from your
-controlling terminal. That confirmation is defense in depth, **not** a cryptographic human-only
-gate: an agent with arbitrary command execution runs as your user and can bypass it. What the record does guarantee is worth having. It lives in an owner-only state
-directory outside the checkout, it makes approval an explicit logged step, and it
-fingerprints the declaration, the runner, repository-backed argv paths, and nearby build
-manifests, so a changed command or input cannot inherit an old approval.
+Declaring a command makes it runnable by name: `agent-run.sh --cmd NAME` runs the exact
+`AGENT_CMD_NAME` value every time it is invoked, with no separate approval step and no trust
+record. Review a declaration when you write it — an agent with command execution runs as
+your user regardless of any gate in front of a single wrapper script, so the review that
+matters happens at declaration time, not at every run. Skills only ever run commands you
+declared, by name, through this wrapper.
 
-The rationale for these controls and their deliberately limited exceptions is in the
+The rationale for what agent-kit does and does not guard, and why, is in the
 [security posture](docs/security-posture.md).
 
 ### Fleet GitHub identity
@@ -134,20 +133,6 @@ operations. Draft PRs and workflow-authored comments use the same fleet
 identity. Ready-flips, approvals, and merges remain human actions from a
 human-authenticated shell. See the [fleet identity runbook](docs/fleet-identity.md)
 for the installation permissions and rollout checklist.
-
-Runs you launch unattended are the one exception. `agent-run.sh --yolo --cmd NAME` skips
-the terminal confirmation for that single invocation, announces the skip on stderr and in
-the run log, and records no trust. It applies only when the command's repository-controlled
-inputs are identical to the remote trunk's; anything new or changed on the checkout still
-requires a terminal approval. Skills thread the flag down from your own `--yolo`
-invocation and never add it on their own.
-
-A changed-input refusal under `--yolo` is an adjudication request, not a dead end. The root
-must preserve the workstream and produce an input-diff digest listing every changed command
-input, its diffstat, and its full diff. It may then use the harness flow from an interactive
-terminal — `agent-run.sh --approve --cmd NAME` — so the approval reviewer sees that concrete
-diff, or park and hand off the workstream with the digest and exact command. Never strip the
-input, retry with a literal equivalent, or treat `--yolo` as an approval record.
 
 ## Hooks
 

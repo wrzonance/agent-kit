@@ -268,12 +268,8 @@ worktree_setup_propagate_config() {
     fi
 }
 
-# $4 (optional) carries the invocation's own unattended trust: when it is 1 or
-# true, the declared setup command is dispatched with agent-run.sh's --yolo so
-# an unattended run's first setup call does not burn a guaranteed approval
-# refusal. Omitting it (or any other value) keeps the prior attended behavior.
 worktree_setup_declared_setup() {
-    local config=$1 agent_run=$2 worktree=$3 yolo=${4:-} declaration
+    local config=$1 agent_run=$2 worktree=$3 declaration
     [[ -x $config ]] || {
         worktree_setup_fail "repository config helper is missing or not executable: $config"
         return 1
@@ -284,9 +280,5 @@ worktree_setup_declared_setup() {
     }
     declaration=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || declaration=''
     [[ -n $declaration ]] || return 0
-    if [[ $yolo == 1 || $yolo == true ]]; then
-        "$agent_run" --dir "$worktree" --cmd setup --yolo
-    else
-        "$agent_run" --dir "$worktree" --cmd setup
-    fi
+    "$agent_run" --dir "$worktree" --cmd setup
 }
