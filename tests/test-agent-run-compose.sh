@@ -10,15 +10,8 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 real_run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
-tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
-export AGENT_TRUST_ROOT="$tmp/trust"
-
-run_sh="$tmp/approved-agent-run.sh"
-printf '#!/usr/bin/env bash\n"%s" y -- "%s" --approve "$@" >/dev/null 2>&1\nexec "%s" "$@"\n' \
-    "$tty_approve" "$real_run_sh" "$real_run_sh" > "$run_sh"
-chmod +x "$run_sh"
 
 make_repo() {
     local dir
@@ -50,13 +43,13 @@ repo_two=$(make_repo)
 make_emit_repo "$repo_one"
 make_emit_repo "$repo_two"
 
-out_one=$(cd "$repo_one" && "$run_sh" --cmd test 2>&1)
+out_one=$(cd "$repo_one" && "$real_run_sh" --cmd test 2>&1)
 log_one=$(latest_log "$repo_one")
 project_one=$(grep -v '^===' "$log_one" | tail -n 1)
-cd "$repo_one" && "$run_sh" --cmd test >/dev/null 2>&1
+cd "$repo_one" && "$real_run_sh" --cmd test >/dev/null 2>&1
 log_one_repeat=$(latest_log "$repo_one")
 project_one_repeat=$(grep -v '^===' "$log_one_repeat" | tail -n 1)
-cd "$repo_two" && "$run_sh" --cmd test >/dev/null 2>&1
+cd "$repo_two" && "$real_run_sh" --cmd test >/dev/null 2>&1
 log_two=$(latest_log "$repo_two")
 project_two=$(grep -v '^===' "$log_two" | tail -n 1)
 
@@ -70,7 +63,7 @@ repo=$(make_repo)
 make_emit_repo "$repo"
 printf 'name: fixed-compose-project\nservices: {}\n' > "$repo/compose.yaml"
 printf 'COMPOSE_PROJECT_NAME=another-fixed-project\n' > "$repo/.env"
-hardcode_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+hardcode_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1)
 hardcode_log=$(latest_log "$repo")
 hardcode_project=$(grep -v '^===' "$hardcode_log" | tail -n 1)
 assert_contains "$hardcode_out" 'hardcodes a Compose project name' \
@@ -90,7 +83,7 @@ chmod +x "$repo/tools/docker"
 printf 'AGENT_CMD_TEST=tools/docker compose --project-name fixed-cli-project\n' \
     > "$repo/.agent/config.env"
 set +e
-cli_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+cli_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1)
 cli_rc=$?
 set -e
 assert_contains "$cli_out" 'hardcodes a Compose project name' \
@@ -110,7 +103,7 @@ assert_not_contains "$cli_out" 'PASS:' \
 
 # The dispatcher asserts it has serialized; the same command then proceeds.
 set +e
-cli_serialized_out=$(cd "$repo" && AGENT_COMPOSE_SERIALIZED=1 "$run_sh" --cmd test 2>&1)
+cli_serialized_out=$(cd "$repo" && AGENT_COMPOSE_SERIALIZED=1 "$real_run_sh" --cmd test 2>&1)
 cli_serialized_rc=$?
 set -e
 assert_eq '0' "$cli_serialized_rc" \
@@ -132,7 +125,7 @@ for engine_case in 'docker:--context' 'podman:--connection'; do
     printf 'AGENT_CMD_TEST=tools/%s %s ci compose --project-name fixed-%s-global\n' \
         "$engine" "$global_opt" "$engine" > "$repo/.agent/config.env"
     set +e
-    global_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+    global_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1)
     global_rc=$?
     set -e
     assert_contains "$global_out" 'hardcodes a Compose project name' \
@@ -149,7 +142,7 @@ repo=$(make_repo)
 make_emit_repo "$repo"
 printf 'AGENT_CMD_TEST=tools/emit-compose -p no:cacheprovider\n' \
     > "$repo/.agent/config.env"
-unrelated_flag_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1)
+unrelated_flag_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1)
 assert_not_contains "$unrelated_flag_out" 'hardcodes a Compose project name' \
     'an unrelated short -p flag is not treated as a Compose project name'
 
@@ -159,7 +152,7 @@ printf '#!/bin/sh\nprintf "docker compose: dependency failed to start; container
     > "$repo/tools/fail-compose"
 chmod +x "$repo/tools/fail-compose"
 printf 'AGENT_CMD_TEST=tools/fail-compose\n' > "$repo/.agent/config.env"
-collision_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
+collision_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
 assert_contains "$collision_out" 'FAIL(rc=1)' \
     'a Compose collision preserves the wrapped command exit status'
 assert_contains "$collision_out" 'environment-retry-eligible' \
@@ -172,7 +165,7 @@ printf '#!/bin/sh\nprintf "AssertionError: expected green result\\n"\nexit 1\n' 
     > "$repo/tools/fail-code"
 chmod +x "$repo/tools/fail-code"
 printf 'AGENT_CMD_TEST=tools/fail-code\n' > "$repo/.agent/config.env"
-code_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
+code_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
 assert_not_contains "$code_out" 'environment-retry-eligible' \
     'a normal command failure is not mislabeled as a Compose environment finding'
 
@@ -181,7 +174,7 @@ printf '#!/bin/sh\nprintf "composer: address already in use\\n"\nexit 1\n' \
     > "$repo/tools/fail-composer"
 chmod +x "$repo/tools/fail-composer"
 printf 'AGENT_CMD_TEST=tools/fail-composer\n' > "$repo/.agent/config.env"
-composer_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
+composer_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
 assert_not_contains "$composer_out" 'environment-retry-eligible' \
     'a Composer-style failure is not treated as a Compose collision'
 
@@ -190,7 +183,7 @@ printf '#!/bin/sh\nprintf "docker compose: address already in use\\n"\nexit 1\n'
     > "$repo/tools/fail-compose-address"
 chmod +x "$repo/tools/fail-compose-address"
 printf 'AGENT_CMD_TEST=tools/fail-compose-address\n' > "$repo/.agent/config.env"
-compose_address_out=$(cd "$repo" && "$run_sh" --cmd test 2>&1 || true)
+compose_address_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
 assert_not_contains "$compose_address_out" 'environment-retry-eligible' \
     'a bare address collision without dependency evidence is not retry-eligible'
 
