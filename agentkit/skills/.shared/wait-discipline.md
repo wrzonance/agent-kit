@@ -54,6 +54,17 @@ permits. A wait that returns `timed_out:true` must never be re-issued at the sam
 it produced nothing and will again: escalate the bound (at least double it) or take the
 stall path (`parallel-issues/scripts/stall-check.sh`) instead of blocking blind.
 
+## Never replay a recorded path as a command
+
+Any path that crosses the boundary to a human, or that is recorded for a future resumed run
+to execute, uses the contract/resolver form (`$agentkit`, or
+`"$agentkit/.shared/scripts/contract-read.sh" --get skills.path`) — never a literal
+`agentkit/<version>/` path. A version-pinned plugin path stops resolving the moment the plugin
+updates, and it then fails as a bare missing-file error that never says why. The one exception:
+the session ledger's `skills_path` field records the version-pinned path as historical
+provenance, which is correct and must stay — the hazard is only replaying a recorded
+`skills_path` as an executable path on resume without re-resolving it first.
+
 ## Durable state to inspect after a completion
 
 Read only from disk and the forge, and only once a wait reports an actual completion:
