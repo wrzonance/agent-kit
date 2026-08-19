@@ -20,9 +20,9 @@ Carry any `agentkit drift advisory` into the handoff; refresh and `.agent/config
 
 Before `verified`, preflight and report its exact runtime/setup/toolchain findings. Read CI before proposing commands; when it differs, report both and make CI's proven entry point canonical `TEST`.
 
-Operator approvals, Stop remediation, and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
+Operator approvals and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
 
-Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work), then run the resolved `agent-run.sh --cmd <declared name> --yolo`. A repo without a declared command has no `Stop` gate.
+Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work), then run the resolved `agent-run.sh --cmd <declared name> --yolo`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
 
 ---
 
@@ -186,9 +186,10 @@ spends the suite's runtime twice.
 command>` — since a worktree starts with no dependencies installed, so without it the
 first verification in every parallel worktree fails for an unrelated reason.
 
-**`VERIFY` is the per-turn gate — make it fast.** `Stop` runs it at the end of every turn, so its cost is
-paid on a one-line comment as surely as on a refactor. Declare the seconds-long gate as `VERIFY` and keep
-the slow one as `TEST` (a single entry point just declares `AGENT_CMD_VERIFY=tools/verify` and moves on):
+**`VERIFY` and `TEST` are on-demand, not turn-gated.** Declaring one makes it runnable by name
+(`agent-run.sh --cmd verify`/`--cmd test`) — nothing blocks a turn on it. Keep `VERIFY` fast so a
+one-line comment doesn't pay a refactor's cost; let `TEST` be the slow one (a single entry point just
+declares `AGENT_CMD_VERIFY=tools/verify` and moves on):
 
 ```ini
 AGENT_CMD_VERIFY=<lint and typecheck, seconds>
@@ -234,13 +235,13 @@ dispatcher with your reasoning — never a silently invented command. Once
 nothing declared covers; a passing `VERIFY` isn't a passing CI, so read the CI definition and say plainly
 which gates remain uncovered, even when the gap can't close — that sentence is the deliverable. **Never
 declare a command you have not run**: one that fails on first use teaches the agent to distrust the
-contract, and `Stop` blocks turns on it.
+contract.
 
 ## Step 5 — propose everything at once
 
 Give the user one message of additions — commands, provider choice, labels, ADR directory — with reasons.
 Ask which providers are installed, including `none`. State unknowns and consequences; e.g., "no
-root test command means `Stop` cannot gate tests until a dispatcher exists."
+root test command means there is nothing for `agent-run.sh --cmd test` to run until a dispatcher exists."
 
 ## Step 6 — write and validate
 
@@ -295,7 +296,7 @@ weigh.
 
 ## Step 9 — report
 
-Report declarations, blanks and reasons, plus the resulting guards and `Stop` behavior.
+Report declarations, blanks and reasons, plus the resulting guards.
 
 ---
 
@@ -328,10 +329,10 @@ worktrees; a PR checkout is excluded and approves separately.
 Shared helpers require Bash 4+ for associative arrays. Invoke them with Bash; zsh calls fail fast.
 
 **`VERIFY` and `TEST` are the only names anything relies on** — others (`lint`, `build`, `coverage`) are reached
-with `--if-declared`, so declaring none of them isn't broken, it just skips those steps. `AGENT_CMD_VERIFY`
-(or, failing that, `AGENT_CMD_TEST`) is what opts the repository into the `Stop` check at the end of every
-turn, so which one you declare decides what every trivial edit costs; declaring neither is legitimate, but
-make it a stated choice. Only `Stop` falls back like that: `agent-run.sh --cmd verify`
+with `--if-declared`, so declaring none of them isn't broken, it just skips those steps. Declaring
+`AGENT_CMD_VERIFY` and/or `AGENT_CMD_TEST` only makes the command runnable by name
+(`agent-run.sh --cmd verify` / `--cmd test`); nothing gates a turn on either, and declaring neither is
+legitimate, but make it a stated choice. `agent-run.sh --cmd verify`
 resolves nothing in a TEST-only repo, so substitute the name you declared in every `--cmd` example here.
 
 **Nothing secret belongs in `config.env`.** Tokens, proxies, and CA paths are refused by the resolver: the
