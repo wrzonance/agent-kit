@@ -51,8 +51,6 @@ SHARED_SCRIPT_LIB=$(cd -- "$GUARD_LIB_DIR/../../skills/.shared/scripts/lib" 2>/d
 }
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SHARED_SCRIPT_LIB/protected-paths.sh"
-# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
-source "$SHARED_SCRIPT_LIB/trunk-policy.sh"
 
 # Populated by guard_resolve_roots.
 roots=()
@@ -845,18 +843,18 @@ guard_strip_git_globals() {
 #
 # The rest of the guard set never blocks, because a command with a cheaper
 # alternative should run and be corrected afterwards. There is no
-# teach-after-the-fact for a force-push that already landed, and a
-# once-per-session override would refuse the first attempt and permit the
+# teach-after-the-fact for a reset --hard that already discarded the work, and
+# a once-per-session override would refuse the first attempt and permit the
 # second -- precisely backwards. So these deny every time, and say what to do
 # instead.
 #
 # Kept deliberately short. A long list of "risky" commands trains an agent to
 # treat denials as noise, which is how the one that mattered gets worked around.
 # `git clean --force -d` and `git clean -fd` do identical damage, and only the
-# second was refused. So did `git push origin +main`, `git branch --delete
-# --force main`, and `rm --recursive --force /`. None of that is obfuscation --
-# it is git's own documented spelling, and an external review found all four by
-# reading the man pages.
+# second was refused. So did `git branch --delete --force main` and
+# `rm --recursive --force /`. None of that is obfuscation -- it is git's own
+# documented spelling, and an external review found all three by reading the
+# man pages.
 #
 # That matters more than an ordinary miss, because the README told operators to
 # hand over a writable .git on the strength of these patterns refusing this

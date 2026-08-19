@@ -140,7 +140,7 @@ for the installation permissions and rollout checklist.
 |---|---|
 | `SessionStart` | Probes the environment once and hands the agent a contract: repo, branch, base, sandbox state, CA bundle, cache roots, and the helpers available here. Without `.agent/config.env` it prints how to onboard instead |
 | `SubagentStart` | Codex-only event. Injects the tooling curriculum into spawned workers; each worker's per-worktree contract travels in the dispatcher's prompt |
-| `PreToolUse` | Refuses work-destroying commands every time; refuses once for a bare helper name, a trunk commit, or an edit to a file that gates other checks |
+| `PreToolUse` | Refuses work-destroying commands every time; refuses once for a bare helper name or an edit to a file that gates other checks |
 | `PostToolUse` | Teaches the cheaper command after a wasteful call returned real data |
 
 There is no `Stop` hook: nothing blocks the end of a turn on a declared verify/test
@@ -153,8 +153,10 @@ only on declared evidence: a repository with no `.agent/` directory gets nothing
 with a usable alternative is allowed to run and corrected afterwards, so a single denial
 cannot end a line of work.
 
-The permanent deny list is short: force-push, `reset --hard`, `clean -f`, deleting the
-trunk branch, `gh pr merge`, `--no-verify`, and recursive deletes of `~` or `/`. A second
+The permanent deny list is short: `reset --hard`, `clean -f`, deleting the
+trunk branch, `gh pr merge`, `--no-verify`, and recursive deletes of `~` or `/`. Committing
+to trunk and force-pushing are allowed -- git keeps both recoverable (reflog, the remote's
+prior ref), so neither is the destructive, unrecoverable class this list guards. A second
 class refuses once and then allows a deliberate retry: bare helper names that cannot
 resolve, and edits to files that decide whether other checks run (CI definitions, git
 hooks, harness config). Add repository-specific entries with `AGENT_PROTECTED_PATHS`; the
