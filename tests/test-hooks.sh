@@ -1263,6 +1263,30 @@ assert_contains "$(ctx_of "$out")" 'version directory' \
     'an executed path still corrects even after the same path was quoted in a heredoc body'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 
+# A double-quoted --body value, or the body of an EXPANDABLE heredoc (<<EOF,
+# unquoted delimiter), is not provably inert: bash executes a $(...) command
+# substitution inside either, so redacting it wholesale would hide a path the
+# shell genuinely resolves (adversarial review, issue #299). Both must still
+# trigger.
+expand_body_sid=$(fresh_sid)
+expand_body_cmd="gh issue create --title x --body \"\$($pinned)\""
+out=$(post_input "$repo" "$expand_body_cmd" "$expand_body_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the assert message below is literal text, not expansion
+assert_contains "$(ctx_of "$out")" 'version directory' \
+    'a pinned path inside a $(...) substitution in --body still triggers the lesson'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+
+expand_heredoc_sid=$(fresh_sid)
+expand_heredoc_cmd="cat <<EOF
+\$($pinned)
+EOF
+gh issue create --body-file /tmp/x.txt"
+out=$(post_input "$repo" "$expand_heredoc_cmd" "$expand_heredoc_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the assert message below is literal text, not expansion
+assert_contains "$(ctx_of "$out")" 'version directory' \
+    'a pinned path inside a $(...) substitution in an expandable heredoc still triggers the lesson'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+
 # The resolver itself contains plugins/cache and must not trip its own rule --
 # an advisory that fires on the correct form teaches that the advice is noise.
 # shellcheck disable=SC2016  # a command line for the hook to read, not to run
