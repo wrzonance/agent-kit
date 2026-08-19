@@ -81,26 +81,18 @@ before the first run.
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
 # its .agent/runner resolves it. The wrapper is not optional.
-<WHEN this parallel-issues invocation carried --yolo (under any alias:
---no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
-"append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
-the lines below and any you compose yourself (typecheck, coverage, a repo-declared
-check)." For a chained issue, append `--yolo --yolo-base $chain_base_sha` instead — the pin is
-the root-published predecessor commit this branch was created from. Otherwise delete this
-placeholder. Either way, never dispatch with the
-placeholder still in the prompt. A worker refused at the trust gate — as
-`unapproved repository command`, or by `--yolo` itself because an input differs
-from the trunk — reports BLOCKED with that reason. It never approves, drives a
-pseudo-terminal, or writes a trust record.>
+<WHEN this parallel-issues invocation carried --yolo (under any alias) — this
+placeholder is always replaced before dispatch, by the composer's own generated
+line stating the commands below carry no unattended trust flags. There is no
+command-approval gate left to skip: a declared command runs directly through
+`agent-run.sh --cmd NAME`. Never dispatch with the placeholder itself still in the
+prompt — it must never reach a worker; that is what the composer's substitution
+guards against, not something a template author writes by hand. It has nothing to
+say about a trust record.>
 __DECLARED_COMMANDS__
 
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
-
-Changed-input refusal rule: a worker reports BLOCKED for that workstream; the root preserves it, produces
-an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
-`park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
-merge-conflict risk.
 
 ```bash
 git branch --show-current
@@ -267,9 +259,11 @@ query selects `public-fenced`; only the operator's explicit `--yolo` invocation 
 it changes only issue-body rendering, while the worker still follows the actionable task and
 branch rules in this prompt.
 
-`--trust-trunk` is deliberately absent from the mode selector: it grants verification-command
-threading only and never selects `yolo-trusted`. Visibility and the explicit `--yolo` invocation
-continue to decide issue-content fencing.
+`--trust-trunk` no longer exists as a flag — its only job was threading `--yolo` onto every
+generated `agent-run.sh` command, which the command-approval fence removal made moot, since
+`agent-run.sh` has no approval step left to thread past. It never selected `yolo-trusted` even
+when it existed. Visibility and the explicit `--yolo` invocation alone decide issue-content
+fencing.
 
 For `public-fenced`, use the already-persisted canonical files and embed their contents verbatim:
 
@@ -452,23 +446,15 @@ provider-neutral base comes from the contract's `harness=` line.
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
 # Read the log path it prints on failure.
-<WHEN this parallel-issues invocation carried --yolo (under any alias:
---no-brainstorm, --skip-brainstorm) or --trust-trunk, replace this placeholder with the rule:
-"append `--yolo` to EVERY agent-run.sh --cmd invocation you make in this run —
-the lines below and any you compose yourself (typecheck, coverage, a repo-declared
-check)." For a chained issue, append `--yolo --yolo-base $chain_base_sha` instead — the pin is
-the root-published predecessor commit this branch was created from. Otherwise delete this
-placeholder. Either way, never dispatch with the
-placeholder still in the prompt. A worker refused at the trust gate — as
-`unapproved repository command`, or by `--yolo` itself because an input differs
-from the trunk — reports BLOCKED with that reason. It never approves, drives a
-pseudo-terminal, or writes a trust record.>
+<WHEN this parallel-issues invocation carried --yolo (under any alias) — this
+placeholder is always replaced before dispatch, by the composer's own generated
+line stating the commands below carry no unattended trust flags. There is no
+command-approval gate left to skip: a declared command runs directly through
+`agent-run.sh --cmd NAME`. Never dispatch with the placeholder itself still in the
+prompt — it must never reach a worker; that is what the composer's substitution
+guards against, not something a template author writes by hand. It has nothing to
+say about a trust record.>
 __DECLARED_COMMANDS__
-
-Changed-input refusal rule: a worker reports BLOCKED for that workstream; the root preserves it, produces
-an input-diff digest, then uses the interactive `agent-run.sh --approve --cmd <name>` flow or
-`park-and-hand-off`. Other workstreams continue. Never strip the input or retry with a literal command; approval is not implied by `--yolo`. A shared repo-root input carries a sibling-PR
-merge-conflict risk.
 
 Compose isolation rule: this prompt runs full verification through the same wrapper as an issue
 lead, so the same rules bind here. `agent-run.sh` exports a deterministic per-worktree

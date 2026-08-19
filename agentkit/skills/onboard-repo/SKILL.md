@@ -20,9 +20,9 @@ Carry any `agentkit drift advisory` into the handoff; refresh and `.agent/config
 
 Before `verified`, preflight and report its exact runtime/setup/toolchain findings. Read CI before proposing commands; when it differs, report both and make CI's proven entry point canonical `TEST`.
 
-Operator approvals and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
+Operator-facing recipes and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
 
-Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work), then run the resolved `agent-run.sh --cmd <declared name> --yolo`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
+Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work, since a per-machine `.agent/config.env` simply is not present in a fresh clone or CI checkout), then run the resolved `agent-run.sh --cmd <declared name>`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
 
 ---
 
@@ -196,26 +196,15 @@ AGENT_CMD_VERIFY=<lint and typecheck, seconds>
 AGENT_CMD_TEST=<the full suite, minutes>
 ```
 
-**Approval is separate from declaration, and it is meant to be a human step.** A committed `AGENT_CMD_*`
-value is repository-controlled data, not permission to execute — before the first run a human reviews the
-declaration and approves the exact command from their own terminal (`--approve` reads confirmation from the
-controlling terminal). That is defense-in-depth, not proof: a non-interactive
-shell can't answer the prompt, but a same-user process could still drive a pseudo-terminal or write the
-record directly.
+**A declared command runs directly, with no approval step.** `agent-run.sh --cmd <name>` runs the
+exact `AGENT_CMD_<NAME>` value as soon as it is declared — review the declaration before you write
+it, since nothing checks it again at run time:
 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-# A human, in an interactive terminal:
-"$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify
-# Any session, once approval exists:
 "$agentkit/.shared/scripts/agent-run.sh" --cmd verify
 ```
-
-Approval lives outside the checkout, is scoped to the repository — one approval covers the clone's ordinary
-worktrees — and fingerprints the declaration plus repository-backed inputs, so a changed `tools/verify` or
-manifest can't inherit it. A PR checkout is excluded and approves separately: a contributor branch can
-change what a command transitively runs. Literal commands (`agent-run.sh -- ...`) never use this record.
 
 **Several commands in one ecosystem** get one key each — values are argv, no shell syntax, pipes, `&&`, or
 `cd`. A command needing to run inside a component pairs with a rundir key instead of wrapping itself
@@ -246,15 +235,17 @@ root test command means there is nothing for `agent-run.sh --cmd test` to run un
 ## Step 6 — write and validate
 
 Edit `.agent/config.env` directly — values are line-wise and never sourced. Write active
-`AGENT_REVIEW_PROVIDERS=...` and each command unquoted, then prove parsing. Approval and the first run are
-a human step (above), so hand them off rather than running `--approve` yourself:
+`AGENT_REVIEW_PROVIDERS=...` and each command unquoted, then prove parsing. There is no approval
+step for the first run — `agent-run.sh --cmd <name>` runs a declared command directly — but hand
+the first invocation of each name to the user anyway: onboarding is attended, and them running and
+reading it once is the actual review moment before this skill leaves the command declared for
+every future session:
 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/repo-config.sh" --list
-# ...then, once per name you declared, a human approves and runs it:
-"$agentkit/.shared/scripts/agent-run.sh" --approve --cmd verify   # human, interactive terminal
+# ...then, once per name you declared, hand this to the user to run themselves:
 "$agentkit/.shared/scripts/agent-run.sh" --cmd verify
 ```
 
@@ -266,10 +257,11 @@ Run each candidate only here; leave commands too slow for this gate to CI, expla
 ## Step 7 — commit, or deliberately not
 
 Onboarding writes declarations as local ignored state, which is right for a repo worked attended. **For a
-repo meant to run unattended, recommend committing `.agent/config.env`:** `--yolo` validates declarations
-against the trunk, so per-machine ones make it refuse every declared command until a human approves each.
-The file carries declarations only (the resolver refuses secrets); the trade is that later edits need a
-trunk PR before unattended runs pick them up. Ask, then report which the user chose:
+repo meant to run unattended, recommend committing `.agent/config.env`:** a per-machine file is
+untracked local state, so it simply is not present in a fresh clone or a CI checkout — there is
+nothing there for `agent-run.sh --cmd <name>` to run, not a refusal to work around. The file carries
+declarations only (the resolver refuses secrets); the trade is that later edits need a trunk PR
+before unattended runs pick them up. Ask, then report which the user chose:
 
 ```bash
 git branch --show-current
@@ -316,15 +308,12 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_GENERATED_PATHS` | generated path prefixes |
 | `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
-| `AGENT_TRUST_ROOT` | runtime-only; overrides the command-trust state root |
 | `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |
 | `AGENT_PROTECTED_PATHS` | extra gating paths; edits refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | reuse labels |
 
-Named repository commands require explicit approval before their first run and after a declaration or
-repository-backed input changes (`agent-run.sh --approve --cmd <name>`); the record is owner-only state
-outside the checkout and scoped to the repository, so one approval covers the clone's ordinary
-worktrees; a PR checkout is excluded and approves separately.
+A named repository command runs directly, with no approval step: `agent-run.sh --cmd <name>` runs
+the exact declared value every time it is invoked.
 
 Shared helpers require Bash 4+ for associative arrays. Invoke them with Bash; zsh calls fail fast.
 

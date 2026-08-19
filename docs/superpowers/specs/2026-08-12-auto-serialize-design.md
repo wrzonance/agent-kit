@@ -4,6 +4,14 @@
 **Date:** 2026-08-12
 **Owner decisions:** trust anchor = server-advertised pinned SHA (amended post-adversarial-review P1); ordering sources = file conflicts + intra-batch blockedBy
 
+**Command-approval fence removed 2026-08-19:** this design's `--yolo-base` trust-anchor
+mechanism (a pin validated against `agent-run.sh`'s command-trust gate) was part of the
+command-approval fence removed 2026-08-19. `agent-run.sh` has no base-pin check left to
+satisfy; a declared command runs directly. The chain-building, join-scheduling, and
+merge-down mechanics below are otherwise unaffected — see
+`agentkit/skills/parallel-issues/references/chains.md` for the current, corrected account of
+what publishing a locally-built chain base still requires.
+
 ## Problem
 
 `parallel-issues` Step 3 detects file-level conflicts between selected issues. Today the

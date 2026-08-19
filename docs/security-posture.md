@@ -35,20 +35,26 @@ class is recorded in [PR #78's discussion](https://github.com/wrzonance/agent-ki
 
 ## The command trust gate is defense-in-depth, not a human-only guarantee
 
-Terminal approval covers repository command declarations and detects changed
-inputs, but it is defense in depth rather than cryptographic proof of a human:
-another process running as the same user could imitate the terminal or alter the
-trust state. Unattended work uses the explicit, logged `--yolo` path for
-trunk-carried command inputs; changed declarations or payloads remain refused.
-This boundary lets an authorized unattended worker continue without stalling at
-an approval prompt while preserving an auditable, fail-closed check. The
-2026-08-11 forged-approval incident is the reason the posture states this limit
-explicitly.
+**Removed 2026-08-19.** This gate — a terminal approval before a declared command's first run,
+backed by a fingerprinted trust record and an unattended `--yolo` bypass scoped to
+trunk-carried inputs — no longer exists. `agent-run.sh --cmd NAME` now runs a declared command
+directly, with no approval step and no trust record. The heading above is kept as written
+because it is a pinned structural anchor (`tests/test-skills-contract.sh` fails loudly if this
+rationale class disappears without a deliberate review); read it as the closed rationale for a
+control this project used to run, not a description of current behavior.
 
-Evidence: the [command-trust and fencing design](../agentkit/skills/parallel-issues/references/trust-and-fencing.md),
-the [approval-gate tests](../tests/test-agent-run-approval-gate.sh), the
-[command-runner tests](../tests/test-agent-run-cmd.sh), and the
-[non-blocking guards design](2026-08-08-non-blocking-guards-design.md).
+The gate was always defense in depth rather than cryptographic proof of a human — another
+process running as the same user could imitate the terminal or alter the trust state — and
+removing it was a deliberate owner decision for a tool built around one already-trusted
+operator: the approval step re-authorized commands for an operator who had already authorized
+them by choosing to run agent-kit in the first place. The 2026-08-11 forged-approval incident,
+which prompted the original defense-in-depth framing, is historical context for why the gate
+existed, not a reason it remains.
+
+Evidence: the [command-runner tests](../tests/test-agent-run-cmd.sh) and the
+[verification cache reference](../agentkit/skills/parallel-issues/references/trust-and-fencing.md),
+which still documents the one still-live mechanism (the verification result cache) that used to
+share this file with the removed gate.
 
 ## Untrusted content is fenced and never shell-expanded
 
