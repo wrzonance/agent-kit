@@ -573,8 +573,13 @@ scope_target_repo=$(cd "$root/../../.." && pwd)
 scope_target_is_home=0
 scope_target_canon=$(cd "$scope_target_repo" && pwd -P)
 scope_home_canon=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P) || scope_home_canon=''
+# Root (/) is an ancestor of every absolute path, $HOME included -- mirror
+# guard_home_sweep_target's own root disjunct here too, or this comparison
+# inherits the same blind spot the guard had (root: cannot self-authorize
+# below pins the guard side; this pins the test oracle side).
 if [[ -n $scope_home_canon ]] &&
     { [[ $scope_target_canon == "$scope_home_canon" ]] ||
+        [[ $scope_target_canon == / ]] ||
         [[ $scope_home_canon == "$scope_target_canon"/* ]]; }; then
     scope_target_is_home=1
 fi
@@ -590,6 +595,25 @@ for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md"
         assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
             "command-derived target cannot self-authorize: $bypass"
     fi
+done
+
+# Root (/) is an ancestor of every absolute path, $HOME included --
+# guard_home_sweep_target's own docstring says "Ancestors of $HOME (/home, /)
+# count too". But its ancestor check was a component-boundary match against
+# "$target"/*, and for target=/ that literally becomes //* -- a doubled
+# leading slash that $HOME (e.g. /home/adam) never matches. So a bare `find /`
+# fell through to the soft "reads outside the workspace" advisory instead of
+# the hard home-sweep denial, silently contradicting the guard's own
+# documented policy. Pin the root case directly, independent of wherever this
+# checkout happens to sit.
+for root_sweep in 'find / -name AGENTS.md' 'cd / && find / -name AGENTS.md'; do
+    out=$(pre_input "$scope_repo" "$root_sweep" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    # shellcheck disable=SC2016  # $HOME is the literal text being matched
+    assert_contains "$out" 'walks $HOME' \
+        "a root sweep is denied as a home sweep, not merely advised: $root_sweep"
+    assert_eq '' "$(pre_context "$out")" \
+        "a root sweep's denial pre-empts the softer advisory: $root_sweep"
 done
 
 # --- work-destroying commands are refused, every time ---------------------

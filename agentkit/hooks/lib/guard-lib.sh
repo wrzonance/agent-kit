@@ -504,7 +504,12 @@ guard_home_sweep_target() {
     [[ -n $home && $home != / ]] || return 1
     target=$(guard_scope_canonical "$1") || return 1
     [[ -n $target ]] || return 1
-    [[ $target == "$home" || $home == "$target"/* ]]
+    # Root is an ancestor of every absolute path, $HOME included, but the
+    # ancestor test below is a component-boundary match against
+    # "$target"/* -- and for target=/ that becomes //* (a doubled leading
+    # slash), which $home (e.g. /home/adam) never matches. Root needs its
+    # own disjunct rather than falling through the general ancestor check.
+    [[ $target == "$home" || $target == / || $home == "$target"/* ]]
 }
 
 # Is this cached contract OURS, or did the repository supply it?
