@@ -201,6 +201,112 @@ fi
 assert_rc 2 'an unknown provenance is a usage error, not a silent default' -- \
     "$script" --worktree "$repo" --measured-from somewhere
 
+# --- branch= on a repository with no commits yet ----------------------------
+# `git rev-parse --abbrev-ref HEAD` fails (exit 128) on an unborn repository
+# but still echoes "HEAD" to stdout as part of its diagnostic; a naive
+# `2>/dev/null || printf 'unknown'` inline fallback captured that stray text
+# too, corrupting the one-line-per-key contract with an extra "unknown" line
+# (test-session-contract-freshness.sh's unborn-checkout case relies on the
+# clean single-line "branch=HEAD" this now produces).
+repo=$(new_repo)
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'branch=HEAD' "$(grep '^branch=' <<< "$out")" \
+    'an unborn repository reports a single-line branch=HEAD'
+assert_not_contains "$out" $'\nunknown\n' \
+    'no stray "unknown" fragment line leaks into the block'
+
+# --- protected= (issue #296) -------------------------------------------------
+# The effective protected-path set is computable before any work starts --
+# lib/protected-paths.sh's shared defaults plus a repository's additive
+# AGENT_PROTECTED_PATHS declaration -- so a colliding write set is knowable at
+# planning time instead of rediscovered at commit time by worktree-commit.sh's
+# guard_staged_protected_paths.
+repo=$(new_repo)
+out=$("$script" --worktree "$repo" 2> /dev/null)
+protected_line=$(grep '^protected=' <<< "$out")
+assert_contains "$out" 'protected=' 'the block reports the effective protected-path set'
+assert_contains "$protected_line" '.github/workflows/' \
+    'protected= carries the shared built-in defaults'
+assert_contains "$protected_line" 'repo-declared="none"' \
+    'a repository with no declaration reports repo-declared=none'
+
+repo=$(new_repo)
+printf 'AGENT_PROTECTED_PATHS=docs/adrs/,infra/terraform.tf\n' > "$repo/.agent/config.env"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+protected_line=$(grep '^protected=' <<< "$out")
+assert_contains "$protected_line" 'docs/adrs/' \
+    'a repository-declared protected path extension is included'
+assert_contains "$protected_line" 'infra/terraform.tf' \
+    'and every declared entry is included, not just the first'
+assert_contains "$protected_line" '.github/workflows/' \
+    'the declared extension is additive to the shared defaults, not a replacement'
+assert_contains "$protected_line" 'repo-declared="docs/adrs/,infra/terraform.tf"' \
+    'repo-declared= names exactly the repository extension'
+
+# --- documented OUTPUT key order matches what the script emits --------------
+# The header's OUTPUT comment is the contract every consumer parses exact
+# prefixes against. Adding protected= without updating both the header and the
+# emission order would silently desynchronize documentation from behaviour.
+header_line=$(grep -m1 '^#   skills= path= repo=' "$script")
+assert_contains "$header_line" ' protected= instructions=' \
+    'the header documents protected= immediately after config= and before instructions='
+mapfile -t expected_tokens < <(tr -s ' ' '\n' <<< "${header_line#\#}")
+declare -a expected_line_keys=()
+skip_next=0
+for tok in "${expected_tokens[@]}"; do
+    [[ -n $tok ]] || continue
+    if (( skip_next )); then skip_next=0; continue; fi
+    if [[ $tok == 'skills=' ]]; then skip_next=1; fi
+    expected_line_keys+=("$tok")
+done
+
+repo=$(new_repo)
+out=$("$script" --worktree "$repo" 2> /dev/null)
+declare -a actual_line_keys=()
+while IFS= read -r line; do
+    key=$(grep -oE '^[a-zA-Z0-9_-]+=' <<< "$line")
+    # runtime-pin= and gh-auth= are conditional lines the header does not name.
+    case "$key" in
+        runtime-pin=|gh-auth=) continue ;;
+    esac
+    actual_line_keys+=("$key")
+done <<< "$out"
+assert_eq "${expected_line_keys[*]}" "${actual_line_keys[*]}" \
+    'the documented OUTPUT key order matches every line the script actually emits'
+
+# --- --ensure must not serve a contract that predates protected= (issue #296) -
+# --check only validates ownership/tracked-state provenance, not which keys the
+# cached file happens to carry. A contract written before protected= existed is
+# still provenance-trusted, so without this check --ensure would keep serving
+# it forever on an otherwise-untouched worktree -- exactly the checkouts most
+# likely to have one already.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+grep -v '^protected=' "$repo/.agent/env-contract.txt" > "$tmp/stale-contract"
+mv "$tmp/stale-contract" "$repo/.agent/env-contract.txt"
+chmod 600 "$repo/.agent/env-contract.txt"
+assert_eq '0' "$(grep -c '^protected=' "$repo/.agent/env-contract.txt")" \
+    'fixture setup: the stale contract really has no protected= line'
+out=$("$script" --ensure --worktree "$repo" 2> "$tmp/ensure-stderr")
+assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
+    '--ensure regenerates a contract that predates protected= rather than serving it'
+assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected=' \
+    'and says why it fell through to a fresh preflight'
+assert_eq '1' "$(grep -c '^protected=' "$repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries protected= too'
+
+# The caching behaviour --ensure exists for must not regress: a contract that
+# already carries protected= is served as-is, not silently rewritten.
+"$script" --worktree "$repo" > /dev/null 2>&1
+before_mtime=$(stat -c %Y "$repo/.agent/env-contract.txt")
+sleep 1
+out=$("$script" --ensure --worktree "$repo" 2> /dev/null)
+after_mtime=$(stat -c %Y "$repo/.agent/env-contract.txt")
+assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
+    '--ensure still reports protected= for an up-to-date contract'
+assert_eq "$before_mtime" "$after_mtime" \
+    '--ensure reuses an up-to-date contract instead of rewriting it'
+
 # Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
 # with a named requirement before doing any work instead of exposing a cryptic
 # `declare: -A: invalid option` error. Running the file through zsh reproduces
