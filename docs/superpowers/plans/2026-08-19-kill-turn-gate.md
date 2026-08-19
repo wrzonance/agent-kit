@@ -141,7 +141,7 @@ Expected: `BUILT`, `False`, `stop.sh absent from plugin`. If build-plugin.sh cop
 - [ ] **Step 2: Run the full suite**
 
 ```bash
-cd ~/github/agent-kit && bash tests/run-tests.sh 2>&1 | tail -30
+cd ~/github/agent-kit && bash -o pipefail -c 'bash tests/run-tests.sh 2>&1 | tail -30'
 ```
 Expected: PASS except the 2 pre-existing `command-derived target cannot self-authorize` failures (issue #284). NO new failures, and no failure mentioning stop/attestation/Stop.
 

@@ -231,7 +231,7 @@ agentkit/
   hooks/
     hooks.json                      where both harnesses look for it
     lib/guard-lib.sh                logic the hooks must agree on
-    *.sh                            the five dispatchers
+    *.sh                            the four dispatchers
   skills/
     onboard-repo/
     parallel-issues/                scripts/ holds the board mover and data fencing

@@ -63,6 +63,8 @@ assert_eq 'yes' "$([[ -x $stage/agentkit/skills/pr-to-green/scripts/review-trans
     'preserves the pr-to-green transition executable'
 assert_eq 'yes' "$([[ -x $stage/agentkit/skills/.shared/scripts/agent-run.sh ]] && echo yes || echo no)" \
     'preserves the executable bit on scripts'
+assert_eq 'no' "$([[ -e $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \
+    'does not package the removed stop.sh turn-gate hook'
 assert_contains "$(jq -r '.plugins[0].source' < "$stage/.claude-plugin/marketplace.json")" \
     './' 'plugin source paths start with ./ as both harnesses require'
 
