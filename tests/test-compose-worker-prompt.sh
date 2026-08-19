@@ -66,10 +66,9 @@ assert_rendered_guard_passes() {
     assert_rc 0 "$label rendered worker-model guard passes" -- bash -c "$guard_block"
 }
 
-chain_base=30c38b2c1fa35c6cecc5946aaa7c41e7c132885c
 prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
-    --worker-effort high --chain-base "$chain_base")
+    --worker-effort high)
 
 assert_contains "$prompt" 'Repo: example-org/example-repo' 'issue lead receives the configured repository slug'
 assert_contains "$prompt" 'Worktree: '"$repo" 'issue lead receives the absolute worktree'
@@ -218,10 +217,6 @@ assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$comp
 assert_rc 1 'an empty worker model is rejected by the composer' -- bash "$compose" \
     --template issue-lead --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-model '' --worker-effort high
-
-assert_rc 1 'a non-40-character chain base is rejected' -- bash "$compose" \
-    --template issue-lead --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
-    --worker-model gpt-5.6-luna --worker-effort high --chain-base short
 
 bad_repo="$tmp/bad-repo"
 make_repo "$bad_repo" 'skills= path='"$root"$'/agentkit/skills\n<PASTE bad contract data>'

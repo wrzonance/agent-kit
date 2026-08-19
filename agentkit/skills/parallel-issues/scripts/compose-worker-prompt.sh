@@ -4,7 +4,7 @@ set -euo pipefail
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] [--chain-base FULL_SHA] [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] [--output PATH]\n' "$program" >&2
     printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
@@ -15,12 +15,11 @@ issue=
 branch=
 worker_model=
 worker_effort=
-chain_base=
 declare -a write_set_args=()
 output=
 while (($#)); do
     case $1 in
-        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--chain-base|--output|-o)
+        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o)
             (($# >= 2)) || die "$1 requires a value"
             case $1 in
                 --template) template_kind=$2 ;;
@@ -30,7 +29,6 @@ while (($#)); do
                 --worker-model) worker_model=$2 ;;
                 --worker-effort) worker_effort=$2 ;;
                 --write-set) write_set_args+=("$2") ;;
-                --chain-base) chain_base=$2 ;;
                 --output|-o) output=$2 ;;
             esac
             shift 2
@@ -69,10 +67,6 @@ for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
         *'/../'* | *'//'* | *'/./'*) die "--write-set glob contains an unsafe path: $glob" ;;
     esac
 done
-if [[ -n $chain_base ]]; then
-    [[ $chain_base =~ ^[0-9a-f]{40}$ ]] || die '--chain-base requires a full 40-character lowercase commit SHA'
-fi
-
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
 template_file=$script_dir/../references/worker-prompts.md
 repo_config=$script_dir/../../.shared/scripts/repo-config.sh

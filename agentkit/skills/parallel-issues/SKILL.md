@@ -773,7 +773,6 @@ chmod 600 -- "$prompt_file" || exit 1
 # REQUIRED for an issue lead; never CSV (comma-bearing globs split).
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
-[[ -z ${chain_base_sha:-} ]] || compose_args+=(--chain-base "$chain_base_sha")
 if ! "$compose_script" "${compose_args[@]}"; then
     exit 1
 fi
