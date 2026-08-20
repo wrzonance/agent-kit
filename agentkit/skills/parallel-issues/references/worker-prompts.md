@@ -169,10 +169,15 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The commit command must embed the expanded literal value of `worker_attribution` (including the
-worker model id) in its `--trailer` argument; never an unresolved shell placeholder. The
-resulting literal remains provider-neutral because its base comes from the contract's
-`harness=` line.
+The commit command's `--trailer` value must embed the expanded literal value of
+`worker_attribution` as `"Co-Authored-By: $worker_attribution"` (including the worker model id;
+never an unresolved shell placeholder) -- `worker_attribution` is a bare identity (`Name
+<email>`), not a git trailer line, so the `Co-Authored-By:` key belongs to the caller. Compute
+and use it in the SAME tool call as the commit: shell state does not persist between tool calls,
+so a value computed earlier expands empty here, and the helper now refuses an empty or keyless
+`--trailer` rather than silently committing one. Omitting `--trailer` entirely is also safe --
+the helper derives the same `Co-Authored-By:` trailer from the contract's `harness=` line on its
+own when none is supplied.
 
 When FINISH's fresh full verification is green, publish the branch yourself:
 
@@ -180,8 +185,8 @@ When FINISH's fresh full verification is green, publish the branch yourself:
    pre-existing dirt you already surfaced, left untouched).
 2. Commit with the shipped helper — explicit file operands, never blanket staging:
    `"$shared/worktree-commit.sh" --message '<Conventional Commit subject>' --body '<why>'
-   --trailer "$worker_attribution" -- <each changed file>`. The helper refuses trunk
-   branches and protected paths and prints one machine-readable line on success — record
+   --trailer "Co-Authored-By: $worker_attribution" -- <each changed file>`. The helper refuses
+   trunk branches and protected paths and prints one machine-readable line on success — record
    the full 40-character commit SHA from it.
 3. Push the branch: `git push -u origin feat/issue-NNN`.
 4. Return a completion report: the branch, that full commit SHA, the diffstat, and the exact
@@ -439,9 +444,15 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The commit command must embed the expanded literal value of `worker_attribution` (including the
-worker model id) in its `--trailer` argument; never an unresolved shell placeholder. Its
-provider-neutral base comes from the contract's `harness=` line.
+The commit command's `--trailer` value must embed the expanded literal value of
+`worker_attribution` as `"Co-Authored-By: $worker_attribution"` (including the worker model id;
+never an unresolved shell placeholder) -- `worker_attribution` is a bare identity (`Name
+<email>`), not a git trailer line, so the `Co-Authored-By:` key belongs to the caller. Compute
+and use it in the SAME tool call as the commit: shell state does not persist between tool calls,
+so a value computed earlier expands empty here, and the helper now refuses an empty or keyless
+`--trailer` rather than silently committing one. Omitting `--trailer` entirely is also safe --
+the helper derives the same `Co-Authored-By:` trailer from the contract's `harness=` line on its
+own when none is supplied.
 
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
@@ -516,7 +527,8 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
 3. Run every focused and full verification command through `agent-run.sh`; retain the fresh
    green marker-bearing log path and do not rerun a failed command outside the wrapper.
 4. When verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
-   operands, Conventional Commit subject, the expanded worker-attributing `--trailer`), then
+   operands, Conventional Commit subject, the expanded `--trailer "Co-Authored-By:
+   $worker_attribution"` -- or omitted, letting the helper derive it from the contract), then
    push the branch. If unrelated dirt appears, stop and surface its files, diffstat, and
    whether the checkpoint manifest explains it — never commit it.
 5. Return a completion report: branch, full commit SHA from the helper's success line,
