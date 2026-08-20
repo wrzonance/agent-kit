@@ -196,13 +196,14 @@ worker_model_fallback=$resolved_value
 fallback_pivot_note=$pivot_note
 ```
 
-The sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
-**`gpt-5.6-terra`**. Validate both resolved `worker_model` and `worker_model_fallback` against
-that set before dispatch. Any other syntactically safe configured preferred or fallback model
-must stop for explicit user authorization; never silently substitute a sanctioned model.
-(This is scoped to the running harness — see "Harness-aware pivot" below for the one deliberate
-exception: a bare declaration recognizably shaped for a *different* harness pivots instead of
-stopping.)
+On Codex, the sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
+**`gpt-5.6-terra`**; on Claude it is exactly **`claude-sonnet-5`**.
+Validate both resolved `worker_model` and `worker_model_fallback` against that set before dispatch.
+Any other syntactically safe configured preferred or fallback model must stop for explicit user
+authorization; never silently substitute a sanctioned model. (This is scoped to the running harness
+— see "Harness-aware pivot" below for the one deliberate exception: a bare declaration recognizably
+shaped for a *different* harness pivots instead of stopping. OpenCode has no such fixed enumeration
+at all — see "OpenCode's native tier" below for its own sanctioned-set rule.)
 The built-in defaults preserve existing behavior when a repository declares nothing. An empty,
 malformed, or otherwise rejected declaration is reported and falls back to its built-in value;
 the fallback model declaration is not optional just because the preferred model declaration is
@@ -219,8 +220,11 @@ from `harness.name` (already established at Step 0; no extra probe). A bare `AGE
 declaration is Codex-shaped data by convention, not harness-neutral data: on a repository that
 declares only the unsuffixed keys, resolution on a harness that does not match that shape pivots
 to *that* harness's own native worker tier rather than stopping — the declaration states the
-*intent* ("dispatch the standard worker tier at high effort"), and `harness.name` supplies the
-concrete model id (`gpt-5.6-luna` on Codex, `claude-sonnet-5` elsewhere). There is no second,
+*intent* ("dispatch the standard worker tier at high effort"), and on Codex or Claude
+`harness.name` supplies that harness's fixed concrete model id (`gpt-5.6-luna` on Codex,
+`claude-sonnet-5` on Claude). OpenCode has no fixed native worker tier to pivot into this way —
+see "OpenCode's native tier" below for what a cross-harness pivot resolves to there, and for why an
+OpenCode repository that declares nothing stops instead of pivoting. There is no second,
 harness-keyed declaration key: the unsuffixed `AGENT_WORKER_MODEL`/`AGENT_WORKER_MODEL_FALLBACK`
 remain the only declarations, on every harness.
 
