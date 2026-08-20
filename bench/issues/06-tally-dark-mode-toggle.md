@@ -19,9 +19,9 @@ the head of this fixture's one dependency chain (`tally-07` -> `tally-08`
 ## What
 
 - Add `src/theme.js` exporting a pure `toggleTheme(current)`: returns
-  `'dark'` when `current === 'light'`, and `'light'` for any other input
-  (including `undefined`) -- so the default (no stored preference) toggles
-  to dark on first use.
+  `'light'` only when `current === 'dark'`, and `'dark'` for every other
+  input (including `'light'` and `undefined`) -- so the default (no stored
+  preference) toggles to dark on first use.
 - Add `style.css` with two selectors, `.theme-light` and `.theme-dark`,
   each setting at least a `background` and `color` declaration.
 - `index.html` gains `<link rel="stylesheet" href="./style.css" />` in
