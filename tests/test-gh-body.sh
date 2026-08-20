@@ -101,6 +101,13 @@ if [[ ${1-} == api ]]; then
     fi
     if [[ ${GH_MISMATCH:-0} == 1 ]]; then
         jq -n '{body: "tampered"}'
+    elif [[ $1 == repos/*/pulls/* ]]; then
+        # Closing-issue base-awareness reads .base.ref / .base.repo.default_branch
+        # from this same pull-request fetch; default both to "main" so existing
+        # scenarios keep exercising the default-branch (registration-required) path.
+        jq -Rs --arg base "${GH_PR_BASE:-main}" --arg default_branch "${GH_PR_DEFAULT_BRANCH:-main}" \
+            '{body: ., base: {ref: $base, repo: {default_branch: $default_branch}}}' \
+            <"$GH_STORED_BODY"
     else
         jq -Rs '{body: .}' <"$GH_STORED_BODY"
     fi
@@ -129,6 +136,8 @@ run_body() {
         GH_CLOSING_LATE="${GH_CLOSING_LATE:-0}" \
         GH_CLOSING_STATE_FILE="$tmp/closing-attempts" \
         GH_BODY_CLOSING_RETRY_DELAY="${GH_BODY_CLOSING_RETRY_DELAY:-0}" \
+        GH_PR_BASE="${GH_PR_BASE:-main}" \
+        GH_PR_DEFAULT_BRANCH="${GH_PR_DEFAULT_BRANCH:-main}" \
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
 }
 
@@ -233,6 +242,8 @@ assert_contains "$output" 'updated pr #41' \
     'explicit closing-reference verification passes when GitHub registers the issue'
 assert_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
     'explicit closing-reference verification queries GitHub GraphQL'
+assert_contains "$output" 'closing-issue #42: confirmed' \
+    'default-branch PR reports a confirmed closing-issue outcome'
 
 rm -f -- "$tmp/closing-attempts"
 export GH_CLOSING_LATE=1
@@ -343,5 +354,71 @@ page2_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
 unset GH_CLOSING_PAGE2
 assert_contains "$page2_output" 'updated pr #41' \
     'closing linkage on the second page is found, not rejected'
+
+# --- closing-issue registration is base-aware ------------------------------
+# GitHub only registers closingIssuesReferences for a PR whose base is the
+# repository's default branch. A stacked PR (base = a feature branch, as
+# --auto-serialize produces) can never register the link at creation time,
+# so the proof must defer rather than fail -- the real check moves to
+# retarget time, outside this helper.
+: >"$tmp/api.log"
+export GH_PR_BASE=feat/issue-299 GH_PR_DEFAULT_BRANCH=main
+stacked_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --expect-closing-issue 42)
+unset GH_PR_BASE GH_PR_DEFAULT_BRANCH
+assert_contains "$stacked_output" 'updated pr #41' \
+    'stacked PR still verifies the byte-exact body'
+assert_contains "$stacked_output" 'closing-issue #42: deferred' \
+    'stacked PR reports a deferred closing-issue outcome instead of failing'
+assert_not_contains "$stacked_output" 'closing-issue #42: confirmed' \
+    'deferred outcome is not reported as confirmed'
+assert_not_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
+    'a stacked base never spends a GraphQL closing-reference query'
+
+# The deferred outcome is a genuinely different string than a plain verified
+# edit with no --expect-closing-issue at all, so the two are never conflated.
+plain_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical")
+assert_not_contains "$plain_output" 'closing-issue #42' \
+    'omitting --expect-closing-issue emits no closing-issue line at all'
+
+# A stacked base is not a free pass: a body missing the closing keyword still
+# fails before any mutation runs, regardless of base.
+stacked_missing_keyword="$tmp/stacked-missing-keyword.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    'no closing keyword in this body' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' >"$stacked_missing_keyword"
+gh_calls_before=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+export GH_PR_BASE=feat/issue-299 GH_PR_DEFAULT_BRANCH=main
+set +e
+stacked_missing_output=$(run_body pr create --repo owner/repo \
+    --body-file "$stacked_missing_keyword" --expect-closing-issue 42 \
+    2>"$tmp/stacked-missing.err")
+stacked_missing_rc=$?
+set -e
+unset GH_PR_BASE GH_PR_DEFAULT_BRANCH
+assert_eq '1' "$stacked_missing_rc" \
+    'stacked PR with a missing closing keyword still fails'
+assert_eq '' "$stacked_missing_output" \
+    'stacked PR missing-keyword failure emits no success output'
+assert_contains "$(cat "$tmp/stacked-missing.err")" \
+    'expected closing keyword for #42' \
+    'stacked PR missing-keyword failure names the expected issue'
+gh_calls_after=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+assert_eq "$gh_calls_before" "$gh_calls_after" \
+    'stacked PR missing-keyword failure never calls gh'
+
+# The default-branch path is unchanged: it still requires a non-empty closing
+# reference and fails loudly when it is absent (missing_link_output and
+# missing_create_output above already exercise this with the suite's default
+# GH_PR_BASE=GH_PR_DEFAULT_BRANCH=main fixture, i.e. the retarget-time shape).
+
+# --- usage documents the base-aware --expect-closing-issue contract --------
+usage_output=$(GH_BODY_GH="$tmp/gh" bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" --help)
+assert_contains "$usage_output" 'default branch' \
+    'usage documents the default-branch closing-issue requirement'
+assert_contains "$usage_output" 'deferred' \
+    'usage documents the stacked-PR deferred closing-issue outcome'
 
 finish
