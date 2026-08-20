@@ -67,14 +67,17 @@ case $running_harness in
     *) printf 'unrecognized harness %s; report BLOCKED\n' "$running_harness" >&2; exit 1 ;;
 esac
 
-# The sanctioned set is scoped to the running harness. Codex keeps its existing
-# pair; Claude's worker tier is claude-sonnet-5 -- the same Root/Worker split
-# (claude-opus-5 reviews, claude-sonnet-5 implements) already used for
-# cross-harness adversarial review. Extend both here and in the tier-mapping
-# section below together, in lockstep, the moment a harness gains a second
-# sanctioned worker tier.
+# Takes an EXPLICIT harness, not just $running_harness: it is also used to ask
+# "is this foreign-family value even sanctioned on ITS OWN harness" before a
+# pivot is allowed. Codex's pair stays as-is; Claude's worker tier is
+# claude-sonnet-5 -- the same Root/Worker split (claude-opus-5 reviews,
+# claude-sonnet-5 implements) already used for cross-harness adversarial
+# review, which is exactly why claude-opus-5 must NOT satisfy this check: it
+# is a real Claude model id, but the reviewer tier, not the worker tier.
+# Extend both here and in the tier-mapping section below together, in
+# lockstep, the moment a harness gains a second sanctioned worker tier.
 model_in_sanctioned_set() {
-    case "$running_harness:$1" in
+    case "$1:$2" in
         codex:gpt-5.6-luna | codex:gpt-5.6-terra) return 0 ;;
         claude:claude-sonnet-5) return 0 ;;
         *) return 1 ;;
@@ -101,22 +104,25 @@ model_family() {
 resolve_worker_slot() {
     local base=$1 native_default=$2 value family
     value=$(worker_config_value "$base" "$native_default")
-    if model_in_sanctioned_set "$value"; then
+    if model_in_sanctioned_set "$running_harness" "$value"; then
         resolved_value=$value
         pivot_note=''
         return
     fi
     family=$(model_family "$value")
-    if [[ $family != "$running_harness" && $family != unknown ]]; then
-        # The declaration states intent for a DIFFERENT harness (its own
-        # sanctioned tier), not a request for this specific unsanctioned model
-        # on THIS harness -- pivot to the running harness's native tier
-        # instead of stopping. A same-family value that merely fails the
-        # sanctioned check (e.g. a typo'd fallback) is a real
-        # unsanctioned-for-this-harness declaration, not a mapping problem,
-        # and falls through to the stop below unchanged -- so does a value in
-        # neither known family, which pivoting could not resolve correctly
-        # anyway.
+    if [[ $family != "$running_harness" && $family != unknown ]] &&
+        model_in_sanctioned_set "$family" "$value"; then
+        # The declaration states intent for a DIFFERENT harness's own
+        # SANCTIONED worker tier, not a request for this specific unsanctioned
+        # model on THIS harness -- pivot to the running harness's native tier
+        # instead of stopping. A foreign-family value that is not itself that
+        # harness's sanctioned worker tier (e.g. claude-opus-5, a real Claude
+        # model id but the reviewer tier, not the worker tier) is an
+        # unsupported configured model, not a mapping problem, and falls
+        # through to the stop below -- so does a same-family value that
+        # merely fails the sanctioned check (e.g. a typo'd fallback), and a
+        # value in neither known family, which pivoting could not resolve
+        # correctly anyway.
         resolved_value=$native_default
         pivot_note="pivoted from cross-harness declaration '$value' (declared for $family) to native '$native_default'"
         return
@@ -166,11 +172,17 @@ concrete model id (`gpt-5.6-luna` on Codex, `claude-sonnet-5` elsewhere). There 
 harness-keyed declaration key: the unsuffixed `AGENT_WORKER_MODEL`/`AGENT_WORKER_MODEL_FALLBACK`
 remain the only declarations, on every harness.
 
-Never pivot a same-family value that merely fails the sanctioned check (e.g. a typo'd
-`AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-sol` read on Codex) or a value recognizable in neither known
-family — both are a real unsanctioned-for-this-harness declaration and still stop for explicit
-user authorization, unchanged from the gate above. Only a declaration recognizably shaped for a
-*different* harness pivots silently.
+A foreign-family value pivots only when it is ITSELF the sanctioned worker tier on its own
+harness — a name recognizably belonging to a different harness's family is not by itself enough.
+`claude-opus-5` is a real Claude model id (the root/reviewer tier — see Tier mapping below), but it
+is not the sanctioned Claude *worker* tier, so `AGENT_WORKER_MODEL_FALLBACK=claude-opus-5` read on
+Codex still stops for explicit authorization rather than silently becoming `gpt-5.6-terra`. Never
+pivot a same-family value that merely fails the sanctioned check (e.g. a typo'd
+`AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-sol` read on Codex), a value recognizable in neither known
+family, or a foreign-family value that is not that harness's own sanctioned worker tier — all three
+are a real unsupported configured model and still stop for explicit user authorization, unchanged
+from the gate above. Only a declaration recognizably shaped for a *different* harness AND
+sanctioned as that harness's own worker tier pivots silently.
 
 When a pivot occurred, the completion table records it verbatim beside the model and effort — e.g.
 `worker=claude-sonnet-5 high (pivoted from cross-harness declaration 'gpt-5.6-luna')` — so a

@@ -1218,6 +1218,20 @@ assert_eq 1 "$typo_rc" \
 assert_eq '' "$typo_out" \
     'a stopped resolution prints nothing further -- the exit is real, not confined to a subshell'
 
+# A foreign-family value is only a pivot candidate when it is ITSELF the
+# sanctioned worker tier on its own harness. claude-opus-5 is a real Claude
+# model id (the root/reviewer tier, per Tier mapping) but is NOT the sanctioned
+# Claude WORKER tier -- pattern-matching the family alone must not silently
+# substitute a Codex model for it; this is an unsupported configured model and
+# must stop for explicit authorization, the same as any other unsanctioned value.
+foreign_unsanctioned_config=$'AGENT_WORKER_MODEL_FALLBACK=claude-opus-5\n'
+foreign_out=$(run_spawn_fence codex "$foreign_unsanctioned_config")
+foreign_rc=$?
+assert_eq 1 "$foreign_rc" \
+    'a foreign-family value that is not its own harness sanctioned worker tier stops, not pivots'
+assert_eq '' "$foreign_out" \
+    'the foreign-unsanctioned stop actually terminates the script'
+
 worker_gate_flat_301=$(tr '\n' ' ' <<<"$worker_gate_text" | tr -s '[:space:]' ' ')
 assert_contains "$worker_gate_flat_301" 'harness-aware' \
     'worker gate points to harness-aware resolution rather than restating it'
