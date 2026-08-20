@@ -64,9 +64,10 @@ and additionally consumes:
 The gate treats an unreadable surface as blocked, never as clean: a
 `code-scanning n/a` line (the endpoint 403/404s), a missing/malformed digest
 line, or a digest that cannot be parsed all print a `blocked reason=...` line
-and exit non-zero. `gate=PASS` is the only signal that authorizes
-`merge-pr.sh`. Re-run the gate after any push or base advance — a passed gate
-for an earlier head never carries forward.
+and exit non-zero. `gate=PASS pr=N sha=<head>` is the only signal that
+authorizes `merge-pr.sh`, and it is bound to that exact PR and head — save its
+verbatim stdout, because `merge-pr.sh` requires it. Re-run the gate after any
+push or base advance — a passed gate for an earlier head never carries forward.
 
 ## Serialization protocol
 
@@ -75,9 +76,16 @@ variant. For the current confirmed `RUNNABLE` item, once its evidence-green
 state and the gate above both hold:
 
 1. Invoke `scripts/merge-pr.sh` with the same confirmed repo/pr/head/base and
-   the ledger's `mergeMethod`/`deleteBranch`. It re-verifies head, base, and
-   `mergeable` itself immediately before the merge call — a second,
-   independent freshness check, not a trust of the gate's read.
+   the ledger's `mergeMethod`/`deleteBranch`, plus `--authorization-file` (the
+   Step 1 ledger record) and `--gate-result` (the saved `gate=PASS` stdout
+   from the step above). The guard lives at the point of mutation, not just in
+   the calling order: `merge-pr.sh` refuses — sending no merge request — unless
+   the authorization file confirms this exact repository/PR/head/base/method/
+   delete-branch as an `autoMerge:true` confirmed `RUNNABLE` queue member, and
+   the gate-result file carries a `gate=PASS` line for this exact PR and head.
+   It also re-verifies head, base, and `mergeable` itself immediately before
+   the merge call — a second, independent freshness check, not a trust of the
+   gate's read.
 2. On `pr=N merged=true`, mark that PR's board item `Done` (existing helper;
    redundant-with-automation board moves are harmless).
 3. Before the next queue item may merge, re-verify it against the advanced
@@ -98,7 +106,13 @@ with a method the repository does not allow — this is never inferred or
 overridden from the invocation. `--delete-branch` is explicit and defaults to
 off; when it is on, a failed branch deletion is reported but does not undo an
 already-completed merge (the branch simply outlives the PR, same as the
-default).
+default). `merge-pr.sh` never deletes by branch name alone: it skips (naming
+the reason, never silently) when the PR's head repository is not this target
+repository — a fork PR's `feat/x` lives in the fork, and deleting
+`owner/repo:feat/x` by name could remove an unrelated same-named branch in
+the target repository instead — and it re-reads the branch ref immediately
+before deleting, skipping if the tip no longer matches the merged head (new
+work may have landed on it since the merge completed).
 
 ## Board move
 

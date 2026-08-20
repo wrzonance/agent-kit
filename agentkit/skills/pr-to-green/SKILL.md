@@ -208,8 +208,12 @@ With `--auto-merge`, an evidence-green item merges only after
 (see [references/auto-merge.md](references/auto-merge.md) — a formal provider
 approval requirement stays repository policy: a branch-protection refusal is
 a named stop, never a bypass). On `gate=PASS`, invoke `scripts/merge-pr.sh`
-and, on its success, move that issue's board item to `Done`. No merge starts
-while a predecessor's post-merge revalidation is outstanding.
+with the Step 1 authorization file and the saved `gate=PASS` output — it
+refuses, sending no merge request, unless both bind to this exact repository/
+PR/head/base/method/delete-branch as a confirmed `RUNNABLE` queue member; the
+guard lives at that point of mutation, not just in the calling order. On its
+success, move that issue's board item to `Done`. No merge starts while a
+predecessor's post-merge revalidation is outstanding.
 
 Only after the predecessor is merged — by the human, or by `merge-pr.sh` under
 `--auto-merge` — may the direct successor become `RETARGET_REQUIRED`. Invoke
