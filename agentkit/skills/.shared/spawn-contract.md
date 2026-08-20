@@ -51,12 +51,100 @@ worker_model_fallback=$(worker_config_value AGENT_WORKER_MODEL_FALLBACK \
     "$worker_model_fallback_default")
 # shellcheck disable=SC2034  # values are consumed by the spawn shape below
 worker_effort=$(worker_config_value AGENT_WORKER_EFFORT "$worker_effort_default")
+
+# The declarations above are Codex-shaped by convention (gpt-5.6-*): a config
+# that only declares the unsuffixed keys is Codex-scoped data, not
+# harness-neutral data. Resolve the running harness and re-resolve worker_model
+# / worker_model_fallback for it before trusting the values above.
+running_harness=$("$agentkit/.shared/scripts/contract-read.sh" \
+    --repo-root "$repository_root" --get harness.name) || {
+    printf '%s\n' 'no harness= line in the environment contract; report BLOCKED' >&2
+    exit 1
+}
+case $running_harness in
+    codex)  native_model_default='gpt-5.6-luna';    native_fallback_default='gpt-5.6-terra' ;;
+    claude) native_model_default='claude-sonnet-5'; native_fallback_default='claude-sonnet-5' ;;
+    *) printf 'unrecognized harness %s; report BLOCKED\n' "$running_harness" >&2; exit 1 ;;
+esac
+
+# The sanctioned set is scoped to the running harness. Codex keeps its existing
+# pair; Claude's worker tier is claude-sonnet-5 -- the same Root/Worker split
+# (claude-opus-5 reviews, claude-sonnet-5 implements) already used for
+# cross-harness adversarial review. Extend both here and in the tier-mapping
+# section below together, in lockstep, the moment a harness gains a second
+# sanctioned worker tier.
+model_in_sanctioned_set() {
+    case "$running_harness:$1" in
+        codex:gpt-5.6-luna | codex:gpt-5.6-terra) return 0 ;;
+        claude:claude-sonnet-5) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+model_family() {
+    case $1 in
+        gpt-5.6-*) printf codex ;;
+        claude-*) printf claude ;;
+        *) printf unknown ;;
+    esac
+}
+
+# Resolves ONE declaration slot (AGENT_WORKER_MODEL or AGENT_WORKER_MODEL_FALLBACK)
+# for the running harness -- the unsuffixed key is the only declaration; the
+# harness supplies the concrete model, never a second harness-keyed key.
+#
+# Sets $resolved_value and $pivot_note (empty when no pivot occurred) as
+# globals for the completion-table record, and calls `exit 1` directly on an
+# unsanctioned model -- so this is called as a plain statement, NEVER wrapped
+# in `$(...)`. Command substitution forks a subshell: an `exit` inside one
+# would only kill that subshell while the real script kept running on an
+# empty resolved value, silently defeating the authorization stop.
+resolve_worker_slot() {
+    local base=$1 native_default=$2 value family
+    value=$(worker_config_value "$base" "$native_default")
+    if model_in_sanctioned_set "$value"; then
+        resolved_value=$value
+        pivot_note=''
+        return
+    fi
+    family=$(model_family "$value")
+    if [[ $family != "$running_harness" && $family != unknown ]]; then
+        # The declaration states intent for a DIFFERENT harness (its own
+        # sanctioned tier), not a request for this specific unsanctioned model
+        # on THIS harness -- pivot to the running harness's native tier
+        # instead of stopping. A same-family value that merely fails the
+        # sanctioned check (e.g. a typo'd fallback) is a real
+        # unsanctioned-for-this-harness declaration, not a mapping problem,
+        # and falls through to the stop below unchanged -- so does a value in
+        # neither known family, which pivoting could not resolve correctly
+        # anyway.
+        resolved_value=$native_default
+        pivot_note="pivoted from cross-harness declaration '$value' (declared for $family) to native '$native_default'"
+        return
+    fi
+    printf 'unsanctioned model for %s: %s; explicit user authorization required\n' \
+        "$running_harness" "$value" >&2
+    exit 1
+}
+
+resolve_worker_slot AGENT_WORKER_MODEL "$native_model_default"
+# shellcheck disable=SC2034  # consumed by the spawn shape and completion-table record below
+worker_model=$resolved_value
+# shellcheck disable=SC2034  # consumed by the completion-table record below
+model_pivot_note=$pivot_note
+resolve_worker_slot AGENT_WORKER_MODEL_FALLBACK "$native_fallback_default"
+# shellcheck disable=SC2034  # consumed by the spawn shape and completion-table record below
+worker_model_fallback=$resolved_value
+# shellcheck disable=SC2034  # consumed by the completion-table record below
+fallback_pivot_note=$pivot_note
 ```
 
 The sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
 **`gpt-5.6-terra`**. Validate both resolved `worker_model` and `worker_model_fallback` against
 that set before dispatch. Any other syntactically safe configured preferred or fallback model
 must stop for explicit user authorization; never silently substitute a sanctioned model.
+(This is scoped to the running harness — see "Harness-aware pivot" below for the one deliberate
+exception: a bare declaration recognizably shaped for a *different* harness pivots instead of
+stopping.)
 The built-in defaults preserve existing behavior when a repository declares nothing. An empty,
 malformed, or otherwise rejected declaration is reported and falls back to its built-in value;
 the fallback model declaration is not optional just because the preferred model declaration is
@@ -65,6 +153,28 @@ authorization gate. The configured effort is carried through unchanged after res
 validation — it is the per-run **default**: a dispatch-plan entry's `workerEffort` override
 (recorded with its `effortReason`; see `parallel-issues`'s triage-and-selection reference)
 replaces it for exactly that issue. Effort follows the issue, not the run.
+
+### Harness-aware pivot
+
+`worker_model`/`worker_model_fallback` are re-resolved above for the running harness, read once
+from `harness.name` (already established at Step 0; no extra probe). A bare `AGENT_WORKER_MODEL`
+declaration is Codex-shaped data by convention, not harness-neutral data: on a repository that
+declares only the unsuffixed keys, resolution on a harness that does not match that shape pivots
+to *that* harness's own native worker tier rather than stopping — the declaration states the
+*intent* ("dispatch the standard worker tier at high effort"), and `harness.name` supplies the
+concrete model id (`gpt-5.6-luna` on Codex, `claude-sonnet-5` elsewhere). There is no second,
+harness-keyed declaration key: the unsuffixed `AGENT_WORKER_MODEL`/`AGENT_WORKER_MODEL_FALLBACK`
+remain the only declarations, on every harness.
+
+Never pivot a same-family value that merely fails the sanctioned check (e.g. a typo'd
+`AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-sol` read on Codex) or a value recognizable in neither known
+family — both are a real unsanctioned-for-this-harness declaration and still stop for explicit
+user authorization, unchanged from the gate above. Only a declaration recognizably shaped for a
+*different* harness pivots silently.
+
+When a pivot occurred, the completion table records it verbatim beside the model and effort — e.g.
+`worker=claude-sonnet-5 high (pivoted from cross-harness declaration 'gpt-5.6-luna')` — so a
+substitution is always evidence, never inferred from prompt text alone.
 
 Inspect the current `collaboration.spawn_agent` capability before dispatch:
 
@@ -174,3 +284,8 @@ writer, except for the two allowed implementation exceptions: a genuinely spawn 
 qualifying bounded inline correction. Root omitting a lead is an
 org-chart shortcut; root writing the code itself bypasses the isolated model, the six-step gate,
 and the audited handback.
+
+Luna/Terra are Codex's own tier names. On Claude the same Root/Worker split maps to
+`claude-opus-5` (root judgment, the same reviewer used for cross-harness adversarial review) and
+`claude-sonnet-5` (the dispatched worker) — see "Harness-aware pivot" above for how a repository's
+declaration resolves to the concrete model on whichever harness is actually running.

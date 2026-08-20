@@ -14,8 +14,10 @@ qualifying bounded inline correction; all other CI, conflict, adversarial, CodeR
 Quality, or approved human feedback requiring a code change dispatches one real worker as the
 sole writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
 `AGENT_WORKER_EFFORT` for the worker model and effort from the repository declarations, not from a
-model tier or the orchestrator's pricing. The Step 1b reviewer (read-only) **never** satisfies this
-gate.
+model tier or the orchestrator's pricing. Resolution is harness-aware: see
+[../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)'s "Harness-aware pivot" for how
+a declaration shaped for a different harness resolves to the running harness's native tier instead
+of stopping. The Step 1b reviewer (read-only) **never** satisfies this gate.
 
 Before dispatching any worker, read [../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)
 for the model/effort selection (Luna→Terra fallback), the exact spawn call shape and parameter

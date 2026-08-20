@@ -85,6 +85,19 @@ expected_generator=$(jq -r .version "$root/agentkit/.codex-plugin/plugin.json")
 assert_contains "$(cat "$repo/.agent/config.env")" "AGENT_ONBOARDED_BY=agentkit/$expected_generator" \
     'generated config records the installed generator version'
 
+# --- worker model declaration is suggested as harness-aware (issue #301) ---
+# AGENT_WORKER_MODEL declares a worker TIER, resolved to a concrete model by
+# whichever harness is actually running; onboarding should say so up front.
+fresh_config=$(cat "$repo/.agent/config.env")
+assert_contains "$fresh_config" '# AGENT_WORKER_MODEL=' \
+    'generated config proposes a worker model declaration'
+assert_contains "$fresh_config" '# AGENT_WORKER_MODEL_FALLBACK=' \
+    'generated config proposes a worker model fallback declaration'
+assert_contains "$fresh_config" 'harness=' \
+    'proposal explains resolution reads the running harness from the environment contract'
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" 'the worker model proposal produces no resolver warnings'
+
 # --- a repo linked to exactly one board needs no --project -----------------
 # An org can own dozens of boards while a repo is linked to one. Asking the
 # repository, not the owner, is what keeps bootstrap zero-prompt on most repos.
@@ -330,6 +343,16 @@ assert_eq '1' "$(grep -c '^AGENT_REVIEW_PROVIDERS=none$' "$repo/.agent/config.en
     'refresh preserves one selected provider declaration'
 assert_eq '0' "$(grep -c '^# AGENT_REVIEW_PROVIDERS=' "$repo/.agent/config.env" || true)" \
     'refresh does not leave a proposal beside a selected provider'
+
+# A declared worker model is likewise a declaration, not a proposal: refresh
+# must not nag once a repository has already made the choice.
+printf '%s\n' 'AGENT_WORKER_MODEL=gpt-5.6-luna' >> "$repo/.agent/config.env"
+assert_rc 0 'refresh accepts an explicit worker model' -- run_bs \
+    --repo-root "$repo" --project 7 --force
+assert_eq '1' "$(grep -c '^AGENT_WORKER_MODEL=gpt-5.6-luna$' "$repo/.agent/config.env")" \
+    'refresh preserves the declared worker model exactly once'
+assert_eq '0' "$(grep -c '^# AGENT_WORKER_MODEL=' "$repo/.agent/config.env" || true)" \
+    'refresh drops the worker model proposal once a declaration exists'
 
 declared_before=$(grep -E '^AGENT_(CMD_TEST|LABEL_TYPES|PROTECTED_PATHS)=' "$repo/.agent/config.env")
 assert_rc 0 'refresh is an explicit force refresh' -- run_bs --repo-root "$repo" --project 7 --refresh
