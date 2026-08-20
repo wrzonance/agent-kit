@@ -95,6 +95,63 @@ assert_contains "$fresh_config" '# AGENT_WORKER_MODEL_FALLBACK=' \
     'generated config proposes a worker model fallback declaration'
 assert_contains "$fresh_config" 'harness=' \
     'proposal explains resolution reads the running harness from the environment contract'
+
+# --- the declared-check goes through the resolver, not a raw grep ----------
+# A raw `grep -qE 'AGENT_WORKER_MODEL(_FALLBACK)?=[^[:space:]]'` counts a
+# value repo-config.sh itself rejects (whitespace-bearing, a
+# command-substitution string) as "declared" and wrongly suppresses the
+# proposal. This can never be observed through a full `--force` run: any
+# pre-existing malformed AGENT_WORKER_MODEL* line is ALSO carried forward
+# verbatim by the generic carry-forward block below, and the unrelated
+# resolver-validates-the-staged-config gate (further down this script)
+# refuses to write ANY config bearing that malformed line before this check's
+# output could ever be observed -- so this executes the real shipped snippet
+# in isolation instead, the same technique spawn-contract.md's fence gets.
+worker_model_declared_snippet="$tmp/worker-model-declared-snippet.sh"
+awk '
+    /^worker_model_declared=0$/ { capture=1 }
+    capture { print }
+    capture && /^fi$/ { exit }
+' "$bs_sh" > "$worker_model_declared_snippet"
+assert_contains "$(cat "$worker_model_declared_snippet")" 'resolver' \
+    'the extracted snippet actually goes through the resolver (extraction found the fixed code)'
+
+run_worker_model_declared() {
+    # $1=repo_root config.env contents (or empty for "no file")
+    local config=$1 fixture
+    fixture=$(mktemp -d "$tmp/wmd-fixture.XXXXXX")
+    mkdir -p "$fixture/.agent"
+    [[ -n $config ]] && printf '%s' "$config" > "$fixture/.agent/config.env"
+    (
+        # These three are consumed by the sourced snippet below, which is a
+        # computed path shellcheck cannot follow -- so its own use of them
+        # reads as dead assignment.
+        # shellcheck disable=SC2034
+        resolver=$rc_sh
+        # shellcheck disable=SC2034
+        repo_root=$fixture
+        # shellcheck disable=SC2034
+        reset=0
+        # shellcheck source=/dev/null
+        source "$worker_model_declared_snippet"
+        # shellcheck disable=SC2154  # assigned by the sourced snippet above
+        printf '%s' "$worker_model_declared"
+    )
+}
+
+assert_eq '0' "$(run_worker_model_declared '')" \
+    'no config.env at all is not a worker-model declaration'
+assert_eq '1' "$(run_worker_model_declared 'AGENT_WORKER_MODEL=gpt-5.6-luna')" \
+    'a valid worker model counts as declared'
+assert_eq '0' "$(run_worker_model_declared 'AGENT_WORKER_MODEL=gpt 5.6')" \
+    'a whitespace-bearing value the resolver rejects does NOT count as declared'
+# shellcheck disable=SC2016  # the unexpanded substitution IS the fixture
+assert_eq '0' "$(run_worker_model_declared 'AGENT_WORKER_MODEL=$(touch PWNED)')" \
+    'a command-substitution string the resolver rejects does NOT count as declared'
+assert_eq '1' "$(run_worker_model_declared 'AGENT_WORKER_MODEL=gpt-9-custom')" \
+    'a syntactically safe but unsupported model id still counts as declared'
+assert_eq '1' "$(run_worker_model_declared 'AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra')" \
+    'a declared fallback alone also counts as declared'
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'the worker model proposal produces no resolver warnings'
 
@@ -345,10 +402,12 @@ assert_eq '0' "$(grep -c '^# AGENT_REVIEW_PROVIDERS=' "$repo/.agent/config.env" 
     'refresh does not leave a proposal beside a selected provider'
 
 # A declared worker model is likewise a declaration, not a proposal: refresh
-# must not nag once a repository has already made the choice.
+# must not nag once a repository has already made the choice. Uses --refresh
+# (not --force) since that is what this case actually describes and exercises
+# -- --refresh also runs onboard-refresh.sh --report before discovery.
 printf '%s\n' 'AGENT_WORKER_MODEL=gpt-5.6-luna' >> "$repo/.agent/config.env"
 assert_rc 0 'refresh accepts an explicit worker model' -- run_bs \
-    --repo-root "$repo" --project 7 --force
+    --repo-root "$repo" --project 7 --refresh
 assert_eq '1' "$(grep -c '^AGENT_WORKER_MODEL=gpt-5.6-luna$' "$repo/.agent/config.env")" \
     'refresh preserves the declared worker model exactly once'
 assert_eq '0' "$(grep -c '^# AGENT_WORKER_MODEL=' "$repo/.agent/config.env" || true)" \

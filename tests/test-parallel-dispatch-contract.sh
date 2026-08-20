@@ -1192,6 +1192,37 @@ run_spawn_fence() {
     bash "$tmp/fence-run.sh" 2>/dev/null
 }
 
+# Mirrors the "During capability selection" bullet in spawn-contract.md's
+# Model/effort selection section verbatim: selected_worker_pivot_note binds to
+# whichever slot's own note applies, at the same moment selected_worker_model
+# does. Executed as real bash (not re-described) so a doc/behavior drift here
+# fails a test, the same way the resolution bug above did.
+run_spawn_fence_selection() {
+    # $1=harness $2=config $3=preferred_advertised(yes/no)
+    local harness=$1 config=$2 preferred_advertised=$3 fixture
+    fixture=$(mktemp -d "$tmp/fence-fixture.XXXXXX")
+    mkdir -p "$fixture/.agent"
+    git -C "$fixture" init -q
+    printf '%s' "$config" > "$fixture/.agent/config.env"
+    printf 'harness= name=%s trailer="X <noreply@example.com>" other=none\n' "$harness" \
+        > "$fixture/.agent/env-contract.txt"
+    {
+        printf 'agentkit=%q\n' "$root/agentkit/skills"
+        printf 'agentkit_provenance=ok\n'
+        printf 'repository_root=%q\n' "$fixture"
+        cat "$spawn_fence"
+        printf 'if [[ %q == yes ]]; then\n' "$preferred_advertised"
+        printf '    selected_worker_model=$worker_model\n'
+        printf '    selected_worker_pivot_note=$model_pivot_note\n'
+        printf 'else\n'
+        printf '    selected_worker_model=$worker_model_fallback\n'
+        printf '    selected_worker_pivot_note=$fallback_pivot_note\n'
+        printf 'fi\n'
+        printf 'printf "%%s|%%s\\n" "$selected_worker_model" "$selected_worker_pivot_note"\n'
+    } > "$tmp/fence-selection-run.sh"
+    bash "$tmp/fence-selection-run.sh" 2>/dev/null
+}
+
 codex_declared_config=$'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra\n'
 claude_out=$(run_spawn_fence claude "$codex_declared_config")
 claude_rc=$?
@@ -1231,6 +1262,28 @@ assert_eq 1 "$foreign_rc" \
     'a foreign-family value that is not its own harness sanctioned worker tier stops, not pivots'
 assert_eq '' "$foreign_out" \
     'the foreign-unsanctioned stop actually terminates the script'
+
+# CodeRabbit finding on PR #314: the pivot notes are per-slot, but selection
+# only bound selected_worker_model -- a fallback selected after a
+# cross-harness pivot had no bound note of its own for the completion table.
+# Preferred advertised: the note must be the PREFERRED slot's own pivot note.
+preferred_selection=$(run_spawn_fence_selection claude "$codex_declared_config" yes)
+assert_contains "$preferred_selection" 'claude-sonnet-5|' \
+    'selecting the preferred model selects its own resolved value'
+assert_contains "$preferred_selection" "pivoted from cross-harness declaration 'gpt-5.6-luna'" \
+    'the preferred selection carries the PREFERRED slot'"'"'s own pivot note'
+assert_not_contains "$preferred_selection" 'gpt-5.6-terra' \
+    'the preferred selection does not leak the fallback slot'"'"'s note'
+
+# Fallback advertised (preferred not): the note must be the FALLBACK slot's
+# own pivot note, not the preferred's (and not empty).
+fallback_selection=$(run_spawn_fence_selection claude "$codex_declared_config" no)
+assert_contains "$fallback_selection" 'claude-sonnet-5|' \
+    'selecting the fallback model selects its own resolved value'
+assert_contains "$fallback_selection" "pivoted from cross-harness declaration 'gpt-5.6-terra'" \
+    'the fallback selection carries the FALLBACK slot'"'"'s own pivot note'
+assert_not_contains "$fallback_selection" "declaration 'gpt-5.6-luna'" \
+    'the fallback selection does not leak the preferred slot'"'"'s note'
 
 worker_gate_flat_301=$(tr '\n' ' ' <<<"$worker_gate_text" | tr -s '[:space:]' ' ')
 assert_contains "$worker_gate_flat_301" 'harness-aware' \

@@ -333,12 +333,18 @@ if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
 fi
 
 # Same "propose once, then defer to the maintainer's choice" treatment as
-# review providers: any active AGENT_WORKER_MODEL* declaration retires the
-# suggestion.
+# review providers -- but unlike that raw-grep check, this one goes through
+# the resolver: a raw grep on `AGENT_WORKER_MODEL(_FALLBACK)?=` would count a
+# malformed value (whitespace-bearing, a command-substitution string) as
+# "declared" and wrongly suppress the proposal, even though repo-config.sh
+# itself rejects and drops that value. A syntactically safe but UNSUPPORTED
+# model id (e.g. a custom provider name) is not malformed -- the resolver
+# still resolves it, so it still counts as declared; only a value the
+# resolver actually drops does not.
 worker_model_declared=0
-if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
-    if grep -qE '^[[:space:]]*AGENT_WORKER_MODEL(_FALLBACK)?=[^[:space:]]' \
-        "$repo_root/.agent/config.env" 2> /dev/null; then
+if [[ -f $repo_root/.agent/config.env && $reset -eq 0 && -x $resolver ]]; then
+    if "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL > /dev/null 2>&1 ||
+        "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL_FALLBACK > /dev/null 2>&1; then
         worker_model_declared=1
     fi
 fi

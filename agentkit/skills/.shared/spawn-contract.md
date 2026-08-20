@@ -194,7 +194,11 @@ Inspect the current `collaboration.spawn_agent` capability before dispatch:
   `worker_model_fallback`; the resolved `worker_effort` applies to either.
 - During capability selection, set `selected_worker_model` to `worker_model` when the preferred
   model is advertised, otherwise to `worker_model_fallback` after that fallback passes the same
-  sanctioned-model gate.
+  sanctioned-model gate. Bind `selected_worker_pivot_note` at that same moment, to whichever
+  slot's note actually applies: `model_pivot_note` when the preferred model was selected,
+  `fallback_pivot_note` when the fallback was — the pivot notes are per-slot, so a fallback
+  selected after a cross-harness pivot must not lose its own audit note to the preferred slot's
+  (which may be empty, or may record a different pivot, or none at all).
 - Required context isolation: **`fork_context: false`**. Paste the complete issue/spec,
   prior art, branch rules, and the six-step contract into the prompt — do not rely on
   inherited history.
@@ -208,7 +212,10 @@ Inspect the current `collaboration.spawn_agent` capability before dispatch:
 - Record the selected model and effort beside every dispatched unit of work. The spawn request
   itself is the model-and-effort evidence — the completion table must carry the actual
   `worker model` and `worker effort` (or `worker=self (spawn unavailable)`) so a tier or effort
-  claim is never inferred from prompt text alone.
+  claim is never inferred from prompt text alone. When `selected_worker_pivot_note` is non-empty,
+  the completion table appends it beside that same model and effort — this is what carries a
+  fallback's own pivot into the record when the fallback, not the preferred model, was the one
+  actually selected.
 - This gate applies only when `collaboration.spawn_agent` exists. If the runtime advertises
   **no** spawn capability (`multi_agent = false`), there is no worker to configure and no
   model to select — take the degraded path below instead of blocking the run.
