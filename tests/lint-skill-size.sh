@@ -7,6 +7,10 @@
 # below never reaches it.
 set -euo pipefail
 
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/token-estimate.sh
+source "$here/lib/token-estimate.sh"
+
 skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 
 # A skill already over budget stays green here only by an explicit, named
@@ -159,7 +163,8 @@ body_stats() {
 
 check_size() {
     local file=$1 name=$2 body_lines=$3 body_bytes=$4
-    local est_tokens=$((body_bytes / 4))
+    local est_tokens
+    est_tokens=$(estimate_tokens "$body_bytes")
     local over=0
     if ((body_lines > MAX_BODY_LINES || est_tokens > MAX_BODY_TOKENS)); then
         over=1

@@ -1,0 +1,123 @@
+bench/ -- the token-benchmark epic's (#152) measurement tree
+==============================================================
+
+This directory holds the epic's deterministic and observed benchmark tiers
+and the append-only ledger they all write to. It is established by issue
+#323 (Tier 0 + the ledger) as the base a successor slice builds inside, so
+the shapes below are load-bearing -- read this before adding a tier.
+
+Design doc: docs/superpowers/specs/2026-08-13-token-benchmark-design.md
+(branch docs/token-benchmark-spec). That doc was not present on this
+directory's base branch (main) at the time issue #323 was implemented; the
+layout below follows the issue body's restated Tier-0 and ledger
+requirements directly, not the design doc's own wording.
+
+Layout
+------
+
+    bench/
+      README             -- this file: layout + ledger schema
+      tier0.sh            -- Tier 0: static resident/reachable/dispatched-
+                              template token accounting at a git SHA, no
+                              network, no model call
+      results/
+        tier0.jsonl       -- Tier 0's ledger records (one per bench/tier0.sh
+                              invocation)
+        <tierN>.jsonl      -- later tiers append their own records to their
+                              own file; see "One file per tier" below
+
+A later tier's script (bench/tierN.sh) is expected to follow the same shape:
+a single executable script under bench/, appending JSON Lines records to its
+own bench/results/*.jsonl file, sharing this same schema's key fields.
+
+One file per tier, one ledger schema
+-------------------------------------
+
+Every bench/results/*.jsonl file uses the SAME record shape and the SAME
+uniqueness key, so a chart or comparison script can treat the whole
+bench/results/*.jsonl glob as one logical ledger without per-tier special
+cases:
+
+Uniqueness key: (plugin_sha, fixture_version, model, effort)
+
+- `plugin_sha`   -- full 40-character git commit SHA the measurement was
+                    taken at (resolved via `git rev-parse --verify`, never a
+                    short or ambiguous ref).
+- `fixture_version` -- names the frozen fixture set (issue body, prior art,
+                    write set, ...) a tier's measurement was taken against,
+                    present from day one even though Tier 0 has no fixture
+                    dependency of its own. Tier 0 records use `tier0-v1`.
+                    A later tier bumps this string whenever its fixture set
+                    changes in a way that would make old and new rows
+                    incomparable.
+- `model`        -- the model identifier a tier's run used. Tier 0 makes no
+                    model call, so it uses the reserved sentinel
+                    `static-accounting` rather than a real model id -- a
+                    reader can tell a Tier-0 row apart from a real model run
+                    without inspecting anything else.
+- `effort`       -- the effort/reasoning level a tier's run used. Tier 0's
+                    sentinel is `n/a` for the same reason.
+
+Common fields on every record:
+
+- `measured_at`  -- UTC ISO-8601 instant the record was appended (`--timestamp`
+                    lets a test pin this for reproducibility).
+
+Tier-0-specific fields (bench/tier0.sh):
+
+- `resident`   -- `{bytes, tokens}` -- every `agentkit/skills/**/SKILL.md`
+                  file's own size, summed. What a session pays for a skill
+                  existing, before any reference is ever read.
+- `reachable`  -- `{bytes, tokens}` -- every `*.md` file under
+                  `agentkit/skills/` (SKILL.md + references/*.md +
+                  .shared/*.md), summed. The ceiling if every reference were
+                  read.
+- `dispatched_template` -- `{bytes, tokens, present, source}` -- the static
+                  size of `parallel-issues/references/worker-prompts.md`
+                  alone: the one reference rendered and paid on every
+                  dispatch (hit rate 1.0 by construction), per the
+                  maintainer comment on issue #323. `present` is `false` for
+                  a SHA before that file existed (e.g. `06d18cf`), in which
+                  case `bytes`/`tokens` read 0 rather than being omitted --
+                  a consumer can always read these fields without a
+                  presence check first. This is the template-only,
+                  fixture-free component of the full per-dispatch surface;
+                  the per-issue substitution byte count (issue body, prior
+                  art, write set) needs a frozen reference-dispatch fixture
+                  and belongs to a later slice, not this one.
+
+`tokens` fields are always `bytes / 4` (integer division), computed through
+the single shared estimator in tests/lib/token-estimate.sh -- the same
+function tests/lint-skill-size.sh's SKILL.md body-budget gate calls. Two
+surfaces sharing one function/constant means they cannot silently disagree
+about the same bytes; see that file's header comment.
+
+Append-only
+-----------
+
+Every bench/*.sh script only ever appends a line to its ledger file --
+never rewrites, reorders, or removes an existing line. This is what lets
+downstream charting be a pure function of the ledger: replaying it from
+scratch always reproduces the same chart, and a chart script never needs
+to guess whether a row it read might later be overwritten out from under
+it. tests/test-bench-tier0.sh asserts this property directly (a second
+invocation strictly grows the file; every previously-written line is
+byte-identical afterward).
+
+Reproducing the epic's Tier-0 numbers
+--------------------------------------
+
+    bench/tier0.sh 06d18cf
+    bench/tier0.sh 53e7e8c
+
+reproduce the epic's already-known table -- resident -59.4%, reachable
+-8.9%, both within rounding -- because both `06d18cf` and `53e7e8c` are real
+commits in this repository's own history (the compression refactor that
+split review-remote-pr and parallel-issues into dispatcher + references/).
+Measured directly against this repo:
+
+    06d18cf: resident 278317 B (~69579 tok)  reachable 278806 B (~69701 tok)
+    53e7e8c: resident 112969 B (~28242 tok)  reachable 253969 B (~63492 tok)
+
+    resident:  (69579 - 28242) / 69579 = -59.40%
+    reachable: (69701 - 63492) / 69701 =  -8.91%
