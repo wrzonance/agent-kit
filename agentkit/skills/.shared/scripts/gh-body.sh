@@ -28,6 +28,7 @@ VERIFY_HOST=''
 MUTATION_URL=''
 MUTATION_COMPLETED=0
 EXPECT_CLOSING_ISSUE=''
+CLOSING_REFERENCE_STATUS=''
 
 usage() {
     cat <<EOF
@@ -35,7 +36,13 @@ Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options.
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
 and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
-also proves that GitHub registered the closing issue reference.
+also proves the closing issue reference, base-aware:
+  - PR base is the repo's default branch: GitHub registration of #N is
+    required, retried, and fatal if still absent (unchanged proof).
+  - PR base is not the default branch (a stacked PR): the body-side "Closes/
+    Fixes/Resolves #N" keyword is still required, but forge-side registration
+    cannot happen until the PR is retargeted, so it is reported as a distinct
+    non-error "closing-issue #N: deferred (...)" outcome and exits 0.
 EOF
 }
 
@@ -279,6 +286,23 @@ compare_body() {
     return 1
 }
 
+# GitHub only registers closingIssuesReferences for a PR whose base is the
+# repository's default branch (a stacked PR's base is a feature branch, so the
+# link cannot register until the PR is retargeted onto the default branch).
+# stored.json already carries the full pull-request object fetched by
+# fetch_stored_body, including the nested base repository, so this reads it
+# rather than issuing another API call.
+pr_base_is_default_branch() {
+    local base_ref default_branch
+    base_ref=$(jq -r '.base.ref // empty' "$WORK_DIR/stored.json") ||
+        die 'PR base ref was unreadable; closing-issue registration is unverified'
+    default_branch=$(jq -r '.base.repo.default_branch // empty' "$WORK_DIR/stored.json") ||
+        die 'PR base repository default_branch was unreadable; closing-issue registration is unverified'
+    [[ -n $base_ref && -n $default_branch ]] ||
+        die 'PR response has no usable base branch info; closing-issue registration is unverified'
+    [[ $base_ref == "$default_branch" ]]
+}
+
 verify_closing_reference() {
     [[ -z $EXPECT_CLOSING_ISSUE ]] && return 0
 
@@ -288,6 +312,15 @@ verify_closing_reference() {
     owner=${BASH_REMATCH[1]}
     name=${BASH_REMATCH[2]}
     number=${BASH_REMATCH[3]}
+
+    if ! pr_base_is_default_branch; then
+        # The forge cannot register the link until this PR is retargeted onto
+        # the default branch; the retarget-time proof (outside this helper)
+        # is where the real registration is required. Reported as a distinct,
+        # non-error outcome -- not silently dropped and not a failure.
+        CLOSING_REFERENCE_STATUS='deferred'
+        return 0
+    fi
     # shellcheck disable=SC2016  # GraphQL variable names must remain literal.
     graphql_query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100,after:$after){nodes{number}pageInfo{hasNextPage endCursor}}}}}'
 
@@ -324,6 +357,7 @@ verify_closing_reference() {
                 (.data.repository.pullRequest.closingIssuesReferences.nodes // []) as $references
                 | any($references[]?; ((.number // "") | tostring) == $expected)
             ' "$WORK_DIR/closing.json" >/dev/null; then
+                CLOSING_REFERENCE_STATUS='confirmed'
                 return 0
             fi
             has_next=$(jq -r '
@@ -369,6 +403,16 @@ main() {
     else
         printf 'updated %s #%s verified=exact\n' "$RESOURCE" "$TARGET_NUMBER"
     fi
+
+    case $CLOSING_REFERENCE_STATUS in
+        confirmed)
+            printf 'closing-issue #%s: confirmed\n' "$EXPECT_CLOSING_ISSUE"
+            ;;
+        deferred)
+            printf 'closing-issue #%s: deferred (base is not the default branch; registration is proven at retarget)\n' \
+                "$EXPECT_CLOSING_ISSUE"
+            ;;
+    esac
 }
 
 main "$@"
