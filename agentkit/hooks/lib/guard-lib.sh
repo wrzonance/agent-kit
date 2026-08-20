@@ -205,15 +205,22 @@ guard_command_target_dir() {
     current=$(guard_scope_canonical "$cwd") || current=$cwd
     last_effective=$current
 
-    # Walk shell segments in order. A target is resolved against the directory
-    # in force at the segment that names it; a later `cd` cannot rewrite that
-    # earlier target. Git's -C is parsed only before the git subcommand, so
-    # grep's -C context flag and `git commit -C <message>` are not directories.
-    local segments=${command_line//[;&|]/$'\n'}
+    # Walk shell segments in order, parsed the way the shell actually would --
+    # segmented via guard_gh_command_segments (which drops heredoc bodies and
+    # honors quoting when splitting on `;`/`|`/`&`) and tokenized via
+    # guard_tokenize_words (which honors quoting instead of splitting on any
+    # whitespace). A target is resolved against the directory in force at the
+    # segment that names it; a later `cd` cannot rewrite that earlier target.
+    # Git's -C is parsed only before the git subcommand, so grep's -C context
+    # flag and `git commit -C <message>` are not directories. This mirrors
+    # guard_out_of_scope_target, which callers of this function rely on to
+    # classify from parsed structure rather than raw command text (issue #335).
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
     while IFS= read -r segment; do
         trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
         [[ -n $trimmed ]] || continue
-        read -r -a words <<< "$trimmed"
+        mapfile -t words < <(guard_tokenize_words "$trimmed")
         ((${#words[@]})) || continue
         segment_dir=$current
         git_candidate=''
@@ -1066,12 +1073,22 @@ guard_destructive_reason() {
 # prose such as `echo "step 1; gh ..."` and body lines such as `gh ...` from
 # becoming executable-looking segments.
 guard_gh_command_segments() {
-    local input=$1 line segment='' quote='' escaped=0 heredoc=''
-    local i length char next third rest k delimiter delimiter_quote
+    local input=$1 line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
+    local i length char next third rest k delimiter delimiter_quote terminator_line
 
     while IFS= read -r line || [[ -n $line ]]; do
         if [[ -n $heredoc ]]; then
-            [[ $line == "$heredoc" ]] && heredoc=''
+            terminator_line=$line
+            # `<<-` permits the TERMINATOR to be tab-indented too, not only the
+            # heredoc body -- bash strips leading tabs from every line of a
+            # `<<-` heredoc, including the closing delimiter line. Comparing
+            # the raw line left a tab-indented terminator never matching, so
+            # the heredoc (and every command segment after it) was silently
+            # swallowed -- the guard failing open rather than closed.
+            if ((heredoc_tabstrip)); then
+                terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
+            fi
+            [[ $terminator_line == "$heredoc" ]] && { heredoc=''; heredoc_tabstrip=0; }
             continue
         fi
 
@@ -1123,7 +1140,8 @@ guard_gh_command_segments() {
                         segment+='<<'
                         i=$((i + 2))
                         rest=${line:i}
-                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; }
+                        heredoc_tabstrip=0
+                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; heredoc_tabstrip=1; }
                         rest="${rest#"${rest%%[![:space:]]*}"}"
                         delimiter_quote=${rest:0:1}
                         if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
@@ -1135,6 +1153,13 @@ guard_gh_command_segments() {
                             delimiter=${rest:0:k}
                         else
                             delimiter=${rest%%[[:space:];|&]*}
+                            # An unquoted delimiter such as `<<\EOF` disables
+                            # heredoc-body expansion the same way a quoted one
+                            # does; bash strips the backslash for the purpose
+                            # of matching the terminator, so the stored
+                            # delimiter must too, or the real terminator line
+                            # (bare "EOF") never matches "\EOF".
+                            delimiter=${delimiter//\\/}
                         fi
                         [[ -n $delimiter ]] && heredoc=$delimiter
                     else

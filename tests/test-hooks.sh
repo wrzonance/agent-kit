@@ -636,6 +636,27 @@ assert_eq '' "$(pre_context "$out")" \
     'a read under the harness own plugin-cache skills tree classifies as harness, not foreign'
 assert_eq 'allow' "$(decision "$out")" 'and stays allowed'
 
+# The same claim, but for Codex's harness variable -- guard_harness_plugin_cache_roots
+# resolves CLAUDE_CONFIG_DIR and CODEX_HOME independently since either may be
+# unset while the other harness is the one actually running. Only the Claude
+# path had a fixture; a Codex-only regression here would still pass the suite.
+# RUNNER_TEMP/dev/shm rather than $tmp itself: everything under $tmp is a
+# configured AGENT_FIXTURE_ROOTS fixture, which would classify as `fixture`
+# and mask the harness-classification distinction under test here (same
+# reasoning as the Claude harness-vs-foreign comparison above).
+codex_harness_home=$(mktemp -d "${RUNNER_TEMP:-/dev/shm}/codex-harness-home.XXXXXX")
+codex_harness_cache="$codex_harness_home/.codex/plugins/cache/agentkit-official/agentkit/1.0.0/skills/onboard-repo"
+mkdir -p "$codex_harness_cache"
+printf 'skill content\n' > "$codex_harness_cache/SKILL.md"
+codex_harness_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cat $codex_harness_cache/SKILL.md" "$codex_harness_sid" |
+    env -u CLAUDE_CONFIG_DIR CODEX_HOME="$codex_harness_home/.codex" HOME="$codex_harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a read under the CODEX_HOME plugin-cache skills tree classifies as harness, not foreign'
+assert_eq 'allow' "$(decision "$out")" 'and stays allowed, with no CLAUDE_CONFIG_DIR set'
+rm -rf -- "$codex_harness_home"
+
 # `foreign` is unchanged for genuinely out-of-tree content -- a sibling
 # checkout outside every plugins/cache root is still foreign, not harness.
 # RUNNER_TEMP/dev/shm rather than $tmp itself: everything under $tmp is a
@@ -732,6 +753,51 @@ out=$(pre_input "$scope_repo" "find \"$spacey_target\" -name AGENTS.md" "$spacey
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'a quoted foreign path containing a space still receives the scope advisory'
 rm -rf -- "$spacey_foreign_dir"
+
+# guard_command_target_dir is the sibling of guard_out_of_scope_target's own
+# segmenting/tokenizing above, and it used to parse raw command TEXT the same
+# broken way: splitting on `[;&|]` and reading words with `read -r -a`. A
+# quoted `; cd ...` inside data (a printf/echo argument, never executed) was
+# mistaken for a real segment, which moved the directory guard_out_of_scope_target
+# resolves the LATER, genuinely in-workspace target against -- turning an
+# in-tree read into a false foreign-scope advisory (issue #335 review, F1).
+# A REAL, existing foreign directory is used for the quoted fake cd target
+# (rather than a plain path that may not exist on the test host): a
+# nonexistent candidate short-circuits guard_resolve_roots's own directory
+# check before the classification under test ever runs, which would make this
+# assertion pass whether or not the fix is present.
+fake_cd_foreign=${RUNNER_TEMP:-/dev/shm}
+fake_cd_foreign_dir=$(mktemp -d "$fake_cd_foreign/hooks-fake-cd-foreign.XXXXXX")
+for fake_cd_verb in printf echo; do
+    fake_cd_sid=$(fresh_sid)
+    out=$(pre_input "$scope_repo" \
+        "$fake_cd_verb 'x; cd $fake_cd_foreign_dir'; find . -name AGENTS.md" "$fake_cd_sid" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(pre_context "$out")" \
+        "a quoted fake cd inside $fake_cd_verb data does not misdirect a later in-workspace find"
+done
+rm -rf -- "$fake_cd_foreign_dir"
+
+# --- heredoc lexer: both standard terminator/delimiter forms close the
+# heredoc (issue #335 review, F2) ------------------------------------------
+# `guard_gh_command_segments`'s terminator test used to be an exact-match
+# comparison, which two standard heredoc forms defeated -- and in both cases
+# the heredoc never closed, so EVERY later segment (including a genuinely
+# foreign read) was silently dropped instead of classified. That is worse
+# than a false positive: the guard failed open, not merely noisy.
+tabstrip_heredoc_sid=$(fresh_sid)
+tabstrip_heredoc_cmd=$(printf 'cat <<-EOF > /tmp/notes3.md\nbody line\n\tEOF\nfind /home/user-sibling -name AGENTS.md')
+out=$(pre_input "$scope_repo" "$tabstrip_heredoc_cmd" "$tabstrip_heredoc_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a command segment after a tab-indented <<- heredoc terminator is still classified'
+
+quoted_delim_heredoc_sid=$(fresh_sid)
+quoted_delim_heredoc_cmd=$(printf 'cat <<\\EOF > /tmp/notes4.md\nbody line\nEOF\nfind /home/user-sibling -name AGENTS.md')
+out=$(pre_input "$scope_repo" "$quoted_delim_heredoc_cmd" "$quoted_delim_heredoc_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a command segment after a backslash-quoted <<\EOF heredoc terminator is still classified'
 
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets
