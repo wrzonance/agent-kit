@@ -277,8 +277,8 @@ validate_trailer_line() {
     esac
     key="$(trailer_key "$line")"
     value="$(trailer_value "$line")"
-    [[ "$key" =~ ^[A-Za-z][A-Za-z0-9-]*$ ]] || die 1 \
-        "--trailer key must be a git-trailer token (letters, digits, hyphens, starting with a letter): $line"
+    [[ "$key" =~ ^[A-Za-z0-9-]+$ ]] || die 1 \
+        "--trailer key must be a git-trailer token (letters, digits, hyphens only -- git rejects '_'): $line"
     [[ -n "$value" ]] || die 1 "--trailer has an empty value after '$key:': $line"
 }
 

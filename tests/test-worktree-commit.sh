@@ -474,6 +474,43 @@ assert_contains "$emptyval_out" 'empty value' 'the refusal names the empty value
 assert_eq '1' "$(git -C "$emptyval_repo" log --oneline | wc -l)" \
     'an empty-value --trailer refusal creates no new commit'
 
+# git's own trailer grammar accepts keys starting with a digit or a hyphen --
+# this helper's key validation must match that grammar, not a stricter guess
+# at it (CodeRabbit finding on PR #313).
+digitkey_repo="$tmp/trailer-digitkey-repo"
+new_repo "$digitkey_repo"
+printf 'change\n' > "$digitkey_repo/change.txt"
+digitkey_rc=0
+digitkey_out=$(cd "$digitkey_repo" && "$script" --message 'feat: digit-led trailer key' \
+    --trailer '1Key: 42' -- change.txt 2>&1) || digitkey_rc=$?
+assert_eq '0' "$digitkey_rc" 'a --trailer key starting with a digit is accepted, matching git'
+assert_contains "$digitkey_out" 'committed' 'the digit-led key commit reports success'
+assert_eq '1Key: 42' "$(git -C "$digitkey_repo" log -1 --format='%(trailers:only=true,unfold=true)')" \
+    'the digit-led key parses via git''s own trailer format'
+
+hyphenkey_repo="$tmp/trailer-hyphenkey-repo"
+new_repo "$hyphenkey_repo"
+printf 'change\n' > "$hyphenkey_repo/change.txt"
+hyphenkey_rc=0
+hyphenkey_out=$(cd "$hyphenkey_repo" && "$script" --message 'feat: hyphen-led trailer key' \
+    --trailer '-Key: 42' -- change.txt 2>&1) || hyphenkey_rc=$?
+assert_eq '0' "$hyphenkey_rc" 'a --trailer key starting with a hyphen is accepted, matching git'
+assert_contains "$hyphenkey_out" 'committed' 'the hyphen-led key commit reports success'
+
+# git rejects an underscore in a trailer key -- this helper must refuse it
+# too, not silently commit a trailer git itself will not parse back out.
+underscorekey_repo="$tmp/trailer-underscorekey-repo"
+new_repo "$underscorekey_repo"
+printf 'change\n' > "$underscorekey_repo/change.txt"
+underscorekey_rc=0
+underscorekey_out=$(cd "$underscorekey_repo" && "$script" --message 'feat: underscore trailer key' \
+    --trailer 'Issue_ID: 42' -- change.txt 2>&1) || underscorekey_rc=$?
+assert_eq '1' "$underscorekey_rc" 'a --trailer key containing an underscore is refused'
+assert_contains "$underscorekey_out" 'git-trailer token' \
+    'the refusal names the git-trailer token rule'
+assert_eq '1' "$(git -C "$underscorekey_repo" log --oneline | wc -l)" \
+    'an underscore-key --trailer refusal creates no new commit'
+
 # A well-formed --trailer commits and parses as the caller intended via git's
 # own trailers pretty-format.
 wellformed_repo="$tmp/trailer-wellformed-repo"

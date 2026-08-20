@@ -175,9 +175,13 @@ never an unresolved shell placeholder) -- `worker_attribution` is a bare identit
 <email>`), not a git trailer line, so the `Co-Authored-By:` key belongs to the caller. Compute
 and use it in the SAME tool call as the commit: shell state does not persist between tool calls,
 so a value computed earlier expands empty here, and the helper now refuses an empty or keyless
-`--trailer` rather than silently committing one. Omitting `--trailer` entirely is also safe --
-the helper derives the same `Co-Authored-By:` trailer from the contract's `harness=` line on its
-own when none is supplied.
+`--trailer` rather than silently committing one. Omitting `--trailer` entirely is also safe -- the
+helper derives its own `Co-Authored-By: <contract harness identity>` trailer from the contract's
+`harness=` line when none is supplied -- but that derived trailer is NOT the same value: it is the
+BASE harness identity with no worker model id appended, where the explicit
+`"Co-Authored-By: $worker_attribution"` form above carries the model id this dispatch selected.
+Prefer the explicit form to keep the model id in history; omitting `--trailer` is a correctness
+fallback, not an equivalent shorthand.
 
 When FINISH's fresh full verification is green, publish the branch yourself:
 
@@ -450,9 +454,13 @@ never an unresolved shell placeholder) -- `worker_attribution` is a bare identit
 <email>`), not a git trailer line, so the `Co-Authored-By:` key belongs to the caller. Compute
 and use it in the SAME tool call as the commit: shell state does not persist between tool calls,
 so a value computed earlier expands empty here, and the helper now refuses an empty or keyless
-`--trailer` rather than silently committing one. Omitting `--trailer` entirely is also safe --
-the helper derives the same `Co-Authored-By:` trailer from the contract's `harness=` line on its
-own when none is supplied.
+`--trailer` rather than silently committing one. Omitting `--trailer` entirely is also safe -- the
+helper derives its own `Co-Authored-By: <contract harness identity>` trailer from the contract's
+`harness=` line when none is supplied -- but that derived trailer is NOT the same value: it is the
+BASE harness identity with no worker model id appended, where the explicit
+`"Co-Authored-By: $worker_attribution"` form above carries the model id this dispatch selected.
+Prefer the explicit form to keep the model id in history; omitting `--trailer` is a correctness
+fallback, not an equivalent shorthand.
 
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
