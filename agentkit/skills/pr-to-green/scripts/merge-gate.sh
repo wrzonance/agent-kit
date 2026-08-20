@@ -28,6 +28,28 @@ die() {
     exit 1
 }
 
+# Ownership alone does not protect gate evidence from another user in the
+# same group -- reject a file group- or world-writable, matching the
+# finding-ledger.sh / post-receipt.sh house style for run-dir artifacts.
+file_mode() {
+    local path=$1 mode
+    if mode=$(stat -c %a -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
+reject_writable_by_others() {
+    local path=$1 label=$2 mode
+    mode=$(file_mode "$path") || die "could not inspect $label permissions: $path"
+    (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
@@ -58,6 +80,7 @@ done
 [[ -n $base ]] || die '--base is required'
 [[ -f $digest_file && ! -L $digest_file && -O $digest_file ]] ||
     die '--pr-state-digest must be an owned regular file, not a symlink'
+reject_writable_by_others "$digest_file" '--pr-state-digest'
 case $provider_result in
     AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
@@ -126,13 +149,18 @@ changes_requested=$(jq -r '
 [[ $changes_requested == 0 ]] || block 'a human review is CHANGES_REQUESTED and undecided'
 
 # --- pr-state digest: CI, base freshness, provider threads, findings, alerts ---
-if grep -qE '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{7}$' "$digest_file"; then
+if grep -qE '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{7,40}$' "$digest_file"; then
     digest_pr=$(sed -nE 's/^pr=([0-9]+) .*$/\1/p' "$digest_file" | head -n 1)
     digest_mergeable=$(sed -nE 's/^pr=[0-9]+ draft=(true|false) mergeable=([A-Z_]+) .*$/\2/p' "$digest_file" | head -n 1)
-    digest_sha=$(sed -nE 's/^.*sha=([0-9a-f]{7})$/\1/p' "$digest_file" | head -n 1)
+    digest_sha=$(sed -nE 's/^.*sha=([0-9a-f]{7,40})$/\1/p' "$digest_file" | head -n 1)
     [[ $digest_pr == "$pr" ]] || block 'pr-state digest is for a different pull request'
     [[ $digest_mergeable == MERGEABLE ]] || block "pr-state digest reports mergeable=$digest_mergeable"
-    [[ ${head_sha:0:7} == "$digest_sha" ]] || block 'pr-state digest predates the current head (stale evidence)'
+    # The binding is exactly as strong as whatever length the digest provides
+    # -- a 7-char digest still binds a 7-char prefix; once gh-pr-state.sh
+    # emits a full 40-char SHA this comparison is full-strength automatically,
+    # with no further change here.
+    [[ ${head_sha:0:${#digest_sha}} == "$digest_sha" ]] ||
+        block 'pr-state digest predates the current head (stale evidence)'
 else
     block 'pr-state digest is missing its pr= summary line'
 fi
@@ -170,6 +198,31 @@ if grep -qE '^nitpicks: [0-9]+ unhandled$' "$digest_file"; then
 else
     block 'pr-state digest carries no readable nitpick evidence'
 fi
+
+# --- Code scanning completion: a scan still in progress can legitimately
+# report zero alerts, so completion for the current head must be established
+# from a live query before the alert count below is trusted. The digest
+# carries no completion field (gh-pr-state.sh is out of scope for this
+# change), so this queries gh directly, the same way the live PR-state read
+# above does. An unreadable completion signal is BLOCKED, same as an
+# unreadable alert count -- never treated as complete.
+if "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
+    >"$work_dir/cs-runs.json" 2>"$work_dir/api.err"; then
+    cs_status=$(jq -r '
+      [.check_runs[]? | select((.app.slug // "") == "github-code-scanning")] as $runs |
+      if ($runs | length) == 0 then "none"
+      elif ($runs | all(.status == "completed")) then "completed"
+      else "pending"
+      end
+    ' "$work_dir/cs-runs.json" 2>/dev/null) || cs_status=''
+else
+    cs_status=''
+fi
+case $cs_status in
+    completed|none) ;;
+    pending) block 'code-scanning analysis has not completed for the current head' ;;
+    *) block 'code-scanning analysis status is unreadable for the current head' ;;
+esac
 
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||

@@ -47,6 +47,10 @@ repos/owner/repo/pulls/9/merge)
     printf '{"merged":true,"sha":"%s","message":"ok"}\n' "$MERGE_SHA"
     ;;
 repos/owner/repo/git/refs/heads/feat/demo)
+    # Plural route -- DELETE only. Must never be used for the GET ref-check
+    # (see the singular endpoint below): the plural route prefix-matches and
+    # returns an ARRAY when this branch name prefixes another branch, which
+    # is exactly the bug F2 fixes.
     if ((is_delete)); then
         if [[ \${DELETE_REFUSE:-0} == 1 ]]; then
             printf 'refused: ref protected\n' >&2
@@ -54,8 +58,16 @@ repos/owner/repo/git/refs/heads/feat/demo)
         fi
         printf '{}\n'
     else
-        printf '{"object":{"sha":"%s"}}\n' "\${REF_CHECK_SHA:-$HEAD_SHA}"
+        printf '[{"object":{"sha":"prefix-match-array-should-never-be-read"}}]\n'
     fi
+    ;;
+repos/owner/repo/git/ref/heads/feat/demo)
+    # Singular route -- GET only, exact match, one object.
+    if [[ \${REF_CHECK_MISSING:-0} == 1 ]]; then
+        printf 'not found\n' >&2
+        exit 1
+    fi
+    printf '{"object":{"sha":"%s"}}\n' "\${REF_CHECK_SHA:-$HEAD_SHA}"
     ;;
 *) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
 esac
@@ -235,6 +247,42 @@ assert_eq '1' "$rc" "a gate result for a different head does not authorize this 
 assert_contains "$out" 'not authorized by a passed review-completion gate' \
     'the mismatched-head gate refusal names the missing pass'
 
+# --- F1 (accepted): group/other-writable evidence files are rejected --------
+
+: >"$tmp/merge.log"
+write_auth false
+write_gate "$HEAD_SHA"
+chmod 664 "$tmp/auth.json"
+set +e
+out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh" bash "$merge_pr" \
+    --repo owner/repo --pr 9 --head-sha "$HEAD_SHA" --base main --merge-method squash \
+    --authorization-file "$tmp/auth.json" --gate-result "$tmp/gate.txt" 2>&1)
+rc=$?
+set -e
+chmod 600 "$tmp/auth.json"
+assert_eq '1' "$rc" 'a group-writable authorization file is refused'
+assert_contains "$out" 'authorization file must not be group- or world-writable' \
+    'the group-writable authorization refusal is named'
+assert_eq '0' "$(grep -c 'pulls/9/merge' "$tmp/merge.log" || true)" \
+    'no merge request is sent for a group-writable authorization file'
+
+: >"$tmp/merge.log"
+write_auth false
+write_gate "$HEAD_SHA"
+chmod 646 "$tmp/gate.txt"
+set +e
+out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh" bash "$merge_pr" \
+    --repo owner/repo --pr 9 --head-sha "$HEAD_SHA" --base main --merge-method squash \
+    --authorization-file "$tmp/auth.json" --gate-result "$tmp/gate.txt" 2>&1)
+rc=$?
+set -e
+chmod 600 "$tmp/gate.txt"
+assert_eq '1' "$rc" 'a world-writable gate-result file is refused'
+assert_contains "$out" 'gate-result file must not be group- or world-writable' \
+    'the world-writable gate-result refusal is named'
+assert_eq '0' "$(grep -c 'pulls/9/merge' "$tmp/merge.log" || true)" \
+    'no merge request is sent for a world-writable gate-result file'
+
 # --- F2 (P2): --delete-branch never targets the wrong branch -----------------
 
 : >"$tmp/merge.log"
@@ -250,5 +298,61 @@ assert_contains "$out" 'branch_delete=skipped ref=feat/demo reason=branch-no-lon
     'a branch that moved since the merge is never deleted'
 assert_eq '0' "$(grep -c -- '-X DELETE' "$tmp/merge.log" || true)" \
     'no delete call is made once the branch tip no longer matches the merged head'
+
+# --- F2 (P1): a branch name that prefixes another branch still deletes -------
+# The plural "refs/heads/<name>" route prefix-matches and returns an ARRAY
+# when <name> is a prefix of another existing branch (e.g. feat/issue-3 vs
+# feat/issue-333). The GET ref-check MUST use the singular "ref/heads/<name>"
+# route so it gets exactly one object. This fixture must fail if the GET
+# route reverts to plural: the array response makes .object.sha empty, which
+# never equals HEAD_SHA, so the delete would be (wrongly) skipped instead of
+# proceeding.
+cat >"$tmp/gh-prefix" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+endpoint=''
+for arg in "\$@"; do [[ \$arg == repos/* ]] && endpoint=\$arg; done
+printf 'gh %s\n' "\$*" >>"\$MERGE_LOG"
+is_delete=0
+[[ " \$* " == *' -X DELETE '* ]] && is_delete=1
+case \$endpoint in
+repos/owner/repo/pulls/9)
+    printf '{"number":9,"state":"open","draft":false,"head":{"sha":"$HEAD_SHA","ref":"feat/issue-3","repo":{"full_name":"owner/repo"}},"base":{"ref":"main"},"mergeable":true}\n'
+    ;;
+repos/owner/repo)
+    printf '{"allow_squash_merge":true,"allow_merge_commit":true,"allow_rebase_merge":true}\n'
+    ;;
+repos/owner/repo/pulls/9/merge)
+    printf '{"merged":true,"sha":"$MERGE_SHA","message":"ok"}\n'
+    ;;
+repos/owner/repo/git/refs/heads/feat/issue-3)
+    # Prefix match against feat/issue-333 -- the real forge returns an ARRAY
+    # here, never a single object.
+    if ((is_delete)); then
+        printf '{}\n'
+    else
+        printf 'unexpected: plural route used for the GET ref-check\n' >&2
+        exit 1
+    fi
+    ;;
+repos/owner/repo/git/ref/heads/feat/issue-3)
+    printf '{"object":{"sha":"$HEAD_SHA"}}\n'
+    ;;
+*) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$tmp/gh-prefix"
+
+jq -n --arg sha "$HEAD_SHA" '{
+  repository:"owner/repo", autoMerge:true, mergeMethod:"squash", deleteBranch:true,
+  queue:[{pr:9,state:"RUNNABLE",headSha:$sha,base:"main"}]
+}' >"$tmp/auth-prefix.json"
+write_gate "$HEAD_SHA"
+: >"$tmp/merge.log"
+out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh-prefix" bash "$merge_pr" \
+    --repo owner/repo --pr 9 --head-sha "$HEAD_SHA" --base main --merge-method squash \
+    --authorization-file "$tmp/auth-prefix.json" --gate-result "$tmp/gate.txt" --delete-branch)
+assert_contains "$out" 'branch_delete=ok ref=feat/issue-3' \
+    'a branch name that prefixes another branch still deletes via the singular GET route'
 
 finish

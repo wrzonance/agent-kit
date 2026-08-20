@@ -35,6 +35,17 @@ repos/owner/repo/pulls/9)
 repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
     ;;
+repos/owner/repo/commits/*/check-runs*)
+    if [[ \${CS_RUNS_UNREADABLE:-0} == 1 ]]; then
+        printf 'not found\n' >&2
+        exit 1
+    fi
+    if [[ -n \${CS_RUNS_JSON:-} ]]; then
+        printf '%s\n' "\$CS_RUNS_JSON"
+    else
+        printf '{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"completed"}]}\n'
+    fi
+    ;;
 *) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
 esac
 EOF
@@ -170,5 +181,66 @@ rc=$?
 set -e
 assert_eq '1' "$rc" 'CI still pending blocks the merge'
 assert_contains "$out" 'blocked reason=CI is not fully green' 'the pending-CI block is named'
+
+# --- F3 (accepted): code scanning must have completed for the current head --
+
+good_digest
+set +e
+out=$(CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a code-scanning analysis still in progress blocks the merge, even with zero open alerts reported'
+assert_contains "$out" 'blocked reason=code-scanning analysis has not completed for the current head' \
+    'the pending-analysis block is named'
+
+good_digest
+out=$(CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"completed"}]}' run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a completed code-scanning analysis with zero open alerts passes the gate'
+
+good_digest
+set +e
+out=$(CS_RUNS_UNREADABLE=1 run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an unreadable code-scanning completion signal blocks the merge (never treated as complete)'
+assert_contains "$out" 'blocked reason=code-scanning analysis status is unreadable for the current head' \
+    'the unreadable-completion block is named'
+
+# --- F1 (accepted): a group/other-writable digest file is rejected ----------
+
+good_digest
+chmod 660 "$tmp/digest.txt"
+set +e
+out=$(run_gate 2>&1)
+rc=$?
+set -e
+chmod 600 "$tmp/digest.txt"
+assert_eq '1' "$rc" 'a group-writable pr-state digest is refused'
+assert_contains "$out" '--pr-state-digest must not be group- or world-writable' \
+    'the group-writable digest refusal is named'
+
+# --- F4 (accepted, in-scope half): the SHA binding matches the digest length -
+
+good_digest
+out=$(run_gate)
+assert_contains "$out" 'gate=PASS pr=9' 'a 7-char digest SHA still binds (weak but functional) against the current head'
+
+FULL_SHA="$HEAD_SHA"
+good_digest
+sed -i "s/sha=$HEAD_SHA7\$/sha=$FULL_SHA/" "$tmp/digest.txt"
+out=$(run_gate)
+assert_contains "$out" 'gate=PASS pr=9' 'a full 40-char digest SHA binds fully against the matching current head'
+
+MISMATCHED_FULL_SHA="${HEAD_SHA7}bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+good_digest
+sed -i "s/sha=$HEAD_SHA7\$/sha=$MISMATCHED_FULL_SHA/" "$tmp/digest.txt"
+set +e
+out=$(run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a full 40-char digest SHA that mismatches the current head is caught as stale evidence'
+assert_contains "$out" 'blocked reason=pr-state digest predates the current head' \
+    'the full-SHA mismatch is caught by the same staleness check'
 
 finish

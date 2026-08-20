@@ -33,6 +33,28 @@ die() {
     exit 1
 }
 
+# Ownership alone does not protect merge evidence from another user in the
+# same group -- reject a file group- or world-writable, matching the
+# finding-ledger.sh / post-receipt.sh house style for run-dir artifacts.
+file_mode() {
+    local path=$1 mode
+    if mode=$(stat -c %a -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
+reject_writable_by_others() {
+    local path=$1 label=$2 mode
+    mode=$(file_mode "$path") || die "could not inspect $label permissions: $path"
+    (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
@@ -75,6 +97,7 @@ trap cleanup EXIT HUP INT TERM
 # --- Authorization: this exact merge, for this exact confirmed queue item ---
 [[ -f $authorization_file && ! -L $authorization_file && -O $authorization_file ]] ||
     die 'authorization file must be an owned regular file, not a symlink'
+reject_writable_by_others "$authorization_file" 'authorization file'
 delete_branch_json=false
 ((delete_branch == 0)) || delete_branch_json=true
 jq -e --arg repo "$repo" --argjson pr "$pr" --arg sha "$head_sha" --arg base "$base" \
@@ -90,6 +113,7 @@ jq -e --arg repo "$repo" --argjson pr "$pr" --arg sha "$head_sha" --arg base "$b
 # --- Gate: a fresh merge-gate.sh PASS bound to this same PR and head ---
 [[ -f $gate_result_file && ! -L $gate_result_file && -O $gate_result_file ]] ||
     die 'gate-result file must be an owned regular file, not a symlink'
+reject_writable_by_others "$gate_result_file" 'gate-result file'
 grep -qF "gate=PASS pr=$pr sha=$head_sha" "$gate_result_file" ||
     die 'merge is not authorized by a passed review-completion gate for this PR and head'
 
@@ -143,8 +167,16 @@ if ((delete_branch)); then
         # deleting "$repo/heads/$head_ref" by name would risk deleting an
         # unrelated same-named branch in the target repository instead.
         printf 'branch_delete=skipped ref=%s reason=head-repository-is-not-the-target-repository\n' "$head_ref"
-    elif ! "$GH_BIN" api "repos/$repo/git/refs/heads/$head_ref" \
+    elif ! "$GH_BIN" api "repos/$repo/git/ref/heads/$head_ref" \
         >"$work_dir/ref-check.json" 2>"$work_dir/ref-check.err"; then
+        # The singular "ref" route (not "refs") is required for this read: it
+        # returns exactly one object and 404s when there is no exact match.
+        # The plural "refs" route prefix-matches and returns an ARRAY when
+        # this branch name is a prefix of another branch (e.g. feat/issue-3
+        # vs feat/issue-333), which broke .object.sha and silently skipped
+        # every deletion for such branches. The DELETE call below still uses
+        # the plural route -- that is the correct documented route for
+        # deletion and must not change.
         printf 'branch_delete=failed ref=%s reason=%s\n' "$head_ref" \
             "$(head -n 1 "$work_dir/ref-check.err")"
     elif [[ $(jq -r '.object.sha // empty' "$work_dir/ref-check.json") != "$head_sha" ]]; then
