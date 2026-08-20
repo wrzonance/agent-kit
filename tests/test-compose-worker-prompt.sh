@@ -467,4 +467,82 @@ AGENT_REPO_RUNNER="$nonexec_env_fallback/tools/absent-exec" bash "$compose" --te
 assert_eq 0 "$nonexec_env_fallback_rc" \
     'a non-executable AGENT_REPO_RUNNER falls through to an executable .agent/runner'
 
+# --- fail-closed: worktree sandbox= less restrictive than the root (#332) ---
+# sandbox= is a session-scoped fact; create-issue-worktree.sh is expected to
+# carry the root checkout's measurement into the worktree verbatim. If the
+# worktree's copy is somehow less restrictive than the root's own contract for
+# the same run, composing the prompt must refuse rather than hand a worker a
+# rosier picture of its sandbox than the root already measured.
+make_widen_root() {
+    local dir=$1 sandbox_line=$2
+    mkdir -p "$dir/.agent"
+    git -C "$dir" init -q
+    git -C "$dir" config user.name test
+    git -C "$dir" config user.email test@example.invalid
+    printf 'seed\n' > "$dir/seed.txt"
+    git -C "$dir" add -- seed.txt
+    git -C "$dir" commit -qm seed -q
+    printf '%s\n' "$sandbox_line" > "$dir/.agent/env-contract.txt"
+}
+
+make_widen_worktree() {
+    local root=$1 branch=$2 worktree=$3 sandbox_line=$4
+    git -C "$root" worktree add -q -b "$branch" "$worktree" > /dev/null 2>&1
+    mkdir -p "$worktree/.agent"
+    printf '%s\n' \
+        'AGENT_REPO_SLUG=example-org/example-repo' \
+        'AGENT_BASE_BRANCH=develop' \
+        'AGENT_CMD_TEST=tools/full-test' \
+        > "$worktree/.agent/config.env"
+    printf 'skills= path=%s/agentkit/skills\n%s\n' "$root_path" "$sandbox_line" \
+        > "$worktree/.agent/env-contract.txt"
+    printf 'SPEC-BYTES\n' > "$worktree/.agent/fenced-spec.txt"
+    printf 'PRIOR-BYTES\n' > "$worktree/.agent/fenced-prior-art.txt"
+}
+
+root_path=$root
+restrictive_line='sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"'
+loose_line='sandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell'
+
+widen_root="$tmp/widen-root"
+make_widen_root "$widen_root" "$restrictive_line"
+widen_worktree="$widen_root/.worktrees/feat-issue-widen"
+make_widen_worktree "$widen_root" feat/issue-widen "$widen_worktree" "$loose_line"
+
+widen_rc=0
+widen_err=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$widen_worktree" --issue 999 --branch feat/issue-widen \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 > /dev/null) || widen_rc=$?
+assert_eq 1 "$widen_rc" \
+    'compose refuses when the worktree sandbox= is less restrictive than the root contract'
+assert_contains "$widen_err" 'worktree-contract-less-restrictive-than-root' \
+    'the refusal names the reason'
+assert_contains "$widen_err" 're-run create-issue-worktree.sh' \
+    'the refusal names the fix'
+
+# The inherited (byte-identical) case must NOT be flagged -- this is the
+# normal, expected shape after create-issue-worktree.sh carries the root
+# contract's sandbox= line forward verbatim.
+inherited_root="$tmp/inherited-root"
+make_widen_root "$inherited_root" "$restrictive_line"
+inherited_worktree="$inherited_root/.worktrees/feat-issue-inherited"
+make_widen_worktree "$inherited_root" feat/issue-inherited "$inherited_worktree" "$restrictive_line"
+inherited_prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$inherited_worktree" --issue 998 --branch feat/issue-inherited \
+    --worker-model gpt-5.6-luna --worker-effort high)
+assert_contains "$inherited_prompt" 'sandbox= active=yes profile=strict network=disabled home-writable=no' \
+    'a worktree contract matching the root sandbox= composes normally'
+
+# A worktree TIGHTER than the root is never a widening and must compose too.
+tighter_root="$tmp/tighter-root"
+make_widen_root "$tighter_root" "$loose_line"
+tighter_worktree="$tighter_root/.worktrees/feat-issue-tighter"
+make_widen_worktree "$tighter_root" feat/issue-tighter "$tighter_worktree" "$restrictive_line"
+tighter_rc=0
+bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$tighter_worktree" --issue 997 --branch feat/issue-tighter \
+    --worker-model gpt-5.6-luna --worker-effort high > /dev/null 2>&1 || tighter_rc=$?
+assert_eq 0 "$tighter_rc" \
+    'a worktree contract more restrictive than the root is never refused as a widening'
+
 finish

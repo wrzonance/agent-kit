@@ -398,4 +398,118 @@ assert_eq 'peer-cli= codex absent note="no cross-harness reviewer among: codex; 
     "$(grep '^peer-cli=' <<< "$out")" \
     'claude sessions still search only codex, unchanged by the multi-candidate support'
 
+# --- sandbox provenance tri-state (issue #332) -------------------------------
+# Three process classes can run this probe -- a hook, the agent's own shell,
+# and a harness-escalated/approval-granted shell -- and only the hook class
+# used to carry a marker. All three must now be provenance-tagged, and the
+# "escalated" class must be an explicit assertion, never something this probe
+# guesses at (there is no verified in-tree signal for it).
+repo=$(new_repo)
+default_view=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$(grep '^sandbox=' <<< "$default_view")" 'measured-by=agent-shell' \
+    'the default (agent-shell) run is now provenance-tagged too'
+
+hook_view=$("$script" --worktree "$repo" --measured-from hook 2> /dev/null)
+assert_contains "$(grep '^sandbox=' <<< "$hook_view")" 'measured-by=hook' \
+    'a hook-measured run is tagged measured-by=hook'
+
+escalated_repo=$(new_repo)
+escalated_view=$("$script" --worktree "$escalated_repo" --measured-from escalated 2> /dev/null)
+escalated_sandbox=$(grep '^sandbox=' <<< "$escalated_view")
+assert_contains "$escalated_sandbox" 'measured-by=escalated' \
+    'an explicitly-asserted escalated run is tagged measured-by=escalated'
+assert_contains "$escalated_sandbox" 'this probe does not detect that state itself' \
+    'the escalated tag discloses it was asserted, not detected'
+
+assert_rc 2 '--measured-from still rejects an unrecognised class' -- \
+    "$script" --worktree "$repo" --measured-from somewhere-else
+
+# --- never-widen: a more restrictive recorded sandbox=/caches= survives ------
+# a less-restrictive re-measurement (issue #332). The scenario reproduces the
+# reported bug directly: a prior run recorded a sandboxed, cache-isolated
+# contract; a second, unsandboxed-looking run must not silently overwrite it.
+repo=$(new_repo)
+restrictive_contract="$repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    'tls= bundle=none source=none corporate-ca=unknown preset=none uv-system-certs=unknown' \
+    'caches= root=/tmp/agent-cache-9999 reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-9999/uv NPM_CONFIG_CACHE=/tmp/agent-cache-9999/npm PIP_CACHE_DIR=/tmp/agent-cache-9999/pip XDG_CACHE_HOME=/tmp/agent-cache-9999' \
+    > "$restrictive_contract"
+chmod 600 "$restrictive_contract"
+widen_err=$("$script" --worktree "$repo" 2>&1 > /dev/null)
+assert_contains "$widen_err" 'keeping the more-restrictive recorded sandbox=' \
+    'a less-restrictive re-measurement of sandbox= reports the disagreement on stderr'
+assert_contains "$widen_err" 'keeping the more-restrictive recorded caches=' \
+    'a less-restrictive re-measurement of caches= reports the disagreement on stderr'
+assert_rc 0 'the never-widen guard still exits 0' -- "$script" --worktree "$repo"
+after_widen=$(cat -- "$restrictive_contract")
+assert_eq 'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' <<< "$after_widen")" \
+    'the more-restrictive recorded sandbox= line is kept byte-for-byte'
+assert_contains "$(grep '^caches=' <<< "$after_widen")" 'reason=home-cache-unwritable' \
+    'the more-restrictive recorded caches= line is kept'
+
+# A worktree with no prior contract records its first measurement normally --
+# there is nothing recorded yet for the guard to protect.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+first_sandbox=$(grep '^sandbox=' "$repo/.agent/env-contract.txt")
+assert_contains "$first_sandbox" 'measured-by=agent-shell' \
+    'a worktree with no prior contract records its first measurement normally'
+
+# A fresh measurement that TIGHTENS the recorded restriction must still win --
+# the guard only refuses to widen. --inherit-session gives full control over
+# the "fresh" line without depending on this machine's real sandbox state.
+repo=$(new_repo)
+loose_contract="$repo/.agent/env-contract.txt"
+printf 'sandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    > "$loose_contract"
+chmod 600 "$loose_contract"
+tighter_session="$tmp/tighter-session-contract.txt"
+printf 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    > "$tighter_session"
+tighten_err=$("$script" --worktree "$repo" --inherit-session "$tighter_session" 2>&1 > /dev/null)
+assert_not_contains "$tighten_err" 'keeping the more-restrictive recorded sandbox=' \
+    'a tightening re-measurement is not treated as a widening'
+assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' "$loose_contract")" \
+    'a tightening re-measurement replaces the previously recorded looser line'
+
+# --- --inherit-session carries session-scoped lines forward verbatim --------
+# sandbox=, tls=, and caches= describe the session, not any one worktree
+# (issue #332); create-issue-worktree.sh relies on this to avoid re-measuring
+# them in a differently-privileged process.
+session_repo=$(new_repo)
+session_contract="$session_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    'tls= bundle=/etc/ssl/certs/ca-certificates.crt source=system corporate-ca=no preset=none uv-system-certs=not-needed' \
+    'caches= root=/tmp/agent-cache-inherit reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-inherit/uv NPM_CONFIG_CACHE=/tmp/agent-cache-inherit/npm PIP_CACHE_DIR=/tmp/agent-cache-inherit/pip XDG_CACHE_HOME=/tmp/agent-cache-inherit' \
+    > "$session_contract"
+chmod 600 "$session_contract"
+
+target_repo=$(new_repo)
+inherit_out=$("$script" --worktree "$target_repo" --inherit-session "$session_contract" 2> "$tmp/inherit-stderr")
+assert_eq "$(grep '^sandbox=' <<< "$inherit_out")" "$(grep '^sandbox=' "$session_contract")" \
+    'the worktree contract carries the session sandbox= line verbatim (byte equality)'
+assert_eq "$(grep '^tls=' <<< "$inherit_out")" "$(grep '^tls=' "$session_contract")" \
+    'the worktree contract carries the session tls= line verbatim (byte equality)'
+assert_eq "$(grep '^caches=' <<< "$inherit_out")" "$(grep '^caches=' "$session_contract")" \
+    'the worktree contract carries the session caches= line verbatim (byte equality)'
+assert_contains "$(cat "$tmp/inherit-stderr")" 'inherited sandbox=' \
+    '--inherit-session discloses on stderr that it copied rather than measured'
+assert_contains "$(grep '^sandbox=' <<< "$inherit_out")" 'note="escalate git writes' \
+    'a note= present on the authoritative sandbox= line survives inheritance'
+
+# A missing or unreadable --inherit-session file falls back to a fresh probe
+# for every line, rather than failing the run: reporting, never blocking.
+fallback_out=$("$script" --worktree "$(new_repo)" --inherit-session "$tmp/does-not-exist.txt" 2> /dev/null)
+assert_contains "$fallback_out" 'sandbox=' \
+    'a missing --inherit-session file still produces a full sandbox= line'
+assert_contains "$(grep '^sandbox=' <<< "$fallback_out")" 'measured-by=agent-shell' \
+    'the fallback measurement is freshly probed, not fabricated'
+
+assert_rc 2 '--ensure rejects an explicit --inherit-session override' -- \
+    "$script" --ensure --worktree "$repo" --inherit-session "$session_contract"
+
 finish
