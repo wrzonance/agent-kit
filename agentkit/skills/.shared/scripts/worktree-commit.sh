@@ -492,7 +492,13 @@ report_commit() {
 # record prints, if an intended trailer did not survive into the real commit.
 verify_trailers() {
     local actual line key value aline akey avalue found
-    actual="$(git log -1 --format='%(trailers:only=true,unfold=true)' HEAD)"
+    # Pin the separator this read is parsed with: a repository-local
+    # trailer.separators config that drops ':' (e.g. "=") would otherwise
+    # change how git's own pretty-format parses trailers, misreporting a real
+    # commit with a well-formed "Key: value" trailer as a verification
+    # failure purely because of repo config, not the commit itself. This
+    # helper's documented, validated syntax is always "Key: value".
+    actual="$(git -c trailer.separators=: log -1 --format='%(trailers:only=true,unfold=true)' HEAD)"
     for line in "${TRAILERS[@]}"; do
         key="$(trailer_key "$line")"
         value="$(trailer_value "$line")"

@@ -503,13 +503,13 @@ verify_git_wrapper="$verify_fake_bin/git"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
-    'if [[ ${1-} == log ]]; then' \
-    '    for arg in "$@"; do' \
-    '        if [[ $arg == *"%(trailers"* ]]; then' \
-    '            exit 0' \
-    '        fi' \
-    '    done' \
-    'fi' \
+    '# Match on argv content, not $1 -- the verification read is pinned with' \
+    '# a leading "-c trailer.separators=:", so "log" is not always $1.' \
+    'for arg in "$@"; do' \
+    '    if [[ $arg == *"%(trailers"* ]]; then' \
+    '        exit 0' \
+    '    fi' \
+    'done' \
     'exec "$REAL_GIT" "$@"' > "$verify_git_wrapper"
 chmod +x "$verify_git_wrapper"
 verify_rc=0
@@ -525,5 +525,23 @@ assert_not_contains "$verify_out" 'committed ' \
     'a failed verification never prints the one-line success record'
 assert_eq 'feat: verification backstop' "$(git -C "$verify_repo" log -1 --format=%s)" \
     'the underlying commit still exists -- verification cannot undo it, only surface it loudly'
+
+# A repository-local `trailer.separators` config that drops ':' (e.g. "=")
+# changes how git's OWN pretty-format parses trailers -- but this helper's
+# documented, validated syntax is always "Key: value". Without pinning the
+# separator on its own verification read, a real commit with a real,
+# well-formed trailer gets misreported as a verification failure purely
+# because of the repository's config, not anything wrong with the commit.
+separators_repo="$tmp/trailer-separators-repo"
+new_repo "$separators_repo"
+git -C "$separators_repo" config trailer.separators '='
+printf 'change\n' > "$separators_repo/change.txt"
+separators_rc=0
+separators_out=$(cd "$separators_repo" && "$script" --message 'feat: nonstandard trailer.separators' \
+    --trailer 'Co-Authored-By: X <x@example.com>' -- change.txt 2>&1) || separators_rc=$?
+assert_eq '0' "$separators_rc" \
+    'a repository-local trailer.separators config that drops the colon does not fail verification'
+assert_contains "$separators_out" 'committed' \
+    'verification still reports success under a nonstandard trailer.separators config'
 
 finish
