@@ -111,8 +111,11 @@ before the first receipt and remain stable when HEAD or the local environment co
 after compaction/resume. `scope=57,54` and `scope=57,62` therefore cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume.
 Reuse this invocation-level `RUN_ID` for every issue and never derive it from worker-local
-values. Append every human grant, steer, or board adjudication immediately on receipt with
-`"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+values. Append every human grant, steer, or board adjudication immediately on receipt. Write the
+verbatim quote to a private temp file first and pass it as `--quote-file`, so a multi-line grant
+(flags on one line, scope on the next) is stored byte-exact with no reflow:
+`quote_file=$(mktemp); chmod 600 "$quote_file"; printf '%s' "$QUOTE" >"$quote_file";
+"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-file "$quote_file"; rm -f "$quote_file"`.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
 
