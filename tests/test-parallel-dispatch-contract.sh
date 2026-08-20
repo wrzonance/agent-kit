@@ -1319,6 +1319,20 @@ assert_eq 1 "$opencode_unsanctioned_rc" \
 assert_eq '' "$opencode_unsanctioned_out" \
     'the OpenCode unsanctioned-value stop actually terminates the script'
 
+# A `case` glob cannot express "exactly one '/'" -- `[^/]` matches exactly
+# one character, so `[^/]*` reads as a quantified character class but is
+# actually "one non-slash char, then a plain unrestricted `*`", which still
+# matches a second or third '/'. With no allowlist behind this check for
+# OpenCode, a malformed multi-slash value must stop just like any other
+# unsanctioned value, never silently dispatch against a nonexistent model.
+opencode_extra_slash_config=$'AGENT_WORKER_MODEL=provider/model/extra\nAGENT_WORKER_MODEL_FALLBACK=wrzcluster/qwen3-coder\n'
+opencode_extra_slash_out=$(run_spawn_fence opencode "$opencode_extra_slash_config")
+opencode_extra_slash_rc=$?
+assert_eq 1 "$opencode_extra_slash_rc" \
+    'a value with more than one "/" is not a well-formed provider/model-id and stops on OpenCode'
+assert_eq '' "$opencode_extra_slash_out" \
+    'the OpenCode extra-slash stop actually terminates the script'
+
 opencode_undeclared_out=$(run_spawn_fence opencode '')
 opencode_undeclared_rc=$?
 assert_eq 1 "$opencode_undeclared_rc" \
