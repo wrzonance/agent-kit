@@ -91,8 +91,16 @@ done
 # Genuinely per-worktree facts are still freshly measured, not copied --
 # only sandbox=/tls=/caches= are session-scoped. worktree= must name the NEW
 # worktree, not be a stale copy of the root's own worktree= line.
+#
+# agent-preflight.sh builds worktree= from readlink -f plus the git toplevel,
+# which resolves symlinks; $worktree here comes from mktemp -d, which does
+# not (issue #332 F6). On a host where the temp root is itself a symlink
+# (e.g. macOS's /var -> /private/var) the two would read as byte-different
+# for reasons that have nothing to do with the behavior under test. Resolve
+# the expected path the same way before comparing.
+worktree_resolved=$(readlink -f -- "$worktree")
 worktree_only_worktree=$(grep -m1 '^worktree=' "$worktree_contract")
-assert_eq "worktree=$worktree" "$worktree_only_worktree" \
+assert_eq "worktree=$worktree_resolved" "$worktree_only_worktree" \
     'the worktree= line is freshly measured for the new worktree, not copied from the root'
 
 # --- a note= on the root's sandbox= line survives into the worktree ---------

@@ -452,6 +452,21 @@ assert_contains "$escalated_sandbox" 'measured-by=escalated' \
 assert_contains "$escalated_sandbox" 'this probe does not detect that state itself' \
     'the escalated tag discloses it was asserted, not detected'
 
+# An escalated run inside a sandboxed workspace must keep BOTH sentences
+# (issue #332 F1): the escalated branch used to replace note= wholesale,
+# silently dropping the actionable "escalate git writes and forge calls"
+# guidance a worker needs before it hits a refusal. CODEX_PERMISSION_PROFILE
+# forces sandboxed=yes deterministically, independent of this machine's real
+# sandbox state.
+escalated_sandboxed_repo=$(new_repo)
+escalated_sandboxed_view=$(CODEX_PERMISSION_PROFILE=test-profile \
+    "$script" --worktree "$escalated_sandboxed_repo" --measured-from escalated 2> /dev/null)
+escalated_sandboxed_sandbox=$(grep '^sandbox=' <<< "$escalated_sandboxed_view")
+assert_contains "$escalated_sandboxed_sandbox" 'escalate git writes and forge calls' \
+    'an escalated run inside a sandbox keeps the sandboxed-workspace guidance'
+assert_contains "$escalated_sandboxed_sandbox" 'this probe does not detect that state itself' \
+    'an escalated run inside a sandbox also keeps the escalated-disclosure sentence'
+
 assert_rc 2 '--measured-from still rejects an unrecognised class' -- \
     "$script" --worktree "$repo" --measured-from somewhere-else
 
@@ -509,6 +524,28 @@ assert_contains "$masking_err" "keeping the more-restrictive recorded sandbox= (
 assert_eq 'sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell' \
     "$(grep '^sandbox=' "$masking_contract")" \
     'the masked-widening scenario keeps the recorded sandbox= line, not the fresh one'
+
+# --- a spoofed field= token inside note= must not out-match the real field --
+# (issue #332 F2). note= is free-form and sits at the end of the line; a
+# naive greedy `.*field=` search prefers the RIGHTMOST match, so an embedded
+# "active=yes" inside note= would previously have been read as the real
+# active= value instead of the genuine, earlier one -- letting a fresh
+# measurement that actually widened (active regressed yes->no) compare as
+# unchanged and slip past the guard.
+spoof_repo=$(new_repo)
+spoof_contract="$spoof_repo/.agent/env-contract.txt"
+printf 'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    > "$spoof_contract"
+chmod 600 "$spoof_contract"
+spoof_session="$tmp/spoof-session-contract.txt"
+printf '%s\nsandbox= active=no profile=none network=disabled home-writable=no measured-by=agent-shell note="spoofed trailing text containing active=yes to mislead a naive parser"\n' \
+    "$current_harness_line" > "$spoof_session"
+spoof_err=$("$script" --worktree "$spoof_repo" --inherit-session "$spoof_session" 2>&1 > /dev/null)
+assert_contains "$spoof_err" "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field 'active')" \
+    "an embedded active= token inside note= does not mask a real active= widening"
+assert_eq 'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' "$spoof_contract")" \
+    'the spoofed-note scenario keeps the recorded sandbox= line, not the fresh one'
 
 # A worktree with no prior contract records its first measurement normally --
 # there is nothing recorded yet for the guard to protect.

@@ -79,6 +79,18 @@ if [[ -r "$PROTECTED_PATHS_LIB" ]]; then
     source "$PROTECTED_PATHS_LIB"
 fi
 
+# sandbox_field_rank/sandbox_widened (issue #332 F3): the single definition
+# shared with compose-worker-prompt.sh, not a copy. Guarded the same way as
+# PROTECTED_PATHS_LIB above (this script reports missing facts rather than
+# blocking; a caller that copies agent-preflight.sh without its lib/ sibling
+# still runs) -- apply_never_widen() below discloses when the comparator is
+# unavailable instead of crashing the whole probe.
+SANDBOX_COMPARATOR_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/sandbox-comparator.sh"
+if [[ -r "$SANDBOX_COMPARATOR_LIB" ]]; then
+    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+    source "$SANDBOX_COMPARATOR_LIB"
+fi
+
 usage() {
     cat <<'EOF'
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
@@ -590,8 +602,18 @@ probe_sandbox() {
         # CODEX_PERMISSION_PROFILE describe a SANDBOXED shell, not an escalated
         # one, and nothing else here can tell the two non-hook classes apart.
         # This branch only ever runs when the caller passed --measured-from
-        # escalated explicitly -- it is not detected, only labelled.
-        note=' note="explicitly asserted by the caller as an escalated/approval-granted execution; this probe does not detect that state itself"'
+        # escalated explicitly -- it is not detected, only labelled. Appended
+        # to (never replacing) any sandboxed-workspace note already set above
+        # (issue #332 F1): an escalated run inside a sandbox still needs the
+        # actionable "escalate git writes and forge calls" guidance, not just
+        # the disclosure that escalation was asserted rather than detected.
+        local escalated_note='explicitly asserted by the caller as an escalated/approval-granted execution; this probe does not detect that state itself'
+        if [[ -n $note ]]; then
+            note=${note%\"}
+            note="$note. $escalated_note\""
+        else
+            note=" note=\"$escalated_note\""
+        fi
     fi
     # measured-by= is unconditional (not just for hook) so every one of the
     # three process classes this probe can run as -- hook, the agent's own
@@ -603,49 +625,10 @@ probe_sandbox() {
     emit "sandbox= active=$sandboxed profile=$profile network=$network home-writable=$(dir_writable_word "${HOME:-}") measured-by=$ARG_MEASURED_FROM$note"
 }
 
-# Restrictiveness rank for one sandbox= token: higher is safer/more
-# restrictive. An absent or unrecognised value ranks as maximally
-# uninformative (1, the middle value) rather than either extreme.
-sandbox_field_rank() {
-    local field="$1" value="$2"
-    case "$field" in
-        active)
-            case "$value" in yes) printf '2' ;; no) printf '0' ;; *) printf '1' ;; esac ;;
-        home-writable)
-            case "$value" in no) printf '2' ;; yes) printf '0' ;; *) printf '1' ;; esac ;;
-        # network=disabled is the most restrictive reading (no reachability at
-        # all); network=ok the least; network=unresolved (a DNS lookup that
-        # failed while the network was nominally allowed) sits in between --
-        # it is evidence of a problem, not proof of either extreme.
-        network)
-            case "$value" in disabled) printf '2' ;; ok) printf '0' ;; *) printf '1' ;; esac ;;
-    esac
-}
-
-# Whether $2 (a fresh sandbox= measurement) is LESS restrictive than $1 (a
-# recorded one) on any single axis. This is field-by-field, deliberately not
-# a summed score (issue #332 F2): active/home-writable/network are
-# independent axes of one sandbox, and a scalar sum lets one axis's
-# tightening mask another axis's widening -- e.g. active regressing from
-# yes to no while network improves from disabled to ok nets to "no change"
-# in a sum, even though the worker just silently lost its network
-# restriction. Prints the name of the first regressed field and returns
-# success when a widening is found; prints nothing and returns failure
-# otherwise.
-sandbox_widened() {
-    local recorded="$1" fresh="$2" field rec_tok fresh_tok rec_rank fresh_rank
-    for field in active home-writable network; do
-        rec_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$recorded")
-        fresh_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$fresh")
-        rec_rank=$(sandbox_field_rank "$field" "$rec_tok")
-        fresh_rank=$(sandbox_field_rank "$field" "$fresh_tok")
-        if (( fresh_rank < rec_rank )); then
-            printf '%s' "$field"
-            return 0
-        fi
-    done
-    return 1
-}
+# sandbox_field_rank/sandbox_widened live in lib/sandbox-comparator.sh
+# (issue #332 F3), sourced near the top of this file -- shared verbatim with
+# compose-worker-prompt.sh so the two sides of the create-issue-worktree.sh
+# boundary can never rank a sandbox= line's restrictiveness differently.
 
 # Same idea for caches=: a root confirmed unwritable ($HOME/.cache truly
 # refused a write, so the cache root fell back to an isolated /tmp path) is
@@ -655,7 +638,14 @@ sandbox_widened() {
 # scores in between rather than being judged for restrictiveness.
 caches_restriction_score() {
     local line="$1" reason
-    reason=$(sed -n 's/.*reason=\([A-Za-z-]*\).*/\1/p' <<< "$line")
+    # Anchored on the literal " home-cache=" that always immediately follows
+    # reason= in this probe's fixed field order (issue #332 F2): root= (just
+    # before reason=) carries an operator-controlled path (AGENT_CACHE_ROOT),
+    # and without this anchor a crafted root value containing its own
+    # "reason=" text could out-match the real field under a greedy .*reason=
+    # search. Requiring the immediate " home-cache=" suffix means only the
+    # genuine field -- always followed by exactly that text -- can match.
+    reason=$(sed -n 's/.*reason=\([A-Za-z-]*\) home-cache=.*/\1/p' <<< "$line")
     case "$reason" in
         home-cache-unwritable) printf '2' ;;
         AGENT_CACHE_ROOT-set) printf '1' ;;
@@ -684,10 +674,14 @@ apply_never_widen() {
                     local new_line
                     new_line="${OUT_LINES[$i]}"
                     if [[ "$prefix" == 'sandbox=' ]]; then
-                        local regressed_field
-                        if regressed_field=$(sandbox_widened "$prev_line" "$new_line"); then
-                            note "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field '$regressed_field'): recorded=[$prev_line] fresh=[$new_line]"
-                            OUT_LINES[i]="$prev_line"
+                        if ! declare -F sandbox_widened >/dev/null; then
+                            note "cannot verify the sandbox= never-widen guard: lib/sandbox-comparator.sh is missing alongside this script"
+                        else
+                            local regressed_field
+                            if regressed_field=$(sandbox_widened "$prev_line" "$new_line"); then
+                                note "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field '$regressed_field'): recorded=[$prev_line] fresh=[$new_line]"
+                                OUT_LINES[i]="$prev_line"
+                            fi
                         fi
                     else
                         local old_score new_score

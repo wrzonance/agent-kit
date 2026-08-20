@@ -71,9 +71,11 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could 
 template_file=$script_dir/../references/worker-prompts.md
 repo_config=$script_dir/../../.shared/scripts/repo-config.sh
 contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
+sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.sh
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
+[[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
 
 contract=$worktree/.agent/env-contract.txt
 spec=$worktree/.agent/fenced-spec.txt
@@ -88,39 +90,12 @@ if grep -Eq '<(PASTE|WHEN)([[:space:]]|[^[:alnum:]_])' "$contract"; then
     die 'environment contract contains an unresolved <PASTE ...> or <WHEN ...> placeholder'
 fi
 
-# Restrictiveness rank for one sandbox= token, and the field-by-field widen
-# check built from it. Kept in lockstep, by design intent, with
-# agent-preflight.sh's own sandbox_field_rank/sandbox_widened -- both exist
-# only to answer "did this get less restrictive on any one axis", never to
-# guess a category neither script can verify. Field-by-field, not a summed
-# score (issue #332 F2): active/home-writable/network are independent axes,
-# and a scalar sum lets one axis's tightening mask another axis's widening.
-sandbox_field_rank() {
-    local field=$1 value=$2
-    case $field in
-        active)
-            case $value in yes) printf '2' ;; no) printf '0' ;; *) printf '1' ;; esac ;;
-        home-writable)
-            case $value in no) printf '2' ;; yes) printf '0' ;; *) printf '1' ;; esac ;;
-        network)
-            case $value in disabled) printf '2' ;; ok) printf '0' ;; *) printf '1' ;; esac ;;
-    esac
-}
-
-sandbox_widened() {
-    local recorded=$1 fresh=$2 field rec_tok fresh_tok rec_rank fresh_rank
-    for field in active home-writable network; do
-        rec_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$recorded")
-        fresh_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$fresh")
-        rec_rank=$(sandbox_field_rank "$field" "$rec_tok")
-        fresh_rank=$(sandbox_field_rank "$field" "$fresh_tok")
-        if ((fresh_rank < rec_rank)); then
-            printf '%s' "$field"
-            return 0
-        fi
-    done
-    return 1
-}
+# sandbox_field_rank/sandbox_widened (issue #332 F3): the single definition
+# shared with agent-preflight.sh, not a copy kept in lockstep by comment
+# alone -- both exist only to answer "did this get less restrictive on any
+# one axis", never to guess a category neither script can verify.
+# shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+source "$sandbox_comparator_lib"
 
 # sandbox= is a SESSION-scoped fact (issue #332): the root checkout's own
 # contract is the authoritative measurement for this run, and
@@ -131,12 +106,22 @@ sandbox_widened() {
 # a rosier picture of its own sandbox than the root already measured for the
 # same run. Refuse rather than propagate that.
 root_git_common=$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null) || root_git_common=''
+# Initialized unconditionally (issue #332 F4): this branch does not always
+# run (root_git_common can be empty outside a git work tree), and an unset
+# repo_root would otherwise fall through to `${repo_root:-}` below and
+# silently pick up whatever repo_root the CALLER'S environment happens to
+# export -- pointing the fail-closed contract comparison at an
+# attacker- or accident-chosen path instead of refusing to compare at all.
+repo_root=''
 if [[ -n $root_git_common ]]; then
     case $root_git_common in
         /*) : ;;
         *) root_git_common=$worktree/$root_git_common ;;
     esac
-    repo_root=$(cd -- "$(dirname -- "$root_git_common")" && pwd -P 2>/dev/null) || repo_root=''
+    # 2>/dev/null on the `cd`, not the `pwd` (issue #332 F4): a failing cd
+    # otherwise still writes its error to stderr even though the `||` below
+    # already handles the failure by falling back to an empty repo_root.
+    repo_root=$(cd -- "$(dirname -- "$root_git_common")" 2>/dev/null && pwd -P) || repo_root=''
 fi
 if [[ -n ${repo_root:-} ]]; then
     root_contract=$repo_root/.agent/env-contract.txt

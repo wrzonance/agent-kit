@@ -565,4 +565,26 @@ assert_eq 1 "$masking_rc" \
 assert_contains "$masking_err" "on field 'network'" \
     'the refusal names the regressed field, not just "less restrictive"'
 
+# --- a spoofed field= token inside note= must not out-match the real field --
+# (issue #332 F2). note= is free-form and sits at the end of the line; a
+# naive greedy `.*field=` search prefers the RIGHTMOST match, so an embedded
+# "active=yes" inside note= would previously have been read as the real
+# active= value instead of the genuine, earlier one -- letting a worktree
+# contract that actually widened (active regressed yes->no) compare as
+# unchanged against the root and slip past the fail-closed guard.
+spoof_root_line='sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"'
+spoof_worktree_line='sandbox= active=no profile=none network=disabled home-writable=no measured-by=agent-shell note="spoofed trailing text containing active=yes to mislead a naive parser"'
+spoof_root="$tmp/spoof-root"
+make_widen_root "$spoof_root" "$spoof_root_line"
+spoof_worktree="$spoof_root/.worktrees/feat-issue-spoof"
+make_widen_worktree "$spoof_root" feat/issue-spoof "$spoof_worktree" "$spoof_worktree_line"
+spoof_rc=0
+spoof_err=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$spoof_worktree" --issue 995 --branch feat/issue-spoof \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 > /dev/null) || spoof_rc=$?
+assert_eq 1 "$spoof_rc" \
+    'an embedded active= token inside note= does not mask a real active= widening'
+assert_contains "$spoof_err" "on field 'active'" \
+    'the refusal names the real regressed field, not a fake one from note='
+
 finish
