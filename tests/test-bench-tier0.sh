@@ -52,9 +52,15 @@ run_tier0 "$real_tier0"
 assert_eq '2' "$RUN_RC" 'no REF argument exits 2'
 assert_contains "$RUN_OUT" 'usage' 'no REF argument prints usage'
 
+# F2: an unresolvable ref must fail immediately with a named, diagnosable
+# error -- not cascade into a missing ledger file and a downstream jq/awk
+# crash three steps later (the exact failure mode a shallow CI checkout hit
+# against 06d18cf/53e7e8c: see the repro block below).
 run_tier0 "$real_tier0" 'not-a-real-ref-xyz'
 assert_eq '1' "$RUN_RC" 'an unresolvable ref fails'
-assert_contains "$RUN_OUT" 'not a resolvable commit' 'an unresolvable ref names the problem'
+assert_contains "$RUN_OUT" 'not present in this checkout' 'an unresolvable ref names the problem'
+assert_contains "$RUN_OUT" 'not-a-real-ref-xyz' 'the error names the actual ref, not a generic message'
+assert_contains "$RUN_OUT" 'shallow' 'the error suggests a shallow clone as the likely cause'
 
 run_tier0 "$real_tier0" HEAD --fixture-version ''
 assert_eq '1' "$RUN_RC" 'an empty --fixture-version fails'
@@ -83,13 +89,24 @@ printf '%s\n' "$(head -c 39 /dev/zero | tr '\0' d)" > "$synth/agentkit/skills/pa
 # a non-.md file under skills/ must never contribute to either surface
 printf '%s\n' "should never be counted" > "$synth/agentkit/skills/alpha/notes.txt"
 
+# F1 regression: a skill directory whose name contains a tab. `git ls-tree`
+# without -z C-quotes a path like this (e.g. as "a\tb/SKILL.md"), which
+# breaks both a naive grep match and a naive `git cat-file` lookup against
+# the quoted display form. sum_bytes_matching must count it exactly like any
+# other skill.
+tab_dir="$synth/agentkit/skills/$(printf 'weird\tname')"
+mkdir -p "$tab_dir"
+printf -- '---\nname: weird\ndescription: Use when the path itself is adversarial.\n---\n%s\n' \
+    "$(head -c 19 /dev/zero | tr '\0' e)" > "$tab_dir/SKILL.md"
+
 skill_bytes=$(wc -c < "$synth/agentkit/skills/alpha/SKILL.md")
 ref_bytes=$(wc -c < "$synth/agentkit/skills/alpha/references/ref.md")
 shared_bytes=$(wc -c < "$synth/agentkit/skills/.shared/policy.md")
 dispatch_bytes=$(wc -c < "$synth/agentkit/skills/parallel-issues/references/worker-prompts.md")
+tab_skill_bytes=$(wc -c < "$tab_dir/SKILL.md")
 
-expect_resident=$skill_bytes
-expect_reachable=$((skill_bytes + ref_bytes + shared_bytes + dispatch_bytes))
+expect_resident=$((skill_bytes + tab_skill_bytes))
+expect_reachable=$((skill_bytes + ref_bytes + shared_bytes + dispatch_bytes + tab_skill_bytes))
 
 git -C "$synth" init -q
 git -C "$synth" -c user.email=t@example.com -c user.name=t add -A
@@ -107,8 +124,10 @@ got_dispatch_present=$(jq -r '.dispatched_template.present' <<< "$record1")
 got_dispatch_bytes=$(jq -r '.dispatched_template.bytes' <<< "$record1")
 got_key=$(jq -r '[.plugin_sha, .fixture_version, .model, .effort] | @tsv' <<< "$record1")
 
-assert_eq "$expect_resident" "$got_resident" 'resident bytes = the one SKILL.md, whole-file'
-assert_eq "$expect_reachable" "$got_reachable" 'reachable bytes = every *.md under skills/, non-md excluded'
+assert_eq "$expect_resident" "$got_resident" \
+    'resident bytes = every SKILL.md (including the tab-path one), whole-file'
+assert_eq "$expect_reachable" "$got_reachable" \
+    'reachable bytes = every *.md under skills/ (including the tab-path one), non-md excluded'
 assert_eq 'true' "$got_dispatch_present" 'dispatched_template is present when the file exists at the SHA'
 assert_eq "$dispatch_bytes" "$got_dispatch_bytes" 'dispatched_template bytes match the template file exactly'
 assert_eq "$(printf '%s\ttier0-v1\tstatic-accounting\tn/a' "$sha1")" "$got_key" \
@@ -143,6 +162,18 @@ assert_eq '3' "$lines_after_three" 'a third invocation strictly grows the ledger
 assert_eq "$record1" "$(sed -n '1p' "$ledger")" 'line 1 is still byte-identical after a third invocation'
 assert_eq "$record2" "$(sed -n '2p' "$ledger")" 'line 2 is still byte-identical after a third invocation'
 
+# F2: (plugin_sha, fixture_version, model, effort) is a grouping/comparison
+# key, not a uniqueness constraint -- re-measuring the same SHA is a normal
+# operation the ledger writer never rejects (see bench/README). The third
+# invocation above re-measured sha1, so line 3 must carry the SAME key as
+# line 1 while being a genuinely distinct row (different measured_at).
+record3=$(sed -n '3p' "$ledger")
+got_key3=$(jq -r '[.plugin_sha, .fixture_version, .model, .effort] | @tsv' <<< "$record3")
+assert_eq "$got_key" "$got_key3" \
+    're-measuring the same SHA appends a row with the identical grouping key'
+assert_eq '2026-01-01T00:00:02Z' "$(jq -r '.measured_at' <<< "$record3")" \
+    'the duplicate-key row is still a distinct, individually-dated measurement'
+
 # --- refuses to append through a symlink ----------------------------------
 symlinked_ledger="$synth/bench/results/via-symlink.jsonl"
 ln -s "$ledger" "$symlinked_ledger"
@@ -154,28 +185,52 @@ assert_contains "$RUN_OUT" 'symlink' 'the symlink refusal names the reason'
 # 06d18cf / 53e7e8c are real, already-merged commits in THIS repository's
 # history (the compression refactor issue #323 cites): no fixture, no
 # network, just this repo's own git objects.
+# This reproduction needs both arm SHAs actually present in the checkout's
+# git history -- a shallow clone (fetch-depth: 1, GitHub Actions' checkout
+# default) does not have them. Each run is asserted on its own line so a
+# missing-history failure names itself (F2's error, asserted above) instead
+# of surfacing three steps later as a jq "could not open file" or an awk
+# "division by zero". If either arm SHA did not resolve, the numeric
+# comparisons below are reported as explicit failures -- never silently
+# skipped -- because a passing suite that quietly didn't check the epic's
+# headline reproduction is worse than a loud one that says so.
 repro_ledger=$tmp/repro-tier0.jsonl
 run_tier0 "$real_tier0" 06d18cf --ledger "$repro_ledger" --timestamp 2026-01-01T00:00:00Z
-assert_eq '0' "$RUN_RC" '06d18cf resolves and measures cleanly'
+before_rc=$RUN_RC before_out=$RUN_OUT
+assert_eq '0' "$before_rc" '06d18cf resolves and measures cleanly'
+
 run_tier0 "$real_tier0" 53e7e8c --ledger "$repro_ledger" --timestamp 2026-01-01T00:00:01Z
-assert_eq '0' "$RUN_RC" '53e7e8c resolves and measures cleanly'
+after_rc=$RUN_RC after_out=$RUN_OUT
+assert_eq '0' "$after_rc" '53e7e8c resolves and measures cleanly'
 
-before_resident=$(jq -r 'select(.plugin_sha | startswith("06d18cf")) | .resident.tokens' "$repro_ledger")
-after_resident=$(jq -r 'select(.plugin_sha | startswith("53e7e8c")) | .resident.tokens' "$repro_ledger")
-before_reachable=$(jq -r 'select(.plugin_sha | startswith("06d18cf")) | .reachable.tokens' "$repro_ledger")
-after_reachable=$(jq -r 'select(.plugin_sha | startswith("53e7e8c")) | .reachable.tokens' "$repro_ledger")
+if [[ $before_rc -eq 0 && $after_rc -eq 0 ]]; then
+    before_resident=$(jq -r 'select(.plugin_sha | startswith("06d18cf")) | .resident.tokens' "$repro_ledger")
+    after_resident=$(jq -r 'select(.plugin_sha | startswith("53e7e8c")) | .resident.tokens' "$repro_ledger")
+    before_reachable=$(jq -r 'select(.plugin_sha | startswith("06d18cf")) | .reachable.tokens' "$repro_ledger")
+    after_reachable=$(jq -r 'select(.plugin_sha | startswith("53e7e8c")) | .reachable.tokens' "$repro_ledger")
 
-# Compare with one decimal digit of precision using awk (no bc dependency) --
-# the epic's published table is -59.4% resident / -8.9% reachable "within
-# rounding".
-resident_pct=$(awk -v b="$before_resident" -v a="$after_resident" 'BEGIN { printf "%.1f", (b - a) / b * 100 }')
-reachable_pct=$(awk -v b="$before_reachable" -v a="$after_reachable" 'BEGIN { printf "%.1f", (b - a) / b * 100 }')
-assert_eq '59.4' "$resident_pct" 'resident dropped 59.4% between 06d18cf and 53e7e8c, matching the epic table'
-assert_eq '8.9' "$reachable_pct" 'reachable dropped 8.9% between 06d18cf and 53e7e8c, matching the epic table'
+    # Compare with one decimal digit of precision using awk (no bc
+    # dependency) -- the epic's published table is -59.4% resident / -8.9%
+    # reachable "within rounding".
+    resident_pct=$(awk -v b="$before_resident" -v a="$after_resident" 'BEGIN { printf "%.1f", (b - a) / b * 100 }')
+    reachable_pct=$(awk -v b="$before_reachable" -v a="$after_reachable" 'BEGIN { printf "%.1f", (b - a) / b * 100 }')
+    assert_eq '59.4' "$resident_pct" 'resident dropped 59.4% between 06d18cf and 53e7e8c, matching the epic table'
+    assert_eq '8.9' "$reachable_pct" 'reachable dropped 8.9% between 06d18cf and 53e7e8c, matching the epic table'
 
-before_dispatch_present=$(jq -r 'select(.plugin_sha | startswith("06d18cf")) | .dispatched_template.present' "$repro_ledger")
-after_dispatch_present=$(jq -r 'select(.plugin_sha | startswith("53e7e8c")) | .dispatched_template.present' "$repro_ledger")
-assert_eq 'false' "$before_dispatch_present" 'worker-prompts.md did not exist yet at 06d18cf'
-assert_eq 'true' "$after_dispatch_present" 'worker-prompts.md exists at 53e7e8c'
+    before_dispatch_present=$(jq -r 'select(.plugin_sha | startswith("06d18cf")) | .dispatched_template.present' "$repro_ledger")
+    after_dispatch_present=$(jq -r 'select(.plugin_sha | startswith("53e7e8c")) | .dispatched_template.present' "$repro_ledger")
+    assert_eq 'false' "$before_dispatch_present" 'worker-prompts.md did not exist yet at 06d18cf'
+    assert_eq 'true' "$after_dispatch_present" 'worker-prompts.md exists at 53e7e8c'
+else
+    _fail 'resident dropped 59.4% between 06d18cf and 53e7e8c, matching the epic table' \
+        'not measured: an arm SHA failed to resolve -- see the failing 06d18cf/53e7e8c assertions above' \
+        "06d18cf rc=$before_rc: ${before_out:0:200}" "53e7e8c rc=$after_rc: ${after_out:0:200}"
+    _fail 'reachable dropped 8.9% between 06d18cf and 53e7e8c, matching the epic table' \
+        'not measured: an arm SHA failed to resolve -- see the failing 06d18cf/53e7e8c assertions above'
+    _fail 'worker-prompts.md did not exist yet at 06d18cf' \
+        'not measured: an arm SHA failed to resolve -- see the failing 06d18cf/53e7e8c assertions above'
+    _fail 'worker-prompts.md exists at 53e7e8c' \
+        'not measured: an arm SHA failed to resolve -- see the failing 06d18cf/53e7e8c assertions above'
+fi
 
 finish
