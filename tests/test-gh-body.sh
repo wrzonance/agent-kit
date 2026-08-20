@@ -414,4 +414,11 @@ assert_eq "$gh_calls_before" "$gh_calls_after" \
 # missing_create_output above already exercise this with the suite's default
 # GH_PR_BASE=GH_PR_DEFAULT_BRANCH=main fixture, i.e. the retarget-time shape).
 
+# --- usage documents the base-aware --expect-closing-issue contract --------
+usage_output=$(GH_BODY_GH="$tmp/gh" bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" --help)
+assert_contains "$usage_output" 'default branch' \
+    'usage documents the default-branch closing-issue requirement'
+assert_contains "$usage_output" 'deferred' \
+    'usage documents the stacked-PR deferred closing-issue outcome'
+
 finish

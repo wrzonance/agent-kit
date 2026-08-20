@@ -36,7 +36,13 @@ Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options.
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
 and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
-also proves that GitHub registered the closing issue reference.
+also proves the closing issue reference, base-aware:
+  - PR base is the repo's default branch: GitHub registration of #N is
+    required, retried, and fatal if still absent (unchanged proof).
+  - PR base is not the default branch (a stacked PR): the body-side "Closes/
+    Fixes/Resolves #N" keyword is still required, but forge-side registration
+    cannot happen until the PR is retargeted, so it is reported as a distinct
+    non-error "closing-issue #N: deferred (...)" outcome and exits 0.
 EOF
 }
 
