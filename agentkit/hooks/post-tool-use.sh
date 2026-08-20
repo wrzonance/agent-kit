@@ -224,10 +224,25 @@ if [[ -n $matched_path ]]; then
     # WITHOUT consuming guard_should_advise's once-per-session claim: a
     # genuinely stale path read later in the same session must still get its
     # own lesson, which a spent claim here would silently swallow.
+    #
+    # The containment check below is LEXICAL (guard_scope_canonical resolves
+    # `..` components without touching the filesystem, same as every other
+    # scope comparison in this tree), never a plain string-prefix compare: a
+    # textual compare passes a path that starts with the resolved tree as TEXT
+    # and then walks back out of it via `..` segments to a genuinely
+    # different, stale version tree while "looking like" the resolved one
+    # (adversarial review, issue #335 finding F2). guard_scope_canonical has
+    # no failure path today, but a failed canonicalization must still be
+    # treated as NOT correct -- fail closed, not fail silent.
     path_is_correct=0
-    [[ -n $resolved_skills &&
-        ( $matched_path == "$resolved_skills" || $matched_path == "$resolved_skills"/* ) ]] &&
-        path_is_correct=1
+    if [[ -n $resolved_skills ]]; then
+        canonical_matched=$(guard_scope_canonical "$matched_path") || canonical_matched=''
+        canonical_resolved=$(guard_scope_canonical "$resolved_skills") || canonical_resolved=''
+        [[ -n $canonical_matched && -n $canonical_resolved &&
+            ( $canonical_matched == "$canonical_resolved" ||
+              $canonical_matched == "$canonical_resolved"/* ) ]] &&
+            path_is_correct=1
+    fi
     if ((! path_is_correct)) && guard_should_advise "$state_root" "$session" pinned-plugin-path; then
         if [[ -n $resolved_skills && $resolved_skills == "$matched_path" ]]; then
             # Defensive only -- unreachable given path_is_correct above, which

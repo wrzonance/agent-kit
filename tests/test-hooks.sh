@@ -709,6 +709,30 @@ out=$(pre_input "$scope_repo" \
 assert_eq '' "$(pre_context "$out")" \
     'a quoted sed address argument with internal whitespace produces no scope advisory'
 
+# grep's -e/--regexp operand is excluded the same way sed's -e is -- a
+# pattern, never a path, regardless of what it looks like.
+grep_e_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "grep -e 'foo bar /baz' README.md" "$grep_e_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted grep -e pattern with internal whitespace produces no scope advisory'
+
+# The whitespace-in-token skip this replaced was itself a real bypass: it is
+# not the presence of whitespace that makes a token safe to skip, it is being
+# the OPERAND of a known expression flag. A quoted path with a space in it is
+# exactly how a real foreign path gets passed on a command line, and it must
+# still be flagged (adversarial review on issue #335, finding F1).
+spacey_path_sid=$(fresh_sid)
+spacey_foreign=${RUNNER_TEMP:-/dev/shm}
+spacey_foreign_dir=$(mktemp -d "$spacey_foreign/hooks-spacey-foreign.XXXXXX")
+spacey_target="$spacey_foreign_dir/foreign repo"
+mkdir -p "$spacey_target"
+out=$(pre_input "$scope_repo" "find \"$spacey_target\" -name AGENTS.md" "$spacey_path_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a quoted foreign path containing a space still receives the scope advisory'
+rm -rf -- "$spacey_foreign_dir"
+
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets
 # the command run because a cheaper alternative can be taught afterwards; there
@@ -1351,6 +1375,17 @@ assert_eq no "$([[ $remedy_line == "$stale_version_path" ]] && printf yes || pri
     'the prescribed remedy is never byte-equal to the flagged path'
 assert_eq "$correct_skills_dir" "$remedy_line" \
     'the remedy is the contract-resolved tree, not the stale one'
+
+# The correctness check above must be LEXICAL, not a plain string-prefix
+# compare -- a `..` traversal that starts with the resolved tree AS TEXT and
+# then walks back out of it to a genuinely different, stale version segment
+# must still be caught (adversarial review on issue #335, finding F2).
+traversal_sid=$(fresh_sid)
+traversal_path="$correct_skills_dir/../../0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "$traversal_path" "$traversal_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a .. traversal that textually starts with the resolved tree but reaches a stale one still fires'
 
 # $command_line is the WHOLE command, so a raw pattern match cannot tell a path
 # being EXECUTED (above) from one merely QUOTED as data -- a heredoc body

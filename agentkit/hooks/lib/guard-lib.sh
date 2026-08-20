@@ -436,7 +436,7 @@ guard_scope_path_allowed() {
 # a command segment is a walker/reader. Relative paths are intentionally left
 # alone: the resolved repository/cwd contract answers those without guessing.
 guard_out_of_scope_target() {
-    local command_line=$1 segment verb token cleaned has_walker=0
+    local command_line=$1 segment verb token cleaned has_walker=0 expr_operand=0
     local cwd=${2:-$PWD} command_root='' command_class='' command_dir=''
     local -a words
     # Segmented and tokenized the way the shell actually parses the command --
@@ -514,14 +514,29 @@ guard_out_of_scope_target() {
             return 0
         fi
 
+        # Only the OPERAND of a known expression-taking flag is excluded from
+        # path checking -- never every token with internal whitespace. A
+        # quoted argument with a space is not proof it is an expression: it
+        # is exactly how a real foreign path containing a space gets passed
+        # (`find "/home/user/foreign repo" -name AGENTS.md` tokenizes to one
+        # argument, and that argument IS the path to flag). Skipping on
+        # whitespace alone reopened the scope guard to that quoting (adversarial
+        # review on issue #335, finding F1). Recognize the exclusion from the
+        # PRECEDING flag instead: sed's -e/--expression and grep's -e/--regexp
+        # take a pattern, never a path, regardless of what it looks like.
+        expr_operand=0
         for token in "${words[@]:1}"; do
-            # guard_tokenize_words already consumed quote characters as
-            # syntax, so a token surviving here with INTERNAL whitespace was
-            # only ever a single quoted shell word (a sed/grep expression, a
-            # sentence, a regex) -- never a bare filesystem path, which a
-            # shell cannot pass as one unquoted argument. Trailing comma/paren
-            # trimming stays for the common prose-list case ("see /a/b, /c)").
-            [[ $token != *[[:space:]]* ]] || continue
+            if ((expr_operand)); then
+                expr_operand=0
+                continue
+            fi
+            case $verb in
+                sed) case $token in -e | --expression) expr_operand=1; continue;; esac ;;
+                grep) case $token in -e | --regexp) expr_operand=1; continue;; esac ;;
+            esac
+            # Trailing comma/paren trimming stays for the common prose-list
+            # case ("see /a/b, /c)") -- unrelated to the expression-operand
+            # exclusion above.
             cleaned=${token%,}; cleaned=${cleaned%)}
             case $cleaned in
                 /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
