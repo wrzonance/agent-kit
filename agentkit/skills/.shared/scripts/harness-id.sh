@@ -33,6 +33,33 @@ elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_
     name=codex
     trailer='Codex <noreply@openai.com>'
     other=claude
+# OPENCODE and OPENCODE_PID are set unconditionally by OpenCode's own CLI
+# entrypoint, in a yargs .middleware() that runs before any command --
+# packages/opencode/src/index.ts (anomalyco/opencode, verified via `gh api
+# search/code` against the upstream source, since no doc page enumerates
+# variables the CLI SETS rather than reads):
+#   process.env.AGENT = "1"
+#   process.env.OPENCODE = "1"
+#   process.env.OPENCODE_PID = String(process.pid)
+# The shell tool that runs commands on the agent's behalf spawns them with
+# `{...process.env, ...extra.env}` (packages/opencode/src/tool/shell.ts), so
+# both variables are inherited by every command OpenCode runs -- the same
+# "CLI exports a fact about itself into commands it runs" shape CLAUDECODE
+# and the CODEX_* variables already rely on above. AGENT=1 alone is
+# deliberately NOT used as a signal: it is a generic, unnamespaced token
+# other tooling could plausibly set for unrelated reasons, where OPENCODE/
+# OPENCODE_PID are namespaced and specific to this CLI.
+elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then
+    name=opencode
+    trailer='OpenCode <noreply@opencode.ai>'
+    # OpenCode has no single fixed peer CLI: unlike Claude/Codex's fixed
+    # 1:1 pairing, an OpenCode session's cross-provider adversarial reviewer
+    # is whichever of Codex or Claude is actually installed alongside it.
+    # A comma-separated candidate list here (never used by the claude/codex
+    # cases above, which stay single-name) lets probe_peer_cli try Codex
+    # first, then Claude, and still emit exactly one winning peer-cli= name
+    # -- the shape every existing peer-cli= consumer already parses.
+    other=codex,claude
 fi
 
 case ${1:-line} in

@@ -325,4 +325,77 @@ else
     printf '  skip zsh interpreter-boundary checks: zsh not installed\n'
 fi
 
+# --- harness= opencode + peer-cli= multi-candidate search (issue #318) ------
+# OpenCode has no fixed 1:1 peer CLI the way Claude/Codex do, so harness-id.sh
+# hands agent-preflight.sh's probe_peer_cli an ordered "codex,claude"
+# candidate list instead of a single name. Exactly one winning name must
+# still be emitted, so every existing single-name peer-cli= consumer keeps
+# working unmodified.
+#
+# This machine has real `codex`/`claude` binaries, both under the same
+# directory (/home/adam/.local/bin), which is also probe_peer_cli's own
+# $HOME/.local/bin fallback -- so an "absent" fixture must strip exactly that
+# one directory out of PATH (keeping every other real tool available) and
+# point HOME somewhere with no .local/bin, rather than clearing PATH, which
+# would break agent-preflight.sh's own use of git/jq/stat/date.
+real_local_bin=$(dirname -- "$(command -v codex 2> /dev/null || printf /nonexistent/codex)")
+declare -a path_dirs=() kept_path_dirs=()
+IFS=: read -ra path_dirs <<< "$PATH"
+for path_dir in "${path_dirs[@]}"; do
+    [[ "$path_dir" == "$real_local_bin" ]] || kept_path_dirs+=("$path_dir")
+done
+filtered_path=$(IFS=:; printf '%s' "${kept_path_dirs[*]}")
+fake_home="$tmp/fake-home-no-local-bin"
+mkdir -p "$fake_home"
+
+repo=$(new_repo)
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'harness= name=opencode trailer="OpenCode <noreply@opencode.ai>" other=codex,claude' \
+    "$(grep '^harness=' <<< "$out")" \
+    'a preflight run under OPENCODE=1 reports harness= name=opencode'
+assert_contains "$(grep '^peer-cli=' <<< "$out")" 'peer-cli= codex absent' \
+    'with neither peer CLI on PATH, peer-cli= names the FIRST candidate (codex) as absent'
+assert_contains "$(grep '^peer-cli=' <<< "$out")" 'codex,claude' \
+    'the absent note lists every candidate that was actually checked'
+
+# Only "claude" present, ahead of the filtered PATH: probe_peer_cli must fall
+# through past the absent first candidate (codex) to find it.
+claude_only_dir="$tmp/claude-only-path"
+mkdir -p "$claude_only_dir"
+printf '#!/bin/sh\n' > "$claude_only_dir/claude"
+chmod +x "$claude_only_dir/claude"
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$claude_only_dir:$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= claude present path='"$claude_only_dir"'/claude probe=not-run' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'with only claude on PATH, peer-cli= falls through codex to report claude present'
+
+# Both present: codex, the first-listed candidate, wins.
+both_dir="$tmp/both-path"
+mkdir -p "$both_dir"
+printf '#!/bin/sh\n' > "$both_dir/codex"
+printf '#!/bin/sh\n' > "$both_dir/claude"
+chmod +x "$both_dir/codex" "$both_dir/claude"
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$both_dir:$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= codex present path='"$both_dir"'/codex probe=not-run' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'with both peers on PATH, codex (the first candidate) wins'
+
+# Claude and Codex are unaffected: still a single-candidate search.
+out=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    -u OPENCODE -u OPENCODE_PID \
+    CLAUDECODE=1 HOME="$fake_home" PATH="$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= codex absent note="no cross-harness reviewer among: codex; use the same-harness blind fallback"' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'claude sessions still search only codex, unchanged by the multi-candidate support'
+
 finish

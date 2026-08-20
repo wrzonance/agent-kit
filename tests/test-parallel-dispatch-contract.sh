@@ -1285,6 +1285,57 @@ assert_contains "$fallback_selection" "pivoted from cross-harness declaration 'g
 assert_not_contains "$fallback_selection" "declaration 'gpt-5.6-luna'" \
     'the fallback selection does not leak the preferred slot'"'"'s note'
 
+# --- OpenCode's provider/model-id worker tier (issue #318) ------------------
+# OpenCode has no fixed vendor tier: the sanctioned worker tier is whatever
+# this repository declares in `provider/model-id` form, and a cross-harness
+# pivot INTO OpenCode has no invented OpenCode-native model to fall back to
+# -- it resolves to OpenCode's own provider-qualified address for the exact
+# foreign model that was declared. These three scenarios mirror the
+# claude/codex fence-execution pattern above.
+opencode_declared_config=$'AGENT_WORKER_MODEL=wrzcluster/qwen3-coder\nAGENT_WORKER_MODEL_FALLBACK=wrzcluster/qwen3-coder-fast\n'
+opencode_out=$(run_spawn_fence opencode "$opencode_declared_config")
+opencode_rc=$?
+assert_eq 0 "$opencode_rc" \
+    'an OpenCode session with its own provider/model-id declared dispatches with no round trip'
+assert_contains "$opencode_out" 'wrzcluster/qwen3-coder wrzcluster/qwen3-coder-fast' \
+    'an OpenCode session resolves its own declared provider/model-id verbatim, with no pivot'
+assert_not_contains "$opencode_out" 'pivoted' \
+    'a well-formed OpenCode-native declaration never records a pivot'
+
+codex_on_opencode_out=$(run_spawn_fence opencode "$codex_declared_config")
+codex_on_opencode_rc=$?
+assert_eq 0 "$codex_on_opencode_rc" \
+    'a codex-shaped declaration read on OpenCode pivots rather than stopping'
+assert_contains "$codex_on_opencode_out" 'openai/gpt-5.6-luna openai/gpt-5.6-terra' \
+    'OpenCode pivots a codex-declared model to its own provider-qualified address, not an invented OpenCode model'
+assert_contains "$codex_on_opencode_out" "pivoted from cross-harness declaration 'gpt-5.6-luna' (declared for codex) to native 'openai/gpt-5.6-luna'" \
+    'the OpenCode pivot is recorded for the completion table, exactly like the claude/codex pivots above'
+
+opencode_unsanctioned_config=$'AGENT_WORKER_MODEL=some-random-model\n'
+opencode_unsanctioned_out=$(run_spawn_fence opencode "$opencode_unsanctioned_config")
+opencode_unsanctioned_rc=$?
+assert_eq 1 "$opencode_unsanctioned_rc" \
+    'a value with no "/" is not a well-formed provider/model-id and stops on OpenCode, never pivots'
+assert_eq '' "$opencode_unsanctioned_out" \
+    'the OpenCode unsanctioned-value stop actually terminates the script'
+
+opencode_undeclared_out=$(run_spawn_fence opencode '')
+opencode_undeclared_rc=$?
+assert_eq 1 "$opencode_undeclared_rc" \
+    'OpenCode has no fixed vendor default: an OpenCode repo declaring nothing stops for explicit configuration'
+assert_eq '' "$opencode_undeclared_out" \
+    'the OpenCode no-declaration stop actually terminates the script, printing nothing further'
+
+# A well-formed provider/model-id declared for a Claude/Codex repo is itself
+# a foreign-family (opencode) value on those harnesses, and pivots to THEIR
+# fixed native default exactly like any other foreign-family declaration --
+# a pivot out of OpenCode is unaffected by OpenCode having no fixed default.
+opencode_declared_on_claude_out=$(run_spawn_fence claude "$opencode_declared_config")
+assert_contains "$opencode_declared_on_claude_out" 'claude-sonnet-5 claude-sonnet-5' \
+    'a provider/model-id declaration read on Claude pivots to the Claude native worker tier'
+assert_contains "$opencode_declared_on_claude_out" "pivoted from cross-harness declaration 'wrzcluster/qwen3-coder' (declared for opencode) to native 'claude-sonnet-5'" \
+    'the pivot out of OpenCode is recorded the same way as any other cross-harness pivot'
+
 worker_gate_flat_301=$(tr '\n' ' ' <<<"$worker_gate_text" | tr -s '[:space:]' ' ')
 assert_contains "$worker_gate_flat_301" 'harness-aware' \
     'worker gate points to harness-aware resolution rather than restating it'

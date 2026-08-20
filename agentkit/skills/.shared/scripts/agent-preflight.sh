@@ -769,15 +769,29 @@ probe_harness() {
 # The peer CLI, for a cross-harness adversarial review. Named from the harness
 # probe rather than assumed: on a Claude session the peer is Codex, and a message
 # that says otherwise sends the reviewer to the CLI it is already running in.
+#
+# $1 is one or more comma-separated candidate names, tried in order (Claude
+# and Codex each pass a single name, unchanged; OpenCode has no fixed 1:1
+# peer, so harness-id.sh hands this "codex,claude" -- try Codex first, then
+# Claude). Exactly one winning name is ever emitted, so every existing
+# peer-cli= consumer's single-name parse keeps working unmodified. When none
+# of the candidates are present, the FIRST candidate names the line -- same
+# as the pre-existing single-candidate behavior -- with a note listing every
+# name that was actually checked.
 probe_peer_cli() {
-    local path other=${1:-claude}
-    if path="$(command -v "$other" 2>/dev/null)"; then
-        emit "peer-cli= $other present path=$path probe=not-run"
-    elif [[ -x "$HOME/.local/bin/$other" ]]; then
-        emit "peer-cli= $other present path=$HOME/.local/bin/$other probe=not-run"
-    else
-        emit "peer-cli= $other absent note=\"no cross-harness reviewer; use the same-harness blind fallback\""
-    fi
+    local candidates_csv=${1:-claude} path other
+    local -a candidates
+    IFS=',' read -r -a candidates <<< "$candidates_csv"
+    for other in "${candidates[@]}"; do
+        if path="$(command -v "$other" 2>/dev/null)"; then
+            emit "peer-cli= $other present path=$path probe=not-run"
+            return
+        elif [[ -x "$HOME/.local/bin/$other" ]]; then
+            emit "peer-cli= $other present path=$HOME/.local/bin/$other probe=not-run"
+            return
+        fi
+    done
+    emit "peer-cli= ${candidates[0]} absent note=\"no cross-harness reviewer among: $candidates_csv; use the same-harness blind fallback\""
 }
 
 # Never fail the run over the artifact: the block already went to stdout.
