@@ -101,7 +101,8 @@ cd -- "$repo_root" || die "could not cd to repo root: $repo_root"
 
 command -v jq > /dev/null 2>&1 || die 'jq is required and was not found on PATH'
 
-sha=$(git rev-parse --verify "${ref}^{commit}" 2> /dev/null) || die "not a resolvable commit: $ref"
+sha=$(git rev-parse --verify "${ref}^{commit}" 2> /dev/null) ||
+    die "ref not present in this checkout: '$ref' does not resolve to a commit object here -- if it should exist, this checkout is likely shallow; fetch full history (e.g. \`git fetch --unshallow\`, or actions/checkout's fetch-depth: 0) before measuring an older commit"
 
 # list_md PATTERN -- paths under agentkit/skills at $sha whose basename
 # matches the (anchored) extended-regex PATTERN. Reads the tree only; no
