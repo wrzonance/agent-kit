@@ -104,28 +104,27 @@ command -v jq > /dev/null 2>&1 || die 'jq is required and was not found on PATH'
 sha=$(git rev-parse --verify "${ref}^{commit}" 2> /dev/null) ||
     die "ref not present in this checkout: '$ref' does not resolve to a commit object here -- if it should exist, this checkout is likely shallow; fetch full history (e.g. \`git fetch --unshallow\`, or actions/checkout's fetch-depth: 0) before measuring an older commit"
 
-# list_md PATTERN -- paths under agentkit/skills at $sha whose basename
-# matches the (anchored) extended-regex PATTERN. Reads the tree only; no
-# working-tree access.
-list_paths() {
-    git ls-tree -r --name-only "$sha" -- agentkit/skills | grep -E "$1" || true
-}
-
-# sum_bytes -- reads repo-relative paths on stdin, prints the sum of their
-# blob sizes at $sha. A path that cannot be read is a hard failure, not a
-# silently-skipped zero.
-sum_bytes() {
-    local total=0 path size
-    while IFS= read -r path; do
+# sum_bytes_matching PATTERN -- sums the blob size at $sha of every path
+# under agentkit/skills whose basename matches the (anchored) extended-regex
+# PATTERN. NUL-delimited end to end (`ls-tree -z`, `read -d ''`, no grep) so
+# a path containing a tab, newline, or other byte `ls-tree`'s default
+# C-quoting would otherwise mangle is still read and counted correctly --
+# this is a measurement instrument whose output is committed to an
+# append-only ledger, so a silently-wrong count is worse than a crash. A
+# path that cannot be read is a hard failure, not a silently-skipped zero.
+sum_bytes_matching() {
+    local pattern=$1 total=0 path size
+    while IFS= read -r -d '' path; do
         [[ -n $path ]] || continue
+        [[ $path =~ $pattern ]] || continue
         size=$(git cat-file -s "$sha:$path") || die "could not read blob size for $path at $sha"
         total=$((total + size))
-    done
+    done < <(git ls-tree -rz --name-only "$sha" -- agentkit/skills)
     printf '%d\n' "$total"
 }
 
-resident_bytes=$(list_paths '/SKILL\.md$' | sum_bytes)
-reachable_bytes=$(list_paths '\.md$' | sum_bytes)
+resident_bytes=$(sum_bytes_matching '/SKILL\.md$')
+reachable_bytes=$(sum_bytes_matching '\.md$')
 
 resident_tokens=$(estimate_tokens "$resident_bytes")
 reachable_tokens=$(estimate_tokens "$reachable_bytes")

@@ -89,13 +89,24 @@ printf '%s\n' "$(head -c 39 /dev/zero | tr '\0' d)" > "$synth/agentkit/skills/pa
 # a non-.md file under skills/ must never contribute to either surface
 printf '%s\n' "should never be counted" > "$synth/agentkit/skills/alpha/notes.txt"
 
+# F1 regression: a skill directory whose name contains a tab. `git ls-tree`
+# without -z C-quotes a path like this (e.g. as "a\tb/SKILL.md"), which
+# breaks both a naive grep match and a naive `git cat-file` lookup against
+# the quoted display form. sum_bytes_matching must count it exactly like any
+# other skill.
+tab_dir="$synth/agentkit/skills/$(printf 'weird\tname')"
+mkdir -p "$tab_dir"
+printf -- '---\nname: weird\ndescription: Use when the path itself is adversarial.\n---\n%s\n' \
+    "$(head -c 19 /dev/zero | tr '\0' e)" > "$tab_dir/SKILL.md"
+
 skill_bytes=$(wc -c < "$synth/agentkit/skills/alpha/SKILL.md")
 ref_bytes=$(wc -c < "$synth/agentkit/skills/alpha/references/ref.md")
 shared_bytes=$(wc -c < "$synth/agentkit/skills/.shared/policy.md")
 dispatch_bytes=$(wc -c < "$synth/agentkit/skills/parallel-issues/references/worker-prompts.md")
+tab_skill_bytes=$(wc -c < "$tab_dir/SKILL.md")
 
-expect_resident=$skill_bytes
-expect_reachable=$((skill_bytes + ref_bytes + shared_bytes + dispatch_bytes))
+expect_resident=$((skill_bytes + tab_skill_bytes))
+expect_reachable=$((skill_bytes + ref_bytes + shared_bytes + dispatch_bytes + tab_skill_bytes))
 
 git -C "$synth" init -q
 git -C "$synth" -c user.email=t@example.com -c user.name=t add -A
@@ -113,8 +124,10 @@ got_dispatch_present=$(jq -r '.dispatched_template.present' <<< "$record1")
 got_dispatch_bytes=$(jq -r '.dispatched_template.bytes' <<< "$record1")
 got_key=$(jq -r '[.plugin_sha, .fixture_version, .model, .effort] | @tsv' <<< "$record1")
 
-assert_eq "$expect_resident" "$got_resident" 'resident bytes = the one SKILL.md, whole-file'
-assert_eq "$expect_reachable" "$got_reachable" 'reachable bytes = every *.md under skills/, non-md excluded'
+assert_eq "$expect_resident" "$got_resident" \
+    'resident bytes = every SKILL.md (including the tab-path one), whole-file'
+assert_eq "$expect_reachable" "$got_reachable" \
+    'reachable bytes = every *.md under skills/ (including the tab-path one), non-md excluded'
 assert_eq 'true' "$got_dispatch_present" 'dispatched_template is present when the file exists at the SHA'
 assert_eq "$dispatch_bytes" "$got_dispatch_bytes" 'dispatched_template bytes match the template file exactly'
 assert_eq "$(printf '%s\ttier0-v1\tstatic-accounting\tn/a' "$sha1")" "$got_key" \
@@ -148,6 +161,18 @@ lines_after_three=$(wc -l < "$ledger")
 assert_eq '3' "$lines_after_three" 'a third invocation strictly grows the ledger'
 assert_eq "$record1" "$(sed -n '1p' "$ledger")" 'line 1 is still byte-identical after a third invocation'
 assert_eq "$record2" "$(sed -n '2p' "$ledger")" 'line 2 is still byte-identical after a third invocation'
+
+# F2: (plugin_sha, fixture_version, model, effort) is a grouping/comparison
+# key, not a uniqueness constraint -- re-measuring the same SHA is a normal
+# operation the ledger writer never rejects (see bench/README). The third
+# invocation above re-measured sha1, so line 3 must carry the SAME key as
+# line 1 while being a genuinely distinct row (different measured_at).
+record3=$(sed -n '3p' "$ledger")
+got_key3=$(jq -r '[.plugin_sha, .fixture_version, .model, .effort] | @tsv' <<< "$record3")
+assert_eq "$got_key" "$got_key3" \
+    're-measuring the same SHA appends a row with the identical grouping key'
+assert_eq '2026-01-01T00:00:02Z' "$(jq -r '.measured_at' <<< "$record3")" \
+    'the duplicate-key row is still a distinct, individually-dated measurement'
 
 # --- refuses to append through a symlink ----------------------------------
 symlinked_ledger="$synth/bench/results/via-symlink.jsonl"
