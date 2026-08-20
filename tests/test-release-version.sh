@@ -11,6 +11,14 @@ root=$(cd -- "$here/.." && pwd)
 checker="$here/check-release-version.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# check-release-version.sh resolves an ambient tag from GITHUB_REF_TYPE and
+# GITHUB_REF_NAME (only) when no --tag is supplied. Neutralize both here so
+# every "no tag" case below genuinely runs without one, instead of merely
+# relying on their absence -- which holds on a branch push but not on the tag
+# push this suite exists to guard.
+unset GITHUB_REF_TYPE GITHUB_REF_NAME
+
 expected_version=$(jq -r '.version' < "$root/agentkit/.claude-plugin/plugin.json")
 mismatch_version="${expected_version}-mismatch"
 
@@ -99,6 +107,9 @@ out="$tmp/tag-context.out"
 export GITHUB_REF_TYPE=tag GITHUB_REF_NAME="v$expected_version"
 assert_eq '0' "$(run_checker "$out")" \
     'tag-push context checks the tag without an argument'
+assert_contains "$(cat -- "$out")" \
+    "tag v$expected_version matches $expected_version across 4 manifests" \
+    'tag-push context reports the tag comparison, not the no-tag message'
 unset GITHUB_REF_TYPE GITHUB_REF_NAME
 
 bad_root="$tmp/missing-root"
