@@ -2,9 +2,10 @@
 name: pr-to-green
 description: >-
   Use when asked to take a confirmed queue of draft pull requests to green,
-  accepting optional PR numbers to resume named ready pull requests.
-  Triggers: /pr-to-green, /pr-to-green 42 43, "take these PRs to green",
-  "finish the draft PR queue".
+  accepting optional PR numbers to resume named ready pull requests and an
+  optional --auto-merge flag to also perform the confirmed queue's merges.
+  Triggers: /pr-to-green, /pr-to-green 42 43, /pr-to-green --auto-merge,
+  "take these PRs to green", "finish the draft PR queue".
 ---
 
 # PR to green
@@ -12,6 +13,12 @@ description: >-
 Coordinate existing Agent Kit review machinery in a strict serial queue. This
 skill owns queue authorization and the ready/provider transition boundary; it
 is not another review engine.
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--auto-merge` | Authorize this run to perform the confirmed queue's merges itself, serially, after each item's pre-merge review-completion gate passes. Without it, every item still stops at evidence-green and the merge stays a human action. See [references/auto-merge.md](references/auto-merge.md) for the full consent, gate, and serialization contract. |
 
 ## Environment warm-up
 
@@ -79,6 +86,10 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 - Provider rules, author classification, fix batches, reply settlement,
   bounded waits, exact readback, worktree mechanics, and the six-step worker
   gate remain in their existing authoritative files.
+- `--auto-merge` authorizes this skill to perform the confirmed queue's
+  merges itself; without it every PR still stops at evidence-green and the
+  merge stays a human action. It implies strict serial merge ordering — see
+  [references/auto-merge.md](references/auto-merge.md).
 
 ## Resident call-site map
 
@@ -91,6 +102,9 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | CI/provider/finding evidence | `../review-remote-pr/scripts/gh-pr-state.sh` |
 | Canonical replies and bot-response settlement | `../review-remote-pr/scripts/thread-action.sh` |
 | Post-merge retarget proof | `../parallel-issues/scripts/chain-advance.sh` |
+| `--auto-merge` pre-merge review-completion gate | `scripts/merge-gate.sh` |
+| `--auto-merge` verified serial merge | `scripts/merge-pr.sh` |
+| Board `Done` move after a merge | `../parallel-issues/scripts/move-github-project-item.sh` |
 
 Read `../review-remote-pr/SKILL.md` once when entering Phase A. Read its provider
 rules once only if findings exist, and reuse that content through Phase C.
@@ -110,15 +124,21 @@ run. The queue helper reports `RUNNABLE`, `WAITING_FOR_MERGE`,
 `RETARGET_REQUIRED`, or `BLOCKED` and fails closed on ambiguous topology.
 
 Show the human table and the exact provider records. State every chain base to
-tip, then independent roots in queue order. Do not mutate until the user confirms
-the displayed provider plan, verified dependency graph, and exact serial queue.
+tip, then independent roots in queue order. When `--auto-merge` is on the
+invocation line, the displayed plan must say plainly that confirmed merges are
+included, naming the merge method and delete-branch setting. Do not mutate
+until the user confirms the displayed provider plan, verified dependency
+graph, and exact serial queue.
 
 After confirmation, write an owner-only authorization JSON file containing:
 
 - `repository` and `readyTransition: true`;
 - `providers`, containing exactly the displayed triggerable providers;
 - `queue`, with each confirmed PR's number, current state, full head SHA, and
-  confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`).
+  confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`);
+- when `--auto-merge` was confirmed: `autoMerge: true`, `mergeMethod`, and
+  `deleteBranch` — see [references/auto-merge.md](references/auto-merge.md)
+  for the exact record shape and ledger requirement.
 
 `review-transition.sh` compares both the live head SHA and the live base ref
 against this record before any ready-flip or provider spend, so an omitted
@@ -176,18 +196,29 @@ A PR is evidence-green only when all of these are current for its head and base:
 Report formal provider approval separately. It is not required for effective
 `none`, and a stale approval after retarget is not evidence-green.
 
-### 5. Advance stacks without merging
+### 5. Advance stacks, merging only under `--auto-merge`
 
 After a predecessor becomes evidence-green, mark its open descendants
-`WAITING_FOR_MERGE`. Never merge it. Continue the oldest independent runnable
-root while the chain waits; otherwise report the exact human merge dependency.
+`WAITING_FOR_MERGE`. Without `--auto-merge`, never merge it — continue the
+oldest independent runnable root while the chain waits, and report the exact
+human merge dependency.
 
-Only after the forge confirms the human merged the predecessor may the direct
-successor become `RETARGET_REQUIRED`. Invoke `chain-advance.sh` to retarget it to
-the default branch and verify the live base. Refresh its diff, ancestry,
-conflicts, checks, head/base evidence, provider state, and closing linkage.
-Unexpected expansion, conflict, stale evidence, failed retarget, or required
-history rewrite blocks that successor instead of selecting a repair.
+With `--auto-merge`, an evidence-green item merges only after
+`scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head
+(see [references/auto-merge.md](references/auto-merge.md) — a formal provider
+approval requirement stays repository policy: a branch-protection refusal is
+a named stop, never a bypass). On `gate=PASS`, invoke `scripts/merge-pr.sh`
+and, on its success, move that issue's board item to `Done`. No merge starts
+while a predecessor's post-merge revalidation is outstanding.
+
+Only after the predecessor is merged — by the human, or by `merge-pr.sh` under
+`--auto-merge` — may the direct successor become `RETARGET_REQUIRED`. Invoke
+`chain-advance.sh` to retarget it to the default branch and verify the live
+base. Refresh its diff, ancestry, conflicts, checks, head/base evidence,
+provider state, and closing linkage. Unexpected expansion, conflict, stale
+evidence, failed retarget, or required history rewrite blocks that successor
+instead of selecting a repair — this applies identically whether merging is
+human or automated.
 
 Regenerate and re-confirm the queue before the successor becomes `RUNNABLE` or
 spends any provider authority. Prefer that newly unblocked successor, then
@@ -195,8 +226,9 @@ continue serially.
 
 ## Exit
 
-Continue until every queue item is evidence-green or blocked on a named
-human/dependency decision. Report per PR: head/base, CI, adversarial receipt,
-provider result, finding settlement, human decisions, stack state, and formal
-provider approval separately. Preserve all worktrees and authorization/evidence
-artifacts for resumption.
+Continue until every queue item is evidence-green (or, under `--auto-merge`,
+merged) or blocked on a named human/dependency decision. Report per PR:
+head/base, CI, adversarial receipt, provider result, finding settlement,
+human decisions, stack state, formal provider approval separately, and — under
+`--auto-merge` — the gate result and merge outcome. Preserve all worktrees and
+authorization/evidence artifacts for resumption.
