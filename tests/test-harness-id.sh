@@ -82,6 +82,24 @@ out=$(run_clean env AGENT=1 bash "$script")
 assert_contains "$out" 'name=unknown' \
     'a bare AGENT=1 with no OPENCODE/OPENCODE_PID does not report opencode'
 
+# The Codex on-disk ~/.codex fallback is the WEAKEST of the three signals
+# (evidence Codex was once installed, not evidence it is running now) and
+# must never shadow a real OpenCode session: an OpenCode session on a
+# machine that has ever run Codex, with no CODEX_* variable currently set,
+# must still report opencode, not codex.
+mkdir -p "$tmp/opencode-with-old-codex-home/.codex"
+out=$(run_clean env OPENCODE=1 HOME="$tmp/opencode-with-old-codex-home" bash "$script")
+assert_eq 'name=opencode trailer="OpenCode <noreply@opencode.ai>" other=codex,claude' "$out" \
+    'OPENCODE=1 wins over a stale on-disk ~/.codex directory'
+
+# An actively-set CODEX_* session variable is still stronger evidence than
+# OPENCODE=1: this ordering question does not actually arise in practice
+# (a single session is not simultaneously two CLIs), but the fixed check
+# order must still be deterministic rather than accidental.
+out=$(run_clean env OPENCODE=1 CODEX_HOME="$tmp/codex-home-explicit" bash "$script")
+assert_eq 'name=codex trailer="Codex <noreply@openai.com>" other=claude' "$out" \
+    'an explicit CODEX_HOME is still checked ahead of OPENCODE=1'
+
 # --- --name / --trailer / --other flags carry the opencode values too -------
 assert_eq 'opencode' "$(run_clean env OPENCODE=1 bash "$script" --name)" \
     '--name reports opencode'

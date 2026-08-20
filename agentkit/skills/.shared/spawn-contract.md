@@ -86,13 +86,24 @@ model_in_sanctioned_set() {
     case "$1:$2" in
         codex:gpt-5.6-luna | codex:gpt-5.6-terra) return 0 ;;
         claude:claude-sonnet-5) return 0 ;;
-        # OpenCode's sanctioned worker tier is repository-declared, not a
-        # fixed allowlist: any value shaped as a well-formed
-        # provider/model-id pair (non-empty on both sides of exactly one
-        # '/') is sanctioned for OpenCode purely by being declared and
-        # correctly shaped -- there is no OpenCode equivalent of
-        # gpt-5.6-luna to enumerate here.
-        opencode:?*/?*) return 0 ;;
+        opencode:*)
+            # OpenCode's sanctioned worker tier is repository-declared, not a
+            # fixed allowlist: any value shaped as a well-formed
+            # provider/model-id pair (non-empty on both sides of EXACTLY one
+            # '/') is sanctioned for OpenCode purely by being declared and
+            # correctly shaped -- there is no OpenCode equivalent of
+            # gpt-5.6-luna to enumerate here. A `case` glob cannot express
+            # "exactly one '/'": a bracket expression like `[^/]` matches
+            # exactly one character, so `[^/]*` is "one non-slash char, then
+            # a plain unrestricted `*`" -- it still matches a second or
+            # third '/', not "one-or-more non-slash chars" the way it reads.
+            # Only a real regex quantifier does that, hence `=~` here rather
+            # than a `case` pattern for this branch. With no allowlist to
+            # catch a mistake after this check, this is the only thing
+            # standing between a typo like `provider/model/extra` in
+            # .agent/config.env and a dispatch against a nonexistent model.
+            [[ $2 =~ ^[^/]+/[^/]+$ ]]
+            ;;
         *) return 1 ;;
     esac
 }

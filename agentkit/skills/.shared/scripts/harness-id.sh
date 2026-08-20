@@ -21,15 +21,20 @@ name=unknown
 trailer='Agent <noreply@example.invalid>'
 other=none
 
-# Order matters. A machine that has run both CLIs has both config directories, so
-# the on-disk check is only ever a last resort -- the environment a CLI exports
-# about ITSELF is the reliable signal.
+# Order matters, and not just claude-before-codex: an actively-set session
+# variable is strong evidence a CLI is running THIS session, while an on-disk
+# directory is only evidence that CLI was installed at some point -- so every
+# CLI's own explicit environment signal is checked first, in a fixed order,
+# and the weakest signal (Codex's ~/.codex directory, the only on-disk
+# fallback any of the three has) runs dead last. Getting this wrong recreates
+# exactly the misattribution this file exists to prevent: an OpenCode session
+# on a machine that has ever run Codex, with no CODEX_* variable currently
+# set, would otherwise be reported as codex by the directory fallback alone.
 if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then
     name=claude
     trailer='Claude <noreply@anthropic.com>'
     other=codex
-elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]] ||
-    [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then
+elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then
     name=codex
     trailer='Codex <noreply@openai.com>'
     other=claude
@@ -48,7 +53,9 @@ elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_
 # and the CODEX_* variables already rely on above. AGENT=1 alone is
 # deliberately NOT used as a signal: it is a generic, unnamespaced token
 # other tooling could plausibly set for unrelated reasons, where OPENCODE/
-# OPENCODE_PID are namespaced and specific to this CLI.
+# OPENCODE_PID are namespaced and specific to this CLI. Checked here, ahead
+# of the Codex on-disk fallback below, so a machine that has ever run Codex
+# does not shadow an actual OpenCode session.
 elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then
     name=opencode
     trailer='OpenCode <noreply@opencode.ai>'
@@ -60,6 +67,13 @@ elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then
     # first, then Claude, and still emit exactly one winning peer-cli= name
     # -- the shape every existing peer-cli= consumer already parses.
     other=codex,claude
+# Last resort: a machine that has run Codex before has ~/.codex on disk even
+# in a session with no CODEX_* variable currently set. Weakest evidence of
+# the three checks above, so it runs only after all of them have missed.
+elif [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then
+    name=codex
+    trailer='Codex <noreply@openai.com>'
+    other=claude
 fi
 
 case ${1:-line} in
