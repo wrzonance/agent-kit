@@ -34,10 +34,13 @@ so a caller stops instead of silently proceeding. Both are mandatory: a
 decision token alone must never satisfy a narrower recorded grant.
 
 --quote and --quote-file are mutually exclusive; exactly one is required for
-append. --quote-file reads the named file's bytes verbatim -- no interpolation,
-no reflow -- which is the fidelity-preserving path for a multi-line human grant.
---quote itself also accepts embedded newlines. --decision and --scope must
-remain single-line tokens.
+append. --quote-file reads the named file's bytes exactly as supplied -- no
+interpolation, no reflow -- except that a carriage return is stripped (a
+CRLF or bare-CR grant is normalized to LF; see below), which is the
+fidelity-preserving path for a multi-line human grant. --quote itself also
+accepts embedded newlines, under the same carriage-return normalization. A
+quote file containing a NUL byte is refused rather than silently truncated.
+--decision and --scope must remain single-line tokens.
 EOF
 }
 
@@ -189,14 +192,26 @@ validate_text() {
         die_usage "$name resembles a secret; do not record credential material"
 }
 
-# --quote-file reads a file's bytes verbatim -- the fidelity-preserving path
-# for a multi-line human grant (matches the file-backed transport discipline
-# in .shared/github-body-policy.md). Command substitution alone strips
-# trailing newlines, so a sentinel byte is appended and stripped back off to
-# preserve the file's exact trailing bytes.
+# --quote-file reads a file's bytes exactly as supplied -- the fidelity-
+# preserving path for a multi-line human grant (matches the file-backed
+# transport discipline in .shared/github-body-policy.md) -- except that
+# strip_carriage_returns (below) still normalizes a carriage return out of
+# the loaded text; that is the one intentional exception to "verbatim" and
+# it is documented, not silent. Command substitution alone strips trailing
+# newlines, so a sentinel byte is appended and stripped back off to preserve
+# the file's exact trailing bytes. A NUL byte cannot survive downstream: the
+# stored value is later passed to jq as a --arg, an argv value, and argv is a
+# NUL-terminated C string at the exec boundary, so anything past the first
+# NUL would be silently dropped there. A NUL-containing file is refused here
+# instead of being silently truncated/altered: a quote with a NUL byte is not
+# a human grant. The comparison reads the file through two independent
+# streams (process substitution, not a pipe) so shellcheck does not read this
+# as a same-file read/write conflict (SC2094) -- both sides only ever read.
 load_quote_file() {
     [[ -f $QUOTE_FILE && ! -L $QUOTE_FILE && -r $QUOTE_FILE && -O $QUOTE_FILE ]] ||
         die_usage "--quote-file must be an owned readable regular file: $QUOTE_FILE"
+    cmp -s <(LC_ALL=C tr -d '\000' <"$QUOTE_FILE") "$QUOTE_FILE" ||
+        die_usage "--quote-file contains a NUL byte and cannot be stored verbatim: $QUOTE_FILE"
     local content
     content=$(cat -- "$QUOTE_FILE" && printf x) ||
         die_evidence "could not read quote file: $QUOTE_FILE"
@@ -205,7 +220,9 @@ load_quote_file() {
 
 # A bare carriage return is a formatting artifact, not content, so it is
 # stripped before validation and storage rather than rejected outright --
-# this also normalizes a CRLF quote to LF without touching its wording.
+# this also normalizes a CRLF quote to LF without touching its wording. This
+# is the one respect in which stored text is not byte-identical to the
+# supplied --quote/--quote-file input: every other byte is preserved exactly.
 strip_carriage_returns() {
     QUOTE=${QUOTE//$'\r'/}
 }

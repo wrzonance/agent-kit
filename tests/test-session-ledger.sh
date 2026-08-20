@@ -98,6 +98,22 @@ assert_rc 2 '--quote-file rejects a symlink' -- "$script" append \
     --skills-path "$skills_path" --procedure-set parallel-issues \
     --scope 'symlinked quote-file' --quote-file "$tmp/skills-link"
 
+# Command substitution cannot retain a NUL byte, so a quote file that contains
+# one is refused loudly instead of being silently truncated/altered -- what is
+# stored must be exactly what was supplied, and a NUL byte cannot honor that.
+nul_quote_file="$tmp/nul-quote.txt"
+printf 'approve\0deny\n' > "$nul_quote_file"
+chmod 600 -- "$nul_quote_file"
+nul_error=''
+nul_rc=0
+nul_error=$("$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'nul quote-file' --quote-file "$nul_quote_file" 2>&1) || nul_rc=$?
+assert_eq 2 "$nul_rc" '--quote-file rejects a file containing a NUL byte'
+assert_contains "$nul_error" 'NUL byte' \
+    'the NUL-byte rejection names the reason'
+
 # The length cap is unchanged by allowing newlines: a multi-line quote that
 # exceeds MAX_TEXT_LENGTH is still rejected, whether it arrives inline or
 # via --quote-file.

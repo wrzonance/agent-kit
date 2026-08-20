@@ -113,7 +113,8 @@ after compaction/resume. `scope=57,54` and `scope=57,62` therefore cannot share 
 Reuse this invocation-level `RUN_ID` for every issue and never derive it from worker-local
 values. Append every human grant, steer, or board adjudication immediately on receipt. Write the
 verbatim quote to a private temp file first and pass it as `--quote-file`, so a multi-line grant
-(flags on one line, scope on the next) is stored byte-exact with no reflow:
+(flags on one line, scope on the next) is stored with no reflow, other than a
+carriage return normalized to LF:
 `quote_file=$(mktemp); chmod 600 "$quote_file"; printf '%s' "$QUOTE" >"$quote_file";
 "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-file "$quote_file"; rm -f "$quote_file"`.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
