@@ -19,8 +19,15 @@ source "$here/lib/assert.sh"
 
 create_sh="$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh"
 preflight_sh="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
+harness_id_script="$root/agentkit/skills/.shared/scripts/harness-id.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# --inherit-session only trusts a source contract that names the current
+# CLI's own harness= (issue #332 F3); a hand-built fixture contract needs
+# this line too, computed live so the suite passes under whichever CLI
+# actually runs it.
+current_harness_line="harness= $("$harness_id_script" 2> /dev/null)"
 
 assert_exec() {
     local path=$1 label=$2
@@ -95,6 +102,7 @@ make_repo "$notes_root" >/dev/null
 notes_contract="$notes_root/.agent/env-contract.txt"
 printf '%s\n' \
     'skills= path='"$root"'/agentkit/skills' \
+    "$current_harness_line" \
     'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
     'tls= bundle=/etc/ssl/certs/ca-certificates.crt source=system corporate-ca=no preset=none uv-system-certs=not-needed' \
     'caches= root=/tmp/agent-cache-notes reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-notes/uv NPM_CONFIG_CACHE=/tmp/agent-cache-notes/npm PIP_CACHE_DIR=/tmp/agent-cache-notes/pip XDG_CACHE_HOME=/tmp/agent-cache-notes' \

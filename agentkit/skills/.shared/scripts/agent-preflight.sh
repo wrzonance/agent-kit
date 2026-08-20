@@ -105,7 +105,9 @@ Options:
                      contracts. A key missing from FILE falls back to a
                      fresh probe for that key only.
   --measured-from W  Whose environment this describes: "agent-shell"
-                     (default, the shell that will run commands), "hook",
+                     (default, the shell that will run commands; "agent" is
+                     accepted as a backward-compatible alias for callers
+                     written against the pre-#332 vocabulary), "hook",
                      which runs outside the agent sandbox and can only
                      report its own, or "escalated", for a caller that
                      already knows -- from its own harness -- that it is
@@ -177,8 +179,13 @@ parse_args() {
                 need_value "$@"
                 ARG_MEASURED_FROM_SET=1
                 case "$2" in
+                    # "agent" was the pre-#332 public value (main's --measured-from
+                    # agent|hook); a caller outside this tree may still pass it.
+                    # Accept it as an alias rather than a hard failure that leaves
+                    # a contract-producing script with no contract to produce.
+                    agent) ARG_MEASURED_FROM=agent-shell ;;
                     agent-shell|hook|escalated) ARG_MEASURED_FROM="$2" ;;
-                    *) die "--measured-from takes agent-shell, hook, or escalated, got: $2" ;;
+                    *) die "--measured-from takes agent-shell (or its alias 'agent'), hook, or escalated, got: $2" ;;
                 esac
                 shift 2 ;;
             --repo)     need_value "$@"; ARG_REPO="$2"; ARG_REPO_SET=1; shift 2 ;;
@@ -596,28 +603,48 @@ probe_sandbox() {
     emit "sandbox= active=$sandboxed profile=$profile network=$network home-writable=$(dir_writable_word "${HOME:-}") measured-by=$ARG_MEASURED_FROM$note"
 }
 
-# Restrictiveness score for a sandbox= line: higher is safer/more restrictive.
-# Used only to decide whether a fresh measurement may overwrite a previously
-# recorded one -- restriction is the safe direction (issue #332): a worker
-# over-provisioned for escalation loses nothing, but one told it is
-# unsandboxed when it is not hits a refusal its contract said could not
-# happen. An absent or unrecognised token scores as maximally uninformative
-# (1, the middle value) rather than either extreme.
-sandbox_restriction_score() {
-    local line="$1" active hw score=0
-    active=$(sed -n 's/.*active=\([A-Za-z]*\).*/\1/p' <<< "$line")
-    hw=$(sed -n 's/.*home-writable=\([A-Za-z]*\).*/\1/p' <<< "$line")
-    case "$active" in
-        yes) score=$((score + 2)) ;;
-        no) : ;;
-        *) score=$((score + 1)) ;;
+# Restrictiveness rank for one sandbox= token: higher is safer/more
+# restrictive. An absent or unrecognised value ranks as maximally
+# uninformative (1, the middle value) rather than either extreme.
+sandbox_field_rank() {
+    local field="$1" value="$2"
+    case "$field" in
+        active)
+            case "$value" in yes) printf '2' ;; no) printf '0' ;; *) printf '1' ;; esac ;;
+        home-writable)
+            case "$value" in no) printf '2' ;; yes) printf '0' ;; *) printf '1' ;; esac ;;
+        # network=disabled is the most restrictive reading (no reachability at
+        # all); network=ok the least; network=unresolved (a DNS lookup that
+        # failed while the network was nominally allowed) sits in between --
+        # it is evidence of a problem, not proof of either extreme.
+        network)
+            case "$value" in disabled) printf '2' ;; ok) printf '0' ;; *) printf '1' ;; esac ;;
     esac
-    case "$hw" in
-        no) score=$((score + 2)) ;;
-        yes) : ;;
-        *) score=$((score + 1)) ;;
-    esac
-    printf '%s' "$score"
+}
+
+# Whether $2 (a fresh sandbox= measurement) is LESS restrictive than $1 (a
+# recorded one) on any single axis. This is field-by-field, deliberately not
+# a summed score (issue #332 F2): active/home-writable/network are
+# independent axes of one sandbox, and a scalar sum lets one axis's
+# tightening mask another axis's widening -- e.g. active regressing from
+# yes to no while network improves from disabled to ok nets to "no change"
+# in a sum, even though the worker just silently lost its network
+# restriction. Prints the name of the first regressed field and returns
+# success when a widening is found; prints nothing and returns failure
+# otherwise.
+sandbox_widened() {
+    local recorded="$1" fresh="$2" field rec_tok fresh_tok rec_rank fresh_rank
+    for field in active home-writable network; do
+        rec_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$recorded")
+        fresh_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$fresh")
+        rec_rank=$(sandbox_field_rank "$field" "$rec_tok")
+        fresh_rank=$(sandbox_field_rank "$field" "$fresh_tok")
+        if (( fresh_rank < rec_rank )); then
+            printf '%s' "$field"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Same idea for caches=: a root confirmed unwritable ($HOME/.cache truly
@@ -654,24 +681,75 @@ apply_never_widen() {
         for i in "${!OUT_LINES[@]}"; do
             case "${OUT_LINES[$i]}" in
                 "$prefix"*)
-                    local new_line old_score new_score
+                    local new_line
                     new_line="${OUT_LINES[$i]}"
                     if [[ "$prefix" == 'sandbox=' ]]; then
-                        old_score=$(sandbox_restriction_score "$prev_line")
-                        new_score=$(sandbox_restriction_score "$new_line")
+                        local regressed_field
+                        if regressed_field=$(sandbox_widened "$prev_line" "$new_line"); then
+                            note "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field '$regressed_field'): recorded=[$prev_line] fresh=[$new_line]"
+                            OUT_LINES[i]="$prev_line"
+                        fi
                     else
+                        local old_score new_score
                         old_score=$(caches_restriction_score "$prev_line")
                         new_score=$(caches_restriction_score "$new_line")
-                    fi
-                    if (( new_score < old_score )); then
-                        note "keeping the more-restrictive recorded ${prefix%=}= (a fresh measurement would widen it): recorded=[$prev_line] fresh=[$new_line]"
-                        OUT_LINES[i]="$prev_line"
+                        if (( new_score < old_score )); then
+                            note "keeping the more-restrictive recorded caches= (a fresh measurement would widen it): recorded=[$prev_line] fresh=[$new_line]"
+                            OUT_LINES[i]="$prev_line"
+                        fi
                     fi
                     break
                     ;;
             esac
         done
     done
+}
+
+# --inherit-session is only safe when the file being inherited actually
+# describes THIS session (issue #332 F3): agreement between a root contract
+# and a worktree contract proves nothing if both are the same stale bytes
+# left over from an earlier, differently-privileged session on the same
+# checkout -- a root preflighted once while unsandboxed, never refreshed,
+# then copied verbatim into every worktree created afterward in a now-
+# restricted session.
+#
+# There is no cryptographic session identity available here, and this does
+# not invent one (the same reasoning that ruled out guessing an escalation
+# signal applies). What IS honestly verifiable, and already the established
+# heuristic this codebase uses for "is this recorded context still current"
+# (session-start.sh's own contract-reuse check): recency, bounded the same
+# way, and agreement on WHICH harness/CLI wrote it. Neither proves same-
+# session; both are cheap, real signals, and their absence is disclosed
+# rather than silently accepted.
+readonly INHERIT_SESSION_MAX_AGE_MINUTES=30
+INHERIT_SESSION_VERIFIED=-1 # memoised: -1 unknown, 0 no, 1 yes
+
+inherit_session_verified() {
+    if (( INHERIT_SESSION_VERIFIED >= 0 )); then
+        (( INHERIT_SESSION_VERIFIED ))
+        return
+    fi
+    INHERIT_SESSION_VERIFIED=0
+    if [[ -z "$ARG_INHERIT_SESSION" || ! -f "$ARG_INHERIT_SESSION" ||
+        -L "$ARG_INHERIT_SESSION" || ! -r "$ARG_INHERIT_SESSION" ]]; then
+        return 1
+    fi
+    if [[ -z "$(find "$ARG_INHERIT_SESSION" -mmin "-$INHERIT_SESSION_MAX_AGE_MINUTES" 2>/dev/null)" ]]; then
+        note "not inheriting from $ARG_INHERIT_SESSION: older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m, so it cannot be verified as belonging to this session -- falling back to a fresh probe for sandbox=/tls=/caches="
+        return 1
+    fi
+    local src_harness current_harness harness_id_script
+    harness_id_script="$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh"
+    src_harness="$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' "$ARG_INHERIT_SESSION" 2>/dev/null)"
+    if [[ -x "$harness_id_script" ]]; then
+        current_harness="$("$harness_id_script" --name 2>/dev/null || true)"
+    fi
+    if [[ -z "$src_harness" || -z "${current_harness:-}" || "$src_harness" != "$current_harness" ]]; then
+        note "not inheriting from $ARG_INHERIT_SESSION: its harness= (${src_harness:-none}) does not match this session's (${current_harness:-unknown}) -- falling back to a fresh probe for sandbox=/tls=/caches="
+        return 1
+    fi
+    INHERIT_SESSION_VERIFIED=1
+    return 0
 }
 
 # The sandbox=, tls=, and caches= lines are properties of the SESSION -- which
@@ -681,15 +759,16 @@ apply_never_widen() {
 # process ran that particular preflight call (agent shell vs. an
 # escalated/approval-granted one) produced a truthful-for-itself but
 # disagreeing answer. --inherit-session carries the already-authoritative
-# lines forward verbatim instead.
+# lines forward verbatim instead -- but only once inherit_session_verified
+# has judged the source recent and same-harness enough to trust.
 inherit_or_probe() {
     local prefix="$1" probe_fn="$2" line=""
-    if [[ -n "$ARG_INHERIT_SESSION" && -f "$ARG_INHERIT_SESSION" && ! -L "$ARG_INHERIT_SESSION" && -r "$ARG_INHERIT_SESSION" ]]; then
+    if inherit_session_verified; then
         line="$(grep -m1 "^$prefix" -- "$ARG_INHERIT_SESSION" 2>/dev/null || true)"
     fi
     if [[ -n "$line" ]]; then
         emit "$line"
-        note "inherited $prefix from $ARG_INHERIT_SESSION verbatim (session-scoped fact, not re-measured)"
+        note "inherited $prefix from $ARG_INHERIT_SESSION verbatim (session-scoped fact, verified recent and same-harness, not re-measured)"
     else
         "$probe_fn"
     fi

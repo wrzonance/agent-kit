@@ -19,8 +19,16 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
+harness_id_script="$root/agentkit/skills/.shared/scripts/harness-id.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# The current CLI's harness= line, exactly as agent-preflight.sh's own
+# probe_harness would emit it. --inherit-session fixtures below must carry
+# this (issue #332 F3: inheritance is only trusted from a same-harness,
+# recent source), computed live rather than hardcoded so the suite passes
+# under whichever CLI actually runs it.
+current_harness_line="harness= $("$harness_id_script" 2> /dev/null)"
 
 new_repo() {
     local d
@@ -424,6 +432,15 @@ assert_contains "$escalated_sandbox" 'this probe does not detect that state itse
 assert_rc 2 '--measured-from still rejects an unrecognised class' -- \
     "$script" --worktree "$repo" --measured-from somewhere-else
 
+# "agent" was the pre-#332 public value on main (--measured-from agent|hook,
+# documented as the default). A caller outside this tree may still pass it;
+# it must be accepted as an alias for agent-shell, not a hard failure that
+# leaves a contract-producing script with no contract to produce.
+alias_repo=$(new_repo)
+alias_view=$("$script" --worktree "$alias_repo" --measured-from agent 2> /dev/null)
+assert_contains "$(grep '^sandbox=' <<< "$alias_view")" 'measured-by=agent-shell' \
+    '--measured-from agent is accepted as a backward-compatible alias for agent-shell'
+
 # --- never-widen: a more restrictive recorded sandbox=/caches= survives ------
 # a less-restrictive re-measurement (issue #332). The scenario reproduces the
 # reported bug directly: a prior run recorded a sandboxed, cache-isolated
@@ -449,6 +466,27 @@ assert_eq 'sandbox= active=yes profile=none network=disabled home-writable=no me
 assert_contains "$(grep '^caches=' <<< "$after_widen")" 'reason=home-cache-unwritable' \
     'the more-restrictive recorded caches= line is kept'
 
+# --- field-by-field widen detection: no single axis may mask another --------
+# (issue #332 F2). A scalar SUM lets one axis's tightening cancel out
+# another axis's widening: active tightening no->yes (+2 under the old
+# scorer) while network widens disabled->ok (-2) nets to "no change" in a
+# sum, even though the worker just silently lost its network restriction.
+# --inherit-session gives full, deterministic control over the "fresh" line.
+masking_repo=$(new_repo)
+masking_contract="$masking_repo/.agent/env-contract.txt"
+printf 'sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell\n' \
+    > "$masking_contract"
+chmod 600 "$masking_contract"
+masking_session="$tmp/masking-session-contract.txt"
+printf '%s\nsandbox= active=yes profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    "$current_harness_line" > "$masking_session"
+masking_err=$("$script" --worktree "$masking_repo" --inherit-session "$masking_session" 2>&1 > /dev/null)
+assert_contains "$masking_err" "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field 'network')" \
+    "a network widening masked by an active tightening is still caught, and names the regressed field"
+assert_eq 'sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell' \
+    "$(grep '^sandbox=' "$masking_contract")" \
+    'the masked-widening scenario keeps the recorded sandbox= line, not the fresh one'
+
 # A worktree with no prior contract records its first measurement normally --
 # there is nothing recorded yet for the guard to protect.
 repo=$(new_repo)
@@ -466,8 +504,8 @@ printf 'sandbox= active=no profile=none network=ok home-writable=yes measured-by
     > "$loose_contract"
 chmod 600 "$loose_contract"
 tighter_session="$tmp/tighter-session-contract.txt"
-printf 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
-    > "$tighter_session"
+printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    "$current_harness_line" > "$tighter_session"
 tighten_err=$("$script" --worktree "$repo" --inherit-session "$tighter_session" 2>&1 > /dev/null)
 assert_not_contains "$tighten_err" 'keeping the more-restrictive recorded sandbox=' \
     'a tightening re-measurement is not treated as a widening'
@@ -482,6 +520,7 @@ assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no 
 session_repo=$(new_repo)
 session_contract="$session_repo/.agent/env-contract.txt"
 printf '%s\n' \
+    "$current_harness_line" \
     'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
     'tls= bundle=/etc/ssl/certs/ca-certificates.crt source=system corporate-ca=no preset=none uv-system-certs=not-needed' \
     'caches= root=/tmp/agent-cache-inherit reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-inherit/uv NPM_CONFIG_CACHE=/tmp/agent-cache-inherit/npm PIP_CACHE_DIR=/tmp/agent-cache-inherit/pip XDG_CACHE_HOME=/tmp/agent-cache-inherit' \
@@ -500,6 +539,40 @@ assert_contains "$(cat "$tmp/inherit-stderr")" 'inherited sandbox=' \
     '--inherit-session discloses on stderr that it copied rather than measured'
 assert_contains "$(grep '^sandbox=' <<< "$inherit_out")" 'note="escalate git writes' \
     'a note= present on the authoritative sandbox= line survives inheritance'
+
+# --- --inherit-session only trusts a source verified as belonging to THIS ---
+# session (issue #332 F3): agreement between a root and a worktree contract
+# proves nothing if both are the same stale bytes left over from an earlier,
+# differently-privileged session. There is no cryptographic session identity
+# available, so this is a heuristic (recency + same-harness) -- the same
+# established heuristic session-start.sh already uses for "is this recorded
+# context still current" -- and its absence must fall back to a fresh probe,
+# not silently accept the stale bytes.
+stale_repo=$(new_repo)
+stale_session="$tmp/stale-session-contract.txt"
+printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    "$current_harness_line" > "$stale_session"
+# Backdate well past INHERIT_SESSION_MAX_AGE_MINUTES (30m).
+touch -d '2 hours ago' "$stale_session" 2> /dev/null || touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$stale_session"
+stale_err=$("$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2>&1 > /dev/null)
+assert_contains "$stale_err" 'older than 30m' \
+    'a stale --inherit-session source is refused with its age named'
+assert_contains "$stale_err" 'falling back to a fresh probe' \
+    'and the run falls back to a fresh probe rather than failing'
+stale_out=$("$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2> /dev/null)
+assert_not_contains "$(grep '^sandbox=' <<< "$stale_out")" 'active=yes profile=strict network=disabled' \
+    'the stale contract'"'"'s sandbox= bytes are not the ones that get served'
+
+mismatch_repo=$(new_repo)
+mismatch_session="$tmp/mismatch-session-contract.txt"
+printf 'harness= name=some-other-cli trailer="Other <noreply@example.invalid>" other=none\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    > "$mismatch_session"
+mismatch_err=$("$script" --worktree "$mismatch_repo" --inherit-session "$mismatch_session" 2>&1 > /dev/null)
+assert_contains "$mismatch_err" 'does not match this session' \
+    'a source contract from a different harness is refused, naming the mismatch'
+mismatch_out=$("$script" --worktree "$mismatch_repo" --inherit-session "$mismatch_session" 2> /dev/null)
+assert_not_contains "$(grep '^sandbox=' <<< "$mismatch_out")" 'active=yes profile=strict network=disabled' \
+    'the cross-harness contract'"'"'s sandbox= bytes are not the ones that get served'
 
 # A missing or unreadable --inherit-session file falls back to a fresh probe
 # for every line, rather than failing the run: reporting, never blocking.

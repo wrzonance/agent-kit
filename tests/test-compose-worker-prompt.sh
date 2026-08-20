@@ -545,4 +545,24 @@ bash "$compose" --template issue-lead --write-set 'src/**' \
 assert_eq 0 "$tighter_rc" \
     'a worktree contract more restrictive than the root is never refused as a widening'
 
+# --- field-by-field widen detection: no single axis may mask another (#332 F2) -
+# A scalar SUM lets one axis's tightening cancel another axis's widening:
+# active tightening no->yes while network widens disabled->ok nets to "no
+# change" in a sum, even though the worker just silently lost its network
+# restriction. The refusal must still fire, and must name the axis.
+masking_root_line='sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell'
+masking_worktree_line='sandbox= active=yes profile=none network=ok home-writable=yes measured-by=agent-shell'
+masking_root="$tmp/masking-root"
+make_widen_root "$masking_root" "$masking_root_line"
+masking_worktree="$masking_root/.worktrees/feat-issue-masking"
+make_widen_worktree "$masking_root" feat/issue-masking "$masking_worktree" "$masking_worktree_line"
+masking_rc=0
+masking_err=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$masking_worktree" --issue 996 --branch feat/issue-masking \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 > /dev/null) || masking_rc=$?
+assert_eq 1 "$masking_rc" \
+    'a network widening masked by an active tightening still refuses composition'
+assert_contains "$masking_err" "on field 'network'" \
+    'the refusal names the regressed field, not just "less restrictive"'
+
 finish

@@ -88,25 +88,38 @@ if grep -Eq '<(PASTE|WHEN)([[:space:]]|[^[:alnum:]_])' "$contract"; then
     die 'environment contract contains an unresolved <PASTE ...> or <WHEN ...> placeholder'
 fi
 
-# Restrictiveness score for a sandbox= line (higher = safer/more restrictive).
-# Kept in lockstep, by design intent, with agent-preflight.sh's own
-# sandbox_restriction_score -- both exist only to answer "did this get less
-# restrictive", never to guess a category neither script can verify.
-sandbox_restriction_score() {
-    local line=$1 active hw score=0
-    active=$(sed -n 's/.*active=\([A-Za-z]*\).*/\1/p' <<< "$line")
-    hw=$(sed -n 's/.*home-writable=\([A-Za-z]*\).*/\1/p' <<< "$line")
-    case $active in
-        yes) score=$((score + 2)) ;;
-        no) : ;;
-        *) score=$((score + 1)) ;;
+# Restrictiveness rank for one sandbox= token, and the field-by-field widen
+# check built from it. Kept in lockstep, by design intent, with
+# agent-preflight.sh's own sandbox_field_rank/sandbox_widened -- both exist
+# only to answer "did this get less restrictive on any one axis", never to
+# guess a category neither script can verify. Field-by-field, not a summed
+# score (issue #332 F2): active/home-writable/network are independent axes,
+# and a scalar sum lets one axis's tightening mask another axis's widening.
+sandbox_field_rank() {
+    local field=$1 value=$2
+    case $field in
+        active)
+            case $value in yes) printf '2' ;; no) printf '0' ;; *) printf '1' ;; esac ;;
+        home-writable)
+            case $value in no) printf '2' ;; yes) printf '0' ;; *) printf '1' ;; esac ;;
+        network)
+            case $value in disabled) printf '2' ;; ok) printf '0' ;; *) printf '1' ;; esac ;;
     esac
-    case $hw in
-        no) score=$((score + 2)) ;;
-        yes) : ;;
-        *) score=$((score + 1)) ;;
-    esac
-    printf '%s' "$score"
+}
+
+sandbox_widened() {
+    local recorded=$1 fresh=$2 field rec_tok fresh_tok rec_rank fresh_rank
+    for field in active home-writable network; do
+        rec_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$recorded")
+        fresh_tok=$(sed -n "s/.*${field}=\\([A-Za-z]*\\).*/\\1/p" <<< "$fresh")
+        rec_rank=$(sandbox_field_rank "$field" "$rec_tok")
+        fresh_rank=$(sandbox_field_rank "$field" "$fresh_tok")
+        if ((fresh_rank < rec_rank)); then
+            printf '%s' "$field"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # sandbox= is a SESSION-scoped fact (issue #332): the root checkout's own
@@ -131,10 +144,8 @@ if [[ -n ${repo_root:-} ]]; then
         root_sandbox=$(grep -m1 '^sandbox=' "$root_contract" 2>/dev/null || true)
         worktree_sandbox=$(grep -m1 '^sandbox=' "$contract" 2>/dev/null || true)
         if [[ -n $root_sandbox && -n $worktree_sandbox ]]; then
-            root_score=$(sandbox_restriction_score "$root_sandbox")
-            worktree_score=$(sandbox_restriction_score "$worktree_sandbox")
-            if ((worktree_score < root_score)); then
-                die "refusing: worktree-contract-less-restrictive-than-root -- worktree sandbox=[$worktree_sandbox] is less restrictive than root sandbox=[$root_sandbox] for the same run; re-run create-issue-worktree.sh so the worktree inherits the root's session-scoped facts instead of a fresh, disagreeing measurement"
+            if regressed_field=$(sandbox_widened "$root_sandbox" "$worktree_sandbox"); then
+                die "refusing: worktree-contract-less-restrictive-than-root -- worktree sandbox= is less restrictive than root sandbox= on field '$regressed_field' for the same run (worktree=[$worktree_sandbox] root=[$root_sandbox]); re-run create-issue-worktree.sh so the worktree inherits the root's session-scoped facts instead of a fresh, disagreeing measurement"
             fi
         fi
     fi
