@@ -105,6 +105,33 @@ guard_fixture_path() {
     return 1
 }
 
+# Plugin-cache roots the RUNNING harness itself loaded into this session --
+# Claude's and Codex's, since either variable may be unset while the other
+# harness is the one actually running, and getting this wrong in either
+# direction is cheap: a sibling harness's own plugin cache is still this
+# machine's harness content, never arbitrary user data (issue #335 Case 2).
+guard_harness_plugin_cache_roots() {
+    local claude_root=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}
+    local codex_root=${CODEX_HOME:-${HOME:-}/.codex}
+    [[ -n $claude_root ]] && printf '%s\n' "$claude_root/plugins/cache"
+    [[ -n $codex_root ]] && printf '%s\n' "$codex_root/plugins/cache"
+}
+
+# Is this path under a harness's own plugin-cache tree? A SKILL.md the running
+# harness injected at SessionStart (e.g. superpowers) lives here -- reading it
+# is expected, ordinary traffic, not an environment probe of foreign content.
+guard_harness_path() {
+    local candidate=$1 root
+    [[ -n $candidate ]] || return 1
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+    while IFS= read -r root; do
+        [[ -n $root ]] || continue
+        root=$(guard_scope_canonical "$root") || continue
+        [[ $candidate == "$root" || $candidate == "$root"/* ]] && return 0
+    done < <(guard_harness_plugin_cache_roots)
+    return 1
+}
+
 guard_workspace_root() {
     local root=$1 common
     [[ -n $workspace_root ]] || return 1
@@ -128,6 +155,8 @@ guard_classify_root() {
         else
             GUARD_TARGET_CLASSIFICATION=workspace
         fi
+    elif guard_harness_path "$root"; then
+        GUARD_TARGET_CLASSIFICATION=harness
     elif guard_fixture_path "$root"; then
         GUARD_TARGET_CLASSIFICATION=fixture
     else
@@ -245,11 +274,24 @@ guard_classify_target() {
             *) candidate="$base/$target";;
         esac
         GUARD_TARGET_ROOT=''
-        GUARD_TARGET_CLASSIFICATION=unresolved
+        # A plugin-cache tree need not be a git checkout at all -- when the
+        # repository-root lookup fails outright, the target may still be
+        # harness content rather than genuinely unresolved.
+        if guard_harness_path "$candidate"; then
+            GUARD_TARGET_CLASSIFICATION=harness
+        else
+            GUARD_TARGET_CLASSIFICATION=unresolved
+        fi
         printf '%s' "$GUARD_TARGET_CLASSIFICATION"
         return 0
     }
     GUARD_TARGET_ROOT=${resolved%%$'\n'*}
+    candidate=${resolved#*$'\n'}
+    if guard_harness_path "$candidate"; then
+        GUARD_TARGET_CLASSIFICATION=harness
+        printf '%s' "$GUARD_TARGET_CLASSIFICATION"
+        return 0
+    fi
     guard_classify_root "$GUARD_TARGET_ROOT"
 }
 
@@ -397,7 +439,18 @@ guard_out_of_scope_target() {
     local command_line=$1 segment verb token cleaned has_walker=0
     local cwd=${2:-$PWD} command_root='' command_class='' command_dir=''
     local -a words
-    local segments=${command_line//[;&|]/$'\n'}
+    # Segmented and tokenized the way the shell actually parses the command --
+    # never by splitting the raw command TEXT on ;&| or whitespace. A heredoc
+    # BODY (data destined for a file, never executed) is dropped entirely by
+    # guard_gh_command_segments, the same quote/heredoc state machine
+    # post-tool-use.sh's pinned-path probe relies on; a quoted argument's `;`,
+    # `|`, or internal whitespace no longer masquerades as command structure
+    # or as several separate words (issue #335 Case 3 -- a heredoc-quoted `rg
+    # '/(\.shared|shared)/|...'` pattern was previously split mid-regex on the
+    # unquoted-looking `|`, and a quoted sed address argument was split on its
+    # internal spaces into fragments that looked like path segments).
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
     # shellcheck disable=SC2034  # consumed by the sourcing PreToolUse hook
     GUARD_SCOPE_CLASSIFICATION=''
     command_root=$(guard_command_repository_root "$cwd" "$command_line" 2> /dev/null || true)
@@ -405,10 +458,13 @@ guard_out_of_scope_target() {
         command_dir=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
         if [[ -n $command_dir && $command_dir != "$(guard_scope_canonical "$cwd")" ]]; then
             command_root=$command_dir
-            # A temporary non-git fixture is still in-scope. Only an
-            # unambiguously foreign directory receives the advisory.
+            # A temporary non-git fixture, or a harness plugin-cache tree, is
+            # still in-scope. Only an unambiguously foreign directory
+            # receives the advisory.
             if guard_fixture_path "$command_dir"; then
                 command_class=fixture
+            elif guard_harness_path "$command_dir"; then
+                command_class=harness
             else
                 command_class=foreign
             fi
@@ -417,7 +473,7 @@ guard_out_of_scope_target() {
 
     while IFS= read -r segment; do
         [[ -n ${segment//[[:space:]]/} ]] || continue
-        read -r -a words <<< "$segment"
+        mapfile -t words < <(guard_tokenize_words "$segment")
         ((${#words[@]})) || continue
         verb=${words[0]#\(}
         case $verb in
@@ -459,9 +515,14 @@ guard_out_of_scope_target() {
         fi
 
         for token in "${words[@]:1}"; do
-            cleaned=${token#\"}; cleaned=${cleaned%\"}
-            cleaned=${cleaned#\'}; cleaned=${cleaned%\'}
-            cleaned=${cleaned%,}; cleaned=${cleaned%)}
+            # guard_tokenize_words already consumed quote characters as
+            # syntax, so a token surviving here with INTERNAL whitespace was
+            # only ever a single quoted shell word (a sed/grep expression, a
+            # sentence, a regex) -- never a bare filesystem path, which a
+            # shell cannot pass as one unquoted argument. Trailing comma/paren
+            # trimming stays for the common prose-list case ("see /a/b, /c)").
+            [[ $token != *[[:space:]]* ]] || continue
+            cleaned=${token%,}; cleaned=${cleaned%)}
             case $cleaned in
                 /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
                     if ! guard_scope_path_allowed "$cleaned"; then
@@ -472,7 +533,7 @@ guard_out_of_scope_target() {
                                 ;;
                             *) command_class=foreign;;
                         esac
-                        [[ $command_class == workspace ]] && continue
+                        [[ $command_class == workspace || $command_class == harness ]] && continue
                         # shellcheck disable=SC2034  # consumed by the sourcing hook
                         GUARD_SCOPE_CLASSIFICATION=foreign
                         printf '%s' "$cleaned"
@@ -1080,6 +1141,54 @@ guard_gh_command_segments() {
             segment+=$'\n'
         fi
     done <<< "$input"
+}
+
+# Tokenize ONE shell segment (already free of `;`/`|`/`&` structure and
+# heredoc bodies, e.g. one line from guard_gh_command_segments) into words the
+# way the shell actually would -- honoring single/double quotes and backslash
+# escapes -- rather than `read -r -a`, which splits on ANY whitespace
+# regardless of quoting. `read -r -a` turns one quoted argument containing a
+# space (a sed/grep expression, a sentence) into several separate "words", one
+# of which can look path-shaped purely because that is where the quoted text
+# happened to start (issue #335 Case 3, e.g. `sed -e "/^Return the
+# six-step/,\$d"` was previously read as the four words -e, "/^Return, the,
+# six-step/,\$d" -- the second of which passed the /* path check). Output:
+# one word per line; the quote characters themselves are consumed as syntax
+# and never appear in a word.
+guard_tokenize_words() {
+    local segment=$1 word='' quote='' escaped=0 char i length
+    length=${#segment}
+    for ((i = 0; i < length; i++)); do
+        char=${segment:i:1}
+        if ((escaped)); then
+            word+=$char
+            escaped=0
+            continue
+        fi
+        if [[ $char == \\ && $quote != "'" ]]; then
+            escaped=1
+            continue
+        fi
+        if [[ -n $quote ]]; then
+            if [[ $char == "$quote" ]]; then
+                quote=''
+            else
+                word+=$char
+            fi
+            continue
+        fi
+        case $char in
+            "'" | '"') quote=$char ;;
+            [[:space:]])
+                if [[ -n $word ]]; then
+                    printf '%s\n' "$word"
+                    word=''
+                fi
+                ;;
+            *) word+=$char ;;
+        esac
+    done
+    [[ -n $word ]] && printf '%s\n' "$word"
 }
 
 # Classify one gh body option. Output is `inline|VALUE`; file-backed and

@@ -176,15 +176,16 @@ together. Timeline fetches and repeated per-issue exploration cost more than
 the digest."
 fi
 
-# A hardcoded plugin path. Observed live: the resolver line came back empty, the
-# call produced nothing, and the session recovered by pasting the absolute path
-# it had seen -- including the VERSION directory -- and then used that for every
-# later call in the session.
-#
-# It worked. It works right up until the version bumps, and then it fails as a
-# path that no longer exists rather than as anything that names the cause. The
-# tree moving is the whole reason the resolver exists, so this is the one place
-# a working command still earns a correction.
+# A hardcoded plugin path -- but ONLY a WRONG one. Observed live: the resolver
+# line came back empty, the call produced nothing, and the session recovered by
+# pasting the absolute path it had seen and then used that for every later call
+# in the session. That correction itself then went wrong the same way twice
+# over: (1) the lesson fired even when the pasted path was already the
+# CONTRACT-RESOLVED tree -- correct by definition -- telling a correct agent it
+# was wrong; and (2) the one observed improvisation swapped the marketplace
+# directory name (agent-kit) for the plugin directory name (agentkit),
+# producing a path that fails as a missing file with no clue why (issue #335
+# Case 1). Both are the actual failure modes; "the version bumped" never was.
 #
 # $command_line is the WHOLE command, so matching it directly cannot tell a
 # path being EXECUTED from one merely QUOTED as data -- a heredoc body writing
@@ -192,9 +193,10 @@ fi
 # were observed tripping this on prose that documented the hazard rather than
 # committing it (issue #299). guard_pinned_path_probe_text narrows the match
 # text to what the command would actually resolve before this pattern runs.
-if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' \
-        <<< "$(guard_pinned_path_probe_text "$command_line")" &&
-    guard_should_advise "$state_root" "$session" pinned-plugin-path; then
+probe_text=$(guard_pinned_path_probe_text "$command_line")
+matched_path=$(grep -oE '[^[:space:]"'"'"']*plugins/cache/[^[:space:]"'"'"']*agentkit/[0-9][^[:space:]"'"'"']*' \
+    <<< "$probe_text" 2> /dev/null | head -n 1) || true
+if [[ -n $matched_path ]]; then
     # A lesson that only names the hazard leaves the model to improvise a
     # remedy, and the one observed improvisation hand-deleted path segments
     # into a path that does not exist -- tripping the scope guard on top. So
@@ -217,24 +219,37 @@ if grep -qE 'plugins/cache/[^[:space:]]*agentkit/[0-9]' \
         # to the generic resolver.
         [[ $resolved_skills =~ ^/[A-Za-z0-9._/@+-]+$ && -d $resolved_skills ]] || resolved_skills=''
     fi
-    if [[ -n $resolved_skills ]]; then
-        # shellcheck disable=SC2016  # the $agentkit references are literal text, see teach()
-        teach "That path has a version directory in it, so it stops resolving at the next
-plugin update -- and it fails as a missing file, which does not say why.
-This repository's environment contract already resolves the current tree. Use exactly:
-  agentkit=$resolved_skills
-That directory exists right now; build every helper path from \"\$agentkit\". Never
-edit version segments out of a path by hand. If it stops resolving after a plugin
-update, re-derive it:
-$RESOLVE_HINT"
-    else
-        # shellcheck disable=SC2016  # literal text, see teach()
-        teach "That path has a version directory in it, so it stops resolving at the next
-plugin update -- and it fails as a missing file, which does not say why.
+    # The flagged path IS the contract-resolved tree -- correct by
+    # definition. Fall straight through with no advisory and, critically,
+    # WITHOUT consuming guard_should_advise's once-per-session claim: a
+    # genuinely stale path read later in the same session must still get its
+    # own lesson, which a spent claim here would silently swallow.
+    path_is_correct=0
+    [[ -n $resolved_skills &&
+        ( $matched_path == "$resolved_skills" || $matched_path == "$resolved_skills"/* ) ]] &&
+        path_is_correct=1
+    if ((! path_is_correct)) && guard_should_advise "$state_root" "$session" pinned-plugin-path; then
+        if [[ -n $resolved_skills && $resolved_skills == "$matched_path" ]]; then
+            # Defensive only -- unreachable given path_is_correct above, which
+            # excludes exact equality before we get here. A remedy that
+            # equals the flagged path is a bug in the check, not something to
+            # hand the agent; assert it into the error log, never print it.
+            guard_log_error 'pinned-plugin-path-remedy-equals-input' 2> /dev/null || true
+        elif [[ -n $resolved_skills ]]; then
+            # shellcheck disable=SC2016  # the $agentkit reference is literal text, see teach()
+            teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit; do
+not conflate them: $matched_path
+Use exactly:
+  agentkit=$resolved_skills"
+        else
+            # shellcheck disable=SC2016  # literal text, see teach()
+            teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit; do
+not conflate them: $matched_path
 $RESOLVE_HINT
 The find picks the highest version present, which is what you want even when
 only one is installed. If it came back empty, the plugin is not installed where
 this is looking; say so rather than substituting a literal path."
+        fi
     fi
 fi
 
