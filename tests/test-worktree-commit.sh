@@ -12,6 +12,21 @@ script="$root/agentkit/skills/.shared/scripts/worktree-commit.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
+# Every fixture below that isn't specifically exercising trailer behaviour
+# (issue #305) supplies this well-formed trailer explicitly, so its outcome
+# does not depend on an environment contract existing in the fixture repo.
+TEST_TRAILER='Co-Authored-By: Test Author <test@example.invalid>'
+
+# Writes a minimal, untracked environment contract declaring HARNESS's
+# identity, in the shape contract-read.sh's harness.trailer projection reads:
+# `harness= name=<name> trailer="<value>"`. Used only by the tests that
+# exercise default-trailer derivation.
+write_contract() {
+    local repo=$1 name=$2 value=$3
+    mkdir -p "$repo/.agent"
+    printf 'harness= name=%s trailer="%s"\n' "$name" "$value" > "$repo/.agent/env-contract.txt"
+}
+
 repo=$(mktemp -d "$tmp/repo.XXXXXX")
 git -C "$repo" init -q
 git -C "$repo" config user.name test
@@ -67,12 +82,12 @@ wait_for_file() {
 
 run_a() {
     (cd "$worktree_a" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" CALLER_ID=a GATE_DIR="$gate" \
-        "$script" --message 'feat: commit a' -- a.txt)
+        "$script" --message 'feat: commit a' --trailer "$TEST_TRAILER" -- a.txt)
 }
 
 run_b() {
     (cd "$worktree_b" && PATH="$fake_bin:$PATH" REAL_GIT="$real_git" CALLER_ID=b GATE_DIR="$gate" \
-        "$script" --message 'feat: commit b' -- b.txt)
+        "$script" --message 'feat: commit b' --trailer "$TEST_TRAILER" -- b.txt)
 }
 
 run_a > "$tmp/a.out" 2> "$tmp/a.err" &
@@ -137,7 +152,7 @@ chmod +x "$fail_bin/flock"
 printf 'failure\n' > "$worktree_a/failure.txt"
 rc=0
 out=$(cd "$worktree_a" && PATH="$fail_bin:/usr/bin:/bin" \
-    "$script" --message 'feat: must not commit' -- failure.txt 2>&1) || rc=$?
+    "$script" --message 'feat: must not commit' --trailer "$TEST_TRAILER" -- failure.txt 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a failed lock acquisition exits with an error'
 assert_contains "$out" 'cannot acquire transaction lock' \
     'a failed lock acquisition names the transaction lock'
@@ -156,7 +171,7 @@ git -C "$trunk_repo" commit -qm init
 printf 'must not stage\n' >"$trunk_repo/blocked.txt"
 trunk_err="$tmp/trunk.err"
 trunk_rc=0
-(cd "$trunk_repo" && "$script" --message 'feat: forbidden' -- blocked.txt \
+(cd "$trunk_repo" && "$script" --message 'feat: forbidden' --trailer "$TEST_TRAILER" -- blocked.txt \
     > /dev/null 2>"$trunk_err") || trunk_rc=$?
 assert_eq '1' "$trunk_rc" 'declared trunk refusal exits before staging'
 assert_contains "$(cat "$trunk_err")" 'refusing to commit' \
@@ -179,7 +194,7 @@ git -C "$ordinary_repo" commit -qm init
 git -C "$ordinary_repo" checkout -qb feature
 printf 'workflow-v2\n' > "$ordinary_repo/.github/workflows/ci.yml"
 ordinary_rc=0
-(cd "$ordinary_repo" && "$script" --message 'fix: ordinary protected edit' -- \
+(cd "$ordinary_repo" && "$script" --message 'fix: ordinary protected edit' --trailer "$TEST_TRAILER" -- \
     .github/workflows/ci.yml > /dev/null 2>&1) || ordinary_rc=$?
 assert_eq '0' "$ordinary_rc" 'ordinary protected edits commit outside an active merge'
 assert_eq 'workflow-v2' "$(git -C "$ordinary_repo" show HEAD:.github/workflows/ci.yml)" \
@@ -193,7 +208,7 @@ assert_contains "$(cat "$script")" 'hand the identical command back to the top-l
 printf 'trailing space  \n' >"$worktree_a/whitespace.txt"
 check_err="$tmp/check.err"
 check_rc=0
-(cd "$worktree_a" && "$script" --message 'feat: bad whitespace' -- whitespace.txt \
+(cd "$worktree_a" && "$script" --message 'feat: bad whitespace' --trailer "$TEST_TRAILER" -- whitespace.txt \
     > /dev/null 2>"$check_err") || check_rc=$?
 assert_eq '1' "$check_rc" 'cached whitespace check rejects the commit'
 assert_contains "$(cat "$check_err")" 'diff --cached --check' \
@@ -229,7 +244,7 @@ git -C "$merge_repo" checkout -q feature
 git -C "$merge_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$merge_repo/change.txt"
 park_rc=0
-park_out=$(cd "$merge_repo" && "$script" --message 'fix: park merge content' \
+park_out=$(cd "$merge_repo" && "$script" --message 'fix: park merge content' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || park_rc=$?
 assert_eq '3' "$park_rc" 'attended inherited protected content parks before commit'
 assert_contains "$park_out" '.github/workflows/ci.yml' 'park output names the inherited protected path'
@@ -241,7 +256,7 @@ before_yolo=$(git -C "$merge_repo" diff --cached --name-only)
 assert_contains "$before_yolo" '.github/workflows/ci.yml' \
     'the parked protected path remains staged before authorization'
 yolo_rc=0
-yolo_out=$(cd "$merge_repo" && "$script" --yolo --message 'fix: carry base merge' \
+yolo_out=$(cd "$merge_repo" && "$script" --yolo --message 'fix: carry base merge' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || yolo_rc=$?
 assert_eq '0' "$yolo_rc" 'yolo named-base authorization permits verified inherited content'
 assert_contains "$yolo_out" 'committed' 'the authorized helper reports its commit'
@@ -277,7 +292,7 @@ git -C "$delete_repo" checkout -q feature
 git -C "$delete_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$delete_repo/change.txt"
 delete_rc=0
-delete_out=$(cd "$delete_repo" && "$script" --yolo --message 'fix: carry base deletion' \
+delete_out=$(cd "$delete_repo" && "$script" --yolo --message 'fix: carry base deletion' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$delete_base" -- change.txt 2>&1) || delete_rc=$?
 assert_eq '0' "$delete_rc" 'named-base authorization permits an inherited protected deletion'
 assert_contains "$delete_out" 'committed' 'the deletion authorization reports its commit'
@@ -310,7 +325,7 @@ git -C "$quoted_repo" checkout -q feature
 git -C "$quoted_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$quoted_repo/change.txt"
 quoted_rc=0
-quoted_out=$(cd "$quoted_repo/subdir" && "$script" --message 'fix: park quoted protected path' \
+quoted_out=$(cd "$quoted_repo/subdir" && "$script" --message 'fix: park quoted protected path' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$quoted_base" -- ../change.txt 2>&1) || quoted_rc=$?
 assert_eq '3' "$quoted_rc" 'quoted protected paths park from a subdirectory'
 assert_contains "$quoted_out" 'migrations/001_init.sql' \
@@ -344,7 +359,7 @@ chain_base_sha=$(git -C "$chained_repo" rev-parse HEAD)
 git -C "$chained_repo" checkout -qb feat/issue-successor "$chain_base_sha"
 printf 'successor change\n' > "$chained_repo/successor.txt"
 chained_rc=0
-chained_out=$(cd "$chained_repo" && "$script" --message 'feat: successor change' \
+chained_out=$(cd "$chained_repo" && "$script" --message 'feat: successor change' --trailer "$TEST_TRAILER" \
     -- successor.txt 2>&1) || chained_rc=$?
 assert_eq '0' "$chained_rc" \
     'a chained successor commits with no active merge and no named base'
@@ -370,10 +385,200 @@ assert_eq "$(git -C "$chained_repo" rev-parse feat/issue-predecessor)" "$derived
     'MERGE_HEAD alone names the exact predecessor commit, with no prior knowledge'
 printf 'more successor change\n' > "$chained_repo/successor2.txt"
 derive_rc=0
-derive_out=$(cd "$chained_repo" && "$script" --yolo --message 'fix: merge-down predecessor' \
+derive_out=$(cd "$chained_repo" && "$script" --yolo --message 'fix: merge-down predecessor' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$derived_base" -- successor2.txt 2>&1) || derive_rc=$?
 assert_eq '0' "$derive_rc" \
     'a base derived from MERGE_HEAD alone authorizes the inherited protected content'
 assert_contains "$derive_out" 'committed' 'the derived-base authorization reports its commit'
+
+# --- Issue #305: the helper owns the trailer instead of trusting its caller ---
+#
+# A five-issue parallel run gave three workers byte-identical trailer
+# instructions and got three differently broken attributions: no trailer line
+# at all, a bare identity with no key, and a key with an empty value. All
+# three parsed as zero (or nobody-naming) trailers. The fix makes this helper
+# derive a correct default from the contract, refuse a malformed --trailer
+# outright, and verify its own commit's parsed trailers before reporting
+# success.
+
+new_repo() {
+    local repo=$1
+    git init -q -b main "$repo"
+    git -C "$repo" config user.name test
+    git -C "$repo" config user.email test@example.invalid
+    mkdir -p "$repo/.agent"
+    printf 'AGENT_BASE_BRANCH=main\n' > "$repo/.agent/config.env"
+    printf 'base\n' > "$repo/base.txt"
+    git -C "$repo" add -- .agent/config.env base.txt
+    git -C "$repo" commit -qm init
+    git -C "$repo" checkout -qb feature
+}
+
+# Omitting --trailer entirely derives "Co-Authored-By: <contract identity>"
+# from this repository's own environment contract and commits with it.
+derive_repo="$tmp/trailer-derive-repo"
+new_repo "$derive_repo"
+write_contract "$derive_repo" claude 'Claude <noreply@anthropic.com>'
+printf 'change\n' > "$derive_repo/change.txt"
+derive_default_rc=0
+derive_default_out=$(cd "$derive_repo" && "$script" --message 'feat: derive default trailer' \
+    -- change.txt 2>&1) || derive_default_rc=$?
+assert_eq '0' "$derive_default_rc" 'omitting --trailer still produces a commit'
+assert_contains "$derive_default_out" 'committed' 'the derived-default commit reports success'
+assert_eq 'Co-Authored-By: Claude <noreply@anthropic.com>' \
+    "$(git -C "$derive_repo" log -1 --format='%(trailers:only=true,unfold=true)')" \
+    'the default trailer is derived from the contract, prefixed with Co-Authored-By'
+
+# A repository whose contract declares a different harness gets THAT harness's
+# identity, not a hardcoded "Claude" -- the bridge reads the contract, it does
+# not assume who is calling it.
+codex_repo="$tmp/trailer-codex-repo"
+new_repo "$codex_repo"
+write_contract "$codex_repo" codex 'Codex <noreply@openai.com>'
+printf 'change\n' > "$codex_repo/change.txt"
+codex_rc=0
+codex_out=$(cd "$codex_repo" && "$script" --message 'feat: codex harness trailer' \
+    -- change.txt 2>&1) || codex_rc=$?
+assert_eq '0' "$codex_rc" 'a codex-harness repository also derives a default trailer'
+assert_contains "$codex_out" 'committed' 'the codex-harness derived-default commit reports success'
+assert_eq 'Co-Authored-By: Codex <noreply@openai.com>' \
+    "$(git -C "$codex_repo" log -1 --format='%(trailers:only=true,unfold=true)')" \
+    "the derived trailer matches the codex repository's own contract, not claude's"
+
+# A --trailer value with no ':' at all -- e.g. a bare contract identity string
+# passed through verbatim -- has no key and is refused before anything stages.
+nokey_repo="$tmp/trailer-nokey-repo"
+new_repo "$nokey_repo"
+printf 'change\n' > "$nokey_repo/change.txt"
+nokey_rc=0
+nokey_out=$(cd "$nokey_repo" && "$script" --message 'feat: no key' \
+    --trailer 'Claude claude-sonnet-5 <noreply@anthropic.com>' -- change.txt 2>&1) || nokey_rc=$?
+assert_eq '1' "$nokey_rc" 'a keyless --trailer value is refused'
+assert_contains "$nokey_out" "no ':' found" 'the refusal names the missing key'
+assert_eq '1' "$(git -C "$nokey_repo" log --oneline | wc -l)" \
+    'a keyless --trailer refusal creates no new commit'
+assert_eq '' "$(git -C "$nokey_repo" diff --cached --name-only)" \
+    'a keyless --trailer refusal stages nothing'
+
+# A --trailer key with an empty value -- the exact shape a variable that
+# expanded empty across a tool-call boundary produced in the field -- is
+# refused rather than folded into an empty paragraph git silently drops.
+emptyval_repo="$tmp/trailer-emptyval-repo"
+new_repo "$emptyval_repo"
+printf 'change\n' > "$emptyval_repo/change.txt"
+emptyval_rc=0
+emptyval_out=$(cd "$emptyval_repo" && "$script" --message 'feat: empty value' \
+    --trailer 'Co-Authored-By: ' -- change.txt 2>&1) || emptyval_rc=$?
+assert_eq '1' "$emptyval_rc" 'a --trailer with an empty value is refused'
+assert_contains "$emptyval_out" 'empty value' 'the refusal names the empty value'
+assert_eq '1' "$(git -C "$emptyval_repo" log --oneline | wc -l)" \
+    'an empty-value --trailer refusal creates no new commit'
+
+# git's own trailer grammar accepts keys starting with a digit or a hyphen --
+# this helper's key validation must match that grammar, not a stricter guess
+# at it (CodeRabbit finding on PR #313).
+digitkey_repo="$tmp/trailer-digitkey-repo"
+new_repo "$digitkey_repo"
+printf 'change\n' > "$digitkey_repo/change.txt"
+digitkey_rc=0
+digitkey_out=$(cd "$digitkey_repo" && "$script" --message 'feat: digit-led trailer key' \
+    --trailer '1Key: 42' -- change.txt 2>&1) || digitkey_rc=$?
+assert_eq '0' "$digitkey_rc" 'a --trailer key starting with a digit is accepted, matching git'
+assert_contains "$digitkey_out" 'committed' 'the digit-led key commit reports success'
+assert_eq '1Key: 42' "$(git -C "$digitkey_repo" log -1 --format='%(trailers:only=true,unfold=true)')" \
+    'the digit-led key parses via git''s own trailer format'
+
+hyphenkey_repo="$tmp/trailer-hyphenkey-repo"
+new_repo "$hyphenkey_repo"
+printf 'change\n' > "$hyphenkey_repo/change.txt"
+hyphenkey_rc=0
+hyphenkey_out=$(cd "$hyphenkey_repo" && "$script" --message 'feat: hyphen-led trailer key' \
+    --trailer '-Key: 42' -- change.txt 2>&1) || hyphenkey_rc=$?
+assert_eq '0' "$hyphenkey_rc" 'a --trailer key starting with a hyphen is accepted, matching git'
+assert_contains "$hyphenkey_out" 'committed' 'the hyphen-led key commit reports success'
+
+# git rejects an underscore in a trailer key -- this helper must refuse it
+# too, not silently commit a trailer git itself will not parse back out.
+underscorekey_repo="$tmp/trailer-underscorekey-repo"
+new_repo "$underscorekey_repo"
+printf 'change\n' > "$underscorekey_repo/change.txt"
+underscorekey_rc=0
+underscorekey_out=$(cd "$underscorekey_repo" && "$script" --message 'feat: underscore trailer key' \
+    --trailer 'Issue_ID: 42' -- change.txt 2>&1) || underscorekey_rc=$?
+assert_eq '1' "$underscorekey_rc" 'a --trailer key containing an underscore is refused'
+assert_contains "$underscorekey_out" 'git-trailer token' \
+    'the refusal names the git-trailer token rule'
+assert_eq '1' "$(git -C "$underscorekey_repo" log --oneline | wc -l)" \
+    'an underscore-key --trailer refusal creates no new commit'
+
+# A well-formed --trailer commits and parses as the caller intended via git's
+# own trailers pretty-format.
+wellformed_repo="$tmp/trailer-wellformed-repo"
+new_repo "$wellformed_repo"
+printf 'change\n' > "$wellformed_repo/change.txt"
+wellformed_rc=0
+wellformed_out=$(cd "$wellformed_repo" && "$script" --message 'feat: well-formed trailer' \
+    --trailer 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>' -- change.txt 2>&1) || wellformed_rc=$?
+assert_eq '0' "$wellformed_rc" 'a well-formed --trailer commits successfully'
+assert_contains "$wellformed_out" 'committed' 'the well-formed trailer commit reports success'
+assert_contains "$(git -C "$wellformed_repo" log -1 --format='%(trailers)')" \
+    'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>' \
+    'the well-formed trailer parses via %(trailers) on the resulting commit'
+
+# The post-commit verification step is a real backstop, not decoration: when
+# git's own parsed trailers do not carry what this helper intended to commit,
+# it fails loudly instead of printing the one-line success record. A fake git
+# that answers the verification read with nothing (as if git's parser had
+# disagreed) proves the check actually runs and actually gates the report.
+verify_repo="$tmp/trailer-verify-repo"
+new_repo "$verify_repo"
+printf 'change\n' > "$verify_repo/change.txt"
+verify_fake_bin="$tmp/verify-fake-bin"
+mkdir -p "$verify_fake_bin"
+verify_git_wrapper="$verify_fake_bin/git"
+# shellcheck disable=SC2016  # The dollar expressions belong to the generated wrapper.
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    '# Match on argv content, not $1 -- the verification read is pinned with' \
+    '# a leading "-c trailer.separators=:", so "log" is not always $1.' \
+    'for arg in "$@"; do' \
+    '    if [[ $arg == *"%(trailers"* ]]; then' \
+    '        exit 0' \
+    '    fi' \
+    'done' \
+    'exec "$REAL_GIT" "$@"' > "$verify_git_wrapper"
+chmod +x "$verify_git_wrapper"
+verify_rc=0
+verify_out=$(cd "$verify_repo" && PATH="$verify_fake_bin:$PATH" REAL_GIT="$real_git" \
+    "$script" --message 'feat: verification backstop' --trailer "$TEST_TRAILER" \
+    -- change.txt 2>&1) || verify_rc=$?
+assert_eq '1' "$verify_rc" 'a trailer that fails post-commit verification is reported as an error'
+assert_contains "$verify_out" 'post-commit verification failed' \
+    'the failure names the post-commit verification step'
+assert_contains "$verify_out" "$TEST_TRAILER" \
+    'the failure names the specific trailer that did not verify'
+assert_not_contains "$verify_out" 'committed ' \
+    'a failed verification never prints the one-line success record'
+assert_eq 'feat: verification backstop' "$(git -C "$verify_repo" log -1 --format=%s)" \
+    'the underlying commit still exists -- verification cannot undo it, only surface it loudly'
+
+# A repository-local `trailer.separators` config that drops ':' (e.g. "=")
+# changes how git's OWN pretty-format parses trailers -- but this helper's
+# documented, validated syntax is always "Key: value". Without pinning the
+# separator on its own verification read, a real commit with a real,
+# well-formed trailer gets misreported as a verification failure purely
+# because of the repository's config, not anything wrong with the commit.
+separators_repo="$tmp/trailer-separators-repo"
+new_repo "$separators_repo"
+git -C "$separators_repo" config trailer.separators '='
+printf 'change\n' > "$separators_repo/change.txt"
+separators_rc=0
+separators_out=$(cd "$separators_repo" && "$script" --message 'feat: nonstandard trailer.separators' \
+    --trailer 'Co-Authored-By: X <x@example.com>' -- change.txt 2>&1) || separators_rc=$?
+assert_eq '0' "$separators_rc" \
+    'a repository-local trailer.separators config that drops the colon does not fail verification'
+assert_contains "$separators_out" 'committed' \
+    'verification still reports success under a nonstandard trailer.separators config'
 
 finish
