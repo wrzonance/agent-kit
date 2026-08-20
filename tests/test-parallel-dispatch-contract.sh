@@ -1133,4 +1133,162 @@ assert_contains "$dispose_err" 'escapes root' \
 assert_eq 'outside bytes' "$(<"$dispose_outside/escape.txt")" \
     'refused disposal does not touch the outside target'
 
+# --- harness-aware worker model resolution (issue #301) --------------------
+# AGENT_WORKER_MODEL is Codex-shaped data by convention (gpt-5.6-*); a Claude
+# session reading it unmodified stopped for authorization on every run. The
+# spawn contract must re-resolve per the running harness instead of stopping
+# on a cross-harness declaration.
+spawn_contract="$root/agentkit/skills/.shared/spawn-contract.md"
+spawn_contract_text=$(<"$spawn_contract")
+spawn_contract_flat=$(tr '\n' ' ' <<<"$spawn_contract_text" | tr -s '[:space:]' ' ')
+
+assert_contains "$spawn_contract_text" '### Harness-aware pivot' \
+    'spawn contract names the harness-aware pivot subsection'
+assert_contains "$spawn_contract_text" '--get harness.name' \
+    'spawn contract resolves the running harness from the environment contract'
+assert_contains "$spawn_contract_text" 'claude-sonnet-5' \
+    'spawn contract documents the native Claude worker tier'
+assert_contains "$spawn_contract_flat" "pivoted from cross-harness declaration" \
+    'spawn contract records a cross-harness pivot by name'
+assert_contains "$spawn_contract_flat" 'Never pivot a same-family value that merely fails the' \
+    'spawn contract never silently pivots a same-family unsanctioned declaration'
+assert_contains "$spawn_contract_flat" 'explicit user authorization required' \
+    'spawn contract still stops a same-harness unsanctioned declaration'
+assert_not_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL_CODEX' \
+    'spawn contract does not introduce a second, harness-keyed declaration key'
+assert_contains "$spawn_contract_flat" 'so a substitution is always evidence, never inferred' \
+    'spawn contract requires the completion table to record a pivot'
+# The pre-existing Codex-scoped gate paragraph must survive untouched: it is
+# pinned verbatim by test-skills-contract.sh and remains true on Codex.
+assert_contains "$spawn_contract_flat" \
+    'sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and **`gpt-5.6-terra`**' \
+    'spawn contract keeps the original Codex sanctioned-set sentence intact'
+
+# Text assertions above cannot catch a subshell/exit-status bug: a resolver
+# helper wrapped in `$(...)` forks a subshell, and an `exit 1` inside it only
+# kills that subshell while the real script runs on with an empty resolved
+# value -- silently defeating the authorization stop this gate exists for.
+# Execute the actual extracted fence against real fixtures so that class of
+# bug fails a test, not just a live spike.
+spawn_fence="$tmp/spawn-contract-fence.sh"
+awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$spawn_contract" > "$spawn_fence"
+
+run_spawn_fence() {
+    # $1=harness $2=config.env contents
+    local harness=$1 config=$2 fixture
+    fixture=$(mktemp -d "$tmp/fence-fixture.XXXXXX")
+    mkdir -p "$fixture/.agent"
+    git -C "$fixture" init -q
+    printf '%s' "$config" > "$fixture/.agent/config.env"
+    printf 'harness= name=%s trailer="X <noreply@example.com>" other=none\n' "$harness" \
+        > "$fixture/.agent/env-contract.txt"
+    {
+        printf 'agentkit=%q\n' "$root/agentkit/skills"
+        printf 'agentkit_provenance=ok\n'
+        printf 'repository_root=%q\n' "$fixture"
+        cat "$spawn_fence"
+        printf 'printf "%%s %%s %%s\\n" "$worker_model" "$worker_model_fallback" "$model_pivot_note"\n'
+    } > "$tmp/fence-run.sh"
+    bash "$tmp/fence-run.sh" 2>/dev/null
+}
+
+# Mirrors the "During capability selection" bullet in spawn-contract.md's
+# Model/effort selection section verbatim: selected_worker_pivot_note binds to
+# whichever slot's own note applies, at the same moment selected_worker_model
+# does. Executed as real bash (not re-described) so a doc/behavior drift here
+# fails a test, the same way the resolution bug above did.
+run_spawn_fence_selection() {
+    # $1=harness $2=config $3=preferred_advertised(yes/no)
+    local harness=$1 config=$2 preferred_advertised=$3 fixture
+    fixture=$(mktemp -d "$tmp/fence-fixture.XXXXXX")
+    mkdir -p "$fixture/.agent"
+    git -C "$fixture" init -q
+    printf '%s' "$config" > "$fixture/.agent/config.env"
+    printf 'harness= name=%s trailer="X <noreply@example.com>" other=none\n' "$harness" \
+        > "$fixture/.agent/env-contract.txt"
+    {
+        printf 'agentkit=%q\n' "$root/agentkit/skills"
+        printf 'agentkit_provenance=ok\n'
+        printf 'repository_root=%q\n' "$fixture"
+        cat "$spawn_fence"
+        printf 'if [[ %q == yes ]]; then\n' "$preferred_advertised"
+        printf '    selected_worker_model=$worker_model\n'
+        printf '    selected_worker_pivot_note=$model_pivot_note\n'
+        printf 'else\n'
+        printf '    selected_worker_model=$worker_model_fallback\n'
+        printf '    selected_worker_pivot_note=$fallback_pivot_note\n'
+        printf 'fi\n'
+        printf 'printf "%%s|%%s\\n" "$selected_worker_model" "$selected_worker_pivot_note"\n'
+    } > "$tmp/fence-selection-run.sh"
+    bash "$tmp/fence-selection-run.sh" 2>/dev/null
+}
+
+codex_declared_config=$'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra\n'
+claude_out=$(run_spawn_fence claude "$codex_declared_config")
+claude_rc=$?
+assert_eq 0 "$claude_rc" 'a Claude session on a Codex-declared repo dispatches with no round trip'
+assert_contains "$claude_out" 'claude-sonnet-5 claude-sonnet-5' \
+    'a Claude session pivots both slots to its native worker tier'
+assert_contains "$claude_out" "pivoted from cross-harness declaration 'gpt-5.6-luna'" \
+    'the pivot is recorded for the completion table, not silently applied'
+
+codex_out=$(run_spawn_fence codex "$codex_declared_config")
+codex_rc=$?
+assert_eq 0 "$codex_rc" 'a Codex session on the same repo is unchanged'
+assert_contains "$codex_out" 'gpt-5.6-luna gpt-5.6-terra' \
+    'a Codex session resolves its own declared models verbatim, with no pivot'
+
+# The regression this bug produced: an unsanctioned same-harness model must
+# actually terminate the script (nonzero exit, no further output), not just
+# print a warning and continue on an empty resolved value.
+typo_config=$'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-sol\n'
+typo_out=$(run_spawn_fence codex "$typo_config")
+typo_rc=$?
+assert_eq 1 "$typo_rc" \
+    'an unsanctioned same-harness fallback (AGENT_WORKER_MODEL_FALLBACK validated) actually stops the script'
+assert_eq '' "$typo_out" \
+    'a stopped resolution prints nothing further -- the exit is real, not confined to a subshell'
+
+# A foreign-family value is only a pivot candidate when it is ITSELF the
+# sanctioned worker tier on its own harness. claude-opus-5 is a real Claude
+# model id (the root/reviewer tier, per Tier mapping) but is NOT the sanctioned
+# Claude WORKER tier -- pattern-matching the family alone must not silently
+# substitute a Codex model for it; this is an unsupported configured model and
+# must stop for explicit authorization, the same as any other unsanctioned value.
+foreign_unsanctioned_config=$'AGENT_WORKER_MODEL_FALLBACK=claude-opus-5\n'
+foreign_out=$(run_spawn_fence codex "$foreign_unsanctioned_config")
+foreign_rc=$?
+assert_eq 1 "$foreign_rc" \
+    'a foreign-family value that is not its own harness sanctioned worker tier stops, not pivots'
+assert_eq '' "$foreign_out" \
+    'the foreign-unsanctioned stop actually terminates the script'
+
+# CodeRabbit finding on PR #314: the pivot notes are per-slot, but selection
+# only bound selected_worker_model -- a fallback selected after a
+# cross-harness pivot had no bound note of its own for the completion table.
+# Preferred advertised: the note must be the PREFERRED slot's own pivot note.
+preferred_selection=$(run_spawn_fence_selection claude "$codex_declared_config" yes)
+assert_contains "$preferred_selection" 'claude-sonnet-5|' \
+    'selecting the preferred model selects its own resolved value'
+assert_contains "$preferred_selection" "pivoted from cross-harness declaration 'gpt-5.6-luna'" \
+    'the preferred selection carries the PREFERRED slot'"'"'s own pivot note'
+assert_not_contains "$preferred_selection" 'gpt-5.6-terra' \
+    'the preferred selection does not leak the fallback slot'"'"'s note'
+
+# Fallback advertised (preferred not): the note must be the FALLBACK slot's
+# own pivot note, not the preferred's (and not empty).
+fallback_selection=$(run_spawn_fence_selection claude "$codex_declared_config" no)
+assert_contains "$fallback_selection" 'claude-sonnet-5|' \
+    'selecting the fallback model selects its own resolved value'
+assert_contains "$fallback_selection" "pivoted from cross-harness declaration 'gpt-5.6-terra'" \
+    'the fallback selection carries the FALLBACK slot'"'"'s own pivot note'
+assert_not_contains "$fallback_selection" "declaration 'gpt-5.6-luna'" \
+    'the fallback selection does not leak the preferred slot'"'"'s note'
+
+worker_gate_flat_301=$(tr '\n' ' ' <<<"$worker_gate_text" | tr -s '[:space:]' ' ')
+assert_contains "$worker_gate_flat_301" 'harness-aware' \
+    'worker gate points to harness-aware resolution rather than restating it'
+assert_not_contains "$worker_gate_flat_301" 'gpt-5.6-luna' \
+    'worker gate never hardcodes a Codex model id itself -- it defers to spawn-contract.md'
+
 finish
