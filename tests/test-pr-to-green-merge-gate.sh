@@ -207,6 +207,16 @@ assert_eq '1' "$rc" 'an unreadable code-scanning completion signal blocks the me
 assert_contains "$out" 'blocked reason=code-scanning analysis status is unreadable for the current head' \
     'the unreadable-completion block is named'
 
+good_digest
+set +e
+out=$(CS_RUNS_JSON='{"check_runs":[]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'a readable check-runs response with no matching github-code-scanning run blocks the merge (absence of evidence is never evidence of completion)'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'the no-matching-run block is named, and distinct from the unreadable-status block'
+
 # --- F1 (accepted): a group/other-writable digest file is rejected ----------
 
 good_digest

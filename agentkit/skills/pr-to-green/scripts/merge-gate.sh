@@ -205,7 +205,14 @@ fi
 # carries no completion field (gh-pr-state.sh is out of scope for this
 # change), so this queries gh directly, the same way the live PR-state read
 # above does. An unreadable completion signal is BLOCKED, same as an
-# unreadable alert count -- never treated as complete.
+# unreadable alert count -- never treated as complete. A response with no
+# matching github-code-scanning check run is ALSO blocked, never passed
+# through as "completed": it is equally consistent with an analysis that has
+# not started yet, and absence of readable evidence is never evidence of
+# absence. This does not newly block repositories without code scanning
+# configured -- their alerts endpoint already 404s, gh-pr-state.sh already
+# emits "alerts: code-scanning n/a", and the existing digest check below
+# already blocks that as unreadable.
 if "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
     >"$work_dir/cs-runs.json" 2>"$work_dir/api.err"; then
     cs_status=$(jq -r '
@@ -219,8 +226,9 @@ else
     cs_status=''
 fi
 case $cs_status in
-    completed|none) ;;
+    completed) ;;
     pending) block 'code-scanning analysis has not completed for the current head' ;;
+    none) block 'no code-scanning analysis is recorded for the current head' ;;
     *) block 'code-scanning analysis status is unreadable for the current head' ;;
 esac
 
