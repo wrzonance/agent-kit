@@ -14,6 +14,7 @@ PROCEDURE_SET=''
 DECISION=''
 SCOPE=''
 QUOTE=''
+QUOTE_FILE=''
 TIMESTAMP=''
 LOCK_FD=''
 
@@ -21,7 +22,7 @@ usage() {
     cat <<EOF
 Usage:
   $PROGRAM append --ledger FILE --run-id ID --skills-path PATH --procedure-set NAME \
-    --decision TEXT --scope TEXT --quote TEXT [--timestamp UTC]
+    --decision TEXT --scope TEXT (--quote TEXT | --quote-file PATH) [--timestamp UTC]
   $PROGRAM read --ledger FILE --run-id ID
   $PROGRAM covers --ledger FILE --run-id ID --decision TEXT --scope TEXT
 
@@ -31,6 +32,15 @@ when a validated record for the run carries the exact decision AND the exact
 scope -- the once-per-run authorization check -- and exits 1 when nothing does,
 so a caller stops instead of silently proceeding. Both are mandatory: a
 decision token alone must never satisfy a narrower recorded grant.
+
+--quote and --quote-file are mutually exclusive; exactly one is required for
+append. --quote-file reads the named file's bytes exactly as supplied -- no
+interpolation, no reflow -- except that a carriage return is stripped (a
+CRLF or bare-CR grant is normalized to LF; see below), which is the
+fidelity-preserving path for a multi-line human grant. --quote itself also
+accepts embedded newlines, under the same carriage-return normalization. A
+quote file containing a NUL byte is refused rather than silently truncated.
+--decision and --scope must remain single-line tokens.
 EOF
 }
 
@@ -41,9 +51,6 @@ die() {
 
 die_usage() {
     local message=$1
-    if [[ $message == '--quote must be a single line' ]]; then
-        message="$message; collapse to one line, preserving the words verbatim"
-    fi
     printf '%s: %s\n' "$PROGRAM" "$message" >&2
     usage >&2
     exit 2
@@ -128,6 +135,16 @@ parse_options() {
                 QUOTE=${1#*=}
                 shift
                 ;;
+            --quote-file)
+                require_value "$1" "${2:-}"
+                QUOTE_FILE=$2
+                shift 2
+                ;;
+            --quote-file=*)
+                require_value '--quote-file' "${1#*=}"
+                QUOTE_FILE=${1#*=}
+                shift
+                ;;
             --timestamp)
                 require_value "$1" "${2:-}"
                 TIMESTAMP=$2
@@ -158,12 +175,14 @@ require_commands() {
 }
 
 validate_text() {
-    local name=$1 value=$2 normalized_value normalized_secret_re
+    local name=$1 value=$2 allow_multiline=${3:-single} normalized_value normalized_secret_re
     [[ -n $value ]] || die_usage "$name must be non-empty"
     ((${#value} <= MAX_TEXT_LENGTH)) ||
         die_usage "$name is too long (maximum $MAX_TEXT_LENGTH characters)"
-    [[ $value != *$'\n'* && $value != *$'\r'* ]] ||
-        die_usage "$name must be a single line"
+    if [[ $allow_multiline == single ]]; then
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] ||
+            die_usage "$name must be a single line"
+    fi
     # The existing-record validator is case-insensitive; normalize both sides
     # here so an uppercase credential label cannot be written and permanently
     # poison the ledger before the replay-side check sees it.
@@ -171,6 +190,41 @@ validate_text() {
     normalized_secret_re=${SECRET_RE,,}
     [[ ! $normalized_value =~ $normalized_secret_re ]] ||
         die_usage "$name resembles a secret; do not record credential material"
+}
+
+# --quote-file reads a file's bytes exactly as supplied -- the fidelity-
+# preserving path for a multi-line human grant (matches the file-backed
+# transport discipline in .shared/github-body-policy.md) -- except that
+# strip_carriage_returns (below) still normalizes a carriage return out of
+# the loaded text; that is the one intentional exception to "verbatim" and
+# it is documented, not silent. Command substitution alone strips trailing
+# newlines, so a sentinel byte is appended and stripped back off to preserve
+# the file's exact trailing bytes. A NUL byte cannot survive downstream: the
+# stored value is later passed to jq as a --arg, an argv value, and argv is a
+# NUL-terminated C string at the exec boundary, so anything past the first
+# NUL would be silently dropped there. A NUL-containing file is refused here
+# instead of being silently truncated/altered: a quote with a NUL byte is not
+# a human grant. The comparison reads the file through two independent
+# streams (process substitution, not a pipe) so shellcheck does not read this
+# as a same-file read/write conflict (SC2094) -- both sides only ever read.
+load_quote_file() {
+    [[ -f $QUOTE_FILE && ! -L $QUOTE_FILE && -r $QUOTE_FILE && -O $QUOTE_FILE ]] ||
+        die_usage "--quote-file must be an owned readable regular file: $QUOTE_FILE"
+    cmp -s <(LC_ALL=C tr -d '\000' <"$QUOTE_FILE") "$QUOTE_FILE" ||
+        die_usage "--quote-file contains a NUL byte and cannot be stored verbatim: $QUOTE_FILE"
+    local content
+    content=$(cat -- "$QUOTE_FILE" && printf x) ||
+        die_evidence "could not read quote file: $QUOTE_FILE"
+    QUOTE=${content%x}
+}
+
+# A bare carriage return is a formatting artifact, not content, so it is
+# stripped before validation and storage rather than rejected outright --
+# this also normalizes a CRLF quote to LF without touching its wording. This
+# is the one respect in which stored text is not byte-identical to the
+# supplied --quote/--quote-file input: every other byte is preserved exactly.
+strip_carriage_returns() {
+    QUOTE=${QUOTE//$'\r'/}
 }
 
 validate_inputs() {
@@ -200,7 +254,15 @@ validate_append_inputs() {
     validate_text '--procedure-set' "$PROCEDURE_SET"
     validate_text '--decision' "$DECISION"
     validate_text '--scope' "$SCOPE"
-    validate_text '--quote' "$QUOTE"
+    if [[ -n $QUOTE && -n $QUOTE_FILE ]]; then
+        die_usage '--quote and --quote-file are mutually exclusive'
+    fi
+    [[ -n $QUOTE || -n $QUOTE_FILE ]] || die_usage '--quote or --quote-file is required'
+    if [[ -n $QUOTE_FILE ]]; then
+        load_quote_file
+    fi
+    strip_carriage_returns
+    validate_text '--quote' "$QUOTE" multiline
     if [[ -z $TIMESTAMP ]]; then
         TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ') ||
             die_evidence 'could not produce a UTC timestamp'
@@ -289,6 +351,15 @@ validate_existing_records() {
           and (test("[\\r\\n]") | not)
           and (test($secret_re; "i") | not)
         end;
+      # The quote field alone preserves a multi-line human grant verbatim; a
+      # bare carriage return is stripped before storage, so a stored quote
+      # must never contain one, but embedded newlines are expected.
+      def safe_quote:
+        if type != "string" then false
+        else length > 0 and length <= 4096
+          and (test("\\r") | not)
+          and (test($secret_re; "i") | not)
+        end;
       def safe_timestamp:
         type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
       def safe_path:
@@ -302,7 +373,7 @@ validate_existing_records() {
           and (.procedure_set | safe_text)
           and (.decision | safe_text)
           and (.scope | safe_text)
-          and (.quote | safe_text)
+          and (.quote | safe_quote)
         end;
       all(.[]; valid_record)
     ' "$LEDGER" >/dev/null 2>&1 ||

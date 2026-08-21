@@ -58,19 +58,122 @@ assert_rc 0 'append preserves JSON punctuation in a quote' -- "$script" append \
     --skills-path "$skills_path" --procedure-set parallel-issues \
     --scope 'board adjudication' --quote 'Use "Ready" -> "In progress".'
 assert_eq '2' "$(wc -l < "$ledger" | tr -d ' ')" 'the punctuation quote remains one record'
-multiline_error=''
-multiline_rc=0
-multiline_error=$("$script" append \
+
+# A multi-line quote is the ordinary shape of a real invocation grant (flags on
+# one line, scope on the next); fidelity to the human's exact wording matters
+# more than single-line storage convenience, so --quote accepts embedded
+# newlines directly, and --quote-file reads a file's bytes byte-exact with no
+# interpolation or reflow.
+assert_rc 0 'append accepts an embedded-newline quote' -- "$script" append \
     --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
     --skills-path "$skills_path" --procedure-set parallel-issues \
-    --scope 'board adjudication' --quote $'line one\nline two' 2>&1) || multiline_rc=$?
-assert_eq 2 "$multiline_rc" 'append rejects a multiline quote'
-assert_contains "$multiline_error" \
-    'collapse to one line, preserving the words verbatim' \
-    'multiline quote rejection tells the caller how to preserve its wording'
-assert_contains "$multiline_error" 'Usage:' \
-    'multiline quote rejection includes the append usage recipe'
-assert_eq '2' "$(wc -l < "$ledger" | tr -d ' ')" 'rejected input does not alter the ledger'
+    --scope 'multiline grant' --quote $'line one\nline two'
+assert_eq '3' "$(wc -l < "$ledger" | tr -d ' ')" 'a multi-line quote is still one NDJSON record'
+assert_rc 0 'the stored multiline record parses as a single JSON value' -- \
+    jq -e 'select(.scope == "multiline grant") | .quote == "line one\nline two"' "$ledger"
+
+quote_file="$tmp/quote.txt"
+printf 'flags: --yolo --fast-mode\nscope: worktree pushes, draft PRs, board moves\nquoted `cmd` and $(sub) stay literal\n' \
+    > "$quote_file"
+chmod 600 -- "$quote_file"
+assert_rc 0 'append accepts --quote-file for a multi-line grant' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'quote-file grant' --quote-file "$quote_file"
+stored_quote_file="$tmp/stored-quote.txt"
+jq -j 'select(.scope == "quote-file grant") | .quote' "$ledger" > "$stored_quote_file"
+assert_rc 0 '--quote-file stores the file bytes byte-exact' -- \
+    cmp -s "$quote_file" "$stored_quote_file"
+
+assert_rc 2 '--quote and --quote-file together is a usage error' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'conflict' --quote inline --quote-file "$quote_file"
+assert_rc 2 'append requires --quote or --quote-file' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'missing quote'
+assert_rc 2 '--quote-file rejects a symlink' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'symlinked quote-file' --quote-file "$tmp/skills-link"
+
+# Command substitution cannot retain a NUL byte, so a quote file that contains
+# one is refused loudly instead of being silently truncated/altered -- what is
+# stored must be exactly what was supplied, and a NUL byte cannot honor that.
+nul_quote_file="$tmp/nul-quote.txt"
+printf 'approve\0deny\n' > "$nul_quote_file"
+chmod 600 -- "$nul_quote_file"
+nul_error=''
+nul_rc=0
+nul_error=$("$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'nul quote-file' --quote-file "$nul_quote_file" 2>&1) || nul_rc=$?
+assert_eq 2 "$nul_rc" '--quote-file rejects a file containing a NUL byte'
+assert_contains "$nul_error" 'NUL byte' \
+    'the NUL-byte rejection names the reason'
+
+# The length cap is unchanged by allowing newlines: a multi-line quote that
+# exceeds MAX_TEXT_LENGTH is still rejected, whether it arrives inline or
+# via --quote-file.
+oversized_quote=$(printf 'line %03d\n' $(seq 1 600))
+oversized_error=''
+oversized_rc=0
+oversized_error=$("$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'oversized inline quote' --quote "$oversized_quote" 2>&1) || oversized_rc=$?
+assert_eq 2 "$oversized_rc" 'an oversized multiline --quote is rejected'
+assert_contains "$oversized_error" 'too long' \
+    'the oversized multiline --quote error names the length cap'
+oversized_quote_file="$tmp/oversized-quote.txt"
+printf '%s' "$oversized_quote" > "$oversized_quote_file"
+chmod 600 -- "$oversized_quote_file"
+assert_rc 2 'an oversized multiline --quote-file is rejected' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'oversized quote-file' --quote-file "$oversized_quote_file"
+
+# A bare carriage return is a formatting artifact, not content: it is stripped
+# rather than rejected, normalizing a CRLF quote to LF without changing wording.
+assert_rc 0 'append accepts a CRLF quote' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'crlf grant' --quote $'line one\r\nline two\r'
+assert_rc 0 'a stored CRLF quote is normalized to LF with no carriage returns' -- \
+    jq -e 'select(.scope == "crlf grant") | .quote == "line one\nline two"' "$ledger"
+
+# read round-trips a multi-line quote unchanged, and every record -- multiline
+# quotes included -- stays exactly one NDJSON line per the existing fixtures.
+reread_records=$("$script" read --ledger "$ledger" --run-id review-pr-24)
+assert_rc 0 'read returns a multiline quote unchanged' -- \
+    jq -e 'select(.scope == "multiline grant") | .quote == "line one\nline two"' \
+        <<<"$reread_records"
+assert_rc 0 'every stored record -- including multiline quotes -- is valid single-line JSON' -- \
+    jq -c . "$ledger"
+
+# --decision and --scope remain single-line tokens; only --quote widens.
+decision_error=''
+decision_rc=0
+decision_error=$("$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision $'line one\nline two' \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'decision multiline' --quote fine 2>&1) || decision_rc=$?
+assert_eq 2 "$decision_rc" '--decision rejects an embedded newline'
+assert_contains "$decision_error" '--decision must be a single line' \
+    '--decision multiline rejection names the offending flag'
+assert_not_contains "$decision_error" 'collapse to one line' \
+    'the obsolete collapse-to-one-line instruction is gone'
+scope_error=''
+scope_rc=0
+scope_error=$("$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision steer \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope $'line one\nline two' --quote fine 2>&1) || scope_rc=$?
+assert_eq 2 "$scope_rc" '--scope rejects an embedded newline'
+assert_contains "$scope_error" '--scope must be a single line' \
+    '--scope multiline rejection names the offending flag'
 
 # A ledger is not a secret store. Reject common credential-shaped material in
 # every human-controlled field before it reaches disk.
@@ -81,7 +184,14 @@ for secret in 'token=ghp_example' 'password: hunter2' 'Bearer abc123' \
         --skills-path "$skills_path" --procedure-set parallel-issues \
         --scope 'secret check' --quote "$secret"
 done
-assert_eq '2' "$(wc -l < "$ledger" | tr -d ' ')" 'secret-shaped input is never persisted'
+# The secret check applies to a multi-line quote too: a credential buried on
+# any line of a longer grant must still be caught before it reaches disk.
+assert_rc 2 'append rejects a secret-shaped multiline quote' -- "$script" append \
+    --ledger "$ledger" --run-id 'review-pr-24' --decision grant \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --scope 'multiline secret check' \
+    --quote $'line one\ntoken=ghp_exampleabc123\nline three'
+assert_eq '5' "$(wc -l < "$ledger" | tr -d ' ')" 'secret-shaped input is never persisted'
 
 # Existing state is validated fail-closed and symlinks cannot redirect writes.
 printf '%s\n' '{"quote":"forged"}' > "$tmp/invalid.ndjson"
@@ -106,7 +216,7 @@ for id in alpha bravo charlie; do
         >"$tmp/$id.out" 2>&1 &
 done
 wait
-assert_eq '5' "$(jq -s 'length' "$ledger")" 'concurrent appends preserve every record'
+assert_eq '8' "$(jq -s 'length' "$ledger")" 'concurrent appends preserve every record'
 assert_eq '3' "$("$script" read --ledger "$ledger" --run-id concurrent | jq -s 'length')" \
     'read returns all concurrent decisions'
 
