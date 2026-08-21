@@ -775,10 +775,23 @@ assert_contains "$(grep '^sandbox=' <<< "$inherit_out")" 'note="escalate git wri
 # probe rather than trusted wholesale or discarded wholesale: whichever
 # reading is more restrictive wins, so the result can never be less
 # restrictive than the recorded root line.
+# The fixture's recorded harness= must match whatever harness-id.sh resolves
+# to UNDER THE SAME ENVIRONMENT the test invocation below actually runs in --
+# not the ambient one $current_harness_line was captured under at file load
+# (issue #372 CI follow-up). CODEX_HOME/CODEX_SANDBOX_NETWORK_DISABLED/
+# CODEX_PERMISSION_PROFILE are harness-identity signals to harness-id.sh
+# (a Codex-only session sets one of them), and even a bare $HOME override
+# can flip its last-resort "does ~/.codex exist" fallback. Any case below
+# that changes the environment for its own determinism must derive its
+# harness= line under that identical environment, or the fixture and the
+# run silently disagree on which CLI is "this session" depending on what
+# happens to be ambiently set on the machine running the suite.
 stale_repo=$(new_repo)
 stale_session="$tmp/stale-session-contract.txt"
+stale_harness_line="harness= $(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$harness_id_script" 2> /dev/null)"
 printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
-    "$current_harness_line" > "$stale_session"
+    "$stale_harness_line" > "$stale_session"
 # Backdate well past INHERIT_SESSION_MAX_AGE_MINUTES (30m).
 touch -d '2 hours ago' "$stale_session" 2> /dev/null || touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$stale_session"
 # The recorded line is already maximally restrictive on every comparator
@@ -807,13 +820,20 @@ assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no 
 # restrictive than the recorded (least-restrictive-possible) line.
 loose_stale_repo=$(new_repo)
 loose_stale_session="$tmp/loose-stale-session-contract.txt"
-printf '%s\nsandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
-    "$current_harness_line" > "$loose_stale_session"
-touch -d '2 hours ago' "$loose_stale_session" 2> /dev/null ||
-    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$loose_stale_session"
 unwritable_home="$tmp/revalidate-unwritable-home"
 mkdir -p "$unwritable_home"
 chmod 000 "$unwritable_home"
+# Derived under the exact HOME + CODEX_SANDBOX_NETWORK_DISABLED this case
+# invokes the script with below (see the comment on the harness= derivation
+# above) -- CODEX_SANDBOX_NETWORK_DISABLED alone is what can flip the
+# resolved harness on a machine with no CLAUDECODE set (e.g. a plain CI
+# runner), independent of HOME.
+loose_stale_harness_line="harness= $(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
+    "$harness_id_script" 2> /dev/null)"
+printf '%s\nsandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    "$loose_stale_harness_line" > "$loose_stale_session"
+touch -d '2 hours ago' "$loose_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$loose_stale_session"
 loose_stale_err=$(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
     "$script" --worktree "$loose_stale_repo" --inherit-session "$loose_stale_session" 2>&1 > /dev/null)
 assert_contains "$loose_stale_err" 'revalidated sandbox=' \
@@ -834,12 +854,19 @@ assert_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=yes' \
 # machine's ambient sandbox state.
 caches_stale_repo=$(new_repo)
 caches_stale_session="$tmp/caches-stale-session-contract.txt"
-printf '%s\ncaches= root=/tmp/agent-cache-stale reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-stale/uv NPM_CONFIG_CACHE=/tmp/agent-cache-stale/npm PIP_CACHE_DIR=/tmp/agent-cache-stale/pip XDG_CACHE_HOME=/tmp/agent-cache-stale\n' \
-    "$current_harness_line" > "$caches_stale_session"
-touch -d '2 hours ago' "$caches_stale_session" 2> /dev/null ||
-    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_stale_session"
 caches_writable_home="$tmp/caches-revalidate-writable-home"
 mkdir -p "$caches_writable_home"
+# Derived under this case's own HOME override: harness-id.sh's last-resort
+# fallback checks "does ~/.codex exist", so overriding HOME alone (with no
+# CODEX_* var touched) can still flip the resolved harness depending on
+# whether the machine running the suite happens to have a real ~/.codex --
+# reusing the ambient $current_harness_line here was passing only by
+# coincidence on machines where that fallback agreed either way.
+caches_stale_harness_line="harness= $(HOME="$caches_writable_home" "$harness_id_script" 2> /dev/null)"
+printf '%s\ncaches= root=/tmp/agent-cache-stale reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-stale/uv NPM_CONFIG_CACHE=/tmp/agent-cache-stale/npm PIP_CACHE_DIR=/tmp/agent-cache-stale/pip XDG_CACHE_HOME=/tmp/agent-cache-stale\n' \
+    "$caches_stale_harness_line" > "$caches_stale_session"
+touch -d '2 hours ago' "$caches_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_stale_session"
 caches_stale_err=$(HOME="$caches_writable_home" \
     "$script" --worktree "$caches_stale_repo" --inherit-session "$caches_stale_session" 2>&1 > /dev/null)
 assert_contains "$caches_stale_err" 'revalidated caches=' \
@@ -856,13 +883,16 @@ assert_contains "$(grep '^caches=' <<< "$caches_stale_out")" 'reason=home-cache-
 # has become more restrictive -- the fresh probe wins and the copy refreshes.
 caches_loose_stale_repo=$(new_repo)
 caches_loose_stale_session="$tmp/caches-loose-stale-session-contract.txt"
-printf '%s\ncaches= root=/home/example/.cache reason=home-cache-writable home-cache=/home/example/.cache UV_CACHE_DIR=/home/example/.cache/uv NPM_CONFIG_CACHE=/home/example/.cache/npm PIP_CACHE_DIR=/home/example/.cache/pip XDG_CACHE_HOME=/home/example/.cache\n' \
-    "$current_harness_line" > "$caches_loose_stale_session"
-touch -d '2 hours ago' "$caches_loose_stale_session" 2> /dev/null ||
-    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_loose_stale_session"
 caches_unwritable_home="$tmp/caches-revalidate-unwritable-home"
 mkdir -p "$caches_unwritable_home"
 chmod 000 "$caches_unwritable_home"
+# Same reasoning as the writable-HOME case above: derive under this case's
+# own (chmod-000) HOME rather than reusing the ambient harness line.
+caches_loose_harness_line="harness= $(HOME="$caches_unwritable_home" "$harness_id_script" 2> /dev/null)"
+printf '%s\ncaches= root=/home/example/.cache reason=home-cache-writable home-cache=/home/example/.cache UV_CACHE_DIR=/home/example/.cache/uv NPM_CONFIG_CACHE=/home/example/.cache/npm PIP_CACHE_DIR=/home/example/.cache/pip XDG_CACHE_HOME=/home/example/.cache\n' \
+    "$caches_loose_harness_line" > "$caches_loose_stale_session"
+touch -d '2 hours ago' "$caches_loose_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_loose_stale_session"
 caches_loose_err=$(HOME="$caches_unwritable_home" \
     "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2>&1 > /dev/null)
 assert_contains "$caches_loose_err" 'revalidated caches=' \
