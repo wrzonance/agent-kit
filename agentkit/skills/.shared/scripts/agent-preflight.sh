@@ -433,20 +433,83 @@ probe_protected() {
     emit "protected= patterns=\"$(join_capped 24 "${effective[@]}")\" repo-declared=\"$repo_declared\""
 }
 
-# Root instruction files are the only instruction files preflight reports. The
-# worker may inspect matching files in directories changed by its task, but the
-# environment contract must never enumerate the wider worktree or filesystem.
+# Resolves a repo-relative reference to a canonical, in-worktree, regular,
+# non-symlink file. Prints the repo-relative path and returns 0 on success;
+# returns 1 (silently) for anything outside those bounds, including a path
+# that escapes the worktree via ../.
+resolve_instruction_ref() {
+    local ref="$1" candidate canon top
+    candidate="$WORKTREE/$ref"
+    [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+    canon="$(readlink -f -- "$candidate" 2>/dev/null)" || return 1
+    top="$(readlink -f -- "$WORKTREE" 2>/dev/null)" || return 1
+    case "$canon" in
+        "$top"/*) ;;
+        *) return 1 ;;
+    esac
+    relative_to_top "$canon"
+}
+
+# A root instruction file can act as a ROUTER: it names on-demand docs by path
+# instead of holding the guidance itself (issue #338 -- an observed root
+# AGENTS.md referenced instructions/workflow.md, instructions/github.md, etc.
+# and none of them existed in the checkout). Any relative, slash-qualified
+# *.md-looking token is a candidate reference; this makes no assumption about
+# the router's chosen directory name.
+router_references() {
+    grep -oE '[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.md' -- "$1" 2>/dev/null | sort -u
+}
+
+# instructions= reports a RESOLVED SET, not a pointer: the root AGENTS.md/
+# CLAUDE.md, any on-demand path a root router references that actually
+# resolves inside the worktree, and per-directory instruction files -- all
+# regular, non-symlink, canonically inside the worktree. Anything a router
+# references that does NOT resolve is named explicitly under unresolved=, so
+# an agent reads "these were referenced and are absent" as a fact instead of
+# rediscovering it through failed reads. The per-directory sweep is bounded
+# and capped exactly like node-roots/py-roots below -- never an unbounded
+# worktree enumeration.
 probe_instructions() {
-    local -a roots=()
-    local root_list
+    local -a roots=() files=() unresolved=() subdir_files=()
+    local root_list files_list unresolved_list resolved ref f
+
     [[ -f "$WORKTREE/AGENTS.md" && ! -L "$WORKTREE/AGENTS.md" ]] && roots+=(AGENTS.md)
     [[ -f "$WORKTREE/CLAUDE.md" && ! -L "$WORKTREE/CLAUDE.md" ]] && roots+=(CLAUDE.md)
-    if (( ${#roots[@]} == 0 )); then
-        emit 'instructions= root=none'
-    else
-        root_list=$(join_by , "${roots[@]}")
-        emit "instructions= root=$root_list"
-    fi
+
+    for f in "${roots[@]}"; do
+        files+=("$f")
+        while IFS= read -r ref; do
+            [[ -n "$ref" ]] || continue
+            if resolved="$(resolve_instruction_ref "$ref")"; then
+                contains "$resolved" "${files[@]+"${files[@]}"}" || files+=("$resolved")
+            else
+                contains "$ref" "${unresolved[@]+"${unresolved[@]}"}" || unresolved+=("$ref")
+            fi
+        done < <(router_references "$WORKTREE/$f" | head -n 24)
+    done
+
+    # Per-directory instruction files: regular, non-symlink AGENTS.md/CLAUDE.md,
+    # skipping vendored trees -- the same node_modules/.git/dotdir bound
+    # node_roots/py_roots already use. Root files surface here too (a root
+    # AGENTS.md is depth 0 below itself), but that is harmless: the contains()
+    # dedup above already added them to files=, so a repeat is simply skipped.
+    # (Deliberately no -mindepth alongside -prune: GNU find applies -mindepth
+    # as a global option that suppresses -prune below that depth too, so
+    # combining them here would walk straight into node_modules/vendor rather
+    # than pruning them -- filtering root duplicates via dedup avoids that trap.)
+    while IFS= read -r f; do
+        resolved="$(relative_to_top "$f")"
+        contains "$resolved" "${files[@]+"${files[@]}"}" || subdir_files+=("$resolved")
+    done < <(find "$WORKTREE" -maxdepth 4 \
+        \( -name node_modules -o -name vendor -o -path "$WORKTREE/.*" \) -prune \
+        -o -type f \( -name AGENTS.md -o -name CLAUDE.md \) -print 2>/dev/null | sort)
+    files+=("${subdir_files[@]+"${subdir_files[@]}"}")
+
+    if (( ${#roots[@]} == 0 )); then root_list="none"; else root_list="$(join_by , "${roots[@]}")"; fi
+    if (( ${#files[@]} == 0 )); then files_list="none"; else files_list="$(join_capped 24 "${files[@]}")"; fi
+    if (( ${#unresolved[@]} == 0 )); then unresolved_list="none"; else unresolved_list="$(join_capped 24 "${unresolved[@]}")"; fi
+
+    emit "instructions= root=$root_list files=$files_list unresolved=$unresolved_list"
 }
 
 # A read-only real git dir is the most expensive surprise in a sandbox: it turns every
@@ -909,12 +972,32 @@ node_roots() {
         printf 'node-roots=none'
         return 0
     fi
-    # Which package manager this repo uses is discovered from its lockfile, not assumed.
-    if   [[ -f "$WORKTREE/pnpm-lock.yaml" ]];    then pm="pnpm"  # ecosystem-allow: detection
-    elif [[ -f "$WORKTREE/yarn.lock" ]];         then pm="yarn"  # ecosystem-allow: detection
-    elif [[ -f "$WORKTREE/bun.lockb" ]];         then pm="bun"
-    elif [[ -f "$WORKTREE/package-lock.json" ]]; then pm="npm"
-    fi
+    # Which package manager this repo uses is discovered from its lockfile --
+    # checked beside EACH detected root first (a monorepo package locks where
+    # its own package.json lives, not necessarily at the worktree root; issue
+    # #338 observed real roots under bench/fixtures/* and opencode/* with no
+    # lockfile at the worktree root, which reported node-pm=none even though
+    # every one of them had its own lockfile). Ancestors up to the worktree
+    # root are checked too, so a workspace package inherits its monorepo's
+    # lock. A Node root that resolves to none anywhere in its ancestry is
+    # reported unresolved -- never silently assumed to be npm.
+    local root dir name lockfile toolname
+    for root in "${roots[@]}"; do
+        dir="$WORKTREE/$root"
+        while :; do
+            for name in 'pnpm-lock.yaml:pnpm' 'yarn.lock:yarn' 'bun.lockb:bun' 'package-lock.json:npm'; do # ecosystem-allow: detection
+                lockfile="${name%%:*}"
+                toolname="${name##*:}"
+                if [[ -f "$dir/$lockfile" ]]; then
+                    pm="$toolname"
+                    break 3
+                fi
+            done
+            [[ "$dir" == "$WORKTREE" ]] && break
+            dir="$(dirname -- "$dir")"
+        done
+    done
+    if [[ "$pm" == "none" ]]; then pm="unresolved"; fi
     printf 'node-roots=%s node-pm=%s' "$(join_capped 6 "${roots[@]}")" "$pm"
 }
 
