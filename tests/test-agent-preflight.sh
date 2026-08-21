@@ -800,4 +800,24 @@ runners_line=$(grep '^runners=' <<< "$out")
 assert_contains "$runners_line" 'node-pm=unresolved' \
     'an unresolvable package manager is named unresolved, not defaulted to npm'
 
+# A monorepo whose roots resolve to DIFFERENT managers must never report the
+# first root's manager for the rest (adversarial review of this same change:
+# a bare `break 3` on the first lockfile found silently let root "a"'s pnpm
+# decide root "b"'s npm too, and Step 5 now dispatches bootstrap commands off
+# this field). Divergence collapses to unresolved -- a single field cannot
+# honestly represent two different managers, and dispatch must not act on
+# a value that could be wrong for either root.
+repo=$(new_repo)
+mkdir -p "$repo/a" "$repo/b"
+printf '{}' > "$repo/a/package.json"
+printf '' > "$repo/a/pnpm-lock.yaml"
+printf '{}' > "$repo/b/package.json"
+printf '' > "$repo/b/package-lock.json"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-roots=a,b' \
+    'both node roots are reported'
+assert_contains "$runners_line" 'node-pm=unresolved' \
+    'roots resolving to different managers collapse to unresolved, never the first root'"'"'s manager'
+
 finish
