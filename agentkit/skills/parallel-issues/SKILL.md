@@ -786,7 +786,7 @@ printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' \
     "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 ```
 
-It prints a path and digest, never the body — those are the worker's instructions, not the root's. The file lands in the worker's excluded `.agent/` tree, so it survives a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site.
+It prints a path and metadata digest (bytes, issue, write set), never the body — the worker's to read. It lands in the worker's excluded `.agent/` tree, surviving a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
