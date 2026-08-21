@@ -120,6 +120,26 @@ it. tests/test-bench-tier0.sh asserts this property directly (a second
 invocation strictly grows the file; every previously-written line is
 byte-identical afterward).
 
+CI recording coverage
+----------------------
+
+.github/workflows/record-tier0.yml appends a bench/results/tier0.jsonl row
+for a merge to main by triggering on CI's own `workflow_run` completion
+event, not on `push` directly. That makes the contract precise: **a record
+exists for every merge whose CI run completed successfully.** It does NOT
+exist for a merge with no successful CI completion -- whether CI ran and
+failed, or CI never ran at all because something skipped it (including a
+merge/squash commit whose message contains `[skip ci]`/`[ci skip]`, which
+is ordinary user-writable text, not something this ledger controls).
+
+A commit missing from this ledger is therefore not, by itself, evidence of
+a recording bug. It means that commit was never independently verified
+green by CI -- the same reason a commit with failing tests is already,
+deliberately, absent. Treat gaps as expected for unverified merges; if you
+need to confirm whether a specific gap is a bug or an unverified merge,
+check that commit's CI run (or the absence of one) directly rather than
+assuming the ledger should be complete.
+
 Tier 1's task substrate -- Tally, the ten issues, and the gold tree
 ------------------------------------------------------------------
 

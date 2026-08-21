@@ -56,7 +56,29 @@ jobs:
     # that push at all. No CI run means no `workflow_run` completion event,
     # so this workflow can never be re-triggered by its own commit -- the
     # loop is broken structurally, not by pattern-matching text an
-    # attacker (or an unlucky PR title) could reproduce.
+    # attacker (or an unlucky PR title) could reproduce. A second,
+    # independent backstop lives in the "Skip ledger-only commits" step
+    # below: even if `[skip ci]` were ever lost from the wrapper's commit
+    # message (or a future edit routed a ledger-only commit through some
+    # other path that does trigger CI), a commit whose diff touches only
+    # the ledger file is detected and skipped there too, so recursion
+    # prevention never rests on a single mechanism.
+    #
+    # THE CONTRACT this job enforces, precisely: a Tier-0 record exists
+    # for every merge to main whose CI run completed successfully. Merges
+    # with no successful CI completion -- CI that ran and failed, or CI
+    # that never ran at all because something skipped it, including a
+    # user-supplied `[skip ci]`/`[ci skip]` in the merge's own commit
+    # message -- are deliberately NOT recorded. That is not a bug or a
+    # gap to chase: this job only exists because `workflow_run` fired,
+    # and `workflow_run` only fires when CI actually completed. A commit
+    # that skipped CI produces no completion event and this job never
+    # runs for it, the same way a commit whose CI failed is already,
+    # deliberately, left unrecorded. The ledger this job feeds
+    # (bench/results/tier0.jsonl) must therefore never be read as "one
+    # row per commit on main" -- it is "one row per commit independently
+    # verified green by CI". See bench/README's "CI recording coverage"
+    # section for the reader-facing statement of this same boundary.
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -76,7 +98,42 @@ jobs:
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git config --global user.name  'github-actions[bot]'
 
+      # Defence in depth for the anti-recursion contract described above.
+      # [skip ci] is the primary mechanism (it stops a CI run from ever
+      # existing for the wrapper's own push, so this workflow's
+      # `workflow_run` trigger can never fire again for it); this step
+      # does not replace that, it backstops it. If a ledger-only commit
+      # ever reaches this job despite [skip ci] -- e.g. a future edit to
+      # the wrapper drops the marker, or some other path pushes a
+      # ledger-only commit through a route that does trigger CI -- a
+      # commit whose entire diff is the ledger file gets re-measured for
+      # nothing (harmless) but should not itself be recorded again, so we
+      # exit here rather than recurse.
+      #
+      # `git diff-tree` on a MERGE commit with no `-m`/`--first-parent`
+      # prints NOTHING (it has no single parent to diff against), which
+      # would make an ordinary merge commit look identical to a
+      # ledger-only commit and get wrongly skipped. `--first-parent -m`
+      # picks the diff against the merge's first parent instead, so a
+      # real merge (which touches more than the ledger) is correctly
+      # NOT skipped.
+      - name: Skip ledger-only commits
+        id: guard
+        env:
+          MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          changed=$(git diff-tree --no-commit-id --name-only -r --first-parent -m "$MERGE_SHA")
+          if [[ -n "$changed" && "$changed" == 'bench/results/tier0.jsonl' ]]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            printf 'skipping: %s touches only the ledger file (%s); this is a recorder commit, not a new merge to record\n' \
+              "$MERGE_SHA" 'bench/results/tier0.jsonl'
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Record Tier 0 for this merge
+        if: steps.guard.outputs.skip != 'true'
         env:
           MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: tests/ci-record-tier0.sh --sha "$MERGE_SHA" --push

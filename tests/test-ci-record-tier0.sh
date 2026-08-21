@@ -252,4 +252,72 @@ race_commit_count=$(git -C "$race_remote" log --oneline main -- bench/results/ti
 assert_eq '1' "$race_commit_count" \
     'exactly one of the two racing runs actually pushed a recording commit'
 
+# --- record-tier0.yml declares the ledger-only-commit backstop -----------
+# The [skip ci] mechanism in the wrapper's own commit message is the
+# primary anti-recursion guard; this step is the defence-in-depth backstop
+# that does not depend on it surviving future edits.
+assert_contains "$record_text" 'Skip ledger-only commits' \
+    'record-tier0.yml declares the ledger-only-commit guard step'
+assert_contains "$record_text" 'git diff-tree' \
+    'record-tier0.yml uses git diff-tree to detect a ledger-only commit'
+assert_contains "$record_text" '--first-parent -m' \
+    'record-tier0.yml diffs merge commits against their first parent (plain diff-tree on a merge prints nothing)'
+
+# --- the guard's actual git diff-tree invocation: ledger-only vs. merge --
+# Reproduce exactly the command the workflow step runs
+# (`git diff-tree --no-commit-id --name-only -r --first-parent -m <sha>`)
+# against a synthetic repo shaped like both cases it must tell apart:
+#  - a commit whose entire diff is bench/results/tier0.jsonl (must be
+#    detected as ledger-only and skipped);
+#  - an ordinary two-parent merge commit that touches other files (must
+#    NOT be mistaken for ledger-only just because a bare `diff-tree`
+#    without -m/--first-parent would print nothing for it).
+guard_repo=$tmp/guard-repo
+mkdir -p "$guard_repo"
+git -C "$guard_repo" init --quiet --initial-branch=main
+git -C "$guard_repo" config user.email test@example.invalid
+git -C "$guard_repo" config user.name 'Test'
+
+echo base > "$guard_repo/base.txt"
+git -C "$guard_repo" add -A
+git -C "$guard_repo" commit --quiet -m 'initial'
+
+# A ledger-only commit on main.
+mkdir -p "$guard_repo/bench/results"
+echo '{"plugin_sha":"deadbeef"}' > "$guard_repo/bench/results/tier0.jsonl"
+git -C "$guard_repo" add -A
+git -C "$guard_repo" commit --quiet -m 'chore(bench): record tier0 for deadbeef [skip ci]'
+ledger_only_sha=$(git -C "$guard_repo" rev-parse HEAD)
+
+guard_changed() {
+    git -C "$guard_repo" diff-tree --no-commit-id --name-only -r --first-parent -m "$1"
+}
+
+ledger_only_changed=$(guard_changed "$ledger_only_sha")
+assert_eq 'bench/results/tier0.jsonl' "$ledger_only_changed" \
+    'a ledger-only commit diffs to exactly the ledger path'
+
+# A genuine merge commit: branch off before the ledger-only commit, add an
+# unrelated file on a side branch, and merge it into main. This is the
+# shape a bare `git diff-tree --no-commit-id --name-only -r <sha>` (no -m,
+# no --first-parent) prints NOTHING for -- the exact footgun the guard
+# must not fall into.
+git -C "$guard_repo" checkout --quiet -b side "$(git -C "$guard_repo" rev-parse HEAD~1)"
+echo feature > "$guard_repo/feature.txt"
+git -C "$guard_repo" add -A
+git -C "$guard_repo" commit --quiet -m 'side work'
+git -C "$guard_repo" checkout --quiet main
+git -C "$guard_repo" merge --quiet --no-ff side -m 'merge side into main'
+merge_commit_sha=$(git -C "$guard_repo" rev-parse HEAD)
+
+bare_diff_tree_output=$(git -C "$guard_repo" diff-tree --no-commit-id --name-only -r "$merge_commit_sha")
+assert_eq '' "$bare_diff_tree_output" \
+    'sanity check: a bare diff-tree with no -m/--first-parent prints nothing for a merge commit (the footgun the guard avoids)'
+
+merge_changed=$(guard_changed "$merge_commit_sha")
+assert_contains "$merge_changed" 'feature.txt' \
+    'the --first-parent -m guard invocation correctly reports the merge commit changed files'
+assert_eq 'no' "$([[ "$merge_changed" == 'bench/results/tier0.jsonl' ]] && echo yes || echo no)" \
+    'an ordinary merge commit is never mistaken for a ledger-only commit and skipped'
+
 finish
