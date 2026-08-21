@@ -164,6 +164,175 @@ snapshot_write_sets() {
     sed -n 's/^write-set=//p' "$snapshot"
 }
 
+# capture_head_ref -- the symbolic ref name HEAD currently points at
+# (e.g. "refs/heads/main"), or the literal "HEAD" when detached. This is the
+# same distinction `git symbolic-ref` makes: a resolvable symbolic ref means
+# an ordinary branch checkout, and its absence means a detached HEAD.
+capture_head_ref() {
+    local root=$1
+    git -C "$root" symbolic-ref -q HEAD || printf 'HEAD\n'
+}
+
+capture_head_sha() {
+    local root=$1
+    git -C "$root" rev-parse HEAD
+}
+
+# capture_ref_reflog_count -- how many reflog entries a fully-qualified ref
+# currently carries, or 0 when the ref has no reflog at all (reflogs
+# disabled, or a ref Git never logs). Counting entries -- rather than reading
+# wall-clock timestamps -- is what lets Collect notice a mutation with
+# certainty: Git's reflog timestamps are whole-second and a fast dispatch can
+# snapshot and mutate inside the same second, so a timestamp-only comparison
+# cannot reliably tell "before" from "after". A monotonically growing entry
+# count can: any count above the snapshot-time baseline means something was
+# appended to that ref's reflog since the snapshot, full stop.
+capture_ref_reflog_count() {
+    local root=$1 fullref=$2
+    git -C "$root" reflog show "$fullref" 2>/dev/null | wc -l | tr -d '[:space:]'
+}
+
+# capture_ref_reflog_usable -- "yes" when Git actually maintains a reflog for
+# this ref, "no" otherwise (reflogs disabled via core.logAllRefUpdates=false,
+# or a ref Git never logs). `reflog show` on an unlogged ref still exits 0
+# with empty output -- indistinguishable from "logged, but zero entries so
+# far" -- so usability has to be its own check (`reflog exists`), never
+# inferred from an entry count of 0.
+capture_ref_reflog_usable() {
+    local root=$1 fullref=$2
+    if git -C "$root" reflog exists "$fullref" >/dev/null 2>&1; then
+        printf 'yes\n'
+    else
+        printf 'no\n'
+    fi
+}
+
+# list_worktree_branches -- branch short names currently checked out by any
+# *other* worktree of this same repository (i.e. every `git worktree list`
+# entry except the one at $root itself). In parallel-issues, worker branches
+# live in the SAME repository as the root checkout -- worktrees share
+# `refs/heads/*` -- so a worker committing and pushing its own branch is a
+# perfectly normal dispatch, not a root mutation. Ownership is decided from
+# Git's own worktree metadata (`git worktree list --porcelain`), never by
+# name pattern: a worktree's checked-out branch is filtered out unless that
+# worktree's path canonicalizes to $root. Root's own branch is never
+# filtered out by this function, even though the root checkout is itself one
+# of the entries `git worktree list` reports.
+list_worktree_branches() {
+    local root=$1 line wt_path='' branch resolved
+    while IFS= read -r line; do
+        case $line in
+            worktree\ *) wt_path=${line#worktree } ;;
+            branch\ refs/heads/*)
+                branch=${line#branch refs/heads/}
+                resolved=$(canonical_dir "$wt_path" 2>/dev/null) || resolved=$wt_path
+                [[ $resolved == "$root" ]] || printf '%s\n' "$branch"
+                ;;
+            '') wt_path='' ;;
+        esac
+    done < <(git -C "$root" worktree list --porcelain)
+}
+
+# capture_branch_shas -- one "name<TAB>sha<TAB>reflog-count<TAB>reflog-usable"
+# line per local branch NOT checked out by another worktree, sorted by
+# refname for deterministic snapshot/report ordering. `exclude` is a
+# newline-delimited set of branch names (leading newline included; a
+# *trailing* newline is not guaranteed -- it is built via `$(...)`, which
+# strips trailing newlines, so a name may be the literal end of the string)
+# to skip entirely -- branches owned by other worktrees are not this
+# checkout's concern, and must not appear in either the baseline or the
+# current capture.
+capture_branch_shas() {
+    local root=$1 exclude=$2 branch_name branch_sha fullref
+    while IFS=$'\t' read -r branch_name branch_sha; do
+        [[ -n $branch_name ]] || continue
+        [[ $exclude == *$'\n'"$branch_name"$'\n'* || $exclude == *$'\n'"$branch_name" ]] && continue
+        fullref="refs/heads/$branch_name"
+        printf '%s\t%s\t%s\t%s\n' "$branch_name" "$branch_sha" \
+            "$(capture_ref_reflog_count "$root" "$fullref")" \
+            "$(capture_ref_reflog_usable "$root" "$fullref")"
+    done < <(git -C "$root" for-each-ref --sort=refname \
+        --format='%(refname:short)%09%(objectname)' refs/heads/)
+}
+
+# branch_name_set -- join branch names (one per positional arg) into the
+# newline-delimited set format capture_branch_shas' `exclude` expects.
+branch_name_set() {
+    local name out=$'\n'
+    for name in "$@"; do
+        [[ -n $name ]] || continue
+        out+="$name"$'\n'
+    done
+    printf '%s' "$out"
+}
+
+snapshot_head_ref() {
+    local snapshot=$1
+    sed -n 's/^head-ref=//p' "$snapshot" | head -n 1
+}
+
+snapshot_head_sha() {
+    local snapshot=$1
+    sed -n 's/^head-sha=//p' "$snapshot" | head -n 1
+}
+
+snapshot_head_reflog_count() {
+    local snapshot=$1
+    sed -n 's/^head-reflog-count=//p' "$snapshot" | head -n 1
+}
+
+snapshot_head_reflog_usable() {
+    local snapshot=$1
+    sed -n 's/^head-reflog-usable=//p' "$snapshot" | head -n 1
+}
+
+snapshot_branch_shas() {
+    local snapshot=$1
+    sed -n 's/^branch-sha=//p' "$snapshot"
+}
+
+# snapshot_excluded_branches -- branch names that were checked out by another
+# worktree at snapshot time, and were therefore left out of the snapshot's
+# branch-sha baseline entirely.
+snapshot_excluded_branches() {
+    local snapshot=$1
+    sed -n 's/^excluded-branch=//p' "$snapshot"
+}
+
+# reflog_activity -- has a fully-qualified ref's reflog grown past
+# baseline_count since the snapshot was taken, and if so, was the newest new
+# entry's own timestamp inside [start, end]? Prints four tab-separated
+# fields: activity (yes|no), the current entry count, the newest entry's
+# subject ("none" when there is no new activity), and window
+# (in-window|outside-window|unknown). "unknown" covers a ref whose reflog
+# entry disappeared entirely (count fell, e.g. `git reflog expire`) -- still
+# real activity, just not attributable to a single new entry.
+reflog_activity() {
+    local root=$1 fullref=$2 baseline_count=$3 start=$4 end=$5
+    local current_count newest selector subject ts window=unknown _
+    current_count=$(capture_ref_reflog_count "$root" "$fullref")
+    if ((current_count == baseline_count)); then
+        printf 'no\t%s\tnone\tunknown\n' "$current_count"
+        return
+    fi
+    if ((current_count > baseline_count)); then
+        # -1 (not a `| head -n1` pipe): under `set -o pipefail`, git writing
+        # past a `head`-closed pipe dies from SIGPIPE and the pipeline's
+        # non-zero status would trip `set -e` on this assignment.
+        newest=$(git -C "$root" log -g -1 --date=unix --pretty='%H%x09%gd%x09%gs' \
+            "$fullref" 2>/dev/null)
+        IFS=$'\t' read -r _ selector subject <<<"$newest"
+        window=outside-window
+        if [[ $selector =~ @\{([0-9]+)\}$ ]]; then
+            ts=${BASH_REMATCH[1]}
+            ((ts >= start && ts <= end)) && window=in-window
+        fi
+        printf 'yes\t%s\t%s\t%s\n' "$current_count" "${subject//$'\t'/ }" "$window"
+        return
+    fi
+    printf 'yes\t%s\treflog-count-decreased\tunknown\n' "$current_count"
+}
+
 normalise_pattern() {
     local pattern=$1 root=$2
     case $pattern in
@@ -266,8 +435,9 @@ dispose_path() {
 }
 
 snapshot_cmd() {
-    local root='' output='' arg write_set
-    local -a write_sets=()
+    local root='' output='' arg write_set branch_name branch_sha
+    local branch_reflog_count branch_reflog_usable exclude_set excluded_branch
+    local -a write_sets=() worktree_excluded=()
     while (($#)); do
         arg=$1
         case $arg in
@@ -291,11 +461,25 @@ snapshot_cmd() {
     temp=$(mktemp "$output.tmp.XXXXXXXXXX") || die "could not create snapshot temporary file"
     status_path=$(mktemp "$output.status.XXXXXXXXXX") || die "could not create status temporary file"
     captured=$(date +%s)
+    mapfile -t worktree_excluded < <(list_worktree_branches "$root")
+    exclude_set=$(branch_name_set "${worktree_excluded[@]}")
     {
         printf 'version=1\nroot=%s\ncaptured-at=%s\n' "$root" "$captured"
         for write_set in "${write_sets[@]}"; do
             printf 'write-set=%s\n' "$write_set"
         done
+        for excluded_branch in "${worktree_excluded[@]}"; do
+            printf 'excluded-branch=%s\n' "$excluded_branch"
+        done
+        printf 'head-ref=%s\n' "$(capture_head_ref "$root")"
+        printf 'head-sha=%s\n' "$(capture_head_sha "$root")"
+        printf 'head-reflog-count=%s\n' "$(capture_ref_reflog_count "$root" HEAD)"
+        printf 'head-reflog-usable=%s\n' "$(capture_ref_reflog_usable "$root" HEAD)"
+        while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
+            [[ -n $branch_name ]] || continue
+            printf 'branch-sha=%s\t%s\t%s\t%s\n' \
+                "$branch_name" "$branch_sha" "$branch_reflog_count" "$branch_reflog_usable"
+        done < <(capture_branch_shas "$root" "$exclude_set")
         printf 'path\tstatus\tmtime\tsha256\n'
         status_file "$root" "$status_path"
     } >"$temp"
@@ -310,8 +494,14 @@ collect_cmd() {
     local arg write_set path status mtime hash issue_attr attribute branch_match disposition
     local baseline_value baseline_hash baseline_changed root_file worker_file
     local current_status current_raw captured now
-    local -a write_sets=()
-    declare -A baseline=()
+    local baseline_head_ref baseline_head_sha baseline_head_reflog_count baseline_head_reflog_usable
+    local current_head_ref current_head_sha current_head_reflog_usable
+    local ref_activity ref_summary ref_window branch_name branch_sha branch_reflog_count _
+    local branch_reflog_usable baseline_branch_sha current_branch_sha current_branch_reflog_usable
+    local exclude_set excluded_branch
+    local -a write_sets=() sorted_branch_names=() baseline_excluded=() current_excluded=()
+    declare -A baseline=() baseline_branches=() baseline_branch_reflog_counts=()
+    declare -A baseline_branch_reflog_usable=() current_branches=() union_excluded=()
     while (($#)); do
         arg=$1
         case $arg in
@@ -416,6 +606,137 @@ collect_cmd() {
             "$path" "$issue_attr" "$attribute" "$status" "$mtime" "$branch_match" "$disposition"
     done <"$current_status"
     rm -f -- "$current_status"
+
+    # --- ref incidents: HEAD's ref/sha and every baseline-tracked branch ----
+    # `git reset --soft`, `git checkout <branch>`, and `git branch -f` move
+    # refs without writing a single file, so the file-status loop above
+    # cannot see them. A plain baseline-vs-current comparison also misses a
+    # ref that moved and landed back on its baseline value (a `reset --soft`
+    # to the pre-dispatch commit is byte-identical to "untouched"), so every
+    # baseline-tracked ref is additionally checked for reflog growth since
+    # the snapshot -- see reflog_activity for why entry counts, not
+    # timestamps, are what detect that case reliably.
+    baseline_head_ref=$(snapshot_head_ref "$snapshot")
+    baseline_head_sha=$(snapshot_head_sha "$snapshot")
+    baseline_head_reflog_count=$(snapshot_head_reflog_count "$snapshot")
+    [[ -n $baseline_head_reflog_count ]] || baseline_head_reflog_count=0
+    baseline_head_reflog_usable=$(snapshot_head_reflog_usable "$snapshot")
+    current_head_ref=$(capture_head_ref "$root")
+    current_head_sha=$(capture_head_sha "$root")
+    current_head_reflog_usable=$(capture_ref_reflog_usable "$root" HEAD)
+    IFS=$'\t' read -r ref_activity _ ref_summary ref_window < <(
+        reflog_activity "$root" HEAD "$baseline_head_reflog_count" "$worker_start" "$worker_end"
+    )
+
+    # A ref this fence cannot observe cannot be certified clean: a reflog
+    # unusable at snapshot or collect time (core.logAllRefUpdates=false, or a
+    # ref Git never logs) is always a named incident, independent of whether
+    # HEAD's ref/sha also changed -- "cross-write=none" must never mean "we
+    # couldn't tell", only "we checked, and nothing moved".
+    if [[ $baseline_head_reflog_usable != yes || $current_head_reflog_usable != yes ]]; then
+        incidents=$((incidents + 1))
+        printf 'cross-ref=type=head-reflog-unavailable name=HEAD baseline=%s current=%s restored=unknown window=unknown reflog=unavailable\n' \
+            "$baseline_head_sha" "$current_head_sha"
+    fi
+
+    if [[ -n $baseline_head_ref && $current_head_ref != "$baseline_head_ref" ]]; then
+        incidents=$((incidents + 1))
+        printf 'cross-ref=type=head-branch-changed name=HEAD baseline=%s current=%s restored=no window=%s reflog=%s\n' \
+            "$baseline_head_ref" "$current_head_ref" "$ref_window" "$ref_summary"
+    elif [[ -n $baseline_head_sha && $current_head_sha != "$baseline_head_sha" ]]; then
+        incidents=$((incidents + 1))
+        printf 'cross-ref=type=head-sha-changed name=HEAD baseline=%s current=%s restored=no window=%s reflog=%s\n' \
+            "$baseline_head_sha" "$current_head_sha" "$ref_window" "$ref_summary"
+    elif [[ -n $baseline_head_sha && $ref_activity == yes ]]; then
+        incidents=$((incidents + 1))
+        printf 'cross-ref=type=head-sha-changed name=HEAD baseline=%s current=%s restored=yes window=%s reflog=%s\n' \
+            "$baseline_head_sha" "$current_head_sha" "$ref_window" "$ref_summary"
+    fi
+
+    # A branch checked out by another worktree is out of scope for the ROOT
+    # ref fence -- that worktree owns its own commits and pushes (see
+    # list_worktree_branches). Ownership can change between snapshot and
+    # collect (a worker worktree can be added, or removed, mid-window), so a
+    # branch excluded at EITHER end is excluded at BOTH: union, not
+    # intersection. Filtering only the side where it happens to be owned
+    # would read the other side's absence as a fabricated branch-created or
+    # branch-deleted incident -- a worktree lifecycle event, not a root
+    # mutation.
+    mapfile -t baseline_excluded < <(snapshot_excluded_branches "$snapshot")
+    mapfile -t current_excluded < <(list_worktree_branches "$root")
+    for excluded_branch in "${baseline_excluded[@]}" "${current_excluded[@]}"; do
+        [[ -n $excluded_branch ]] || continue
+        union_excluded["$excluded_branch"]=1
+    done
+    exclude_set=$(branch_name_set "${!union_excluded[@]}")
+
+    while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
+        [[ -n $branch_name ]] || continue
+        [[ -n ${union_excluded[$branch_name]+present} ]] && continue
+        baseline_branches["$branch_name"]=$branch_sha
+        baseline_branch_reflog_counts["$branch_name"]=${branch_reflog_count:-0}
+        baseline_branch_reflog_usable["$branch_name"]=${branch_reflog_usable:-no}
+    done < <(snapshot_branch_shas "$snapshot")
+    while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
+        [[ -n $branch_name ]] || continue
+        current_branches["$branch_name"]=$branch_sha
+    done < <(capture_branch_shas "$root" "$exclude_set")
+
+    # Compare the UNION of baseline and current branch names, not just the
+    # baseline set: a branch created in the root checkout never appears in
+    # baseline, and a branch deleted from it never appears in current -- each
+    # is a real ref mutation this fence must not pass through as clean.
+    mapfile -t sorted_branch_names < <(
+        printf '%s\n' "${!baseline_branches[@]}" "${!current_branches[@]}" | sort -u
+    )
+    for branch_name in "${sorted_branch_names[@]}"; do
+        if [[ -z ${baseline_branches[$branch_name]+present} ]]; then
+            # Created: no baseline entry to compare against, so the presence
+            # of the name at all is the incident. reflog_activity against a
+            # zero baseline still reports a useful window/summary when the
+            # branch's own creation reflog entry exists.
+            current_branch_sha=${current_branches[$branch_name]}
+            incidents=$((incidents + 1))
+            IFS=$'\t' read -r _ _ ref_summary ref_window < <(
+                reflog_activity "$root" "refs/heads/$branch_name" 0 "$worker_start" "$worker_end"
+            )
+            printf 'cross-ref=type=branch-created name=%s baseline=none current=%s restored=no window=%s reflog=%s\n' \
+                "$branch_name" "$current_branch_sha" "$ref_window" "$ref_summary"
+            continue
+        fi
+        baseline_branch_sha=${baseline_branches[$branch_name]}
+        if [[ -z ${current_branches[$branch_name]+present} ]]; then
+            # Deleted: the ref (and its reflog) is gone, so there is nothing
+            # left to compare bytes or reflog activity against -- the
+            # disappearance itself is the incident.
+            incidents=$((incidents + 1))
+            printf 'cross-ref=type=branch-deleted name=%s baseline=%s current=none restored=no window=unknown reflog=branch-deleted\n' \
+                "$branch_name" "$baseline_branch_sha"
+            continue
+        fi
+        current_branch_sha=${current_branches[$branch_name]}
+        current_branch_reflog_usable=$(capture_ref_reflog_usable "$root" "refs/heads/$branch_name")
+        if [[ ${baseline_branch_reflog_usable[$branch_name]:-no} != yes ||
+              $current_branch_reflog_usable != yes ]]; then
+            incidents=$((incidents + 1))
+            printf 'cross-ref=type=branch-reflog-unavailable name=%s baseline=%s current=%s restored=unknown window=unknown reflog=unavailable\n' \
+                "$branch_name" "$baseline_branch_sha" "$current_branch_sha"
+        fi
+        IFS=$'\t' read -r ref_activity _ ref_summary ref_window < <(
+            reflog_activity "$root" "refs/heads/$branch_name" \
+                "${baseline_branch_reflog_counts[$branch_name]:-0}" "$worker_start" "$worker_end"
+        )
+        if [[ $current_branch_sha != "$baseline_branch_sha" ]]; then
+            incidents=$((incidents + 1))
+            printf 'cross-ref=type=branch-moved name=%s baseline=%s current=%s restored=no window=%s reflog=%s\n' \
+                "$branch_name" "$baseline_branch_sha" "$current_branch_sha" "$ref_window" "$ref_summary"
+        elif [[ $ref_activity == yes ]]; then
+            incidents=$((incidents + 1))
+            printf 'cross-ref=type=branch-moved name=%s baseline=%s current=%s restored=yes window=%s reflog=%s\n' \
+                "$branch_name" "$baseline_branch_sha" "$current_branch_sha" "$ref_window" "$ref_summary"
+        fi
+    done
+
     if ((incidents == 0)); then
         printf 'cross-write=none root=%s\n' "$root"
         return 0

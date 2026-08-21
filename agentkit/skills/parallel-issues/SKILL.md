@@ -740,6 +740,10 @@ duplicate); divergent or outside-window bytes are always surfaced for an explici
 disposition. Never fold dirt first observed inside a dispatch window into the
 handoff's "unrelated local changes" list.
 
+The snapshot also captures the root's **refs** (HEAD's ref/SHA, every branch SHA): `reset --soft`/
+`checkout`/`branch -f` move a ref with no file write, so Collect also checks reflog growth since
+the snapshot and names it `cross-ref=type=…` (`restored=yes` covers moved-then-restored).
+
 ```bash
 collect_rc=0
 worker_write_set_args=()
