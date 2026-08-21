@@ -13,8 +13,9 @@ violations=0
 declare -A seen=()
 
 report() {
-    printf 'VIOLATION %s:%s: unresolved helper/reference path %s (looked for %s)\n' \
-        "$1" "$2" "$3" "$4" >&2
+    local kind=${5:-helper/reference path}
+    printf 'VIOLATION %s:%s: unresolved %s %s (looked for %s)\n' \
+        "$1" "$2" "$kind" "$3" "$4" >&2
     violations=$((violations + 1))
 }
 
@@ -62,7 +63,7 @@ resolve_token() {
 }
 
 check_token() {
-    local source_file=$1 line_no=$2 token=$3 candidate key
+    local source_file=$1 line_no=$2 token=$3 kind=${4:-helper/reference path} candidate key
     [[ -n $token ]] || return 0
     # Markdown destinations may carry an anchor; it is not part of the file.
     token=${token%%#*}
@@ -71,17 +72,26 @@ check_token() {
     [[ -n ${seen[$key]:-} ]] && return 0
     seen[$key]=1
     candidate=$(resolve_token "$source_file" "$token")
-    [[ -f $candidate ]] || report "$source_file" "$line_no" "$token" "$candidate"
+    [[ -f $candidate ]] || report "$source_file" "$line_no" "$token" "$candidate" "$kind"
 }
 
 scan_file() {
-    local source_file=$1 line_no content match token
+    local source_file=$1 line_no content match token bracket_text dest_token
     while IFS=: read -r line_no content; do
         # Markdown links are resolved from the document containing the link.
+        # Bracket TEXT holds the same resolve-or-fail bar as the destination:
+        # these documents are read by agents, not rendered for humans, and an
+        # agent following prose frequently retypes the path it sees rather
+        # than dereferencing the link. Only path-shaped bracket text (the
+        # same .sh/.md filter check_token already applies) is checked, so
+        # ordinary prose bracket text is never a false positive.
         while IFS= read -r match; do
-            token=${match#*](}
-            check_token "$source_file" "$line_no" "$token"
-        done < <(grep -oE '\]\([^)#[:space:]]+\.(sh|md)(#[^)]*)?' <<< "$content" || true)
+            bracket_text=${match%%](*}
+            bracket_text=${bracket_text#\[}
+            dest_token=${match#*](}
+            check_token "$source_file" "$line_no" "$dest_token" 'link destination'
+            check_token "$source_file" "$line_no" "$bracket_text" 'link bracket text'
+        done < <(grep -oE '\[[^]]*\]\([^)#[:space:]]+\.(sh|md)(#[^)]*)?' <<< "$content" || true)
 
         # Shell snippets and prose that name the installed tree use one of the
         # explicit roots below. Bare helper basenames are intentionally ignored:

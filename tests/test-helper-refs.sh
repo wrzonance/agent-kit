@@ -59,6 +59,55 @@ assert_eq 1 "$placement_rc" 'an executable directly under .shared fails the lint
 assert_contains "$placement_output" 'misplaced.sh' \
     'the placement violation names the misplaced helper'
 
+bfixture="$tmp/bracket/agentkit/skills"
+mkdir -p "$bfixture/demo/references"
+printf '%s\n' \
+    '---' \
+    'name: demo' \
+    'description: Use when testing bracket-text references.' \
+    '---' \
+    'See [references/DOES-NOT-EXIST.md](references/hit.md) for details.' \
+    'Contrast: [some text](references/REALLY-MISSING.md) has a bad destination.' \
+    'Prose stays quiet: [the chains contract](references/hit.md) is not path-shaped.' \
+    > "$bfixture/demo/SKILL.md"
+printf 'target\n' > "$bfixture/demo/references/hit.md"
+
+bracket_output=''
+bracket_rc=0
+bracket_output=$("$lint" "$bfixture" 2>&1) || bracket_rc=$?
+assert_eq 1 "$bracket_rc" 'a bad bracket text with a good destination fails the lint'
+assert_contains "$bracket_output" 'link bracket text' \
+    'a bad bracket text is labeled distinctly from a bad destination'
+assert_contains "$bracket_output" 'DOES-NOT-EXIST.md' \
+    'the lint names the unresolved bracket text'
+assert_contains "$bracket_output" 'link destination' \
+    'a bad destination is labeled distinctly from a bad bracket text'
+assert_contains "$bracket_output" 'REALLY-MISSING.md' \
+    'the lint names the unresolved destination'
+bracket_lines=$(printf '%s\n' "$bracket_output" | grep -c '^VIOLATION' || true)
+assert_eq 2 "$bracket_lines" \
+    'ordinary prose bracket text produces no extra violation'
+
+# A markdown-link destination such as skills/demo2/foo.md is independently
+# re-matched, byte for byte, by the separate $agentkit/$shared/skills/.shared
+# scan of the same raw line -- that is what the shared `seen` dedup exists to
+# collapse. Labeling violations by kind must not defeat that: the dedup key
+# stays token-only, so the same broken path found via two extraction loops is
+# still reported once, not twice under two different labels.
+mkdir -p "$bfixture/demo2"
+printf '%s\n' \
+    '---' \
+    'name: demo2' \
+    'description: Use when testing cross-loop dedup.' \
+    '---' \
+    'See [here](skills/demo2/definitely-missing.md) for details.' \
+    > "$bfixture/demo2/SKILL.md"
+dedup_output=''
+dedup_output=$("$lint" "$bfixture" 2>&1) || true
+dedup_lines=$(printf '%s\n' "$dedup_output" | grep -c 'definitely-missing.md' || true)
+assert_eq 1 "$dedup_lines" \
+    'the same broken path found via two extraction loops is reported once, not twice'
+
 policy_needle="helpers invoked by more than one skill live in \`.shared/scripts/\`"
 assert_contains "$(<"$root/agentkit/skills/.shared/six-step-loop.md")" \
     "$policy_needle" \
