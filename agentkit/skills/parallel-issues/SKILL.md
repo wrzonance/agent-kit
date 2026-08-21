@@ -780,7 +780,7 @@ chmod 600 -- "$prompt_file" || exit 1
 # worker_effort is override or AGENT_WORKER_EFFORT default.
 # write_set_globs contains predictedWriteSet globs, one per flag --
 # REQUIRED for an issue lead; never CSV (comma-bearing globs split).
-compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --output "$prompt_file")
+compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
 if ! "$compose_script" "${compose_args[@]}"; then
     exit 1

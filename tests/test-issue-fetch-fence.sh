@@ -285,10 +285,16 @@ assert_contains "$script_text" 'prior_target="$agent_dir/fenced-prior-art.txt"' 
     'the canonical recipe persists prior-art fence bytes beside the spec'
 assert_contains "$script_text" ': "${prior_art_contents:="(no prior art selected by triage digest)"}"' \
     'the canonical recipe initializes the absent-prior-art sentinel before fencing'
-assert_contains "$recipe_text" 'cat -- "$worktree/.agent/fenced-spec.txt"' \
-    'the worker embeds persisted spec bytes rather than re-fencing'
-assert_contains "$recipe_text" 'cat -- "$worktree/.agent/fenced-prior-art.txt"' \
-    'the worker embeds persisted prior-art bytes rather than re-fencing'
+# The literal per-mode cat recipe no longer lives in the raw worker prompt
+# (issue #334): compose-worker-prompt.sh now embeds the persisted bytes for
+# every mode itself, resolving the mode-appropriate spec/prior-art path and
+# reading it directly rather than documenting a hand-copied cat recipe the
+# worker would have to run.
+compose_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh")
+assert_contains "$compose_script_text" 'cat -- "$spec"' \
+    'the composer embeds persisted spec bytes rather than re-fencing'
+assert_contains "$compose_script_text" 'cat -- "$prior_art"' \
+    'the composer embeds persisted prior-art bytes rather than re-fencing'
 assert_contains "$recipe_text" 'Re-running the script for an existing complete set is churn' \
     'the recipe documents deliberate deletion before re-fencing'
 assert_contains "$recipe_text" 'fence artifacts already exist; delete the affected file deliberately' \
