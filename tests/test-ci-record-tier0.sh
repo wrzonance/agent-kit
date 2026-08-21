@@ -9,10 +9,10 @@
 #    push/pull (the ledger file only ever grows, existing lines never
 #    change).
 # The .github/workflows/ci.yml wiring itself (push-to-main trigger, the
-# anti-self-trigger guard, and the dedicated non-cancelling concurrency
-# group) is asserted directly against the checked-in workflow text, since
-# exercising GitHub Actions triggers themselves is outside what a local
-# suite can run.
+# structural [skip ci] anti-recursion mechanism, and the deliberate absence
+# of a concurrency group) is asserted directly against the checked-in
+# workflow text, since exercising GitHub Actions triggers themselves is
+# outside what a local suite can run.
 set -uo pipefail
 
 TEST_NAME='ci-record-tier0'
@@ -137,8 +137,8 @@ assert_eq '1' "$remote_ledger_lines" 'the pushed remote ledger holds exactly one
 
 # --- CI wiring: record-tier0.yml is its own workflow (not a job living ----
 # --- inside ci.yml's cancelling concurrency group), triggered on green ----
-# --- CI completion, with an anti-self-trigger guard and a dedicated -------
-# --- non-cancelling concurrency group --------------------------------------
+# --- CI completion, with NO concurrency group of its own and NO ----------
+# --- commit-message guard -- the anti-recursion mechanism is structural ---
 #
 # This job MUST NOT live inside ci.yml: ci.yml's own workflow-level
 # concurrency group (`ci-${{ github.ref }}`, cancel-in-progress: true)
@@ -163,21 +163,28 @@ assert_contains "$record_text" 'workflows: [CI]' \
     "record-tier0 triggers off CI's completion"
 assert_contains "$record_text" "github.event.workflow_run.conclusion == 'success'" \
     'record-tier0 only records a merge whose own CI run finished green'
-assert_contains "$record_text" "startsWith(github.event.workflow_run.head_commit.message, 'chore(bench): record tier0')" \
-    "record-tier0 guards against re-triggering on its own commit's push"
-assert_contains "$record_text" 'cancel-in-progress: false' \
-    'record-tier0 uses a non-cancelling concurrency group so a merge is never dropped mid-recording'
-assert_contains "$record_text" 'group: record-tier0-main' \
-    "record-tier0's concurrency group key is its own dedicated group, not ci.yml's cancelling group"
 assert_contains "$record_text" 'contents: write' \
     'record-tier0 carries the write permission the push needs'
 
-# the commit-message marker the guard checks for must be exactly the prefix
-# the wrapper script actually writes -- a drift here would silently defeat
-# the anti-loop guard.
+# A concurrency group only ever retains at most one PENDING run: queuing a
+# new run cancels any run already pending in that group, so a group here
+# would silently drop a merge's record under a burst of completions. This
+# workflow must not declare one of its own.
+assert_not_contains "$record_text" 'concurrency:' \
+    'record-tier0 declares no concurrency group of its own (one would cancel a pending run and drop a record)'
+
+# The startsWith commit-message guard is forgeable: a merge/squash commit
+# that happens to start with the same text as the wrapper's commit message
+# would silently suppress recording, with no warning. It must be gone.
+assert_not_contains "$record_text" 'startsWith(github.event.workflow_run.head_commit.message' \
+    'record-tier0 does not gate on commit-message text (forgeable by any merge/squash commit)'
+
+# the wrapper's own commit message carries the actual anti-recursion
+# mechanism -- [skip ci] stops ci.yml from ever creating a CI run for that
+# push, so no workflow_run completion event is ever generated for it.
 wrapper_prefix=$(grep -m1 "printf 'chore(bench): record tier0 for %s" "$real_wrapper" || true)
-assert_contains "$wrapper_prefix" 'chore(bench): record tier0 for %s' \
-    "the wrapper's own commit message starts with the guard's exact marker string"
+assert_contains "$wrapper_prefix" '[skip ci]' \
+    "the wrapper's own commit message carries [skip ci] so its push never triggers a CI run"
 
 # --- race regression (finding 2): two stale checkouts recording the same --
 # --- SHA must never both push a row --------------------------------------

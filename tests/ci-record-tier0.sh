@@ -131,7 +131,16 @@ rel_ledger=${ledger#"$repo_root"/}
 msg_file=$(mktemp) || die 'could not create commit message file'
 trap 'rm -f -- "$msg_file"' EXIT
 {
-    printf 'chore(bench): record tier0 for %s\n\n' "$resolved_sha"
+    # [skip ci] is the anti-recursion mechanism, not the commit-message
+    # prefix: it stops GitHub from creating a CI run for THIS push at all,
+    # so record-tier0.yml (triggered on CI's `workflow_run` completion)
+    # never fires again for a commit this script itself made -- no run,
+    # no completion event, no retrigger, regardless of what any commit
+    # text says. This does mean each recorded merge adds one CI-skipped
+    # commit to main; that is acceptable because this commit only ever
+    # touches $rel_ledger (staged explicitly below, nothing else), so
+    # skipping CI on it never lets an unverified code change onto main.
+    printf 'chore(bench): record tier0 for %s [skip ci]\n\n' "$resolved_sha"
     printf 'Automated Tier-0 measurement appended by CI on merge to %s.\n' "$branch"
     printf 'See bench/README for the ledger schema.\n'
 } > "$msg_file"

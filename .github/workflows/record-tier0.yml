@@ -29,23 +29,35 @@ on:
 permissions:
   contents: read
 
-# A dedicated group, entirely independent of ci.yml's `ci-${{ github.ref }}`
-# group. cancel-in-progress is deliberately false: concurrent completions
-# queue and run one after another rather than canceling each other, which is
-# what actually keeps "exactly one record per merge" true.
-concurrency:
-  group: record-tier0-main
-  cancel-in-progress: false
-
+# Deliberately NO concurrency group here. A GitHub Actions concurrency
+# group only ever retains at most one PENDING run per group: when a new run
+# is queued while another is in progress, any previously-pending run in
+# that same group is cancelled outright -- cancel-in-progress: false only
+# protects the run that is currently executing, it does not turn the group
+# into a queue. So three CI completions in quick succession (A running, B
+# pending, C arrives) would cancel B and silently drop its merge's Tier-0
+# record -- exactly the "exactly one record per merge" violation this
+# workflow exists to prevent. Removing the group means every successful
+# CI completion gets its own run, and the wrapper's own concurrency safety
+# (tests/ci-record-tier0.sh --push fetches and hard-resets to the remote
+# tip immediately before its idempotency check on every attempt, and
+# restarts the whole cycle on a rejected push) is what actually keeps
+# concurrent runs from double-recording or losing a record.
 jobs:
   record-tier0:
     name: record tier0 on merge
-    # Guarded against the commit message this job's own push produces so
-    # that push's own CI run (which also completes and fires this trigger)
-    # does not record itself, which would otherwise loop indefinitely.
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      !startsWith(github.event.workflow_run.head_commit.message, 'chore(bench): record tier0')
+    # No commit-message guard here. A commit message is ordinary
+    # user-writable text -- a merge/squash commit that happens to start
+    # with the same prefix this job's own push produces would silently
+    # suppress recording for that merge, with no warning. The actual
+    # anti-recursion mechanism lives in the push itself: the wrapper's
+    # commit message carries `[skip ci]` (see tests/ci-record-tier0.sh),
+    # which stops ci.yml's `on: push` trigger from creating a CI run for
+    # that push at all. No CI run means no `workflow_run` completion event,
+    # so this workflow can never be re-triggered by its own commit -- the
+    # loop is broken structurally, not by pattern-matching text an
+    # attacker (or an unlucky PR title) could reproduce.
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
