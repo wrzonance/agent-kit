@@ -327,7 +327,19 @@ guard_resolve_roots() {
     # Broad grep over the whole command mistakes grep context and commit
     # message reuse flags for directory-bearing -C options.
     candidate=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
-    [[ -d $candidate ]] && guard_add_root "$candidate"
+    # A candidate that does not exist is a normal "no optional extra root"
+    # outcome, not a failure -- but as a bare `[[ ]] && cmd` this was also the
+    # FUNCTION's own return status. Both hooks call guard_resolve_roots as a
+    # bare simple command under `trap ... ERR`, so that stray 1 fired the trap
+    # and fell straight into allow/emit_empty before any guard had run,
+    # skipping every downstream check (issue #369). An `if` with no `else`
+    # returns 0 regardless of the test, which is what this function's callers
+    # need: resolving roots always "succeeds", whether or not this particular
+    # candidate turned out to exist.
+    if [[ -d $candidate ]]; then
+        guard_add_root "$candidate"
+    fi
+    return 0
 }
 
 # Resolve only the hook's trusted working directory and its current repository.
