@@ -970,27 +970,248 @@ guard_has_short_flags() {
     return 0
 }
 
+# Is the consumer of a heredoc a shell interpreter? Its BODY then runs as a
+# script regardless of delimiter quoting -- quoting only controls expansion
+# INSIDE the heredoc, never whether the consumer executes what it reads.
+# `bash <<'EOF' ... rm -rf ~ ... EOF` deletes just as surely as the unquoted
+# form. Skips `env`'s own flags/NAME=value pairs to reach the interpreter it
+# execs, and leading VAR=value assignments on the owning command itself.
+guard_heredoc_consumer_is_shell() {
+    local owner=$1 word i=0
+    local -a words
+    mapfile -t words < <(guard_tokenize_words "$owner")
+    while ((i < ${#words[@]})) && [[ ${words[i]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
+        ((i++))
+    done
+    word=${words[i]-}
+    if [[ ${word##*/} == env ]]; then
+        ((i++))
+        while ((i < ${#words[@]})); do
+            case ${words[i]} in
+                -*|*=*) ((i++));;
+                *) break;;
+            esac
+        done
+        word=${words[i]-}
+    fi
+    case ${word##*/} in
+        bash|sh|zsh|dash|ksh|ash|mksh) return 0;;
+    esac
+    return 1
+}
+
+# Every $(...) / `...` command substitution inside a heredoc BODY, inner text
+# only. An UNQUOTED delimiter (`<<EOF`, no quotes and no leading backslash)
+# means the shell expands these while it BUILDS the heredoc, before the
+# consumer ever reads it -- `cat <<EOF` with a `$(rm -rf ~)` inside deletes
+# regardless of `cat` being perfectly inert. Depth-counted so a nested
+# `$(echo $(pwd))` extracts the whole outer call, not the first `)`.
+guard_heredoc_substitutions() {
+    local body=$1
+    local i=0 length=${#body} depth start inner
+    while ((i < length)); do
+        if [[ ${body:i:1} == '$' && ${body:i+1:1} == '(' ]]; then
+            depth=1
+            start=$((i + 2))
+            i=$start
+            while ((i < length && depth > 0)); do
+                case ${body:i:1} in
+                    '(') ((depth++));;
+                    ')') ((depth--));;
+                esac
+                ((i++))
+            done
+            inner=${body:start:i-start-1}
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        if [[ ${body:i:1} == '`' ]]; then
+            start=$((i + 1))
+            i=$start
+            while ((i < length && ${body:i:1} != '`')); do
+                ((i++))
+            done
+            inner=${body:start:i-start}
+            ((i++))
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        ((i++))
+    done
+}
+
+# Like guard_gh_command_segments (same quote/heredoc state machine, same
+# command-boundary splitting) but a heredoc BODY is not dropped unconditionally
+# -- only when it is genuinely inert. A quoted-delimiter heredoc handed to an
+# ordinary data sink (cat, tee, a redirect, gh's -F/@file) really is data, and
+# stays dropped -- that is the false positive issue #351 fixed. But an
+# UNQUOTED delimiter expands command substitutions before any consumer runs,
+# and a heredoc handed to a shell interpreter executes as a script regardless
+# of quoting -- both of those are commands, not data, and issue #364's review
+# is right that treating every heredoc body as inert let them through
+# unexamined. The recovered command text is recursively re-segmented (through
+# this same function) so a substitution or script body that itself contains a
+# heredoc is still fully parsed, not just pattern-matched as one blob.
+guard_destructive_command_segments() {
+    local input=$1 line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
+    local i length char next third rest k delimiter delimiter_quote terminator_line
+    local owner='' heredoc_no_expand=0 body='' bodyline sub recovered
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ -n $heredoc ]]; then
+            terminator_line=$line
+            if ((heredoc_tabstrip)); then
+                terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
+            fi
+            if [[ $terminator_line == "$heredoc" ]]; then
+                heredoc=''
+                heredoc_tabstrip=0
+                if ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; then
+                    body=''
+                elif guard_heredoc_consumer_is_shell "$owner"; then
+                    while IFS= read -r recovered; do
+                        [[ -n $recovered ]] && printf '%s\n' "$recovered"
+                    done < <(guard_destructive_command_segments "$body")
+                    body=''
+                else
+                    while IFS= read -r sub; do
+                        while IFS= read -r recovered; do
+                            [[ -n $recovered ]] && printf '%s\n' "$recovered"
+                        done < <(guard_destructive_command_segments "$sub")
+                    done < <(guard_heredoc_substitutions "$body")
+                    body=''
+                fi
+                owner=''
+                continue
+            fi
+            bodyline=$line
+            if ((heredoc_tabstrip)); then
+                bodyline=${bodyline#"${bodyline%%[!$'\t']*}"}
+            fi
+            body+="$bodyline"$'\n'
+            continue
+        fi
+
+        i=0
+        length=${#line}
+        while ((i < length)); do
+            char=${line:i:1}
+            next=${line:i+1:1}
+            third=${line:i+2:1}
+
+            if [[ $quote == "'" ]]; then
+                segment+=$char
+                [[ $char == "'" ]] && quote=''
+                ((i++))
+                continue
+            fi
+            if ((escaped)); then
+                segment+=$char
+                escaped=0
+                ((i++))
+                continue
+            fi
+            if [[ $char == \\ ]]; then
+                segment+=$char
+                escaped=1
+                ((i++))
+                continue
+            fi
+            if [[ $quote == '"' ]]; then
+                segment+=$char
+                [[ $char == '"' ]] && quote=''
+                ((i++))
+                continue
+            fi
+
+            case $char in
+                "'"|'"')
+                    quote=$char
+                    segment+=$char
+                    ((i++))
+                    ;;
+                ';'|'|'|'&')
+                    printf '%s\n' "$segment"
+                    segment=''
+                    ((i++))
+                    ;;
+                '<')
+                    if [[ $next == '<' && $third != '<' ]]; then
+                        owner=$segment
+                        segment+='<<'
+                        i=$((i + 2))
+                        rest=${line:i}
+                        heredoc_tabstrip=0
+                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; heredoc_tabstrip=1; }
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        delimiter_quote=${rest:0:1}
+                        if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
+                            rest=${rest:1}
+                            k=0
+                            while ((k < ${#rest})) && [[ ${rest:k:1} != "$delimiter_quote" ]]; do
+                                ((k++))
+                            done
+                            delimiter=${rest:0:k}
+                            heredoc_no_expand=1
+                        else
+                            delimiter=${rest%%[[:space:];|&]*}
+                            # An unquoted delimiter such as `<<\EOF` disables
+                            # heredoc-body expansion the same way a quoted one
+                            # does; bash strips the backslash for the purpose
+                            # of matching the terminator, so the stored
+                            # delimiter must too, or the real terminator line
+                            # (bare "EOF") never matches "\EOF".
+                            heredoc_no_expand=0
+                            [[ $delimiter_quote == \\ ]] && heredoc_no_expand=1
+                            delimiter=${delimiter//\\/}
+                        fi
+                        [[ -n $delimiter ]] && heredoc=$delimiter
+                        body=''
+                    else
+                        segment+=$char
+                        ((i++))
+                    fi
+                    ;;
+                *)
+                    segment+=$char
+                    ((i++))
+                    ;;
+            esac
+        done
+
+        if [[ -z $heredoc && -z $quote ]]; then
+            printf '%s\n' "$segment"
+            segment=''
+        else
+            segment+=$'\n'
+        fi
+    done <<< "$input"
+}
+
 # Splits the raw command text into the segments the shell would actually
-# execute -- via guard_gh_command_segments, the same quote/heredoc state
-# machine guard_out_of_scope_target and guard_gh_inline_body_reason already
-# rely on (issue #335) -- and judges each segment on its own.
+# execute -- via guard_destructive_command_segments, a heredoc-aware sibling
+# of guard_gh_command_segments (the shared quote/heredoc state machine
+# guard_out_of_scope_target and guard_gh_inline_body_reason already rely on,
+# issue #335) -- and judges each segment on its own.
 #
 # Matching the WHOLE raw command_line as one string let unrelated text
-# contaminate the verdict: a heredoc BODY is data destined for a file, never
-# executed, but a `rm -rf ~` example quoted inside one (documentation prose,
-# a pasted issue body) read exactly like a real command, and a short flag
-# from one segment (`gh api ... -f`) could combine with an unrelated `-r`
-# text elsewhere to manufacture a match neither line actually contains. An
-# innocuous trailing `rm -f -- "$f"` then got refused for a danger that was
-# never in the command actually being run (issue #351). Segmenting first
-# means each command is judged against its own tokens only, and heredoc
-# bodies -- dropped entirely by guard_gh_command_segments -- never enter the
-# match at all.
+# contaminate the verdict: a `rm -rf ~` example quoted inside a genuinely
+# inert heredoc BODY (documentation prose, a pasted issue body) read exactly
+# like a real command, and a short flag from one segment (`gh api ... -f`)
+# could combine with an unrelated `-r` text elsewhere to manufacture a match
+# neither line actually contains. An innocuous trailing `rm -f -- "$f"` then
+# got refused for a danger that was never in the command actually being run
+# (issue #351). Segmenting first means each command is judged against its own
+# tokens only. A heredoc BODY that is genuinely data (quoted delimiter, an
+# inert consumer such as cat/tee/a redirect/gh) is dropped, exactly as before;
+# one that is not -- an unquoted substitution, or any body handed to a shell
+# interpreter regardless of quoting -- is recovered and judged as the command
+# it actually is (issue #364).
 guard_destructive_reason() {
     local command_line=$1 segments segment trimmed reason
     local -a lines=()
 
-    segments=$(guard_gh_command_segments "$command_line")
+    segments=$(guard_destructive_command_segments "$command_line")
     while IFS= read -r segment; do
         trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
         [[ -n $trimmed ]] || continue

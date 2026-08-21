@@ -960,11 +960,14 @@ out=$(pre_input "$repo" "$regression_payload" | "$hooks/pre-tool-use.sh" 2>/dev/
 assert_eq 'allow' "$(decision "$out")" \
     'the exact observed payload shape is permitted end to end'
 
-# A heredoc BODY is data destined for a file, never executed. Documentation
-# prose quoting a destructive example (exactly what this repository's own
-# skill docs and issue bodies do) must not be read as a command to refuse --
-# and must not drag down an unrelated, harmless `rm` elsewhere in the same
-# payload.
+# A heredoc BODY with a QUOTED delimiter, handed to an inert consumer (cat,
+# here, writing to a file), is genuinely data -- it is never expanded and
+# never executed. Documentation prose quoting a destructive example (exactly
+# what this repository's own skill docs and issue bodies do) must not be
+# read as a command to refuse -- and must not drag down an unrelated,
+# harmless `rm` elsewhere in the same payload. This is narrower than "no
+# heredoc BODY is ever a command" -- see the issue #364 fixtures below for
+# the two BODY shapes that DO execute and must still be refused.
 heredoc_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md")\ncat > "$f" <<"BODY"\nNever run `rm -rf ~` or `rm --recursive --force /` on this box.\nBODY\nrm -f -- "$f"'
 out=$(pre_input "$repo" "$heredoc_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
@@ -984,6 +987,44 @@ unrelated_sub_payload=$'branch=$(git branch --show-current)\nrm -f -- "$branch.l
 out=$(pre_input "$repo" "$unrelated_sub_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
     'a substitution elsewhere in the payload does not by itself trigger the guard'
+
+# --- issue #364: not every heredoc BODY is inert -- two classes still execute
+# An UNQUOTED delimiter means the shell expands `$(...)`/`` ` `` inside the
+# BODY while it builds the heredoc, before `cat` (or anything else) ever
+# reads it. The consumer being inert does not matter; the expansion already
+# ran.
+unquoted_sub_heredoc=$'cat <<EOF\nbefore\n$(rm -rf ~)\nafter\nEOF'
+out=$(pre_input "$repo" "$unquoted_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
+
+# A heredoc handed to a shell interpreter is executed as a script, regardless
+# of delimiter quoting -- quoting only controls expansion inside the body,
+# never whether the interpreter runs what it reads.
+shell_interpreter_heredoc=$'bash <<\047EOF\047\necho hi\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$shell_interpreter_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive line in a heredoc BODY handed to bash is refused even when quoted'
+
+unquoted_shell_heredoc=$'bash <<EOF\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$unquoted_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive line in an unquoted heredoc BODY handed to bash is refused'
+
+# `env FOO=bar bash <<EOF` -- the interpreter is still reached through env's
+# own flags and NAME=value pairs.
+env_shell_heredoc=$'env FOO=bar bash <<EOF\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$env_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive body handed to bash via env is still refused'
+
+# A benign substitution inside an unquoted heredoc must still be allowed --
+# this class is about a substitution actually executing something dangerous,
+# not about banning substitution inside heredocs outright.
+unquoted_benign_heredoc=$'cat <<EOF\ncurrent branch: $(git branch --show-current)\nEOF'
+out=$(pre_input "$repo" "$unquoted_benign_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a benign substitution inside an unquoted heredoc BODY is still allowed'
 
 # A destructive command is refused on the SECOND attempt too -- the opposite of
 # the once-per-session rule that governs every other denial here.
