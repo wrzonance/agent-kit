@@ -51,7 +51,8 @@ command_lines() { printf '%s\n' "$1" | grep -E 'agent-run\.sh.*--cmd'; }
 # Fixture B: a monorepo with per-component rundirs, dispatched for a
 # frontend-only write set. Repo-wide gates (no AGENT_RUNDIR_*) always stay;
 # commands whose declared rundir cannot intersect the write set are dropped
-# from the runnable list and named as out of scope instead.
+# from the runnable list and DISCLOSED instead -- named, explained, and
+# explicitly still runnable at the worker's judgement.
 mono_declarations=(
     'AGENT_CMD_VERIFY=tools/verify' 'AGENT_CMD_TEST=tools/test'
     'AGENT_CMD_FRONTEND_TEST=npm test' 'AGENT_RUNDIR_FRONTEND_TEST=frontend'
@@ -76,9 +77,44 @@ assert_not_contains "$frontend_commands" '--cmd backend-test' 'a backend test co
 assert_not_contains "$frontend_commands" '--cmd backend-build' 'a backend build command is absent from a frontend-only dispatch'
 assert_not_contains "$frontend_commands" '--cmd server-test' 'a server test command is absent from a frontend-only dispatch'
 assert_not_contains "$frontend_commands" '--cmd server-build' 'a server build command is absent from a frontend-only dispatch'
-assert_contains "$frontend_prompt" 'Declared but out of scope for this write set' 'the prompt states that a filter was applied'
+assert_contains "$frontend_prompt" 'Also declared, but withheld from the list above' 'the prompt states that a filter was applied'
 assert_contains "$frontend_prompt" 'backend-test (rundir backend)' 'a dropped command is named with its rundir so the worker knows it exists'
 assert_contains "$frontend_prompt" 'server-build (rundir server)' 'every dropped command is named'
+
+# --- regression pin: a rundir is a LOCATION fact, never a coverage boundary --
+# A `shared/**` dispatch drops a suite declared in `frontend/` even when the
+# frontend imports the changed shared code. Withholding the recipe is fine;
+# telling the worker not to run it hides exactly the regression the heuristic
+# cannot see. The disclosure must name the command AND leave the call open.
+assert_not_contains "$frontend_prompt" 'do not run them' \
+    'a withheld command is disclosed, never forbidden'
+assert_contains "$frontend_prompt" 'LOCATION heuristic, not a coverage guarantee' \
+    'the disclosure says a rundir does not bound coverage'
+assert_contains "$frontend_prompt" 'Run one anyway when your change can reach it' \
+    'the worker is told to run a withheld command when the change reaches it'
+assert_contains "$frontend_prompt" 'shared or library code can break a dependent component' \
+    'the disclosure names the shared-code case the heuristic is blindest to'
+
+# The hazard shape needs a rundir-less repo-wide gate present: without one,
+# every command drops and the fail-open fallback already lists them all. WITH
+# one, `verify` survives, the component suites are withheld, and the withheld
+# text is the only thing standing between the worker and an untested dependent.
+shared_dep="$tmp/shared-dep"
+make_repo "$shared_dep" 'AGENT_CMD_VERIFY=tools/verify' \
+    'AGENT_CMD_FRONTEND_TEST=npm test' 'AGENT_RUNDIR_FRONTEND_TEST=frontend' \
+    'AGENT_CMD_BACKEND_TEST=dotnet test' 'AGENT_RUNDIR_BACKEND_TEST=backend'
+mkdir -p "$shared_dep/frontend" "$shared_dep/backend" "$shared_dep/shared"
+shared_prompt=$(compose_lead "$shared_dep" 'shared/**')
+assert_contains "$(command_lines "$shared_prompt")" '--cmd verify' \
+    'the repo-wide gate survives a shared/** dispatch'
+assert_not_contains "$(command_lines "$shared_prompt")" '--cmd frontend-test' \
+    'the component suite is withheld from the runnable list, as the filter intends'
+assert_contains "$shared_prompt" 'frontend-test (rundir frontend)' \
+    'a dependent component suite dropped by a shared/** dispatch is still named'
+assert_not_contains "$shared_prompt" 'do not run them' \
+    'a shared/** dispatch is never told to skip a dependent component suite'
+assert_contains "$shared_prompt" 'Run one anyway when your change can reach it' \
+    'a shared/** dispatch is told the withheld dependent suite remains its call'
 assert_not_contains "$frontend_prompt" '__DECLARED_COMMANDS__' 'the command token never survives composition'
 
 # A write set that reaches every component keeps every command and states no filter.
@@ -87,7 +123,7 @@ wide_commands=$(command_lines "$wide_prompt")
 for name in verify test frontend-test frontend-lint backend-test backend-build server-test server-build; do
     assert_contains "$wide_commands" "--cmd $name" "a repo-wide write set keeps --cmd $name"
 done
-assert_not_contains "$wide_prompt" 'Declared but out of scope' 'no filter statement renders when nothing was dropped'
+assert_not_contains "$wide_prompt" 'withheld from the list above' 'no filter statement renders when nothing was dropped'
 
 # A glob whose literal prefix is a parent of the rundir, or a child of it, intersects.
 parent_prompt=$(compose_lead "$mono" 'backend/api/*.cs' 'docs/*.md')
@@ -117,7 +153,7 @@ assert_contains "$docs_commands" '--cmd backend-test' \
     'the unfiltered fallback keeps every declared command'
 assert_contains "$docs_prompt" 'No declared command rundir intersects this write set' \
     'the fallback states why the list is unfiltered'
-assert_not_contains "$docs_prompt" 'Declared but out of scope' \
+assert_not_contains "$docs_prompt" 'withheld from the list above' \
     'the fallback does not also claim commands were dropped'
 
 # fix-batch carries no write set, so it is never filtered.
@@ -126,7 +162,7 @@ fix_commands=$(command_lines "$fix_prompt")
 for name in verify test frontend-test backend-test server-build; do
     assert_contains "$fix_commands" "--cmd $name" "fix-batch keeps --cmd $name unfiltered"
 done
-assert_not_contains "$fix_prompt" 'Declared but out of scope' 'fix-batch states no filter'
+assert_not_contains "$fix_prompt" 'withheld from the list above' 'fix-batch states no filter'
 
 # --- Compose-isolation prose is conditional ---------------------------------
 compose_phrase='AGENT_COMPOSE_SERIALIZED=1'

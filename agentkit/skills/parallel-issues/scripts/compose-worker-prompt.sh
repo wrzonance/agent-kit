@@ -339,12 +339,16 @@ emit_commands() {
     for name in "${scoped_command_names[@]}"; do
         printf '%s --dir %s --cmd %s\n' "$helper_path" "\"\$worktree\"" "$name"
     done
-    # State the filter rather than silently shortening the list: a worker that
-    # knows a command exists and is out of scope will not go looking for it,
-    # and a root reading the prompt can see what this dispatch withheld.
+    # Disclose the filter; never turn it into a prohibition. A rundir is where
+    # a command RUNS, not what it COVERS: a `shared/**` dispatch legitimately
+    # drops a suite declared in `frontend/`, and that suite is exactly the one
+    # a dependent-breaking change needs. So the worker is told these exist, why
+    # they were withheld, and that the judgement of when to run one anyway is
+    # theirs -- silently shortening the list, or forbidding the list, both hide
+    # a regression the location heuristic cannot see.
     if ((scope_fallback)); then
         printf '\n# No declared command rundir intersects this write set, so every declared\n'
-        printf '# command is listed unfiltered -- run the ones your change can actually affect.\n'
+        printf '# command is listed above, unfiltered. Run the ones your change can affect.\n'
         return 0
     fi
     if ((${#dropped_commands[@]})); then
@@ -352,8 +356,12 @@ emit_commands() {
         for dropped in "${dropped_commands[@]}"; do
             joined+=${joined:+, }$dropped
         done
-        printf '\n# Declared but out of scope for this write set (their declared rundir cannot\n'
-        printf '# contain a file this dispatch may write) -- do not run them: %s\n' "$joined"
+        printf '\n# Also declared, but withheld from the list above: %s\n' "$joined"
+        printf '# Withheld because that declared rundir cannot contain a file this dispatch\n'
+        printf '# writes. That is a LOCATION heuristic, not a coverage guarantee: a change to\n'
+        printf '# shared or library code can break a dependent component whose suite is\n'
+        printf '# declared elsewhere. Run one anyway when your change can reach it -- that\n'
+        printf '# call is yours, and these commands are available through the same wrapper.\n'
     fi
 }
 
