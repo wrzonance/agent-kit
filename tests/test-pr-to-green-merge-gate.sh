@@ -46,6 +46,24 @@ repos/owner/repo/commits/*/check-runs*)
         printf '{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"completed"}]}\n'
     fi
     ;;
+repos/owner/repo/code-scanning/default-setup)
+    printf '{"state":"%s"}\n' "\${CS_DEFAULT_SETUP_STATE:-configured}"
+    ;;
+repos/owner/repo/code-scanning/alerts*)
+    case \${CS_ALERTS_PROBE:-ok} in
+    ok)
+        printf '[]\n'
+        ;;
+    definitive-404)
+        printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository","status":"404"}\n'
+        exit 1
+        ;;
+    forbidden-403)
+        printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+        exit 1
+        ;;
+    esac
+    ;;
 *) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
 esac
 EOF
@@ -252,5 +270,57 @@ set -e
 assert_eq '1' "$rc" 'a full 40-char digest SHA that mismatches the current head is caught as stale evidence'
 assert_contains "$out" 'blocked reason=pr-state digest predates the current head' \
     'the full-SHA mismatch is caught by the same staleness check'
+
+# --- issue #383: code-scanning not-configured + definitive-404 corroboration
+# Two independent positive signals -- default-setup == not-configured AND a
+# definitive 404 "no analysis found" from the alerts endpoint -- are required
+# before "no code-scanning evidence" is read as "code scanning is unused"
+# rather than "evidence is unreadable". All five acceptance-criteria cases:
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+out=$(CS_RUNS_JSON='{"check_runs":[]}' CS_DEFAULT_SETUP_STATE=not-configured \
+    CS_ALERTS_PROBE=definitive-404 run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'not-configured default-setup corroborated by a definitive 404 passes the code-scanning portion of the gate'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_RUNS_JSON='{"check_runs":[]}' CS_DEFAULT_SETUP_STATE=not-configured \
+    CS_ALERTS_PROBE=forbidden-403 run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'not-configured default-setup alone, without the definitive 404 corroboration, still blocks the merge'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'a 403 on the alerts probe is never treated as corroborating absence'
+assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
+    'the digest n/a case still blocks too, since neither probe corroborated non-use'
+
+good_digest
+set +e
+out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok \
+    CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a configured repository with a still-pending analysis keeps blocking, unaffected by the corroboration'
+assert_contains "$out" 'blocked reason=code-scanning analysis has not completed for the current head' \
+    'the pending-analysis block is unchanged'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning open=1/' "$tmp/digest.txt"
+set +e
+out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a configured repository with an open alert keeps blocking, unaffected by the corroboration'
+assert_contains "$out" 'blocked reason=an open code-scanning alert is attributable to this PR' \
+    'the open-alert block is unchanged'
+
+good_digest
+out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a configured repository with zero open alerts keeps passing, unaffected by the corroboration'
 
 finish
