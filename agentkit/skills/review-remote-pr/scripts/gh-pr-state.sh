@@ -11,7 +11,7 @@
 # deciding settledness: it can sit pending under a rate limit and never settle.
 #
 # Digest lines (a line is omitted only when it does not apply):
-#   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234
+#   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
 #   base: ref=main behind=1 stale=yes
 #   ci=3/3 green pending=0 failing=0
 #   provider: coderabbit=reviewed
@@ -640,11 +640,20 @@ print_next_lines() {
 
 print_digest() {
     local alerts provider
+    # The full head SHA, never a 7-character abbreviation: pr-to-green's
+    # merge-gate.sh consumes this field as merge authorization evidence,
+    # binding CI/thread/nitpick/code-scanning evidence to the head being
+    # merged. A short prefix can collide across commits (28 bits of entropy),
+    # so it cannot prove the evidence was captured for THIS commit -- only
+    # for some commit sharing those characters. Every other identity in that
+    # decision path (merge-gate.sh --head-sha, the auto-merge authorization
+    # record, merge-pr.sh's merge call) is already full-width; this is the
+    # one field that must match.
     jq -r '"pr=" + (.number | tostring)
            + " draft=" + (.isDraft | tostring)
            + " mergeable=" + (.mergeable // "UNKNOWN")
            + " head=" + (.headRefName // "?")
-           + " sha=" + ((.headRefOid // "") | .[0:7])' <"$WORK_DIR/pr.json"
+           + " sha=" + (.headRefOid // "")' <"$WORK_DIR/pr.json"
     print_base_line
     print_ci_line
     provider=$(provider_state)

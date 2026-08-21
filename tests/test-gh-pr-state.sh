@@ -40,8 +40,10 @@ chmod +x "$tmp/gh"
 
 output=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 14 --repo owner/repo)
-assert_contains "$output" 'pr=14 draft=true mergeable=MERGEABLE head=feat/test sha=abcdef0' \
+assert_contains "$output" 'pr=14 draft=true mergeable=MERGEABLE head=feat/test sha=abcdef0123456789' \
     'digest reports pull-request metadata'
+assert_not_contains "$output" $'sha=abcdef0\n' \
+    'the digest never truncates the head SHA to a 7-character prefix'
 assert_contains "$output" 'ci=1/3 failing pending=1 failing=1' \
     'digest reports check counts'
 assert_contains "$output" 'threads: coderabbit=1 unresolved  code-quality=0 open  human=2  generic=2' \
@@ -353,7 +355,7 @@ chmod +x "$tmp/case-graphql-dead/gh"
 graphql_dead_err="$tmp/graphql-dead.err"
 graphql_dead_output=$(PATH="$tmp/case-graphql-dead:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 404 --repo owner/repo 2>"$graphql_dead_err")
-assert_contains "$graphql_dead_output" 'pr=404 draft=true mergeable=MERGEABLE head=feat/rest sha=2222222' \
+assert_contains "$graphql_dead_output" 'pr=404 draft=true mergeable=MERGEABLE head=feat/rest sha=2222222222' \
     'REST metadata still produces a digest when GraphQL is depleted'
 assert_contains "$graphql_dead_output" 'ci=1/1 green pending=0 failing=0' \
     'REST check runs still produce CI counts when GraphQL is depleted'
