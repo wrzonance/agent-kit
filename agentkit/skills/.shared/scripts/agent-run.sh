@@ -451,6 +451,23 @@ compose_argv() {
     return 1
 }
 
+# Positive evidence that the repository itself uses Compose, independent of
+# anything a command happened to print. Mirrors the filename shapes
+# compose_project_hardcodes recognises, but only asks whether one exists.
+compose_repo_has_compose_file() {
+    local rel
+    while IFS= read -r -d '' rel; do
+        case ${rel##*/} in
+            compose.yml | compose.yaml | compose-*.yml | compose-*.yaml | \
+            docker-compose.yml | docker-compose.yaml | docker-compose-*.yml | \
+            docker-compose-*.yaml)
+                return 0
+                ;;
+        esac
+    done < <(git -C "$git_top" ls-files --cached --others --exclude-standard -z 2>/dev/null)
+    return 1
+}
+
 # Print repository-controlled Compose project names as path:value findings.
 # This is deliberately a narrow filename/shape scan: arbitrary YAML `name:`
 # fields and unrelated environment variables are not Compose evidence.
@@ -890,13 +907,18 @@ print_notes() {
 }
 
 # Compose's dependency-start messages are often the only durable signal that
-# concurrent worktrees contended for a container, port, or network. Require a
-# Compose/dependency context plus a collision/startup signature so ordinary
-# assertion and application failures remain ordinary command failures.
+# concurrent worktrees contended for a container, port, or network. Require
+# POSITIVE evidence that the runner itself contended for a Compose resource --
+# the declared command's resolved argv is a Compose invocation (compose_argv),
+# or the repository actually contains a Compose file -- plus a collision/
+# startup signature, so ordinary assertion and application failures remain
+# ordinary command failures. Matching signature 1 against the log text alone
+# was satisfied by any line that merely *mentions* Compose -- including a test
+# suite's own passing test names -- which reduced the check to signature 2
+# alone; a repository with no Compose file must never classify.
 compose_dependency_start_collision() {
     local log=$1
-    grep -Eiq '(^|[^[:alnum:]_-])docker([[:space:]]+|-)compose([^[:alnum:]_-]|$)' \
-        "$log" 2>/dev/null || return 1
+    { compose_argv || compose_repo_has_compose_file; } || return 1
     grep -Eiq \
         'dependency[[:space:][:punct:]]+failed to start|dependency[^[:cntrl:]]*(already in use|already exists|port is already allocated|conflict)|container name[^[:cntrl:]]*already in use|port is already allocated|network[^[:cntrl:]]*already exists|Error response from daemon:[[:space:]]*Conflict|driver failed programming external connectivity' \
         "$log" 2>/dev/null
