@@ -1,8 +1,10 @@
 tests/tmp/
 plugin/
 
-# agentkit: .agent/ is per-machine working state; onboarding regenerates declarations
-.agent/*
+# agentkit: .agent/ is per-machine working state; onboarding regenerates
+# declarations. Unanchored (**/) so a nested .agent/ -- e.g. one a hook wrote
+# from a cwd inside agentkit/skills/ -- can never be staged either (issue #370).
+**/.agent/*
 .worktrees/
 .claude/
 .codex/

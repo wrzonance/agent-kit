@@ -2086,4 +2086,54 @@ assert_hook_output "$post_out_369" post-tool-use \
 assert_eq yes "$( [[ ! -e $guard_log_post_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
     'PostToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
 
+# --- regression: guard_log_error must resolve the repository state root,
+# never $PWD or an otherwise-inherited cwd, and must never leave a stray log
+# nested under a skills tree (issue #370). guard_log_error used to resolve
+# ${GUARD_LOG_ROOT:-$PWD}, and GUARD_LOG_ROOT is assigned nowhere in the
+# repository -- so $PWD, the hook PROCESS's inherited working directory, was
+# the only behaviour. An agent that had cd'd into agentkit/skills/ left a hook
+# process inheriting that directory, and the stray log it wrote there was
+# neither gitignored (root .gitignore's `.agent/*` is anchored to the
+# repository root) nor excluded from the plugin build, which copies the
+# skills tree wholesale.
+repo_370=$(make_repo)
+skills_like_370="$repo_370/agentkit/skills/example-skill"
+mkdir -p "$skills_like_370"
+
+# Unit-level: with roots resolved from a cwd inside a skills-tree-shaped
+# directory -- exactly what guard_resolve_roots does early in each hook --
+# guard_log_error must write to the resolved repository state root, never
+# nested under the skills-tree cwd itself.
+(
+    source "$hooks/lib/guard-lib.sh"
+    # shellcheck disable=SC2034  # read by guard_log_error, sourced from a
+    # dynamic path shellcheck cannot follow
+    GUARD_HOOK_NAME=test-370
+    guard_resolve_roots "$skills_like_370" ''
+    guard_log_error 'unit-370'
+) > /dev/null 2>&1
+
+assert_eq yes "$( [[ ! -e $skills_like_370/.agent ]] && printf yes || printf no )" \
+    'guard_log_error with a cwd inside the skills tree writes no .agent/ there'
+assert_eq yes "$( [[ ! -e $repo_370/agentkit/skills/.agent ]] && printf yes || printf no )" \
+    'nor at the skills tree root'
+assert_eq yes "$( [[ -f $repo_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'the log instead lands at the resolved repository state root'
+assert_contains "$(cat "$repo_370/.agent/logs/hook-errors.jsonl" 2> /dev/null)" 'unit-370' \
+    'and carries the reported status'
+
+# When roots were never resolved at all -- the ERR trap firing before
+# guard_resolve_roots has run -- there is no known location to write to.
+# guard_log_error must write nothing rather than fall back to $PWD, even when
+# $PWD happens to already contain a real .agent/ directory of its own.
+unresolved_370=$(make_repo)
+(
+    cd "$unresolved_370" || exit 1
+    source "$hooks/lib/guard-lib.sh"
+    guard_log_error 'unresolved-370'
+) > /dev/null 2>&1
+# shellcheck disable=SC2016  # $PWD is the literal text being matched, not expanded
+assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
+
 finish
