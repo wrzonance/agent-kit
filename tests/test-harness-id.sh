@@ -130,10 +130,17 @@ opencode_line=$(run_clean env OPENCODE=1 bash "$script")
 printf '%s\n' "harness= $opencode_line" > "$fixture_repo/.agent/env-contract.txt"
 chmod 600 "$fixture_repo/.agent/env-contract.txt"
 
-composed=$(bash "$contract_read" --repo-root "$fixture_repo" --get harness.trailer \
+composed=$(bash "$contract_read" --repo-root "$fixture_repo" --get harness.identity \
     --worker-model 'wrzcluster/qwen3-coder' 2> /dev/null)
 assert_eq 'OpenCode wrzcluster/qwen3-coder <noreply@opencode.ai>' "$composed" \
-    'contract-read.sh composes the OpenCode trailer with a provider/model-id worker model, slash intact'
+    'contract-read.sh composes the OpenCode identity with a provider/model-id worker model, slash intact'
+
+# harness.trailer composes the SAME identity into a complete trailer line
+# directly (issue #345) -- exercise that path too, not just harness.identity.
+trailer_composed=$(bash "$contract_read" --repo-root "$fixture_repo" --get harness.trailer \
+    --worker-model 'wrzcluster/qwen3-coder' 2> /dev/null)
+assert_eq 'Co-Authored-By: OpenCode wrzcluster/qwen3-coder <noreply@opencode.ai>' "$trailer_composed" \
+    'contract-read.sh harness.trailer composes a full Co-Authored-By line, slash intact'
 
 # worktree-commit.sh's own validate_trailer_line (agentkit/skills/.shared/
 # scripts/worktree-commit.sh) accepts any "Key: value" line where the key is

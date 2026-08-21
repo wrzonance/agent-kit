@@ -282,12 +282,12 @@ validate_trailer_line() {
     [[ -n "$value" ]] || die 1 "--trailer has an empty value after '$key:': $line"
 }
 
-# The environment contract publishes a bare IDENTITY (harness= ... trailer=
-# "Claude <noreply@anthropic.com>"), not a trailer LINE -- nothing bridges the
-# two today, which is exactly what let three independently correct-looking
-# callers each produce a differently broken commit. Own the bridge here, in
-# the one place that also validates and verifies it, instead of asking every
-# caller to remember the "Co-Authored-By:" prefix.
+# contract-read.sh's harness.trailer key composes a complete, git-parseable
+# "Co-Authored-By: <identity>" line -- it is the one key that never returns a
+# bare identity (see issue #345: a field literally named "trailer" that held
+# a keyless identity was the trap that let a caller pass it straight to
+# --trailer and silently drop attribution). This helper still validates and
+# post-commit-verifies whatever it gets back, rather than trusting the name.
 contract_trailer_value() {
     local repo_root value rc=0
     repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die 1 \
@@ -305,7 +305,10 @@ contract_trailer_value() {
 resolve_trailers() {
     local line
     if (( ${#TRAILERS[@]} == 0 )); then
-        TRAILERS+=("Co-Authored-By: $(contract_trailer_value)")
+        # contract_trailer_value already returns a complete "Co-Authored-By: ..."
+        # line (contract-read.sh's harness.trailer composes it) -- do not
+        # prefix it again here.
+        TRAILERS+=("$(contract_trailer_value)")
     fi
     for line in "${TRAILERS[@]}"; do
         validate_trailer_line "$line"

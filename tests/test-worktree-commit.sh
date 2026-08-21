@@ -581,4 +581,29 @@ assert_eq '0' "$separators_rc" \
 assert_contains "$separators_out" 'committed' \
     'verification still reports success under a nonstandard trailer.separators config'
 
+# --- Issue #345: the documented worker path (contract-read.sh's harness.trailer
+# feeding worktree-commit.sh's --trailer directly, per worker-prompts.md) must
+# produce a commit whose trailers actually parse and name the worker model --
+# this is the end-to-end shape of the original defect, not just a unit check
+# of either script in isolation.
+contract_read="$root/agentkit/skills/.shared/scripts/contract-read.sh"
+e2e_repo="$tmp/trailer-e2e-repo"
+new_repo "$e2e_repo"
+write_contract "$e2e_repo" claude 'Claude <noreply@anthropic.com>'
+printf 'change\n' > "$e2e_repo/change.txt"
+e2e_rc=0
+worker_attribution=$(cd "$e2e_repo" && "$contract_read" --repo-root "$e2e_repo" \
+    --get harness.trailer --worker-model claude-sonnet-5 2>&1) || e2e_rc=$?
+assert_eq '0' "$e2e_rc" 'contract-read.sh resolves harness.trailer for the worker-model-bearing path'
+e2e_commit_rc=0
+e2e_commit_out=$(cd "$e2e_repo" && "$script" --message 'feat: worker attribution path' \
+    --trailer "$worker_attribution" -- change.txt 2>&1) || e2e_commit_rc=$?
+assert_eq '0' "$e2e_commit_rc" \
+    'feeding harness.trailer straight into --trailer (the documented worker path) commits cleanly'
+assert_contains "$e2e_commit_out" 'committed' \
+    'the documented worker path reports the one-line success record'
+e2e_trailers=$(git -C "$e2e_repo" log -1 --format='%(trailers:only=true,unfold=true)')
+assert_eq 'Co-Authored-By: Claude claude-sonnet-5 <noreply@anthropic.com>' "$e2e_trailers" \
+    'the documented worker path produces a non-empty, git-parseable trailer naming the worker model'
+
 finish
