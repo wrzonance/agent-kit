@@ -327,7 +327,19 @@ guard_resolve_roots() {
     # Broad grep over the whole command mistakes grep context and commit
     # message reuse flags for directory-bearing -C options.
     candidate=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
-    [[ -d $candidate ]] && guard_add_root "$candidate"
+    # A candidate that does not exist is a normal "no optional extra root"
+    # outcome, not a failure -- but as a bare `[[ ]] && cmd` this was also the
+    # FUNCTION's own return status. Both hooks call guard_resolve_roots as a
+    # bare simple command under `trap ... ERR`, so that stray 1 fired the trap
+    # and fell straight into allow/emit_empty before any guard had run,
+    # skipping every downstream check (issue #369). An `if` with no `else`
+    # returns 0 regardless of the test, which is what this function's callers
+    # need: resolving roots always "succeeds", whether or not this particular
+    # candidate turned out to exist.
+    if [[ -d $candidate ]]; then
+        guard_add_root "$candidate"
+    fi
+    return 0
 }
 
 # Resolve only the hook's trusted working directory and its current repository.
@@ -1727,8 +1739,31 @@ guard_gh_inline_body_reason() {
 # a SIGPIPE exit of 141, a pipefail death before the error could print -- looked
 # from outside exactly like a hook that had nothing to say. One line per
 # incident, next to the logs the runner already writes.
+#
+# The destination used to be ${GUARD_LOG_ROOT:-$PWD}, and GUARD_LOG_ROOT is
+# assigned nowhere in the repository -- so $PWD, the hook PROCESS's inherited
+# working directory, was the only behaviour. That is not the same thing as the
+# TOOL CALL's cwd: an agent cd'd into agentkit/skills/ leaves a hook process
+# inheriting that directory, and the stray log it wrote there was neither
+# gitignored (the root .gitignore's `.agent/*` is anchored to the repository
+# root) nor excluded from the plugin build, which copies the skills tree
+# wholesale (issue #370).
+#
+# guard_state_root already answers "where does this session's state live":
+# the first candidate in `roots` -- populated from the payload's .cwd by
+# guard_resolve_roots, resolved through `git rev-parse --show-toplevel` -- that
+# has an existing .agent/. That is always the real repository root, never a
+# nested subdirectory, so this reuses it exactly the way pre-tool-use.sh
+# already does for protect_root. If the ERR trap fires before roots exist yet
+# (very early in a hook, before guard_resolve_roots has run), guard_state_root
+# has nothing to resolve and returns empty -- an unknown location, so this
+# writes nothing rather than guessing. GUARD_LOG_ROOT remains an explicit
+# override for callers (tests) that want to pin the destination.
 guard_log_error() {
-    local status=${1:-?} dir="${GUARD_LOG_ROOT:-$PWD}/.agent/logs"
+    local status=${1:-?} root dir
+    root=${GUARD_LOG_ROOT:-$(guard_state_root)}
+    [[ -n $root ]] || return 0
+    dir="$root/.agent/logs"
     mkdir -p "$dir" 2> /dev/null || return 0
     printf '{"hook":"%s","status":"%s","line":"%s"}\n' \
         "${GUARD_HOOK_NAME:-unknown}" "$status" "${BASH_LINENO[0]:-unknown}" \

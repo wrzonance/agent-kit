@@ -131,8 +131,10 @@ user direction rather than silently substituting another external reviewer.
 The executable record is the consent boundary, not a replacement for the disclosure and decision.
 Use `scripts/consent-record.sh` for disclosure, grant, and check. Every review launcher derives
 the payload again from its own repository, PR, and diff arguments and refuses to start without a
-successful check against this state record. A missing, malformed, unwritable, mismatched, or
-symlinked record fails closed.
+successful check against this state record. A missing, malformed, unwritable, mismatched,
+symlinked, or empty (or whitespace-only) diff record fails closed -- `payload` refuses to mint an
+identity for an empty diff itself, the same emptiness check the launcher already enforces before
+it ever calls this helper.
 
 ## Availability and authoritative helpers
 
