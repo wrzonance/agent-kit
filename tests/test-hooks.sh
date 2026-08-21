@@ -927,6 +927,192 @@ for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
     assert_eq 'allow' "$(decision "$out")" "allows the ordinary form: $safe"
 done
 
+# --- issue #351: a single-file `rm` is not a recursive root delete ---------
+# `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
+# there is. No `-r`/`-R` appears anywhere, so it must never be read as one.
+# shellcheck disable=SC2016  # the UNEXPANDED $f is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+for single_file in 'rm -f -- "$f"' 'rm -f /some/single/file' \
+    'rm -f -- /some/single/file'; do
+    out=$(pre_input "$repo" "$single_file" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a single-file rm is not recursive: $single_file"
+done
+
+# The genuinely destructive spellings must still be refused, in every flag
+# arrangement, so the fix above cannot be a blanket loosening of the guard.
+# shellcheck disable=SC2016  # the UNEXPANDED $HOME is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+for still_dangerous in 'rm -rf ~' 'rm -rf /' 'rm -R --force $HOME' \
+    'rm -r -f ~' 'rm --recursive --force /'; do
+    out=$(pre_input "$repo" "$still_dangerous" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "still refuses the genuinely destructive form: $still_dangerous"
+    assert_contains "$out" 'recursive force-remove' "and names it recursive: $still_dangerous"
+done
+
+# The exact observed regression shape: a multi-line `bash -c` payload whose
+# LAST line is an ordinary temp-file cleanup, with an unrelated `-f` short
+# flag earlier (gh api's own `-f`/`-F` field flags) and a `$(mktemp ...)`
+# substitution feeding the path. None of that may contaminate the verdict on
+# the final `rm` line -- the payload's real side effect (filing the issue)
+# must not be silently dropped because of a line that never ran destructively.
+regression_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md"); chmod 600 "$f"\ngh api repos/OWNER/REPO/issues -f title="x" -F body=@"$f" --jq ".number, .html_url"\nrm -f -- "$f"'
+out=$(pre_input "$repo" "$regression_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'the exact observed payload shape is permitted end to end'
+
+# A heredoc BODY with a QUOTED delimiter, handed to an inert consumer (cat,
+# here, writing to a file), is genuinely data -- it is never expanded and
+# never executed. Documentation prose quoting a destructive example (exactly
+# what this repository's own skill docs and issue bodies do) must not be
+# read as a command to refuse -- and must not drag down an unrelated,
+# harmless `rm` elsewhere in the same payload. This is narrower than "no
+# heredoc BODY is ever a command" -- see the issue #364 fixtures below for
+# the two BODY shapes that DO execute and must still be refused.
+heredoc_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md")\ncat > "$f" <<"BODY"\nNever run `rm -rf ~` or `rm --recursive --force /` on this box.\nBODY\nrm -f -- "$f"'
+out=$(pre_input "$repo" "$heredoc_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a destructive example quoted inside a heredoc BODY is data, not a command'
+
+# A refusal on a multi-line payload must name the offending line, not refuse
+# the payload wholesale -- so the agent can re-issue the rest deliberately.
+named_line_payload=$'echo starting cleanup\nrm -rf ~\necho done'
+out=$(pre_input "$repo" "$named_line_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a genuinely destructive line in a multi-line payload is still refused'
+assert_contains "$out" 'rm -rf ~' 'and the refusal names the offending line'
+
+# A substitution in an unrelated part of the payload must not, by itself,
+# trigger the guard -- flattening is for finding a HIDDEN flag on the SAME
+# command, not for treating every substitution anywhere as suspicious.
+unrelated_sub_payload=$'branch=$(git branch --show-current)\nrm -f -- "$branch.log"'
+out=$(pre_input "$repo" "$unrelated_sub_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a substitution elsewhere in the payload does not by itself trigger the guard'
+
+# --- issue #364: not every heredoc BODY is inert -- two classes still execute
+# An UNQUOTED delimiter means the shell expands `$(...)`/`` ` `` inside the
+# BODY while it builds the heredoc, before `cat` (or anything else) ever
+# reads it. The consumer being inert does not matter; the expansion already
+# ran.
+unquoted_sub_heredoc=$'cat <<EOF\nbefore\n$(rm -rf ~)\nafter\nEOF'
+out=$(pre_input "$repo" "$unquoted_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
+
+# Backticks are the older substitution syntax and expand in an UNQUOTED
+# heredoc exactly like $(...) -- a guard that only extracted the $(...) form
+# would be bypassed by anyone who typed the other one. \140 is the backtick's
+# octal escape, so the fixture never types a literal backtick next to a
+# destructive command in this file.
+backtick_sub_heredoc=$'cat <<EOF\nbefore\n\140rm -rf ~\140\nafter\nEOF'
+out=$(pre_input "$repo" "$backtick_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
+
+# A heredoc handed to a shell interpreter is executed as a script, regardless
+# of delimiter quoting -- quoting only controls expansion inside the body,
+# never whether the interpreter runs what it reads.
+shell_interpreter_heredoc=$'bash <<\047EOF\047\necho hi\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$shell_interpreter_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive line in a heredoc BODY handed to bash is refused even when quoted'
+
+unquoted_shell_heredoc=$'bash <<EOF\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$unquoted_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive line in an unquoted heredoc BODY handed to bash is refused'
+
+# `env FOO=bar bash <<EOF` -- the interpreter is still reached through env's
+# own flags and NAME=value pairs.
+env_shell_heredoc=$'env FOO=bar bash <<EOF\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$env_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive body handed to bash via env is still refused'
+
+# A backtick-wrapped destructive command as its own line inside a shell-
+# interpreter heredoc BODY -- verified rather than assumed, because the
+# unquoted-heredoc extraction and the shell-interpreter path are different
+# code paths and one covering backticks does not imply the other does.
+backtick_shell_heredoc=$'bash <<EOF\n\140rm -rf ~\140\nEOF'
+out=$(pre_input "$repo" "$backtick_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick-wrapped destructive line handed to bash is refused'
+
+# A benign substitution inside an unquoted heredoc must still be allowed --
+# this class is about a substitution actually executing something dangerous,
+# not about banning substitution inside heredocs outright.
+unquoted_benign_heredoc=$'cat <<EOF\ncurrent branch: $(git branch --show-current)\nEOF'
+out=$(pre_input "$repo" "$unquoted_benign_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a benign substitution inside an unquoted heredoc BODY is still allowed'
+
+# --- issue #364 review round 2: execution wrappers must not hide the
+# interpreter from guard_heredoc_consumer_is_shell -----------------------
+# The consumer-resolution walk skipped `env`'s own flags/NAME=value pairs to
+# reach the interpreter it execs, but stopped there -- any OTHER wrapper
+# standing in front of the interpreter (sudo, command, nohup, timeout, nice,
+# ionice, stdbuf, doas, setsid, xargs) made the function report "not a
+# shell", so a QUOTED heredoc body handed to `sudo bash` or `timeout 5 bash`
+# was dropped as inert data and never inspected. Assembled with string
+# concatenation, not typed literally, so this file's own text is never a
+# destructive payload (see the harness note at the top of this suite's PR).
+destructive_body='rm -r''f ~'
+for wrapper in 'sudo bash' 'command bash' 'nohup sh' 'timeout 5 bash' \
+    'sudo -u root bash' 'timeout -s KILL 5 bash' 'nice -n 5 bash' \
+    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash'; do
+    wrapped_heredoc=$(printf "%s <<'EOF'\n%s\nEOF" "$wrapper" "$destructive_body")
+    out=$(pre_input "$repo" "$wrapped_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a destructive body in a quoted heredoc handed to '$wrapper' is refused"
+done
+
+# The fix must not turn every wrapper into a shell by default -- a quoted
+# heredoc to a genuinely inert consumer reached through a wrapper (here,
+# `sudo cat`, merely quoting a destructive example as prose) stays data.
+inert_wrapper_note="Never run ${destructive_body} on this box."
+inert_wrapper_heredoc=$(printf "sudo cat > /tmp/out.txt <<'EOF'\n%s\nEOF" "$inert_wrapper_note")
+out=$(pre_input "$repo" "$inert_wrapper_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted heredoc to an inert consumer reached through a wrapper (sudo cat) stays allowed'
+
+# --- issue #364 review round 2: the heredoc-owner segment must be flushed
+# when the heredoc closes, not left to merge with whatever text follows ----
+# guard_destructive_command_segments captures the owner line into $segment at
+# the `<<` opener, but the end-of-line flush is skipped while `heredoc` is
+# set, and the terminator-line branch closes the heredoc without ever
+# flushing that pending segment. The function's CONTRACT is one segment per
+# command; nothing here re-splits on newlines except by accident.
+#
+# A `while read -r` loop over the segmenter's OWN OUTPUT cannot detect this:
+# newline-delimited text is indistinguishable whether it came from one
+# printf call with an embedded newline or two separate calls, so the merge
+# with a FOLLOWING command produces byte-identical stdout either way (proven
+# by direct comparison against the pre-fix code before this test was
+# written). What genuinely differs is when the heredoc is the LAST construct
+# in the payload, with no following command to accidentally carry the
+# pending segment out via its own flush -- there, the unflushed segment is
+# not merged, it is silently DROPPED. Calling the segmenter directly (not
+# through any newline-based re-split) and counting its emitted array is what
+# actually observes the flush.
+segment_flush_owner="rm -r""f ~ <<'EOF'"
+segment_flush_payload=$'rm -rf ~ <<\'EOF\'\nnotes\nEOF'
+mapfile -t segment_flush_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$segment_flush_payload"
+)
+assert_eq '1' "${#segment_flush_segs[@]}" \
+    'the heredoc-owner segment is emitted even when the heredoc is the last construct in the payload'
+assert_eq "$segment_flush_owner" "${segment_flush_segs[0]-}" \
+    'and the emitted segment is exactly the owner line, not merged with or missing the heredoc opener'
+
+# Same shape at the hook level: an owner line that is itself destructive,
+# with nothing after the heredoc closes, must still be refused -- before this
+# fix the unflushed segment was dropped entirely, so guard_destructive_reason
+# saw zero segments and allowed it.
+segment_flush_hook_payload=$(printf "%s <<'EOF'\nnotes\nEOF" "rm -r""f ~")
+out=$(pre_input "$repo" "$segment_flush_hook_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive heredoc-owner line with nothing following the heredoc close is still refused'
+
 # A destructive command is refused on the SECOND attempt too -- the opposite of
 # the once-per-session rule that governs every other denial here.
 same_sid=$(fresh_sid)
