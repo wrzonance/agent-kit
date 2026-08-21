@@ -998,6 +998,16 @@ out=$(pre_input "$repo" "$unquoted_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/de
 assert_eq 'deny' "$(decision "$out")" \
     'a command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
 
+# Backticks are the older substitution syntax and expand in an UNQUOTED
+# heredoc exactly like $(...) -- a guard that only extracted the $(...) form
+# would be bypassed by anyone who typed the other one. \140 is the backtick's
+# octal escape, so the fixture never types a literal backtick next to a
+# destructive command in this file.
+backtick_sub_heredoc=$'cat <<EOF\nbefore\n\140rm -rf ~\140\nafter\nEOF'
+out=$(pre_input "$repo" "$backtick_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
+
 # A heredoc handed to a shell interpreter is executed as a script, regardless
 # of delimiter quoting -- quoting only controls expansion inside the body,
 # never whether the interpreter runs what it reads.
@@ -1017,6 +1027,15 @@ env_shell_heredoc=$'env FOO=bar bash <<EOF\nrm -rf ~\nEOF'
 out=$(pre_input "$repo" "$env_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a destructive body handed to bash via env is still refused'
+
+# A backtick-wrapped destructive command as its own line inside a shell-
+# interpreter heredoc BODY -- verified rather than assumed, because the
+# unquoted-heredoc extraction and the shell-interpreter path are different
+# code paths and one covering backticks does not imply the other does.
+backtick_shell_heredoc=$'bash <<EOF\n\140rm -rf ~\140\nEOF'
+out=$(pre_input "$repo" "$backtick_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick-wrapped destructive line handed to bash is refused'
 
 # A benign substitution inside an unquoted heredoc must still be allowed --
 # this class is about a substitution actually executing something dangerous,

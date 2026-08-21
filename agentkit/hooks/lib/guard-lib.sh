@@ -1028,7 +1028,16 @@ guard_heredoc_substitutions() {
         if [[ ${body:i:1} == '`' ]]; then
             start=$((i + 1))
             i=$start
-            while ((i < length && ${body:i:1} != '`')); do
+            # Backticks do not nest the way $( ) does: the first UNESCAPED
+            # backtick closes the span. A literal backtick inside one is
+            # written `\`` -- the backslash is consumed and does not end the
+            # scan, matching how the shell itself reads a backtick span.
+            while ((i < length)); do
+                if [[ ${body:i:1} == \\ ]]; then
+                    i=$((i + 2))
+                    continue
+                fi
+                [[ ${body:i:1} == '`' ]] && break
                 ((i++))
             done
             inner=${body:start:i-start}
