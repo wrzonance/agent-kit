@@ -17,8 +17,11 @@ test('tally-08: src/exporter.js exports a pure exportState', () => {
   assert.equal(obs.exportStateFnType, 'function', 'exportState is exported as a function');
   assert.equal(obs.filename, 'tally-export.json', 'filename is tally-export.json');
   assert.equal(obs.mimeType, 'application/json', 'mimeType is application/json');
-  assert.ok(obs.contentItemsMatch, 'content JSON.parses to items matching state');
-  assert.ok(obs.contentNextIdMatch, 'content JSON.parses to nextId matching state');
+  // deepEqual, not a JSON.stringify() string comparison (PR #363 review
+  // finding 4) -- key insertion order must not be able to fail a
+  // compliant target.
+  assert.deepEqual(obs.contentItems, obs.stateItems, 'content JSON.parses to items matching state');
+  assert.deepEqual(obs.contentNextId, obs.stateNextId, 'content JSON.parses to nextId matching state');
 });
 
 test('tally-08: node test/exporter.smoke.mjs exits 0 and prints a PASS line', () => {

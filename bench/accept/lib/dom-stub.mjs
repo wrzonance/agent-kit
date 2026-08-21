@@ -30,7 +30,17 @@ function parseAttrs(raw) {
   return attrs;
 }
 
-function tokenize(html) {
+// Markup that only appears inside an HTML comment was never rendered --
+// a target returning `<!-- <p class="tally-empty">...</p> -->` must not
+// get acceptance credit for it. Strip comments before generic tag
+// tokenization ever sees the string, so nothing inside one can be parsed
+// into an element or survive as text content.
+function stripComments(html) {
+  return html.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+function tokenize(rawHtml) {
+  const html = stripComments(rawHtml);
   const tokens = [];
   const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^<>]*?)?)\s*(\/?)>/g;
   let last = 0;

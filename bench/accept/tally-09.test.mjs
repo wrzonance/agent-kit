@@ -15,7 +15,14 @@ const obs = await runScenario('tally-09');
 
 test('tally-09: src/importer.js exports a pure, never-throwing parseImport', () => {
   assert.equal(obs.parseImportFnType, 'function', 'parseImport is exported as a function');
-  assert.ok(obs.okResultMatches, 'valid JSON parses to ok:true with the expected state');
+  // deepEqual, not a JSON.stringify() string comparison (PR #363 review
+  // finding 4) -- key insertion order must not be able to fail a
+  // compliant target.
+  assert.deepEqual(
+    obs.ok,
+    { ok: true, state: { items: [], nextId: 1 } },
+    'valid JSON parses to ok:true with the expected state',
+  );
 
   assert.ok(!obs.badJsonThrew, 'invalid JSON does not throw');
   assert.equal(obs.badJsonOk, false, 'invalid JSON returns ok:false');

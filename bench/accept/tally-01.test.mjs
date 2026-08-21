@@ -13,6 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runScenario } from './lib/isolated.mjs';
 import { assertBaseSmokeOk } from './lib/smoke.mjs';
+import { parseFragment, query, textContent } from './lib/dom-stub.mjs';
 
 const obs = await runScenario('tally-01');
 
@@ -27,11 +28,22 @@ test('tally-01: src/render.js exports renderEmptyState taking no arguments', () 
 });
 
 test('tally-01: renderApp(createState()) contains the empty-state message', () => {
-  assert.ok(obs.emptyHtmlHasEmptyMarkup, 'renderApp includes the empty-state markup for an empty state');
+  // Parses the rendered HTML rather than substring-matching it (PR #363
+  // review finding 2) -- a target that only smuggled this markup inside
+  // an HTML comment must not get credit for actually rendering it.
+  const root = parseFragment(obs.emptyHtml);
+  const empty = query(root, 'p.tally-empty');
+  assert.ok(empty, 'renderApp includes a p.tally-empty element for an empty state');
+  assert.equal(
+    textContent(empty),
+    'No tallies yet -- add one above.',
+    'the empty-state element carries the exact copy',
+  );
 });
 
-test('tally-01: renderApp for a non-empty state does not contain "tally-empty"', () => {
-  assert.ok(!obs.nonEmptyHtmlHasEmptyMarkup, 'renderApp omits tally-empty once there are items');
+test('tally-01: renderApp for a non-empty state does not render tally-empty', () => {
+  const root = parseFragment(obs.nonEmptyHtml);
+  assert.equal(query(root, 'p.tally-empty'), null, 'renderApp omits the tally-empty element once there are items');
 });
 
 test('tally-01: node test/smoke.mjs still exits 0', assertBaseSmokeOk);

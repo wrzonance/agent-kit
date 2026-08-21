@@ -16,17 +16,20 @@ import { parseFragment, query, textContent, closest } from './lib/dom-stub.mjs';
 const obs = await runScenario('tally-02');
 
 test('tally-02: renderApp shows a total badge matching total(state)', () => {
-  assert.ok(
-    obs.fiveHtml.includes('<span class="tally-total">Total: 5</span>'),
-    'renderApp includes the exact badge markup for a total of 5',
-  );
+  // Queries the parsed fragment rather than substring-matching the raw
+  // HTML (PR #363 review finding 2) -- markup smuggled inside an HTML
+  // comment must not count as a rendered badge.
+  const root = parseFragment(obs.fiveHtml);
+  const badge = query(root, 'span.tally-total');
+  assert.ok(badge, 'a span.tally-total element exists for a total of 5');
+  assert.equal(textContent(badge), 'Total: 5', 'the badge text matches total(state)');
 });
 
 test('tally-02: renderApp(createState()) shows a total badge of 0', () => {
-  assert.ok(
-    obs.emptyHtml.includes('<span class="tally-total">Total: 0</span>'),
-    'renderApp includes the exact badge markup for an empty state',
-  );
+  const root = parseFragment(obs.emptyHtml);
+  const badge = query(root, 'span.tally-total');
+  assert.ok(badge, 'a span.tally-total element exists for an empty state');
+  assert.equal(textContent(badge), 'Total: 0', 'the badge text matches total(state)');
 });
 
 test('tally-02: the badge is inside header.tally-header, not the ul', () => {

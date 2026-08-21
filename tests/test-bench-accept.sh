@@ -109,6 +109,28 @@ run_scenario_suite() {
     RUN_OUT=$(BENCH_ACCEPT_TARGET="$target" "$@" node --test "$tally_03_suite" 2>&1) || RUN_RC=$?
 }
 
+# Calls runScenario(scenario_id) directly (bypassing node:test) against
+# $target and prints the observation as JSON -- used below to inspect the
+# exact value an attempted IPC forgery does or does not produce, rather
+# than only whether some assertion downstream happened to notice.
+#
+# Runs the driver from a real .mjs file rather than `node -e`/
+# `--input-type=module`: fork() inherits the running process's own
+# execArgv into the child by default, and a driver started with
+# --input-type=module poisons scenario-runner.mjs's own fork of itself
+# with that same flag, breaking the very isolation this test verifies.
+run_scenario_direct_driver="$forge_tmp/run-scenario-direct.mjs"
+cat > "$run_scenario_direct_driver" << DRIVEREOF
+import { runScenario } from '$repo_root/bench/accept/lib/isolated.mjs';
+const obs = await runScenario(process.argv[2]);
+console.log(JSON.stringify(obs));
+DRIVEREOF
+run_scenario_direct() {
+    local target=$1 scenario_id=$2
+    RUN_RC=0
+    RUN_OUT=$(BENCH_ACCEPT_TARGET="$target" node "$run_scenario_direct_driver" "$scenario_id" 2>&1) || RUN_RC=$?
+}
+
 assert_monkeypatch_target="$forge_tmp/monkeypatch"
 mkdir -p "$assert_monkeypatch_target"
 build_forged_target "$assert_monkeypatch_target" \
@@ -147,6 +169,74 @@ PYEOF
 run_scenario_suite "$hang_target" env BENCH_ACCEPT_SCENARIO_TIMEOUT_MS=500
 assert_eq '1' "$RUN_RC" 'a target whose call never returns is killed and scores fail, never left to hang the run'
 assert_contains "$RUN_OUT" 'did not respond within' 'the hang is reported as a timeout, not silently swallowed'
+
+# --- PR #363 review finding 1 (round 2): forged IPC results are rejected --
+# Forking put target code in a different process than the oracle's own
+# assertions, but the fork still had process.send reachable while target
+# code was imported, and lib/isolated.mjs accepted the first message with
+# an `ok` field unconditionally -- a target could call
+# process.send({ok: true, value: {...}}) at import time and forge the
+# entire observation. Both halves of the fix are exercised directly
+# against runScenario(), not just through a suite's own assertions, so a
+# forged value being accepted is caught even if it happened to also
+# satisfy that suite's checks.
+forge_send_target="$forge_tmp/forge-send"
+mkdir -p "$forge_send_target"
+build_forged_target "$forge_send_target" \
+    "if (typeof process.send === 'function') { process.send({ ok: true, value: { FORGED_BY_TARGET_CODE: true } }); }"
+run_scenario_direct "$forge_send_target" tally-03
+assert_eq '0' "$RUN_RC" 'a target calling process.send at import does not break the real scenario'
+assert_not_contains "$RUN_OUT" 'FORGED_BY_TARGET_CODE' \
+    'a target-forged process.send message at import is never accepted as the observation'
+assert_contains "$RUN_OUT" 'undoRemoveFnType' 'the real, correlated scenario result is returned instead'
+
+forge_ipc_target="$forge_tmp/forge-ipc"
+mkdir -p "$forge_ipc_target"
+build_forged_target "$forge_ipc_target" \
+    "if (typeof process._send === 'function') { process._send(JSON.stringify({ ok: true, value: { FORGED_BY_TARGET_CODE: true }, token: 'not-the-real-token' })); }"
+run_scenario_direct "$forge_ipc_target" tally-03
+assert_eq '0' "$RUN_RC" 'a target sending a wrong-token IPC message directly does not break the real scenario'
+assert_not_contains "$RUN_OUT" 'FORGED_BY_TARGET_CODE' \
+    'an IPC message with the wrong (or absent) correlation token is never accepted as the observation'
+assert_contains "$RUN_OUT" 'undoRemoveFnType' 'the real, correlated scenario result is returned instead'
+
+# --- PR #363 review finding 2: HTML-comment markup scores fail -----------
+# lib/dom-stub.mjs used to tokenize tags inside HTML comments as real
+# elements, so a target could get acceptance credit for markup it never
+# actually rendered -- only mentioned it in a comment.
+dom_stub_comment_out=$(node --input-type=module -e "
+import assert from 'node:assert/strict';
+import { parseFragment, query, textContent } from '$repo_root/bench/accept/lib/dom-stub.mjs';
+const html = '<!-- <p class=\"tally-empty\">No tallies yet -- add one above.</p> -->';
+const root = parseFragment(html);
+assert.equal(query(root, 'p.tally-empty'), null, 'markup inside a comment must not parse as an element');
+assert.equal(textContent(root), '', 'comment text must not surface as text content');
+console.log('OK');
+" 2>&1)
+dom_stub_comment_rc=$?
+assert_eq '0' "$dom_stub_comment_rc" 'dom-stub ignores markup that only appears inside an HTML comment'
+assert_contains "$dom_stub_comment_out" 'OK' 'the HTML-comment regression check ran to completion'
+
+# --- PR #363 review finding 3: smoke timeouts kill with SIGKILL ----------
+# spawnSync's default killSignal is SIGTERM, which a smoke script can
+# trap and keep running past the deadline in a busy loop, then exit 0 on
+# its own -- read back by assertBaseSmokeOk as a clean pass despite
+# blowing the timeout. BENCH_ACCEPT_SMOKE_TIMEOUT_MS keeps this fast
+# rather than waiting out the 10s production default.
+sigterm_target="$forge_tmp/sigterm-smoke"
+mkdir -p "$sigterm_target"
+cp -r "$gold/." "$sigterm_target/"
+cat > "$sigterm_target/test/smoke.mjs" << 'SMOKEEOF'
+process.on('SIGTERM', () => { /* trap and ignore -- must not be enough to survive */ });
+const start = Date.now();
+while (Date.now() - start < 5000) { /* busy loop: blocks the event loop, SIGTERM never gets scheduled */ }
+console.log('PASS ignored SIGTERM and finished anyway');
+SMOKEEOF
+RUN_RC=0
+RUN_OUT=$(BENCH_ACCEPT_TARGET="$sigterm_target" BENCH_ACCEPT_SMOKE_TIMEOUT_MS=500 \
+    node --test "$repo_root/bench/accept/tally-01.test.mjs" 2>&1) || RUN_RC=$?
+assert_eq '1' "$RUN_RC" \
+    'a smoke script that traps SIGTERM and keeps running is still killed at the deadline and scores fail'
 
 rm -rf -- "$forge_tmp"
 trap - EXIT

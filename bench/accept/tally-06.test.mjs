@@ -54,12 +54,17 @@ test('tally-06: index.html links style.css in head; body unchanged from base fix
   );
   assert.ok(link, 'head links ./style.css as a stylesheet');
 
-  const bodyMatch = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html);
+  // Captures the WHOLE <body ...>...</body> element, opening tag
+  // included, not just its inner content (PR #363 review finding 5) --
+  // otherwise a target could add/change attributes on <body> itself
+  // (e.g. inline style, an onload handler) and still pass "unchanged
+  // from the base fixture".
+  const bodyMatch = /<body[^>]*>[\s\S]*<\/body>/i.exec(html);
   assert.ok(bodyMatch, 'index.html has a body element');
   const baseHtml = fs.readFileSync(baseFixtureIndexHtml, 'utf8');
-  const baseBodyMatch = /<body[^>]*>([\s\S]*)<\/body>/i.exec(baseHtml);
+  const baseBodyMatch = /<body[^>]*>[\s\S]*<\/body>/i.exec(baseHtml);
   const normalize = (text) => text.replace(/\s+/g, ' ').trim();
-  assert.equal(normalize(bodyMatch[1]), normalize(baseBodyMatch[1]), 'body is unchanged from the base fixture');
+  assert.equal(normalize(bodyMatch[0]), normalize(baseBodyMatch[0]), 'body element is unchanged from the base fixture');
 });
 
 test('tally-06: node test/theme.smoke.mjs exits 0 and prints a PASS line', () => {

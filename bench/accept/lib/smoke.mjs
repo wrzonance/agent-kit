@@ -11,17 +11,33 @@
 // outer per-suite timeout. A timeout here fails this assertion, which
 // fails this suite, which run-accept.sh already scores as `fail`, never
 // skipped.
+//
+// killSignal is deliberately SIGKILL, not spawnSync's default SIGTERM
+// (PR #363 review finding 3): SIGTERM is catchable, and a target smoke
+// script that traps it and keeps running past the deadline (a busy loop
+// with a `process.on('SIGTERM', ...)` handler that never gets scheduled
+// because the loop never yields) exits 0 on its own once the loop ends --
+// `result.status` reads back as a clean 0 even though the run blew the
+// timeout, and this would score a false pass. SIGKILL cannot be trapped,
+// ignored, or blocked, so the process always actually dies at the
+// deadline and `result.status` is reliably null.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { targetRoot } from './target.mjs';
 
-export const SMOKE_TIMEOUT_MS = 10_000;
+// Overridable so the SIGKILL regression test doesn't have to wait out
+// the production default to prove a SIGTERM-trapping smoke script still
+// gets killed at the deadline (mirrors BENCH_ACCEPT_SCENARIO_TIMEOUT_MS
+// in lib/isolated.mjs).
+const envSmokeTimeoutMs = Number(process.env.BENCH_ACCEPT_SMOKE_TIMEOUT_MS);
+export const SMOKE_TIMEOUT_MS = Number.isFinite(envSmokeTimeoutMs) && envSmokeTimeoutMs > 0 ? envSmokeTimeoutMs : 10_000;
 
 function runSmoke(relPath) {
   return spawnSync(process.execPath, [relPath], {
     cwd: targetRoot(),
     encoding: 'utf8',
     timeout: SMOKE_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
 }
 

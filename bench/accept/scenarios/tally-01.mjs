@@ -2,8 +2,11 @@
 // bench/issues/01-tally-empty-state-message.md. Executes ONLY inside the
 // forked scenario-runner child (see bench/accept/lib/scenario-runner.mjs)
 // -- never in the same process as bench/accept/tally-01.test.mjs's own
-// assertions (PR #363 review finding 1). Returns a plain, JSON-safe
-// observation object.
+// assertions (PR #363 review finding 1). Returns the rendered HTML
+// strings themselves rather than precomputed `.includes()` booleans
+// (PR #363 review finding 2) -- bench/accept/tally-01.test.mjs parses
+// them with the vendored DOM stub in its OWN process, which executes no
+// target code and so stays outside the isolation boundary.
 export default async function run({ importTarget }) {
   const render = await importTarget('src/render.js');
   const store = await importTarget('src/store.js');
@@ -20,7 +23,7 @@ export default async function run({ importTarget }) {
     emptyStateFnType,
     emptyStateArity,
     emptyStateText,
-    emptyHtmlHasEmptyMarkup: emptyHtml.includes('<p class="tally-empty">No tallies yet -- add one above.</p>'),
-    nonEmptyHtmlHasEmptyMarkup: nonEmptyHtml.includes('tally-empty'),
+    emptyHtml,
+    nonEmptyHtml,
   };
 }

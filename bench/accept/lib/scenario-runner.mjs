@@ -14,20 +14,43 @@
 // for the result). A crash, a call to process.exit() during target import,
 // or simply never finishing all report as "no message received" to the
 // caller, which lib/isolated.mjs treats as a failed call -- never a pass.
+//
+// Forking put target code in a different process than the oracle's own
+// assertions, but the fork still shares ITS process with target code --
+// and target code is imported by `main()` below while process.send is
+// still reachable. Left alone, a target could call
+// process.send({ok: true, value: {...}}) at import time and forge the
+// entire observation before any real scenario code ever ran (PR #363
+// review finding 1, round 2). Two independent closures, applied before
+// ANY target-reachable import:
+//   1. The reporting function is captured and then deleted off `process`
+//      -- imported target code sees `typeof process.send === 'undefined'`.
+//   2. Every real result is stamped with the per-run token
+//      lib/isolated.mjs minted and handed over via env, which is then
+//      stripped from this process's own env so target code cannot read
+//      it back out (via process.env) and echo it in a forged message
+//      sent some other way (e.g. process._send, which this file
+//      deliberately does not delete because the captured, bound `send`
+//      above still needs it to work).
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { importFromTarget, targetRoot } from './target.mjs';
 
+const ipcToken = process.env.BENCH_ACCEPT_IPC_TOKEN;
+delete process.env.BENCH_ACCEPT_IPC_TOKEN;
+const rawSend = typeof process.send === 'function' ? process.send.bind(process) : null;
+delete process.send;
+
 function sendResult(result) {
   return new Promise((resolve) => {
-    if (typeof process.send !== 'function') {
+    if (!rawSend || !ipcToken) {
       resolve();
       return;
     }
     // The callback form waits for the IPC write to actually flush before
-    // resolving -- calling process.exit() right after a bare process.send()
-    // can drop the message if the pipe hasn't drained yet.
-    process.send(result, undefined, undefined, () => resolve());
+    // resolving -- calling process.exit() right after a bare send() can
+    // drop the message if the pipe hasn't drained yet.
+    rawSend({ ...result, token: ipcToken }, undefined, undefined, () => resolve());
   });
 }
 
