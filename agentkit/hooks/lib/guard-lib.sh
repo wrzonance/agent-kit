@@ -895,6 +895,12 @@ guard_curriculum() {
         ".shared/scripts/bootstrap-repo.sh|re-declare this repo facts; see the onboard-repo skill"
         ".shared/scripts/onboard-refresh.sh|report onboarding drift without mutating config.env"
         ".shared/scripts/onboard-state.sh|report the next resumable onboarding stage and environment preflight"
+        # Not a script: the manifest of every companion reference that ships,
+        # with its openable path and purpose. Named here because the
+        # references themselves live under .shared/ and <skill>/references/,
+        # which default enumeration hides -- an agent told only that they
+        # exist searches for them.
+        "references.md|every reference file that ships, with its path and purpose -- read it instead of searching"
     )
 
     [[ -d $skills ]] || return 1

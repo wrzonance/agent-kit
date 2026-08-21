@@ -121,12 +121,16 @@ for helper in "$skills_dir/.shared"/*.sh; do
     placement_report "$helper"
 done
 
+# The reference manifest joins the scanned set: every path it names is a
+# promise an agent will follow without searching, so it holds the same
+# resolve-or-fail bar as a link in the prose that sends the agent there.
 mapfile -t documents < <(
     find "$skills_dir" -type f \( \
         -name 'SKILL.md' -o \
         -path '*/references/*.md' -o \
         -name '*prompt*.md' -o \
-        -path "$skills_dir/.shared/*.md" \
+        -path "$skills_dir/.shared/*.md" -o \
+        -path "$skills_dir/references.md" \
     \) -print | sort
 )
 for document in "${documents[@]}"; do

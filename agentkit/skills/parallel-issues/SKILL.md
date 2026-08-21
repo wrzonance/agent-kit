@@ -20,7 +20,8 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-**References are read once and batched.** When a step names a reference file, read it in full
+**References are read once and batched.** Reference paths resolve: open `"$agentkit/<path>"`, and read
+`"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference file, read it in full
 at that step — one batched read covering several files is ideal — and do not re-read it later
 in the run. Do not probe a reference's size before reading it (`wc -l`, `stat`, `head`):
 per-file sizing spends one root turn per file before any real work starts. One exception, and
@@ -66,7 +67,7 @@ red/green iteration, the full suite once per tree state before commit;
 `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
 that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
-Read [references/verification-isolation.md](references/verification-isolation.md) in full only
+Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full only
 when this repository declares a Compose-driven command.
 
 **`--auto-review` is independent.** It is valid with or without the other two, and it
@@ -145,8 +146,8 @@ authorised rather than leaving it to be reconstructed later.
 
 ## Runtime and provider neutrality
 
-Before any GitHub body mutation, read and follow the shared
-[GitHub body transport policy](../.shared/github-body-policy.md). It governs every `gh` body
+Before any GitHub body mutation, read and follow the shared GitHub body transport policy
+["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md). It governs every `gh` body
 surface used by this skill, not only draft PR creation.
 
 Runtime facts come from the current session contract, not from this procedure. Read its
@@ -566,8 +567,8 @@ worktrees provide isolation.
 ### Implementation-model preflight (MANDATORY — before worktrees or board mutations)
 
 Role separation: the root/orchestrator must not implement when a real worker can be dispatched except for two allowed implementation exceptions: spawn unavailable or qualifying bounded inline correction. Workers get fresh context and sole-writer isolation. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` for model/effort. **Effort follows the issue, not the run:** `AGENT_WORKER_EFFORT` is the per-run default; a dispatch-plan entry may raise it for one genuinely hard issue via `workerEffort` with a recorded reason, and that per-issue value is what the composer receives. Root design review and adversarial review keep their own effort setting regardless. Read
-[.shared/spawn-contract.md](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
-[.shared/six-step-loop.md](../.shared/six-step-loop.md).
+["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
+["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md).
 
 ### Dispatch (one round, then refill slots)
 
@@ -609,7 +610,7 @@ decision to re-litigate. The still-gated actions are unchanged: ready-flips, mer
 bot triggers, and human-review responses.
 
 Every issue-lead call uses the spawn shape and exact-parameter rules in
-[.shared/spawn-contract.md](../.shared/spawn-contract.md) — that file has no `task_name`
+["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) — that file has no `task_name`
 parameter; fill in only the complete prompt below. When constructing a worker session, set its working directory to the assigned worktree
 whenever the harness supports a cwd/workdir field; the prompt's absolute-path rule remains
 mandatory even when that field is unavailable. Do not describe the spawn call without making
@@ -979,7 +980,7 @@ the consent-holding context, against the fetched PR conversation artifact
 unavailable, not an empty comment set — a completed review or verified skip without the receipt
 below is a **no-silent-skip** failure and cannot be handed off as draft-phase-complete. Materiality,
 consent-holder ownership, exit codes, monitoring, and the blind fallback are
-`review-remote-pr`'s [references/adversarial-review.md](../review-remote-pr/references/adversarial-review.md)
+`review-remote-pr`'s ["$agentkit/review-remote-pr/references/adversarial-review.md"](../review-remote-pr/references/adversarial-review.md)
 contract; this loop runs precheck before root launch and publishes after root returns the result.
 
 ```bash
@@ -1079,11 +1080,11 @@ Review behavior after a ready transition or push is repository/provider configur
 arriving is an observed state to report, not a trigger decision. Watch each PR on a long interval
 under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6
 `gh-pr-state.sh --full` refresh plus Step 3's and
-[references/provider-rules.md](../review-remote-pr/references/provider-rules.md)'s detection rules
+["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules
 (real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch
 a follow-up agent per PR (or run it yourself,
 labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and
-[references/provider-rules.md](../review-remote-pr/references/provider-rules.md) cycle order:
+["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order:
 approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit
 threads — one push per cycle, no bot commands.
 

@@ -10,7 +10,8 @@ Draft-first automated loop. **Phase A (draft):** root-orchestrated — watches C
 
 **Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
 
-**References are read once, batched, and never sized first.** When a step names a reference
+**References are read once, batched, and never sized first.** Reference paths resolve: open
+`"$agentkit/<path>"`, and read `"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference
 file, read it in full at that step — one batched read covering several files is ideal — and do
 not re-read it later in the same uninterrupted context. Read each reference once per
 uninterrupted context. If compaction/resume occurs since Step 1a and the loaded provider-rules
@@ -66,9 +67,9 @@ After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read
 
 A missing `jq`/`python3` is a blocking check, never a silent "no findings":
 `command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }`
-Before any GitHub body mutation, follow the shared
-[GitHub body transport policy](../.shared/github-body-policy.md).
-Read [references/environment-contract.md](references/environment-contract.md) in full before Step 0a — it carries the full runtime-neutrality contract (session-contract facts, no cross-session
+Before any GitHub body mutation, follow the shared GitHub body transport policy
+["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md).
+Read ["$agentkit/review-remote-pr/references/environment-contract.md"](references/environment-contract.md) in full before Step 0a — it carries the full runtime-neutrality contract (session-contract facts, no cross-session
 inference, no TLS bypass) and the environment-contract mechanics (the preflight block, its
 decision lines, and the repo-runner opt-in) behind the rules above.
 
@@ -82,7 +83,7 @@ H; H labels are human-only. Every automated reply must pass the reply-body integ
 (`gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
 human-touched thread.**
 
-Read [references/provider-rules.md](references/provider-rules.md) in full before Step 1a — the
+Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) in full before Step 1a — the
 provider table, classifier, human-confirmation gate, and reply-settlement recipes live
 there. Reuse that loaded content in Step 5; do not re-read it.
 
@@ -132,7 +133,7 @@ contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$con
 
 The PR loop orchestrates; implementation workers are sole writers for fix batches. The two allowed
 exceptions are spawn unavailable and qualifying bounded inline correction. Resolve model/effort,
-then read [references/worker-gate.md](references/worker-gate.md), [../.shared/spawn-contract.md](../.shared/spawn-contract.md), and [../.shared/six-step-loop.md](../.shared/six-step-loop.md) in full before dispatch; workers validate, commit, push; root owns PR metadata/posts.
+then read ["$agentkit/review-remote-pr/references/worker-gate.md"](references/worker-gate.md), ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md), and ["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md) in full before dispatch; workers validate, commit, push; root owns PR metadata/posts.
 
 ## The Loop
 
@@ -301,13 +302,13 @@ triaging**, thread-less actionable content exists. `threads: truncated=yes` mean
 **Step 1a — surface human review content:** route every item through the classifier; exclude
 recognized providers, authoritative Bot/`[bot]` authors, and exact
 `<!-- review-remote-pr:agent-doc|agent-reply -->` comments — **not** the `gh api user` login. Read
-[references/provider-rules.md](references/provider-rules.md) for the H/B presentation formats and
+["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) for the H/B presentation formats and
 wait for an explicit per-item decision before acting.
 
 ## Step 1b (runs as 2b): Adversarial Review — ONCE, at the end of the draft phase
 
 Apply this gate once as the LAST step of Phase A, after CI is green and conflicts are resolved.
-Read [references/adversarial-review.md](references/adversarial-review.md) in full before running
+Read ["$agentkit/review-remote-pr/references/adversarial-review.md"](references/adversarial-review.md) in full before running
 or skipping — it carries materiality, attribution, external-service authorization/consent, the
 exit-code table and one-shot `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR` contract;
 the runner reads `harness=`/`peer-cli=` facts for selection and blind same-harness fallback. Pass
@@ -361,7 +362,7 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 
 ### Wait contract: one turn-free wait
 
-Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before waits: it owns the
+Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) in full before waits: it owns the
 no-model-turn, bounds, and durable-state rules; Step 4 adds CI settlement specifics.
 
 This loop keeps waits silent until terminal: background output wakes the orchestrator for a turn; log
@@ -416,7 +417,7 @@ esac
 
 When Phase A is done — CI green, conflicts resolved, every adversarial finding fixed or
 declined-with-comment, every human item decided — report the draft-phase summary (Exit Report) and
-wait per [../.shared/wait-discipline.md](../.shared/wait-discipline.md) instead of spending model
+wait per ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) instead of spending model
 turns on a `gh pr view` plus sleep/re-check loop. Then observe a real CodeRabbit review landing
 (actionable-comments/walkthrough body, not just an ack). If none arrives, report it — do not infer
 configuration or trigger one. If rate-limited, perform **bounded blocking re-check rounds** (~10 minutes each, up to ~90 minutes total): use
@@ -505,6 +506,6 @@ Human review: [none | H1 approved/replied/open, H2 declined/open | H3 awaiting c
 (Identify which reviewer ran and any fallback reason; who wrote the code and its model/effort or
 `worker=self` reason; every human-review item's decision, verified-reply state, and open-thread state.)
 
-Then run **Backlog grooming** — read [references/grooming.md](references/grooming.md) in full —
+Then run **Backlog grooming** — read ["$agentkit/review-remote-pr/references/grooming.md"](references/grooming.md) in full —
 before handing back. It proposes Ready candidates from the Backlog and never auto-promotes; it
 no-ops silently when there is no board/scope for it, never failing the PR handoff.

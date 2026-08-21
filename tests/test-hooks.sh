@@ -305,21 +305,26 @@ out=$(session_input "$onboarded" | "$hooks/session-start.sh" 2>/dev/null)
 ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
 assert_contains "$ctx" 'triage-issues.sh' 'an onboarded repo is told what helpers exist'
 assert_contains "$ctx" 'move-github-project-item.sh' 'including the board mover'
+# The manifest is the answer to "which references exist and where". Without it
+# the curriculum names ten scripts and leaves the companion references -- which
+# live in directories default enumeration hides -- to be searched for.
+assert_contains "$ctx" 'references.md' 'and the reference manifest'
 assert_contains "$ctx" 'plugins/cache' 'and how to resolve them'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_not_contains "$ctx" 'not onboarded' 'and is not also told to bootstrap'
 
-# Every helper named must EXIST. A curriculum naming a missing script teaches a
-# broken path -- the same failure the deny messages had after packaging moved
-# the tree. Extracted from the emitted text, not restated here, so this cannot
-# drift from what agents are actually told.
+# Every path named must EXIST -- scripts and the reference manifest alike. A
+# curriculum naming a missing file teaches a broken path -- the same failure
+# the deny messages had after packaging moved the tree. Extracted from the
+# emitted text, not restated here, so this cannot drift from what agents are
+# actually told.
 # shellcheck disable=SC2016  # $agentkit is the literal text being matched in the
 # emitted curriculum, not a variable to expand here.
 while read -r rel; do
     [[ -n $rel ]] || continue
     assert_eq 'yes' "$([[ -e $skills_root/$rel ]] && echo yes || echo no)" \
-        "the curriculum names a helper that exists: $rel"
-done < <(grep -oE '\$agentkit/[^[:space:]]+\.sh' <<< "$ctx" | sed 's|^\$agentkit/||' | sort -u)
+        "the curriculum names a path that exists: $rel"
+done < <(grep -oE '\$agentkit/[^[:space:]]+\.(sh|md)' <<< "$ctx" | sed 's|^\$agentkit/||' | sort -u)
 
 # A worker gets the curriculum too, and the prompt is the separate contract
 # channel that carries the worker's worktree-specific facts.

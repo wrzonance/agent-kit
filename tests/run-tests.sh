@@ -151,6 +151,9 @@ step 'skill size'
 step 'helper/reference paths'
 "$here/lint-helper-refs.sh" "$skills" || rc=1
 
+step 'reference manifest'
+"$here/lint-reference-manifest.sh" "$skills" || rc=1
+
 step 'versioned plugin paths'
 # Scans the whole plugin root, not just $skills: the hooks tree ships the
 # detector this lint must not flag (agentkit/hooks/post-tool-use.sh's own

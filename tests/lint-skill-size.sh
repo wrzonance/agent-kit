@@ -144,6 +144,32 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # rationale live in references/triage-and-selection.md rather than here.
 # test-skill-size.sh's pinned ratchet message moves with it.
 KNOWN_OVERSIZE[parallel-issues]="1132:19468:900"
+# Issue #340 makes the companion references resolvable without a search. The
+# body change is confined to two shapes: one sentence on each skill's existing
+# references-are-read-once rule, giving the resolvable form
+# (`"$agentkit/<path>"`) and naming the new manifest
+# (`agentkit/skills/references.md`, which indexes every reference file and its
+# purpose); and, at each instruction to READ a reference, the markdown link's
+# TEXT becomes that same rooted path while its destination is left untouched,
+# so forge navigation and every verbatim-pinned relative path survive. The
+# observed failure this buys back: an agent spent ~8 exploratory searches
+# locating files SKILL.md had already named, because `rg --files` skips
+# `.shared/` without `--hidden` and a bare relative link is not an openable
+# path. parallel-issues LINES 1132 -> 1133 and TOKENS 19468 -> 19533;
+# review-remote-pr TOKENS 8144 -> 8234 (its LINES ceiling of 513 is untouched
+# -- the body sits at 507). pr-to-green takes the same two shapes and stays
+# inside the standard budget, so it gains no entry. Each ceiling is measured
+# against this body and set to the minimum that passes, never padded; the
+# rooted paths are longer than the relative ones by construction, which is the
+# whole point of the change. The same pass also repairs three cross-skill links
+# in parallel-issues whose TEXT read `references/provider-rules.md` /
+# `references/adversarial-review.md` while their destination pointed into
+# review-remote-pr -- an agent that typed what it read got a path that does not
+# exist under parallel-issues, which is the exact failure this issue is about;
+# that repair is the 19533 -> 19554 difference. test-skill-size.sh's pinned
+# ratchet messages move with these numbers.
+KNOWN_OVERSIZE[review-remote-pr]="513:8234:450"
+KNOWN_OVERSIZE[parallel-issues]="1133:19554:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
