@@ -960,6 +960,28 @@ resolve_repo_runner() {
     fi
 }
 
+# The package manager beside ONE root: its own directory first, then
+# ancestors up to the worktree root, so a workspace package inherits its
+# monorepo's lock. Prints the tool name and returns 0 on the first lockfile
+# found; returns 1 with nothing printed when none resolves anywhere in the
+# root's ancestry.
+resolve_node_pm_for_root() {
+    local dir="$WORKTREE/$1" name lockfile toolname
+    while :; do
+        for name in 'pnpm-lock.yaml:pnpm' 'yarn.lock:yarn' 'bun.lockb:bun' 'package-lock.json:npm'; do # ecosystem-allow: detection
+            lockfile="${name%%:*}"
+            toolname="${name##*:}"
+            if [[ -f "$dir/$lockfile" ]]; then
+                printf '%s' "$toolname"
+                return 0
+            fi
+        done
+        [[ "$dir" == "$WORKTREE" ]] && break
+        dir="$(dirname -- "$dir")"
+    done
+    return 1
+}
+
 node_roots() {
     local -a roots=()
     local found pm="none"
@@ -973,29 +995,30 @@ node_roots() {
         return 0
     fi
     # Which package manager this repo uses is discovered from its lockfile --
-    # checked beside EACH detected root first (a monorepo package locks where
-    # its own package.json lives, not necessarily at the worktree root; issue
-    # #338 observed real roots under bench/fixtures/* and opencode/* with no
-    # lockfile at the worktree root, which reported node-pm=none even though
-    # every one of them had its own lockfile). Ancestors up to the worktree
-    # root are checked too, so a workspace package inherits its monorepo's
-    # lock. A Node root that resolves to none anywhere in its ancestry is
-    # reported unresolved -- never silently assumed to be npm.
-    local root dir name lockfile toolname
+    # checked beside EACH detected root (issue #338 observed real roots under
+    # bench/fixtures/* and opencode/* with no lockfile at the worktree root,
+    # which reported node-pm=none even though every one of them had its own
+    # lockfile). A single repo-wide field cannot honestly represent a
+    # monorepo whose roots resolve to DIFFERENT managers -- reporting the
+    # first root's manager for every root would hand a wrong bootstrap
+    # command to whichever component didn't happen to go first (caught in
+    # adversarial review of this same change). So: a root that resolves to
+    # nothing, OR roots that resolve to more than one distinct manager, both
+    # collapse to node-pm=unresolved -- never a value dispatch could act on
+    # for the wrong component.
+    local root root_pm first=1
     for root in "${roots[@]}"; do
-        dir="$WORKTREE/$root"
-        while :; do
-            for name in 'pnpm-lock.yaml:pnpm' 'yarn.lock:yarn' 'bun.lockb:bun' 'package-lock.json:npm'; do # ecosystem-allow: detection
-                lockfile="${name%%:*}"
-                toolname="${name##*:}"
-                if [[ -f "$dir/$lockfile" ]]; then
-                    pm="$toolname"
-                    break 3
-                fi
-            done
-            [[ "$dir" == "$WORKTREE" ]] && break
-            dir="$(dirname -- "$dir")"
-        done
+        if root_pm="$(resolve_node_pm_for_root "$root")"; then
+            if (( first )); then
+                pm="$root_pm"
+                first=0
+            elif [[ "$pm" != "$root_pm" ]]; then
+                pm="unresolved"
+            fi
+        else
+            pm="unresolved"
+            break
+        fi
     done
     if [[ "$pm" == "none" ]]; then pm="unresolved"; fi
     printf 'node-roots=%s node-pm=%s' "$(join_capped 6 "${roots[@]}")" "$pm"
