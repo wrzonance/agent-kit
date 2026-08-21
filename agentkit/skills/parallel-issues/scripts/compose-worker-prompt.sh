@@ -323,6 +323,28 @@ if ((focus_declared)) && ((test_declared == 0)) && ! query_test_resolution; then
     die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
+# focus_declared is read from the FULL declaration list, but `--cmd test --only`
+# selects one specific command -- and the write-set filter may have scoped that
+# command out. Emitting the focused selector anyway points the worker at a suite
+# this dispatch has no business running, and (when that suite drives Compose)
+# does so without the isolation prose, since compose_reachable only inspects
+# scoped commands. Both the selector and the Compose decision must therefore
+# follow the SCOPED test command, not the mere existence of a declaration.
+#
+# A repo with no AGENT_CMD_TEST resolves `test` through its runner instead;
+# there is no per-command rundir to scope by, so that case is never scoped out.
+focus_test_scoped_out=0
+if ((focus_declared)) && ((test_declared)); then
+    focus_test_in_scope=0
+    for scoped_key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
+        if [[ $scoped_key == AGENT_CMD_TEST ]]; then
+            focus_test_in_scope=1
+            break
+        fi
+    done
+    ((focus_test_in_scope)) || focus_test_scoped_out=1
+fi
+
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'
 cleanup() { rm -f -- "$temporary"; }
 trap cleanup EXIT HUP INT TERM
@@ -454,7 +476,15 @@ emit_image_invalidating_writers() {
     done
 }
 
+# shellcheck disable=SC2016  # backticked Markdown is literal prompt text, not expansion
 emit_focus() {
+    if ((focus_test_scoped_out)); then
+        # Deliberately distinct from the no-selector branch: silently falling
+        # into that one would tell the worker this repository has no focused
+        # selector, which is false and unfalsifiable from inside the prompt.
+        printf 'A focused selector is declared, but the test command it selects runs in a directory this write set cannot reach, so no `--cmd test --only` guidance is offered here. Use the commands listed above for scoped checks and once against the final tree state before handback. If your change reaches that command'"'"'s component after all, see the withheld-command note above -- running it is your call.\n'
+        return 0
+    fi
     if ((focus_declared)); then
         local helper_path
         helper_path=$(shell_quote "$shared_path/agent-run.sh")
