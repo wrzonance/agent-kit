@@ -182,6 +182,13 @@ When FINISH's fresh full verification is green, publish the branch yourself:
    green marker-bearing verification log path. The top-level session reviews the pushed diff
    and owns the draft PR, board moves, review orchestration, and every other forge action.
 
+**History freeze — binding the moment you push.** After your first push, do not amend, rebase, reset, or force-push
+that branch for any reason — including a root instruction that reads as a trailer or wording
+fix. Add a follow-up commit instead, or report the problem and stop. Rewriting a pushed commit
+strips it from `origin` while a chain successor's branch still points at the old SHA, so the
+successor's merge-base falls back to the trunk and its PR shows your entire diff duplicated
+inside it — stranding that successor is the cost of every rewrite, cosmetic included.
+
 **Environment-refusal fallback (the only remaining handback paths):**
 
 - **Commit refused** — `worktree-commit.sh` exits 2 (git metadata not writable): nothing is
@@ -482,6 +489,13 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
    a commit command the root cannot rerun.
 6. Do not contact external services beyond pushing the assigned branch, and do not alter
    forge metadata; phase leads hand privileged actions to the root.
+
+**History freeze — binding the moment you push.** After your first push, do not amend, rebase, reset, or force-push
+that branch for any reason — including a root instruction that reads as a trailer or wording
+fix. Add a follow-up commit instead, or report the problem and stop. Rewriting a pushed commit
+strips it from `origin` while anything already anchored to it — a review in progress, a running
+CI check, or a chain successor built on this branch — still points at the old SHA;
+stranding it is the cost of even a cosmetic rewrite.
 
 ## Exit Report
 Return the six-step/review/finish status and the completion report: branch, full commit SHA,
