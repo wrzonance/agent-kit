@@ -61,10 +61,31 @@ else
     assert_eq "$skill" "$invokers" 'only pr-to-green invokes the transition engine (grep fallback: rg unavailable)'
 fi
 
+assert_contains "$text" '--auto-merge' 'frontmatter and flags table document the auto-merge flag'
+assert_contains "$text" 'merge-gate.sh' 'coordinator delegates the pre-merge review-completion gate'
+assert_contains "$text" 'merge-pr.sh' 'coordinator delegates the verified serial merge'
+assert_contains "$text" 'move-github-project-item.sh' 'coordinator delegates the post-merge board move'
+assert_contains "$text" 'auto-merge.md' 'coordinator points auto-merge detail at its reference file'
+assert_contains "$flat" 'strict serial merge ordering' 'auto-merge implies strict serial merge ordering'
+assert_contains "$flat" 'branch-protection refusal is' 'branch protection refusal is a named stop, never a bypass'
+
+assert_eq yes "$(test -f "$skills/pr-to-green/references/auto-merge.md" && printf yes || printf no)" \
+    'auto-merge reference file exists'
+ref_text=$(cat "$skills/pr-to-green/references/auto-merge.md")
+assert_contains "$ref_text" '## Contents' 'auto-merge reference carries a Contents heading within the TOC scan window'
+assert_contains "$ref_text" 'code-scanning n/a' \
+    'auto-merge reference states unreadable code-scanning is never treated as zero findings'
+assert_contains "$ref_text" 'never carries forward' \
+    'auto-merge reference states a passed gate never carries forward to a new head'
+
 assert_eq yes "$(test -x "$skills/pr-to-green/scripts/pr-queue.sh" && printf yes || printf no)" \
     'queue helper ships executable'
 assert_eq yes "$(test -x "$skills/pr-to-green/scripts/review-transition.sh" && printf yes || printf no)" \
     'transition helper ships executable'
+assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-gate.sh" && printf yes || printf no)" \
+    'merge gate helper ships executable'
+assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes || printf no)" \
+    'merge helper ships executable'
 # shellcheck disable=SC2016 # Backticks are expected Markdown bytes.
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
