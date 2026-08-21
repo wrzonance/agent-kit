@@ -121,6 +121,38 @@ for i in "${!manifest_names[@]}"; do
     fi
 done
 
+# OpenCode is a third harness surface, packaged in-tree only (opencode/, plus
+# the built plugin/opencode/ once tests/build-plugin.sh has run) -- it is
+# checked whenever present rather than added to manifest_names outright, so a
+# synthetic fixture that predates OpenCode packaging and never creates an
+# opencode/ directory (see test-release-version.sh) keeps working unchanged. A
+# real checkout always has opencode/package.json after this change, and CI
+# builds the plugin before this script runs, so both files are present and
+# fully enforced there; only a hand-built minimal fixture tree skips them.
+opencode_checked=0
+if [[ -e $root/opencode ]]; then
+    opencode_checked=1
+    for name in 'opencode/package.json' 'plugin/opencode/package.json'; do
+        manifest=$root/$name
+        if [[ ! -f $manifest ]]; then
+            printf 'missing manifest: %s\n' "$name" >&2
+            failed=1
+            continue
+        fi
+        if ! version=$(jq -er '.version | select(type == "string" and length > 0)' \
+            < "$manifest" 2> /dev/null); then
+            printf 'manifest has no non-empty string version: %s\n' "$name" >&2
+            failed=1
+            continue
+        fi
+        if [[ $version != "$expected" ]]; then
+            printf 'manifest version mismatch: %s declares %s; expected %s\n' \
+                "$name" "$version" "$expected" >&2
+            failed=1
+        fi
+    done
+fi
+
 if ((tag_set == 1)); then
     tag_version=${tag#refs/tags/}
     tag_version=${tag_version#v}
@@ -141,4 +173,7 @@ if ((tag_set == 1)); then
 else
     printf 'release version check passed: all %d manifests agree on %s\n' \
         "${#manifest_names[@]}" "$expected"
+fi
+if ((opencode_checked)); then
+    printf 'release version check: opencode manifests agree on %s too\n' "$expected"
 fi

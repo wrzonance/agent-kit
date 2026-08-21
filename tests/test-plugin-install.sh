@@ -68,6 +68,38 @@ assert_eq 'no' "$([[ -e $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)
 assert_contains "$(jq -r '.plugins[0].source' < "$stage/.claude-plugin/marketplace.json")" \
     './' 'plugin source paths start with ./ as both harnesses require'
 
+# --- opencode surface -------------------------------------------------------
+# OpenCode is a third harness, packaged alongside (never in place of) the
+# Claude/Codex manifests above: this block must not perturb any assertion
+# before it. There is no OpenCode plugin registry install to exercise here --
+# unlike Claude/Codex, OpenCode loads a local file straight out of a plugins
+# directory, so the closest thing to "installs it" is importing the shipped
+# module the way OpenCode's runtime would.
+assert_eq 'yes' "$([[ -f $stage/opencode/package.json ]] && echo yes || echo no)" \
+    'writes the opencode package manifest'
+assert_eq 'yes' "$([[ -f $stage/opencode/index.js ]] && echo yes || echo no)" \
+    'writes the opencode plugin module'
+assert_eq "$(jq -r .version < "$here/../agentkit/.codex-plugin/plugin.json" 2> /dev/null)" \
+    "$(jq -r .version < "$stage/opencode/package.json" 2> /dev/null)" \
+    'opencode manifest version matches the codex/claude manifests'
+
+if command -v node > /dev/null 2>&1; then
+    smoke_out=$(node --input-type=module -e "
+        import('file://' + process.argv[1]).then(async (m) => {
+            if (typeof m.AgentKitPlugin !== 'function') throw new Error('AgentKitPlugin missing');
+            if (typeof m.default !== 'function') throw new Error('default export missing');
+            const hooks = await m.AgentKitPlugin({});
+            if (typeof hooks !== 'object' || hooks === null) throw new Error('hooks not an object');
+            if (!('session.idle' in hooks)) throw new Error('session.idle hook missing');
+            process.stdout.write('ok');
+        }).catch((e) => { process.stderr.write(String(e)); process.exit(1); });
+    " "$stage/opencode/index.js" 2>&1)
+    assert_eq 'ok' "$smoke_out" \
+        'node imports the built opencode module with no server and no install step'
+else
+    printf '%s: node not installed, skipping opencode module smoke test\n' "$TEST_NAME"
+fi
+
 # --- claude validates it ---------------------------------------------------
 # The string source form is the one shape both schemas accept: claude rejects
 # the {"source":"local","path":...} object outright, and codex installs the

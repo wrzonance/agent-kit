@@ -55,6 +55,16 @@ cp -a "$root/agentkit/hooks" "$dest/agentkit/hooks"
 
 jq -e . < "$dest/.claude-plugin/marketplace.json" > /dev/null
 
+# OpenCode ships as a plain ES module + package.json under opencode/, packaged
+# ALONGSIDE the Claude/Codex manifests, never touching their output: a third
+# harness surface, not a replacement. There is no assembly step -- the module
+# under opencode/ is already what ships, so this is a straight copy plus a
+# manifest sanity check, same as the two plugin.json copies above.
+mkdir -p "$dest/opencode"
+cp -a "$root/opencode/package.json" "$dest/opencode/package.json"
+cp -a "$root/opencode/index.js" "$dest/opencode/index.js"
+jq -e . < "$dest/opencode/package.json" > /dev/null
+
 # Follow the manifest's own declaration to the file rather than checking the file
 # we just copied: an orphaned hooks.json is well-formed too, so validating it
 # proves nothing about whether anything reads it.

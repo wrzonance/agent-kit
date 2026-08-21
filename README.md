@@ -47,6 +47,33 @@ There is no build step. The same checkout serves both harnesses, with one plugin
 per harness and a resolver that searches both plugin caches. Install it on both and they
 share one copy of the skills.
 
+OpenCode CLI (packaging foundation only -- see [Decisions](#decisions) below; the
+board-aware hooks Claude/Codex get are not wired up for OpenCode yet):
+
+```bash
+mkdir -p ~/.config/opencode/plugins   # or .opencode/plugins in a single project
+cp ~/github/agent-kit/opencode/index.js ~/.config/opencode/plugins/agentkit.js
+```
+
+OpenCode auto-loads any module dropped into a `plugins/` directory at startup -- no
+`opencode.json` edit or `bun`/`npm install` required. Config sources merge project over
+global, so a copy under a project's own `.opencode/plugins/` takes precedence over the
+global one. The module ships with zero runtime dependencies; `opencode/package.json`'s
+`@opencode-ai/plugin` reference is a type-only peer dependency, never imported at runtime.
+
+### Decisions
+
+**OpenCode distribution shape (issue #317):** plugins-directory drop-in, not an npm
+package published through `opencode.json`'s `"plugin"` array. Verified from OpenCode's own
+docs (`https://opencode.ai/docs/plugins/`, `https://opencode.ai/docs/config/`): the local
+directory is plural -- `.opencode/plugins/` (project) and `~/.config/opencode/plugins/`
+(global) -- and config sources merge project over global. The `"plugin"` array field is
+real and does take npm package names, but this package is not published to any registry
+(packaging in-tree only; no registry write), so documenting it as installable via
+`opencode.json` today would be false. `opencode/package.json` exists so the module still
+carries a version the release gate can census, and so publishing later is a `npm publish`
+away without a source-layout change.
+
 ## Onboard a repository
 
 Ask the agent to onboard the repository. The `onboard-repo` skill runs the bootstrap
@@ -227,6 +254,9 @@ agentkit/
     .shared/
       schema/config.env.example     every AGENT_* key, documented
       scripts/                      the shared procedural helpers
+opencode/
+  package.json                     name, version, license -- counted in the release-version census
+  index.js                         the OpenCode plugin module; drop-in, zero runtime deps
 tests/                              the test harness; never shipped in the plugin
 docs/                               design specs and review records
 ```
