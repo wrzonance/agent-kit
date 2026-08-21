@@ -528,6 +528,61 @@ assert_contains "$caches_spoof_err" 'keeping the more-restrictive recorded cache
 assert_contains "$(grep '^caches=' "$caches_contract")" 'reason=home-cache-unwritable' \
     'the spoofed caches= scenario keeps the recorded (restrictive) caches= line, not the fresh one'
 
+# --- a whitespace-bearing TMPDIR must not make the RESTRICTIVE record itself
+# unparseable (issue #332 F2, round 3). Round 2's whitespace refusal covered
+# only AGENT_CACHE_ROOT; TMPDIR feeds root= too, in exactly the branch that
+# produces the restrictive home-cache-unwritable record. An unwritable
+# $HOME/.cache plus a space-bearing TMPDIR used to emit a caches= line whose
+# root= swallowed a literal space, so caches_restriction_score() could not
+# find " reason=" at the expected position and scored it as unparseable
+# (0, before this fix) -- indistinguishable from a genuinely widened
+# home-cache-writable record (also 0), so the guard missed the widening.
+tmpdir_repo=$(new_repo)
+tmpdir_home="$tmp/tmpdir-unwritable-home"
+mkdir -p "$tmpdir_home"
+chmod 000 "$tmpdir_home"
+weird_tmpdir="$tmp/weird tmpdir"
+mkdir -p "$weird_tmpdir"
+HOME="$tmpdir_home" TMPDIR="$weird_tmpdir" \
+    "$script" --worktree "$tmpdir_repo" > /dev/null 2>&1
+chmod 700 "$tmpdir_home"
+tmpdir_recorded=$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")
+assert_contains "$tmpdir_recorded" 'reason=home-cache-unwritable' \
+    'a whitespace-bearing TMPDIR still records a well-formed, restrictive caches= line'
+assert_not_contains "$tmpdir_recorded" 'weird tmpdir' \
+    'the whitespace-bearing TMPDIR value itself is not used as root='
+tmpdir_widen_home="$tmp/tmpdir-writable-home"
+mkdir -p "$tmpdir_widen_home"
+tmpdir_widen_err=$(HOME="$tmpdir_widen_home" \
+    "$script" --worktree "$tmpdir_repo" 2>&1 > /dev/null)
+assert_contains "$tmpdir_widen_err" 'keeping the more-restrictive recorded caches=' \
+    'a later home-cache-writable measurement is still caught as a widening after a whitespace-bearing TMPDIR run'
+assert_contains "$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")" 'reason=home-cache-unwritable' \
+    'the whitespace-bearing-TMPDIR scenario keeps the recorded restrictive caches= line, not the fresh one'
+
+# --- an unparseable/unrecognised reason= must rank in the MIDDLE, never as --
+# the known least-restrictive value (issue #332 F2 round 3). Independent of
+# the TMPDIR whitespace source above: ANY future cause of an unparseable
+# caches= record (a malformed line, a reason= token this script doesn't know
+# about yet) must fail closed rather than silently comparing equal to a
+# genuinely widened home-cache-writable record. This fixture builds the
+# malformed "recorded" line directly (missing root=) so it exercises the
+# scoring rule itself, not the whitespace guard.
+unknown_repo=$(new_repo)
+unknown_contract="$unknown_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'caches= reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/x/uv NPM_CONFIG_CACHE=/tmp/x/npm PIP_CACHE_DIR=/tmp/x/pip XDG_CACHE_HOME=/tmp/x' \
+    > "$unknown_contract"
+chmod 600 "$unknown_contract"
+unknown_session="$tmp/unknown-session-contract.txt"
+printf '%s\ncaches= root=/tmp/agent-cache-8 reason=home-cache-writable home-cache=/home/u/.cache UV_CACHE_DIR=/tmp/agent-cache-8/uv NPM_CONFIG_CACHE=/tmp/agent-cache-8/npm PIP_CACHE_DIR=/tmp/agent-cache-8/pip XDG_CACHE_HOME=/tmp/agent-cache-8\n' \
+    "$current_harness_line" > "$unknown_session"
+unknown_err=$("$script" --worktree "$unknown_repo" --inherit-session "$unknown_session" 2>&1 > /dev/null)
+assert_contains "$unknown_err" 'keeping the more-restrictive recorded caches=' \
+    'an unparseable recorded caches= line ranks as uncertain, not as freely widenable'
+assert_contains "$(grep '^caches=' "$unknown_contract")" 'reason=home-cache-unwritable' \
+    'the unparseable-record scenario keeps the recorded line, not a widened fresh one'
+
 # --- field-by-field widen detection: no single axis may mask another --------
 # (issue #332 F2). A scalar SUM lets one axis's tightening cancel out
 # another axis's widening: active tightening no->yes (+2 under the old

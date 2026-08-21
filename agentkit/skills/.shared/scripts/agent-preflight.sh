@@ -651,10 +651,20 @@ caches_restriction_score() {
     # whitespace-free root token is sound: nothing attacker-controlled can
     # precede the genuine reason= at that fixed position.
     reason=$(sed -n 's/^caches= root=[^[:space:]]* reason=\([A-Za-z-]*\).*/\1/p' <<< "$line")
+    # An unparseable or unrecognised reason= (empty match, or a token this
+    # case statement doesn't know) ranks in the MIDDLE, never as the known
+    # least-restrictive value (issue #332 F2 round 3) -- mirroring
+    # sandbox_field_rank's own rule that uncertainty must never read as
+    # freedom. Collapsing "unknown" into "known least-restrictive" (0) was
+    # the bug: a record that fails to parse for ANY reason (a malformed
+    # line, a future reason= token this script doesn't know about yet) would
+    # then compare equal to a genuinely widened "writable" record and the
+    # never-widen guard would miss the widening entirely.
     case "$reason" in
         home-cache-unwritable) printf '2' ;;
         AGENT_CACHE_ROOT-set) printf '1' ;;
-        *) printf '0' ;;
+        home-cache-writable) printf '0' ;;
+        *) printf '1' ;;
     esac
 }
 
@@ -816,25 +826,41 @@ probe_tls() {
 probe_caches() {
     local home_cache root reason
     home_cache="${XDG_CACHE_HOME:-$HOME/.cache}"
-    # A whitespace byte in AGENT_CACHE_ROOT would let it masquerade as more
-    # than one caches= token -- e.g. embedding its own trailing "reason=...
+    # A whitespace byte in root= would let it masquerade as more than one
+    # caches= token -- e.g. embedding its own trailing "reason=...
     # home-cache=..." sequence to spoof the field caches_restriction_score()
     # reads (issue #332 F2). root= is always the first token after "caches= "
     # and is never quoted, so the only sound fix is refusing to emit a root
     # value that could split into extra tokens, not trying to out-pattern one
-    # that already has.
-    if [[ -n "${AGENT_CACHE_ROOT:-}" && "${AGENT_CACHE_ROOT}" != *[[:space:]]* ]]; then
-        root="$AGENT_CACHE_ROOT"
-        reason="AGENT_CACHE_ROOT-set"
-    elif [[ -n "${AGENT_CACHE_ROOT:-}" ]]; then
-        note "ignoring AGENT_CACHE_ROOT: contains whitespace, which the caches= contract record cannot carry safely -- falling back to the home-cache probe"
+    # that already has. EVERY source that can become root= needs this check,
+    # not only AGENT_CACHE_ROOT (round 2 fixed just that one): TMPDIR and the
+    # XDG_CACHE_HOME/$HOME-derived home_cache are environment-controlled too,
+    # and the TMPDIR-derived fallback below is exactly the branch that
+    # produces the RESTRICTIVE home-cache-unwritable record -- if THAT record
+    # were the one that failed to parse, it would score as unknown instead of
+    # restrictive, which is the bypass this guards against (issue #332 F2
+    # round 3).
+    if [[ -n "${AGENT_CACHE_ROOT:-}" ]]; then
+        if [[ "${AGENT_CACHE_ROOT}" != *[[:space:]]* ]]; then
+            root="$AGENT_CACHE_ROOT"
+            reason="AGENT_CACHE_ROOT-set"
+        else
+            note "ignoring AGENT_CACHE_ROOT: contains whitespace, which the caches= contract record cannot carry safely -- falling back to the home-cache probe"
+        fi
     fi
     if [[ -z "${root:-}" ]]; then
-        if dir_writable "$home_cache"; then
+        if [[ "$home_cache" == *[[:space:]]* ]]; then
+            note "treating \$HOME/.cache as unusable: XDG_CACHE_HOME/HOME contains whitespace, which the caches= contract record cannot carry safely"
+        fi
+        if [[ "$home_cache" != *[[:space:]]* ]] && dir_writable "$home_cache"; then
             root="$home_cache"
             reason="home-cache-writable"
         else
             root="${TMPDIR:-/tmp}/agent-cache-$(id -u)"
+            if [[ "$root" == *[[:space:]]* ]]; then
+                note "ignoring TMPDIR: contains whitespace, which the caches= contract record cannot carry safely -- using /tmp instead"
+                root="/tmp/agent-cache-$(id -u)"
+            fi
             reason="home-cache-unwritable"
         fi
     fi
