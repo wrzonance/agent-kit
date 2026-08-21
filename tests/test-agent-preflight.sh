@@ -610,6 +610,35 @@ assert_contains "$tmpdir_widen_err" 'keeping the more-restrictive recorded cache
 assert_contains "$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")" 'reason=home-cache-unwritable' \
     'the whitespace-bearing-TMPDIR scenario keeps the recorded restrictive caches= line, not the fresh one'
 
+# --- a whitespace-bearing $HOME (issue #354's reported scenario -- an
+# ordinary macOS home like "/Users/First Last") must not make the derived
+# XDG_CACHE_HOME/$HOME/.cache root= unparseable either. This is the OTHER
+# source of root= the TMPDIR fixture above doesn't exercise: probe_caches()
+# derives home_cache from $HOME/.cache BEFORE ever reaching the TMPDIR
+# fallback, and round 3's whitespace guard covers that branch too (the
+# home_cache-has-whitespace check right before dir_writable), but until now
+# nothing exercised it directly with a space-bearing $HOME rather than a
+# space-bearing TMPDIR.
+home_space_repo=$(new_repo)
+home_space_home="$tmp/weird home"
+mkdir -p "$home_space_home"
+HOME="$home_space_home" TMPDIR="$tmp" \
+    "$script" --worktree "$home_space_repo" > /dev/null 2>&1
+home_space_recorded=$(grep '^caches=' "$home_space_repo/.agent/env-contract.txt")
+assert_contains "$home_space_recorded" 'reason=home-cache-unwritable' \
+    'a whitespace-bearing HOME still records a well-formed, restrictive caches= line'
+home_space_root=$(sed -n 's/^caches= root=\([^[:space:]]*\).*/\1/p' <<< "$home_space_recorded")
+assert_not_contains "$home_space_root" 'weird' \
+    'the whitespace-bearing HOME value itself is not used as root= (it may still be disclosed in home-cache=)'
+home_space_widen_home="$tmp/home-space-widen-writable"
+mkdir -p "$home_space_widen_home"
+home_space_widen_err=$(HOME="$home_space_widen_home" TMPDIR="$tmp" \
+    "$script" --worktree "$home_space_repo" 2>&1 > /dev/null)
+assert_contains "$home_space_widen_err" 'keeping the more-restrictive recorded caches=' \
+    'a later home-cache-writable measurement is still caught as a widening after a whitespace-bearing HOME run'
+assert_contains "$(grep '^caches=' "$home_space_repo/.agent/env-contract.txt")" 'reason=home-cache-unwritable' \
+    'the whitespace-bearing-HOME scenario keeps the recorded restrictive caches= line, not the fresh one'
+
 # --- an unparseable/unrecognised reason= must rank in the MIDDLE, never as --
 # the known least-restrictive value (issue #332 F2 round 3). Independent of
 # the TMPDIR whitespace source above: ANY future cause of an unparseable
