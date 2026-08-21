@@ -233,11 +233,20 @@ rc=0
 value=$("$reader" --repo-root "$valid_repo" --get skills.path) || rc=$?
 assert_eq 0 "$rc" 'trusted contract allows skills.path reads'
 assert_eq '/tmp/installed/agentkit/skills' "$value" 'skills.path is read from the contract'
-value=$("$reader" --repo-root "$valid_repo" --get harness.trailer)
-assert_eq 'Codex <noreply@openai.com>' "$value" 'harness.trailer is read from the contract'
-value=$("$reader" --repo-root "$valid_repo" --get harness.trailer --worker-model gpt-5.6-luna)
+value=$("$reader" --repo-root "$valid_repo" --get harness.identity)
+assert_eq 'Codex <noreply@openai.com>' "$value" 'harness.identity is read from the contract'
+value=$("$reader" --repo-root "$valid_repo" --get harness.identity --worker-model gpt-5.6-luna)
 assert_eq 'Codex gpt-5.6-luna <noreply@openai.com>' "$value" \
     'worker-model substitution is performed by the helper'
+# harness.trailer composes the SAME identity into a complete, git-parseable
+# trailer line (issue #345) -- it never returns a bare identity, which is
+# what let a caller pass one straight to worktree-commit.sh's --trailer.
+value=$("$reader" --repo-root "$valid_repo" --get harness.trailer)
+assert_eq 'Co-Authored-By: Codex <noreply@openai.com>' "$value" \
+    'harness.trailer composes a full Co-Authored-By line from the contract identity'
+value=$("$reader" --repo-root "$valid_repo" --get harness.trailer --worker-model gpt-5.6-luna)
+assert_eq 'Co-Authored-By: Codex gpt-5.6-luna <noreply@openai.com>' "$value" \
+    'harness.trailer composition also carries worker-model substitution'
 value=$("$reader" --repo-root "$valid_repo" --get harness.name)
 assert_eq codex "$value" 'harness.name is read from the contract'
 value=$("$reader" --repo-root "$valid_repo" --get repo.slug)

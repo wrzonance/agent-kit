@@ -28,7 +28,10 @@ worker_model=''
 
 usage() {
     printf 'usage: %s --repo-root DIR (--get KEY [--worker-model ID] | --check)\n' "$PROGRAM" >&2
-    printf 'keys: skills.path harness.trailer harness.name repo.slug base.branch\n' >&2
+    printf 'keys: skills.path harness.identity harness.trailer harness.name repo.slug base.branch\n' >&2
+    printf '  harness.identity resolves to the bare harness identity (e.g. "Claude <noreply@anthropic.com>").\n' >&2
+    printf '  harness.trailer resolves to the full, git-parseable trailer line built from that identity\n' >&2
+    printf '  (e.g. "Co-Authored-By: Claude <noreply@anthropic.com>") -- it never returns a keyless value.\n' >&2
     exit 2
 }
 
@@ -84,18 +87,18 @@ contract="$repo_root/.agent/env-contract.txt"
 case $mode in
     get)
         case $key in
-            skills.path|harness.trailer|harness.name|repo.slug|base.branch) ;;
+            skills.path|harness.identity|harness.trailer|harness.name|repo.slug|base.branch) ;;
             *) die 2 "unknown contract key: $key" ;;
         esac
-        [[ -z $worker_model || $key == harness.trailer ]] ||
-            die 2 '--worker-model requires --get harness.trailer'
+        [[ -z $worker_model || $key == harness.identity || $key == harness.trailer ]] ||
+            die 2 '--worker-model requires --get harness.identity or harness.trailer'
         if [[ -n $worker_model ]]; then
             [[ $worker_model =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] ||
                 die 2 '--worker-model must be a safe single-token identifier'
         fi
         ;;
     check)
-        [[ -z $worker_model ]] || die 2 '--worker-model requires --get harness.trailer'
+        [[ -z $worker_model ]] || die 2 '--worker-model requires --get harness.identity or harness.trailer'
         ;;
 esac
 
@@ -142,10 +145,19 @@ emit_value() {
     if [[ -n $worker_model ]]; then
         original=$value
         [[ $value == *' <'* ]] ||
-            die 1 'harness.trailer has no email boundary for worker-model substitution'
+            die 1 'harness identity has no email boundary for worker-model substitution'
         value=$(printf '%s\n' "$value" | sed "s| <| $worker_model <|")
         [[ $value != "$original" ]] ||
-            die 1 'harness.trailer substitution did not change the value'
+            die 1 'harness identity substitution did not change the value'
+    fi
+    # harness.trailer is the ONLY key that composes a full "Key: value" trailer
+    # line -- harness.identity (and every other key) always returns bare data.
+    # This is the fix for the keyless-trailer defect (issue #345): a field
+    # literally named "trailer" now always returns something git can parse as
+    # one, so a caller can no longer be misled by the name into passing an
+    # identity straight to worktree-commit.sh's --trailer.
+    if [[ $key == harness.trailer ]]; then
+        value="Co-Authored-By: $value"
     fi
     printf '%s\n' "$value"
 }
@@ -157,7 +169,9 @@ read_contract_value() {
         skills.path)
             raw=$(sed -n 's/^skills= path=//p' "$contract")
             ;;
-        harness.trailer)
+        harness.identity|harness.trailer)
+            # Both keys read the same raw contract field; emit_value is what
+            # composes harness.trailer into a full "Co-Authored-By: ..." line.
             raw=$(sed -n 's/^harness=.*trailer="\([^"]*\)".*/\1/p' "$contract")
             ;;
         harness.name)
@@ -196,7 +210,7 @@ value=$raw
 
 if [[ -n $cache_digest ]]; then
     cache_entries=()
-    for cache_key in skills.path harness.trailer harness.name repo.slug base.branch; do
+    for cache_key in skills.path harness.identity harness.trailer harness.name repo.slug base.branch; do
         cache_value=$(read_contract_value "$cache_key")
         [[ -n $cache_value ]] && cache_entries+=("$cache_key=$cache_value")
     done

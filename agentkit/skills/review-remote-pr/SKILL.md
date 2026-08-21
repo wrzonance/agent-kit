@@ -241,7 +241,7 @@ git diff --name-only --diff-filter=U   # resolve each listed file, then:
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
-# Trailer from harness=; contract-read.sh performs provenance checks and model substitution.
+# harness.trailer composes a full "Co-Authored-By: ..." line already; pass it verbatim.
 contract_root="$(git rev-parse --show-toplevel)"
 worker_model=$("$agentkit/.shared/scripts/repo-config.sh" --repo-root "$contract_root" \
   --get AGENT_WORKER_MODEL 2>/dev/null || true)
@@ -252,7 +252,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 # Chained: no `set -e` here, so unchained these would push even after the commit
 # helper or a verification failed -- what the rule below forbids.
 "$agentkit/.shared/scripts/worktree-commit.sh" --message 'fix(example): resolve merge conflicts with the base branch' \
-  --trailer "Co-Authored-By: $worker_attribution" -- "$resolved" &&
+  --trailer "$worker_attribution" -- "$resolved" &&
 "$agentkit/.shared/scripts/agent-run.sh" --cmd lint --if-declared &&
 "$agentkit/.shared/scripts/agent-run.sh" --cmd test &&
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
