@@ -1045,6 +1045,74 @@ out=$(pre_input "$repo" "$unquoted_benign_heredoc" | "$hooks/pre-tool-use.sh" 2>
 assert_eq 'allow' "$(decision "$out")" \
     'a benign substitution inside an unquoted heredoc BODY is still allowed'
 
+# --- issue #364 review round 2: execution wrappers must not hide the
+# interpreter from guard_heredoc_consumer_is_shell -----------------------
+# The consumer-resolution walk skipped `env`'s own flags/NAME=value pairs to
+# reach the interpreter it execs, but stopped there -- any OTHER wrapper
+# standing in front of the interpreter (sudo, command, nohup, timeout, nice,
+# ionice, stdbuf, doas, setsid, xargs) made the function report "not a
+# shell", so a QUOTED heredoc body handed to `sudo bash` or `timeout 5 bash`
+# was dropped as inert data and never inspected. Assembled with string
+# concatenation, not typed literally, so this file's own text is never a
+# destructive payload (see the harness note at the top of this suite's PR).
+destructive_body='rm -r''f ~'
+for wrapper in 'sudo bash' 'command bash' 'nohup sh' 'timeout 5 bash' \
+    'sudo -u root bash' 'timeout -s KILL 5 bash' 'nice -n 5 bash' \
+    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash'; do
+    wrapped_heredoc=$(printf "%s <<'EOF'\n%s\nEOF" "$wrapper" "$destructive_body")
+    out=$(pre_input "$repo" "$wrapped_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a destructive body in a quoted heredoc handed to '$wrapper' is refused"
+done
+
+# The fix must not turn every wrapper into a shell by default -- a quoted
+# heredoc to a genuinely inert consumer reached through a wrapper (here,
+# `sudo cat`, merely quoting a destructive example as prose) stays data.
+inert_wrapper_note="Never run ${destructive_body} on this box."
+inert_wrapper_heredoc=$(printf "sudo cat > /tmp/out.txt <<'EOF'\n%s\nEOF" "$inert_wrapper_note")
+out=$(pre_input "$repo" "$inert_wrapper_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted heredoc to an inert consumer reached through a wrapper (sudo cat) stays allowed'
+
+# --- issue #364 review round 2: the heredoc-owner segment must be flushed
+# when the heredoc closes, not left to merge with whatever text follows ----
+# guard_destructive_command_segments captures the owner line into $segment at
+# the `<<` opener, but the end-of-line flush is skipped while `heredoc` is
+# set, and the terminator-line branch closes the heredoc without ever
+# flushing that pending segment. The function's CONTRACT is one segment per
+# command; nothing here re-splits on newlines except by accident.
+#
+# A `while read -r` loop over the segmenter's OWN OUTPUT cannot detect this:
+# newline-delimited text is indistinguishable whether it came from one
+# printf call with an embedded newline or two separate calls, so the merge
+# with a FOLLOWING command produces byte-identical stdout either way (proven
+# by direct comparison against the pre-fix code before this test was
+# written). What genuinely differs is when the heredoc is the LAST construct
+# in the payload, with no following command to accidentally carry the
+# pending segment out via its own flush -- there, the unflushed segment is
+# not merged, it is silently DROPPED. Calling the segmenter directly (not
+# through any newline-based re-split) and counting its emitted array is what
+# actually observes the flush.
+segment_flush_owner="rm -r""f ~ <<'EOF'"
+segment_flush_payload=$'rm -rf ~ <<\'EOF\'\nnotes\nEOF'
+mapfile -t segment_flush_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$segment_flush_payload"
+)
+assert_eq '1' "${#segment_flush_segs[@]}" \
+    'the heredoc-owner segment is emitted even when the heredoc is the last construct in the payload'
+assert_eq "$segment_flush_owner" "${segment_flush_segs[0]-}" \
+    'and the emitted segment is exactly the owner line, not merged with or missing the heredoc opener'
+
+# Same shape at the hook level: an owner line that is itself destructive,
+# with nothing after the heredoc closes, must still be refused -- before this
+# fix the unflushed segment was dropped entirely, so guard_destructive_reason
+# saw zero segments and allowed it.
+segment_flush_hook_payload=$(printf "%s <<'EOF'\nnotes\nEOF" "rm -r""f ~")
+out=$(pre_input "$repo" "$segment_flush_hook_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive heredoc-owner line with nothing following the heredoc close is still refused'
+
 # A destructive command is refused on the SECOND attempt too -- the opposite of
 # the once-per-session rule that governs every other denial here.
 same_sid=$(fresh_sid)

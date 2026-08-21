@@ -974,26 +974,112 @@ guard_has_short_flags() {
 # script regardless of delimiter quoting -- quoting only controls expansion
 # INSIDE the heredoc, never whether the consumer executes what it reads.
 # `bash <<'EOF' ... rm -rf ~ ... EOF` deletes just as surely as the unquoted
-# form. Skips `env`'s own flags/NAME=value pairs to reach the interpreter it
-# execs, and leading VAR=value assignments on the owning command itself.
+# form. Skips leading VAR=value assignments on the owning command itself,
+# then walks past every execution wrapper standing between that and the real
+# interpreter -- `env`, `sudo`/`doas`, `command`, `nohup`/`setsid`, `timeout`,
+# `nice`/`ionice`, `stdbuf`, `xargs` -- so `sudo bash`, `timeout 5 bash`, and
+# chains of these (`env FOO=1 sudo bash`) all resolve to the interpreter they
+# actually exec instead of stopping at the wrapper's own name. A wrapper not
+# in this list, or a name that isn't a wrapper at all, ends the walk and is
+# judged on its own -- that is a resolved verdict, not a guess.
+#
+# If the walk runs out of tokens while stepping over a wrapper's own flags --
+# a malformed or unrecognised invocation this function cannot confidently
+# parse -- it returns 0 (treat as shell) rather than 1. A false positive here
+# costs a refusal message; a false negative lets a destructive body through
+# unexamined, which is worse.
 guard_heredoc_consumer_is_shell() {
-    local owner=$1 word i=0
+    local owner=$1 word wrapper i=0
     local -a words
     mapfile -t words < <(guard_tokenize_words "$owner")
     while ((i < ${#words[@]})) && [[ ${words[i]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
         ((i++))
     done
     word=${words[i]-}
-    if [[ ${word##*/} == env ]]; then
-        ((i++))
-        while ((i < ${#words[@]})); do
-            case ${words[i]} in
-                -*|*=*) ((i++));;
-                *) break;;
-            esac
-        done
+
+    while [[ -n $word ]]; do
+        wrapper=${word##*/}
+        case $wrapper in
+            env)
+                ((i++))
+                while ((i < ${#words[@]})); do
+                    case ${words[i]} in
+                        -*|*=*) ((i++));;
+                        *) break;;
+                    esac
+                done
+                ;;
+            sudo|doas)
+                ((i++))
+                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                    case ${words[i]} in
+                        -u|-g|-p|-r|-t|-C|-h|--user|--group|--prompt|--role|--type|--close-from|--host)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            command|nohup|setsid)
+                ((i++))
+                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                    ((i++))
+                done
+                ;;
+            timeout)
+                ((i++))
+                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                    case ${words[i]} in
+                        -s|-k|--signal|--kill-after)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                # The DURATION is a required positional argument.
+                ((i++))
+                ;;
+            nice|ionice)
+                ((i++))
+                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                    case ${words[i]} in
+                        -n|-c|-p|--adjustment)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            stdbuf)
+                ((i++))
+                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                    case ${words[i]} in
+                        -i|-o|-e)
+                            # Bare flag (no attached value, e.g. `-o` not
+                            # `-oL`) takes the next token as its value.
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            xargs)
+                ((i++))
+                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                    case ${words[i]} in
+                        -I|-L|-n|-P|-s|-d|-E|--replace|--max-lines|--max-args|--max-procs|--max-chars|--delimiter|--eof)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            *)
+                break
+                ;;
+        esac
         word=${words[i]-}
-    fi
+    done
+
+    # Ran out of tokens mid-wrapper (e.g. `sudo -u` with nothing after): the
+    # real interpreter could not be confidently resolved. Treat as a shell.
+    ((i >= ${#words[@]} && ${#words[@]} > 0)) && [[ -z $word ]] && return 0
+
     case ${word##*/} in
         bash|sh|zsh|dash|ksh|ash|mksh) return 0;;
     esac
@@ -1091,6 +1177,24 @@ guard_destructive_command_segments() {
                     body=''
                 fi
                 owner=''
+                # The owner line (everything up to and including the heredoc
+                # opener, captured in $segment) is a complete command in its
+                # own right -- flush it now instead of leaving it to merge
+                # with whatever text follows. Without this, $segment keeps
+                # accumulating past the heredoc close and the NEXT command
+                # gets appended onto it before the end-of-line flush below
+                # ever runs, breaking this function's one-segment-per-command
+                # contract. `guard_destructive_reason`'s `while read -r`
+                # consumer happens to re-split on the embedded newline today,
+                # which is why that merge currently causes no misjudged
+                # command -- but a caller that reads differently (an array,
+                # a NUL-delimited read, a whole-string match) would see one
+                # merged segment instead of two, so this is fixed at the
+                # source rather than left as an implicit coupling.
+                if [[ -n $segment ]]; then
+                    printf '%s\n' "${segment%$'\n'}"
+                    segment=''
+                fi
                 continue
             fi
             bodyline=$line
