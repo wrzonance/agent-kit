@@ -147,18 +147,50 @@ assert_not_contains "$unrelated_flag_out" 'hardcodes a Compose project name' \
     'an unrelated short -p flag is not treated as a Compose project name'
 
 # --- Compose dependency-start collisions are retry-eligible findings --------
+# Positive evidence path 1: the declared command's resolved argv is itself a
+# Compose invocation (compose_argv already answers this).
 repo=$(make_repo)
-printf '#!/bin/sh\nprintf "docker compose: dependency failed to start; container name is already in use\\n"\nexit 1\n' \
-    > "$repo/tools/fail-compose"
-chmod +x "$repo/tools/fail-compose"
-printf 'AGENT_CMD_TEST=tools/fail-compose\n' > "$repo/.agent/config.env"
+printf '#!/bin/sh\nprintf "dependency failed to start; container name is already in use\\n"\nexit 1\n' \
+    > "$repo/tools/docker"
+chmod +x "$repo/tools/docker"
+printf 'AGENT_CMD_TEST=tools/docker compose\n' > "$repo/.agent/config.env"
 collision_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
 assert_contains "$collision_out" 'FAIL(rc=1)' \
     'a Compose collision preserves the wrapped command exit status'
 assert_contains "$collision_out" 'environment-retry-eligible' \
-    'a Compose dependency-start collision is retry-eligible'
+    'a Compose dependency-start collision is retry-eligible when the declared command is a Compose invocation'
 assert_contains "$collision_out" 'not a code regression' \
     'the collision finding is distinct from a code regression'
+
+# Positive evidence path 2: the repository actually contains a Compose file,
+# even though the declared command itself is not a Compose invocation.
+repo=$(make_repo)
+printf 'services: {}\n' > "$repo/compose.yaml"
+printf '#!/bin/sh\nprintf "dependency failed to start; port is already allocated\\n"\nexit 1\n' \
+    > "$repo/tools/fail-compose-file"
+chmod +x "$repo/tools/fail-compose-file"
+printf 'AGENT_CMD_TEST=tools/fail-compose-file\n' > "$repo/.agent/config.env"
+compose_file_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
+assert_contains "$compose_file_out" 'environment-retry-eligible' \
+    'a Compose dependency-start collision is retry-eligible when the repository contains a Compose file'
+
+# The defect this issue fixes: signature 1 used to be satisfied by ANY log
+# line mentioning "docker compose" or "docker-compose" -- including a test
+# name that merely describes Compose behaviour -- with no evidence the
+# declared command or repository actually used Compose. A repository with no
+# Compose file, running a declared command that is not itself a Compose
+# invocation, must never classify -- even when its log contains both the old
+# substring signature and a genuine collision signature.
+repo=$(make_repo)
+printf '#!/bin/sh\nprintf "ok a declared docker compose test command brings the Compose-isolation prose\\n"\nprintf "FAIL: expected port 8080 free, but port is already allocated\\n"\nexit 1\n' \
+    > "$repo/tools/fail-compose-mention"
+chmod +x "$repo/tools/fail-compose-mention"
+printf 'AGENT_CMD_TEST=tools/fail-compose-mention\n' > "$repo/.agent/config.env"
+mention_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
+assert_contains "$mention_out" 'FAIL(rc=1)' \
+    'a mislabelled misfire fixture still preserves the wrapped command exit status'
+assert_not_contains "$mention_out" 'environment-retry-eligible' \
+    'a log mentioning "docker compose" only in test/assertion text is not retry-eligible without positive Compose evidence'
 
 repo=$(make_repo)
 printf '#!/bin/sh\nprintf "AssertionError: expected green result\\n"\nexit 1\n' \
