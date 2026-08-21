@@ -145,7 +145,8 @@ conflict analysis. The plan uses this schema:
       "issue": 167,
       "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"],
       "workerEffort": "xhigh",
-      "effortReason": "novel cache-ownership rewrite; three prior attempts failed"
+      "effortReason": "novel cache-ownership rewrite; three prior attempts failed",
+      "uncoveredVerification": [4, 6]
     }
   ],
   "conflictMap": {
@@ -188,6 +189,19 @@ predecessor's recorded head. `pr-to-green` verifies every recorded PR and head
 but performs no discovery graph walk while the artifact is current. An absent
 artifact or recorded-head drift activates forge derivation; malformed records,
 duplicates, or an unsafe live base fail closed.
+
+`uncoveredVerification` records the verification steps this issue's spec
+enumerates that no declared command covers. `compose-worker-prompt.sh` reports
+them when it composes the issue-lead prompt -- before the worker is spawned --
+as `spec-verification= issue=N steps=K covered=C uncovered=U uncovered-steps=…`,
+where the values are 1-based step indices counted in order of appearance inside
+the composed `## Spec` block. A non-zero `uncovered` belongs on the entry, so the
+gap is a disclosed dispatch fact rather than something the worker discovers
+mid-implementation and reconciles alone; omit the key when the composer reports
+`uncovered=0`. It is a disclosure, never a gate: the composer's matching is
+textual and deliberately approximate (the same posture as `ci-gap.sh` for CI
+gates), so an uncovered step is a prompt to declare the missing command or to
+accept the gap in writing, not a reason to hold the dispatch.
 
 `workerEffort` is the optional per-issue effort override — **effort follows the issue, not
 the run**. Omitted, the issue dispatches at the `AGENT_WORKER_EFFORT` default; present, it
