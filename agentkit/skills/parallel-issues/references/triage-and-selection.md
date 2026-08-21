@@ -289,11 +289,17 @@ set -euo pipefail
 ```
 
 ```text
-pick= project=10 owner=example-org candidates=4 of=18 selectable=2 calls=2
+pick= project=10 owner=example-org scanned=18 of=18 candidates=4 selectable=2 calls=2
   #10  Ready  a title
   SKIP #11  Ready  another title  [blocked by #99]
   #12  Backlog  a groomable title
 ```
+
+`scanned=` and `of=` are two different populations on purpose: `scanned=` is how many cards
+the read actually fetched, `of=` is the board's declared total. When they diverge the script
+refuses to select at all -- a `TRUNCATED:` block and a nonzero exit, no candidate/SKIP lines --
+because a partial read cannot judge the whole board. Re-run with the suggested `--limit` rather
+than trusting a subset.
 
 **Only `selectable` lines are eligible.** A `SKIP` line is a decision the script already
 made; do not re-litigate it, and never dispatch one because the blocker "looks stale".

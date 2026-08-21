@@ -22,12 +22,19 @@
 #   pick-issues.sh [--repo-root DIR] [--limit N] [--include-backlog]
 #                  [--ready-only] [--json]
 #
-# Exit: 0 success (including an empty selection), 1 a call failed, 2 bad usage,
-#       3 gh unavailable/unauthenticated (environment-blocked).
+# Exit: 0 success (including an empty selection), 1 a call failed or the board
+#       read was truncated (declared total exceeds what --limit fetched -- a
+#       partial read cannot judge the whole board, so it refuses to select),
+#       2 bad usage, 3 gh unavailable/unauthenticated (environment-blocked).
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}
-readonly DEFAULT_LIMIT=50
+# 1000, not 50. A 123-card board answered through a 50-item window reported
+# "candidates=3 of=123" -- two numbers describing different populations on one
+# line, read by an unattended run as a whole-board scan. board-list.sh already
+# carries this lesson (see its ARG_LIMIT comment); this script did not inherit
+# it until this default caught the same defect on a live run.
+readonly DEFAULT_LIMIT=1000
 # Dependencies deep enough to exceed this are a planning problem, not a paging
 # problem; the count is reported so a truncated read never reads as "unblocked".
 readonly BLOCKER_PAGE=20
@@ -75,7 +82,7 @@ while (($#)); do
     shift
 done
 
-[[ $limit =~ ^[0-9]{1,3}$ ]] || die_usage "--limit must be a number, got: $limit"
+[[ $limit =~ ^[0-9]{1,4}$ ]] || die_usage "--limit must be a number, got: $limit"
 
 for tool in gh jq; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
@@ -115,8 +122,22 @@ items=$(gh project item-list "$project_number" --owner "$board_owner" \
     --limit "$limit" --format json 2> /dev/null) ||
     die "could not read project $project_number for owner $board_owner"
 
-declared_total=$(jq -r '.totalCount // 0' <<< "$items" 2> /dev/null || printf '0')
+declared_total=$(jq -r '.totalCount // empty' <<< "$items" 2> /dev/null || true)
 fetched=$(jq -r '(.items // []) | length' <<< "$items" 2> /dev/null || printf '0')
+
+# A truncated read must not produce a selection: selection is an eligibility
+# judgement over the whole board, and a partial read cannot make it. Reporting
+# a plausible-looking subset here is the exact defect this script exists to
+# avoid -- a confident, silently-wrong answer instead of a slow, honest one.
+if [[ -n $declared_total ]] && ((fetched < declared_total)); then
+    printf 'pick= project=%s owner=%s scanned=%s of=%s calls=1\n' \
+        "$project_number" "$board_owner" "$fetched" "$declared_total" >&2
+    printf 'TRUNCATED: read %s of %s items. Selection refused -- every count above is a\n' \
+        "$fetched" "$declared_total" >&2
+    printf 'count of what was read, not of what the board holds. Re-run with --limit %s.\n' \
+        "$((declared_total + 100))" >&2
+    exit 1
+fi
 
 wanted_statuses='["ready"]'
 ((include_backlog == 0)) || wanted_statuses='["ready","backlog"]'
@@ -142,8 +163,8 @@ if ((count == 0)); then
     if ((as_json)); then
         printf '[]\n'
     else
-        printf 'pick= project=%s owner=%s candidates=0 of=%s selectable=0 calls=1\n' \
-            "$project_number" "$board_owner" "${declared_total:-$fetched}"
+        printf 'pick= project=%s owner=%s scanned=%s of=%s candidates=0 selectable=0 calls=1\n' \
+            "$project_number" "$board_owner" "$fetched" "${declared_total:-$fetched}"
         printf 'nothing is eligible to start\n'
     fi
     exit 0
@@ -193,8 +214,8 @@ if ((as_json)); then
 fi
 
 eligible=$(jq -r '[.[] | select(.eligible)] | length' <<< "$selection")
-printf 'pick= project=%s owner=%s candidates=%s of=%s selectable=%s calls=2\n' \
-    "$project_number" "$board_owner" "$count" "${declared_total:-$fetched}" "$eligible"
+printf 'pick= project=%s owner=%s scanned=%s of=%s candidates=%s selectable=%s calls=2\n' \
+    "$project_number" "$board_owner" "$fetched" "${declared_total:-$fetched}" "$count" "$eligible"
 
 jq -r '.[]
     | if .eligible then "  " else "  SKIP " end
