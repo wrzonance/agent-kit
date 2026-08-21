@@ -120,6 +120,133 @@ it. tests/test-bench-tier0.sh asserts this property directly (a second
 invocation strictly grows the file; every previously-written line is
 byte-identical afterward).
 
+Tier 1's task substrate -- Tally, the ten issues, and the gold tree
+------------------------------------------------------------------
+
+Issue #325 (slice 3 of the epic) adds the fixed, controlled task substrate
+Tier 1 measures agents against. Like issue #323's Tier 0, the epic's design
+doc (`docs/superpowers/specs/2026-08-13-token-benchmark-design.md`, branch
+`docs/token-benchmark-spec`) was NOT present on this directory's base branch
+at implementation time. Everything below follows the issue #325 body's
+restated structural requirements directly -- see "Construction decisions"
+at the end of this stanza for the specific choices the absent doc would
+otherwise have pinned down.
+
+    bench/
+      fixtures/tally/    -- the Tally skeleton: a small, dependency-free
+                             ES-module SPA (index.html + src/store.js +
+                             src/render.js + src/main.js), plus its own
+                             public smoke test (test/smoke.mjs, runnable via
+                             `node test/smoke.mjs`, no network, no bundler)
+                             and a hand-authored .agent/config.env (see
+                             below).
+      issues/*.md         -- the ten frozen issue bodies, one file each,
+                             spec-grade (a concrete, checkable Acceptance
+                             Criteria list per issue). Each carries a small
+                             structured frontmatter block
+                             (id / conflict_group / files / blocked_by)
+                             that verify-issues.py reads.
+      gold/tally/          -- the reference solution: bench/fixtures/tally
+                             with all ten issues' changes applied and
+                             merged (the two render.js issues and the three
+                             store.js issues coexist in one file each; the
+                             five disjoint issues each add one standalone
+                             module + its own test/*.smoke.mjs).
+      build-gold.sh         -- builds (syntax-checks every source file,
+                             confirms index.html's entry-point wiring) and
+                             runs (every test/*.smoke.mjs) bench/gold/tally
+                             standalone. `bench/build-gold.sh` with no
+                             arguments.
+      verify-issues.py      -- mechanically verifies bench/issues/*.md's
+                             conflict/dependency structure: exactly ten
+                             issues, exactly 2 sharing src/render.js and 3
+                             sharing src/store.js (conflicting), exactly 5
+                             touching no file any other issue touches
+                             (disjoint), and a blocked_by DAG whose longest
+                             chain is exactly depth 3. `python3
+                             bench/verify-issues.py`, no arguments, no
+                             network, stdlib only.
+      verify-config-env.sh   -- proves
+                             bench/fixtures/tally/.agent/config.env is
+                             resolver-parseable at both benchmark-arm SHAs
+                             (06d18cf, 53e7e8c): extracts
+                             repo-config.sh as it existed at each SHA and
+                             asserts every key the fixture's config.env
+                             declares actually resolves through it, not
+                             just that the resolver exits 0. `bench/
+                             verify-config-env.sh`, no arguments.
+
+The conflict/dependency structure, exactly as issue #325 fixed it:
+
+    conflict_group=render (2): tally-01, tally-02        -- both edit
+        src/render.js's header/list region in renderApp.
+    conflict_group=store  (3): tally-03, tally-04, tally-05 -- all three
+        add a new exported function to src/store.js.
+    conflict_group=none   (5, disjoint): tally-06..tally-10 -- each adds
+        exactly one standalone module (+ its own test file); no file is
+        shared between any two of them, and none touches render.js or
+        store.js.
+    blocked_by chain: tally-06 -> tally-07 -> tally-08 -> tally-09 (three
+        edges, depth 3 -- one under both arms' byte-identical chain depth
+        cap of 4). tally-10 is a second, shorter branch off tally-06
+        (depth 1) so the graph's longest path stays exactly 3.
+
+Frozen-set boundary
+--------------------
+
+bench/fixtures/**, bench/gold/**, and bench/issues/** are this slice's
+frozen set, per issue #325's "Freezing" requirement: a fixture whose exact
+bytes later changed out from under a published Tier-1 result would make
+that result silently incomparable to a re-run. Any future edit to a file
+under those three trees -- fixing a bug in the gold solution, rewording an
+issue's acceptance criteria, adjusting the base Tally skeleton -- forks
+`fixture_version` to a new string (e.g. `tier1-v2`) rather than mutating
+`tier1-v1` (or whatever a later Tier-1 ledger slice names it) in place.
+This mirrors Tier 0's `fixture_version` convention above; enforcing it
+mechanically (e.g. a hash-pin test) is left to the ledger slice that
+actually writes Tier-1 rows, per the issue body.
+
+bench/build-gold.sh and bench/verify-issues.py are tooling, not fixture
+content -- they are expected to gain fixes/features without forking
+`fixture_version`, the same way bench/tier0.sh itself is not part of Tier
+0's frozen set.
+
+Construction decisions (no design doc to defer to)
+----------------------------------------------------
+
+The design doc would have specified: Tally's exact feature list, and the
+ten issues' exact wording. In its absence, this slice made these choices,
+recorded here rather than silently implied as the design doc's own:
+
+  - Tally is a tally-counter list app (add a named counter, +/-, remove),
+    not any other app shape -- chosen only because it is small enough to
+    hand-author ten spec-grade issues against without an oracle yet.
+  - store.js and render.js are both plain pure functions (no framework, no
+    real DOM in render.js -- it returns HTML strings) specifically so the
+    base fixture and the gold tree are testable under plain `node`, with
+    no jsdom/browser dependency and therefore no network install.
+  - The five disjoint issues are each scoped to a single new standalone
+    module that is NOT wired into src/main.js. This is what makes
+    "disjoint" mean something real at the file level (no issue's
+    acceptance criteria can be satisfied by touching src/main.js), at the
+    cost of the resulting app not actually surfacing dark mode/keyboard
+    shortcuts/export/import/stats in the UI -- wiring them in is
+    explicitly out of scope for this fixture slice.
+  - The blocked_by chain is built entirely from the disjoint issue set
+    (tally-06..tally-10), not from the conflicting issues. The conflicting
+    issues are deliberately independent of each other in the blocked_by
+    graph -- the whole point of the render.js/store.js conflict pairs is
+    that they are dispatched in parallel and collide, which a blocked_by
+    edge would prevent from ever happening.
+  - bench/fixtures/tally/.agent/config.env's key set (AGENT_REPO_SLUG,
+    AGENT_BASE_BRANCH, AGENT_WORKTREE_ROOT, AGENT_BRANCH_PREFIXES,
+    AGENT_LABEL_TYPES/AREAS/PRIORITIES, AGENT_CMD_TEST) was chosen by
+    diffing agentkit/skills/.shared/scripts/repo-config.sh's ACCEPTED_KEYS
+    array at 06d18cf and 53e7e8c directly (`git show <sha>:path | grep
+    ACCEPTED_KEYS` at each) and keeping only the intersection -- not by
+    trusting the issue body's claim of "byte-identical cap strings"
+    verbatim. Every key used here is in that intersection at both SHAs.
+
 Reproducing the epic's Tier-0 numbers
 --------------------------------------
 
