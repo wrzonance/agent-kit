@@ -618,6 +618,187 @@ for root_sweep in 'find / -name AGENTS.md' 'cd / && find / -name AGENTS.md'; do
         "a root sweep returns a deny permission decision: $root_sweep"
 done
 
+# --- harness-injected plugin-cache trees are not foreign (issue #335 Case 2) -
+# A SKILL.md the running harness itself loaded into the session at
+# SessionStart (e.g. a companion plugin's skill tree) lives under the
+# harness's own plugins/cache -- reading it is expected, ordinary traffic, not
+# an environment probe of foreign content. Observed live: a read of the
+# harness's OWN injected using-superpowers/SKILL.md was advised as "foreign".
+harness_home=$(mktemp -d "$tmp/harness-home.XXXXXX")
+harness_cache="$harness_home/.claude/plugins/cache/claude-plugins-official/superpowers/1.0.0/skills/using-superpowers"
+mkdir -p "$harness_cache"
+printf 'skill content\n' > "$harness_cache/SKILL.md"
+harness_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cat $harness_cache/SKILL.md" "$harness_sid" |
+    CLAUDE_CONFIG_DIR="$harness_home/.claude" HOME="$harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a read under the harness own plugin-cache skills tree classifies as harness, not foreign'
+assert_eq 'allow' "$(decision "$out")" 'and stays allowed'
+
+# The same claim, but for Codex's harness variable -- guard_harness_plugin_cache_roots
+# resolves CLAUDE_CONFIG_DIR and CODEX_HOME independently since either may be
+# unset while the other harness is the one actually running. Only the Claude
+# path had a fixture; a Codex-only regression here would still pass the suite.
+# RUNNER_TEMP/dev/shm rather than $tmp itself: everything under $tmp is a
+# configured AGENT_FIXTURE_ROOTS fixture, which would classify as `fixture`
+# and mask the harness-classification distinction under test here (same
+# reasoning as the Claude harness-vs-foreign comparison above).
+codex_harness_home=$(mktemp -d "${RUNNER_TEMP:-/dev/shm}/codex-harness-home.XXXXXX")
+codex_harness_cache="$codex_harness_home/.codex/plugins/cache/agentkit-official/agentkit/1.0.0/skills/onboard-repo"
+mkdir -p "$codex_harness_cache"
+printf 'skill content\n' > "$codex_harness_cache/SKILL.md"
+codex_harness_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cat $codex_harness_cache/SKILL.md" "$codex_harness_sid" |
+    env -u CLAUDE_CONFIG_DIR CODEX_HOME="$codex_harness_home/.codex" HOME="$codex_harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a read under the CODEX_HOME plugin-cache skills tree classifies as harness, not foreign'
+assert_eq 'allow' "$(decision "$out")" 'and stays allowed, with no CLAUDE_CONFIG_DIR set'
+rm -rf -- "$codex_harness_home"
+
+# `foreign` is unchanged for genuinely out-of-tree content -- a sibling
+# checkout outside every plugins/cache root is still foreign, not harness.
+# RUNNER_TEMP/dev/shm rather than $tmp itself: everything under $tmp is a
+# configured AGENT_FIXTURE_ROOTS fixture (see the /tmp fixture test above),
+# which would classify as `fixture` and mask the distinction under test here.
+harness_foreign_parent=${RUNNER_TEMP:-/dev/shm}
+harness_sibling=$(mktemp -d "$harness_foreign_parent/hooks-harness-foreign.XXXXXX")
+out=$(pre_input "$scope_repo" "cat $harness_sibling/AGENTS.md" "$(fresh_sid)" |
+    CLAUDE_CONFIG_DIR="$harness_home/.claude" HOME="$harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'classification: foreign' \
+    'a sibling path outside every plugins/cache root still classifies as foreign'
+rm -rf -- "$harness_sibling"
+
+# --- heredoc-body payloads never leak into scope classification (issue #335
+# Case 3) -- guard_out_of_scope_target must classify from the command as the
+# shell would actually PARSE it (segments and quoted-word boundaries), never
+# from raw command TEXT. A heredoc BODY is data destined for a file, never
+# executed; splitting the raw text on `;&|` also broke inside a quoted
+# argument, so a `|` or `;` used as ordinary regex/prose punctuation was
+# mistaken for shell structure.
+heredoc_scope_sid=$(fresh_sid)
+heredoc_scope_cmd="cat <<'EOF' > /tmp/notes.md
+rg --files /some/tree | rg '/(\\.shared|shared)/|spawn|wait|six-step'
+EOF"
+out=$(pre_input "$scope_repo" "$heredoc_scope_cmd" "$heredoc_scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a regex fragment with a leading / inside a quoted heredoc body produces no scope advisory'
+
+quoted_string_sid=$(fresh_sid)
+quoted_string_cmd="cat <<'EOF' > /tmp/notes2.md
+See /home/user-sibling/notes for the path-shaped text under discussion.
+EOF"
+out=$(pre_input "$scope_repo" "$quoted_string_cmd" "$quoted_string_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'path-shaped prose inside a quoted heredoc body produces no scope advisory'
+
+inline_script_sid=$(fresh_sid)
+inline_script_cmd="python3 - <<'EOF'
+print(\"/home/user-sibling/data\")
+EOF"
+out=$(pre_input "$scope_repo" "$inline_script_cmd" "$inline_script_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an absolute path in a python string literal inside a quoted heredoc produces no scope advisory'
+
+# The command TEXT and its parsed argv disagree here: naive text-splitting on
+# `;&|` breaks mid-regex (the second rg's single-quoted `|` looks like a pipe)
+# and produces a fragment ("/(\.shared") that starts with `/`; the shell's
+# actual argv never has that fragment as a standalone word. This is a LIVE
+# command (no heredoc at all), so it demonstrates the argv-vs-text fix
+# directly, not merely heredoc-body stripping.
+argv_disagree_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" \
+    "rg -n 'a;b|c' $scope_repo" "$argv_disagree_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted ; or | inside a live argument is never mistaken for shell structure'
+
+# Confirmation evidence from the dispatching run: a sed address regex, quoted,
+# with embedded whitespace -- `read -r -a` used to split it into several
+# words, one of which ("/^Return) looked like a rooted path fragment.
+sed_address_sid=$(fresh_sid)
+# shellcheck disable=SC2016  # the unexpanded $d is the fixture: a literal sed
+# address suffix, never meant to expand as this test shell's own variable.
+out=$(pre_input "$scope_repo" \
+    'sed -i -e "/^Return the six-step/,$d" README.md' "$sed_address_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted sed address argument with internal whitespace produces no scope advisory'
+
+# grep's -e/--regexp operand is excluded the same way sed's -e is -- a
+# pattern, never a path, regardless of what it looks like.
+grep_e_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "grep -e 'foo bar /baz' README.md" "$grep_e_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted grep -e pattern with internal whitespace produces no scope advisory'
+
+# The whitespace-in-token skip this replaced was itself a real bypass: it is
+# not the presence of whitespace that makes a token safe to skip, it is being
+# the OPERAND of a known expression flag. A quoted path with a space in it is
+# exactly how a real foreign path gets passed on a command line, and it must
+# still be flagged (adversarial review on issue #335, finding F1).
+spacey_path_sid=$(fresh_sid)
+spacey_foreign=${RUNNER_TEMP:-/dev/shm}
+spacey_foreign_dir=$(mktemp -d "$spacey_foreign/hooks-spacey-foreign.XXXXXX")
+spacey_target="$spacey_foreign_dir/foreign repo"
+mkdir -p "$spacey_target"
+out=$(pre_input "$scope_repo" "find \"$spacey_target\" -name AGENTS.md" "$spacey_path_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a quoted foreign path containing a space still receives the scope advisory'
+rm -rf -- "$spacey_foreign_dir"
+
+# guard_command_target_dir is the sibling of guard_out_of_scope_target's own
+# segmenting/tokenizing above, and it used to parse raw command TEXT the same
+# broken way: splitting on `[;&|]` and reading words with `read -r -a`. A
+# quoted `; cd ...` inside data (a printf/echo argument, never executed) was
+# mistaken for a real segment, which moved the directory guard_out_of_scope_target
+# resolves the LATER, genuinely in-workspace target against -- turning an
+# in-tree read into a false foreign-scope advisory (issue #335 review, F1).
+# A REAL, existing foreign directory is used for the quoted fake cd target
+# (rather than a plain path that may not exist on the test host): a
+# nonexistent candidate short-circuits guard_resolve_roots's own directory
+# check before the classification under test ever runs, which would make this
+# assertion pass whether or not the fix is present.
+fake_cd_foreign=${RUNNER_TEMP:-/dev/shm}
+fake_cd_foreign_dir=$(mktemp -d "$fake_cd_foreign/hooks-fake-cd-foreign.XXXXXX")
+for fake_cd_verb in printf echo; do
+    fake_cd_sid=$(fresh_sid)
+    out=$(pre_input "$scope_repo" \
+        "$fake_cd_verb 'x; cd $fake_cd_foreign_dir'; find . -name AGENTS.md" "$fake_cd_sid" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(pre_context "$out")" \
+        "a quoted fake cd inside $fake_cd_verb data does not misdirect a later in-workspace find"
+done
+rm -rf -- "$fake_cd_foreign_dir"
+
+# --- heredoc lexer: both standard terminator/delimiter forms close the
+# heredoc (issue #335 review, F2) ------------------------------------------
+# `guard_gh_command_segments`'s terminator test used to be an exact-match
+# comparison, which two standard heredoc forms defeated -- and in both cases
+# the heredoc never closed, so EVERY later segment (including a genuinely
+# foreign read) was silently dropped instead of classified. That is worse
+# than a false positive: the guard failed open, not merely noisy.
+tabstrip_heredoc_sid=$(fresh_sid)
+tabstrip_heredoc_cmd=$(printf 'cat <<-EOF > /tmp/notes3.md\nbody line\n\tEOF\nfind /home/user-sibling -name AGENTS.md')
+out=$(pre_input "$scope_repo" "$tabstrip_heredoc_cmd" "$tabstrip_heredoc_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a command segment after a tab-indented <<- heredoc terminator is still classified'
+
+quoted_delim_heredoc_sid=$(fresh_sid)
+quoted_delim_heredoc_cmd=$(printf 'cat <<\\EOF > /tmp/notes4.md\nbody line\nEOF\nfind /home/user-sibling -name AGENTS.md')
+out=$(pre_input "$scope_repo" "$quoted_delim_heredoc_cmd" "$quoted_delim_heredoc_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a command segment after a backslash-quoted <<\EOF heredoc terminator is still classified'
+
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets
 # the command run because a cheaper alternative can be taught afterwards; there
@@ -1212,15 +1393,65 @@ assert_contains "$(ctx_of "$out")" 'body read in a session stays quiet' \
 # --- a hardcoded plugin path ------------------------------------------------
 # Observed live: the resolver came back empty, the call produced no output at
 # all, and the session recovered by pasting the absolute path it had seen --
-# version directory included -- then used it for every later call. It worked,
-# and it keeps working until the version bumps.
+# then used it for every later call. That correction went wrong in its own
+# right: it fired even on a path that was already the contract-resolved tree,
+# and the one observed improvisation swapped the marketplace directory name
+# (agent-kit) for the plugin directory name (agentkit) -- not a version bump
+# (issue #335 Case 1).
 pinned='/home/x/.codex/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh'
 psid2=$(fresh_sid)
 out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
-assert_contains "$(ctx_of "$out")" 'version directory' 'a version-pinned plugin path is corrected'
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' 'a version-pinned plugin path is corrected'
+assert_contains "$(ctx_of "$out")" 'agent-kit' 'and names the marketplace dir'
+assert_contains "$(ctx_of "$out")" 'agentkit' 'and the plugin dir, so the two are not conflated'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'and only once per session'
+
+# A path that IS the contract-resolved tree is correct by definition and must
+# never be flagged -- the exact bug this rule exists to prevent: telling a
+# correct agent its correct path is wrong (issue #335 Case 1, acceptance
+# criterion 1). Reading a file one level deeper than the resolved skills=
+# path still matches the same tree, not a different one.
+correct_repo=$(make_repo)
+correct_skills=$(mktemp -d "$tmp/plugins.XXXXXX")
+correct_skills_dir="$correct_skills/plugins/cache/agent-kit/agentkit/0.6.0/skills"
+mkdir -p "$correct_skills_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$correct_skills_dir" "$HARNESS_LINE" \
+    > "$correct_repo/.agent/env-contract.txt"
+correct_sid=$(fresh_sid)
+out=$(post_input "$correct_repo" "$correct_skills_dir/.shared/scripts/board-list.sh" "$correct_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'reading under the contract-resolved skills tree emits no version advisory'
+
+# The session budget above must stay UNSPENT: a genuinely stale version path
+# (a different version segment than the contract resolves) read afterward, in
+# the SAME session, still earns its own lesson (acceptance criterion 2).
+stale_version_path="$correct_skills/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "$stale_version_path" "$correct_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_contains "$ctx" 'Wrong plugin path' \
+    'a genuinely stale version path still emits the advisory after a correct read'
+# The prescribed remedy is never byte-equal to the flagged path (acceptance
+# criterion 3) -- asserted programmatically here, not only by review.
+remedy_line=$(grep -m1 '^  agentkit=' <<< "$ctx" | sed 's/^  agentkit=//')
+assert_eq no "$([[ $remedy_line == "$stale_version_path" ]] && printf yes || printf no)" \
+    'the prescribed remedy is never byte-equal to the flagged path'
+assert_eq "$correct_skills_dir" "$remedy_line" \
+    'the remedy is the contract-resolved tree, not the stale one'
+
+# The correctness check above must be LEXICAL, not a plain string-prefix
+# compare -- a `..` traversal that starts with the resolved tree AS TEXT and
+# then walks back out of it to a genuinely different, stale version segment
+# must still be caught (adversarial review on issue #335, finding F2).
+traversal_sid=$(fresh_sid)
+traversal_path="$correct_skills_dir/../../0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "$traversal_path" "$traversal_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a .. traversal that textually starts with the resolved tree but reaches a stale one still fires'
 
 # $command_line is the WHOLE command, so a raw pattern match cannot tell a path
 # being EXECUTED (above) from one merely QUOTED as data -- a heredoc body
@@ -1259,7 +1490,7 @@ Evidence: $pinned
 EOF
 $pinned"
 out=$(post_input "$repo" "$mixed_cmd" "$mixed_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
-assert_contains "$(ctx_of "$out")" 'version directory' \
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
     'an executed path still corrects even after the same path was quoted in a heredoc body'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 
@@ -1272,7 +1503,7 @@ expand_body_sid=$(fresh_sid)
 expand_body_cmd="gh issue create --title x --body \"\$($pinned)\""
 out=$(post_input "$repo" "$expand_body_cmd" "$expand_body_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
 # shellcheck disable=SC2016  # the assert message below is literal text, not expansion
-assert_contains "$(ctx_of "$out")" 'version directory' \
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
     'a pinned path inside a $(...) substitution in --body still triggers the lesson'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 
@@ -1283,7 +1514,7 @@ EOF
 gh issue create --body-file /tmp/x.txt"
 out=$(post_input "$repo" "$expand_heredoc_cmd" "$expand_heredoc_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
 # shellcheck disable=SC2016  # the assert message below is literal text, not expansion
-assert_contains "$(ctx_of "$out")" 'version directory' \
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
     'a pinned path inside a $(...) substitution in an expandable heredoc still triggers the lesson'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 
@@ -1314,11 +1545,22 @@ out=$(post_input "$resolved_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/n
 ctx=$(ctx_of "$out")
 assert_contains "$ctx" "agentkit=$resolved_skills_dir" \
     'the version-path lesson carries the contract-resolved skills path'
-assert_contains "$ctx" 'version directory' 'the resolved lesson still names the hazard'
-assert_contains "$ctx" 'plugins/cache' 'the resolved lesson still teaches the resolver'
+assert_contains "$ctx" 'Wrong plugin path' 'the resolved lesson still names the hazard'
+assert_contains "$ctx" 'agent-kit' 'and names the marketplace dir'
+assert_contains "$ctx" 'agentkit' 'and the plugin dir'
 resolved_line=$(grep -m1 '^  agentkit=' <<<"$ctx" | sed 's/^  agentkit=//')
 assert_eq yes "$([[ -d $resolved_line ]] && printf yes || printf no)" \
     'following the lesson verbatim lands on an existing directory'
+assert_eq no "$([[ $resolved_line == "$pinned" ]] && printf yes || printf no)" \
+    'the prescribed remedy is never byte-equal to the flagged path'
+# The re-derivation snippet is a fallback for when resolution FAILS -- when it
+# already succeeded, inlining it is pure noise. Measured cut: this branch used
+# to be 7 lines including the whole RESOLVE_HINT block; it is now 3.
+assert_not_contains "$ctx" 'contract_root=' \
+    'the full re-derivation snippet is omitted once resolution has already succeeded'
+ctx_line_count=$(printf '%s' "$ctx" | grep -c '^' || true)
+assert_eq yes "$([[ $ctx_line_count -le 4 ]] && printf yes || printf no)" \
+    'the successful-resolution advisory is cut to the resolved-tree line plus a pointer'
 
 # A path that cannot be rendered as a plain shell assignment is not a remedy
 # either -- a space breaks the assignment and metacharacters would inject text
