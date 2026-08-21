@@ -2036,4 +2036,54 @@ assert_eq 'allow' "$(decision "$evidence_symlink_out")" \
 assert_eq yes "$( [[ ! -e $evidence_outside/paths-touched.ndjson ]] && printf yes || printf no )" \
     'a symlinked evidence parent receives no paths-touched record'
 
+# --- regression: guard_resolve_roots must not fail the hook open when a
+# parsed cd/-C candidate directory does not exist (issue #369). Its last
+# statement used to be a bare `[[ -d $candidate ]] && guard_add_root
+# "$candidate"` -- an ordinary "this optional extra root does not exist" is
+# expected, not an error, but that shape made the FUNCTION's own return status
+# track the test's falseness. Both hooks call it as a bare simple command
+# under `trap ... ERR`, so a missing candidate directory tripped the trap and
+# fell straight into allow/emit_empty before any guard had run, silently
+# skipping every downstream check for that command.
+nonexistent_dir_369=/nonexistent-dir-issue-369
+
+# Unit-level: the function itself must always return 0, regardless of whether
+# the parsed candidate directory exists.
+guard_rc_369=1
+(
+    source "$hooks/lib/guard-lib.sh"
+    guard_resolve_roots "$repo" "cd $nonexistent_dir_369 && ls"
+) > /dev/null 2>&1
+guard_rc_369=$?
+assert_eq '0' "$guard_rc_369" \
+    'guard_resolve_roots returns 0 when the parsed candidate directory does not exist'
+
+# End-to-end: PreToolUse must still classify and advise on the scope
+# violation instead of failing the hook open. cd into a directory that does
+# not exist, then read a file outside the workspace -- the ERR trap used to
+# fire on the guard_resolve_roots call before this classification ever ran,
+# so the hook emitted a bare {} with no advisory at all.
+guard_log_369="$tmp/guard-log-369"
+mkdir -p "$guard_log_369"
+cd369_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cd $nonexistent_dir_369 && cat /home/user-sibling/notes" \
+    "$cd369_sid" | GUARD_LOG_ROOT="$guard_log_369" "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a cd into a nonexistent directory does not deny the out-of-scope read that follows'
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'PreToolUse emits the scope advisory instead of a bare {} for a nonexistent cd target'
+assert_eq yes "$( [[ ! -e $guard_log_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'PreToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
+
+# PostToolUse calls guard_resolve_roots on the same command shape and must
+# stay equally silent about it.
+guard_log_post_369="$tmp/guard-log-post-369"
+mkdir -p "$guard_log_post_369"
+post_out_369=$(post_input "$repo" "cd $nonexistent_dir_369 && ls" "$(fresh_sid)" |
+    GUARD_LOG_ROOT="$guard_log_post_369" "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_hook_output "$post_out_369" post-tool-use \
+    'PostToolUse still emits schema-valid JSON for a nonexistent cd target'
+assert_eq yes "$( [[ ! -e $guard_log_post_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'PostToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
+
 finish
