@@ -41,10 +41,17 @@ ARG_WRITE_SET=0
 ARG_NO_WRITE=0
 ARG_ENSURE=0
 ARG_MEASURED_FROM_SET=0
+ARG_INHERIT_SESSION=""
+ARG_INHERIT_SESSION_SET=0
 # Which process this run speaks for. A hook runs OUTSIDE the agent's sandbox,
 # so everything measured here about writability and sandboxing describes the
 # hook, not the shell that will run the commands -- see probe_sandbox().
-ARG_MEASURED_FROM=agent
+# "escalated" names a harness-escalated / approval-granted execution (issue
+# #332): a real class, but nothing in this script infers it -- there is no
+# verified signal for it (see probe_sandbox()). It exists in the vocabulary
+# for a caller that already knows its own escalation state from its own
+# harness; --measured-from is how that caller would assert it.
+ARG_MEASURED_FROM=agent-shell
 WORKTREE=""
 IN_REPO=0
 OUT_LINES=()
@@ -72,14 +79,26 @@ if [[ -r "$PROTECTED_PATHS_LIB" ]]; then
     source "$PROTECTED_PATHS_LIB"
 fi
 
+# sandbox_field_rank/sandbox_widened (issue #332 F3): the single definition
+# shared with compose-worker-prompt.sh, not a copy. Guarded the same way as
+# PROTECTED_PATHS_LIB above (this script reports missing facts rather than
+# blocking; a caller that copies agent-preflight.sh without its lib/ sibling
+# still runs) -- apply_never_widen() below discloses when the comparator is
+# unavailable instead of crashing the whole probe.
+SANDBOX_COMPARATOR_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/sandbox-comparator.sh"
+if [[ -r "$SANDBOX_COMPARATOR_LIB" ]]; then
+    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+    source "$SANDBOX_COMPARATOR_LIB"
+fi
+
 usage() {
     cat <<'EOF'
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
 
 Usage:
   agent-preflight.sh [--worktree PATH] [--repo OWNER/REPO] [--write FILE | --no-write]
-                     [--ensure]
-                     [--measured-from agent|hook] [-h|--help]
+                     [--ensure] [--inherit-session FILE]
+                     [--measured-from agent-shell|hook|escalated] [-h|--help]
 
 Options:
   --worktree PATH    Worktree to describe (default: git toplevel of the cwd, else the cwd).
@@ -89,9 +108,23 @@ Options:
   --ensure           Reuse and print a trusted existing contract; run the
                      preflight probes only when that contract is missing or
                      fails contract-read provenance checks.
-  --measured-from W  Whose environment this describes: "agent" (default, the
-                     shell that will run commands) or "hook", which runs
-                     outside the agent sandbox and can only report its own.
+  --inherit-session FILE
+                     Copy this file's sandbox=, tls=, and caches= lines
+                     verbatim instead of re-measuring them: those are
+                     session-scoped facts, not per-worktree ones, and a
+                     second measurement in a differently-privileged process
+                     is exactly how a session ends up with contradictory
+                     contracts. A key missing from FILE falls back to a
+                     fresh probe for that key only.
+  --measured-from W  Whose environment this describes: "agent-shell"
+                     (default, the shell that will run commands; "agent" is
+                     accepted as a backward-compatible alias for callers
+                     written against the pre-#332 vocabulary), "hook",
+                     which runs outside the agent sandbox and can only
+                     report its own, or "escalated", for a caller that
+                     already knows -- from its own harness -- that it is
+                     running with escalated/approval-granted privileges.
+                     This script never infers "escalated" itself.
   -h, --help         Print this help and exit 0.
 
 Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
@@ -158,14 +191,24 @@ parse_args() {
                 need_value "$@"
                 ARG_MEASURED_FROM_SET=1
                 case "$2" in
-                    agent|hook) ARG_MEASURED_FROM="$2" ;;
-                    *) die "--measured-from takes agent or hook, got: $2" ;;
+                    # "agent" was the pre-#332 public value (main's --measured-from
+                    # agent|hook); a caller outside this tree may still pass it.
+                    # Accept it as an alias rather than a hard failure that leaves
+                    # a contract-producing script with no contract to produce.
+                    agent) ARG_MEASURED_FROM=agent-shell ;;
+                    agent-shell|hook|escalated) ARG_MEASURED_FROM="$2" ;;
+                    *) die "--measured-from takes agent-shell (or its alias 'agent'), hook, or escalated, got: $2" ;;
                 esac
                 shift 2 ;;
             --repo)     need_value "$@"; ARG_REPO="$2"; ARG_REPO_SET=1; shift 2 ;;
             --write)    need_value "$@"; ARG_WRITE="$2"; ARG_WRITE_SET=1; ARG_NO_WRITE=0; shift 2 ;;
             --no-write) ARG_NO_WRITE=1; ARG_WRITE=""; shift ;;
             --ensure) ARG_ENSURE=1; shift ;;
+            --inherit-session)
+                need_value "$@"
+                ARG_INHERIT_SESSION="$2"
+                ARG_INHERIT_SESSION_SET=1
+                shift 2 ;;
             --)         shift; break ;;
             -*)         die "unknown option: $1" ;;
             *)          die "unexpected argument: $1 (this command takes options only)" ;;
@@ -551,9 +594,193 @@ probe_sandbox() {
         # session looks unsandboxed regardless of what it actually is. Say so
         # rather than emitting a confident "active=no".
         [[ $sandboxed == yes ]] || sandboxed=unknown
-        note=' measured-by=hook note="probed outside your sandbox; treat this as the floor, not the ceiling, and believe a denial over this line"'
+        note=' note="probed outside your sandbox; treat this as the floor, not the ceiling, and believe a denial over this line"'
+    elif [[ $ARG_MEASURED_FROM == escalated ]]; then
+        # There is no verified signal in this repository for "this shell is
+        # running with escalated/approval-granted privileges" (issue #332's
+        # disclosure): CODEX_SANDBOX_NETWORK_DISABLED and
+        # CODEX_PERMISSION_PROFILE describe a SANDBOXED shell, not an escalated
+        # one, and nothing else here can tell the two non-hook classes apart.
+        # This branch only ever runs when the caller passed --measured-from
+        # escalated explicitly -- it is not detected, only labelled. Appended
+        # to (never replacing) any sandboxed-workspace note already set above
+        # (issue #332 F1): an escalated run inside a sandbox still needs the
+        # actionable "escalate git writes and forge calls" guidance, not just
+        # the disclosure that escalation was asserted rather than detected.
+        local escalated_note='explicitly asserted by the caller as an escalated/approval-granted execution; this probe does not detect that state itself'
+        if [[ -n $note ]]; then
+            note=${note%\"}
+            note="$note. $escalated_note\""
+        else
+            note=" note=\"$escalated_note\""
+        fi
     fi
-    emit "sandbox= active=$sandboxed profile=$profile network=$network home-writable=$(dir_writable_word "${HOME:-}")$note"
+    # measured-by= is unconditional (not just for hook) so every one of the
+    # three process classes this probe can run as -- hook, the agent's own
+    # shell, or an explicitly-asserted escalated execution -- is provenance-
+    # tagged. Before this, only the hook case carried a marker, so a
+    # measurement from an escalated shell and one from the agent's ordinary
+    # shell were indistinguishable in the persisted contract even though they
+    # can truthfully disagree about the same session (issue #332).
+    emit "sandbox= active=$sandboxed profile=$profile network=$network home-writable=$(dir_writable_word "${HOME:-}") measured-by=$ARG_MEASURED_FROM$note"
+}
+
+# sandbox_field_rank/sandbox_widened live in lib/sandbox-comparator.sh
+# (issue #332 F3), sourced near the top of this file -- shared verbatim with
+# compose-worker-prompt.sh so the two sides of the create-issue-worktree.sh
+# boundary can never rank a sandbox= line's restrictiveness differently.
+
+# Same idea for caches=: a root confirmed unwritable ($HOME/.cache truly
+# refused a write, so the cache root fell back to an isolated /tmp path) is
+# the restrictive/safe reading; a later measurement claiming $HOME/.cache IS
+# writable after all is the exact widening this guards against. An explicit
+# AGENT_CACHE_ROOT override is an operator decision, not a measurement, so it
+# scores in between rather than being judged for restrictiveness.
+caches_restriction_score() {
+    local line="$1" reason
+    # Anchored at the START of the record, not on a trailing-context marker
+    # (issue #332 F2 round 2): requiring " home-cache=" to follow reason=
+    # only blocks an injected "reason=" that ISN'T itself followed by a
+    # "home-cache=" token -- an attacker-controlled value can simply include
+    # one too (root=/x reason=fake home-cache=/y reason=REAL home-cache=/z
+    # still matches "fake" under that rule, since "fake" is ALSO followed by
+    # a home-cache= token). root= is always the very first token after
+    # "caches= " and probe_caches() now refuses to emit a root value
+    # containing whitespace (the only way root= could otherwise swallow a
+    # space-delimited " reason=" of its own), so anchoring past exactly one
+    # whitespace-free root token is sound: nothing attacker-controlled can
+    # precede the genuine reason= at that fixed position.
+    reason=$(sed -n 's/^caches= root=[^[:space:]]* reason=\([A-Za-z-]*\).*/\1/p' <<< "$line")
+    # An unparseable or unrecognised reason= (empty match, or a token this
+    # case statement doesn't know) ranks in the MIDDLE, never as the known
+    # least-restrictive value (issue #332 F2 round 3) -- mirroring
+    # sandbox_field_rank's own rule that uncertainty must never read as
+    # freedom. Collapsing "unknown" into "known least-restrictive" (0) was
+    # the bug: a record that fails to parse for ANY reason (a malformed
+    # line, a future reason= token this script doesn't know about yet) would
+    # then compare equal to a genuinely widened "writable" record and the
+    # never-widen guard would miss the widening entirely.
+    case "$reason" in
+        home-cache-unwritable) printf '2' ;;
+        AGENT_CACHE_ROOT-set) printf '1' ;;
+        home-cache-writable) printf '0' ;;
+        *) printf '1' ;;
+    esac
+}
+
+# Never let a later, less-privileged-context-blind measurement overwrite a
+# more restrictive one already recorded for this worktree (issue #332): the
+# bug this guards against is real -- three preflight runs on one machine, one
+# session, produced three mutually contradictory sandbox=/caches= verdicts,
+# and the least restrictive one is the one that reached a dispatched worker.
+# Only sandbox= and caches= are compared; tls= carries no restrictiveness
+# ordering worth guessing at.
+apply_never_widen() {
+    local target="$1" existing prefix prev_line
+    [[ -n "$target" && -f "$target" && ! -L "$target" && -r "$target" ]] || return 0
+    existing="$(cat -- "$target" 2>/dev/null)" || return 0
+    for prefix in 'sandbox=' 'caches='; do
+        prev_line="$(grep -m1 "^$prefix" <<< "$existing" || true)"
+        [[ -n "$prev_line" ]] || continue
+        local i
+        for i in "${!OUT_LINES[@]}"; do
+            case "${OUT_LINES[$i]}" in
+                "$prefix"*)
+                    local new_line
+                    new_line="${OUT_LINES[$i]}"
+                    if [[ "$prefix" == 'sandbox=' ]]; then
+                        if ! declare -F sandbox_widened >/dev/null; then
+                            note "cannot verify the sandbox= never-widen guard: lib/sandbox-comparator.sh is missing alongside this script"
+                        else
+                            local regressed_field
+                            if regressed_field=$(sandbox_widened "$prev_line" "$new_line"); then
+                                note "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field '$regressed_field'): recorded=[$prev_line] fresh=[$new_line]"
+                                OUT_LINES[i]="$prev_line"
+                            fi
+                        fi
+                    else
+                        local old_score new_score
+                        old_score=$(caches_restriction_score "$prev_line")
+                        new_score=$(caches_restriction_score "$new_line")
+                        if (( new_score < old_score )); then
+                            note "keeping the more-restrictive recorded caches= (a fresh measurement would widen it): recorded=[$prev_line] fresh=[$new_line]"
+                            OUT_LINES[i]="$prev_line"
+                        fi
+                    fi
+                    break
+                    ;;
+            esac
+        done
+    done
+}
+
+# --inherit-session is only safe when the file being inherited actually
+# describes THIS session (issue #332 F3): agreement between a root contract
+# and a worktree contract proves nothing if both are the same stale bytes
+# left over from an earlier, differently-privileged session on the same
+# checkout -- a root preflighted once while unsandboxed, never refreshed,
+# then copied verbatim into every worktree created afterward in a now-
+# restricted session.
+#
+# There is no cryptographic session identity available here, and this does
+# not invent one (the same reasoning that ruled out guessing an escalation
+# signal applies). What IS honestly verifiable, and already the established
+# heuristic this codebase uses for "is this recorded context still current"
+# (session-start.sh's own contract-reuse check): recency, bounded the same
+# way, and agreement on WHICH harness/CLI wrote it. Neither proves same-
+# session; both are cheap, real signals, and their absence is disclosed
+# rather than silently accepted.
+readonly INHERIT_SESSION_MAX_AGE_MINUTES=30
+INHERIT_SESSION_VERIFIED=-1 # memoised: -1 unknown, 0 no, 1 yes
+
+inherit_session_verified() {
+    if (( INHERIT_SESSION_VERIFIED >= 0 )); then
+        (( INHERIT_SESSION_VERIFIED ))
+        return
+    fi
+    INHERIT_SESSION_VERIFIED=0
+    if [[ -z "$ARG_INHERIT_SESSION" || ! -f "$ARG_INHERIT_SESSION" ||
+        -L "$ARG_INHERIT_SESSION" || ! -r "$ARG_INHERIT_SESSION" ]]; then
+        return 1
+    fi
+    if [[ -z "$(find "$ARG_INHERIT_SESSION" -mmin "-$INHERIT_SESSION_MAX_AGE_MINUTES" 2>/dev/null)" ]]; then
+        note "not inheriting from $ARG_INHERIT_SESSION: older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m, so it cannot be verified as belonging to this session -- falling back to a fresh probe for sandbox=/tls=/caches="
+        return 1
+    fi
+    local src_harness current_harness harness_id_script
+    harness_id_script="$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh"
+    src_harness="$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' "$ARG_INHERIT_SESSION" 2>/dev/null)"
+    if [[ -x "$harness_id_script" ]]; then
+        current_harness="$("$harness_id_script" --name 2>/dev/null || true)"
+    fi
+    if [[ -z "$src_harness" || -z "${current_harness:-}" || "$src_harness" != "$current_harness" ]]; then
+        note "not inheriting from $ARG_INHERIT_SESSION: its harness= (${src_harness:-none}) does not match this session's (${current_harness:-unknown}) -- falling back to a fresh probe for sandbox=/tls=/caches="
+        return 1
+    fi
+    INHERIT_SESSION_VERIFIED=1
+    return 0
+}
+
+# The sandbox=, tls=, and caches= lines are properties of the SESSION -- which
+# process is running the commands and what it can reach -- not of any one
+# worktree inside that session. A per-worktree preflight that re-measures them
+# is exactly how issue #332's contradictory contracts happened: whichever
+# process ran that particular preflight call (agent shell vs. an
+# escalated/approval-granted one) produced a truthful-for-itself but
+# disagreeing answer. --inherit-session carries the already-authoritative
+# lines forward verbatim instead -- but only once inherit_session_verified
+# has judged the source recent and same-harness enough to trust.
+inherit_or_probe() {
+    local prefix="$1" probe_fn="$2" line=""
+    if inherit_session_verified; then
+        line="$(grep -m1 "^$prefix" -- "$ARG_INHERIT_SESSION" 2>/dev/null || true)"
+    fi
+    if [[ -n "$line" ]]; then
+        emit "$line"
+        note "inherited $prefix from $ARG_INHERIT_SESSION verbatim (session-scoped fact, verified recent and same-harness, not re-measured)"
+    else
+        "$probe_fn"
+    fi
 }
 
 dir_writable_word() {
@@ -599,15 +826,43 @@ probe_tls() {
 probe_caches() {
     local home_cache root reason
     home_cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+    # A whitespace byte in root= would let it masquerade as more than one
+    # caches= token -- e.g. embedding its own trailing "reason=...
+    # home-cache=..." sequence to spoof the field caches_restriction_score()
+    # reads (issue #332 F2). root= is always the first token after "caches= "
+    # and is never quoted, so the only sound fix is refusing to emit a root
+    # value that could split into extra tokens, not trying to out-pattern one
+    # that already has. EVERY source that can become root= needs this check,
+    # not only AGENT_CACHE_ROOT (round 2 fixed just that one): TMPDIR and the
+    # XDG_CACHE_HOME/$HOME-derived home_cache are environment-controlled too,
+    # and the TMPDIR-derived fallback below is exactly the branch that
+    # produces the RESTRICTIVE home-cache-unwritable record -- if THAT record
+    # were the one that failed to parse, it would score as unknown instead of
+    # restrictive, which is the bypass this guards against (issue #332 F2
+    # round 3).
     if [[ -n "${AGENT_CACHE_ROOT:-}" ]]; then
-        root="$AGENT_CACHE_ROOT"
-        reason="AGENT_CACHE_ROOT-set"
-    elif dir_writable "$home_cache"; then
-        root="$home_cache"
-        reason="home-cache-writable"
-    else
-        root="${TMPDIR:-/tmp}/agent-cache-$(id -u)"
-        reason="home-cache-unwritable"
+        if [[ "${AGENT_CACHE_ROOT}" != *[[:space:]]* ]]; then
+            root="$AGENT_CACHE_ROOT"
+            reason="AGENT_CACHE_ROOT-set"
+        else
+            note "ignoring AGENT_CACHE_ROOT: contains whitespace, which the caches= contract record cannot carry safely -- falling back to the home-cache probe"
+        fi
+    fi
+    if [[ -z "${root:-}" ]]; then
+        if [[ "$home_cache" == *[[:space:]]* ]]; then
+            note "treating \$HOME/.cache as unusable: XDG_CACHE_HOME/HOME contains whitespace, which the caches= contract record cannot carry safely"
+        fi
+        if [[ "$home_cache" != *[[:space:]]* ]] && dir_writable "$home_cache"; then
+            root="$home_cache"
+            reason="home-cache-writable"
+        else
+            root="${TMPDIR:-/tmp}/agent-cache-$(id -u)"
+            if [[ "$root" == *[[:space:]]* ]]; then
+                note "ignoring TMPDIR: contains whitespace, which the caches= contract record cannot carry safely -- using /tmp instead"
+                root="/tmp/agent-cache-$(id -u)"
+            fi
+            reason="home-cache-unwritable"
+        fi
     fi
     emit "caches= root=$root reason=$reason home-cache=$home_cache UV_CACHE_DIR=$root/uv NPM_CONFIG_CACHE=$root/npm PIP_CACHE_DIR=$root/pip XDG_CACHE_HOME=$root"
 }
@@ -843,8 +1098,8 @@ write_block() {
 main() {
     parse_args "$@"
     if (( ARG_ENSURE )); then
-        if (( ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET )); then
-            die '--ensure cannot be combined with --write, --repo, or --measured-from'
+        if (( ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET || ARG_INHERIT_SESSION_SET )); then
+            die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
         fi
         resolve_worktree
         contract_reader="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/contract-read.sh"
@@ -875,13 +1130,15 @@ main() {
     probe_instructions
     probe_git
     probe_gh
-    probe_sandbox
-    probe_tls
-    probe_caches
+    inherit_or_probe 'sandbox=' probe_sandbox
+    inherit_or_probe 'tls=' probe_tls
+    inherit_or_probe 'caches=' probe_caches
     probe_runners
     probe_runtime_pin
     probe_harness
     probe_peer_cli "$HARNESS_OTHER"
+    local write_target="${ARG_WRITE:-$WORKTREE/.agent/env-contract.txt}"
+    apply_never_widen "$write_target"
     printf '%s\n' "${OUT_LINES[@]}"
     if (( ARG_NO_WRITE )); then
         note "--no-write: no environment block file written"
@@ -889,7 +1146,7 @@ main() {
     fi
     mkdir -p -- "$WORKTREE/.agent/logs" 2>/dev/null ||
         note "could not create $WORKTREE/.agent/logs -- agent-run.sh will fall back"
-    write_block "${ARG_WRITE:-$WORKTREE/.agent/env-contract.txt}"
+    write_block "$write_target"
 }
 
 main "$@"

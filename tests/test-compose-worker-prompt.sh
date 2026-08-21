@@ -467,4 +467,124 @@ AGENT_REPO_RUNNER="$nonexec_env_fallback/tools/absent-exec" bash "$compose" --te
 assert_eq 0 "$nonexec_env_fallback_rc" \
     'a non-executable AGENT_REPO_RUNNER falls through to an executable .agent/runner'
 
+# --- fail-closed: worktree sandbox= less restrictive than the root (#332) ---
+# sandbox= is a session-scoped fact; create-issue-worktree.sh is expected to
+# carry the root checkout's measurement into the worktree verbatim. If the
+# worktree's copy is somehow less restrictive than the root's own contract for
+# the same run, composing the prompt must refuse rather than hand a worker a
+# rosier picture of its sandbox than the root already measured.
+make_widen_root() {
+    local dir=$1 sandbox_line=$2
+    mkdir -p "$dir/.agent"
+    git -C "$dir" init -q
+    git -C "$dir" config user.name test
+    git -C "$dir" config user.email test@example.invalid
+    printf 'seed\n' > "$dir/seed.txt"
+    git -C "$dir" add -- seed.txt
+    git -C "$dir" commit -qm seed -q
+    printf '%s\n' "$sandbox_line" > "$dir/.agent/env-contract.txt"
+}
+
+make_widen_worktree() {
+    local root=$1 branch=$2 worktree=$3 sandbox_line=$4
+    git -C "$root" worktree add -q -b "$branch" "$worktree" > /dev/null 2>&1
+    mkdir -p "$worktree/.agent"
+    printf '%s\n' \
+        'AGENT_REPO_SLUG=example-org/example-repo' \
+        'AGENT_BASE_BRANCH=develop' \
+        'AGENT_CMD_TEST=tools/full-test' \
+        > "$worktree/.agent/config.env"
+    printf 'skills= path=%s/agentkit/skills\n%s\n' "$root_path" "$sandbox_line" \
+        > "$worktree/.agent/env-contract.txt"
+    printf 'SPEC-BYTES\n' > "$worktree/.agent/fenced-spec.txt"
+    printf 'PRIOR-BYTES\n' > "$worktree/.agent/fenced-prior-art.txt"
+}
+
+root_path=$root
+restrictive_line='sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"'
+loose_line='sandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell'
+
+widen_root="$tmp/widen-root"
+make_widen_root "$widen_root" "$restrictive_line"
+widen_worktree="$widen_root/.worktrees/feat-issue-widen"
+make_widen_worktree "$widen_root" feat/issue-widen "$widen_worktree" "$loose_line"
+
+widen_rc=0
+widen_err=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$widen_worktree" --issue 999 --branch feat/issue-widen \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 > /dev/null) || widen_rc=$?
+assert_eq 1 "$widen_rc" \
+    'compose refuses when the worktree sandbox= is less restrictive than the root contract'
+assert_contains "$widen_err" 'worktree-contract-less-restrictive-than-root' \
+    'the refusal names the reason'
+assert_contains "$widen_err" 're-run create-issue-worktree.sh' \
+    'the refusal names the fix'
+
+# The inherited (byte-identical) case must NOT be flagged -- this is the
+# normal, expected shape after create-issue-worktree.sh carries the root
+# contract's sandbox= line forward verbatim.
+inherited_root="$tmp/inherited-root"
+make_widen_root "$inherited_root" "$restrictive_line"
+inherited_worktree="$inherited_root/.worktrees/feat-issue-inherited"
+make_widen_worktree "$inherited_root" feat/issue-inherited "$inherited_worktree" "$restrictive_line"
+inherited_prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$inherited_worktree" --issue 998 --branch feat/issue-inherited \
+    --worker-model gpt-5.6-luna --worker-effort high)
+assert_contains "$inherited_prompt" 'sandbox= active=yes profile=strict network=disabled home-writable=no' \
+    'a worktree contract matching the root sandbox= composes normally'
+
+# A worktree TIGHTER than the root is never a widening and must compose too.
+tighter_root="$tmp/tighter-root"
+make_widen_root "$tighter_root" "$loose_line"
+tighter_worktree="$tighter_root/.worktrees/feat-issue-tighter"
+make_widen_worktree "$tighter_root" feat/issue-tighter "$tighter_worktree" "$restrictive_line"
+tighter_rc=0
+bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$tighter_worktree" --issue 997 --branch feat/issue-tighter \
+    --worker-model gpt-5.6-luna --worker-effort high > /dev/null 2>&1 || tighter_rc=$?
+assert_eq 0 "$tighter_rc" \
+    'a worktree contract more restrictive than the root is never refused as a widening'
+
+# --- field-by-field widen detection: no single axis may mask another (#332 F2) -
+# A scalar SUM lets one axis's tightening cancel another axis's widening:
+# active tightening no->yes while network widens disabled->ok nets to "no
+# change" in a sum, even though the worker just silently lost its network
+# restriction. The refusal must still fire, and must name the axis.
+masking_root_line='sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell'
+masking_worktree_line='sandbox= active=yes profile=none network=ok home-writable=yes measured-by=agent-shell'
+masking_root="$tmp/masking-root"
+make_widen_root "$masking_root" "$masking_root_line"
+masking_worktree="$masking_root/.worktrees/feat-issue-masking"
+make_widen_worktree "$masking_root" feat/issue-masking "$masking_worktree" "$masking_worktree_line"
+masking_rc=0
+masking_err=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$masking_worktree" --issue 996 --branch feat/issue-masking \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 > /dev/null) || masking_rc=$?
+assert_eq 1 "$masking_rc" \
+    'a network widening masked by an active tightening still refuses composition'
+assert_contains "$masking_err" "on field 'network'" \
+    'the refusal names the regressed field, not just "less restrictive"'
+
+# --- a spoofed field= token inside note= must not out-match the real field --
+# (issue #332 F2). note= is free-form and sits at the end of the line; a
+# naive greedy `.*field=` search prefers the RIGHTMOST match, so an embedded
+# "active=yes" inside note= would previously have been read as the real
+# active= value instead of the genuine, earlier one -- letting a worktree
+# contract that actually widened (active regressed yes->no) compare as
+# unchanged against the root and slip past the fail-closed guard.
+spoof_root_line='sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"'
+spoof_worktree_line='sandbox= active=no profile=none network=disabled home-writable=no measured-by=agent-shell note="spoofed trailing text containing active=yes to mislead a naive parser"'
+spoof_root="$tmp/spoof-root"
+make_widen_root "$spoof_root" "$spoof_root_line"
+spoof_worktree="$spoof_root/.worktrees/feat-issue-spoof"
+make_widen_worktree "$spoof_root" feat/issue-spoof "$spoof_worktree" "$spoof_worktree_line"
+spoof_rc=0
+spoof_err=$(bash "$compose" --template issue-lead --write-set 'src/**' \
+    --worktree "$spoof_worktree" --issue 995 --branch feat/issue-spoof \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 > /dev/null) || spoof_rc=$?
+assert_eq 1 "$spoof_rc" \
+    'an embedded active= token inside note= does not mask a real active= widening'
+assert_contains "$spoof_err" "on field 'active'" \
+    'the refusal names the real regressed field, not a fake one from note='
+
 finish
