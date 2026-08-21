@@ -633,6 +633,32 @@ bash "$compose" --template fix-batch --worktree "$repo" --issue 136 --branch fea
 assert_eq 0 "$fix_batch_no_boundary_rc" \
     'fix-batch composes without --boundary'
 
+# Regression (issue #359 adversarial review): fix-batch must never resolve
+# or require issue-text artifacts at all. A yolo-trusted (or private-trusted)
+# worktree, as prepare-issue-artifacts.sh actually publishes it, carries ONLY
+# the mode-neutral spec.txt / prior-art.txt pair -- no fenced-spec.txt /
+# fenced-prior-art.txt exists. Composing fix-batch there must still succeed,
+# because fix-batch's template never references either artifact.
+yolo_only_repo="$tmp/yolo-only-repo"
+mkdir -p "$yolo_only_repo/.agent"
+git -C "$yolo_only_repo" init -q
+printf '%s\n' \
+    'AGENT_REPO_SLUG=example-org/example-repo' \
+    'AGENT_BASE_BRANCH=develop' \
+    'AGENT_CMD_TEST=tools/full-test' \
+    > "$yolo_only_repo/.agent/config.env"
+printf 'skills= path=%s/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\n' \
+    "$root" > "$yolo_only_repo/.agent/env-contract.txt"
+printf 'TRUSTED-SPEC-BYTES\n' > "$yolo_only_repo/.agent/spec.txt"
+printf 'TRUSTED-PRIOR-BYTES\n' > "$yolo_only_repo/.agent/prior-art.txt"
+# Deliberately no fenced-spec.txt / fenced-prior-art.txt in this fixture.
+yolo_only_fix_batch_rc=0
+bash "$compose" --template fix-batch --worktree "$yolo_only_repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    >/dev/null 2>&1 || yolo_only_fix_batch_rc=$?
+assert_eq 0 "$yolo_only_fix_batch_rc" \
+    'fix-batch composes in a yolo-trusted worktree that has only the mode-neutral artifact pair'
+
 # Each mode discloses itself, embeds only its own artifact pair, and states
 # only its own rule paragraph -- never the other two modes' text.
 # shellcheck disable=SC2016  # the literal $(...) below must stay unexpanded

@@ -94,25 +94,33 @@ sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
 
 contract=$worktree/.agent/env-contract.txt
-# Must agree, filename-for-filename, with prepare-issue-artifacts.sh's own
-# per-mode publish targets (issue #334): only public-fenced actually fences
-# the bytes, so only public-fenced keeps the fenced-* name; private-trusted
-# and yolo-trusted publish under the mode-neutral spec.txt / prior-art.txt
-# names instead, so a filename never asserts a fence that does not exist.
-# fix-batch never renders these files and carries no --boundary, so it keeps
-# resolving the legacy fenced-* names it has always used.
-case ${boundary_mode:-public-fenced} in
-    public-fenced)
-        spec=$worktree/.agent/fenced-spec.txt
-        prior_art=$worktree/.agent/fenced-prior-art.txt
-        ;;
-    private-trusted | yolo-trusted)
-        spec=$worktree/.agent/spec.txt
-        prior_art=$worktree/.agent/prior-art.txt
-        ;;
-esac
-[[ -f $spec && ! -L $spec && -r $spec ]] || die "missing persisted spec: $spec"
-[[ -f $prior_art && ! -L $prior_art && -r $prior_art ]] || die "missing persisted prior art: $prior_art"
+spec=
+prior_art=
+if [[ $template_kind == issue-lead ]]; then
+    # Must agree, filename-for-filename, with prepare-issue-artifacts.sh's
+    # own per-mode publish targets (issue #334): only public-fenced actually
+    # fences the bytes, so only public-fenced keeps the fenced-* name;
+    # private-trusted and yolo-trusted publish under the mode-neutral
+    # spec.txt / prior-art.txt names instead, so a filename never asserts a
+    # fence that does not exist. fix-batch never renders issue text and
+    # carries no --boundary, so it must never resolve or require either
+    # artifact -- for a private-trusted/yolo-trusted issue,
+    # prepare-issue-artifacts.sh publishes only the mode-neutral pair, and a
+    # fix-batch composition that still demanded fenced-spec.txt would die on
+    # an artifact that was never produced (issue #359 adversarial review).
+    case $boundary_mode in
+        public-fenced)
+            spec=$worktree/.agent/fenced-spec.txt
+            prior_art=$worktree/.agent/fenced-prior-art.txt
+            ;;
+        private-trusted | yolo-trusted)
+            spec=$worktree/.agent/spec.txt
+            prior_art=$worktree/.agent/prior-art.txt
+            ;;
+    esac
+    [[ -f $spec && ! -L $spec && -r $spec ]] || die "missing persisted spec: $spec"
+    [[ -f $prior_art && ! -L $prior_art && -r $prior_art ]] || die "missing persisted prior art: $prior_art"
+fi
 shared_path=$("$contract_reader" --repo-root "$worktree" --get skills.path) ||
     die "could not read trusted skills path from environment contract: $contract"
 [[ $shared_path == /* ]] || die 'environment contract has no absolute skills path'
