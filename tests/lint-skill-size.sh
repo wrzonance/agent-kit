@@ -130,7 +130,20 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # per this file's own ratchet rule; the shrink this issue buys lands in the
 # COMPOSED prompt (a per-dispatch surface this gate does not measure), not in
 # the body. test-skill-size.sh's pinned ratchet message moves with it.
-KNOWN_OVERSIZE[parallel-issues]="1132:19394:900"
+# Issue #337 restates command precedence at the point of conflict: the composed
+# worker prompt now carries a binding line immediately above its `## Spec` block
+# (a composer-owned token, so none of that prose lands in this body), and the
+# composer reports the spec verification steps no declared command covers. The
+# body's only change is one appended sentence on the existing compose-block
+# prose line, telling the root to record a non-zero `uncovered` on the
+# dispatch-plan entry before spawning -- the dispatch-time disclosure the issue
+# asks for, at the one spine point where the root has the report in hand. LINES
+# is unchanged at 1132; TOKENS rises 19394 -> 19468 for that sentence, measured
+# against this body and set to the minimum that passes, never padded. A
+# deliberate, conscious raise per this file's own ratchet rule; the schema and
+# rationale live in references/triage-and-selection.md rather than here.
+# test-skill-size.sh's pinned ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1132:19468:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

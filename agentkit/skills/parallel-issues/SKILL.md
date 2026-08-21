@@ -786,7 +786,7 @@ printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' \
     "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 ```
 
-It prints a path and metadata digest (bytes, issue, write set), never the body — the worker's to read. It lands in the worker's excluded `.agent/` tree, surviving a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site.
+It prints a path and metadata digest (bytes, issue, write set), never the body — the worker's to read. It lands in the worker's excluded `.agent/` tree, surviving a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site. It also prints one `spec-verification=` line naming the spec verification steps no declared command covers; record a non-zero `uncovered` on that issue's dispatch-plan entry as `uncoveredVerification` before you spawn, so the gap is disclosed at dispatch instead of reconciled mid-implementation.
 
 ### Collect (per-completion — never wait for the slowest issue)
 

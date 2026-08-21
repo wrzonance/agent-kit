@@ -241,6 +241,8 @@ __BOUNDARY_RULE__
 
 __BOUNDARY_DISCLOSURE__
 
+__SPEC_COMMAND_PRECEDENCE__
+
 ## Spec
 <PASTE the complete output selected by the boundary mode for the approved design-doc contents or full issue body>
 
