@@ -164,6 +164,61 @@ for name in verify test frontend-test backend-test server-build; do
 done
 assert_not_contains "$fix_prompt" 'withheld from the list above' 'fix-batch states no filter'
 
+# --- the focused selector follows the SCOPED test command (CodeRabbit F1) ---
+# focus_declared is read from the FULL declaration list, but `--cmd test --only`
+# selects ONE command, and the write-set filter may have scoped that command
+# out. Emitting the selector anyway points the worker at a suite this dispatch
+# has no business running -- and when that suite drives Compose, it does so
+# without the isolation prose, because compose_reachable only inspects scoped
+# commands. That pair is the sibling-worktree collision the isolation reference
+# exists to prevent, so the selector and the Compose decision must agree.
+focus_out="$tmp/focus-scoped-out"
+make_repo "$focus_out" 'AGENT_CMD_VERIFY=tools/verify' \
+    'AGENT_CMD_TEST=docker compose run --rm tests' 'AGENT_RUNDIR_TEST=backend' \
+    'AGENT_CMD_TEST_FOCUS=tools/focused --only %s'
+mkdir -p "$focus_out/backend" "$focus_out/frontend"
+focus_out_prompt=$(compose_lead "$focus_out" 'frontend/src/**')
+# Match the emitted COMMAND LINES, not the whole prompt: the explanatory
+# sentence legitimately names the `--cmd test --only` flag it is declining to
+# offer, and a whole-prompt match would read that mention as the offer itself.
+assert_not_contains "$(command_lines "$focus_out_prompt")" '--only' \
+    'no runnable focused selector is emitted when the test command it selects is scoped out'
+assert_not_contains "$focus_out_prompt" "--cmd test --only 'NAME[,NAME...]'" \
+    'the focused selector recipe is absent when its test command is scoped out'
+assert_not_contains "$(command_lines "$focus_out_prompt")" '--cmd test ' \
+    'the scoped-out test command is not in the runnable list either'
+assert_contains "$focus_out_prompt" 'A focused selector is declared, but the test command it selects' \
+    'the prose distinguishes scoped-out from never-declared'
+assert_not_contains "$focus_out_prompt" 'No focused selector is declared' \
+    'a scoped-out test command never masquerades as a repository with no selector'
+assert_contains "$focus_out_prompt" 'test (rundir backend)' \
+    'the scoped-out test command is still disclosed by name'
+# The coherent pair: no selector for it, and no Compose prose for it either.
+assert_not_contains "$focus_out_prompt" 'AGENT_COMPOSE_SERIALIZED=1' \
+    'a scoped-out Compose test command brings no isolation prose, matching the withheld selector'
+
+# The same repository with a write set that DOES reach the test command keeps
+# both halves: the focused selector and the Compose-isolation prose.
+focus_in_prompt=$(compose_lead "$focus_out" 'backend/**')
+assert_contains "$focus_in_prompt" "--cmd test --only 'NAME[,NAME...]'" \
+    'an in-scope test command still offers the focused selector'
+assert_contains "$focus_in_prompt" 'AGENT_COMPOSE_SERIALIZED=1' \
+    'an in-scope Compose test command still brings the isolation prose'
+assert_not_contains "$focus_in_prompt" 'A focused selector is declared, but' \
+    'the scoped-out explanation does not render when the command is in scope'
+
+# A repository with no AGENT_CMD_TEST resolves `test` through its runner, so
+# there is no per-command rundir to scope by and the selector must survive.
+runner_focus="$tmp/runner-focus"
+make_repo "$runner_focus" 'AGENT_CMD_VERIFY=tools/verify' 'AGENT_CMD_TEST_FOCUS=tools/focused --only %s'
+mkdir -p "$runner_focus/tools"
+printf '#!/usr/bin/env bash\n' > "$runner_focus/tools/run"
+chmod +x "$runner_focus/tools/run"
+printf 'tools/run\n' > "$runner_focus/.agent/runner"
+runner_focus_prompt=$(compose_lead "$runner_focus" 'src/**')
+assert_contains "$runner_focus_prompt" "--cmd test --only 'NAME[,NAME...]'" \
+    'a runner-resolved test command is never treated as scoped out'
+
 # --- Compose-isolation prose is conditional ---------------------------------
 compose_phrase='AGENT_COMPOSE_SERIALIZED=1'
 assert_not_contains "$frontend_prompt" "$compose_phrase" \
