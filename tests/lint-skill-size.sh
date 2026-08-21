@@ -111,7 +111,12 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # locally-built chain base" subsection instead, per the standing preference
 # to keep body growth to a pointer. Minimum that passes. Line target
 # unchanged.
-KNOWN_OVERSIZE[parallel-issues]="1132:19312:900"
+# Issue #352 raises TOKENS 19312 -> 19357 for the combined body of three
+# concurrent SKILL.md PRs in this wave (#334, #338, #352): each passes this
+# gate on its own branch, but no single PR's CI can observe the merged
+# total, so the ceiling is re-measured against the merged tree and set to
+# the minimum that passes. Line target unchanged.
+KNOWN_OVERSIZE[parallel-issues]="1132:19357:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
