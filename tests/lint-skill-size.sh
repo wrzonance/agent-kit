@@ -116,7 +116,21 @@ KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
 # gate on its own branch, but no single PR's CI can observe the merged
 # total, so the ceiling is re-measured against the merged tree and set to
 # the minimum that passes. Line target unchanged.
-KNOWN_OVERSIZE[parallel-issues]="1132:19357:900"
+# Issue #336 stops the dispatcher from echoing each composed worker prompt into
+# root context: the compose block now writes a persistent per-issue prompt file
+# and prints only `prompt=<path> bytes=<n> issue=<n> write-set=<globs>`. That
+# trades ~18KB of echoed prompt per dispatched issue (paid twice under an
+# approval layer that re-executes an approved command) for a one-line digest.
+# The same issue reconciles the blanket no-size-probe rule with this file's own
+# size, since a 1100+ line mandatory read is exactly the case where a bounded
+# probe is worth one turn. LINES is unchanged at 1132; TOKENS rises 19357 ->
+# 19394 for the persistent-path recipe, the digest printf, the bounded-probe
+# exception, and the inline-bytes spawn note -- measured against this body and
+# set to the minimum that passes, never padded. A deliberate, conscious raise,
+# per this file's own ratchet rule; the shrink this issue buys lands in the
+# COMPOSED prompt (a per-dispatch surface this gate does not measure), not in
+# the body. test-skill-size.sh's pinned ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1132:19394:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

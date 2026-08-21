@@ -20,11 +20,13 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-**References are read once, batched, and never sized first.** When a step names a reference
-file, read it in full at that step — one batched read covering several files is ideal — and do
-not re-read it later in the run. Never probe a reference's size before reading it (`wc -l`,
-`stat`, `head`): nothing in this skill consumes a line count, and per-file sizing spends one
-root turn per file before any real work starts.
+**References are read once and batched.** When a step names a reference file, read it in full
+at that step — one batched read covering several files is ideal — and do not re-read it later
+in the run. Do not probe a reference's size before reading it (`wc -l`, `stat`, `head`):
+per-file sizing spends one root turn per file before any real work starts. One exception, and
+the only thing here that consumes a line count: a **first** read of a file over ~800 lines
+(this SKILL.md included) may take one bounded size probe, because that count decides whether a
+single-shot read is affordable at all.
 
 ## Flags
 
@@ -38,12 +40,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | `--auto-review` | `--auto-approve` | Standing consent for this invocation's diff review. The consent-bearing review launch stays in the consent-holding context (root by default); dispatched loops do not launch it. |
 | `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
-`--trust-trunk` no longer exists: its only job was threading `--yolo` onto every dispatched
-`agent-run.sh --cmd` invocation, which the command-approval fence removal made moot 2026-08-19
-(`agent-run.sh` has no approval step left to thread past — a declared command just runs). The
-session ledger's `invocation_flags` string below keeps the `trust-trunk=` field name for run-ID
-hash-format stability with earlier runs; it always reads `false` now, since nothing parses that
-flag any more.
+`--trust-trunk` no longer exists; the ledger keeps the field name (always `false`) for run-ID hash stability.
 
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
 
@@ -69,8 +66,8 @@ red/green iteration, the full suite once per tree state before commit;
 `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
 that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
-Read [references/verification-isolation.md](references/verification-isolation.md) in full before
-dispatching verification that may use Compose.
+Read [references/verification-isolation.md](references/verification-isolation.md) in full only
+when this repository declares a Compose-driven command.
 
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
@@ -768,15 +765,14 @@ human merely because the root checkout is dirty.
 
 ### Compose the issue-lead prompt
 
-Per-issue prompt: helper fills inputs. **Compose once; the spawn consumes the bytes emitted by this block — never re-compose to re-read.**
+Per-issue prompt: helper fills inputs. **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
-prompt_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-worker-prompt.XXXXXXXXXX") || exit 1
-cleanup_prompt_file() { rm -f -- "$prompt_file"; }
-trap cleanup_prompt_file EXIT HUP INT TERM
-chmod 600 -- "$prompt_file" || exit 1
+prompt_dir="$worktree/.agent/prompts"
+mkdir -p -- "$prompt_dir" || exit 1
+prompt_file="$prompt_dir/issue-$issue_number-lead.md"
 # worker_effort is override or AGENT_WORKER_EFFORT default.
 # write_set_globs contains predictedWriteSet globs, one per flag --
 # REQUIRED for an issue lead; never CSV (comma-bearing globs split).
@@ -785,8 +781,12 @@ for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); don
 if ! "$compose_script" "${compose_args[@]}"; then
     exit 1
 fi
-cat -- "$prompt_file"
+chmod 600 -- "$prompt_file" || exit 1
+printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' \
+    "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 ```
+
+It prints a path and digest, never the body — those are the worker's instructions, not the root's. The file lands in the worker's excluded `.agent/` tree, so it survives a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site.
 
 ### Collect (per-completion — never wait for the slowest issue)
 

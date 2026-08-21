@@ -91,19 +91,34 @@ fix_batch_prompt=$(awk '
     printf 'could not extract the fix-batch prompt block from %s\n' "$worker_prompts" >&2
     exit 1
 }
+# Issue #336: the Compose-isolation prose is CONDITIONAL, so both raw templates
+# carry the composer-filled token rather than the paragraph itself. A repository
+# with no Compose-driven command never pays for the essay; one that declares a
+# Compose command still gets every rule. The rendered-both-ways assertions live
+# in test-compose-worker-prompt-scope.sh, which can actually compose a prompt;
+# here we pin that neither template hardcodes the prose it must not always emit.
 for _tpl_name in issue_lead fix_batch; do
     _tpl_var="${_tpl_name}_prompt"
     # Collapse wrapping before matching: these sentences are reflowed by hand and
     # a phrase split across two lines is still the phrase. Matching raw text made
     # the assertion depend on where the paragraph happened to wrap.
     _tpl_flat=$(printf '%s' "${!_tpl_var}" | tr '\n' ' ' | tr -s ' ' | tr '[:upper:]' '[:lower:]')
-    assert_contains "$_tpl_flat" 'serialize full-suite verification' \
-        "the $_tpl_name prompt carries the Compose serialization fallback"
-    assert_contains "$_tpl_flat" 'environment-retry-eligible' \
-        "the $_tpl_name prompt classifies Compose collisions as environment retries"
-    assert_contains "$_tpl_flat" 'compose_project_name' \
-        "the $_tpl_name prompt names the isolated Compose project variable"
+    assert_contains "$_tpl_flat" '__compose_isolation__' \
+        "the $_tpl_name template defers Compose isolation to the composer"
+    assert_not_contains "$_tpl_flat" 'agent_compose_serialized' \
+        "the $_tpl_name template does not hardcode the Compose serialization essay"
+    assert_contains "$_tpl_flat" '__image_invalidating_writers__' \
+        "the $_tpl_name template defers the image-invalidating writer list to the composer"
+    assert_not_contains "$_tpl_flat" 'move-github-project-item.sh' \
+        "the $_tpl_name template does not hardcode root-side writers a worker never invokes"
 done
+compose_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh")
+assert_contains "$compose_script_text" 'AGENT_COMPOSE_SERIALIZED=1' \
+    'the composer owns the Compose serialization fallback text'
+assert_contains "$compose_script_text" 'environment-retry-eligible' \
+    'the composer owns the Compose retry classification'
+assert_contains "$compose_script_text" 'COMPOSE_PROJECT_NAME' \
+    'the composer owns the isolated Compose project variable'
 assert_contains "$text" '--auto-serialize' 'auto-serialize flag is documented'
 assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside the selected set' \
     'chain ordering sources are exactly the two mechanical ones'
@@ -287,19 +302,30 @@ assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]
 assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
     'root prints the selected boundary mode'
 dispatch_handoff=$(sed -n '/^Per-issue prompt:/,/^### Collect (per-completion/p' <<< "$text")
-assert_contains "$dispatch_handoff" 'Compose once; the spawn consumes the bytes emitted by this block — never re-compose to re-read.' \
-    'dispatch pins one composition and emitted prompt bytes per spawned worker'
+assert_contains "$dispatch_handoff" 'Compose once, to a file; the spawn reads that file — never re-compose to re-read.' \
+    'dispatch pins one composition to a file per spawned worker'
 assert_contains "$dispatch_handoff" 'REQUIRED for an issue lead' \
     'dispatch marks write-set globs as required for issue leads'
-assert_contains "$dispatch_handoff" 'trap cleanup_prompt_file EXIT HUP INT TERM' \
-    'dispatch handoff cleans its private prompt file on every exit path'
+assert_contains "$dispatch_handoff" 'prompt_file="$prompt_dir/issue-$issue_number-lead.md"' \
+    'dispatch handoff composes to a per-issue file in the worker'"'"'s excluded .agent/ tree'
+assert_contains "$dispatch_handoff" 'chmod 600 -- "$prompt_file"' \
+    'the composed prompt file is not world-readable'
 assert_contains "$dispatch_handoff" 'if ! "$compose_script" "${compose_args[@]}"; then' \
     'dispatch handoff stops when prompt composition fails'
 compose_invocations=$(grep -Fxc 'if ! "$compose_script" "${compose_args[@]}"; then' <<< "$dispatch_handoff" || true)
 assert_eq '1' "$compose_invocations" \
     'dispatch invokes the prompt composer exactly once per worker'
-assert_contains "$dispatch_handoff" 'cat -- "$prompt_file"' \
-    'dispatch handoff emits the composed prompt bytes'
+# Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
+# composed body in root context for no dispatch benefit -- twice, under an
+# approval layer that re-executes an approved command. The block emits a digest.
+assert_contains "$dispatch_handoff" "printf 'prompt=%s bytes=%s issue=%s write-set=%s" \
+    'dispatch handoff emits a path + digest instead of the prompt body'
+assert_contains "$dispatch_handoff" 'wc -c < "$prompt_file"' \
+    'the digest carries the composed byte count'
+for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tail -'; do
+    assert_not_contains "$dispatch_handoff" "$_echo" \
+        "dispatch handoff never reads the composed prompt back into root context ($_echo)"
+done
 assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
 boundary_selector="$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh"
@@ -940,11 +966,22 @@ assert_contains "$text" 'covers --ledger' \
 assert_contains "$normalized_text" 'A mutation no recorded decision covers still stops' \
     'an uncovered mutation still stops'
 
-# --- issue #224: references read once, never sized (WS2d) ---------------------
-assert_contains "$normalized_text" 'References are read once, batched, and never sized first' \
-    'parallel skill forbids per-file reference sizing'
+# --- issue #224: references read once (WS2d); issue #336 reconciles the size
+# probe with this skill's own size. The blanket prohibition and a 1000+ line
+# mandatory read were jointly untenable: sizing is still barred as a routine
+# habit, with ONE bounded exception for a large first read.
+assert_contains "$normalized_text" 'References are read once and batched' \
+    'parallel skill still reads each reference once, in batches'
 assert_contains "$text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
+assert_contains "$normalized_text" 'per-file sizing spends one root turn per file' \
+    'the no-sizing default names its cost'
+assert_contains "$normalized_text" 'may take one bounded size probe' \
+    'a large first read may be sized once'
+assert_contains "$normalized_text" 'this SKILL.md included' \
+    'the size-probe exception admits this skill is over the threshold'
+assert_not_contains "$normalized_text" 'nothing in this skill consumes a line count' \
+    'the skill no longer claims nothing consumes a line count while permitting a probe'
 
 assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
