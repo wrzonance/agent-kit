@@ -504,6 +504,30 @@ assert_eq 'sandbox= active=yes profile=none network=disabled home-writable=no me
 assert_contains "$(grep '^caches=' <<< "$after_widen")" 'reason=home-cache-unwritable' \
     'the more-restrictive recorded caches= line is kept'
 
+# --- a spoofed reason= sequence embedded in home-cache= must not out-match --
+# the real, earlier reason= (issue #332 F2, round 2). home-cache= is fed by
+# XDG_CACHE_HOME/HOME and sits AFTER the genuine reason= in the fixed field
+# order; a value containing a complete "reason=... home-cache=..." sequence
+# of its own defeats a trailing-context anchor just as easily as the naive
+# greedy regex it replaced, since the fake occurrence is ALSO followed by a
+# home-cache= token. Only anchoring at the record's start -- past exactly one
+# whitespace-free root= token -- closes this: nothing attacker-controlled can
+# precede the genuine reason= at that fixed position.
+caches_repo=$(new_repo)
+caches_contract="$caches_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'caches= root=/tmp/agent-cache-restrictive reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-restrictive/uv NPM_CONFIG_CACHE=/tmp/agent-cache-restrictive/npm PIP_CACHE_DIR=/tmp/agent-cache-restrictive/pip XDG_CACHE_HOME=/tmp/agent-cache-restrictive' \
+    > "$caches_contract"
+chmod 600 "$caches_contract"
+caches_session="$tmp/caches-spoof-session-contract.txt"
+printf '%s\ncaches= root=/tmp/agent-cache-7 reason=home-cache-writable home-cache=/home/u/.cache reason=home-cache-unwritable home-cache=/tmp/spoof UV_CACHE_DIR=/tmp/agent-cache-7/uv NPM_CONFIG_CACHE=/tmp/agent-cache-7/npm PIP_CACHE_DIR=/tmp/agent-cache-7/pip XDG_CACHE_HOME=/tmp/agent-cache-7\n' \
+    "$current_harness_line" > "$caches_session"
+caches_spoof_err=$("$script" --worktree "$caches_repo" --inherit-session "$caches_session" 2>&1 > /dev/null)
+assert_contains "$caches_spoof_err" 'keeping the more-restrictive recorded caches=' \
+    'an embedded reason=...home-cache=... sequence inside home-cache= does not mask a real caches= widening'
+assert_contains "$(grep '^caches=' "$caches_contract")" 'reason=home-cache-unwritable' \
+    'the spoofed caches= scenario keeps the recorded (restrictive) caches= line, not the fresh one'
+
 # --- field-by-field widen detection: no single axis may mask another --------
 # (issue #332 F2). A scalar SUM lets one axis's tightening cancel out
 # another axis's widening: active tightening no->yes (+2 under the old

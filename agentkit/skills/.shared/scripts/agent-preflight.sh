@@ -638,14 +638,19 @@ probe_sandbox() {
 # scores in between rather than being judged for restrictiveness.
 caches_restriction_score() {
     local line="$1" reason
-    # Anchored on the literal " home-cache=" that always immediately follows
-    # reason= in this probe's fixed field order (issue #332 F2): root= (just
-    # before reason=) carries an operator-controlled path (AGENT_CACHE_ROOT),
-    # and without this anchor a crafted root value containing its own
-    # "reason=" text could out-match the real field under a greedy .*reason=
-    # search. Requiring the immediate " home-cache=" suffix means only the
-    # genuine field -- always followed by exactly that text -- can match.
-    reason=$(sed -n 's/.*reason=\([A-Za-z-]*\) home-cache=.*/\1/p' <<< "$line")
+    # Anchored at the START of the record, not on a trailing-context marker
+    # (issue #332 F2 round 2): requiring " home-cache=" to follow reason=
+    # only blocks an injected "reason=" that ISN'T itself followed by a
+    # "home-cache=" token -- an attacker-controlled value can simply include
+    # one too (root=/x reason=fake home-cache=/y reason=REAL home-cache=/z
+    # still matches "fake" under that rule, since "fake" is ALSO followed by
+    # a home-cache= token). root= is always the very first token after
+    # "caches= " and probe_caches() now refuses to emit a root value
+    # containing whitespace (the only way root= could otherwise swallow a
+    # space-delimited " reason=" of its own), so anchoring past exactly one
+    # whitespace-free root token is sound: nothing attacker-controlled can
+    # precede the genuine reason= at that fixed position.
+    reason=$(sed -n 's/^caches= root=[^[:space:]]* reason=\([A-Za-z-]*\).*/\1/p' <<< "$line")
     case "$reason" in
         home-cache-unwritable) printf '2' ;;
         AGENT_CACHE_ROOT-set) printf '1' ;;
@@ -811,15 +816,27 @@ probe_tls() {
 probe_caches() {
     local home_cache root reason
     home_cache="${XDG_CACHE_HOME:-$HOME/.cache}"
-    if [[ -n "${AGENT_CACHE_ROOT:-}" ]]; then
+    # A whitespace byte in AGENT_CACHE_ROOT would let it masquerade as more
+    # than one caches= token -- e.g. embedding its own trailing "reason=...
+    # home-cache=..." sequence to spoof the field caches_restriction_score()
+    # reads (issue #332 F2). root= is always the first token after "caches= "
+    # and is never quoted, so the only sound fix is refusing to emit a root
+    # value that could split into extra tokens, not trying to out-pattern one
+    # that already has.
+    if [[ -n "${AGENT_CACHE_ROOT:-}" && "${AGENT_CACHE_ROOT}" != *[[:space:]]* ]]; then
         root="$AGENT_CACHE_ROOT"
         reason="AGENT_CACHE_ROOT-set"
-    elif dir_writable "$home_cache"; then
-        root="$home_cache"
-        reason="home-cache-writable"
-    else
-        root="${TMPDIR:-/tmp}/agent-cache-$(id -u)"
-        reason="home-cache-unwritable"
+    elif [[ -n "${AGENT_CACHE_ROOT:-}" ]]; then
+        note "ignoring AGENT_CACHE_ROOT: contains whitespace, which the caches= contract record cannot carry safely -- falling back to the home-cache probe"
+    fi
+    if [[ -z "${root:-}" ]]; then
+        if dir_writable "$home_cache"; then
+            root="$home_cache"
+            reason="home-cache-writable"
+        else
+            root="${TMPDIR:-/tmp}/agent-cache-$(id -u)"
+            reason="home-cache-unwritable"
+        fi
     fi
     emit "caches= root=$root reason=$reason home-cache=$home_cache UV_CACHE_DIR=$root/uv NPM_CONFIG_CACHE=$root/npm PIP_CACHE_DIR=$root/pip XDG_CACHE_HOME=$root"
 }
