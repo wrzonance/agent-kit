@@ -245,4 +245,56 @@ assert_contains "$noreflog_out" 'type=head-reflog-unavailable' \
 assert_not_contains "$noreflog_out" 'cross-write=none' \
     'an unobservable ref is never reported as cross-write=none'
 
+# --- a worker committing on its own branch is NOT a root cross-write --------
+# Reproduces the issue #352 false positive: worker branches live in the same
+# repository as the root checkout (worktrees share refs/heads/*), so a
+# perfectly normal worker commit on its own branch must never surface as a
+# root incident.
+worker_root="$tmp/worker-root"
+worker_worker="$tmp/worker-worker"
+make_repo "$worker_root"
+git -C "$worker_root" worktree add -q -b feat/w1 "$worker_worker"
+worker_snap="$worker_root/.agent/cross-write.snapshot"
+snapshot_repo "$worker_root" "$worker_snap"
+now=$(date +%s)
+git -C "$worker_worker" -c user.name=t -c user.email=t@example.invalid \
+    commit -q --allow-empty -m 'worker commit'
+worker_out=$(
+    "$cross_write" collect --root "$worker_root" --snapshot "$worker_snap" \
+        --worker-worktree "$worker_worker" --issue 352 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) --write-set 'src/**'
+)
+worker_rc=$?
+assert_eq 0 "$worker_rc" \
+    'a worker commit on its own branch is not a root incident (issue #352)'
+assert_contains "$worker_out" 'cross-write=none' \
+    'a worker committing on its own branch still reports cross-write=none'
+assert_not_contains "$worker_out" 'cross-ref=' \
+    'the worker branch move produces no cross-ref incident at all'
+
+# --- the root checkout's OWN branch moving is still a named incident -------
+# Proves the fix narrows WHICH refs are in scope, not what counts as a
+# mutation: the worker-branch exclusion above must not blind the fence to a
+# move of the branch the ROOT checkout itself owns.
+rootmove_root="$tmp/rootmove-root"
+rootmove_worker="$tmp/rootmove-worker"
+make_repo "$rootmove_root"
+git -C "$rootmove_root" worktree add -q -b feat/rootmove-worker "$rootmove_worker"
+rootmove_snap="$rootmove_root/.agent/cross-write.snapshot"
+snapshot_repo "$rootmove_root" "$rootmove_snap"
+git -C "$rootmove_root" -c user.name=t -c user.email=t@example.invalid \
+    commit -q --allow-empty -m second
+now=$(date +%s)
+git -C "$rootmove_root" reset --soft HEAD^
+rootmove_out=$(
+    "$cross_write" collect --root "$rootmove_root" --snapshot "$rootmove_snap" \
+        --worker-worktree "$rootmove_worker" --issue 352 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) --write-set 'src/**'
+)
+rootmove_rc=$?
+assert_eq 10 "$rootmove_rc" \
+    "the root checkout's own branch moving is still a named incident"
+assert_contains "$rootmove_out" 'type=head-sha-changed' \
+    'the fix narrows scope to worker-owned refs, not what counts as a mutation'
+
 finish

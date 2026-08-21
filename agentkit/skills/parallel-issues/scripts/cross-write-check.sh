@@ -207,19 +207,63 @@ capture_ref_reflog_usable() {
     fi
 }
 
+# list_worktree_branches -- branch short names currently checked out by any
+# *other* worktree of this same repository (i.e. every `git worktree list`
+# entry except the one at $root itself). In parallel-issues, worker branches
+# live in the SAME repository as the root checkout -- worktrees share
+# `refs/heads/*` -- so a worker committing and pushing its own branch is a
+# perfectly normal dispatch, not a root mutation. Ownership is decided from
+# Git's own worktree metadata (`git worktree list --porcelain`), never by
+# name pattern: a worktree's checked-out branch is filtered out unless that
+# worktree's path canonicalizes to $root. Root's own branch is never
+# filtered out by this function, even though the root checkout is itself one
+# of the entries `git worktree list` reports.
+list_worktree_branches() {
+    local root=$1 line wt_path='' branch resolved
+    while IFS= read -r line; do
+        case $line in
+            worktree\ *) wt_path=${line#worktree } ;;
+            branch\ refs/heads/*)
+                branch=${line#branch refs/heads/}
+                resolved=$(canonical_dir "$wt_path" 2>/dev/null) || resolved=$wt_path
+                [[ $resolved == "$root" ]] || printf '%s\n' "$branch"
+                ;;
+            '') wt_path='' ;;
+        esac
+    done < <(git -C "$root" worktree list --porcelain)
+}
+
 # capture_branch_shas -- one "name<TAB>sha<TAB>reflog-count<TAB>reflog-usable"
-# line per local branch, sorted by refname for deterministic snapshot/report
-# ordering.
+# line per local branch NOT checked out by another worktree, sorted by
+# refname for deterministic snapshot/report ordering. `exclude` is a
+# newline-delimited set of branch names (leading newline included; a
+# *trailing* newline is not guaranteed -- it is built via `$(...)`, which
+# strips trailing newlines, so a name may be the literal end of the string)
+# to skip entirely -- branches owned by other worktrees are not this
+# checkout's concern, and must not appear in either the baseline or the
+# current capture.
 capture_branch_shas() {
-    local root=$1 branch_name branch_sha fullref
+    local root=$1 exclude=$2 branch_name branch_sha fullref
     while IFS=$'\t' read -r branch_name branch_sha; do
         [[ -n $branch_name ]] || continue
+        [[ $exclude == *$'\n'"$branch_name"$'\n'* || $exclude == *$'\n'"$branch_name" ]] && continue
         fullref="refs/heads/$branch_name"
         printf '%s\t%s\t%s\t%s\n' "$branch_name" "$branch_sha" \
             "$(capture_ref_reflog_count "$root" "$fullref")" \
             "$(capture_ref_reflog_usable "$root" "$fullref")"
     done < <(git -C "$root" for-each-ref --sort=refname \
         --format='%(refname:short)%09%(objectname)' refs/heads/)
+}
+
+# branch_name_set -- join branch names (one per positional arg) into the
+# newline-delimited set format capture_branch_shas' `exclude` expects.
+branch_name_set() {
+    local name out=$'\n'
+    for name in "$@"; do
+        [[ -n $name ]] || continue
+        out+="$name"$'\n'
+    done
+    printf '%s' "$out"
 }
 
 snapshot_head_ref() {
@@ -245,6 +289,14 @@ snapshot_head_reflog_usable() {
 snapshot_branch_shas() {
     local snapshot=$1
     sed -n 's/^branch-sha=//p' "$snapshot"
+}
+
+# snapshot_excluded_branches -- branch names that were checked out by another
+# worktree at snapshot time, and were therefore left out of the snapshot's
+# branch-sha baseline entirely.
+snapshot_excluded_branches() {
+    local snapshot=$1
+    sed -n 's/^excluded-branch=//p' "$snapshot"
 }
 
 # reflog_activity -- has a fully-qualified ref's reflog grown past
@@ -384,8 +436,8 @@ dispose_path() {
 
 snapshot_cmd() {
     local root='' output='' arg write_set branch_name branch_sha
-    local branch_reflog_count branch_reflog_usable
-    local -a write_sets=()
+    local branch_reflog_count branch_reflog_usable exclude_set excluded_branch
+    local -a write_sets=() worktree_excluded=()
     while (($#)); do
         arg=$1
         case $arg in
@@ -409,10 +461,15 @@ snapshot_cmd() {
     temp=$(mktemp "$output.tmp.XXXXXXXXXX") || die "could not create snapshot temporary file"
     status_path=$(mktemp "$output.status.XXXXXXXXXX") || die "could not create status temporary file"
     captured=$(date +%s)
+    mapfile -t worktree_excluded < <(list_worktree_branches "$root")
+    exclude_set=$(branch_name_set "${worktree_excluded[@]}")
     {
         printf 'version=1\nroot=%s\ncaptured-at=%s\n' "$root" "$captured"
         for write_set in "${write_sets[@]}"; do
             printf 'write-set=%s\n' "$write_set"
+        done
+        for excluded_branch in "${worktree_excluded[@]}"; do
+            printf 'excluded-branch=%s\n' "$excluded_branch"
         done
         printf 'head-ref=%s\n' "$(capture_head_ref "$root")"
         printf 'head-sha=%s\n' "$(capture_head_sha "$root")"
@@ -422,7 +479,7 @@ snapshot_cmd() {
             [[ -n $branch_name ]] || continue
             printf 'branch-sha=%s\t%s\t%s\t%s\n' \
                 "$branch_name" "$branch_sha" "$branch_reflog_count" "$branch_reflog_usable"
-        done < <(capture_branch_shas "$root")
+        done < <(capture_branch_shas "$root" "$exclude_set")
         printf 'path\tstatus\tmtime\tsha256\n'
         status_file "$root" "$status_path"
     } >"$temp"
@@ -441,9 +498,10 @@ collect_cmd() {
     local current_head_ref current_head_sha current_head_reflog_usable
     local ref_activity ref_summary ref_window branch_name branch_sha branch_reflog_count _
     local branch_reflog_usable baseline_branch_sha current_branch_sha current_branch_reflog_usable
-    local -a write_sets=() sorted_branch_names=()
+    local exclude_set excluded_branch
+    local -a write_sets=() sorted_branch_names=() baseline_excluded=() current_excluded=()
     declare -A baseline=() baseline_branches=() baseline_branch_reflog_counts=()
-    declare -A baseline_branch_reflog_usable=() current_branches=()
+    declare -A baseline_branch_reflog_usable=() current_branches=() union_excluded=()
     while (($#)); do
         arg=$1
         case $arg in
@@ -595,8 +653,26 @@ collect_cmd() {
             "$baseline_head_sha" "$current_head_sha" "$ref_window" "$ref_summary"
     fi
 
+    # A branch checked out by another worktree is out of scope for the ROOT
+    # ref fence -- that worktree owns its own commits and pushes (see
+    # list_worktree_branches). Ownership can change between snapshot and
+    # collect (a worker worktree can be added, or removed, mid-window), so a
+    # branch excluded at EITHER end is excluded at BOTH: union, not
+    # intersection. Filtering only the side where it happens to be owned
+    # would read the other side's absence as a fabricated branch-created or
+    # branch-deleted incident -- a worktree lifecycle event, not a root
+    # mutation.
+    mapfile -t baseline_excluded < <(snapshot_excluded_branches "$snapshot")
+    mapfile -t current_excluded < <(list_worktree_branches "$root")
+    for excluded_branch in "${baseline_excluded[@]}" "${current_excluded[@]}"; do
+        [[ -n $excluded_branch ]] || continue
+        union_excluded["$excluded_branch"]=1
+    done
+    exclude_set=$(branch_name_set "${!union_excluded[@]}")
+
     while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
         [[ -n $branch_name ]] || continue
+        [[ -n ${union_excluded[$branch_name]+present} ]] && continue
         baseline_branches["$branch_name"]=$branch_sha
         baseline_branch_reflog_counts["$branch_name"]=${branch_reflog_count:-0}
         baseline_branch_reflog_usable["$branch_name"]=${branch_reflog_usable:-no}
@@ -604,7 +680,7 @@ collect_cmd() {
     while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
         [[ -n $branch_name ]] || continue
         current_branches["$branch_name"]=$branch_sha
-    done < <(capture_branch_shas "$root")
+    done < <(capture_branch_shas "$root" "$exclude_set")
 
     # Compare the UNION of baseline and current branch names, not just the
     # baseline set: a branch created in the root checkout never appears in
