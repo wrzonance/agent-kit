@@ -84,27 +84,77 @@ assert_contains "$race_out" 'harness=' \
 mode=$(stat -c '%a' "$repo/.agent/env-contract.txt" 2> /dev/null || printf '?')
 assert_eq '600' "$mode" 'the contract is written private to the user'
 
-# --- bounded root instruction report ---------------------------------------
+# --- bounded root instruction report (issue #338: a resolved set, not a pointer) ---
 repo=$(new_repo)
-mkdir -p "$repo/nested"
-printf 'nested guidance\n' > "$repo/nested/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_contains "$out" 'instructions= root=none' \
-    'a bare fixture reports no root instruction files'
-assert_not_contains "$out" 'nested/AGENTS.md' \
-    'nested instruction files are not enumerated by preflight'
+assert_eq 'instructions= root=none files=none unresolved=none' "$(grep '^instructions=' <<< "$out")" \
+    'a bare fixture reports no root instruction files, root-only case'
 
 printf 'root guidance\n' > "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=AGENTS.md' "$(grep '^instructions=' <<< "$out")" \
-    'preflight reports exactly the root AGENTS.md'
+assert_eq 'instructions= root=AGENTS.md files=AGENTS.md unresolved=none' "$(grep '^instructions=' <<< "$out")" \
+    'preflight reports exactly the root AGENTS.md, resolved into files='
 assert_not_contains "$(grep '^instructions=' <<< "$out")" 'CLAUDE.md' \
     'the root report omits an absent CLAUDE.md'
 
 printf 'root guidance\n' > "$repo/CLAUDE.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=AGENTS.md,CLAUDE.md' "$(grep '^instructions=' <<< "$out")" \
+assert_eq 'instructions= root=AGENTS.md,CLAUDE.md files=AGENTS.md,CLAUDE.md unresolved=none' \
+    "$(grep '^instructions=' <<< "$out")" \
     'preflight reports exactly both root instruction files in stable order'
+
+# --- router-with-resolving-targets ------------------------------------------
+# A root file that names on-demand docs by path is a router, not the guidance
+# itself; a reference that DOES exist in the checkout resolves into files=.
+repo=$(new_repo)
+mkdir -p "$repo/instructions"
+printf 'See instructions/workflow.md for process rules.\n' > "$repo/AGENTS.md"
+printf 'workflow guidance\n' > "$repo/instructions/workflow.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=AGENTS.md files=AGENTS.md,instructions/workflow.md unresolved=none' \
+    "$(grep '^instructions=' <<< "$out")" \
+    'a router reference that resolves is named under files='
+
+# --- router-with-absent-targets ---------------------------------------------
+# The exact failure mode issue #338 reports: a router names paths that do not
+# exist in this checkout. Those must be named explicitly under unresolved=,
+# never silently dropped and never probed for by the agent turn over turn.
+repo=$(new_repo)
+printf 'See instructions/workflow.md and instructions/github.md.\n' > "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=AGENTS.md files=AGENTS.md unresolved=instructions/github.md,instructions/workflow.md' \
+    "$(grep '^instructions=' <<< "$out")" \
+    'router references that do not resolve are named under unresolved=, sorted'
+
+# A router reference that escapes the worktree (../) must never resolve --
+# that would turn a router into a path traversal into the wider filesystem.
+repo=$(new_repo)
+printf 'unrelated guidance\n' > "$tmp/escape.md"
+printf 'See ../%s/escape.md for context.\n' "$(basename -- "$tmp")" > "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_not_contains "$(grep '^instructions=' <<< "$out")" "$tmp/escape.md" \
+    'a router reference that escapes the worktree never resolves into files='
+
+# --- per-directory instruction files ----------------------------------------
+# A real per-directory AGENTS.md (a component's own guidance, not referenced
+# by any router) is now discovered too -- bounded and capped like
+# node-roots/py-roots, never an unbounded worktree sweep.
+repo=$(new_repo)
+mkdir -p "$repo/nested"
+printf 'nested guidance\n' > "$repo/nested/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=none files=nested/AGENTS.md unresolved=none' \
+    "$(grep '^instructions=' <<< "$out")" \
+    'a per-directory instruction file is discovered even with no root instruction file'
+
+mkdir -p "$repo/node_modules/dep" "$repo/vendor/lib"
+printf 'vendored, untrusted\n' > "$repo/node_modules/dep/AGENTS.md"
+printf 'vendored, untrusted\n' > "$repo/vendor/lib/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_not_contains "$(grep '^instructions=' <<< "$out")" 'node_modules' \
+    'vendored instruction files under node_modules are never enumerated'
+assert_not_contains "$(grep '^instructions=' <<< "$out")" 'vendor/lib' \
+    'vendored instruction files under vendor are never enumerated'
 
 # Root instruction files are a trust boundary. Reject both external and in-tree
 # symlinks rather than importing text through a path whose canonical target was
@@ -113,14 +163,14 @@ repo=$(new_repo)
 printf 'external guidance\n' > "$tmp/external-AGENTS.md"
 ln -s "$tmp/external-AGENTS.md" "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=none' "$(grep '^instructions=' <<< "$out")" \
+assert_eq 'instructions= root=none files=none unresolved=none' "$(grep '^instructions=' <<< "$out")" \
     'preflight rejects a symlinked root AGENTS.md'
 
 repo=$(new_repo)
 printf 'in-tree guidance\n' > "$repo/in-tree-AGENTS.md"
 ln -s in-tree-AGENTS.md "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=none' "$(grep '^instructions=' <<< "$out")" \
+assert_eq 'instructions= root=none files=none unresolved=none' "$(grep '^instructions=' <<< "$out")" \
     'preflight rejects an in-tree root AGENTS.md symlink'
 
 # --- the symlink ------------------------------------------------------------
@@ -723,5 +773,51 @@ assert_contains "$(grep '^sandbox=' <<< "$fallback_out")" 'measured-by=agent-she
 
 assert_rc 2 '--ensure rejects an explicit --inherit-session override' -- \
     "$script" --ensure --worktree "$repo" --inherit-session "$session_contract"
+
+# --- integration: a Node root with a recognizable lockfile resolves node-pm -
+# issue #338: node_roots() checked the WORKTREE ROOT for a lockfile, so a
+# monorepo package whose lockfile lives beside its own package.json (not at
+# the top) reported node-pm=none even though its package manager was fully
+# knowable from disk.
+repo=$(new_repo)
+mkdir -p "$repo/opencode"
+printf '{}' > "$repo/opencode/package.json"
+printf '' > "$repo/opencode/pnpm-lock.yaml"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-roots=opencode' \
+    'the detected node root is reported'
+assert_contains "$runners_line" 'node-pm=pnpm' \
+    'its own lockfile resolves node-pm, not the worktree root'
+
+# A Node root with NO lockfile anywhere in its ancestry is a real gap, and is
+# reported as such -- never silently defaulted to npm.
+repo=$(new_repo)
+mkdir -p "$repo/opencode"
+printf '{}' > "$repo/opencode/package.json"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-pm=unresolved' \
+    'an unresolvable package manager is named unresolved, not defaulted to npm'
+
+# A monorepo whose roots resolve to DIFFERENT managers must never report the
+# first root's manager for the rest (adversarial review of this same change:
+# a bare `break 3` on the first lockfile found silently let root "a"'s pnpm
+# decide root "b"'s npm too, and Step 5 now dispatches bootstrap commands off
+# this field). Divergence collapses to unresolved -- a single field cannot
+# honestly represent two different managers, and dispatch must not act on
+# a value that could be wrong for either root.
+repo=$(new_repo)
+mkdir -p "$repo/a" "$repo/b"
+printf '{}' > "$repo/a/package.json"
+printf '' > "$repo/a/pnpm-lock.yaml"
+printf '{}' > "$repo/b/package.json"
+printf '' > "$repo/b/package-lock.json"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-roots=a,b' \
+    'both node roots are reported'
+assert_contains "$runners_line" 'node-pm=unresolved' \
+    'roots resolving to different managers collapse to unresolved, never the first root'"'"'s manager'
 
 finish

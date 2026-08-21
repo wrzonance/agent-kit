@@ -525,7 +525,7 @@ No design docs created. Step 5 proceeds directly. See [references/worker-prompts
 
 ### Step 5: Create worktrees
 
-Before running this block, determine the repository's documented locked bootstrap command from its applicable instructions. Store it as an argument array in `dependency_bootstrap`; use an empty array when no bootstrap command is documented. Do not infer a package manager or substitute an unlocked install command.
+Before running this block, determine the repository's documented locked bootstrap command from its applicable instructions -- the `files=` set the environment contract's `instructions=` line resolved, never a path the contract's `unresolved=` names as referenced-but-absent. Store it as an argument array in `dependency_bootstrap`; use an empty array when no bootstrap command is documented. Do not infer a package manager or substitute an unlocked install command. When `unresolved=` names a router reference and no other resolved instruction file documents a bootstrap for a detected component (a `runners= … node-roots=` entry whose `node-pm=unresolved`, for example), that is a real gap, not a silent no-op: record it on the dispatch plan entry for the affected issue so a worker is never dispatched unbootstrapped without the root having said so.
 
 ```bash
 set -euo pipefail
