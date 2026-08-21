@@ -97,20 +97,13 @@ git branch --show-current
 ```
 
 agent-run.sh sets the run's caches and CA bundle, prepends the detected source roots to
-PYTHONPATH, exports a deterministic per-worktree `COMPOSE_PROJECT_NAME`, delegates to the repo
-runner when one is declared, and suppresses output: success is a single PASS line; failure
-prints the matched error lines plus the full log path under <worktree>/.agent/logs/. Its exit
-status IS the wrapped command's exit status. It reports repository Compose files, `.env` values,
-or command argv that hardcode a project name. A repository `.env` value or compose-file `name:` is
-reported and deliberately overridden -- that override is the isolation. A literal
-`-p`/`--project-name` in the declaration outranks the export, so isolation cannot be established:
-agent-run.sh exits 5 without running. Serialize full-suite verification across worktrees, then
-re-run with `AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
-`environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
-command after the conflicting dependency has drained or been isolated. On failure READ THE
-NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
+PYTHONPATH, delegates to the repo runner when one is declared, and suppresses output: success
+is a single PASS line; failure prints the matched error lines plus the full log path under
+<worktree>/.agent/logs/. Its exit status IS the wrapped command's exit status. On failure READ
+THE NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
 Pass `--` whenever the command's first token starts with `-`; always passing it is simplest.
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
+__COMPOSE_ISOLATION__
 
 ## File-image freshness (MANDATORY before generating a patch)
 
@@ -121,15 +114,7 @@ file image is stale: re-read the target and regenerate the patch before retrying
 Treat these kit-side writers as image-invalidating whenever their target could overlap the file you
 are editing:
 
-- `agent-run.sh` writes .agent/logs/ and verification stamps under .agent/cache/; its declared
-  formatter, test, build, or other command may also rewrite tracked files.
-- `session-start.sh` can replace `.agent/env-contract.txt` and prune `.agent/cache/brief/`, while
-  `bootstrap-repo.sh` replaces `.agent/config.env` and `.agent/board.json`.
-- `prepare-issue-artifacts.sh`, `triage-issues.sh`, and `move-github-project-item.sh` atomically
-  replace persisted issue, fence, and board-cache artifacts.
-- `session-ledger.sh`, `apply-ledger.sh`, `finding-ledger.sh`, `consent-record.sh`, and review
-  receipt helpers append or replace ledger, consent, and evidence files.
-- `compose-worker-prompt.sh` and `compose-pr-body.sh` replace their requested output files.
+__IMAGE_INVALIDATING_WRITERS__
 
 After your own edit, a formatter or hook, a root correction round, or any helper/test invocation
 that might write, discard the previous target image and read it again immediately before composing
@@ -440,16 +425,7 @@ guards against, not something a template author writes by hand. It has nothing t
 say about a trust record.>
 __DECLARED_COMMANDS__
 
-Compose isolation rule: this prompt runs full verification through the same wrapper as an issue
-lead, so the same rules bind here. `agent-run.sh` exports a deterministic per-worktree
-`COMPOSE_PROJECT_NAME` and reports repository Compose files, `.env` values, or command argv that
-hardcode a project name. A repository `.env` value or compose-file `name:` is reported and
-deliberately overridden -- that override is the isolation. A literal `-p`/`--project-name` in the
-declaration outranks the export, so isolation cannot be established: agent-run.sh exits 5 without
-running. Serialize full-suite verification across worktrees, then re-run with
-`AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an
-`environment-retry-eligible` finding, not a code regression; retry only the unchanged declared
-command after the conflicting dependency has drained or been isolated.
+__COMPOSE_ISOLATION__
 
 ## File-image freshness (MANDATORY before generating a patch)
 
@@ -460,15 +436,7 @@ file image is stale: re-read the target and regenerate the patch before retrying
 Treat these kit-side writers as image-invalidating whenever their target could overlap the file you
 are editing:
 
-- `agent-run.sh` writes .agent/logs/ and verification stamps under .agent/cache/; its declared
-  formatter, test, build, or other command may also rewrite tracked files.
-- `session-start.sh` can replace `.agent/env-contract.txt` and prune `.agent/cache/brief/`, while
-  `bootstrap-repo.sh` replaces `.agent/config.env` and `.agent/board.json`.
-- `prepare-issue-artifacts.sh`, `triage-issues.sh`, and `move-github-project-item.sh` atomically
-  replace persisted issue, fence, and board-cache artifacts.
-- `session-ledger.sh`, `apply-ledger.sh`, `finding-ledger.sh`, `consent-record.sh`, and review
-  receipt helpers append or replace ledger, consent, and evidence files.
-- `compose-worker-prompt.sh` and `compose-pr-body.sh` replace their requested output files.
+__IMAGE_INVALIDATING_WRITERS__
 
 After your own edit, a formatter or hook, a root correction round, or any helper/test invocation
 that might write, discard the previous target image and read it again immediately before composing

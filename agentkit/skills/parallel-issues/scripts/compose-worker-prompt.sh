@@ -185,6 +185,8 @@ fi
 [[ -n $base_branch ]] || die 'AGENT_BASE_BRANCH is empty in repository config'
 
 declare -a command_names=()
+declare -a command_keys=()
+declare -A declared_rundirs=()
 focus_declared=0
 test_declared=0
 is_verification_key() {
@@ -201,7 +203,10 @@ if ! command_list=$("$repo_config" --repo-root "$worktree" --list); then
     die 'could not list repository commands'
 fi
 while IFS='=' read -r key value; do
-    : "$value"
+    if [[ $key =~ ^AGENT_RUNDIR_[A-Z][A-Z0-9_]*$ ]]; then
+        declared_rundirs[$key]=$value
+        continue
+    fi
     [[ $key =~ ^AGENT_CMD_[A-Z][A-Z0-9_]*$ ]] || continue
     if [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
         focus_declared=1
@@ -215,8 +220,88 @@ while IFS='=' read -r key value; do
     name=${name,,}
     name=${name//_/-}
     command_names+=("$name")
+    command_keys+=("$key")
 done <<< "$command_list"
 ((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
+
+# --- write-set scoping of the declared-command list (issue #336) -----------
+# A dispatch whose write set is `frontend/src/**` cannot make a .NET backend
+# suite fail or pass, so emitting it is prompt weight AND an invitation to run
+# an out-of-scope suite -- which, in a Compose-using repository, is exactly the
+# cross-worktree collision references/verification-isolation.md exists to
+# prevent. Filter by the ONE mechanical fact the repository declares about a
+# command's location, `AGENT_RUNDIR_<NAME>`: a command with no rundir is a
+# repo-wide gate and always survives. Nothing here guesses from a command's
+# name or argv.
+#
+# Prints the component-complete literal prefix of a glob: the longest leading
+# path that no metacharacter can widen. `frontend/src/**` -> `frontend/src`;
+# `front*/**` -> `` (the metacharacter cuts the FIRST component, so the glob
+# could name any top-level directory and no scoping claim is safe).
+glob_literal_prefix() {
+    local glob=$1 literal
+    glob=${glob#./}
+    literal=${glob%%[\*\?\[]*}
+    if [[ $literal != "$glob" ]]; then
+        if [[ $literal == */* ]]; then literal=${literal%/*}; else literal=''; fi
+    fi
+    literal=${literal%/}
+    printf '%s' "$literal"
+}
+
+# 0 when a glob can name a file inside RUNDIR. Deliberately conservative in
+# both directions: an empty literal prefix (a glob that could match anywhere)
+# and a rundir at the repository root both intersect everything, so an
+# ambiguous case keeps the command rather than dropping a suite the worker
+# needed.
+write_set_reaches_rundir() {
+    local rundir=$1 glob literal
+    rundir=${rundir#./}
+    rundir=${rundir%/}
+    [[ -n $rundir && $rundir != . ]] || return 0
+    for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
+        literal=$(glob_literal_prefix "$glob")
+        [[ -n $literal ]] || return 0
+        if [[ $literal == "$rundir" || $literal == "$rundir"/* || $rundir == "$literal"/* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+declare -a scoped_command_names=()
+declare -a scoped_command_keys=()
+declare -a dropped_commands=()
+scope_commands() {
+    local index key name rundir_key rundir
+    for index in "${!command_names[@]}"; do
+        key=${command_keys[$index]}
+        name=${command_names[$index]}
+        rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
+        rundir=${declared_rundirs[$rundir_key]:-}
+        # No declared rundir means no declared location: a repo-wide gate.
+        if [[ -z $rundir ]] || ((${#write_set_globs[@]} == 0)) ||
+            write_set_reaches_rundir "$rundir"; then
+            scoped_command_names+=("$name")
+            scoped_command_keys+=("$key")
+            continue
+        fi
+        dropped_commands+=("$name (rundir $rundir)")
+    done
+    # Filtering away EVERY command would hand a worker a prompt with no way to
+    # verify anything, so this fails open: a write set that intersects no
+    # declared component (a docs-only dispatch in a fully-componentised
+    # monorepo) keeps the full list, exactly as before the filter existed.
+    # Refusing here would convert a legitimate dispatch into a blocker.
+    if ((${#scoped_command_names[@]} == 0)); then
+        scoped_command_names=("${command_names[@]}")
+        scoped_command_keys=("${command_keys[@]}")
+        dropped_commands=()
+        scope_fallback=1
+    fi
+}
+scope_fallback=0
+scope_commands
 
 query_test_resolution() {
     local resolution='' query_rc=0
@@ -238,6 +323,28 @@ if ((focus_declared)) && ((test_declared == 0)) && ! query_test_resolution; then
     die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
+# focus_declared is read from the FULL declaration list, but `--cmd test --only`
+# selects one specific command -- and the write-set filter may have scoped that
+# command out. Emitting the focused selector anyway points the worker at a suite
+# this dispatch has no business running, and (when that suite drives Compose)
+# does so without the isolation prose, since compose_reachable only inspects
+# scoped commands. Both the selector and the Compose decision must therefore
+# follow the SCOPED test command, not the mere existence of a declaration.
+#
+# A repo with no AGENT_CMD_TEST resolves `test` through its runner instead;
+# there is no per-command rundir to scope by, so that case is never scoped out.
+focus_test_scoped_out=0
+if ((focus_declared)) && ((test_declared)); then
+    focus_test_in_scope=0
+    for scoped_key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
+        if [[ $scoped_key == AGENT_CMD_TEST ]]; then
+            focus_test_in_scope=1
+            break
+        fi
+    done
+    ((focus_test_in_scope)) || focus_test_scoped_out=1
+fi
+
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'
 cleanup() { rm -f -- "$temporary"; }
 trap cleanup EXIT HUP INT TERM
@@ -251,12 +358,133 @@ shell_quote() {
 emit_commands() {
     local name helper_path
     helper_path=$(shell_quote "$shared_path/agent-run.sh")
-    for name in "${command_names[@]}"; do
+    for name in "${scoped_command_names[@]}"; do
         printf '%s --dir %s --cmd %s\n' "$helper_path" "\"\$worktree\"" "$name"
+    done
+    # Disclose the filter; never turn it into a prohibition. A rundir is where
+    # a command RUNS, not what it COVERS: a `shared/**` dispatch legitimately
+    # drops a suite declared in `frontend/`, and that suite is exactly the one
+    # a dependent-breaking change needs. So the worker is told these exist, why
+    # they were withheld, and that the judgement of when to run one anyway is
+    # theirs -- silently shortening the list, or forbidding the list, both hide
+    # a regression the location heuristic cannot see.
+    if ((scope_fallback)); then
+        printf '\n# No declared command rundir intersects this write set, so every declared\n'
+        printf '# command is listed above, unfiltered. Run the ones your change can affect.\n'
+        return 0
+    fi
+    if ((${#dropped_commands[@]})); then
+        local joined='' dropped
+        for dropped in "${dropped_commands[@]}"; do
+            joined+=${joined:+, }$dropped
+        done
+        printf '\n# Also declared, but withheld from the list above: %s\n' "$joined"
+        printf '# Withheld because that declared rundir cannot contain a file this dispatch\n'
+        printf '# writes. That is a LOCATION heuristic, not a coverage guarantee: a change to\n'
+        printf '# shared or library code can break a dependent component whose suite is\n'
+        printf '# declared elsewhere. Run one anyway when your change can reach it -- that\n'
+        printf '# call is yours, and these commands are available through the same wrapper.\n'
+    fi
+}
+
+# Compose isolation is a real hazard only where a declared, IN-SCOPE command
+# actually drives Compose -- the same argv shapes agent-run.sh's own
+# compose_argv() matches. A repository with no Compose file has no collision to
+# describe, and a Compose command this dispatch may not run cannot collide.
+# repo-config.sh --get-argv emits NUL-delimited tokens, and a command
+# substitution DISCARDS NUL bytes -- capturing it into a string silently
+# concatenates every token into one word. Read it into a real array instead,
+# so `docker compose` is two tokens here exactly as agent-run.sh sees them.
+declare -a command_argv=()
+read_command_argv() {
+    local key=$1
+    command_argv=()
+    mapfile -t -d '' command_argv < <("$repo_config" --repo-root "$worktree" --get-argv "$key" 2>/dev/null)
+    ((${#command_argv[@]}))
+}
+
+command_uses_compose() {
+    read_command_argv "$1" || return 1
+    local token base engine_seen=0
+    for token in "${command_argv[@]}"; do
+        base=${token##*/}
+        case $base in
+            docker-compose | podman-compose) return 0 ;;
+            docker | podman) engine_seen=1 ;;
+            compose)
+                if ((engine_seen)); then return 0; fi
+                ;;
+        esac
+    done
+    return 1
+}
+
+compose_reachable() {
+    local key
+    for key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
+        command_uses_compose "$key" && return 0
+    done
+    return 1
+}
+
+# shellcheck disable=SC2016  # backticked Markdown is literal prompt text, not expansion
+emit_compose_isolation() {
+    compose_reachable || return 0
+    printf 'This repository declares a Compose-driven command, so Compose isolation binds here. `agent-run.sh` exports a deterministic per-worktree `COMPOSE_PROJECT_NAME` and reports repository Compose files, `.env` values, or command argv that hardcode a project name. A repository `.env` value or compose-file `name:` is reported and deliberately overridden -- that override is the isolation. A literal `-p`/`--project-name` in the declaration outranks the export, so isolation cannot be established: agent-run.sh exits 5 without running. Serialize full-suite verification across worktrees, then re-run with `AGENT_COMPOSE_SERIALIZED=1`, or drop the flag from the declaration. A Compose dependency-start collision is an `environment-retry-eligible` finding, not a code regression; retry only the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
+}
+
+# The worker needs the writers it can actually trigger, not a catalogue of the
+# root's. agent-run.sh is always reachable (it wraps every emitted command);
+# any other kit-side writer earns its bullet only by being named in an
+# in-scope declared command's argv.
+# shellcheck disable=SC2016  # backticked Markdown is literal prompt text, not expansion
+emit_image_invalidating_writers() {
+    printf -- '- `agent-run.sh` writes .agent/logs/ and verification stamps under .agent/cache/; its declared\n'
+    printf -- '  formatter, test, build, or other command may also rewrite tracked files.\n'
+    local -a candidates=(
+        'session-start.sh:replaces `.agent/env-contract.txt` and prunes `.agent/cache/brief/`'
+        'bootstrap-repo.sh:replaces `.agent/config.env` and `.agent/board.json`'
+        'prepare-issue-artifacts.sh:atomically replaces persisted issue and fence artifacts'
+        'triage-issues.sh:atomically replaces the persisted triage artifact'
+        'move-github-project-item.sh:atomically replaces the board cache'
+        'session-ledger.sh:appends or replaces ledger files'
+        'apply-ledger.sh:appends or replaces ledger files'
+        'finding-ledger.sh:appends or replaces finding-ledger files'
+        'consent-record.sh:appends or replaces consent and evidence files'
+        'compose-worker-prompt.sh:replaces its requested output file'
+        'compose-pr-body.sh:replaces its requested output file'
+    )
+    local entry script description key token
+    # Collect every in-scope command's argv basenames ONCE, rather than
+    # re-reading each command for every candidate writer.
+    local -A reachable=()
+    for key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
+        read_command_argv "$key" || continue
+        for token in "${command_argv[@]}"; do
+            # Key on the token's basename, never a substring of the whole
+            # command line: an argument that merely contains the name is not
+            # an invocation of that writer.
+            reachable[${token##*/}]=yes
+        done
+    done
+    for entry in "${candidates[@]}"; do
+        script=${entry%%:*}
+        description=${entry#*:}
+        if [[ -n ${reachable[$script]+yes} ]]; then
+            printf -- '- `%s` %s.\n' "$script" "$description"
+        fi
     done
 }
 
+# shellcheck disable=SC2016  # backticked Markdown is literal prompt text, not expansion
 emit_focus() {
+    if ((focus_test_scoped_out)); then
+        # Deliberately distinct from the no-selector branch: silently falling
+        # into that one would tell the worker this repository has no focused
+        # selector, which is false and unfalsifiable from inside the prompt.
+        printf 'A focused selector is declared, but the test command it selects runs in a directory this write set cannot reach, so no `--cmd test --only` guidance is offered here. Use the commands listed above for scoped checks and once against the final tree state before handback. If your change reaches that command'"'"'s component after all, see the withheld-command note above -- running it is your call.\n'
+        return 0
+    fi
     if ((focus_declared)); then
         local helper_path
         helper_path=$(shell_quote "$shared_path/agent-run.sh")
@@ -384,6 +612,14 @@ while IFS= read -r line || [[ -n $line ]]; do
         emit_focus
         continue
     fi
+    if [[ $line == '__COMPOSE_ISOLATION__' ]]; then
+        emit_compose_isolation
+        continue
+    fi
+    if [[ $line == '__IMAGE_INVALIDATING_WRITERS__' ]]; then
+        emit_image_invalidating_writers
+        continue
+    fi
     if [[ $line == '__DECLARED_WRITE_SET__' ]]; then
         emit_write_set
         continue
@@ -414,6 +650,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         $line == *'FULL_PATH'* || $line == *'/ABS/PATH'* ||
         $line == *'__BASE_BRANCH__'* || $line == *'__WORKER_EFFORT__'* ||
         $line == *'__DECLARED_'* || $line == *'__BOUNDARY_'* ||
+        $line == *'__COMPOSE_ISOLATION__'* || $line == *'__IMAGE_INVALIDATING_WRITERS__'* ||
         $line == *'<worker model id selected by the root dispatch>'* ]]; then
         template_placeholder=1
     fi
