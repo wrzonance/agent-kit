@@ -970,7 +970,50 @@ guard_has_short_flags() {
     return 0
 }
 
+# Splits the raw command text into the segments the shell would actually
+# execute -- via guard_gh_command_segments, the same quote/heredoc state
+# machine guard_out_of_scope_target and guard_gh_inline_body_reason already
+# rely on (issue #335) -- and judges each segment on its own.
+#
+# Matching the WHOLE raw command_line as one string let unrelated text
+# contaminate the verdict: a heredoc BODY is data destined for a file, never
+# executed, but a `rm -rf ~` example quoted inside one (documentation prose,
+# a pasted issue body) read exactly like a real command, and a short flag
+# from one segment (`gh api ... -f`) could combine with an unrelated `-r`
+# text elsewhere to manufacture a match neither line actually contains. An
+# innocuous trailing `rm -f -- "$f"` then got refused for a danger that was
+# never in the command actually being run (issue #351). Segmenting first
+# means each command is judged against its own tokens only, and heredoc
+# bodies -- dropped entirely by guard_gh_command_segments -- never enter the
+# match at all.
 guard_destructive_reason() {
+    local command_line=$1 segments segment trimmed reason
+    local -a lines=()
+
+    segments=$(guard_gh_command_segments "$command_line")
+    while IFS= read -r segment; do
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        lines+=("$trimmed")
+    done <<< "$segments"
+
+    for segment in "${lines[@]}"; do
+        if reason=$(guard_destructive_segment_reason "$segment"); then
+            # Name the offending line once more than one command shares this
+            # payload, so a multi-line script is not refused wholesale over a
+            # single dangerous line -- the agent can see which one to redo.
+            if ((${#lines[@]} > 1)); then
+                printf '%s (the offending line is: %s)' "$reason" "$segment"
+            else
+                printf '%s' "$reason"
+            fi
+            return 0
+        fi
+    done
+    return 1
+}
+
+guard_destructive_segment_reason() {
     local cmd=$1 stripped flattened normalized
 
     # A flag hidden inside a substitution reads as ordinary text to every pattern
@@ -988,7 +1031,7 @@ guard_destructive_reason() {
     flattened=${flattened//[\`)]/ }
     if [[ $flattened != "$cmd" ]]; then
         local hidden
-        if hidden=$(guard_destructive_reason "$flattened"); then
+        if hidden=$(guard_destructive_segment_reason "$flattened"); then
             printf '%s (the command hides that flag inside a substitution; write it literally if you mean it)' "$hidden"
             return 0
         fi

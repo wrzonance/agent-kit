@@ -927,6 +927,64 @@ for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
     assert_eq 'allow' "$(decision "$out")" "allows the ordinary form: $safe"
 done
 
+# --- issue #351: a single-file `rm` is not a recursive root delete ---------
+# `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
+# there is. No `-r`/`-R` appears anywhere, so it must never be read as one.
+# shellcheck disable=SC2016  # the UNEXPANDED $f is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+for single_file in 'rm -f -- "$f"' 'rm -f /some/single/file' \
+    'rm -f -- /some/single/file'; do
+    out=$(pre_input "$repo" "$single_file" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a single-file rm is not recursive: $single_file"
+done
+
+# The genuinely destructive spellings must still be refused, in every flag
+# arrangement, so the fix above cannot be a blanket loosening of the guard.
+# shellcheck disable=SC2016  # the UNEXPANDED $HOME is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+for still_dangerous in 'rm -rf ~' 'rm -rf /' 'rm -R --force $HOME' \
+    'rm -r -f ~' 'rm --recursive --force /'; do
+    out=$(pre_input "$repo" "$still_dangerous" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "still refuses the genuinely destructive form: $still_dangerous"
+    assert_contains "$out" 'recursive force-remove' "and names it recursive: $still_dangerous"
+done
+
+# The exact observed regression shape: a multi-line `bash -c` payload whose
+# LAST line is an ordinary temp-file cleanup, with an unrelated `-f` short
+# flag earlier (gh api's own `-f`/`-F` field flags) and a `$(mktemp ...)`
+# substitution feeding the path. None of that may contaminate the verdict on
+# the final `rm` line -- the payload's real side effect (filing the issue)
+# must not be silently dropped because of a line that never ran destructively.
+regression_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md"); chmod 600 "$f"\ngh api repos/OWNER/REPO/issues -f title="x" -F body=@"$f" --jq ".number, .html_url"\nrm -f -- "$f"'
+out=$(pre_input "$repo" "$regression_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'the exact observed payload shape is permitted end to end'
+
+# A heredoc BODY is data destined for a file, never executed. Documentation
+# prose quoting a destructive example (exactly what this repository's own
+# skill docs and issue bodies do) must not be read as a command to refuse --
+# and must not drag down an unrelated, harmless `rm` elsewhere in the same
+# payload.
+heredoc_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md")\ncat > "$f" <<"BODY"\nNever run `rm -rf ~` or `rm --recursive --force /` on this box.\nBODY\nrm -f -- "$f"'
+out=$(pre_input "$repo" "$heredoc_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a destructive example quoted inside a heredoc BODY is data, not a command'
+
+# A refusal on a multi-line payload must name the offending line, not refuse
+# the payload wholesale -- so the agent can re-issue the rest deliberately.
+named_line_payload=$'echo starting cleanup\nrm -rf ~\necho done'
+out=$(pre_input "$repo" "$named_line_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a genuinely destructive line in a multi-line payload is still refused'
+assert_contains "$out" 'rm -rf ~' 'and the refusal names the offending line'
+
+# A substitution in an unrelated part of the payload must not, by itself,
+# trigger the guard -- flattening is for finding a HIDDEN flag on the SAME
+# command, not for treating every substitution anywhere as suspicious.
+unrelated_sub_payload=$'branch=$(git branch --show-current)\nrm -f -- "$branch.log"'
+out=$(pre_input "$repo" "$unrelated_sub_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a substitution elsewhere in the payload does not by itself trigger the guard'
+
 # A destructive command is refused on the SECOND attempt too -- the opposite of
 # the once-per-session rule that governs every other denial here.
 same_sid=$(fresh_sid)
