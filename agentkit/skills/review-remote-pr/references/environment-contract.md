@@ -8,8 +8,8 @@ environment-contract mechanics behind them.
 Evidence parsing is a blocking check: empty output is acceptable only when the parser proved it
 ran; missing parser ≠ "no findings." Guard every `jq`/`python3` recipe:
 `command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }`
-Before any GitHub body mutation, follow the shared
-[GitHub body transport policy](../../.shared/github-body-policy.md).
+Before any GitHub body mutation, follow the shared GitHub body transport policy
+["$agentkit/.shared/github-body-policy.md"](../../.shared/github-body-policy.md).
 
 Runtime facts come from the session contract's `sandbox=`/`git=`/`measured-by=` records, never
 inferred; absent = "unknown." A denial or approval in one session does not establish the same

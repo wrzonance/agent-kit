@@ -14,11 +14,14 @@ Coordinate existing Agent Kit review machinery in a strict serial queue. This
 skill owns queue authorization and the ready/provider transition boundary; it
 is not another review engine.
 
+Reference paths resolve: open `"$agentkit/<path>"`, and read `"$agentkit/references.md"` —
+every reference and its purpose — instead of searching.
+
 ## Flags
 
 | Flag | Effect |
 |---|---|
-| `--auto-merge` | Authorize this run to perform the confirmed queue's merges itself, serially, after each item's pre-merge review-completion gate passes. Without it, every item still stops at evidence-green and the merge stays a human action. See [references/auto-merge.md](references/auto-merge.md) for the full consent, gate, and serialization contract. |
+| `--auto-merge` | Authorize this run to perform the confirmed queue's merges itself, serially, after each item's pre-merge review-completion gate passes. Without it, every item still stops at evidence-green and the merge stays a human action. See ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) for the full consent, gate, and serialization contract. |
 
 ## Environment warm-up
 
@@ -89,7 +92,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 - `--auto-merge` authorizes this skill to perform the confirmed queue's
   merges itself; without it every PR still stops at evidence-green and the
   merge stays a human action. It implies strict serial merge ordering — see
-  [references/auto-merge.md](references/auto-merge.md).
+  ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ## Resident call-site map
 
@@ -137,7 +140,7 @@ After confirmation, write an owner-only authorization JSON file containing:
 - `queue`, with each confirmed PR's number, current state, full head SHA, and
   confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`);
 - when `--auto-merge` was confirmed: `autoMerge: true`, `mergeMethod`, and
-  `deleteBranch` — see [references/auto-merge.md](references/auto-merge.md)
+  `deleteBranch` — see ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md)
   for the exact record shape and ledger requirement.
 
 `review-transition.sh` compares both the live head SHA and the live base ref
@@ -205,7 +208,7 @@ human merge dependency.
 
 With `--auto-merge`, an evidence-green item merges only after
 `scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head
-(see [references/auto-merge.md](references/auto-merge.md) — a formal provider
+(see ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) — a formal provider
 approval requirement stays repository policy: a branch-protection refusal is
 a named stop, never a bypass). On `gate=PASS`, invoke `scripts/merge-pr.sh`
 with the Step 1 authorization file and the saved `gate=PASS` output — it

@@ -19,10 +19,10 @@ model tier or the orchestrator's pricing. Resolution is harness-aware: see
 a declaration shaped for a different harness resolves to the running harness's native tier instead
 of stopping. The Step 1b reviewer (read-only) **never** satisfies this gate.
 
-Before dispatching any worker, read [../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)
+Before dispatching any worker, read ["$agentkit/.shared/spawn-contract.md"](../../.shared/spawn-contract.md)
 for the model/effort selection (Luna→Terra fallback), the exact spawn call shape and parameter
 warnings, and the degraded no-spawn path — this file is dispatcher-side guidance, never pasted
-into a worker prompt; read [../../.shared/six-step-loop.md](../../.shared/six-step-loop.md) for the
+into a worker prompt; read ["$agentkit/.shared/six-step-loop.md"](../../.shared/six-step-loop.md) for the
 required six-step ultracode loop and its reporting format. **Paste the six-step contract
 verbatim into the worker's prompt, alongside the accepted findings, worktree/branch rules, and
 the Step 0a environment contract — never as a pointer** — `fork_context: false` leaves it no
