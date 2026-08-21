@@ -69,14 +69,44 @@ fi
 # fixture_version values are namespaced per tier (tier0-v1, tier1-v1, ...):
 # a "tier1" record anywhere in the ledger glob would mean a real trial ran
 # before this pre-registration document was committed.
+#
+# This is a JSON ledger, so a JSON parser (jq) is the oracle -- not a raw-
+# text grep. A grep anchored on the exact byte sequence `"fixture_version":`
+# (no space) silently misses an equally valid record written with JSON
+# whitespace after the colon (`"fixture_version": "tier1-v1"`), which would
+# make this assertion pass while a real Tier-1 record sat right there in the
+# file it was supposed to guard.
+count_tier1_records() {
+    local file total=0 n
+    for file in "$@"; do
+        [[ -f $file ]] || continue
+        n=$(jq -r 'select(.fixture_version != null) | .fixture_version' -- "$file" 2> /dev/null \
+            | grep -c '^tier1' 2> /dev/null)
+        n=${n:-0}
+        total=$((total + n))
+    done
+    printf '%s' "$total"
+}
+
 shopt -s nullglob
 ledger_files=("$repo_root"/bench/results/*.jsonl)
 shopt -u nullglob
 
-tier1_records=0
-if ((${#ledger_files[@]} > 0)); then
-    tier1_records=$(grep -h -o '"fixture_version":"tier1[^"]*"' "${ledger_files[@]}" 2> /dev/null | wc -l | tr -d ' ')
-fi
+tier1_records=$(count_tier1_records "${ledger_files[@]}")
 assert_eq '0' "$tier1_records" 'bench/results/*.jsonl contains no Tier-1 records at merge time'
+
+# --- regression: the oracle must not be whitespace-brittle ---------------
+# Prove count_tier1_records() actually parses JSON rather than matching a
+# specific byte sequence, by feeding it a record with whitespace after the
+# colon -- exactly the shape a raw `"fixture_version":"tier1..."` grep
+# (no space) would silently miss.
+regression_dir=$(mktemp -d)
+trap 'rm -rf -- "$regression_dir"' EXIT
+
+whitespace_record="$regression_dir/whitespace.jsonl"
+printf '{"fixture_version": "tier1-v1"}\n' > "$whitespace_record"
+whitespace_count=$(count_tier1_records "$whitespace_record")
+assert_eq '1' "$whitespace_count" \
+    'oracle catches a Tier-1 record with whitespace after the "fixture_version" colon'
 
 finish
