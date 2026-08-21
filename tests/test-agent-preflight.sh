@@ -325,4 +325,100 @@ else
     printf '  skip zsh interpreter-boundary checks: zsh not installed\n'
 fi
 
+# --- harness= opencode + peer-cli= multi-candidate search (issue #318) ------
+# OpenCode has no fixed 1:1 peer CLI the way Claude/Codex do, so harness-id.sh
+# hands agent-preflight.sh's probe_peer_cli an ordered "codex,claude"
+# candidate list instead of a single name. Exactly one winning name must
+# still be emitted, so every existing single-name peer-cli= consumer keeps
+# working unmodified.
+#
+# The candidate list is NOT hardcoded here -- it is read straight from
+# harness-id.sh's own OpenCode `other=` output, the single source of truth
+# probe_peer_cli is actually handed. Hardcoding "codex claude" would silently
+# rot the moment a third candidate is added there: this fixture would keep
+# stripping only the two it knows about, a leftover real binary for the new
+# candidate would still be on PATH, and the "absent" case below would no
+# longer be testing what its name claims.
+#
+# On THIS machine, codex/claude happen to live in the same directory
+# (/home/adam/.local/bin, also probe_peer_cli's own $HOME/.local/bin
+# fallback), but a fixture that assumed that would break on any machine
+# where the peer CLIs are installed separately (e.g. one via npm global in
+# /usr/local/bin, the other in ~/.local/bin) -- so every PATH directory that
+# resolves ANY candidate name is stripped, not just one. HOME still points
+# somewhere with no .local/bin, and PATH is filtered rather than cleared,
+# since agent-preflight.sh itself needs git/jq/stat/date.
+opencode_other=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 "$root/agentkit/skills/.shared/scripts/harness-id.sh" --other)
+declare -a candidate_names=()
+IFS=',' read -ra candidate_names <<< "$opencode_other"
+assert_eq 'codex,claude' "$opencode_other" \
+    'harness-id.sh OpenCode candidate list is codex,claude -- if this fails, a new candidate was added and this fixture (and the assertions below) must account for it'
+declare -a path_dirs=() kept_path_dirs=()
+IFS=: read -ra path_dirs <<< "$PATH"
+for path_dir in "${path_dirs[@]}"; do
+    exposes_candidate=0
+    for candidate_name in "${candidate_names[@]}"; do
+        if [[ -x "$path_dir/$candidate_name" ]]; then
+            exposes_candidate=1
+            break
+        fi
+    done
+    (( exposes_candidate )) || kept_path_dirs+=("$path_dir")
+done
+filtered_path=$(IFS=:; printf '%s' "${kept_path_dirs[*]}")
+fake_home="$tmp/fake-home-no-local-bin"
+mkdir -p "$fake_home"
+
+repo=$(new_repo)
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'harness= name=opencode trailer="OpenCode <noreply@opencode.ai>" other=codex,claude' \
+    "$(grep '^harness=' <<< "$out")" \
+    'a preflight run under OPENCODE=1 reports harness= name=opencode'
+assert_contains "$(grep '^peer-cli=' <<< "$out")" 'peer-cli= codex absent' \
+    'with neither peer CLI on PATH, peer-cli= names the FIRST candidate (codex) as absent'
+assert_contains "$(grep '^peer-cli=' <<< "$out")" 'codex,claude' \
+    'the absent note lists every candidate that was actually checked'
+
+# Only "claude" present, ahead of the filtered PATH: probe_peer_cli must fall
+# through past the absent first candidate (codex) to find it.
+claude_only_dir="$tmp/claude-only-path"
+mkdir -p "$claude_only_dir"
+printf '#!/bin/sh\n' > "$claude_only_dir/claude"
+chmod +x "$claude_only_dir/claude"
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$claude_only_dir:$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= claude present path='"$claude_only_dir"'/claude probe=not-run' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'with only claude on PATH, peer-cli= falls through codex to report claude present'
+
+# Both present: codex, the first-listed candidate, wins.
+both_dir="$tmp/both-path"
+mkdir -p "$both_dir"
+printf '#!/bin/sh\n' > "$both_dir/codex"
+printf '#!/bin/sh\n' > "$both_dir/claude"
+chmod +x "$both_dir/codex" "$both_dir/claude"
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$both_dir:$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= codex present path='"$both_dir"'/codex probe=not-run' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'with both peers on PATH, codex (the first candidate) wins'
+
+# Claude and Codex are unaffected: still a single-candidate search.
+out=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    -u OPENCODE -u OPENCODE_PID \
+    CLAUDECODE=1 HOME="$fake_home" PATH="$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= codex absent note="no cross-harness reviewer among: codex; use the same-harness blind fallback"' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'claude sessions still search only codex, unchanged by the multi-candidate support'
+
 finish

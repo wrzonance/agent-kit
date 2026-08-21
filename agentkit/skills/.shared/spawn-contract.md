@@ -64,6 +64,12 @@ running_harness=$("$agentkit/.shared/scripts/contract-read.sh" \
 case $running_harness in
     codex)  native_model_default='gpt-5.6-luna';    native_fallback_default='gpt-5.6-terra' ;;
     claude) native_model_default='claude-sonnet-5'; native_fallback_default='claude-sonnet-5' ;;
+    # OpenCode has no fixed vendor tier -- there is no single OpenCode model
+    # id every repository should default to, the way gpt-5.6-luna/
+    # claude-sonnet-5 are for Codex/Claude. So there is no built-in default:
+    # a repository that declares nothing stops for explicit configuration
+    # (see resolve_worker_slot below) rather than guessing a provider.
+    opencode) native_model_default=''; native_fallback_default='' ;;
     *) printf 'unrecognized harness %s; report BLOCKED\n' "$running_harness" >&2; exit 1 ;;
 esac
 
@@ -80,6 +86,24 @@ model_in_sanctioned_set() {
     case "$1:$2" in
         codex:gpt-5.6-luna | codex:gpt-5.6-terra) return 0 ;;
         claude:claude-sonnet-5) return 0 ;;
+        opencode:*)
+            # OpenCode's sanctioned worker tier is repository-declared, not a
+            # fixed allowlist: any value shaped as a well-formed
+            # provider/model-id pair (non-empty on both sides of EXACTLY one
+            # '/') is sanctioned for OpenCode purely by being declared and
+            # correctly shaped -- there is no OpenCode equivalent of
+            # gpt-5.6-luna to enumerate here. A `case` glob cannot express
+            # "exactly one '/'": a bracket expression like `[^/]` matches
+            # exactly one character, so `[^/]*` is "one non-slash char, then
+            # a plain unrestricted `*`" -- it still matches a second or
+            # third '/', not "one-or-more non-slash chars" the way it reads.
+            # Only a real regex quantifier does that, hence `=~` here rather
+            # than a `case` pattern for this branch. With no allowlist to
+            # catch a mistake after this check, this is the only thing
+            # standing between a typo like `provider/model/extra` in
+            # .agent/config.env and a dispatch against a nonexistent model.
+            [[ $2 =~ ^[^/]+/[^/]+$ ]]
+            ;;
         *) return 1 ;;
     esac
 }
@@ -87,7 +111,23 @@ model_family() {
     case $1 in
         gpt-5.6-*) printf codex ;;
         claude-*) printf claude ;;
+        # Checked after the two prefix cases above so neither can be
+        # mis-classified: gpt-5.6-*/claude-* never contain '/', so ordering
+        # only matters for readability here, not correctness.
+        */*) printf opencode ;;
         *) printf unknown ;;
+    esac
+}
+# The provider namespace OpenCode addresses a foreign harness's own sanctioned
+# model under, when pivoting a foreign-family declaration INTO a running
+# OpenCode session (see resolve_worker_slot below). Not a claim that these are
+# the ONLY providers hosting these models on OpenCode -- just the pivot
+# target's provider prefix for the two families this contract already knows.
+model_home_provider() {
+    case $1 in
+        codex) printf openai ;;
+        claude) printf anthropic ;;
+        *) printf '' ;;
     esac
 }
 
@@ -123,8 +163,20 @@ resolve_worker_slot() {
         # merely fails the sanctioned check (e.g. a typo'd fallback), and a
         # value in neither known family, which pivoting could not resolve
         # correctly anyway.
-        resolved_value=$native_default
-        pivot_note="pivoted from cross-harness declaration '$value' (declared for $family) to native '$native_default'"
+        local pivot_target=$native_default
+        if [[ $running_harness == opencode ]]; then
+            # OpenCode has no fixed native default to pivot INTO (see the
+            # case statement above) -- its "native tier" for a cross-harness
+            # pivot is instead OpenCode's own provider-qualified address for
+            # the EXACT sanctioned model that was declared, built from the
+            # declaring harness's home provider rather than an invented
+            # OpenCode model id. A codex-declared gpt-5.6-luna therefore
+            # pivots to 'openai/gpt-5.6-luna' on OpenCode, never to a blank
+            # or guessed value.
+            pivot_target="$(model_home_provider "$family")/$value"
+        fi
+        resolved_value=$pivot_target
+        pivot_note="pivoted from cross-harness declaration '$value' (declared for $family) to native '$pivot_target'"
         return
     fi
     printf 'unsanctioned model for %s: %s; explicit user authorization required\n' \
@@ -144,13 +196,14 @@ worker_model_fallback=$resolved_value
 fallback_pivot_note=$pivot_note
 ```
 
-The sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
-**`gpt-5.6-terra`**. Validate both resolved `worker_model` and `worker_model_fallback` against
-that set before dispatch. Any other syntactically safe configured preferred or fallback model
-must stop for explicit user authorization; never silently substitute a sanctioned model.
-(This is scoped to the running harness — see "Harness-aware pivot" below for the one deliberate
-exception: a bare declaration recognizably shaped for a *different* harness pivots instead of
-stopping.)
+On Codex, the sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
+**`gpt-5.6-terra`**; on Claude it is exactly **`claude-sonnet-5`**.
+Validate both resolved `worker_model` and `worker_model_fallback` against that set before dispatch.
+Any other syntactically safe configured preferred or fallback model must stop for explicit user
+authorization; never silently substitute a sanctioned model. (This is scoped to the running harness
+— see "Harness-aware pivot" below for the one deliberate exception: a bare declaration recognizably
+shaped for a *different* harness pivots instead of stopping. OpenCode has no such fixed enumeration
+at all — see "OpenCode's native tier" below for its own sanctioned-set rule.)
 The built-in defaults preserve existing behavior when a repository declares nothing. An empty,
 malformed, or otherwise rejected declaration is reported and falls back to its built-in value;
 the fallback model declaration is not optional just because the preferred model declaration is
@@ -167,8 +220,11 @@ from `harness.name` (already established at Step 0; no extra probe). A bare `AGE
 declaration is Codex-shaped data by convention, not harness-neutral data: on a repository that
 declares only the unsuffixed keys, resolution on a harness that does not match that shape pivots
 to *that* harness's own native worker tier rather than stopping — the declaration states the
-*intent* ("dispatch the standard worker tier at high effort"), and `harness.name` supplies the
-concrete model id (`gpt-5.6-luna` on Codex, `claude-sonnet-5` elsewhere). There is no second,
+*intent* ("dispatch the standard worker tier at high effort"), and on Codex or Claude
+`harness.name` supplies that harness's fixed concrete model id (`gpt-5.6-luna` on Codex,
+`claude-sonnet-5` on Claude). OpenCode has no fixed native worker tier to pivot into this way —
+see "OpenCode's native tier" below for what a cross-harness pivot resolves to there, and for why an
+OpenCode repository that declares nothing stops instead of pivoting. There is no second,
 harness-keyed declaration key: the unsuffixed `AGENT_WORKER_MODEL`/`AGENT_WORKER_MODEL_FALLBACK`
 remain the only declarations, on every harness.
 
@@ -187,6 +243,21 @@ sanctioned as that harness's own worker tier pivots silently.
 When a pivot occurred, the completion table records it verbatim beside the model and effort — e.g.
 `worker=claude-sonnet-5 high (pivoted from cross-harness declaration 'gpt-5.6-luna')` — so a
 substitution is always evidence, never inferred from prompt text alone.
+
+**OpenCode's native tier.** Unlike Codex/Claude, OpenCode has no single fixed worker model:
+`AGENT_WORKER_MODEL` on an OpenCode repository is expected in `provider/model-id` form (e.g.
+`wrzcluster/qwen3-coder`), and *any* well-formed `provider/model-id` value is sanctioned purely by
+being declared that way — there is no OpenCode equivalent of `gpt-5.6-luna` to enumerate. That
+absence of a fixed default has two consequences: a repository that declares nothing on OpenCode
+stops for explicit configuration rather than guessing a vendor, and a pivot *into* OpenCode from a
+foreign-family declaration (`AGENT_WORKER_MODEL=gpt-5.6-luna` read while running OpenCode) resolves
+to OpenCode's own provider-qualified address for that exact foreign model — `openai/gpt-5.6-luna` —
+rather than an invented OpenCode-native id. `model_home_provider` names the provider each known
+family is pivoted under (`codex` → `openai`, `claude` → `anthropic`); this is the pivot target's
+provider prefix, not a claim that it is the only provider hosting that model on OpenCode. A pivot
+*out of* OpenCode is unaffected: a `provider/model-id` declaration read on Codex or Claude is a
+foreign-family value like any other, and pivots to that harness's own fixed native default exactly
+as `gpt-5.6-luna` does today.
 
 Inspect the current `collaboration.spawn_agent` capability before dispatch:
 
@@ -307,4 +378,17 @@ and the audited handback.
 Luna/Terra are Codex's own tier names. On Claude the same Root/Worker split maps to
 `claude-opus-5` (root judgment, the same reviewer used for cross-harness adversarial review) and
 `claude-sonnet-5` (the dispatched worker) — see "Harness-aware pivot" above for how a repository's
-declaration resolves to the concrete model on whichever harness is actually running.
+declaration resolves to the concrete model on whichever harness is actually running. On OpenCode
+there is no fixed root/worker pair of its own to name here — the worker tier is the
+repository-declared `provider/model-id` above, and OpenCode has no local reviewer tier at all: its
+adversarial review always runs cross-harness, against whichever peer CLI `peer-cli=` names (see
+below).
+
+**Peer-cli mapping.** Claude and Codex each have a fixed 1:1 peer (Claude → Codex, Codex → Claude),
+so `harness-id.sh` names exactly one candidate for `agent-preflight.sh`'s `probe_peer_cli` to check.
+OpenCode has no such fixed pairing — a self-hosted OpenCode session may have either or both peer
+CLIs installed — so `harness-id.sh` hands `probe_peer_cli` an ordered, comma-separated candidate
+list (`codex,claude`: Codex checked first, Claude as fallback) instead of a single name.
+`probe_peer_cli` still emits exactly one winning `peer-cli= <name> present|absent` line, so every
+existing consumer of that contract line keeps its single-name parse; only the *search* is
+multi-candidate, never the emitted fact.
