@@ -7,6 +7,12 @@
 # offline with zero installs, and bench/accept/ never gets pulled into the
 # Tier-1 ledger (that is a later slice's job -- see
 # tests/test-bench-preregistration.sh).
+#
+# Also proves the PR #363 review findings stay fixed: a target that
+# monkeypatches assert.ok/assert.equal, or that calls process.exit() while
+# being imported, or that hangs forever, must never score a false pass
+# (finding 1); a hung suite must be killed and scored fail, never left to
+# stall the run forever (finding 2).
 set -uo pipefail
 
 TEST_NAME='bench accept'
@@ -18,12 +24,23 @@ source "$here/lib/assert.sh"
 run_accept="$repo_root/bench/accept/run-accept.sh"
 gold="$repo_root/bench/gold/tally"
 fixture="$repo_root/bench/fixtures/tally"
+tally_03_suite="$repo_root/bench/accept/tally-03.test.mjs"
 
 RUN_RC=0
 RUN_OUT=''
 run() {
     RUN_RC=0
     RUN_OUT=$("$@" 2>&1) || RUN_RC=$?
+}
+
+# Builds a forged target tree at $1 (a fresh mktemp -d): a copy of the gold
+# tree with $2 prepended to src/store.js, the module every tally-03 test
+# imports. Real forgery attempts prepend code that runs at import time,
+# before any of the module's own real exports are even defined.
+build_forged_target() {
+    local dir=$1 prelude=$2
+    cp -r "$gold/." "$dir/"
+    { printf '%s\n' "$prelude"; cat "$gold/src/store.js"; } > "$dir/src/store.js"
 }
 
 # --- shipped, executable, zero installs to reach node:test --------------
@@ -74,6 +91,65 @@ assert_eq '0' "$ledger_write_count" 'run-accept.sh never touches bench/results/*
 tier1_ledger="$repo_root/bench/results/tier1.jsonl"
 assert_eq 'no' "$([[ -e $tier1_ledger ]] && printf yes || printf no)" \
     'no bench/results/tier1.jsonl exists yet -- this slice does not introduce a Tier-1 record'
+
+# --- PR #363 review finding 1: the oracle cannot be forged -----------------
+# Each forged target is a real gold-tree copy (so a leaked forgery would
+# otherwise show up as a bogus pass) with a prelude injected into
+# src/store.js -- the module tally-03's suite imports. run_scenario_suite
+# runs bench/accept/tally-03.test.mjs directly against it, bypassing
+# run-accept.sh's own timeout wrapper so these assertions pin
+# lib/isolated.mjs's own per-scenario timeout, not the outer one.
+forge_tmp=$(mktemp -d)
+trap 'rm -rf -- "$forge_tmp"' EXIT
+
+run_scenario_suite() {
+    local target=$1
+    shift
+    RUN_RC=0
+    RUN_OUT=$(BENCH_ACCEPT_TARGET="$target" "$@" node --test "$tally_03_suite" 2>&1) || RUN_RC=$?
+}
+
+assert_monkeypatch_target="$forge_tmp/monkeypatch"
+mkdir -p "$assert_monkeypatch_target"
+build_forged_target "$assert_monkeypatch_target" \
+    "import assert from 'node:assert/strict'; assert.ok = () => {}; assert.equal = () => {}; assert.deepEqual = () => {};"
+run_scenario_suite "$assert_monkeypatch_target"
+assert_eq '0' "$RUN_RC" 'a target that only monkeypatches assert (but is otherwise correct) still scores pass'
+
+exit_target="$forge_tmp/exit"
+mkdir -p "$exit_target"
+build_forged_target "$exit_target" 'process.exit(0);'
+run_scenario_suite "$exit_target"
+assert_eq '1' "$RUN_RC" 'a target that calls process.exit(0) at import time scores fail, never a false pass'
+assert_contains "$RUN_OUT" 'exited without sending a result' \
+    'process.exit(0) at import is reported as a failed call, not as an ambiguous pass'
+
+hang_target="$forge_tmp/hang"
+mkdir -p "$hang_target"
+build_forged_target "$hang_target" ''
+# A synchronous busy loop inside undoRemove -- not just a background timer
+# -- blocks the child's event loop entirely, so only the parent's
+# fork()-level watchdog (never the child's own cooperative cleanup) can
+# recover. BENCH_ACCEPT_SCENARIO_TIMEOUT_MS keeps this test fast rather
+# than waiting out the 10s production default.
+python3 - "$hang_target/src/store.js" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as handle:
+    content = handle.read()
+content = content.replace(
+    'export function undoRemove(state) {',
+    'export function undoRemove(state) {\n  while (true) { /* busy loop: never yields */ }',
+)
+with open(path, 'w') as handle:
+    handle.write(content)
+PYEOF
+run_scenario_suite "$hang_target" env BENCH_ACCEPT_SCENARIO_TIMEOUT_MS=500
+assert_eq '1' "$RUN_RC" 'a target whose call never returns is killed and scores fail, never left to hang the run'
+assert_contains "$RUN_OUT" 'did not respond within' 'the hang is reported as a timeout, not silently swallowed'
+
+rm -rf -- "$forge_tmp"
+trap - EXIT
 
 finish
 exit $?

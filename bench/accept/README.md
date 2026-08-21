@@ -22,19 +22,82 @@ case in a per-issue suite must be green for that issue to score.
       run-accept.sh           -- scores a target Tally tree; see below
       tally-01.test.mjs .. tally-10.test.mjs
                                -- one node:test suite per bench/issues/*.md,
-                                  one-to-one with its Acceptance Criteria
+                                  one-to-one with its Acceptance Criteria.
+                                  Never imports target code directly (see
+                                  "Process isolation" below) -- asserts only
+                                  on plain values returned by runScenario().
+      scenarios/
+        tally-01.mjs .. tally-10.mjs
+                               -- oracle-authored, executed ONLY inside the
+                                  forked scenario-runner child. Imports and
+                                  calls the target's functions, returns a
+                                  plain JSON-safe observation object.
       lib/
         target.mjs             -- resolves the tree under test via
                                    BENCH_ACCEPT_TARGET (never a hardcoded
                                    bench/gold/tally or bench/fixtures/tally
-                                   path)
+                                   path); importFromTarget/readFromTarget/
+                                   existsInTarget all resolve strictly
+                                   inside it, rejecting ".." traversal,
+                                   absolute paths, and symlink escapes
+        isolated.mjs             -- runScenario(id): forks scenario-runner
+                                   with a bounded timeout; the ONLY signal
+                                   trusted is the child's single structured
+                                   IPC message, never its exit code
+        scenario-runner.mjs      -- the fork() entrypoint that actually
+                                   imports and runs one scenarios/*.mjs
         smoke.mjs               -- the "node test/smoke.mjs still exits 0"
-                                   check every issue's acceptance list
-                                   repeats; shared so it is defined once
+                                   and "node test/<module>.smoke.mjs exits 0
+                                   and prints PASS" checks every issue's
+                                   acceptance list repeats; shared so each
+                                   is defined once, with a bounded timeout
         dom-stub.mjs            -- the vendored, zero-dependency HTML
                                    fragment parser the design names,
                                    for the badge-placement and
-                                   index.html/head checks
+                                   index.html/head checks (parses plain
+                                   strings -- executes no target code, so
+                                   it runs in the test-file process)
+
+## Process isolation (PR #363 review finding 1)
+
+Every `tally-NN.test.mjs` process's own `node:assert/strict` and
+`node:test` bookkeeping never share a process with imported target code.
+Target modules are only ever imported inside a `fork()`ed
+`lib/scenario-runner.mjs` child (via `lib/isolated.mjs`'s `runScenario()`),
+a completely separate OS process with its own memory -- not merely a
+separate module cache or realm. This closes two concrete forgery vectors a
+shared-process design leaves open:
+
+- **Monkeypatching**: `node:assert/strict`'s methods are plain, mutable
+  object properties. A target module importing `node:assert/strict` and
+  reassigning `assert.ok`/`assert.equal` in the SAME process as the
+  oracle's own assertions would neuter every later assertion in that
+  process. In this design the target's `assert` mutation happens inside
+  the disposable child; the parent's `assert` was never in that process.
+- **`process.exit()` during import**: the original design let
+  `run-accept.sh` treat a suite's exit code as its pass/fail signal. A
+  target module calling `process.exit(0)` while being imported would force
+  `node --test`'s own exit code to 0 with no assertion ever having run --
+  a sharper vector than assert-monkeypatching, since it needs no shared
+  `assert` reference at all. `lib/isolated.mjs` never inspects the child's
+  exit code; the only trusted signal is the single structured
+  `process.send({ok, value|error})` message `scenario-runner.mjs` sends.
+  A child that exits (for any reason, including `process.exit()`) without
+  ever sending that message is reported as a **failed** call.
+
+A scenario call that never responds is killed and also reported as a
+failed call (`BENCH_ACCEPT_SCENARIO_TIMEOUT_MS`, default 10s) -- the
+finding 2 per-call timeout; `run-accept.sh`'s own outer per-suite `timeout`
+wrapper (`BENCH_ACCEPT_TIMEOUT_SECONDS`, default 30s) is the remaining
+backstop. `tests/test-bench-accept.sh` pins all three regressions directly:
+assert-monkeypatching does not flip a correct target to fail (it has no
+effect at all) and does not flip a broken target to pass; `process.exit(0)`
+at import scores fail; a target call that never returns is killed and
+scores fail.
+
+`readFromTarget`/`existsInTarget` execute no code (plain `fs` reads) and
+stay in the `tally-NN.test.mjs` process; so does `lib/dom-stub.mjs`, which
+only parses already-returned HTML strings.
 
 ## Running it
 

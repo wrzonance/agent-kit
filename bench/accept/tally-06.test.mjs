@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { importFromTarget, existsInTarget, readFromTarget } from './lib/target.mjs';
+import { existsInTarget, readFromTarget } from './lib/target.mjs';
+import { runScenario } from './lib/isolated.mjs';
 import { assertBaseSmokeOk, assertModuleSmokeOk } from './lib/smoke.mjs';
 import { parseFragment, query, queryAll } from './lib/dom-stub.mjs';
 
@@ -17,13 +18,17 @@ import { parseFragment, query, queryAll } from './lib/dom-stub.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baseFixtureIndexHtml = path.join(here, '..', 'fixtures', 'tally', 'index.html');
 
-test('tally-06: src/theme.js exports a pure toggleTheme', async () => {
-  assert.ok(existsInTarget('src/theme.js'), 'src/theme.js must exist');
-  const { toggleTheme } = await importFromTarget('src/theme.js');
-  assert.equal(typeof toggleTheme, 'function', 'toggleTheme is exported as a function');
-  assert.equal(toggleTheme('light'), 'dark', "toggleTheme('light') === 'dark'");
-  assert.equal(toggleTheme('dark'), 'light', "toggleTheme('dark') === 'light'");
-  assert.equal(toggleTheme(undefined), 'dark', 'toggleTheme(undefined) === \'dark\' (no stored preference)');
+// This process never imports target code directly -- runScenario() forks
+// scenarios/tally-06.mjs into a separate process for the toggleTheme()
+// calls (PR #363 review finding 1). The style.css/index.html checks below
+// execute no target code (plain fs reads) and stay in this process.
+const obs = await runScenario('tally-06');
+
+test('tally-06: src/theme.js exports a pure toggleTheme', () => {
+  assert.equal(obs.toggleThemeFnType, 'function', 'toggleTheme is exported as a function');
+  assert.equal(obs.lightToDark, 'dark', "toggleTheme('light') === 'dark'");
+  assert.equal(obs.darkToLight, 'light', "toggleTheme('dark') === 'light'");
+  assert.equal(obs.undefinedToDark, 'dark', 'toggleTheme(undefined) === \'dark\' (no stored preference)');
 });
 
 test('tally-06: style.css defines .theme-light and .theme-dark with background+color', () => {

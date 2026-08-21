@@ -2,28 +2,28 @@
 // bench/issues/09-tally-import-json.md. Hidden from the trial container;
 // injected only for scoring (see bench/accept/README.md). Scores the
 // Tally tree at BENCH_ACCEPT_TARGET.
+//
+// This process never imports target code directly -- runScenario() forks
+// scenarios/tally-09.mjs into a separate process (PR #363 review
+// finding 1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { importFromTarget, existsInTarget } from './lib/target.mjs';
+import { runScenario } from './lib/isolated.mjs';
 import { assertBaseSmokeOk, assertModuleSmokeOk } from './lib/smoke.mjs';
 
-test('tally-09: src/importer.js exports a pure, never-throwing parseImport', async () => {
-  assert.ok(existsInTarget('src/importer.js'), 'src/importer.js must exist');
-  const { parseImport } = await importFromTarget('src/importer.js');
-  assert.equal(typeof parseImport, 'function', 'parseImport is exported as a function');
+const obs = await runScenario('tally-09');
 
-  const ok = parseImport('{"items":[],"nextId":1}');
-  assert.deepEqual(ok, { ok: true, state: { items: [], nextId: 1 } }, 'valid JSON parses to ok:true');
+test('tally-09: src/importer.js exports a pure, never-throwing parseImport', () => {
+  assert.equal(obs.parseImportFnType, 'function', 'parseImport is exported as a function');
+  assert.ok(obs.okResultMatches, 'valid JSON parses to ok:true with the expected state');
 
-  assert.doesNotThrow(() => parseImport('not json'), 'invalid JSON does not throw');
-  const badJson = parseImport('not json');
-  assert.equal(badJson.ok, false, 'invalid JSON returns ok:false');
-  assert.equal(typeof badJson.error, 'string', 'invalid JSON returns a string error');
-  assert.ok(badJson.error.length > 0, 'invalid JSON returns a non-empty error message');
+  assert.ok(!obs.badJsonThrew, 'invalid JSON does not throw');
+  assert.equal(obs.badJsonOk, false, 'invalid JSON returns ok:false');
+  assert.equal(obs.badJsonErrorType, 'string', 'invalid JSON returns a string error');
+  assert.ok(obs.badJsonErrorNonEmpty, 'invalid JSON returns a non-empty error message');
 
-  assert.doesNotThrow(() => parseImport('{"nextId":1}'), 'a shape mismatch does not throw');
-  const badShape = parseImport('{"nextId":1}');
-  assert.equal(badShape.ok, false, 'missing items returns ok:false');
+  assert.ok(!obs.badShapeThrew, 'a shape mismatch does not throw');
+  assert.equal(obs.badShapeOk, false, 'missing items returns ok:false');
 });
 
 test('tally-09: node test/importer.smoke.mjs exits 0 and prints a PASS line', () => {
