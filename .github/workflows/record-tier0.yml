@@ -1,0 +1,70 @@
+name: Record Tier 0
+
+# Slice 6 of epic #152 ("Cadence", issue #328): free-to-compute Tier 0 is
+# recorded on every merge to main instead of only being run by hand.
+#
+# This is a SEPARATE workflow file from ci.yml, deliberately. ci.yml's own
+# concurrency group (`ci-${{ github.ref }}`, cancel-in-progress: true)
+# cancels the ENTIRE workflow run -- every job in it -- the instant a newer
+# push lands on the same ref; a job-level concurrency setting on a job
+# living inside that workflow cannot exempt it from that run-level
+# cancellation (a job-level group only arbitrates between instances of that
+# job, it does not opt the job out of its own run being torn down). Living
+# in its own workflow file means this job's scheduling is never subject to
+# ci.yml's group at all, so a fast run of merges cannot silently drop an
+# earlier merge's Tier-0 record the way embedding it as a job in ci.yml did.
+#
+# Triggered by `workflow_run` on CI's completion (never `push` directly) so
+# a merge is only recorded once its own CI run has actually finished
+# green -- a broken merge's tests failing (or that merge's own CI run being
+# canceled by ci.yml's group when a later push lands first) means it is
+# never independently recorded, consistent with ci.yml already treating
+# that commit as not independently verified.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A dedicated group, entirely independent of ci.yml's `ci-${{ github.ref }}`
+# group. cancel-in-progress is deliberately false: concurrent completions
+# queue and run one after another rather than canceling each other, which is
+# what actually keeps "exactly one record per merge" true.
+concurrency:
+  group: record-tier0-main
+  cancel-in-progress: false
+
+jobs:
+  record-tier0:
+    name: record tier0 on merge
+    # Guarded against the commit message this job's own push produces so
+    # that push's own CI run (which also completes and fires this trigger)
+    # does not record itself, which would otherwise loop indefinitely.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'chore(bench): record tier0')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # The only permission this workflow needs beyond the read-only
+      # default: pushing the appended ledger record back to main.
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Identify git
+        run: |
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config --global user.name  'github-actions[bot]'
+
+      - name: Record Tier 0 for this merge
+        env:
+          MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: tests/ci-record-tier0.sh --sha "$MERGE_SHA" --push

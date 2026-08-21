@@ -135,22 +135,42 @@ assert_eq "$remote_head_after_first" "$remote_head_after_second" \
 remote_ledger_lines=$(git -C "$remote_bare" show main:bench/results/tier0.jsonl | wc -l | tr -d ' ')
 assert_eq '1' "$remote_ledger_lines" 'the pushed remote ledger holds exactly one record for the one merge'
 
-# --- CI wiring: push-to-main trigger, anti-self-trigger guard, and a ------
-# --- dedicated non-cancelling concurrency group ---------------------------
+# --- CI wiring: record-tier0.yml is its own workflow (not a job living ----
+# --- inside ci.yml's cancelling concurrency group), triggered on green ----
+# --- CI completion, with an anti-self-trigger guard and a dedicated -------
+# --- non-cancelling concurrency group --------------------------------------
+#
+# This job MUST NOT live inside ci.yml: ci.yml's own workflow-level
+# concurrency group (`ci-${{ github.ref }}`, cancel-in-progress: true)
+# cancels an entire in-progress run -- including every job in it -- the
+# moment a newer push lands on the same ref, and a job-level concurrency
+# setting cannot exempt a job from that run-level cancellation. A merge's
+# Tier-0 recording living as a job inside ci.yml would therefore be
+# silently dropped whenever a second merge lands before the first
+# finishes, defeating "exactly one record per merge". Splitting it into a
+# separate workflow file removes it from that group entirely.
 ci_text=$(cat -- "$repo_root/.github/workflows/ci.yml")
-assert_contains "$ci_text" 'record-tier0:' 'ci.yml declares the record-tier0 job'
-assert_contains "$ci_text" "tests/ci-record-tier0.sh --sha" 'ci.yml invokes the wrapper script'
-assert_contains "$ci_text" '--push' 'ci.yml runs the wrapper with --push'
-assert_contains "$ci_text" "github.event_name == 'push'" \
-    'record-tier0 only runs on push events'
-assert_contains "$ci_text" "github.ref == 'refs/heads/main'" \
-    'record-tier0 is restricted to main'
-assert_contains "$ci_text" "startsWith(github.event.head_commit.message, 'chore(bench): record tier0')" \
+assert_not_contains "$ci_text" 'record-tier0' \
+    "ci.yml itself does not declare the record-tier0 job (it would inherit ci.yml's cancelling concurrency group)"
+
+record_text=$(cat -- "$repo_root/.github/workflows/record-tier0.yml")
+assert_contains "$record_text" 'record-tier0:' 'record-tier0.yml declares the record-tier0 job'
+assert_contains "$record_text" "tests/ci-record-tier0.sh --sha" 'record-tier0.yml invokes the wrapper script'
+assert_contains "$record_text" '--push' 'record-tier0.yml runs the wrapper with --push'
+assert_contains "$record_text" 'workflow_run:' \
+    'record-tier0 triggers on workflow_run, never directly on push'
+assert_contains "$record_text" 'workflows: [CI]' \
+    "record-tier0 triggers off CI's completion"
+assert_contains "$record_text" "github.event.workflow_run.conclusion == 'success'" \
+    'record-tier0 only records a merge whose own CI run finished green'
+assert_contains "$record_text" "startsWith(github.event.workflow_run.head_commit.message, 'chore(bench): record tier0')" \
     "record-tier0 guards against re-triggering on its own commit's push"
-assert_contains "$ci_text" 'cancel-in-progress: false' \
+assert_contains "$record_text" 'cancel-in-progress: false' \
     'record-tier0 uses a non-cancelling concurrency group so a merge is never dropped mid-recording'
-assert_contains "$ci_text" 'contents: write' \
-    'record-tier0 is the job that carries the write permission the push needs'
+assert_contains "$record_text" 'group: record-tier0-main' \
+    "record-tier0's concurrency group key is its own dedicated group, not ci.yml's cancelling group"
+assert_contains "$record_text" 'contents: write' \
+    'record-tier0 carries the write permission the push needs'
 
 # the commit-message marker the guard checks for must be exactly the prefix
 # the wrapper script actually writes -- a drift here would silently defeat
@@ -158,5 +178,71 @@ assert_contains "$ci_text" 'contents: write' \
 wrapper_prefix=$(grep -m1 "printf 'chore(bench): record tier0 for %s" "$real_wrapper" || true)
 assert_contains "$wrapper_prefix" 'chore(bench): record tier0 for %s' \
     "the wrapper's own commit message starts with the guard's exact marker string"
+
+# --- race regression (finding 2): two stale checkouts recording the same --
+# --- SHA must never both push a row --------------------------------------
+# Two independent clones taken before either has recorded anything (the
+# shape of two overlapping runs -- e.g. a workflow re-run racing the
+# original run) both try to record the SAME merge SHA. The fix is the
+# fetch+hard-reset the wrapper performs immediately before its idempotency
+# check on every --push attempt: whichever clone pushes second must see the
+# first clone's row once it re-syncs, and skip instead of duplicating.
+race_remote=$tmp/race-remote.git
+git init --quiet --bare --initial-branch=main "$race_remote"
+
+race_seed=$tmp/race-seed
+mkdir -p "$race_seed/bench/results" "$race_seed/tests/lib"
+cp "$real_tier0" "$race_seed/bench/tier0.sh"
+chmod +x "$race_seed/bench/tier0.sh"
+cp "$real_estimator" "$race_seed/tests/lib/token-estimate.sh"
+cp "$real_wrapper" "$race_seed/tests/ci-record-tier0.sh"
+chmod +x "$race_seed/tests/ci-record-tier0.sh"
+git -C "$race_seed" init --quiet --initial-branch=main
+git -C "$race_seed" config user.email test@example.invalid
+git -C "$race_seed" config user.name 'Test'
+git -C "$race_seed" remote add origin "$race_remote"
+git -C "$race_seed" add -A
+git -C "$race_seed" commit --quiet -m 'initial'
+git -C "$race_seed" push --quiet origin main
+race_sha=$(git -C "$race_seed" rev-parse HEAD)
+
+worker_a=$tmp/race-worker-a
+worker_b=$tmp/race-worker-b
+git clone --quiet "$race_remote" "$worker_a"
+git clone --quiet "$race_remote" "$worker_b"
+git -C "$worker_a" config user.email test@example.invalid
+git -C "$worker_a" config user.name 'Test'
+git -C "$worker_b" config user.email test@example.invalid
+git -C "$worker_b" config user.name 'Test'
+
+out_a=$tmp/race-a.out
+out_b=$tmp/race-b.out
+rc_a_file=$tmp/race-a.rc
+rc_b_file=$tmp/race-b.rc
+(
+    "$worker_a/tests/ci-record-tier0.sh" --sha "$race_sha" --push > "$out_a" 2>&1
+    echo $? > "$rc_a_file"
+) &
+pid_a=$!
+(
+    "$worker_b/tests/ci-record-tier0.sh" --sha "$race_sha" --push > "$out_b" 2>&1
+    echo $? > "$rc_b_file"
+) &
+pid_b=$!
+wait "$pid_a"
+wait "$pid_b"
+rc_a=$(cat "$rc_a_file")
+rc_b=$(cat "$rc_b_file")
+
+assert_eq '0' "$rc_a" 'racing worker A exits 0'
+assert_eq '0' "$rc_b" 'racing worker B exits 0'
+
+race_ledger_lines=$(git -C "$race_remote" show main:bench/results/tier0.jsonl | wc -l | tr -d ' ')
+assert_eq '1' "$race_ledger_lines" \
+    'two racing --push runs for the same merge SHA leave exactly one ledger row, never two'
+
+race_commit_count=$(git -C "$race_remote" log --oneline main -- bench/results/tier0.jsonl | wc -l | tr -d ' ')
+assert_eq '1' "$race_commit_count" \
+    'exactly one of the two racing runs actually pushed a recording commit'
 
 finish
