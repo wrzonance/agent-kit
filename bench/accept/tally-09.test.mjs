@@ -4,9 +4,8 @@
 // Tally tree at BENCH_ACCEPT_TARGET.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { importFromTarget, existsInTarget, targetRoot } from './lib/target.mjs';
-import { assertBaseSmokeOk } from './lib/smoke.mjs';
+import { importFromTarget, existsInTarget } from './lib/target.mjs';
+import { assertBaseSmokeOk, assertModuleSmokeOk } from './lib/smoke.mjs';
 
 test('tally-09: src/importer.js exports a pure, never-throwing parseImport', async () => {
   assert.ok(existsInTarget('src/importer.js'), 'src/importer.js must exist');
@@ -28,12 +27,7 @@ test('tally-09: src/importer.js exports a pure, never-throwing parseImport', asy
 });
 
 test('tally-09: node test/importer.smoke.mjs exits 0 and prints a PASS line', () => {
-  const result = spawnSync(process.execPath, ['test/importer.smoke.mjs'], {
-    cwd: targetRoot(),
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, `test/importer.smoke.mjs exited ${String(result.status)}: ${result.stderr}`);
-  assert.match(result.stdout, /^PASS/m, 'test/importer.smoke.mjs prints a line starting with PASS');
+  assertModuleSmokeOk('test/importer.smoke.mjs');
 });
 
 test('tally-09: node test/smoke.mjs still exits 0', assertBaseSmokeOk);

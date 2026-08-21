@@ -7,9 +7,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { importFromTarget, existsInTarget, readFromTarget, targetRoot } from './lib/target.mjs';
-import { assertBaseSmokeOk } from './lib/smoke.mjs';
+import { importFromTarget, existsInTarget, readFromTarget } from './lib/target.mjs';
+import { assertBaseSmokeOk, assertModuleSmokeOk } from './lib/smoke.mjs';
 import { parseFragment, query, queryAll } from './lib/dom-stub.mjs';
 
 // Resolved relative to this suite's own file location (not BENCH_ACCEPT_TARGET)
@@ -59,12 +58,7 @@ test('tally-06: index.html links style.css in head; body unchanged from base fix
 });
 
 test('tally-06: node test/theme.smoke.mjs exits 0 and prints a PASS line', () => {
-  const result = spawnSync(process.execPath, ['test/theme.smoke.mjs'], {
-    cwd: targetRoot(),
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, `test/theme.smoke.mjs exited ${String(result.status)}: ${result.stderr}`);
-  assert.match(result.stdout, /^PASS/m, 'test/theme.smoke.mjs prints a line starting with PASS');
+  assertModuleSmokeOk('test/theme.smoke.mjs');
 });
 
 test('tally-06: node test/smoke.mjs still exits 0', assertBaseSmokeOk);

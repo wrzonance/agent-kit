@@ -4,9 +4,8 @@
 // Scores the Tally tree at BENCH_ACCEPT_TARGET.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { importFromTarget, existsInTarget, targetRoot } from './lib/target.mjs';
-import { assertBaseSmokeOk } from './lib/smoke.mjs';
+import { importFromTarget, existsInTarget } from './lib/target.mjs';
+import { assertBaseSmokeOk, assertModuleSmokeOk } from './lib/smoke.mjs';
 
 test('tally-07: src/keyboard.js exports a pure matchShortcut', async () => {
   assert.ok(existsInTarget('src/keyboard.js'), 'src/keyboard.js must exist');
@@ -19,12 +18,7 @@ test('tally-07: src/keyboard.js exports a pure matchShortcut', async () => {
 });
 
 test('tally-07: node test/keyboard.smoke.mjs exits 0 and prints a PASS line', () => {
-  const result = spawnSync(process.execPath, ['test/keyboard.smoke.mjs'], {
-    cwd: targetRoot(),
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, `test/keyboard.smoke.mjs exited ${String(result.status)}: ${result.stderr}`);
-  assert.match(result.stdout, /^PASS/m, 'test/keyboard.smoke.mjs prints a line starting with PASS');
+  assertModuleSmokeOk('test/keyboard.smoke.mjs');
 });
 
 test('tally-07: node test/smoke.mjs still exits 0', assertBaseSmokeOk);
