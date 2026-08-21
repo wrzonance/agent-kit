@@ -21,6 +21,10 @@ DIFF_PATH=''
 BASE_REF=''
 DESTINATION=''
 PURPOSE=''
+# Global, not local to payload_command: an EXIT trap fires after the function
+# that set it has returned, so a deferred "$var" expansion in the trap needs
+# the variable to still be in scope at that point.
+CANONICAL_DIFF_TMP=''
 
 usage() {
     cat <<EOF
@@ -108,17 +112,39 @@ validate_payload_inputs() {
     fi
 }
 
+cleanup_canonical_diff_tmp() {
+    [[ -z $CANONICAL_DIFF_TMP ]] || rm -f -- "$CANONICAL_DIFF_TMP"
+}
+
+# Mirrors adversarial-run.sh's own build_diff emptiness check byte-for-byte:
+# sha256sum of empty (or whitespace-only) input is still a well-formed 64-hex
+# digest, so this has to run before hashing, not rely on digest shape.
+diff_is_empty() {
+    [[ -s $1 ]] || return 0
+    grep -q '[^[:space:]]' -- "$1" || return 0
+    return 1
+}
+
 payload_command() {
     validate_payload_inputs
     local digest canonical_digest supplied_digest
     if [[ -n $BASE_REF ]]; then
         git fetch --quiet origin "$BASE_REF" ||
             die "could not refresh origin/$BASE_REF before rendering canonical diff"
-        canonical_digest=$(canonical_diff "$BASE_REF" | sha256sum | awk '{print $1}') ||
+        CANONICAL_DIFF_TMP=$(mktemp) || die 'could not create a temporary file for the canonical diff'
+        trap cleanup_canonical_diff_tmp EXIT
+        canonical_diff "$BASE_REF" >"$CANONICAL_DIFF_TMP" ||
             die "could not render canonical diff from origin/$BASE_REF"
+        chmod 600 -- "$CANONICAL_DIFF_TMP" || die "could not secure the canonical diff temp file"
+        diff_is_empty "$CANONICAL_DIFF_TMP" &&
+            die "the canonical diff from origin/$BASE_REF is empty; this usually means it ran outside the PR worktree, or HEAD already equals origin/$BASE_REF"
+        canonical_digest=$(sha256sum -- "$CANONICAL_DIFF_TMP" | awk '{print $1}') ||
+            die "could not hash canonical diff from origin/$BASE_REF"
         [[ $canonical_digest =~ ^[[:xdigit:]]{64}$ ]] ||
             die 'canonical diff renderer returned an invalid digest'
         if [[ -n $DIFF_PATH ]]; then
+            diff_is_empty "$DIFF_PATH" &&
+                die "the supplied diff is empty: $DIFF_PATH; this usually means it was captured outside the PR worktree, or HEAD equals the base"
             supplied_digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
                 die "could not hash diff: $DIFF_PATH"
             [[ $supplied_digest == "$canonical_digest" ]] ||
@@ -126,6 +152,8 @@ payload_command() {
         fi
         digest=$canonical_digest
     else
+        diff_is_empty "$DIFF_PATH" &&
+            die "the supplied diff is empty: $DIFF_PATH; this usually means it was captured outside the PR worktree, or HEAD equals the intended base"
         digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
             die "could not hash diff: $DIFF_PATH"
     fi

@@ -21,6 +21,10 @@ diff_one="$tmp/diff-one"
 diff_two="$tmp/diff-two"
 printf '%s\n' 'exact diff bytes one' >"$diff_one"
 printf '%s\n' 'exact diff bytes two' >"$diff_two"
+empty_diff="$tmp/diff-empty"
+: >"$empty_diff"
+whitespace_diff="$tmp/diff-whitespace"
+printf '   \n\t\n  \n' >"$whitespace_diff"
 
 payload_one="acme/widget:24:$(sha256sum -- "$diff_one" | awk '{print $1}')"
 payload_two="acme/widget:24:$(sha256sum -- "$diff_two" | awk '{print $1}')"
@@ -138,6 +142,60 @@ drift_payload() {
 }
 assert_rc 1 'base-ref payload rejects rendering drift' -- \
     drift_payload
+
+# An empty or whitespace-only diff must never mint a valid-looking payload --
+# sha256sum of empty/whitespace input is still a well-formed 64-hex digest, so
+# the emptiness check has to run before hashing, not rely on digest shape.
+empty_supplied_error=''
+empty_supplied_rc=0
+empty_supplied_error=$(/bin/bash "$script" payload --repo acme/widget --pr 24 \
+    --diff "$empty_diff" 2>&1) || empty_supplied_rc=$?
+assert_eq 1 "$empty_supplied_rc" 'payload refuses an empty supplied diff'
+assert_contains "$empty_supplied_error" 'empty' \
+    'empty supplied diff rejection names the empty diff'
+
+whitespace_supplied_rc=0
+/bin/bash "$script" payload --repo acme/widget --pr 24 \
+    --diff "$whitespace_diff" >/dev/null 2>&1 || whitespace_supplied_rc=$?
+assert_eq 1 "$whitespace_supplied_rc" 'payload refuses a whitespace-only supplied diff'
+
+# The same refusal applies when a base-ref is also given: an explicitly
+# supplied empty diff must not slip through under a mismatch message, or any
+# other message that doesn't name the actual cause.
+supplied_empty_with_base_error=''
+supplied_empty_with_base_rc=0
+supplied_empty_with_base_error=$(
+    cd -- "$canonical_repo" || exit
+    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main --diff "$empty_diff" 2>&1
+) || supplied_empty_with_base_rc=$?
+assert_eq 1 "$supplied_empty_with_base_rc" \
+    'payload refuses an empty supplied diff even alongside a non-empty base-ref'
+assert_contains "$supplied_empty_with_base_error" 'empty' \
+    'empty supplied diff with base-ref names the empty diff'
+
+# A canonical (base-ref-derived) diff can itself be empty -- run outside the PR
+# worktree, or HEAD already equals the base -- and must fail closed too.
+empty_base_origin="$tmp/empty-base-origin.git"
+empty_base_repo="$tmp/empty-base-repo"
+git init --bare --quiet "$empty_base_origin"
+git init --quiet --initial-branch=main "$empty_base_repo"
+git -C "$empty_base_repo" config user.email test@example.invalid
+git -C "$empty_base_repo" config user.name test
+git -C "$empty_base_repo" remote add origin "$empty_base_origin"
+printf '%s\n' base-only >"$empty_base_repo/example.txt"
+git -C "$empty_base_repo" add example.txt
+git -C "$empty_base_repo" commit --quiet -m base
+git -C "$empty_base_repo" push --quiet -u origin main
+empty_base_error=''
+empty_base_rc=0
+empty_base_error=$(
+    cd -- "$empty_base_repo" || exit
+    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main 2>&1
+) || empty_base_rc=$?
+assert_eq 1 "$empty_base_rc" \
+    'payload refuses an empty canonical diff when HEAD already equals origin/main'
+assert_contains "$empty_base_error" 'empty' \
+    'empty canonical diff rejection names the empty diff'
 
 # Disclosure is informational only and cannot create consent state.
 disclosure=$(/bin/bash "$script" disclose --payload "$payload_one" \
