@@ -35,8 +35,17 @@ function parseAttrs(raw) {
 // get acceptance credit for it. Strip comments before generic tag
 // tokenization ever sees the string, so nothing inside one can be parsed
 // into an element or survive as text content.
+//
+// An UNCLOSED `<!--` (no matching `-->` anywhere after it) must also
+// consume everything to the end of the input -- that is what real
+// browsers do, and a target emitting one could otherwise hide/alter
+// arbitrary subsequent markup from being tokenized as real elements while
+// still getting it stripped from view. The `(?:-->|$)` alternation
+// prefers the closing marker when one exists (matching the original
+// closed-comment behavior) and falls back to end-of-string only when a
+// comment is never closed.
 function stripComments(html) {
-  return html.replace(/<!--[\s\S]*?-->/g, '');
+  return html.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
 }
 
 function tokenize(rawHtml) {

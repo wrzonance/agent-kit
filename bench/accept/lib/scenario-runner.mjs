@@ -21,25 +21,42 @@
 // still reachable. Left alone, a target could call
 // process.send({ok: true, value: {...}}) at import time and forge the
 // entire observation before any real scenario code ever ran (PR #363
-// review finding 1, round 2). Two independent closures, applied before
-// ANY target-reachable import:
-//   1. The reporting function is captured and then deleted off `process`
-//      -- imported target code sees `typeof process.send === 'undefined'`.
-//   2. Every real result is stamped with the per-run token
-//      lib/isolated.mjs minted and handed over via env, which is then
-//      stripped from this process's own env so target code cannot read
-//      it back out (via process.env) and echo it in a forged message
-//      sent some other way (e.g. process._send, which this file
-//      deliberately does not delete because the captured, bound `send`
-//      above still needs it to work).
+// review finding 1, round 2).
+//
+// The first fix attempt captured `process.send.bind(process)` and deleted
+// `process.send`, leaving `process._send` untouched because the bound
+// `send` still called into it. That was itself forgeable a different way
+// (PR #363 review finding 1, round 2 -- second pass): `process.send`'s own
+// body resolves `this._send(...)` AT CALL TIME, so target code imported
+// afterward could replace `process._send` with a wrapper that intercepts
+// the real outgoing message, reads the genuine token out of it, sends a
+// forged `{token, ok: true, value}` first (accepted, since
+// lib/isolated.mjs takes the first token-matching message), then forwards
+// the real message through -- the fork boundary and the token both held,
+// but the *reporting path itself* was still reachable and re-resolvable
+// after target import.
+//
+// The fix: capture the actual low-level sender -- `process._send` itself,
+// bound so the reference is frozen to today's function object rather than
+// a live `this._send` lookup -- before any target-reachable import, then
+// delete BOTH `process.send` and `process._send` so nothing target code
+// does afterward (deleting, reassigning, wrapping) can affect what the
+// captured reference calls. Every real result is stamped with the per-run
+// token lib/isolated.mjs minted and handed over via env, which is then
+// stripped from this process's own env so target code cannot read it back
+// out (via process.env) and echo it in a forged message.
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { importFromTarget, targetRoot } from './target.mjs';
 
 const ipcToken = process.env.BENCH_ACCEPT_IPC_TOKEN;
 delete process.env.BENCH_ACCEPT_IPC_TOKEN;
-const rawSend = typeof process.send === 'function' ? process.send.bind(process) : null;
+// Bind captures a reference to TODAY's `process._send` function object --
+// not a live `this._send` property lookup -- so reassigning or wrapping
+// `process._send` after this line cannot change what `rawSend` calls.
+const rawSend = typeof process._send === 'function' ? process._send.bind(process) : null;
 delete process.send;
+delete process._send;
 
 function sendResult(result) {
   return new Promise((resolve) => {

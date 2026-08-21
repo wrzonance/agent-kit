@@ -200,6 +200,61 @@ assert_not_contains "$RUN_OUT" 'FORGED_BY_TARGET_CODE' \
     'an IPC message with the wrong (or absent) correlation token is never accepted as the observation'
 assert_contains "$RUN_OUT" 'undoRemoveFnType' 'the real, correlated scenario result is returned instead'
 
+# --- PR #363 review finding 1 (round 2, second pass): process._send -------
+# interception is rejected -----------------------------------------------
+# The first fix captured `process.send.bind(process)` and deleted
+# `process.send`, but left `process._send` reachable -- and process.send's
+# own body resolves `this._send(...)` AT CALL TIME. A target could wrap
+# `process._send` during import, intercept the genuine outgoing message,
+# read the real (correct) token out of it, forge a `{token, ok: true,
+# value}` message with that real token, send it FIRST, then forward the
+# real message through. Because lib/isolated.mjs takes the first
+# token-matching message, the forged one would win even though the token
+# was correct -- the reporting path itself was still reachable, not just
+# the token. This must never produce a passing observation.
+forge_intercept_target="$forge_tmp/forge-intercept"
+mkdir -p "$forge_intercept_target"
+build_forged_target "$forge_intercept_target" '
+if (typeof process._send === "function") {
+  const real = process._send.bind(process);
+  process._send = function (msg, ...rest) {
+    try {
+      const parsed = typeof msg === "string" ? JSON.parse(msg) : msg;
+      if (parsed && parsed.token) {
+        real.call(process, { token: parsed.token, ok: true, value: { FORGED_VIA_INTERCEPT: true } }, ...rest);
+      }
+    } catch { /* not a real result message -- fall through to forwarding it unchanged */ }
+    return real.call(process, msg, ...rest);
+  };
+}'
+run_scenario_direct "$forge_intercept_target" tally-03
+assert_eq '0' "$RUN_RC" 'a target that wraps process._send at import to intercept and forge does not break the real scenario'
+assert_not_contains "$RUN_OUT" 'FORGED_VIA_INTERCEPT' \
+    'a forged message built from the intercepted real token is never accepted as the observation'
+assert_contains "$RUN_OUT" 'undoRemoveFnType' 'the real, correlated scenario result is returned instead'
+
+# --- PR #363 review finding (round 2): target code cannot read the ----------
+# oracle's own scenario files -----------------------------------------------
+# resolveInTarget() only constrains the oracle's OWN helper calls
+# (importFromTarget/readFromTarget/existsInTarget); target code running
+# inside the forked child could `import('node:fs')` directly and read
+# bench/accept/scenarios/*.mjs to tailor its output to the exact
+# assertions. lib/isolated.mjs now forks the scenario-runner child with
+# Node's --permission model, granting fs-read only for the oracle's lib/
+# directory, the ONE scenario module this run needs, and targetRoot() --
+# never the sibling scenario files. An uncaught read here must fail the
+# whole scenario run (denied, not silently allowed and not swallowed into
+# a false pass).
+forge_scenario_read_target="$forge_tmp/read-scenario"
+mkdir -p "$forge_scenario_read_target"
+build_forged_target "$forge_scenario_read_target" \
+    "import fs from 'node:fs'; fs.readFileSync('$repo_root/bench/accept/scenarios/tally-01.mjs', 'utf8');"
+run_scenario_direct "$forge_scenario_read_target" tally-03
+assert_eq '1' "$RUN_RC" \
+    'a target that tries to read a sibling oracle scenario file fails the run, never scores a pass'
+assert_contains "$RUN_OUT" 'Access to this API has been restricted' \
+    "the failure is Node's permission model denying the read, not some unrelated crash"
+
 # --- PR #363 review finding 2: HTML-comment markup scores fail -----------
 # lib/dom-stub.mjs used to tokenize tags inside HTML comments as real
 # elements, so a target could get acceptance credit for markup it never
@@ -216,6 +271,25 @@ console.log('OK');
 dom_stub_comment_rc=$?
 assert_eq '0' "$dom_stub_comment_rc" 'dom-stub ignores markup that only appears inside an HTML comment'
 assert_contains "$dom_stub_comment_out" 'OK' 'the HTML-comment regression check ran to completion'
+
+# stripComments() used to only strip PROPERLY CLOSED comments (`<!-- ... -->`),
+# so an unclosed `<!--` left everything after it -- including real markup --
+# exposed to the tag tokenizer unchanged. Real browsers treat an unclosed
+# comment as running to end-of-input; nothing after it should tokenize as
+# an element or survive as text content either.
+dom_stub_unclosed_out=$(node --input-type=module -e "
+import assert from 'node:assert/strict';
+import { parseFragment, query, textContent } from '$repo_root/bench/accept/lib/dom-stub.mjs';
+const html = '<p class=\"tally-empty\">visible</p><!-- unclosed <p class=\"tally-empty\">hidden</p>';
+const root = parseFragment(html);
+const matches = query(root, 'p.tally-empty');
+assert.equal(matches ? matches.tagName : null, 'p', 'markup before the unclosed comment still parses');
+assert.equal(textContent(root), 'visible', 'nothing after an unclosed comment survives as text content');
+console.log('OK');
+" 2>&1)
+dom_stub_unclosed_rc=$?
+assert_eq '0' "$dom_stub_unclosed_rc" 'dom-stub treats an unclosed HTML comment as running to end-of-input'
+assert_contains "$dom_stub_unclosed_out" 'OK' 'the unclosed-comment regression check ran to completion'
 
 # --- PR #363 review finding 3: smoke timeouts kill with SIGKILL ----------
 # spawnSync's default killSignal is SIGTERM, which a smoke script can

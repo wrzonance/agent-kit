@@ -18,21 +18,29 @@
 // (PR #363 review finding 1, round 2), so a target could call
 // process.send({ok: true, value: {...}}) at import time and have it
 // accepted as the real observation before scenario-runner.mjs itself
-// ever runs. lib/scenario-runner.mjs closes the reachability half of
-// that (captures + deletes process.send before any target import); this
-// side closes the acceptance half: every real result carries an
-// unguessable per-run token minted here and handed to the child out of
-// band, and only a message carrying the exact token is ever accepted --
-// anything else (unsolicited, wrong token, or a duplicate after the real
-// message already settled the promise) is silently ignored, never
-// treated as a pass or as a hard failure.
+// ever runs. Deleting only `process.send` was not enough either: its own
+// body resolves `this._send(...)` at call time, so target code could
+// replace `process._send` during import, intercept the genuine outgoing
+// message, forge `{token, ok: true, value}` with the real (observed)
+// token, and have that accepted first. lib/scenario-runner.mjs closes the
+// reachability half of both routes (captures a frozen reference to the
+// low-level `process._send` before any target import, then deletes both
+// `process.send` and `process._send`); this side closes the acceptance
+// half: every real result carries an unguessable per-run token minted
+// here and handed to the child out of band, and only a message carrying
+// the exact token is ever accepted -- anything else (unsolicited, wrong
+// token, or a duplicate after the real message already settled the
+// promise) is silently ignored, never treated as a pass or as a hard
+// failure.
 import { fork } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { targetRoot } from './target.mjs';
 
-const RUNNER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scenario-runner.mjs');
+const LIB_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNNER = path.join(LIB_DIR, 'scenario-runner.mjs');
+const SCENARIOS_DIR = path.join(LIB_DIR, '..', 'scenarios');
 // Overridable so the forgery/hang regression tests in
 // tests/test-bench-accept.sh don't have to wait out the production
 // default to prove a hung scenario is killed and scored as a failure.
@@ -41,16 +49,50 @@ const DEFAULT_TIMEOUT_MS = Number.isFinite(envTimeoutMs) && envTimeoutMs > 0 ? e
 
 function forkScenario(scenarioId, timeoutMs) {
   return new Promise((resolve) => {
+    // scenarioId is always an oracle-authored literal (a tally-NN.test.mjs
+    // calling runScenario('tally-01')), never attacker input, but this
+    // path is about to be granted an explicit fs-read permission below --
+    // validate it the same way lib/scenario-runner.mjs does before using
+    // it to build a filesystem path, as defence in depth.
+    if (!scenarioId || /[^a-zA-Z0-9_-]/.test(scenarioId)) {
+      resolve({ ok: false, error: `runScenario: invalid scenario id: ${String(scenarioId)}` });
+      return;
+    }
     let settled = false;
     // Unguessable per-run token, handed to the child via env and never
     // reused. lib/scenario-runner.mjs reads it and strips it from its own
     // env before importing anything target-authored, so imported target
     // code has no way to read it back out and echo it in a forged message.
     const token = crypto.randomBytes(32).toString('hex');
+    const scenarioFile = path.join(SCENARIOS_DIR, `${scenarioId}.mjs`);
+    const target = targetRoot();
     const child = fork(RUNNER, [scenarioId], {
-      cwd: targetRoot(),
+      cwd: target,
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: { ...process.env, BENCH_ACCEPT_IPC_TOKEN: token },
+      // fork() inherits the PARENT's execArgv by default -- explicit here
+      // so the child's flags are exactly this allowlist, never whatever
+      // the parent process happened to be started with (this has bitten
+      // this code before: tests/test-bench-accept.sh's driver script
+      // deliberately avoids `node -e`/`--input-type=module` for the same
+      // reason).
+      //
+      // Node's permission model (--permission) denies all fs access by
+      // default; --allow-fs-read grants back exactly: this oracle's own
+      // lib/ directory (scenario-runner.mjs and the helpers it imports --
+      // none of it secret), the ONE scenario module this run needs
+      // (never the sibling scenarios/*.mjs files, which carry the exact
+      // assertions a target must not be able to read and tailor its
+      // output to -- PR #363 review finding, round 2), and targetRoot()
+      // itself (target code must be readable to be imported/executed).
+      // See bench/accept/README.md's "Injection interface" for why this
+      // is defence in depth rather than the primary secrecy control.
+      execArgv: [
+        '--permission',
+        `--allow-fs-read=${LIB_DIR}`,
+        `--allow-fs-read=${scenarioFile}`,
+        `--allow-fs-read=${target}`,
+      ],
     });
 
     const finish = (outcome) => {

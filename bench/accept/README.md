@@ -163,6 +163,41 @@ slice guarantees is that `run-accept.sh` and every `tally-NN.test.mjs`
 suite work unmodified against any directory passed as `TARGET_DIR`, which
 is the contract the injection step needs to hold.
 
+### In-process fs isolation is defence in depth, not the primary control
+
+Target code executes inside the forked `scenario-runner.mjs` child (see
+`lib/isolated.mjs`), in the same OS process as the scenario module that
+scores it. `lib/target.mjs`'s `resolveInTarget()` only constrains the
+oracle's *own* helper calls (`importFromTarget`/`readFromTarget`/
+`existsInTarget`) to stay inside `targetRoot()` -- it cannot stop target
+code from calling `import('node:fs')` directly and reading arbitrary paths
+on disk, including this oracle's own `bench/accept/scenarios/*.mjs` files,
+to tailor its output to the exact assertions.
+
+`lib/isolated.mjs` forks that child under Node's `--permission` model
+(`--allow-fs-read`), granting read access only to: this oracle's `lib/`
+directory (no secrets there), the single scenario module the run in
+progress needs, and `targetRoot()` itself. A target that tries to read a
+sibling scenario file is denied and the run fails outright (see
+`tests/test-bench-accept.sh`'s "target code cannot read the oracle's own
+scenario files" case). This closes the specific vector of a target reading
+its *own suite's neighbors* through this process.
+
+It does **not** make in-process execution of untrusted target code safe in
+general -- Node's permission model does not sandbox against every
+side channel (environment variables not already scrubbed, timing,
+`node:child_process`/`node:worker_threads` reachability, future target
+code exploiting a permission-model bug), and this oracle intentionally
+runs target code with no OS-level sandbox (no container, no seccomp, no
+separate user). **The real secrecy control is the injection design above:
+`bench/accept/**` is never present in the trial container while the agent
+under test is working (points 1-2 above) -- there is nothing on disk for a
+side channel to find.** The permission-model restriction here is a second
+layer against a *specific, cheap* attack (a target that reads its own
+oracle's assertions out of curiosity or via a generic "read everything
+nearby" strategy), not a claim that arbitrary untrusted code execution is
+contained.
+
 ## Frozen-set membership
 
 Per `bench/README`'s "Frozen-set boundary" section, `bench/accept/` joins
