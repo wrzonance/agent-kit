@@ -33,6 +33,11 @@ jobs:
           # pull_request; persisting the token would leave it readable from
           # .git/config to anything that tree runs.
           persist-credentials: false
+          # bench/tier0.sh reproduces the token-benchmark epic's numbers by
+          # measuring specific historical commits (06d18cf, 53e7e8c); the
+          # default shallow clone (fetch-depth: 1) does not contain them, so
+          # the suite needs full history to run that reproduction.
+          fetch-depth: 0
 
       - name: Install pinned ShellCheck
         # Reference release: ShellCheck v0.11.0

@@ -241,6 +241,14 @@ with_entry() { # prints the path to a lint copy whose review-remote-pr entry is 
     escaped=${escaped//&/\\&}
     sed -E "s|KNOWN_OVERSIZE\[review-remote-pr\]=\"[^\"]*\"|KNOWN_OVERSIZE[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
     chmod +x "$copy"
+    # The copy sources the shared token estimator relative to its own
+    # directory (lib/token-estimate.sh), matching how a real invocation of
+    # tests/lint-skill-size.sh resolves it -- so a standalone copy needs that
+    # sibling present too, once per $tmp.
+    if [[ ! -e $tmp/lib/token-estimate.sh ]]; then
+        mkdir -p "$tmp/lib"
+        cp "$here/lib/token-estimate.sh" "$tmp/lib/token-estimate.sh"
+    fi
     if cmp -s "$lint" "$copy"; then
         _fail "the '$replacement' fixture actually edits the allowlist" \
             'the KNOWN_OVERSIZE entry format changed; update this substitution'
