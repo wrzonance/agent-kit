@@ -2045,7 +2045,7 @@ assert_eq yes "$( [[ ! -e $evidence_outside/paths-touched.ndjson ]] && printf ye
 # under `trap ... ERR`, so a missing candidate directory tripped the trap and
 # fell straight into allow/emit_empty before any guard had run, silently
 # skipping every downstream check for that command.
-nonexistent_dir_369=/nonexistent-dir-issue-369
+nonexistent_dir_369="$tmp/nonexistent-dir-issue-369"
 
 # Unit-level: the function itself must always return 0, regardless of whether
 # the parsed candidate directory exists.
