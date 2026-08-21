@@ -108,6 +108,45 @@ dedup_lines=$(printf '%s\n' "$dedup_output" | grep -c 'definitely-missing.md' ||
 assert_eq 1 "$dedup_lines" \
     'the same broken path found via two extraction loops is reported once, not twice'
 
+# A labelled path containing interior whitespace ("the policy.md") is prose
+# that happens to end in .md, not a path claim -- validating it as a token
+# produced a false positive on a perfectly valid link (adversarial finding
+# on PR #378, finding 1). It must never be reported, regardless of whether
+# its destination resolves.
+mkdir -p "$bfixture/demo3/references"
+printf 'target\n' > "$bfixture/demo3/references/policy.md"
+printf '%s\n' \
+    '---' \
+    'name: demo3' \
+    'description: Use when testing a whitespace-containing bracket label.' \
+    '---' \
+    'See [the policy.md](references/policy.md) for details.' \
+    > "$bfixture/demo3/SKILL.md"
+whitespace_output=''
+whitespace_output=$("$lint" "$bfixture" 2>&1) || true
+whitespace_lines=$(printf '%s\n' "$whitespace_output" | grep -c 'demo3/SKILL.md' || true)
+assert_eq 0 "$whitespace_lines" \
+    'a labelled path with interior whitespace is prose, not a path claim, and is never reported'
+
+# A link label containing an escaped `]` (e.g. "[policy \] archive](dest)")
+# must not blind the lint to a genuinely broken destination: pairing the
+# whole `[label](` to extract a destination lets the label swallow the `]`
+# and hide the entire link from a label-anchored extraction (adversarial
+# finding on PR #378, finding 2 -- a real coverage regression this issue's
+# own fix introduced and then had to repair).
+mkdir -p "$bfixture/demo4/references"
+printf '%s\n' \
+    '---' \
+    'name: demo4' \
+    'description: Use when testing an escaped bracket in a link label.' \
+    '---' \
+    'See [policy \] archive](references/escaped-bracket-missing.md) for details.' \
+    > "$bfixture/demo4/SKILL.md"
+escaped_output=''
+escaped_output=$("$lint" "$bfixture" 2>&1) || true
+assert_contains "$escaped_output" 'escaped-bracket-missing.md' \
+    'a bad destination behind a label with an escaped bracket still fails the lint'
+
 policy_needle="helpers invoked by more than one skill live in \`.shared/scripts/\`"
 assert_contains "$(<"$root/agentkit/skills/.shared/six-step-loop.md")" \
     "$policy_needle" \

@@ -12,6 +12,17 @@ repo_dir=$(cd -- "$plugin_dir/.." && pwd -P)
 violations=0
 declare -A seen=()
 
+# A markdown-link bracket TEXT counts as a path claim only when it is an
+# unformatted token: the same character set every other extraction loop in
+# this file already restricts itself to, with no interior whitespace or
+# markdown markup. This tells "the policy.md" (prose that happens to end in
+# .md) apart from "policy.md" (a path). A backtick-quoted label such as
+# "`policy.md`" is excluded the same way check_token already excludes any
+# other token with a trailing non-path character: it ends in a backtick, not
+# in .sh/.md.
+# shellcheck disable=SC2016  # the regex intentionally matches literal $ names
+readonly bracket_path_token_re='^[[:alnum:]_.${}/-]+\.(sh|md)(#[[:alnum:]_.${}/-]*)?$'
+
 report() {
     local kind=${5:-helper/reference path}
     printf 'VIOLATION %s:%s: unresolved %s %s (looked for %s)\n' \
@@ -78,18 +89,31 @@ check_token() {
 scan_file() {
     local source_file=$1 line_no content match token bracket_text dest_token
     while IFS=: read -r line_no content; do
-        # Markdown links are resolved from the document containing the link.
-        # Bracket TEXT holds the same resolve-or-fail bar as the destination:
-        # these documents are read by agents, not rendered for humans, and an
-        # agent following prose frequently retypes the path it sees rather
-        # than dereferencing the link. Only path-shaped bracket text (the
-        # same .sh/.md filter check_token already applies) is checked, so
-        # ordinary prose bracket text is never a false positive.
+        # Markdown link destinations are resolved from the document
+        # containing the link. This extraction is deliberately
+        # label-independent -- it anchors on `](` rather than on the opening
+        # `[`, so a label containing an escaped `]` (e.g.
+        # `[policy \] archive](dest)`) still gets its destination checked;
+        # pairing the whole `[label](` would let that label swallow the `]`
+        # and make the entire link invisible to this loop.
+        while IFS= read -r match; do
+            dest_token=${match#*](}
+            check_token "$source_file" "$line_no" "$dest_token" 'link destination'
+        done < <(grep -oE '\]\([^)#[:space:]]+\.(sh|md)(#[^)]*)?' <<< "$content" || true)
+
+        # Bracket TEXT holds the same resolve-or-fail bar as the
+        # destination: these documents are read by agents, not rendered for
+        # humans, and an agent following prose frequently retypes the path
+        # it sees rather than dereferencing the link. Extracted as its own
+        # pass, rather than reusing the destination match above, precisely
+        # because pairing `[label](` requires the label to contain no
+        # literal `]` -- a label with an escaped `]` is silently skipped
+        # here without losing the destination check above. Only an
+        # unformatted path token is validated; see bracket_path_token_re.
         while IFS= read -r match; do
             bracket_text=${match%%](*}
             bracket_text=${bracket_text#\[}
-            dest_token=${match#*](}
-            check_token "$source_file" "$line_no" "$dest_token" 'link destination'
+            [[ $bracket_text =~ $bracket_path_token_re ]] || continue
             check_token "$source_file" "$line_no" "$bracket_text" 'link bracket text'
         done < <(grep -oE '\[[^]]*\]\([^)#[:space:]]+\.(sh|md)(#[^)]*)?' <<< "$content" || true)
 
