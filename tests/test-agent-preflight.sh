@@ -758,28 +758,122 @@ assert_contains "$(cat "$tmp/inherit-stderr")" 'inherited sandbox=' \
 assert_contains "$(grep '^sandbox=' <<< "$inherit_out")" 'note="escalate git writes' \
     'a note= present on the authoritative sandbox= line survives inheritance'
 
-# --- --inherit-session only trusts a source verified as belonging to THIS ---
-# session (issue #332 F3): agreement between a root and a worktree contract
-# proves nothing if both are the same stale bytes left over from an earlier,
-# differently-privileged session. There is no cryptographic session identity
-# available, so this is a heuristic (recency + same-harness) -- the same
-# established heuristic session-start.sh already uses for "is this recorded
-# context still current" -- and its absence must fall back to a fresh probe,
-# not silently accept the stale bytes.
+# --- a stale --inherit-session source is revalidated, not discarded --------
+# (issue #372): a long --auto-serialize chain creates each link's worktree
+# minutes apart, so the root's own contract (written once, at session start)
+# is reliably past INHERIT_SESSION_MAX_AGE_MINUTES by the third-or-later
+# link even though nothing about the session changed. The old behaviour --
+# discard the recorded source wholesale past the window and trust a fresh,
+# differently-privileged-blind probe instead -- is exactly how a stale-but-
+# MORE-restrictive root (e.g. measured-by=hook, active=unknown) lost to a
+# fresh, confidently-unsandboxed worktree measurement and tripped
+# compose-worker-prompt.sh's worktree-contract-less-restrictive-than-root
+# refusal, with no documented recovery. Same-harness identity is still
+# required (there is no cryptographic session identity available, so this
+# remains the same recency+same-harness heuristic session-start.sh uses) --
+# but past the window a same-harness source is revalidated against a fresh
+# probe rather than trusted wholesale or discarded wholesale: whichever
+# reading is more restrictive wins, so the result can never be less
+# restrictive than the recorded root line.
 stale_repo=$(new_repo)
 stale_session="$tmp/stale-session-contract.txt"
 printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
     "$current_harness_line" > "$stale_session"
 # Backdate well past INHERIT_SESSION_MAX_AGE_MINUTES (30m).
 touch -d '2 hours ago' "$stale_session" 2> /dev/null || touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$stale_session"
-stale_err=$("$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2>&1 > /dev/null)
+# The recorded line is already maximally restrictive on every comparator
+# field; forcing a genuinely unsandboxed fresh probe (never more restrictive)
+# makes "the recorded line survives" the only possible deterministic outcome
+# -- proving the revalidation, not just an accidental agreement.
+stale_err=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2>&1 > /dev/null)
 assert_contains "$stale_err" 'older than 30m' \
-    'a stale --inherit-session source is refused with its age named'
-assert_contains "$stale_err" 'falling back to a fresh probe' \
-    'and the run falls back to a fresh probe rather than failing'
-stale_out=$("$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2> /dev/null)
-assert_not_contains "$(grep '^sandbox=' <<< "$stale_out")" 'active=yes profile=strict network=disabled' \
-    'the stale contract'"'"'s sandbox= bytes are not the ones that get served'
+    'a stale --inherit-session source is disclosed with its age named'
+assert_contains "$stale_err" 'revalidated sandbox=' \
+    'and the run discloses that sandbox= was revalidated, not blindly trusted or blindly discarded'
+assert_contains "$stale_err" "kept the recorded line" \
+    'a fresh probe that would widen the recorded line loses to it'
+stale_out=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2> /dev/null)
+assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' <<< "$stale_out")" \
+    'the stale contract'"'"'s more-restrictive sandbox= bytes ARE the ones that get served -- never less restrictive than the recorded root'
+
+# The opposite direction: a stale recorded line that is NOT more restrictive
+# than the current, real state must not pin the worktree to out-of-date,
+# falsely-loose bytes forever -- the fresh (now more restrictive) probe wins
+# and the copy is refreshed. CODEX_SANDBOX_NETWORK_DISABLED plus an
+# unwritable HOME force a fresh probe that is deterministically MORE
+# restrictive than the recorded (least-restrictive-possible) line.
+loose_stale_repo=$(new_repo)
+loose_stale_session="$tmp/loose-stale-session-contract.txt"
+printf '%s\nsandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    "$current_harness_line" > "$loose_stale_session"
+touch -d '2 hours ago' "$loose_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$loose_stale_session"
+unwritable_home="$tmp/revalidate-unwritable-home"
+mkdir -p "$unwritable_home"
+chmod 000 "$unwritable_home"
+loose_stale_err=$(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
+    "$script" --worktree "$loose_stale_repo" --inherit-session "$loose_stale_session" 2>&1 > /dev/null)
+assert_contains "$loose_stale_err" 'revalidated sandbox=' \
+    'a stale recorded line that is not more restrictive than reality is still revalidated'
+assert_contains "$loose_stale_err" 'the fresh probe is at least as restrictive, so it replaces' \
+    'and the note discloses that the fresher, more-restrictive measurement replaced it'
+loose_stale_out=$(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
+    "$script" --worktree "$loose_stale_repo" --inherit-session "$loose_stale_session" 2> /dev/null)
+chmod 700 "$unwritable_home"
+assert_not_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=no profile=none network=ok home-writable=yes' \
+    'the stale, now-inaccurate-and-looser recorded bytes are not the ones that get served'
+assert_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=yes' \
+    'the fresher, more-restrictive probe (forced sandboxed+network-disabled) is served instead'
+
+# The same revalidate-not-discard behaviour for caches= (issue #372), using
+# caches_widened -- HOME writability is directly controllable, which gives a
+# fully deterministic "kept recorded" case without depending on this
+# machine's ambient sandbox state.
+caches_stale_repo=$(new_repo)
+caches_stale_session="$tmp/caches-stale-session-contract.txt"
+printf '%s\ncaches= root=/tmp/agent-cache-stale reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-stale/uv NPM_CONFIG_CACHE=/tmp/agent-cache-stale/npm PIP_CACHE_DIR=/tmp/agent-cache-stale/pip XDG_CACHE_HOME=/tmp/agent-cache-stale\n' \
+    "$current_harness_line" > "$caches_stale_session"
+touch -d '2 hours ago' "$caches_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_stale_session"
+caches_writable_home="$tmp/caches-revalidate-writable-home"
+mkdir -p "$caches_writable_home"
+caches_stale_err=$(HOME="$caches_writable_home" \
+    "$script" --worktree "$caches_stale_repo" --inherit-session "$caches_stale_session" 2>&1 > /dev/null)
+assert_contains "$caches_stale_err" 'revalidated caches=' \
+    'a stale recorded caches= is revalidated against a fresh probe'
+assert_contains "$caches_stale_err" 'kept the recorded line' \
+    'a fresh home-cache-writable probe loses to the recorded home-cache-unwritable line'
+caches_stale_out=$(HOME="$caches_writable_home" \
+    "$script" --worktree "$caches_stale_repo" --inherit-session "$caches_stale_session" 2> /dev/null)
+assert_contains "$(grep '^caches=' <<< "$caches_stale_out")" 'reason=home-cache-unwritable' \
+    'the stale, more-restrictive recorded caches= bytes ARE the ones that get served'
+
+# Opposite direction: a stale recorded caches= that is already the least-
+# restrictive reading must not pin the worktree to it forever once reality
+# has become more restrictive -- the fresh probe wins and the copy refreshes.
+caches_loose_stale_repo=$(new_repo)
+caches_loose_stale_session="$tmp/caches-loose-stale-session-contract.txt"
+printf '%s\ncaches= root=/home/example/.cache reason=home-cache-writable home-cache=/home/example/.cache UV_CACHE_DIR=/home/example/.cache/uv NPM_CONFIG_CACHE=/home/example/.cache/npm PIP_CACHE_DIR=/home/example/.cache/pip XDG_CACHE_HOME=/home/example/.cache\n' \
+    "$current_harness_line" > "$caches_loose_stale_session"
+touch -d '2 hours ago' "$caches_loose_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_loose_stale_session"
+caches_unwritable_home="$tmp/caches-revalidate-unwritable-home"
+mkdir -p "$caches_unwritable_home"
+chmod 000 "$caches_unwritable_home"
+caches_loose_err=$(HOME="$caches_unwritable_home" \
+    "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2>&1 > /dev/null)
+assert_contains "$caches_loose_err" 'revalidated caches=' \
+    'a stale, already-loosest recorded caches= is still revalidated'
+assert_contains "$caches_loose_err" 'the fresh probe is at least as restrictive, so it replaces' \
+    'and the fresher, now more-restrictive probe replaces it'
+caches_loose_out=$(HOME="$caches_unwritable_home" \
+    "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2> /dev/null)
+chmod 700 "$caches_unwritable_home"
+assert_contains "$(grep '^caches=' <<< "$caches_loose_out")" 'reason=home-cache-unwritable' \
+    'the fresher, more-restrictive probe (forced-unwritable HOME) is served instead of the stale looser bytes'
 
 mismatch_repo=$(new_repo)
 mismatch_session="$tmp/mismatch-session-contract.txt"

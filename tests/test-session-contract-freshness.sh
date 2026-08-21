@@ -87,4 +87,81 @@ out=$(session_input "$repo" | PATH="$stub_path" "$hooks/session-start.sh" 2> /de
 assert_not_contains "$out" 'legacy/value' 'a legacy cache without HEAD is not trusted'
 assert_contains "$out" "head=$new_detached_head" 'a legacy cache is refreshed with checkout identity'
 
+# --- issue #372: a chain link created outside the 30-minute inheritance ----
+# window still composes a worker prompt. This is the end-to-end shape of a
+# long --auto-serialize chain's later links: create-issue-worktree.sh calls
+# agent-preflight.sh --inherit-session against the ROOT checkout's own
+# .agent/env-contract.txt, and that root contract was written once, at
+# session start -- by the third-or-later link it is reliably older than
+# INHERIT_SESSION_MAX_AGE_MINUTES even though nothing about the session
+# changed. Before agent-preflight.sh revalidated instead of discarding a
+# stale-but-same-harness source, the worktree fell back to an unqualified
+# fresh probe, which could disagree with the (more restrictive) root and
+# trip compose-worker-prompt.sh's worktree-contract-less-restrictive-than-
+# root refusal -- with no documented recovery (see
+# agentkit/skills/parallel-issues/references/chains.md).
+preflight="$skills_root/.shared/scripts/agent-preflight.sh"
+compose="$skills_root/parallel-issues/scripts/compose-worker-prompt.sh"
+harness_line="harness= $("$skills_root/.shared/scripts/harness-id.sh" 2> /dev/null)"
+
+make_chain_root() {
+    local dir=$1 sandbox_line=$2
+    mkdir -p "$dir/.agent"
+    git -C "$dir" init -q
+    git -C "$dir" config user.name test
+    git -C "$dir" config user.email test@example.invalid
+    printf 'seed\n' > "$dir/seed.txt"
+    git -C "$dir" add -- seed.txt
+    git -C "$dir" commit -qm seed
+    printf '%s\n%s\n' "$harness_line" "$sandbox_line" > "$dir/.agent/env-contract.txt"
+    chmod 600 "$dir/.agent/env-contract.txt"
+    # Backdate past INHERIT_SESSION_MAX_AGE_MINUTES (30m) -- the exact shape
+    # a chain's third-or-later link finds the root contract in.
+    touch -d '2 hours ago' "$dir/.agent/env-contract.txt" 2> /dev/null ||
+        touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" \
+            "$dir/.agent/env-contract.txt"
+}
+
+chain_restrictive='sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=hook note="probed outside your sandbox; treat this as the floor, not the ceiling, and believe a denial over this line"'
+
+chain_root=$(mktemp -d "$tmp/chain-root.XXXXXX")
+make_chain_root "$chain_root" "$chain_restrictive"
+
+chain_branch=feat/issue-chain-link
+chain_worktree="$chain_root/.worktrees/$chain_branch"
+git -C "$chain_root" worktree add -q -b "$chain_branch" "$chain_worktree" > /dev/null 2>&1
+mkdir -p "$chain_worktree/.agent"
+printf '%s\n' \
+    'AGENT_REPO_SLUG=example-org/example-repo' \
+    'AGENT_BASE_BRANCH=main' \
+    'AGENT_CMD_TEST=tools/full-test' \
+    > "$chain_worktree/.agent/config.env"
+printf 'SPEC-BYTES\n' > "$chain_worktree/.agent/fenced-spec.txt"
+printf 'PRIOR-BYTES\n' > "$chain_worktree/.agent/fenced-prior-art.txt"
+
+# create-issue-worktree.sh's own call shape: preflight the new worktree,
+# inheriting the root's contract. Force a genuinely unsandboxed fresh probe
+# (env -u) so the only way the worktree ends up at least as restrictive as
+# the stale root is the revalidation path, never an accidental agreement.
+chain_preflight_err=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$preflight" --worktree "$chain_worktree" --inherit-session "$chain_root/.agent/env-contract.txt" \
+    2>&1 > /dev/null)
+assert_contains "$chain_preflight_err" 'revalidated sandbox=' \
+    'a chain link past the inheritance window revalidates the stale root contract rather than silently discarding it'
+
+chain_worktree_sandbox=$(grep '^sandbox=' "$chain_worktree/.agent/env-contract.txt")
+assert_eq "$chain_restrictive" "$chain_worktree_sandbox" \
+    'the revalidated worktree sandbox= is never less restrictive than the stale root (kept verbatim here since a fresh probe would have widened it)'
+
+chain_prompt_rc=0
+chain_prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$chain_worktree" --issue 372 --branch "$chain_branch" \
+    --worker-model gpt-5.6-luna --worker-effort high 2> "$tmp/chain-compose-err") || chain_prompt_rc=$?
+assert_eq 0 "$chain_prompt_rc" \
+    'the worker prompt still composes for a chain link created outside the inheritance window'
+assert_not_contains "$(cat -- "$tmp/chain-compose-err")" 'worktree-contract-less-restrictive-than-root' \
+    'composing never hits the less-restrictive-than-root refusal for a revalidated stale-but-same-harness worktree'
+assert_contains "$chain_prompt" 'Repo: example-org/example-repo' \
+    'the composed prompt is a real worker prompt, not an empty success'
+
 finish
