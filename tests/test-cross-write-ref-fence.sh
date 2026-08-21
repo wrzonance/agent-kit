@@ -170,4 +170,79 @@ assert_eq 10 "$outside_rc" 'a ref change outside the declared window is still an
 assert_contains "$outside_out" 'window=outside-window' \
     'a ref change outside the worker window is attributed as such, not dropped'
 
+# --- a branch created in the root checkout is a named incident -------------
+created_root="$tmp/created-root"
+created_worker="$tmp/created-worker"
+make_repo "$created_root"
+git -C "$created_root" worktree add -q -b feat/created "$created_worker"
+created_snap="$created_root/.agent/cross-write.snapshot"
+snapshot_repo "$created_root" "$created_snap"
+now=$(date +%s)
+git -C "$created_root" branch injected
+created_out=$(
+    "$cross_write" collect --root "$created_root" --snapshot "$created_snap" \
+        --worker-worktree "$created_worker" --issue 352 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) --write-set 'src/**'
+)
+created_rc=$?
+assert_eq 10 "$created_rc" 'a branch created in the root checkout is a named incident'
+assert_contains "$created_out" 'type=branch-created' \
+    'the incident is attributed as a branch creation'
+assert_contains "$created_out" 'name=injected' \
+    'the incident names the created branch'
+
+# --- a branch deleted from the root checkout is a named incident -----------
+deleted_root="$tmp/deleted-root"
+deleted_worker="$tmp/deleted-worker"
+make_repo "$deleted_root"
+git -C "$deleted_root" branch doomed
+git -C "$deleted_root" worktree add -q -b feat/deleted "$deleted_worker"
+deleted_snap="$deleted_root/.agent/cross-write.snapshot"
+snapshot_repo "$deleted_root" "$deleted_snap"
+now=$(date +%s)
+git -C "$deleted_root" branch -D doomed >/dev/null
+deleted_out=$(
+    "$cross_write" collect --root "$deleted_root" --snapshot "$deleted_snap" \
+        --worker-worktree "$deleted_worker" --issue 352 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) --write-set 'src/**'
+)
+deleted_rc=$?
+assert_eq 10 "$deleted_rc" 'a branch deleted from the root checkout is a named incident'
+assert_contains "$deleted_out" 'type=branch-deleted' \
+    'the incident is attributed as a branch deletion'
+assert_contains "$deleted_out" 'name=doomed' \
+    'the incident names the deleted branch'
+
+# --- a reflogs-disabled repo never certifies a moved-and-restored ref clean -
+noreflog_root="$tmp/noreflog-root"
+noreflog_worker="$tmp/noreflog-worker"
+mkdir -p "$noreflog_root"
+git init -q -b main "$noreflog_root"
+git -C "$noreflog_root" config core.logAllRefUpdates false
+git -C "$noreflog_root" -c user.name=t -c user.email=t@example.invalid \
+    commit -q --allow-empty -m base
+git -C "$noreflog_root" worktree add -q -b feat/noreflog "$noreflog_worker"
+noreflog_snap="$noreflog_root/.agent/cross-write.snapshot"
+snapshot_repo "$noreflog_root" "$noreflog_snap"
+baseline_sha=$(git -C "$noreflog_root" rev-parse HEAD)
+git -C "$noreflog_root" -c user.name=t -c user.email=t@example.invalid \
+    commit -q --allow-empty -m second
+now=$(date +%s)
+git -C "$noreflog_root" reset --soft "$baseline_sha"
+restored_sha=$(git -C "$noreflog_root" rev-parse HEAD)
+assert_eq "$baseline_sha" "$restored_sha" \
+    'the reflogs-disabled ref genuinely matches its pre-dispatch baseline byte-for-byte'
+noreflog_out=$(
+    "$cross_write" collect --root "$noreflog_root" --snapshot "$noreflog_snap" \
+        --worker-worktree "$noreflog_worker" --issue 352 \
+        --worker-start $((now - 5)) --worker-end $((now + 5)) --write-set 'src/**'
+)
+noreflog_rc=$?
+assert_eq 10 "$noreflog_rc" \
+    'a reflogs-disabled repo never certifies a moved-and-restored ref as clean'
+assert_contains "$noreflog_out" 'type=head-reflog-unavailable' \
+    'the fail-closed incident names the unavailable reflog rather than reporting clean'
+assert_not_contains "$noreflog_out" 'cross-write=none' \
+    'an unobservable ref is never reported as cross-write=none'
+
 finish

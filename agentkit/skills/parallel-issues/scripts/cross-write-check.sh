@@ -192,14 +192,32 @@ capture_ref_reflog_count() {
     git -C "$root" reflog show "$fullref" 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
-# capture_branch_shas -- one "name<TAB>sha<TAB>reflog-count" line per local
-# branch, sorted by refname for deterministic snapshot/report ordering.
+# capture_ref_reflog_usable -- "yes" when Git actually maintains a reflog for
+# this ref, "no" otherwise (reflogs disabled via core.logAllRefUpdates=false,
+# or a ref Git never logs). `reflog show` on an unlogged ref still exits 0
+# with empty output -- indistinguishable from "logged, but zero entries so
+# far" -- so usability has to be its own check (`reflog exists`), never
+# inferred from an entry count of 0.
+capture_ref_reflog_usable() {
+    local root=$1 fullref=$2
+    if git -C "$root" reflog exists "$fullref" >/dev/null 2>&1; then
+        printf 'yes\n'
+    else
+        printf 'no\n'
+    fi
+}
+
+# capture_branch_shas -- one "name<TAB>sha<TAB>reflog-count<TAB>reflog-usable"
+# line per local branch, sorted by refname for deterministic snapshot/report
+# ordering.
 capture_branch_shas() {
-    local root=$1 branch_name branch_sha
+    local root=$1 branch_name branch_sha fullref
     while IFS=$'\t' read -r branch_name branch_sha; do
         [[ -n $branch_name ]] || continue
-        printf '%s\t%s\t%s\n' "$branch_name" "$branch_sha" \
-            "$(capture_ref_reflog_count "$root" "refs/heads/$branch_name")"
+        fullref="refs/heads/$branch_name"
+        printf '%s\t%s\t%s\t%s\n' "$branch_name" "$branch_sha" \
+            "$(capture_ref_reflog_count "$root" "$fullref")" \
+            "$(capture_ref_reflog_usable "$root" "$fullref")"
     done < <(git -C "$root" for-each-ref --sort=refname \
         --format='%(refname:short)%09%(objectname)' refs/heads/)
 }
@@ -217,6 +235,11 @@ snapshot_head_sha() {
 snapshot_head_reflog_count() {
     local snapshot=$1
     sed -n 's/^head-reflog-count=//p' "$snapshot" | head -n 1
+}
+
+snapshot_head_reflog_usable() {
+    local snapshot=$1
+    sed -n 's/^head-reflog-usable=//p' "$snapshot" | head -n 1
 }
 
 snapshot_branch_shas() {
@@ -360,7 +383,8 @@ dispose_path() {
 }
 
 snapshot_cmd() {
-    local root='' output='' arg write_set branch_name branch_sha branch_reflog_count
+    local root='' output='' arg write_set branch_name branch_sha
+    local branch_reflog_count branch_reflog_usable
     local -a write_sets=()
     while (($#)); do
         arg=$1
@@ -393,9 +417,11 @@ snapshot_cmd() {
         printf 'head-ref=%s\n' "$(capture_head_ref "$root")"
         printf 'head-sha=%s\n' "$(capture_head_sha "$root")"
         printf 'head-reflog-count=%s\n' "$(capture_ref_reflog_count "$root" HEAD)"
-        while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count; do
+        printf 'head-reflog-usable=%s\n' "$(capture_ref_reflog_usable "$root" HEAD)"
+        while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
             [[ -n $branch_name ]] || continue
-            printf 'branch-sha=%s\t%s\t%s\n' "$branch_name" "$branch_sha" "$branch_reflog_count"
+            printf 'branch-sha=%s\t%s\t%s\t%s\n' \
+                "$branch_name" "$branch_sha" "$branch_reflog_count" "$branch_reflog_usable"
         done < <(capture_branch_shas "$root")
         printf 'path\tstatus\tmtime\tsha256\n'
         status_file "$root" "$status_path"
@@ -411,12 +437,13 @@ collect_cmd() {
     local arg write_set path status mtime hash issue_attr attribute branch_match disposition
     local baseline_value baseline_hash baseline_changed root_file worker_file
     local current_status current_raw captured now
-    local baseline_head_ref baseline_head_sha baseline_head_reflog_count
-    local current_head_ref current_head_sha
+    local baseline_head_ref baseline_head_sha baseline_head_reflog_count baseline_head_reflog_usable
+    local current_head_ref current_head_sha current_head_reflog_usable
     local ref_activity ref_summary ref_window branch_name branch_sha branch_reflog_count _
-    local baseline_branch_sha current_branch_sha
+    local branch_reflog_usable baseline_branch_sha current_branch_sha current_branch_reflog_usable
     local -a write_sets=() sorted_branch_names=()
-    declare -A baseline=() baseline_branches=() baseline_branch_reflog_counts=() current_branches=()
+    declare -A baseline=() baseline_branches=() baseline_branch_reflog_counts=()
+    declare -A baseline_branch_reflog_usable=() current_branches=()
     while (($#)); do
         arg=$1
         case $arg in
@@ -535,11 +562,24 @@ collect_cmd() {
     baseline_head_sha=$(snapshot_head_sha "$snapshot")
     baseline_head_reflog_count=$(snapshot_head_reflog_count "$snapshot")
     [[ -n $baseline_head_reflog_count ]] || baseline_head_reflog_count=0
+    baseline_head_reflog_usable=$(snapshot_head_reflog_usable "$snapshot")
     current_head_ref=$(capture_head_ref "$root")
     current_head_sha=$(capture_head_sha "$root")
+    current_head_reflog_usable=$(capture_ref_reflog_usable "$root" HEAD)
     IFS=$'\t' read -r ref_activity _ ref_summary ref_window < <(
         reflog_activity "$root" HEAD "$baseline_head_reflog_count" "$worker_start" "$worker_end"
     )
+
+    # A ref this fence cannot observe cannot be certified clean: a reflog
+    # unusable at snapshot or collect time (core.logAllRefUpdates=false, or a
+    # ref Git never logs) is always a named incident, independent of whether
+    # HEAD's ref/sha also changed -- "cross-write=none" must never mean "we
+    # couldn't tell", only "we checked, and nothing moved".
+    if [[ $baseline_head_reflog_usable != yes || $current_head_reflog_usable != yes ]]; then
+        incidents=$((incidents + 1))
+        printf 'cross-ref=type=head-reflog-unavailable name=HEAD baseline=%s current=%s restored=unknown window=unknown reflog=unavailable\n' \
+            "$baseline_head_sha" "$current_head_sha"
+    fi
 
     if [[ -n $baseline_head_ref && $current_head_ref != "$baseline_head_ref" ]]; then
         incidents=$((incidents + 1))
@@ -555,24 +595,57 @@ collect_cmd() {
             "$baseline_head_sha" "$current_head_sha" "$ref_window" "$ref_summary"
     fi
 
-    while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count; do
+    while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
         [[ -n $branch_name ]] || continue
         baseline_branches["$branch_name"]=$branch_sha
         baseline_branch_reflog_counts["$branch_name"]=${branch_reflog_count:-0}
+        baseline_branch_reflog_usable["$branch_name"]=${branch_reflog_usable:-no}
     done < <(snapshot_branch_shas "$snapshot")
-    while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count; do
+    while IFS=$'\t' read -r branch_name branch_sha branch_reflog_count branch_reflog_usable; do
         [[ -n $branch_name ]] || continue
         current_branches["$branch_name"]=$branch_sha
     done < <(capture_branch_shas "$root")
 
-    mapfile -t sorted_branch_names < <(printf '%s\n' "${!baseline_branches[@]}" | sort)
+    # Compare the UNION of baseline and current branch names, not just the
+    # baseline set: a branch created in the root checkout never appears in
+    # baseline, and a branch deleted from it never appears in current -- each
+    # is a real ref mutation this fence must not pass through as clean.
+    mapfile -t sorted_branch_names < <(
+        printf '%s\n' "${!baseline_branches[@]}" "${!current_branches[@]}" | sort -u
+    )
     for branch_name in "${sorted_branch_names[@]}"; do
+        if [[ -z ${baseline_branches[$branch_name]+present} ]]; then
+            # Created: no baseline entry to compare against, so the presence
+            # of the name at all is the incident. reflog_activity against a
+            # zero baseline still reports a useful window/summary when the
+            # branch's own creation reflog entry exists.
+            current_branch_sha=${current_branches[$branch_name]}
+            incidents=$((incidents + 1))
+            IFS=$'\t' read -r _ _ ref_summary ref_window < <(
+                reflog_activity "$root" "refs/heads/$branch_name" 0 "$worker_start" "$worker_end"
+            )
+            printf 'cross-ref=type=branch-created name=%s baseline=none current=%s restored=no window=%s reflog=%s\n' \
+                "$branch_name" "$current_branch_sha" "$ref_window" "$ref_summary"
+            continue
+        fi
         baseline_branch_sha=${baseline_branches[$branch_name]}
-        # A branch absent from the current set was deleted; deletion detection
-        # is outside this fence's scope (no acceptance criterion covers it),
-        # so it is left for explicit human/board review rather than guessed at.
-        [[ -n ${current_branches[$branch_name]+present} ]] || continue
+        if [[ -z ${current_branches[$branch_name]+present} ]]; then
+            # Deleted: the ref (and its reflog) is gone, so there is nothing
+            # left to compare bytes or reflog activity against -- the
+            # disappearance itself is the incident.
+            incidents=$((incidents + 1))
+            printf 'cross-ref=type=branch-deleted name=%s baseline=%s current=none restored=no window=unknown reflog=branch-deleted\n' \
+                "$branch_name" "$baseline_branch_sha"
+            continue
+        fi
         current_branch_sha=${current_branches[$branch_name]}
+        current_branch_reflog_usable=$(capture_ref_reflog_usable "$root" "refs/heads/$branch_name")
+        if [[ ${baseline_branch_reflog_usable[$branch_name]:-no} != yes ||
+              $current_branch_reflog_usable != yes ]]; then
+            incidents=$((incidents + 1))
+            printf 'cross-ref=type=branch-reflog-unavailable name=%s baseline=%s current=%s restored=unknown window=unknown reflog=unavailable\n' \
+                "$branch_name" "$baseline_branch_sha" "$current_branch_sha"
+        fi
         IFS=$'\t' read -r ref_activity _ ref_summary ref_window < <(
             reflog_activity "$root" "refs/heads/$branch_name" \
                 "${baseline_branch_reflog_counts[$branch_name]:-0}" "$worker_start" "$worker_end"
