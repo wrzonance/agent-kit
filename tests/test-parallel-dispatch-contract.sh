@@ -445,7 +445,21 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_not_contains "$prompt_text" 'Co-Authored-By: gpt-' "$prompt_label has no literal model trailer"
     assert_not_contains "$prompt_text" 'merge origin/main' "$prompt_label has no root conflict merge command"
     assert_not_contains "$prompt_text" 'NEVER rebase' "$prompt_label has no rebase guard"
-    assert_not_contains "$prompt_text" 'force-push' "$prompt_label has no force-push guard"
+    # A blanket ban on the substring "force-push" was correct before commit
+    # caecaa7 ("move privileged publication to root"): workers never touched
+    # git beyond producing a diff, so any mention of force-push in a worker
+    # prompt could only be a leaked root-authored INSTRUCTION. Workers now
+    # publish their own branch (see "you publish your own branch" below), and
+    # issue #374 adds the opposite thing: a worker-authored PROHIBITION on
+    # ever force-pushing once the first push has landed. A blind substring
+    # scan cannot tell those two apart, so this asserts both halves instead
+    # of one blind ban -- do not restore the old blanket "no force-push at
+    # all" check; that would make issue #374's freeze clause untestable.
+    assert_contains "$prompt_text" 'do not amend, rebase, reset, or force-push' \
+        "$prompt_label states the post-push history-freeze prohibition"
+    prompt_text_without_freeze=${prompt_text//'do not amend, rebase, reset, or force-push'/}
+    assert_not_contains "$prompt_text_without_freeze" 'force-push' \
+        "$prompt_label has no force-push mention outside the freeze prohibition"
     assert_not_contains "$prompt_text" 'git add -A' "$prompt_label has no broad staging instruction"
     assert_not_contains "$prompt_text" 'peer-cli=' "$prompt_label has no reviewer provider selection"
     assert_not_contains "$prompt_text" 'gpt-5.6-terra' "$prompt_label has no blind reviewer fallback"

@@ -7,6 +7,7 @@
 - Deferred dispatch
 - Merge-down after a predecessor advances
 - Merge order and the stacked-PR retarget
+- Never send a post-push instruction that reads as a rewrite
 - Contract-inheritance refusal and recovery
 
 Read this when `--auto-serialize` turns Step 3 conflicts into chains, and again at Phase 2
@@ -170,6 +171,23 @@ and require CI to run against the new base before treating it as green.
 A stale digest is a stop signal, not a green result. If the provider's approval is stale too,
 record that residue explicitly in the handoff; the one-review/one-ping rule does not permit
 silently inheriting it or spending a second provider trigger to make the history look fresh.
+
+## Never send a post-push instruction that reads as a rewrite
+
+A dispatched worker's history is frozen the moment its first push lands — `worker-prompts.md`'s
+"Progress, commit, and push" section states that rule in the worker's own voice, and the
+fix-batch template carries the same rule. This is the root's reciprocal half of it: once a
+worker has pushed, never send it — or leave standing in its inbox from an earlier phase — any
+instruction that can be read as "amend," "reset," "rebase," or "force-push" the commit it just
+published, no matter how small the defect. A `Co-Authored-By` trailer typo, a wording nit, or
+any other cosmetic fix is never worth it: rewriting a commit that a chain successor may already
+have started from strands that successor — its branch keeps pointing at a SHA that no longer
+exists on `origin`, the merge-base falls back to the trunk, and its PR ends up showing the
+predecessor's entire diff duplicated inside it. Ask for a follow-up commit instead, exactly as
+the worker itself is instructed to do. Confirmed 2026-08-21: a pre-push "fix the trailer if it
+is wrong" instruction was still sitting in a worker's inbox after its push and read as license
+to force-push; word every post-push correction as a request for a new commit, never as a
+description of what the existing one should have said.
 
 ## Contract-inheritance refusal and recovery
 

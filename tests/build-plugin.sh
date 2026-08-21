@@ -24,7 +24,14 @@ cp -a "$skills/." "$dest/agentkit/skills/"
 # a third-party plugin.
 rm -rf -- "$dest/agentkit/skills/.system"
 
-find "$dest/agentkit/skills" \( -name 'test-*' -o -name fixtures -o -name stub \) \
+# .agent/ is per-machine hook/session state, never plugin content. Before this
+# guard, GUARD_LOG_ROOT was never assigned, so guard_log_error fell back to
+# $PWD -- a stray hook-errors.jsonl written while an agent's cwd was inside the
+# skills tree was not gitignored there (the root .gitignore's `.agent/*` is
+# anchored to the repository root) and this wholesale `cp -a` shipped it to
+# every plugin consumer (issue #370). Drop any .agent/ found anywhere under
+# the copied tree, independent of whether the write-time fix above holds.
+find "$dest/agentkit/skills" \( -name 'test-*' -o -name fixtures -o -name stub -o -name .agent \) \
     -exec rm -rf -- {} + 2> /dev/null || true
 
 cp -a "$root/.claude-plugin/marketplace.json" "$dest/.claude-plugin/marketplace.json"
