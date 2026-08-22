@@ -133,6 +133,62 @@ container_run "$fresh_state" 'trial-2' 'agent-kit-bench-tally:test' "$tmp/home-e
 no_build_rc=$?
 assert_eq '1' "$no_build_rc" 'container_run refuses to run against a state dir with no prior container_build'
 
+# -- F2 (PR #389 review): BENCH_CONTAINER_DRY_RUN=1 is equivalent to
+# --dry-run, for every lifecycle function -- not just the ones a caller
+# happens to pass the flag to.
+env_state="$tmp/container-state-env-var"
+BENCH_CONTAINER_DRY_RUN=1 container_build "$env_state" 'agent-kit-bench-tally:test' "$repo_root/bench/container"
+assert_eq '0' "$?" 'BENCH_CONTAINER_DRY_RUN=1 alone (no --dry-run flag) puts container_build in dry-run mode'
+assert_eq 'yes' "$([[ -f "$env_state/built-image" ]] && printf yes || printf no)" \
+    'container_build under the env var writes the same dry-run marker as the --dry-run flag'
+BENCH_CONTAINER_DRY_RUN=1 container_run "$env_state" 'trial-env' 'agent-kit-bench-tally:test' "$tmp/home-empty-1"
+assert_eq '0' "$?" 'BENCH_CONTAINER_DRY_RUN=1 alone puts container_run in dry-run mode'
+BENCH_CONTAINER_DRY_RUN=1 container_is_destroyed "$env_state" 'trial-env'
+running_under_env_rc=$?
+assert_eq '1' "$running_under_env_rc" 'the env-var dry-run path is a real, checkable state machine, not a no-op'
+BENCH_CONTAINER_DRY_RUN=1 container_destroy "$env_state" 'trial-env'
+assert_eq '0' "$?" 'BENCH_CONTAINER_DRY_RUN=1 alone puts container_destroy in dry-run mode'
+BENCH_CONTAINER_DRY_RUN=1 container_is_destroyed "$env_state" 'trial-env'
+assert_eq '0' "$?" 'destruction under the env-var dry-run path is independently verifiable, same as the --dry-run flag'
+
+# -- F3 (PR #389 review): a failed `docker rm -f`/`docker ps` must never
+# read as success. A fake `docker` on PATH that always fails stands in for
+# a real daemon outage or a container docker genuinely could not remove;
+# the state dir is pre-seeded with the marker files a real build+run would
+# have left, since only the failure behaviour of destroy/is_destroyed is
+# under test here, not build/run.
+f3_state="$tmp/container-state-f3"
+mkdir -p "$f3_state"
+printf 'agent-kit-bench-tally:test\n' > "$f3_state/built-image"
+printf '%s\n' "$tmp/home-empty-1" > "$f3_state/running-trial-f3"
+failing_docker_dir="$tmp/docker-bin-failing"
+mkdir -p "$failing_docker_dir"
+cat > "$failing_docker_dir/docker" << 'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    rm) printf 'docker: Error response from daemon: no such container\n' >&2; exit 1 ;;
+    ps) printf 'docker: Cannot connect to the Docker daemon\n' >&2; exit 1 ;;
+    *) printf 'fake failing docker: unexpected invocation: %s\n' "$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$failing_docker_dir/docker"
+
+# PATH is overridden only for the single function-call command that
+# follows it (bash's ordinary VAR=val temporary-environment form -- no
+# subshell, so nothing to leak or restore).
+PATH="$failing_docker_dir:$PATH" container_destroy "$f3_state" 'trial-f3'
+f3_destroy_rc=$?
+# shellcheck disable=SC2016  # backticked "docker rm -f" is literal message text, not shell expansion
+assert_eq '1' "$f3_destroy_rc" 'a failed `docker rm -f` makes container_destroy fail, not silently succeed'
+assert_eq 'yes' "$([[ -e "$f3_state/running-trial-f3" ]] && printf yes || printf no)" \
+    'the running-marker is kept (not removed) when docker rm -f actually failed'
+
+PATH="$failing_docker_dir:$PATH" container_is_destroyed "$f3_state" 'trial-f3'
+f3_is_destroyed_rc=$?
+# shellcheck disable=SC2016  # backticked "docker ps" is literal message text, not shell expansion
+assert_eq '1' "$f3_is_destroyed_rc" \
+    'a failed `docker ps` query makes container_is_destroyed fail, never read as "destroyed"'
+
 # ============================================================
 # bench/lib/rate-limit-gate.sh
 # ============================================================
@@ -194,6 +250,20 @@ ln -s "$ledger_path" "$tmp/ledger/via-symlink.jsonl"
 ledger_append "$tmp/ledger/via-symlink.jsonl" '{"a":3}' 2> /dev/null
 symlink_rc=$?
 assert_eq '1' "$symlink_rc" 'ledger_append refuses to write through a symlink'
+
+# -- F4 (PR #389 review): a DANGLING symlink (target does not exist) must
+# be refused too. `-e` reads false for a symlink whose target is absent, so
+# a naive `[[ ! -e || ! -L ]]` guard let `>>` follow it straight through
+# and create the attacker-chosen target -- the exact case this fixture
+# reproduces.
+dangling_target="$tmp/ledger/does-not-exist-yet.jsonl"
+dangling_link="$tmp/ledger/dangling-symlink.jsonl"
+ln -s "$dangling_target" "$dangling_link"
+ledger_append "$dangling_link" '{"a":6}' 2> /dev/null
+dangling_rc=$?
+assert_eq '1' "$dangling_rc" 'ledger_append refuses a DANGLING symlink too, not just one whose target already exists'
+assert_eq 'no' "$([[ -e $dangling_target ]] && printf yes || printf no)" \
+    'the dangling symlink target is never created by a refused append'
 
 ledger_append "$ledger_path" $'{"a":4}\n{"a":5}' 2> /dev/null
 newline_rc=$?
@@ -275,6 +345,51 @@ assert_eq 'no' "$([[ -e $abort_ledger ]] && printf yes || printf no)" \
     'an aborted trial never creates a ledger file, let alone appends a row -- abort means abort before spend'
 assert_eq 'no' "$([[ -d $abort_state/home ]] && printf yes || printf no)" \
     'an aborted trial never even builds the (baked-empty) home directory -- the cap gate runs first'
+
+# -- F1 (PR #389 review): --live is rejected during argument validation --
+# before the cap gate, before the home directory, before a real container
+# is ever built or started. Before this fix, --live died only at step 6,
+# by which point step 4 had already started a real, credential-bearing
+# container and left it running forever.
+live_ledger="$tmp/ledger-live.jsonl"
+live_state="$tmp/state-live"
+run_trial_case --live --fixture "$repo_root/bench/fixtures/tally" --run-id trial-live \
+    --ledger "$live_ledger" --state-dir "$live_state" \
+    --old-config "$fixtures/config/cap-old-match.toml" \
+    --new-config "$fixtures/config/cap-new-match.toml" \
+    --arm new --plugin-sha 53e7e8c850380444cd4fb0edb25ebfd8adb32b61 \
+    --assigned-model gpt-5.6-luna --assigned-effort low \
+    --orchestrator-session "$sessions/orchestrator.jsonl" \
+    --worker-session "$sessions/worker-1.jsonl" \
+    --timestamp 2026-08-20T00:00:00Z
+assert_eq '1' "$run_trial_rc" '--live fails -- this dispatch ships the dry-run harness only'
+assert_contains "$run_trial_out" 'GH_TOKEN must be set' \
+    '--live with no GH_TOKEN in the environment names the missing secret first (sensible message order)'
+assert_eq 'no' "$([[ -e $live_ledger ]] && printf yes || printf no)" \
+    '--live never creates a ledger file'
+assert_eq 'no' "$([[ -d $live_state/home ]] && printf yes || printf no)" \
+    '--live never builds the home directory -- rejected before any allocation, not just before the container'
+assert_eq 'no' "$([[ -e $live_state/built-image ]] && printf yes || printf no)" \
+    '--live never builds a container image, not even in dry-run-style marker form'
+
+# With secrets present, --live still fails (still unimplemented) -- but the
+# failure reason changes, proving the secrets check actually ran rather
+# than the same die() firing unconditionally regardless of environment.
+GH_TOKEN=dummy-token CODEX_API_KEY=dummy-key run_trial_case \
+    --live --fixture "$repo_root/bench/fixtures/tally" --run-id trial-live-with-secrets \
+    --ledger "$tmp/ledger-live-2.jsonl" --state-dir "$tmp/state-live-2" \
+    --old-config "$fixtures/config/cap-old-match.toml" \
+    --new-config "$fixtures/config/cap-new-match.toml" \
+    --arm new --plugin-sha 53e7e8c850380444cd4fb0edb25ebfd8adb32b61 \
+    --assigned-model gpt-5.6-luna --assigned-effort low \
+    --orchestrator-session "$sessions/orchestrator.jsonl" \
+    --worker-session "$sessions/worker-1.jsonl" \
+    --timestamp 2026-08-20T00:00:00Z
+assert_eq '1' "$run_trial_rc" '--live with both secrets present still fails -- the invocation itself is unimplemented'
+assert_contains "$run_trial_out" 'not implemented' \
+    'with secrets present, the failure reason is "not implemented", not a missing-secret complaint'
+assert_eq 'no' "$([[ -d "$tmp/state-live-2/home" ]] && printf yes || printf no)" \
+    '--live with secrets present still never allocates the home directory'
 
 # -- selected_issues defaults to the real bench/issues/*.md set -------------
 assert_eq '10' "$(jq -r '.selected_issues | length' "$gold_ledger")" \

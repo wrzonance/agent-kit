@@ -16,9 +16,12 @@
 # JSON_LINE must already be one complete, single-line JSON object (build it
 # with jq before calling this -- this function does not validate JSON
 # shape, only that the append itself is safe). Creates the ledger's parent
-# directory if needed. Refuses to write through a symlink, and refuses a
-# JSON_LINE containing an embedded newline (which would silently split into
-# two ledger rows).
+# directory if needed. Refuses to write through a symlink -- a DANGLING one
+# included (PR #389 review finding F4: `-e` is false for a symlink whose
+# target does not exist, so a naive `-e && -L` check let `>>` follow it
+# straight through and silently create the attacker-chosen target instead
+# of refusing) -- and refuses a JSON_LINE containing an embedded newline
+# (which would silently split into two ledger rows).
 ledger_append() {
     local ledger=$1 line=$2
     [[ $line != *$'\n'* ]] || {
@@ -31,7 +34,7 @@ ledger_append() {
         printf 'ledger_append: could not create ledger directory: %s\n' "$ledger_dir" >&2
         return 1
     }
-    [[ ! -e $ledger || ! -L $ledger ]] || {
+    [[ ! -L $ledger ]] || {
         printf 'ledger_append: refusing to append through a symlink: %s\n' "$ledger" >&2
         return 1
     }

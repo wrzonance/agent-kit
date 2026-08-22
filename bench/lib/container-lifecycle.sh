@@ -20,11 +20,22 @@
 #
 # Source this file; do not execute it directly.
 
+# _container_dry_run DRY_RUN_ARG -- true when dry-run mode applies, via
+# either spelling the header above documents: the positional --dry-run
+# argument every function below accepts, or BENCH_CONTAINER_DRY_RUN=1 in
+# the environment. Every function checks both through this one helper so
+# the two spellings cannot silently drift apart (a caller relying on the
+# env var while only the flag was actually honored is exactly how this bug
+# shipped the first time -- issue #327 PR #389 review finding F2).
+_container_dry_run() {
+    [[ ${1:-} == --dry-run || ${BENCH_CONTAINER_DRY_RUN:-} == 1 ]]
+}
+
 # container_build STATE_DIR IMAGE_TAG DOCKERFILE_DIR [--dry-run]
 container_build() {
     local state_dir=$1 image_tag=$2 dockerfile_dir=$3 dry_run=${4:-}
     mkdir -p -- "$state_dir" || return 1
-    if [[ $dry_run == --dry-run ]]; then
+    if _container_dry_run "$dry_run"; then
         printf '%s\n' "$image_tag" > "$state_dir/built-image"
         printf 'container_build (dry-run): would build %s from %s\n' "$image_tag" "$dockerfile_dir"
         return 0
@@ -53,7 +64,7 @@ container_run() {
         printf 'container_run: a container named %s is already running in this state dir -- one trial per container\n' "$name" >&2
         return 1
     fi
-    if [[ $dry_run == --dry-run ]]; then
+    if _container_dry_run "$dry_run"; then
         printf '%s\n' "$home_dir" > "$state_dir/running-$name"
         printf 'container_run (dry-run): would run %s from image %s with HOME=%s\n' "$name" "$image_tag" "$home_dir"
         return 0
@@ -72,9 +83,15 @@ container_run() {
 }
 
 # container_destroy STATE_DIR CONTAINER_NAME [--dry-run]
+#
+# Returns non-zero -- and leaves the running-marker in place -- when
+# `docker rm -f` itself fails, rather than discarding its exit status and
+# reporting success regardless (PR #389 review finding F3): a container
+# this function could not actually remove must never be reported as
+# destroyed.
 container_destroy() {
     local state_dir=$1 name=$2 dry_run=${3:-}
-    if [[ $dry_run == --dry-run ]]; then
+    if _container_dry_run "$dry_run"; then
         rm -f -- "$state_dir/running-$name"
         printf 'container_destroy (dry-run): would destroy %s\n' "$name"
         return 0
@@ -83,7 +100,12 @@ container_destroy() {
         printf 'container_destroy: docker is required and was not found on PATH\n' >&2
         return 1
     }
-    docker rm -f "$name" > /dev/null 2>&1
+    local destroy_output
+    if ! destroy_output=$(docker rm -f "$name" 2>&1); then
+        printf 'container_destroy: docker rm -f failed for %s -- it may still be running, refusing to report success:\n%s\n' \
+            "$name" "$destroy_output" >&2
+        return 1
+    fi
     rm -f -- "$state_dir/running-$name"
 }
 
@@ -97,7 +119,7 @@ container_destroy() {
 # container_destroy.
 container_is_destroyed() {
     local state_dir=$1 name=$2 dry_run=${3:-}
-    if [[ $dry_run == --dry-run ]]; then
+    if _container_dry_run "$dry_run"; then
         [[ ! -e "$state_dir/running-$name" ]]
         return
     fi
@@ -105,5 +127,14 @@ container_is_destroyed() {
         printf 'container_is_destroyed: docker is required and was not found on PATH\n' >&2
         return 1
     }
-    [[ -z $(docker ps -aq -f "name=^${name}$" 2> /dev/null) ]]
+    # docker ps's own exit status is checked, not just its (possibly empty
+    # on failure) stdout: a failed query used to read identically to "no
+    # matching container", which would let a real docker outage report a
+    # live container as destroyed (PR #389 review finding F3).
+    local ps_output
+    if ! ps_output=$(docker ps -aq -f "name=^${name}$" 2>&1); then
+        printf 'container_is_destroyed: docker ps failed -- cannot confirm %s is actually gone:\n%s\n' "$name" "$ps_output" >&2
+        return 1
+    fi
+    [[ -z $ps_output ]]
 }

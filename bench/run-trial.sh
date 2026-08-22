@@ -119,6 +119,21 @@ while (($#)); do
     esac
 done
 
+# --live is rejected here, during argument validation -- before the
+# concurrency-cap gate and before any container/home/ledger allocation.
+# This used to be checked at step 6 (the benchmark invocation), by which
+# point step 4 had already built an image and started a real,
+# credential-bearing container (GH_TOKEN/CODEX_API_KEY passed via -e) that
+# the "not implemented" die() left running forever -- a real security find
+# (F1), not just an early-exit nicety. The secrets check stays here too, so
+# a caller missing GH_TOKEN/CODEX_API_KEY sees that diagnosed first, before
+# the (currently unconditional) "not implemented" message.
+if [[ $mode == --live ]]; then
+    [[ -n ${GH_TOKEN:-} ]] || die 'GH_TOKEN must be set in the environment for --live'
+    [[ -n ${CODEX_API_KEY:-} ]] || die 'CODEX_API_KEY must be set in the environment for --live'
+    die 'run-trial: --live invocation is not implemented -- this dispatch builds the dry-run harness only; wiring the real docker exec + /parallel-issues invocation is left to the operator (see the completion report)'
+fi
+
 for required in fixture old_config new_config arm run_id plugin_sha assigned_model assigned_effort orchestrator_session; do
     [[ -n ${!required} ]] || { printf '%s: --%s is required\n' "$program" "${required//_/-}" >&2; usage; }
 done
@@ -177,6 +192,16 @@ printf 'run-trial: home directory verified empty -- %s\n' "$home_dir"
 container_build "$state_dir" "$image_tag" "$dockerfile_dir" "$mode" || die 'container build failed'
 container_run "$state_dir" "$container_name" "$image_tag" "$home_dir" "$mode" || die 'container run failed'
 printf 'run-trial: container %s -- %s\n' "$container_name" "$mode"
+# Defense in depth: --live is already refused during argument validation
+# above, so this branch cannot execute today -- but a real, credential-
+# bearing container must never be left running because of a failure
+# somewhere between here and step 9's explicit destroy. An EXIT trap set
+# the moment a live container actually starts closes that gap regardless
+# of how execution later leaves the script (die, an unhandled error, a
+# signal).
+if [[ $mode == --live ]]; then
+    trap 'container_destroy "$state_dir" "$container_name" "$mode" > /dev/null 2>&1 || true' EXIT
+fi
 
 # --- 5. repo reset: delete-and-recreate from the fixture template ---------
 rm -rf -- "$repo_dir"
@@ -184,13 +209,9 @@ cp -r -- "$fixture" "$repo_dir" || die "could not reset the trial repo from fixt
 printf 'run-trial: repo reset from %s\n' "$fixture"
 
 # --- 6. the benchmark invocation -------------------------------------------
-if [[ $mode == --live ]]; then
-    [[ -n ${GH_TOKEN:-} ]] || die 'GH_TOKEN must be set in the environment for --live'
-    [[ -n ${CODEX_API_KEY:-} ]] || die 'CODEX_API_KEY must be set in the environment for --live'
-    die 'run-trial: --live invocation is not implemented -- this dispatch builds the dry-run harness only; wiring the real docker exec + /parallel-issues invocation is left to the operator (see the completion report)'
-else
-    printf 'run-trial: dry-run -- skipping the real /parallel-issues invocation\n'
-fi
+# mode is always --dry-run by this point: --live is refused during argument
+# validation, before any of this ran (see the comment there -- F1).
+printf 'run-trial: dry-run -- skipping the real /parallel-issues invocation\n'
 
 # --- 7. oracle: score the resulting tree ------------------------------------
 [[ -n $acceptance_target ]] || acceptance_target=$repo_dir
@@ -243,6 +264,10 @@ container_destroy "$state_dir" "$container_name" "$mode" || die 'container destr
 container_is_destroyed "$state_dir" "$container_name" "$mode" ||
     die "container $container_name is still present after destroy -- refusing to report success"
 printf 'run-trial: container destroyed and verified gone -- %s\n' "$container_name"
+# The explicit destroy above already ran; the step-4 EXIT trap (live mode
+# only) is now redundant and cleared rather than left to fire a harmless
+# but pointless second `docker rm -f` on normal exit.
+[[ $mode != --live ]] || trap - EXIT
 
 void=$(jq -r '.void' <<< "$ledger_line")
 score=$(jq -r '.acceptance.score' <<< "$ledger_line")
