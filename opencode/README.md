@@ -11,11 +11,12 @@ a black box (the same probe SessionStart runs for Claude/Codex), caches its
 stdout for the life of the session, and pushes the result onto the system
 prompt wrapped in `<agentkit-environment-contract>` tags.
 
-The probe is time-bound with coreutils `timeout -k` (not a bare
-`Promise.race`; see "API Notes" below) and fails open: a missing, malformed,
-slow, or erroring probe leaves `output.system` untouched rather than
-throwing. The session must never break because the contract could not be
-fetched.
+The probe is time-bound -- coreutils `timeout -k` when `timeout` or
+`gtimeout` is on PATH, falling back to a bare `Promise.race` bound that
+cannot kill an outlived child when neither is (see "API Notes" below) -- and
+fails open: a missing, malformed, slow, or erroring probe leaves
+`output.system` untouched rather than throwing. The session must never break
+because the contract could not be fetched.
 
 The injected text is also tag-neutralized before wrapping: probe output can
 legally contain a `<`/`>` sequence that spells the wrapper's own tag (a git

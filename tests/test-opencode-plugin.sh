@@ -44,6 +44,19 @@ assert_rc 0 'opencode/test/run-probe.sh is shellcheck-clean' \
     -- shellcheck -x -P SCRIPTDIR -S style "$run_probe"
 assert_rc 0 'opencode/test/run-probe.sh parses under bash -n' -- bash -n "$run_probe"
 
+# --- run-probe.sh resolves the timeout binary rather than hardcoding it ----
+# Fix for issue #319/#388 finding F1: a bare `timeout -k` call is BSD-macOS-
+# hostile -- stock macOS ships no `timeout` at all, and Homebrew's coreutils
+# installs it as `gtimeout` instead, so a hardcoded call exits 127 before the
+# probe ever runs. run-probe.sh must resolve the binary the same way
+# opencode/index.js's resolveTimeoutBinary() does (`timeout`, then
+# `gtimeout`, then no kill bound). This is a grep oracle, not an executed
+# assertion: the no-timeout/no-gtimeout fallback path can only be exercised
+# on a host missing both binaries, which this Linux host is not.
+probe_src=$(cat -- "$run_probe")
+assert_not_contains "$probe_src" 'timeout -k' \
+    'run-probe.sh has no bare hardcoded "timeout -k" invocation'
+
 # --- run-probe.sh: real probe against the real session-start.sh -----------
 probe_out=$("$run_probe" 2>&1)
 probe_rc=$?
