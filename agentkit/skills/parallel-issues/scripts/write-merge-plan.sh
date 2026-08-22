@@ -102,7 +102,8 @@ jq -e --slurpfile dispatch "$dispatch_plan" '
         (endswith("/") | not) and
         (endswith(".lock") | not);
       def record_issue($ctx; $require_root):
-        if (keys | sort) != (["branch","chainBaseSha","headSha","issue","pr"] | sort)
+        if (type != "object") then "\($ctx) must be an object"
+        elif (keys | sort) != (["branch","chainBaseSha","headSha","issue","pr"] | sort)
         then "\($ctx) must have exactly these keys: branch, chainBaseSha, headSha, issue, pr"
         elif (.issue | uint | not) then "\($ctx).issue must be a positive integer"
         elif (.pr | uint | not) then "\($ctx).pr must be a positive integer"
