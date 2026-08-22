@@ -156,6 +156,42 @@ assert_contains "$(cat -- "$tmp/claude.out")" 'mode=cross-provider' 'receipt lin
 assert_contains "$(cat -- "$tmp/claude.out")" 'P1=1' 'receipt line counts P1 findings'
 assert_contains "$(cat -- "$tmp/claude.out")" 'P2=1' 'receipt line counts P2 findings'
 
+# A leftover findings ledger from a prior attempt in a reused RUN_DIR must be
+# rejected before the provider is ever launched -- not after paying for the
+# review, which is the defect this file regression-tests (#393).
+badmode_run="$tmp/badmode-run"
+grant "$badmode_run" anthropic
+printf '%s\n' stale >"$badmode_run/findings.ndjson"
+chmod 644 -- "$badmode_run/findings.ndjson"
+badmode_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/badmode.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$badmode_run") \
+    >"$tmp/badmode.out" 2>"$tmp/badmode.err" || badmode_rc=$?
+assert_eq 1 "$badmode_rc" 'a wrong-mode findings ledger fails before launch'
+assert_contains "$(cat -- "$tmp/badmode.err")" "$badmode_run/findings.ndjson" \
+    'wrong-mode findings ledger failure names the path'
+assert_eq no "$( [[ -e $tmp/badmode.called ]] && printf yes || printf no )" \
+    'wrong-mode findings ledger never launches the provider CLI'
+assert_eq no "$( [[ -e $badmode_run/adversarial.diff ]] && printf yes || printf no )" \
+    'wrong-mode findings ledger check happens before diff construction'
+
+symlink_run="$tmp/symlink-run"
+grant "$symlink_run" anthropic
+ln -s /etc/passwd "$symlink_run/findings.ndjson"
+symlink_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/symlink.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$symlink_run") \
+    >"$tmp/symlink.out" 2>"$tmp/symlink.err" || symlink_rc=$?
+assert_eq 1 "$symlink_rc" 'a symlinked findings ledger fails before launch'
+assert_contains "$(cat -- "$tmp/symlink.err")" "$symlink_run/findings.ndjson" \
+    'symlinked findings ledger failure names the path'
+assert_eq no "$( [[ -e $tmp/symlink.called ]] && printf yes || printf no )" \
+    'symlinked findings ledger never launches the provider CLI'
+assert_eq no "$( [[ -e $symlink_run/adversarial.diff ]] && printf yes || printf no )" \
+    'symlinked findings ledger check happens before diff construction'
+
 write_contract claude codex "present path=$tmp/fake-codex"
 codex_peer_run="$tmp/codex-peer-run"
 grant "$codex_peer_run" openai
