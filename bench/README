@@ -284,3 +284,107 @@ Measured directly against this repo:
 
     resident:  (69579 - 28242) / 69579 = -59.40%
     reachable: (69701 - 63492) / 69701 =  -8.91%
+
+The Tier-1 trial harness (issue #327)
+--------------------------------------
+
+Issue #327 (slice 5 of the epic) adds the harness that actually RUNS a
+Tier-1 trial: a pinned container, `bench/run-trial.sh` (lifecycle, repo
+reset, invocation, oracle scoring, ledger append), and
+`bench/parse-rollout.py` (turns a trial's Codex session logs into one
+ledger row). Design doc sections "Environment" and "Instrumentation"
+(`docs/superpowers/specs/2026-08-13-token-benchmark-design.md`, branch
+`docs/token-benchmark-spec` -- again not present on this directory's base
+branch at implementation time; see the two "Construction decisions"
+stanzas above for the same situation on the prior two slices).
+
+    bench/
+      container/
+        Dockerfile         -- the one image every trial container is built
+                              from: debian:13 pinned by digest, every apt
+                              package pinned by exact version, the Codex
+                              CLI pinned by its release-asset sha256. See
+                              the Dockerfile's own header comment for
+                              exactly how each pin was resolved, and
+                              bench/container/README.md for build/re-pin
+                              instructions.
+        README.md          -- building, re-pinning, and the secrets rule
+                              (never baked into the image; see there).
+      lib/
+        concurrency-cap-gate.sh   -- the "present and identical on both
+                              arms, or abort before spend" control, built
+                              on top of the shipped
+                              agentkit/skills/parallel-issues/scripts/
+                              concurrency-cap.sh parser (reused, not
+                              reimplemented -- see that file's own header
+                              comment).
+        home-empty.sh       -- builds and verifies the baked-empty home
+                              directory the design doc calls "the control
+                              most likely to silently destroy the study."
+        container-lifecycle.sh -- build/run/destroy, and the destruction
+                              PROOF the acceptance criteria ask for. Has a
+                              dry-run mode that runs the same state machine
+                              against plain marker files instead of a real
+                              docker daemon -- see its header comment for
+                              why that is the only mode this repo's tests
+                              and CI ever exercise.
+        rate-limit-gate.sh  -- "pause rather than fail mid-run" against the
+                              GraphQL pool (`gh api rate_limit`), the same
+                              pool this repo's own
+                              github-api-budget rule calls the scarce one.
+        ledger-append.sh    -- the append-only, symlink-refusing discipline
+                              bench/tier0.sh keeps inline, extracted here so
+                              bench/run-trial.sh's second ledger file
+                              (results/tier1.jsonl) does not carry its own
+                              divergent copy.
+      run-trial.sh          -- one trial, wiring every lib/ piece together;
+                              `--dry-run` (default) exercises the full
+                              sequence with no docker, no Codex process, no
+                              spend; `--live` is the real path, unexercised
+                              by this repo's tests or CI. See its own header
+                              comment.
+      parse-rollout.py      -- one trial's `~/.codex/sessions/*.jsonl`-shaped
+                              logs in, one Tier-1 ledger record out: the
+                              ledger key, assigned vs. realised effort tier
+                              (and the void-trial rule this makes
+                              mechanical -- PREREGISTRATION.md's "Void
+                              trials"), the four token classes separately
+                              per actor (orchestrator vs. each worker),
+                              blended USD, per-path reference-read counts
+                              (the primary Tier-1 instrument), and the
+                              orchestration-level facts (selected issues,
+                              chain plan, serialization/retry events, wall
+                              clock, exit condition) a harness-appended
+                              `bench_trial_meta` record carries -- see that
+                              script's own "Construction decisions" for why
+                              those specific fields come from the harness
+                              rather than from parsing LLM tool-call prose.
+
+`bench/results/tier1.jsonl` is this harness's ledger file (same schema
+family as `tier0.jsonl`: append-only, keyed by `(plugin_sha,
+fixture_version, model, effort)` -- see "One file per tier, one ledger
+schema" above). It is not committed by this slice: every test that exercises
+`run-trial.sh` passes its own `--ledger` under a scratch directory, so the
+real path stays absent until an actual trial runs -- see
+tests/test-bench-accept.sh's "no bench/results/tier1.jsonl exists yet"
+assertion, which this slice deliberately leaves true.
+
+What is and is not exercised by this slice's tests
+-----------------------------------------------------
+
+`tests/test-bench-harness.sh` and `tests/test-bench-parse-rollout.sh` run
+every gate, the container-lifecycle state machine, and the full
+`run-trial.sh` sequence end to end in dry-run mode, against a synthetic
+Codex-session fixture (`tests/fixtures/bench/sessions/*.jsonl`) built to a
+schema documented in `bench/parse-rollout.py`'s own header comment. Real
+Codex CLI rollout files are not available to read or generate from inside
+this task's declared scope, and a real trial would spend real money -- both
+explicitly out of scope for this slice (see the issue's acceptance
+criteria). Two things are therefore left to the operator, unverified by
+this slice:
+
+  - `bench/container/Dockerfile` building successfully for real (never run
+    by CI; see bench/container/README.md).
+  - One real, paid trial end-to-end, which would also be the first chance
+    to confirm bench/parse-rollout.py's assumed session-log schema against
+    Codex's actual output rather than this slice's synthetic fixture.

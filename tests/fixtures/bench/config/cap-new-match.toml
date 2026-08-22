@@ -1,0 +1,4 @@
+# Fixture: shaped like an arm's ~/.codex/config.toml, cap present, same
+# value as cap-old-match.toml -- the "present and identical" gate case.
+[features.multi_agent_v2]
+max_concurrent_threads_per_session = 4
