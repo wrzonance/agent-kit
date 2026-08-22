@@ -300,6 +300,96 @@ chmod +x "$tmp/case-all-zero/gh"
 all_zero_output=$(PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 99 --repo owner/repo)
 assert_not_contains "$all_zero_output" 'next:' 'every lane at zero prints no next: line at all'
+assert_contains "$all_zero_output" 'ci=0/0 none pending=0 failing=0' \
+    'zero checks outside --wait-ci still report none, never none-configured'
+
+# --- --wait-ci: zero registered checks right after a push (agent-kit#396) --
+
+# A stub that returns 0 checks for the first two rounds, then a real pending
+# check, then a completed one. --wait-ci must not settle on the initial 0/0 --
+# it has to keep polling through the grace window until real evidence arrives.
+mkdir -p "$tmp/case-wait-grace"
+cat >"$tmp/case-wait-grace/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/601 "*)
+        printf '%s\n' '{"number":601,"draft":true,"mergeable":true,"head":{"ref":"feat/wait","sha":"6010601060"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/6010601060/check-runs"*)
+        n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "$n" >"$COUNT_FILE"
+        case $n in
+            1|2) printf '%s\n' '{"check_runs":[]}' ;;
+            3)   printf '%s\n' '{"check_runs":[{"name":"tests","status":"in_progress"}]}' ;;
+            *)   printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}' ;;
+        esac
+        ;;
+    *" api repos/owner/repo/commits/6010601060/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-grace/gh"
+cat >"$tmp/case-wait-grace/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmp/case-wait-grace/sleep"
+wait_grace_err="$tmp/wait-grace.err"
+wait_grace_output=$(COUNT_FILE="$tmp/wait-grace-count" PATH="$tmp/case-wait-grace:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 601 --repo owner/repo --wait-ci --rounds 4 --interval 1 2>"$wait_grace_err")
+assert_contains "$wait_grace_output" 'ci=1/1 green pending=0 failing=0' \
+    'zero checks right after a push settle once real checks register and complete'
+assert_contains "$(cat "$wait_grace_err")" 'treating as pending' \
+    '--wait-ci treats zero registered checks as pending during the grace window'
+assert_eq '4' "$(cat "$tmp/wait-grace-count")" \
+    '--wait-ci polls through all four rounds before the late-arriving check settles'
+
+# A stub that never registers any check at all. After the grace window
+# elapses, --wait-ci must report none-configured explicitly -- and stop
+# polling rather than burning the rest of the --rounds budget.
+mkdir -p "$tmp/case-wait-none"
+cat >"$tmp/case-wait-none/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/602 "*)
+        printf '%s\n' '{"number":602,"draft":true,"mergeable":true,"head":{"ref":"feat/none","sha":"6020602060"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/6020602060/check-runs"*)
+        n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "$n" >"$COUNT_FILE"
+        printf '%s\n' '{"check_runs":[]}'
+        ;;
+    *" api repos/owner/repo/commits/6020602060/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-none/gh"
+cp "$tmp/case-wait-grace/sleep" "$tmp/case-wait-none/sleep"
+wait_none_err="$tmp/wait-none.err"
+wait_none_output=$(COUNT_FILE="$tmp/wait-none-count" PATH="$tmp/case-wait-none:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 602 --repo owner/repo --wait-ci --rounds 5 --interval 1 2>"$wait_none_err")
+assert_contains "$wait_none_output" 'ci=0/0 none-configured pending=0 failing=0' \
+    'checks that never register within the grace window report none-configured explicitly'
+assert_contains "$(cat "$wait_none_err")" 'reporting none-configured' \
+    '--wait-ci names the none-configured outcome in its diagnostic'
+assert_eq '3' "$(cat "$tmp/wait-none-count")" \
+    '--wait-ci stops at the grace window instead of consuming the full --rounds budget'
 
 bare_output=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     14 --repo owner/repo)
