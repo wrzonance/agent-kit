@@ -102,7 +102,18 @@ assert_contains "$out" "head=$new_detached_head" 'a legacy cache is refreshed wi
 # agentkit/skills/parallel-issues/references/chains.md).
 preflight="$skills_root/.shared/scripts/agent-preflight.sh"
 compose="$skills_root/parallel-issues/scripts/compose-worker-prompt.sh"
-harness_line="harness= $("$skills_root/.shared/scripts/harness-id.sh" 2> /dev/null)"
+# Derived under the SAME `env -u ...` the preflight invocation below actually
+# runs under (issue #372 review finding), not the ambient environment --
+# harness-id.sh treats CODEX_HOME/CODEX_SANDBOX_NETWORK_DISABLED/
+# CODEX_PERMISSION_PROFILE as harness-identity signals, so if any of those
+# three is set on the machine running this suite, the ambient value here and
+# the value the invocation resolves at run time would disagree, and
+# compute_inherit_session_state would refuse the fixture as a harness
+# mismatch before ever reaching the revalidation path this test exists to
+# exercise (the exact class of bug that turned PR #381's first CI run red in
+# tests/test-agent-preflight.sh).
+harness_line="harness= $(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$skills_root/.shared/scripts/harness-id.sh" 2> /dev/null)"
 
 make_chain_root() {
     local dir=$1 sandbox_line=$2

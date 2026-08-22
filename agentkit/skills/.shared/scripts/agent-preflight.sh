@@ -915,7 +915,21 @@ inherit_or_probe() {
             idx=${#OUT_LINES[@]}
             "$probe_fn"
             fresh="${OUT_LINES[$idx]}"
-            if regressed_field=$("$comparator" "$line" "$fresh"); then
+            # Fail CLOSED, not open (issue #372 review finding): a comparator
+            # that fails to run for any reason -- missing lib/sandbox-
+            # comparator.sh, a future comparator name typo'd at a call site --
+            # must never read as "not widened". Guarding with `declare -F`
+            # first (the same check apply_never_widen already uses to
+            # disclose a missing sandbox_widened) lets this branch tell
+            # "comparator unavailable" apart from "comparator ran and found
+            # no regression" before ever invoking it, so an unavailable
+            # comparator keeps the recorded line -- the safe, more-
+            # restrictive default -- instead of an unguarded command-not-
+            # found exit status silently taking the "fresh wins" branch.
+            if ! declare -F "$comparator" >/dev/null; then
+                OUT_LINES[idx]="$line"
+                note "cannot verify the $prefix revalidation guard: $comparator is not defined -- keeping the recorded (older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m) line rather than treat an unmeasurable comparison as not widened (recorded=[$line] fresh=[$fresh])"
+            elif regressed_field=$("$comparator" "$line" "$fresh"); then
                 OUT_LINES[idx]="$line"
                 note "revalidated $prefix from $ARG_INHERIT_SESSION: kept the recorded line -- older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m but still the more restrictive reading; a fresh probe would widen field '$regressed_field' (recorded=[$line] fresh=[$fresh])"
             else

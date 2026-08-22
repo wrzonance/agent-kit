@@ -848,6 +848,40 @@ assert_not_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=no prof
 assert_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=yes' \
     'the fresher, more-restrictive probe (forced sandboxed+network-disabled) is served instead'
 
+# --- an unavailable comparator fails CLOSED, not open (issue #372 review ---
+# finding): sandbox_widened comes from the OPTIONAL sibling library
+# lib/sandbox-comparator.sh, sourced only `if [[ -r "$SANDBOX_COMPARATOR_LIB" ]]`
+# -- exactly like PROTECTED_PATHS_LIB just above it. An unguarded
+# `if regressed_field=$("$comparator" ...); then` would see a command-not-
+# found (rc=127, non-zero) when that library is missing and take the FALSE
+# branch -- "not widened" -- silently letting a less-restrictive fresh probe
+# replace the recorded line on the exact invariant this fix exists to
+# preserve. Prove the `declare -F` guard in inherit_or_probe() instead
+# discloses the gap and keeps the recorded (safe, more-restrictive) line,
+# mirroring the guard apply_never_widen already uses for the identical
+# missing-library case a few hundred lines above it.
+noguard_root="$tmp/no-comparator-lib"
+mkdir -p "$noguard_root"
+cp -r "$root/agentkit/skills/.shared" "$noguard_root/.shared"
+rm -f "$noguard_root/.shared/scripts/lib/sandbox-comparator.sh"
+chmod +x "$noguard_root/.shared/scripts/agent-preflight.sh" "$noguard_root/.shared/scripts/harness-id.sh"
+noguard_script="$noguard_root/.shared/scripts/agent-preflight.sh"
+noguard_repo=$(new_repo)
+noguard_session="$tmp/no-comparator-lib-session.txt"
+printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    "$current_harness_line" > "$noguard_session"
+touch -d '2 hours ago' "$noguard_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$noguard_session"
+noguard_err=$("$noguard_script" --worktree "$noguard_repo" --inherit-session "$noguard_session" 2>&1 > /dev/null)
+assert_contains "$noguard_err" 'cannot verify the sandbox= revalidation guard' \
+    'a missing comparator library is disclosed on stderr, not silently ignored'
+assert_contains "$noguard_err" 'sandbox_widened is not defined' \
+    'the disclosure names the missing comparator'
+noguard_out=$("$noguard_script" --worktree "$noguard_repo" --inherit-session "$noguard_session" 2> /dev/null)
+assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' <<< "$noguard_out")" \
+    'an unavailable comparator fails CLOSED -- the recorded line is kept, never silently treated as "not widened"'
+
 # The same revalidate-not-discard behaviour for caches= (issue #372), using
 # caches_widened -- HOME writability is directly controllable, which gives a
 # fully deterministic "kept recorded" case without depending on this
@@ -881,29 +915,37 @@ assert_contains "$(grep '^caches=' <<< "$caches_stale_out")" 'reason=home-cache-
 # Opposite direction: a stale recorded caches= that is already the least-
 # restrictive reading must not pin the worktree to it forever once reality
 # has become more restrictive -- the fresh probe wins and the copy refreshes.
+# AGENT_CACHE_ROOT forces a deterministic, UID-INDEPENDENT fresh reading
+# (issue #372 review finding): a chmod-000-HOME technique here relies on the
+# OS enforcing the permission bits, which a root UID (routine in CI
+# containers) does not observe -- root can still write into a mode-000
+# directory, so dir_writable() would report home-cache-writable exactly like
+# an unprivileged run would find home-cache-unwritable, and the "fresh wins"
+# assertions below would silently flip meaning depending on who runs the
+# suite. AGENT_CACHE_ROOT-set (rank 1) is still strictly more restrictive
+# than the recorded home-cache-writable (rank 0) -- see
+# caches_restriction_score() -- and needs no filesystem probe at all, so it
+# is identical across every UID. No CODEX_*/HOME override remains in this
+# case's invocation, so it is safe to reuse the ambient $current_harness_line
+# here (unlike the writable-HOME case above, nothing left in this
+# environment can change which harness harness-id.sh resolves).
 caches_loose_stale_repo=$(new_repo)
 caches_loose_stale_session="$tmp/caches-loose-stale-session-contract.txt"
-caches_unwritable_home="$tmp/caches-revalidate-unwritable-home"
-mkdir -p "$caches_unwritable_home"
-chmod 000 "$caches_unwritable_home"
-# Same reasoning as the writable-HOME case above: derive under this case's
-# own (chmod-000) HOME rather than reusing the ambient harness line.
-caches_loose_harness_line="harness= $(HOME="$caches_unwritable_home" "$harness_id_script" 2> /dev/null)"
 printf '%s\ncaches= root=/home/example/.cache reason=home-cache-writable home-cache=/home/example/.cache UV_CACHE_DIR=/home/example/.cache/uv NPM_CONFIG_CACHE=/home/example/.cache/npm PIP_CACHE_DIR=/home/example/.cache/pip XDG_CACHE_HOME=/home/example/.cache\n' \
-    "$caches_loose_harness_line" > "$caches_loose_stale_session"
+    "$current_harness_line" > "$caches_loose_stale_session"
 touch -d '2 hours ago' "$caches_loose_stale_session" 2> /dev/null ||
     touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_loose_stale_session"
-caches_loose_err=$(HOME="$caches_unwritable_home" \
+caches_override_root="$tmp/caches-revalidate-override-root"
+caches_loose_err=$(AGENT_CACHE_ROOT="$caches_override_root" \
     "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2>&1 > /dev/null)
 assert_contains "$caches_loose_err" 'revalidated caches=' \
     'a stale, already-loosest recorded caches= is still revalidated'
 assert_contains "$caches_loose_err" 'the fresh probe is at least as restrictive, so it replaces' \
     'and the fresher, now more-restrictive probe replaces it'
-caches_loose_out=$(HOME="$caches_unwritable_home" \
+caches_loose_out=$(AGENT_CACHE_ROOT="$caches_override_root" \
     "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2> /dev/null)
-chmod 700 "$caches_unwritable_home"
-assert_contains "$(grep '^caches=' <<< "$caches_loose_out")" 'reason=home-cache-unwritable' \
-    'the fresher, more-restrictive probe (forced-unwritable HOME) is served instead of the stale looser bytes'
+assert_contains "$(grep '^caches=' <<< "$caches_loose_out")" 'reason=AGENT_CACHE_ROOT-set' \
+    'the fresher, more-restrictive probe (AGENT_CACHE_ROOT override, UID-independent) is served instead of the stale looser bytes'
 
 mismatch_repo=$(new_repo)
 mismatch_session="$tmp/mismatch-session-contract.txt"
