@@ -355,4 +355,33 @@ out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh-prefix" bash "$merge_pr" \
 assert_contains "$out" 'branch_delete=ok ref=feat/issue-3' \
     'a branch name that prefixes another branch still deletes via the singular GET route'
 
+# --- issue #404: the one merge rule, enforced against this script's own call
+# The PreToolUse merge guard (agentkit/hooks/lib/guard-lib.sh) refuses the `gh
+# pr merge` porcelain verb unconditionally, but the same guard must never
+# refuse THIS script's own mutation call -- an agent that dispatches
+# merge-pr.sh's actual `gh api -X PUT .../pulls/N/merge` invocation is the
+# sanctioned path, not a bypass of it. Run the real hook against the exact
+# argv shape merge-pr.sh issues (see its `"$GH_BIN" api -X PUT
+# "repos/$repo/pulls/$pr/merge" --input "$merge_body_file"` call above) so a
+# future edit that widens this call into the refused token sequence is caught
+# here, not discovered live.
+hooks="$root/agentkit/hooks"
+guard_repo=$(mktemp -d "$tmp/guard-repo.XXXXXX")
+git -C "$guard_repo" init -q
+
+guard_decision() {
+    local cmd=$1 out
+    out=$(jq -nc --arg cwd "$guard_repo" --arg cmd "$cmd" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:"s-issue-404",tool_name:"Bash",tool_use_id:"t",transcript_path:null,
+          tool_input:{command:$cmd}}' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$out"
+}
+
+assert_eq 'allow' \
+    "$(guard_decision 'gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json')" \
+    "the guard allows merge-pr.sh's own gh api merge call (issue #404)"
+assert_eq 'deny' "$(guard_decision 'gh pr merge 9 --squash')" \
+    'the same guard still refuses the gh pr merge porcelain verb (issue #404)'
+
 finish

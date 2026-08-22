@@ -1513,8 +1513,19 @@ guard_destructive_segment_reason() {
     # Exact command-token sequence, not a substring grep: `gh pr merge`
     # spelled out inside a quoted sed/printf data argument is one word here,
     # not three command tokens, so it can never match (issue #397).
+    #
+    # The one rule (issue #404): an agent-driven merge is sanctioned ONLY
+    # through pr-to-green's merge-pr.sh, bound to a confirmed --auto-merge
+    # authorization record plus a gate=PASS review-completion result (both
+    # re-checked at the point of mutation -- see auto-merge.md). This porcelain
+    # verb is refused unconditionally, including under an operator override,
+    # because the override the operator actually wants is already available
+    # through that path; nothing here should ever teach "retype it and it
+    # goes through". `merge-pr.sh` itself calls `gh api -X PUT
+    # repos/.../pulls/N/merge`, which shares no `gh pr merge` token sequence
+    # with this pattern and is therefore never caught by it.
     if guard_words_contain_sequence words gh pr merge; then
-        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
+        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result -- this gh pr merge porcelain form stays refused even under that authorization.'
         return 0
     fi
     if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then

@@ -979,6 +979,48 @@ out=$(pre_input "$repo" 'printf x > .github/workflows/x.yml' | "$hooks/pre-tool-
 assert_eq 'deny' "$(decision "$out")" \
     'a real redirect into .github/workflows/ remains denied (issue #397)'
 
+# --- issue #404: one merge rule, and the guard names its own exception -----
+# The porcelain refusal used to say only "report the PR is ready instead",
+# leaving no way to tell from the message alone whether an authorized
+# --auto-merge run was expected to hit the same wall. It must now name the
+# sanctioned alternative explicitly, so the guard doc and auto-merge.md state
+# the identical rule: an agent merge goes through merge-pr.sh, bound to a
+# confirmed authorization record and a gate=PASS result, and nowhere else.
+out=$(pre_input "$repo" 'gh pr merge 42 --squash' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'gh pr merge remains denied (issue #404)'
+assert_contains "$out" 'merge-pr.sh' \
+    'the refusal names the sanctioned alternative script (issue #404)'
+assert_contains "$out" 'gate=PASS' \
+    'and the review-completion result that path requires (issue #404)'
+
+# The exact reported evidence: an operator authorization comment that merely
+# mentions the porcelain phrase as prose/data must never trip the guard --
+# same fixture shape as the #397 data-string cases above, specific to this
+# issue's reported false positive (SpecR #667).
+out=$(pre_input "$repo" \
+    'printf "gate-override: operator authorized -- do not run gh pr merge\n" >> gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an authorization comment mentioning the phrase as data is not the command (issue #404)'
+
+# merge-pr.sh's own mutation call is a distinct token sequence -- `gh api -X
+# PUT .../pulls/N/merge` shares no `gh pr merge` sequence with the porcelain
+# pattern above -- so the sanctioned path is never itself caught by the guard
+# that blocks the porcelain form.
+out=$(pre_input "$repo" \
+    'gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    "merge-pr.sh's real gh api merge call is never denied (issue #404)"
+
+# And running the script itself -- the sanctioned entry point -- is likewise
+# unaffected by the porcelain-verb rule, regardless of the flags it is given.
+out=$(pre_input "$repo" \
+    'agentkit/skills/pr-to-green/scripts/merge-pr.sh --repo owner/repo --pr 9 --head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --base main --merge-method squash --authorization-file /tmp/auth.json --gate-result /tmp/gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'invoking merge-pr.sh as the sanctioned entry point is never denied (issue #404)'
+
 # --- issue #351: a single-file `rm` is not a recursive root delete ---------
 # `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
 # there is. No `-r`/`-R` appears anywhere, so it must never be read as one.

@@ -12,6 +12,7 @@ invocation line.
 - Serialization protocol
 - Merge method and branch deletion
 - Board move
+- PreToolUse guard alignment
 - Still forbidden
 
 ## Consent and the ledger record
@@ -132,11 +133,28 @@ The merge step alone moves the board item to `Done`. It does not chain into
 merge, and a redundant `Done` from GitHub's own Project automation is
 harmless.
 
+## PreToolUse guard alignment
+
+The repository's PreToolUse hook (`agentkit/hooks/lib/guard-lib.sh`) enforces
+one rule for every agent, on every invocation, independent of this skill: an
+agent-driven merge is sanctioned **only** through this script, `merge-pr.sh`,
+bound to a confirmed `--auto-merge` authorization record plus a `gate=PASS`
+review-completion result. The `gh pr merge` porcelain verb is refused
+unconditionally — including after an explicit operator authorization, and
+including a data string that merely mentions those three words (a quoted
+sed/printf argument never becomes a command). That refusal never lifts on a
+retry, by design: the retry the operator actually wants is this script, run
+through the consent, gate, and serialization contract already documented
+above, not the same porcelain verb typed again. `merge-pr.sh`'s own mutation
+call — `gh api -X PUT repos/OWNER/REPO/pulls/N/merge` — is a distinct token
+sequence the guard never matches, so this path is never itself blocked.
+
 ## Still forbidden
 
 Identical to the non-`--auto-merge` prohibitions, restated because a merge
 step raises the cost of getting them wrong: force-push, history rewrite,
-merging a `BLOCKED` item, bypassing branch protection, or merging outside the
-confirmed queue. `merge-pr.sh` never retries around a forge refusal — a
+merging a `BLOCKED` item, bypassing branch protection, the `gh pr merge`
+porcelain verb (see "PreToolUse guard alignment" above), or merging outside
+the confirmed queue. `merge-pr.sh` never retries around a forge refusal — a
 branch-protection-required-approval refusal, a stale-sha 409, or a
 not-mergeable 405 is reported verbatim and is a named stop.
