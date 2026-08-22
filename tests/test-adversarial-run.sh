@@ -192,6 +192,46 @@ assert_eq no "$( [[ -e $tmp/symlink.called ]] && printf yes || printf no )" \
 assert_eq no "$( [[ -e $symlink_run/adversarial.diff ]] && printf yes || printf no )" \
     'symlinked findings ledger check happens before diff construction'
 
+# A safe (owned, mode-0600, regular, non-symlink) but NON-EMPTY pre-existing
+# ledger must still be refused: silently accepting it would carry a prior
+# review's dispositions into this review's receipt (follow-up to #393, PR
+# #412 adversarial review).
+nonempty_run="$tmp/nonempty-run"
+grant "$nonempty_run" anthropic
+printf '%s\n' '{"title":"prior finding","sha":"abc1234","verdict":"declined","rationale":"stale"}' \
+    >"$nonempty_run/findings.ndjson"
+chmod 600 -- "$nonempty_run/findings.ndjson"
+nonempty_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/nonempty.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$nonempty_run") \
+    >"$tmp/nonempty.out" 2>"$tmp/nonempty.err" || nonempty_rc=$?
+assert_eq 1 "$nonempty_rc" 'a non-empty pre-existing findings ledger fails before launch'
+assert_contains "$(cat -- "$tmp/nonempty.err")" "$nonempty_run/findings.ndjson" \
+    'non-empty findings ledger failure names the path'
+assert_contains "$(cat -- "$tmp/nonempty.err")" 'prior review' \
+    'non-empty findings ledger failure explains why it is refused'
+assert_eq no "$( [[ -e $tmp/nonempty.called ]] && printf yes || printf no )" \
+    'non-empty findings ledger never launches the provider CLI'
+assert_eq no "$( [[ -e $nonempty_run/adversarial.diff ]] && printf yes || printf no )" \
+    'non-empty findings ledger check happens before diff construction'
+
+# An empty, already-owned mode-0600 ledger (e.g. pre-created by the caller
+# before launch) is a legitimate starting state and must not block the run.
+preempty_run="$tmp/preempty-run"
+grant "$preempty_run" anthropic
+: >"$preempty_run/findings.ndjson"
+chmod 600 -- "$preempty_run/findings.ndjson"
+preempty_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$preempty_run") \
+    >"$tmp/preempty.out" 2>"$tmp/preempty.err" || preempty_rc=$?
+assert_eq 0 "$preempty_rc" 'a pre-existing empty owned mode-0600 ledger allows the run to complete'
+assert_eq yes "$( [[ -f $preempty_run/findings.ndjson ]] && printf yes || printf no )" \
+    'the pre-existing empty ledger survives a completed review'
+assert_eq 0 "$(wc -c <"$preempty_run/findings.ndjson")" \
+    'the pre-existing empty ledger is left empty by the runner itself'
+
 write_contract claude codex "present path=$tmp/fake-codex"
 codex_peer_run="$tmp/codex-peer-run"
 grant "$codex_peer_run" openai

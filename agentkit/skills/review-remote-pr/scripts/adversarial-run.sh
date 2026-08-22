@@ -320,9 +320,16 @@ validate_finding_ledger_if_present() {
 # findings ledger (e.g. from a prior attempt in a reused RUN_DIR) fails fast
 # and names the path instead of surfacing only after the expensive review
 # call already ran. A missing ledger is fine here -- it is created once the
-# review actually completes, by initialize_finding_ledger below.
+# review actually completes, by initialize_finding_ledger below. A safe but
+# NON-EMPTY existing ledger is also refused: silently accepting it would
+# carry a prior review's dispositions into this review's receipt. An empty
+# 0600-owned ledger stays acceptable -- the caller may legitimately
+# pre-create one before launch.
 check_finding_ledger() {
-    validate_finding_ledger_if_present "$RUN_DIR/findings.ndjson"
+    local ledger=$RUN_DIR/findings.ndjson
+    validate_finding_ledger_if_present "$ledger"
+    [[ ! -s $ledger ]] ||
+        die "a findings ledger from a prior review is present; use a fresh --run-dir: $ledger"
 }
 
 initialize_finding_ledger() {
