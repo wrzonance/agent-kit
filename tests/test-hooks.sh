@@ -979,6 +979,58 @@ out=$(pre_input "$repo" 'printf x > .github/workflows/x.yml' | "$hooks/pre-tool-
 assert_eq 'deny' "$(decision "$out")" \
     'a real redirect into .github/workflows/ remains denied (issue #397)'
 
+# --- issue #397 follow-up: a `$(...)`/`...` substitution INSIDE an outer
+# double-quoted argument still executes, and must not hide behind the
+# data-string exemption above. guard_tokenize_words correctly reads the
+# outer double-quoted argument as one WORD (it is one argument to printf/
+# echo), but the shell evaluates the substitution inside it before that
+# outer command ever runs -- so it is not inert data the way a single-quoted
+# argument's contents are, and adversarial review confirmed this was still
+# an allow on this branch.
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) is the fixture: the
+# guard matches command text, so expanding it here would test a different
+# string.
+for hidden_in_dquotes in \
+    'printf "%s\n" "$(git config --local core.hooksPath /tmp/evil)"' \
+    'echo "$(gh pr merge 42 --squash)"'; do
+    out=$(pre_input "$repo" "$hidden_in_dquotes" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a live substitution inside an outer double-quoted argument is not exempt data (issue #397 follow-up): $hidden_in_dquotes"
+    assert_contains "$out" 'substitution' \
+        "and explains the hidden substitution: $hidden_in_dquotes"
+done
+
+# The backtick form was already caught by the existing hidden-flag flattening
+# (it never sits inside an outer double-quoted argument), so it must keep
+# denying unchanged.
+# shellcheck disable=SC2016,SC2006  # the UNEXPANDED backtick substitution is
+# the fixture; the deprecated backtick form is exactly what is under test.
+out=$(pre_input "$repo" 'x=`gh pr merge 42 --squash`' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick-hidden gh pr merge remains denied (issue #397 follow-up)'
+
+# The single-quote-wrapped control case: no substitution ever occurs inside
+# single quotes, so this stays exactly the data-string case already proven
+# above -- confirming the new substitution-extraction pass is single-quote
+# aware rather than newly over-blocking every `$(` byte in sight.
+# shellcheck disable=SC2016  # same: the literal, unexpanded text is the point.
+out=$(pre_input "$repo" 'printf %s "gh pr merge 42"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted data argument with no substitution is still allowed (issue #397 follow-up)'
+out=$(pre_input "$repo" "sed -i 's/x/\$(gh pr merge 42)/' notes.md" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) in the message is the point.
+assert_eq 'allow' "$(decision "$out")" \
+    'a $(...) spelled inside SINGLE quotes never executes, and stays allowed (issue #397 follow-up)'
+
+# A read-only substitution payload is still just a read once unwrapped.
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+out=$(pre_input "$repo" 'echo "$(git config --get core.hooksPath)"' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a --get read inside a substitution payload is still a read (issue #397 follow-up)'
+
 # --- issue #351: a single-file `rm` is not a recursive root delete ---------
 # `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
 # there is. No `-r`/`-R` appears anywhere, so it must never be read as one.

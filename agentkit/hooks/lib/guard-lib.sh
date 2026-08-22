@@ -1153,6 +1153,109 @@ guard_heredoc_substitutions() {
     done
 }
 
+# Replace the CONTENT of every unescaped single-quoted span in $1 with `#`
+# filler, preserving length and every character outside single quotes --
+# quote delimiters included -- verbatim. `#` can never introduce a new `$(`
+# or backtick, so a `$(...)`/backtick spelled inside a single-quoted argument
+# (which the shell never expands: single quotes suppress ALL expansion) can
+# no longer be mistaken by a later scan for a real, executing substitution.
+# Double-quote and escape state are tracked too, but only so a literal `'`
+# appearing INSIDE an outer double-quoted string is never misread as opening
+# single-quote mode -- the same quote state machine guard_tokenize_words
+# uses, single-quote branch checked first exactly as the shell itself reads
+# it (backslash has no escaping meaning inside single quotes at all).
+guard_mask_single_quotes() {
+    local input=$1 out='' quote='' escaped=0 char i length
+    length=${#input}
+    for ((i = 0; i < length; i++)); do
+        char=${input:i:1}
+        if [[ $quote == "'" ]]; then
+            if [[ $char == "'" ]]; then
+                quote=''
+                out+=$char
+            else
+                out+='#'
+            fi
+            continue
+        fi
+        if ((escaped)); then
+            out+=$char
+            escaped=0
+            continue
+        fi
+        if [[ $char == \\ ]]; then
+            out+=$char
+            escaped=1
+            continue
+        fi
+        if [[ $quote == '"' ]]; then
+            out+=$char
+            [[ $char == '"' ]] && quote=''
+            continue
+        fi
+        case $char in
+            "'" | '"') quote=$char; out+=$char ;;
+            *) out+=$char ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Every $(...) / `...` substitution in a command SEGMENT (as opposed to
+# guard_heredoc_substitutions' heredoc BODY) that the shell will actually
+# evaluate before the segment's outer command runs -- including one spelled
+# inside an outer DOUBLE-quoted argument, which guard_tokenize_words correctly
+# treats as one WORD later on (it is one argument) but which still executes
+# its substitution first. A single-quoted argument's `$(...)`/backtick text is
+# inert data, never executed, and must never be extracted: this walks a
+# single-quote-MASKED copy of $1 (via guard_mask_single_quotes) to decide
+# where a live delimiter sits, reusing guard_heredoc_substitutions' own
+# depth-counting algorithm for the boundary math, but slices the payload TEXT
+# out of the original, UNMASKED $1 at the same offsets (masking preserves
+# length and every non-single-quoted character 1:1) -- so a nested
+# single-quoted data argument inside the payload itself survives intact for
+# the recursive destructive-command check to re-tokenize on its own terms,
+# rather than arriving pre-shredded into `#` filler (issue #397 follow-up).
+guard_segment_substitutions() {
+    local original=$1 masked
+    masked=$(guard_mask_single_quotes "$original")
+    local i=0 length=${#masked} depth start inner
+    while ((i < length)); do
+        if [[ ${masked:i:1} == '$' && ${masked:i+1:1} == '(' ]]; then
+            depth=1
+            start=$((i + 2))
+            i=$start
+            while ((i < length && depth > 0)); do
+                case ${masked:i:1} in
+                    '(') ((depth++));;
+                    ')') ((depth--));;
+                esac
+                ((i++))
+            done
+            inner=${original:start:i-start-1}
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        if [[ ${masked:i:1} == '`' ]]; then
+            start=$((i + 1))
+            i=$start
+            while ((i < length)); do
+                if [[ ${masked:i:1} == \\ ]]; then
+                    i=$((i + 2))
+                    continue
+                fi
+                [[ ${masked:i:1} == '`' ]] && break
+                ((i++))
+            done
+            inner=${original:start:i-start}
+            ((i++))
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        ((i++))
+    done
+}
+
 # Like guard_gh_command_segments (same quote/heredoc state machine, same
 # command-boundary splitting) but a heredoc BODY is not dropped unconditionally
 # -- only when it is genuinely inert. A quoted-delimiter heredoc handed to an
@@ -1444,6 +1547,29 @@ guard_destructive_segment_reason() {
             return 0
         fi
     fi
+
+    # A `$(...)`/`` `...` `` substitution executes BEFORE the outer command
+    # ever uses its output -- including one written inside an outer
+    # DOUBLE-quoted argument. The tokenizer below correctly treats that whole
+    # quoted argument as ONE word (it IS one argument to the outer command),
+    # but the substitution inside it is still a separately-executed command,
+    # not inert data the way a single-quoted argument's contents are (the
+    # naive flattening above misses this: it never opens the outer double
+    # quotes, so a flattened `"$(git config core.hooksPath /tmp/evil)"`
+    # tokenizes right back into one quoted word). guard_segment_substitutions
+    # is single-quote aware, so a substitution genuinely trapped inside single
+    # quotes (never executed) is correctly left alone. Judge every extracted
+    # payload through the FULL destructive-command check, not just the two
+    # checks below, since a hidden substitution can carry any of them
+    # (issue #397 follow-up).
+    local payload payload_reason
+    while IFS= read -r payload; do
+        [[ -n $payload ]] || continue
+        if payload_reason=$(guard_destructive_segment_reason "$payload"); then
+            printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
+            return 0
+        fi
+    done < <(guard_segment_substitutions "$cmd")
 
     stripped=$(guard_strip_git_globals "$cmd")
     normalized=$(guard_normalize_flags "$stripped")
