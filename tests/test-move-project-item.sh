@@ -31,6 +31,8 @@ case "\$*" in
           printf '%s\n' '{"data":{"repository":{"issue":null}}}'
       elif [[ -n \${MALFORMED_MEMBERSHIP:-} ]]; then
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":"not-an-object"}}}}'
+      elif [[ -n \${MISSING_NODES:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{}}}}}'
       elif [[ -n \${TRANSIENT_THEN_OK:-} ]]; then
           attempts=0
           [[ ! -f \${GH_MEMBERSHIP_ATTEMPTS_FILE:?} ]] || attempts=\$(<"\$GH_MEMBERSHIP_ATTEMPTS_FILE")
@@ -658,6 +660,22 @@ assert_contains "$out" 'no-op: issue #58 project board membership could not be r
 assert_eq '1' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
     'a malformed membership response is not retried like the transient null-issue case'
 
+# A response whose repository.issue.projectItems is an object but carries no
+# nodes array at all (not the "wrong type" malformed case above) must also
+# resolve to the same unreadable no-op -- not silently classified "ok" with
+# zero items, which would misreport a real membership as "not on any board".
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(MISSING_NODES=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a projectItems response missing nodes still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'a projectItems response missing nodes reports the same distinct unreadable no-op'
+assert_not_contains "$out" 'is not on any project board' \
+    'a projectItems response missing nodes is never conflated with a genuine board absence'
+assert_eq '1' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'a projectItems response missing nodes is not retried like the transient null-issue case'
+
 # A membership read that fails on its first attempts but succeeds within the
 # retry budget recovers cleanly and reports the real outcome, not a failure.
 repo=$(seed_repo)
@@ -674,5 +692,21 @@ assert_not_contains "$out" 'could not be read' \
     'a transient membership read that recovers is never reported as unreadable'
 assert_eq '3' "$(cat "$attempts_file")" \
     'a transient membership read succeeds on the third attempt'
+
+# process_project_memberships (the --all-boards path) is a separate code path
+# from try_declared_memberships above and has its own membership-read handling;
+# it must honor the same never-fail-the-workstream contract for an unreadable
+# membership read.
+repo=$(bare_repo)
+: > "$tmp/gh.log"
+out=$(NULL_ISSUE=1 run_mv "$repo" --issue-number 58 --status Ready --all-boards 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'all-boards: a persistently null-issue membership read still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'all-boards: a persistently null-issue membership read reports the distinct unreadable no-op'
+assert_not_contains "$out" 'is not on any project board' \
+    'all-boards: an unreadable membership read is never conflated with a genuine board absence'
+assert_eq '3' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'all-boards: a persistently null-issue membership read retries the bounded number of attempts'
 
 finish

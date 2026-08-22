@@ -220,7 +220,8 @@ issue_project_items_once() {
     # shape", and the null-issue case must be handled explicitly, not folded
     # into the generic malformed branch.
     result=$(jq -s -c '
-        if all(.[]; .data.repository.issue.projectItems? | type == "object")
+        if all(.[]; (.data.repository.issue.projectItems? | type == "object") and
+                    (.data.repository.issue.projectItems.nodes? | type == "array"))
         then {status: "ok", items: [.[].data.repository.issue.projectItems.nodes[]?]}
         elif any(.[]; .data.repository.issue == null)
         then {status: "null-issue"}
