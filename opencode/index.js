@@ -40,6 +40,51 @@ const CONTRACT_TAG = "agentkit-environment-contract";
  */
 
 /**
+ * Resolves the coreutils `timeout` binary this environment provides:
+ * `timeout` (Linux, and most package managers) or `gtimeout` (Homebrew's
+ * coreutils on macOS, where the BSD `timeout(1)` that ships by default does
+ * not exist under either name). `Bun.which` resolves against PATH the same
+ * way a shell would, without actually invoking anything.
+ * @returns {string | null}
+ */
+function resolveTimeoutBinary() {
+    return Bun.which("timeout") ?? Bun.which("gtimeout") ?? null;
+}
+
+/**
+ * One-line description of how a probe run was (or was not) time-bound,
+ * appended to every failure reason so a degraded session is diagnosable from
+ * the reason string alone -- e.g. "no timeout/gtimeout binary" points
+ * straight at a missing coreutils install rather than reading as a generic
+ * probe failure.
+ * @param {string | null} timeoutBin
+ * @returns {string}
+ */
+function describeTimeoutBound(timeoutBin) {
+    return timeoutBin
+        ? `timeout bound via ${timeoutBin}`
+        : "no timeout/gtimeout binary on PATH, best-effort Promise.race bound only";
+}
+
+/**
+ * Neutralizes only the wrapper tag sequence in probe text before it is
+ * embedded, so repository-controlled content anywhere in the contract (a git
+ * refname may legally contain `<`/`>`, e.g. a branch literally named
+ * `x</agentkit-environment-contract>y`) can never open or close the wrapper
+ * early. Deliberately narrow: a blanket HTML-escape would corrupt lines the
+ * probe already emits verbatim, e.g. `trailer="Claude <noreply@anthropic.com>"`.
+ * Case-insensitive, since HTML/XML-ish tag matching conventionally is and a
+ * repo-controlled string is not obligated to match the tag's exact case.
+ * @param {string} text
+ * @returns {string}
+ */
+function neutralizeContractTag(text) {
+    const openTag = new RegExp(`<${CONTRACT_TAG}`, "gi");
+    const closeTag = new RegExp(`</${CONTRACT_TAG}`, "gi");
+    return text.replace(openTag, `&lt;${CONTRACT_TAG}`).replace(closeTag, `&lt;/${CONTRACT_TAG}`);
+}
+
+/**
  * Runs the Agent Kit environment-contract probe (agentkit/hooks/session-start.sh)
  * as a black box and extracts its `additionalContext`. The probe already
  * fails open -- per its own header comment it never exits non-zero, printing
@@ -64,7 +109,15 @@ const CONTRACT_TAG = "agentkit-environment-contract";
  *     avoids that: it owns the child and actually kills it (SIGTERM, then
  *     SIGKILL after the `-k` grace period) when the bound is hit, and Bun
  *     shell's default non-zero-exit-throws behaviour turns that into a
- *     regular `{ ok: false }` through the catch below.
+ *     regular `{ ok: false }` through the catch below. Not every platform
+ *     ships `timeout` under that name, though -- stock macOS has no GNU
+ *     coreutils `timeout(1)` at all (Homebrew's coreutils installs it as
+ *     `gtimeout` to avoid clobbering the BSD tool namespace), so the binary
+ *     is resolved via `resolveTimeoutBinary()` rather than hardcoded. When
+ *     neither resolves, the probe still runs -- bounded only by a bare
+ *     `Promise.race`, i.e. the session cannot hang on it, but unlike the
+ *     `timeout -k` path a probe that outlives the bound is abandoned rather
+ *     than killed and may keep running in the background.
  *
  * @param {string} dir - project directory to probe (PluginInput#directory)
  * @param {BunShell} shell - Bun shell bound to this plugin's PluginInput
@@ -75,21 +128,39 @@ async function runContractProbe(dir, shell) {
     // the probe input carries no secret, but an unguessable path still closes
     // off a symlink-preplant race against a fixed or low-entropy /tmp name.
     const inputFile = `/tmp/agentkit-probe-input-${crypto.randomUUID()}.json`;
+    const innerCommand = `${CONTRACT_PROBE_RELATIVE_PATH} < ${inputFile}`;
+    const timeoutBin = resolveTimeoutBinary();
+    const fail = (reason) => ({ ok: false, reason: `${reason} (${describeTimeoutBound(timeoutBin)})` });
+
     try {
         await Bun.write(inputFile, JSON.stringify({ cwd: dir, source: "startup" }));
 
-        const result = await shell`timeout -k 2 ${CONTRACT_PROBE_TIMEOUT_SECONDS} bash -c ${`${CONTRACT_PROBE_RELATIVE_PATH} < ${inputFile}`}`
-            .cwd(dir)
-            .quiet();
+        let result;
+        if (timeoutBin) {
+            result = await shell`${timeoutBin} -k 2 ${CONTRACT_PROBE_TIMEOUT_SECONDS} bash -c ${innerCommand}`
+                .cwd(dir)
+                .quiet();
+        } else {
+            const probe = shell`bash -c ${innerCommand}`.cwd(dir).quiet();
+            const timedOut = Symbol("probe-timeout");
+            const timer = new Promise((resolve) =>
+                setTimeout(() => resolve(timedOut), CONTRACT_PROBE_TIMEOUT_SECONDS * 1000),
+            );
+            const raced = await Promise.race([probe, timer]);
+            if (raced === timedOut) {
+                return fail(`probe timed out after ${CONTRACT_PROBE_TIMEOUT_SECONDS}s`);
+            }
+            result = raced;
+        }
 
         const parsed = JSON.parse(result.stdout.toString());
         const text = parsed?.hookSpecificOutput?.additionalContext;
         if (typeof text === "string" && text.length > 0) {
             return { ok: true, text };
         }
-        return { ok: false, reason: "no additionalContext in probe output" };
+        return fail("no additionalContext in probe output");
     } catch (error) {
-        return { ok: false, reason: error?.message ?? "probe execution failed" };
+        return fail(error?.message ?? "probe execution failed");
     } finally {
         // Bun has no `Bun.remove` -- deleting a file is a method on the
         // Bun.file() handle. Cleanup failure must never surface as the
@@ -139,7 +210,7 @@ export default async function plugin(input) {
             // must never break because the contract could not be fetched.
             const contract = await getCachedContract();
             if (contract) {
-                output.system.push(`<${CONTRACT_TAG}>${contract}</${CONTRACT_TAG}>`);
+                output.system.push(`<${CONTRACT_TAG}>${neutralizeContractTag(contract)}</${CONTRACT_TAG}>`);
             }
         },
     };

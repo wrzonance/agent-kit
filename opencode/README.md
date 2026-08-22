@@ -12,10 +12,17 @@ stdout for the life of the session, and pushes the result onto the system
 prompt wrapped in `<agentkit-environment-contract>` tags.
 
 The probe is time-bound with coreutils `timeout -k` (not a bare
-`Promise.race`; see "Shell API usage" below) and fails open: a missing,
-malformed, slow, or erroring probe leaves `output.system` untouched rather
-than throwing. The session must never break because the contract could not be
+`Promise.race`; see "API Notes" below) and fails open: a missing, malformed,
+slow, or erroring probe leaves `output.system` untouched rather than
+throwing. The session must never break because the contract could not be
 fetched.
+
+The injected text is also tag-neutralized before wrapping: probe output can
+legally contain a `<`/`>` sequence that spells the wrapper's own tag (a git
+branch name may contain either character, so a branch literally named
+`x</agentkit-environment-contract>y` is valid input), which would otherwise
+close the wrapper early or open a spoofed second one. Only that exact tag
+sequence is neutralized -- see "Tag neutralization" below.
 
 ## Enable
 
@@ -80,6 +87,29 @@ after `npm install`:
   redirected into the command, and bounds it with coreutils `timeout -k`
   rather than a shell-API timeout.
 
+  `timeout(1)` is not universal, though: stock macOS ships the BSD toolset,
+  which has no `timeout` at all, and Homebrew's coreutils installs GNU
+  `timeout` as `gtimeout` rather than overwriting the (nonexistent) system
+  binary. `resolveTimeoutBinary()` resolves `timeout`, then `gtimeout`, via
+  `Bun.which` (a real Bun global that resolves a name against `PATH` the same
+  way a shell would, without invoking it). When neither resolves, the probe
+  still runs, bounded instead by a bare `Promise.race` -- the session cannot
+  hang on it either way, but unlike the `timeout -k` path, a probe that
+  outlives that bound is abandoned rather than killed and may keep running in
+  the background. Every failure's `reason` records which of the two bounded
+  the run (`describeTimeoutBound`), so a degraded session is diagnosable from
+  the reason string alone.
+
+## Tag neutralization
+
+`neutralizeContractTag` runs the probe's raw text through a narrow,
+case-insensitive replace for exactly `<agentkit-environment-contract` and
+`</agentkit-environment-contract` (to `&lt;agentkit-environment-contract` /
+`&lt;/agentkit-environment-contract`) before it is wrapped. Deliberately not a
+blanket HTML-escape: the probe already emits lines with unrelated `<...>`
+sequences verbatim, e.g. `trailer="Claude <noreply@anthropic.com>"`, and those
+must survive untouched for the contract to stay readable.
+
 ## Export shape (loader evidence)
 
 `PluginModule` is typed as `{ id?: string; server: Plugin; tui?: never }`,
@@ -140,8 +170,12 @@ fact from the `<agentkit-environment-contract>` block (e.g. its `repo=` or
   invoked unbound (no `this` dependency), the shell is invoked exactly once
   per session even across multiple `experimental.chat.system.transform`
   calls (per-session caching), a successful probe pushes exactly one
-  `<agentkit-environment-contract>`-wrapped entry, and a failing probe is a
-  silent no-op that never throws.
+  `<agentkit-environment-contract>`-wrapped entry, a failing probe is a
+  silent no-op that never throws, `resolveTimeoutBinary()` falls back from
+  `timeout` to `gtimeout` to a bare `Promise.race` bound (overriding the real,
+  writable `Bun.which` global rather than depending on this machine's PATH),
+  every failure reason names which bound was in play, and probe text
+  containing the wrapper's own tag can never open or close it early.
 
 Both are wired into `tests/test-opencode-plugin.sh`, which `tests/run-tests.sh`
 discovers automatically.
