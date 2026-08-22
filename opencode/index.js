@@ -6,33 +6,143 @@
 // `~/.config/opencode/plugins/`) with no build step and no npm install --
 // the same "clone and go" posture the Claude/Codex manifests already have.
 // `@opencode-ai/plugin` is referenced only for its TypeScript types (see the
-// JSDoc typedef below); it is never imported at runtime.
+// JSDoc typedefs below); it is a devDependency (see package.json), pinned to
+// the OpenCode CLI version this was verified against, and is never imported
+// at runtime.
 //
-// Behavioural hooks (the board-aware guards Claude/Codex get from
-// agentkit/hooks/) are intentionally out of scope here -- this issue decides
-// where OpenCode artifacts live and what the build/version-census emit, not
-// what the plugin does. A follow-on issue wires real hook logic.
+// Contract-injection slice (issue #319): recovers and productionizes the
+// phase-1 prototype (recoverable at commit 7db1a90, branched off
+// 18106a2..7db1a90) into this S1 layout. `experimental.chat.system.transform`
+// runs `agentkit/hooks/session-start.sh` as a black box, the same probe
+// Claude/Codex run on SessionStart, and injects its output into the system
+// prompt so the model sees the environment contract before turn one instead
+// of costing a tool call. See opencode/README.md for the API notes and the
+// loader/export-shape evidence this slice is built on.
 
 /**
  * @typedef {import("@opencode-ai/plugin").Plugin} Plugin
+ * @typedef {import("@opencode-ai/plugin").PluginInput} PluginInput
+ * @typedef {import("@opencode-ai/plugin").Hooks} Hooks
+ * @typedef {import("@opencode-ai/plugin").BunShell} BunShell
+ */
+
+// Relative to PluginInput#directory -- the same layout Claude/Codex read
+// agentkit/hooks/ from, and the layout build-plugin.sh ships opencode/ and
+// agentkit/ into as siblings.
+const CONTRACT_PROBE_RELATIVE_PATH = "agentkit/hooks/session-start.sh";
+// Seconds, passed to coreutils `timeout` (see runContractProbe). Matches the
+// phase-1 prototype's original 5000ms bound.
+const CONTRACT_PROBE_TIMEOUT_SECONDS = 5;
+const CONTRACT_TAG = "agentkit-environment-contract";
+
+/**
+ * @typedef {{ ok: true, text: string } | { ok: false, reason: string }} ProbeResult
  */
 
 /**
+ * Runs the Agent Kit environment-contract probe (agentkit/hooks/session-start.sh)
+ * as a black box and extracts its `additionalContext`. The probe already
+ * fails open -- per its own header comment it never exits non-zero, printing
+ * `{}` on any internal error -- so a missing `additionalContext` here is a
+ * benign "no contract" signal, not a bug to surface.
+ *
+ * Hard-won rules, ported from the reviewed phase-1 prototype (see
+ * opencode/README.md "API Notes" for the loader/typings evidence each one is
+ * based on):
+ *   - `shell` must come from the caller's `PluginInput#$`, never `this` --
+ *     OpenCode invokes hooks unbound, so a `const { $ } = this` reads
+ *     `undefined` and throws before the probe ever runs.
+ *   - `BunShellPromise#stdin` is a readonly WritableStream PROPERTY, not a
+ *     callable `.stdin(...)` method, so the probe's JSON input is fed via a
+ *     temp file redirected into the command instead.
+ *   - `BunShell`/`BunShellPromise` expose no `.timeout()` method. Bounding
+ *     wall-clock time with a bare `Promise.race` still lets the underlying
+ *     shell child (and anything it spawned) run to completion in the
+ *     background once the race is lost -- confirmed by spiking a
+ *     deliberately hung probe script, which left the reaped-away child
+ *     holding the process open. `timeout -k` inside the shell command itself
+ *     avoids that: it owns the child and actually kills it (SIGTERM, then
+ *     SIGKILL after the `-k` grace period) when the bound is hit, and Bun
+ *     shell's default non-zero-exit-throws behaviour turns that into a
+ *     regular `{ ok: false }` through the catch below.
+ *
+ * @param {string} dir - project directory to probe (PluginInput#directory)
+ * @param {BunShell} shell - Bun shell bound to this plugin's PluginInput
+ * @returns {Promise<ProbeResult>}
+ */
+async function runContractProbe(dir, shell) {
+    // crypto.randomUUID() (global in Bun and Node) rather than Math.random():
+    // the probe input carries no secret, but an unguessable path still closes
+    // off a symlink-preplant race against a fixed or low-entropy /tmp name.
+    const inputFile = `/tmp/agentkit-probe-input-${crypto.randomUUID()}.json`;
+    try {
+        await Bun.write(inputFile, JSON.stringify({ cwd: dir, source: "startup" }));
+
+        const result = await shell`timeout -k 2 ${CONTRACT_PROBE_TIMEOUT_SECONDS} bash -c ${`${CONTRACT_PROBE_RELATIVE_PATH} < ${inputFile}`}`
+            .cwd(dir)
+            .quiet();
+
+        const parsed = JSON.parse(result.stdout.toString());
+        const text = parsed?.hookSpecificOutput?.additionalContext;
+        if (typeof text === "string" && text.length > 0) {
+            return { ok: true, text };
+        }
+        return { ok: false, reason: "no additionalContext in probe output" };
+    } catch (error) {
+        return { ok: false, reason: error?.message ?? "probe execution failed" };
+    } finally {
+        // Bun has no `Bun.remove` -- deleting a file is a method on the
+        // Bun.file() handle. Cleanup failure must never surface as the
+        // probe's own result, so it is swallowed here rather than joining
+        // the outer try/catch.
+        await Bun.file(inputFile)
+            .unlink()
+            .catch(() => {});
+    }
+}
+
+/**
+ * Main plugin function.
  * @type {Plugin}
  */
-export const AgentKitPlugin = async ({ client }) => {
+export default async function plugin(input) {
+    const { directory, $, client } = input;
+
+    // Scoped to this closure, which OpenCode creates once per session (one
+    // `plugin()` call per session, confirmed empirically -- see
+    // opencode/README.md), so caching the promise here caches the probe per
+    // session rather than per message: every `experimental.chat.system.transform`
+    // call in the session reuses this same in-flight-or-settled promise
+    // instead of re-shelling out.
+    let cachedContractPromise = null;
+
+    async function getCachedContract() {
+        if (!cachedContractPromise) {
+            cachedContractPromise = runContractProbe(directory, $);
+        }
+        const result = await cachedContractPromise;
+        return result.ok ? result.text : null;
+    }
+
     return {
         "session.idle": async () => {
             await client.app.log({
                 body: {
                     service: "agentkit",
                     level: "info",
-                    message:
-                        "agent-kit OpenCode plugin loaded (packaging slice; no hooks wired yet)",
+                    message: "agent-kit OpenCode plugin loaded",
                 },
             });
         },
+        "experimental.chat.system.transform": async (_input, output) => {
+            // A failed/slow probe degrades to a silent no-op -- the session
+            // must never break because the contract could not be fetched.
+            const contract = await getCachedContract();
+            if (contract) {
+                output.system.push(`<${CONTRACT_TAG}>${contract}</${CONTRACT_TAG}>`);
+            }
+        },
     };
-};
+}
 
-export default AgentKitPlugin;
+export { plugin as AgentKitPlugin, runContractProbe };

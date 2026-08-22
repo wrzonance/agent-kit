@@ -91,6 +91,7 @@ if command -v node > /dev/null 2>&1; then
             const hooks = await m.AgentKitPlugin({});
             if (typeof hooks !== 'object' || hooks === null) throw new Error('hooks not an object');
             if (!('session.idle' in hooks)) throw new Error('session.idle hook missing');
+            if (!('experimental.chat.system.transform' in hooks)) throw new Error('experimental.chat.system.transform hook missing');
             process.stdout.write('ok');
         }).catch((e) => { process.stderr.write(String(e)); process.exit(1); });
     " "$stage/opencode/index.js" 2>&1)
