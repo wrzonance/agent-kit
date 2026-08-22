@@ -199,29 +199,64 @@ else
     block 'pr-state digest carries no readable nitpick evidence'
 fi
 
-# --- Code scanning completion: a scan still in progress can legitimately
-# report zero alerts, so completion for the current head must be established
-# from a live query before the alert count below is trusted. The digest
-# carries no completion field (gh-pr-state.sh is out of scope for this
-# change), so this queries gh directly, the same way the live PR-state read
-# above does. An unreadable completion signal is BLOCKED, same as an
-# unreadable alert count -- never treated as complete. A response with no
-# matching github-code-scanning check run is ALSO blocked, UNLESS the
-# repository is corroborated below as demonstrably not using code scanning
-# at all: otherwise it is equally consistent with an analysis that has not
-# started yet, and absence of readable evidence is never evidence of
-# absence.
-if "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
-    >"$work_dir/cs-runs.json" 2>"$work_dir/api.err"; then
-    cs_status=$(jq -r '
-      [.check_runs[]? | select((.app.slug // "") == "github-code-scanning")] as $runs |
-      if ($runs | length) == 0 then "none"
-      elif ($runs | all(.status == "completed")) then "completed"
-      else "pending"
-      end
-    ' "$work_dir/cs-runs.json" 2>/dev/null) || cs_status=''
-else
-    cs_status=''
+# --- Code scanning completion: proven from the analyses endpoint, not from
+# check-run app slugs. GitHub records workflow-uploaded SARIF (a CodeQL
+# workflow, clippy, etc.) under check-run app.slug=github-advanced-security,
+# not github-code-scanning -- a slug-only lookup false-blocks every head with
+# real, clean analyses recorded that way (issue #390). GET
+# code-scanning/analyses?ref=<ref> is the surface that actually records a
+# completed analysis regardless of which app posted the check run, so it is
+# the primary signal here; the check-run lookup is kept only as a secondary
+# "is a scan still running" signal, demoted from its old load-bearing role.
+# Never dispatch a workflow to manufacture analysis evidence for this gate --
+# that is gate-gaming, not a remedy (see auto-merge.md).
+
+# Queries code-scanning/analyses for one ref into $2. Prints "ok" (a readable
+# JSON array, possibly empty), "empty" (the endpoint's definitive 404 "no
+# analysis found" body for this ref/repo), or "error" (403, a malformed body,
+# or any other unreadable response) -- the caller must treat "error" as
+# unreadable, never as "empty".
+analyses_for_ref() {
+    local ref=$1 out=$2
+    if "$GH_BIN" api "repos/$repo/code-scanning/analyses?ref=$ref&per_page=100" \
+        >"$out" 2>"$work_dir/api.err"; then
+        if jq -e 'type == "array"' "$out" >/dev/null 2>&1; then
+            printf 'ok\n'
+        else
+            printf 'error\n'
+        fi
+        return 0
+    fi
+    if jq -e '(.status == "404") and ((.message // "") == "no analysis found")' \
+        "$out" >/dev/null 2>&1; then
+        printf 'empty\n'
+    else
+        printf 'error\n'
+    fi
+    return 0
+}
+
+# Secondary signal only: is a code-scanning-related check run still running
+# for this head, under either app slug? Its failure to answer is never
+# itself a block -- absence of a completed analysis (below) is what blocks,
+# not absence of a check run.
+scan_check_run_pending() {
+    local runs_file="$work_dir/cs-runs.json"
+    "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
+        >"$runs_file" 2>"$work_dir/api.err" || return 1
+    jq -e '
+      [.check_runs[]? | select(((.app.slug // "") == "github-code-scanning") or
+                                ((.app.slug // "") == "github-advanced-security"))] as $runs |
+      ($runs | length) > 0 and ($runs | any(.status != "completed"))
+    ' "$runs_file" >/dev/null 2>&1
+}
+
+pr_ref="refs/pull/$pr/merge"
+pr_analyses_state=$(analyses_for_ref "$pr_ref" "$work_dir/cs-analyses-pr.json")
+cs_head_matches=0
+if [[ $pr_analyses_state == ok ]]; then
+    cs_head_matches=$(jq --arg sha "$head_sha" '[.[] | select(.commit_sha == $sha)] | length' \
+        "$work_dir/cs-analyses-pr.json" 2>/dev/null) || cs_head_matches=''
 fi
 
 # --- Code scanning non-use corroboration: a repository is only established
@@ -256,17 +291,56 @@ if [[ $default_setup_state == not-configured && $alerts_probe_definitive_404 == 
     cs_definitively_unused=yes
 fi
 
+# --- Resolve completion status: a matching analysis for the current head
+# wins outright; otherwise a still-running scan blocks; otherwise a
+# repository that plainly runs code scanning elsewhere (on its base ref, on
+# a schedule or workflow_dispatch never triggered by this PR) is reported,
+# not blocked; otherwise the two-signal non-use exception above applies;
+# otherwise this is the ambiguous "no evidence yet" case, and it blocks.
+cs_status=''
+cs_last_ref=''
+cs_last_date=''
+if [[ $cs_head_matches =~ ^[0-9]+$ ]] && ((cs_head_matches > 0)); then
+    cs_status=current
+elif [[ $pr_analyses_state == error ]]; then
+    cs_status=unreadable
+elif scan_check_run_pending; then
+    cs_status=pending
+else
+    base_ref="refs/heads/$base"
+    base_analyses_state=$(analyses_for_ref "$base_ref" "$work_dir/cs-analyses-base.json")
+    if [[ $base_analyses_state == ok ]] &&
+        jq -e 'length > 0' "$work_dir/cs-analyses-base.json" >/dev/null 2>&1; then
+        cs_status=scheduled-only
+        cs_last_date=$(jq -r 'sort_by(.created_at // "") | last | .created_at // "unknown"' \
+            "$work_dir/cs-analyses-base.json")
+        cs_last_ref=$(jq -r --arg r "$base_ref" 'sort_by(.created_at // "") | last | .ref // $r' \
+            "$work_dir/cs-analyses-base.json")
+    elif [[ $cs_definitively_unused == yes ]]; then
+        cs_status=unused
+    else
+        cs_status=absent
+    fi
+fi
+
 case $cs_status in
-    completed) ;;
+    current|scheduled-only|unused) ;;
     pending) block 'code-scanning analysis has not completed for the current head' ;;
-    none) [[ $cs_definitively_unused == yes ]] || block 'no code-scanning analysis is recorded for the current head' ;;
+    absent) block 'no code-scanning analysis is recorded for the current head' ;;
     *) block 'code-scanning analysis status is unreadable for the current head' ;;
 esac
+
+if [[ $cs_status == scheduled-only ]]; then
+    printf 'code-scanning: scheduled-only, last analysis %s on %s\n' "$cs_last_date" "$cs_last_ref"
+fi
+
+cs_completion_exempt=no
+[[ $cs_status == unused || $cs_status == scheduled-only ]] && cs_completion_exempt=yes
 
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||
         block 'an open code-scanning alert is attributable to this PR'
-elif [[ $cs_definitively_unused != yes ]]; then
+elif [[ $cs_completion_exempt != yes ]]; then
     block 'code-scanning evidence is unreadable (n/a is never treated as zero findings)'
 fi
 

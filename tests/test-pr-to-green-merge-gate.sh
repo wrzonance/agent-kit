@@ -15,11 +15,18 @@ gate="$root/agentkit/skills/pr-to-green/scripts/merge-gate.sh"
 readonly HEAD_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 readonly HEAD_SHA7='aaaaaaa'
 
+fixtures="$here/fixtures"
+
 cat >"$tmp/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 endpoint=''
 for arg in "\$@"; do [[ \$arg == repos/* ]] && endpoint=\$arg; done
+# Held in its own variable, never inlined literally inside a \${VAR:-...}
+# default: bash's brace-matching for that construct gets confused by the
+# unescaped { and } this JSON itself contains.
+default_pr_analyses='[{"ref":"refs/pull/9/merge","commit_sha":"$HEAD_SHA","tool":{"name":"CodeQL"},"created_at":"2026-08-20T00:00:00Z"}]'
+default_check_runs='{"check_runs":[]}'
 case \$endpoint in
 repos/owner/repo/pulls/9)
     mergeable=\${PR_MERGEABLE:-true}
@@ -35,16 +42,42 @@ repos/owner/repo/pulls/9)
 repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
     ;;
+repos/owner/repo/code-scanning/analyses*ref=refs/pull/9/merge*)
+    case \${CS_PR_ANALYSES_MODE:-ok} in
+    ok)
+        printf '%s\n' "\${CS_PR_ANALYSES_JSON:-\$default_pr_analyses}"
+        ;;
+    empty)
+        printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
+        exit 1
+        ;;
+    error)
+        printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+        exit 1
+        ;;
+    esac
+    ;;
+repos/owner/repo/code-scanning/analyses*ref=refs/heads/main*)
+    case \${CS_BASE_ANALYSES_MODE:-empty} in
+    ok)
+        printf '%s\n' "\${CS_BASE_ANALYSES_JSON:-[]}"
+        ;;
+    empty)
+        printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
+        exit 1
+        ;;
+    error)
+        printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+        exit 1
+        ;;
+    esac
+    ;;
 repos/owner/repo/commits/*/check-runs*)
     if [[ \${CS_RUNS_UNREADABLE:-0} == 1 ]]; then
         printf 'not found\n' >&2
         exit 1
     fi
-    if [[ -n \${CS_RUNS_JSON:-} ]]; then
-        printf '%s\n' "\$CS_RUNS_JSON"
-    else
-        printf '{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"completed"}]}\n'
-    fi
+    printf '%s\n' "\${CS_RUNS_JSON:-\$default_check_runs}"
     ;;
 repos/owner/repo/code-scanning/default-setup)
     printf '{"state":"%s"}\n' "\${CS_DEFAULT_SETUP_STATE:-configured}"
@@ -204,7 +237,8 @@ assert_contains "$out" 'blocked reason=CI is not fully green' 'the pending-CI bl
 
 good_digest
 set +e
-out=$(CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
 rc=$?
 set -e
 assert_eq '1' "$rc" 'a code-scanning analysis still in progress blocks the merge, even with zero open alerts reported'
@@ -214,26 +248,68 @@ assert_contains "$out" 'blocked reason=code-scanning analysis has not completed 
 good_digest
 out=$(CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"completed"}]}' run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
-    'a completed code-scanning analysis with zero open alerts passes the gate'
+    'a completed analysis recorded for the current head passes the gate regardless of check-run state'
 
 good_digest
 set +e
-out=$(CS_RUNS_UNREADABLE=1 run_gate)
+out=$(CS_PR_ANALYSES_MODE=error run_gate)
 rc=$?
 set -e
-assert_eq '1' "$rc" 'an unreadable code-scanning completion signal blocks the merge (never treated as complete)'
+assert_eq '1' "$rc" 'an unreadable analyses endpoint blocks the merge (never treated as complete)'
 assert_contains "$out" 'blocked reason=code-scanning analysis status is unreadable for the current head' \
     'the unreadable-completion block is named'
 
 good_digest
 set +e
-out=$(CS_RUNS_JSON='{"check_runs":[]}' run_gate)
+out=$(CS_PR_ANALYSES_MODE=empty run_gate)
 rc=$?
 set -e
 assert_eq '1' "$rc" \
-    'a readable check-runs response with no matching github-code-scanning run blocks the merge (absence of evidence is never evidence of completion)'
+    'no analysis recorded for the current head anywhere (PR ref or base ref) blocks the merge (absence of evidence is never evidence of completion)'
 assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
-    'the no-matching-run block is named, and distinct from the unreadable-status block'
+    'the no-analysis block is named, and distinct from the unreadable-status block'
+
+# --- issue #390: the analyses endpoint is authoritative; the check-run app
+# slug is at most a secondary "still running" signal.
+
+good_digest
+out=$(CS_PR_ANALYSES_JSON="$(cat "$fixtures/merge-gate-honkhonk-249-analyses.json")" \
+    CS_RUNS_JSON="$(cat "$fixtures/merge-gate-honkhonk-249-check-runs.json")" run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'HonkHonk #249: analyses recorded under app.slug=github-advanced-security pass the gate (a slug-only lookup would false-block this head)'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty CS_RUNS_UNREADABLE=1 run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a check-run fetch failure alone does not block as "unreadable" -- it is a demoted, non-authoritative signal'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'the block is the analyses-absence reason, never the old check-run-unreadable reason'
+assert_not_contains "$out" 'blocked reason=code-scanning analysis status is unreadable for the current head' \
+    'a bare check-run failure is not, by itself, an unreadable-completion-signal block'
+
+for slug in github-code-scanning github-advanced-security; do
+    good_digest
+    set +e
+    out=$(CS_PR_ANALYSES_MODE=empty \
+        CS_RUNS_JSON="{\"check_runs\":[{\"app\":{\"slug\":\"$slug\"},\"status\":\"in_progress\"}]}" run_gate)
+    rc=$?
+    set -e
+    assert_eq '1' "$rc" "a still-running check run under app.slug=$slug blocks the merge as pending"
+    assert_contains "$out" 'blocked reason=code-scanning analysis has not completed for the current head' \
+        "the pending block is named for app.slug=$slug"
+done
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+out=$(CS_PR_ANALYSES_MODE=empty CS_BASE_ANALYSES_MODE=ok \
+    CS_BASE_ANALYSES_JSON='[{"ref":"refs/heads/main","commit_sha":"cccccccccccccccccccccccccccccccccccccccc","created_at":"2026-08-15T04:00:00Z","tool":{"name":"CodeQL"}}]' \
+    run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'scheduled-only code scanning (analyses on the base ref, none for this PR) is reported, not blocked'
+assert_contains "$out" 'code-scanning: scheduled-only, last analysis 2026-08-15T04:00:00Z on refs/heads/main' \
+    'the scheduled-only report names the last analysis date and ref'
 
 # --- F1 (accepted): a group/other-writable digest file is rejected ----------
 
@@ -279,7 +355,7 @@ assert_contains "$out" 'blocked reason=pr-state digest predates the current head
 
 good_digest
 sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
-out=$(CS_RUNS_JSON='{"check_runs":[]}' CS_DEFAULT_SETUP_STATE=not-configured \
+out=$(CS_PR_ANALYSES_MODE=empty CS_DEFAULT_SETUP_STATE=not-configured \
     CS_ALERTS_PROBE=definitive-404 run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
     'not-configured default-setup corroborated by a definitive 404 passes the code-scanning portion of the gate'
@@ -287,7 +363,7 @@ assert_contains "$out" 'gate=PASS pr=9' \
 good_digest
 sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
 set +e
-out=$(CS_RUNS_JSON='{"check_runs":[]}' CS_DEFAULT_SETUP_STATE=not-configured \
+out=$(CS_PR_ANALYSES_MODE=empty CS_DEFAULT_SETUP_STATE=not-configured \
     CS_ALERTS_PROBE=forbidden-403 run_gate)
 rc=$?
 set -e
@@ -300,7 +376,7 @@ assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
 
 good_digest
 set +e
-out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok \
+out=$(CS_PR_ANALYSES_MODE=empty CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok \
     CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
 rc=$?
 set -e

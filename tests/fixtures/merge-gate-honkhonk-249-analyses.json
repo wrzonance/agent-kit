@@ -1,0 +1,26 @@
+[
+  {
+    "ref": "refs/pull/249/merge",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "analysis_key": ".github/workflows/ci.yml:clippy",
+    "environment": "{}",
+    "category": ".github/workflows/ci.yml:clippy",
+    "error": "",
+    "created_at": "2026-08-22T09:00:00Z",
+    "results_count": 0,
+    "rules_count": 120,
+    "tool": { "name": "clippy", "guid": null, "version": "0.1.0" }
+  },
+  {
+    "ref": "refs/pull/249/merge",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "analysis_key": ".github/workflows/ci.yml:clippy",
+    "environment": "{}",
+    "category": ".github/workflows/ci.yml:clippy",
+    "error": "",
+    "created_at": "2026-08-22T09:00:05Z",
+    "results_count": 0,
+    "rules_count": 118,
+    "tool": { "name": "clippy", "guid": null, "version": "0.1.0" }
+  }
+]
