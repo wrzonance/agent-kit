@@ -360,9 +360,11 @@ write_skip_result() {
     if [[ -e $path ]]; then
         [[ -f $path && ! -L $path && -O $path ]] ||
             evidence_unavailable "a result artifact blocks the verified-skip result: $path"
-        jq -e --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" '
-            type == "object" and .status == "skipped" and
-            .skipRationale == $rationale and .oracle == $oracle
+        jq -s -e --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" '
+            length == 1 and
+            (.[0] |
+                type == "object" and .status == "skipped" and
+                .skipRationale == $rationale and .oracle == $oracle)
         ' "$path" >/dev/null 2>&1 && return 0
         evidence_unavailable "an existing adversarial review result does not match this verified skip: $path"
     fi

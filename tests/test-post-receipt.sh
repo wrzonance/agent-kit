@@ -645,4 +645,41 @@ completed_result_status=$(jq -r '.status' "$completed_dir/adversarial.result.jso
 assert_eq 'completed' "$completed_result_status" \
     'the real completed result is left untouched by the refused skip'
 
+# -- verified skip: a multi-document artifact is never treated as a match ---
+# A bare `jq -e` (no -s) tests every top-level JSON value in the input and
+# bases its exit status on only the LAST one. A file holding a completed
+# runner result as its first document and a matching skipped document second
+# therefore passed the old check even though the artifact also recorded a
+# completed review -- the no-silent-overwrite contract requires exactly one
+# document, matching validate_runner_provenance's own `jq -s -e` shape.
+
+multidoc_dir="$tmp/skip-vs-multidoc"
+mkdir -p "$multidoc_dir"
+chmod 700 "$multidoc_dir"
+multidoc_findings="$multidoc_dir/findings.ndjson"
+: >"$multidoc_findings"
+{
+    printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}'
+    printf '%s\n' '{"status":"skipped","skipRationale":"comments/formatting only","oracle":"diff --stat parity check"}'
+} >"$multidoc_dir/adversarial.result.json"
+chmod 600 -- "$multidoc_dir/adversarial.result.json"
+
+skip_comments5="$tmp/skip-not-spent-5.json"
+fresh_comments "$skip_comments5"
+multidoc_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$multidoc_findings" --pr 405 --repo owner/repo \
+    --comments "$skip_comments5" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+multidoc_rc=$?
+assert_eq '1' "$multidoc_rc" \
+    'publish refuses a verified skip against a multi-document result artifact'
+assert_contains "$multidoc_out" 'does not match this verified skip' \
+    'the multi-document refusal names the reason'
+multidoc_doc_count=$(jq -s 'length' "$multidoc_dir/adversarial.result.json")
+assert_eq '2' "$multidoc_doc_count" \
+    'the multi-document result artifact is left untouched by the refused skip'
+
 finish
