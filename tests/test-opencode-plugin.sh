@@ -73,27 +73,76 @@ forced_fallback_rc=$?
 assert_eq 0 "$forced_fallback_rc" 'run-probe.sh forced-fallback path exits 0 against the real probe'
 assert_contains "$forced_fallback_out" 'gh=' 'run-probe.sh forced-fallback path still finds the gh= line'
 
-# --- run-probe.sh fallback: a hung probe is killed within the bound -------
+# --- run-probe.sh fallback: a hung probe (and its descendant) is killed ---
 # Regression for the no-timeout/no-gtimeout fallback running the probe with
 # NO bound at all (a hung probe would hang this smoke test, and the whole
-# suite, forever). Points run-probe.sh at a throwaway fake probe that never
-# exits, via the AGENTKIT_PROBE_SCRIPT test seam, with the watchdog shortened
-# to 1s via AGENTKIT_PROBE_BOUND_SECONDS so this assertion itself cannot hang
-# the suite -- and an outer `timeout` is a belt-and-braces guard in case the
-# fallback's own bound were ever broken again.
+# suite, forever). Points run-probe.sh at a throwaway fake probe that spawns
+# its own grandchild and never exits itself, via the AGENTKIT_PROBE_SCRIPT
+# test seam, with the watchdog shortened to 1s via AGENTKIT_PROBE_BOUND_SECONDS
+# so this assertion itself cannot hang the suite.
+#
+# `guard_bin` resolves the outer safety-net guard the SAME way run-probe.sh
+# resolves its own bound (CodeRabbit on e7ebaf7: a bare `timeout` call is
+# command-not-found on stock macOS) -- when neither `timeout` nor `gtimeout`
+# is on PATH, the guard is simply omitted, since AGENTKIT_PROBE_BOUND_SECONDS=1
+# already bounds run-probe.sh internally.
+guard_bin=$(command -v timeout 2> /dev/null || command -v gtimeout 2> /dev/null || true)
+
 hung_probe_script=$(mktemp)
-cat > "$hung_probe_script" << 'HUNG_PROBE'
+grandchild_pidfile=$(mktemp)
+rm -f "$grandchild_pidfile" # the fake probe below (re)creates this itself
+cat > "$hung_probe_script" << HUNG_PROBE
 #!/usr/bin/env bash
 cat > /dev/null # drain stdin like the real probe does
-sleep 300
+sleep 300 &
+echo \$! > "$grandchild_pidfile"
+wait
 HUNG_PROBE
 chmod +x -- "$hung_probe_script"
-hung_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 AGENTKIT_PROBE_SCRIPT="$hung_probe_script" \
-    AGENTKIT_PROBE_BOUND_SECONDS=1 timeout 10 "$run_probe" 2>&1)
+
+# Safety net: if an assertion below fails/exits oddly, still reap the
+# grandchild and remove the throwaway fixtures rather than leaking them.
+cleanup_hung_probe() {
+    local leftover_pid
+    if [[ -s $grandchild_pidfile ]]; then
+        leftover_pid=$(cat -- "$grandchild_pidfile")
+        kill -9 "$leftover_pid" 2> /dev/null || true
+    fi
+    rm -f "$hung_probe_script" "$grandchild_pidfile"
+}
+trap cleanup_hung_probe EXIT
+
+if [[ -n $guard_bin ]]; then
+    hung_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 AGENTKIT_PROBE_SCRIPT="$hung_probe_script" \
+        AGENTKIT_PROBE_BOUND_SECONDS=1 "$guard_bin" 10 "$run_probe" 2>&1)
+else
+    hung_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 AGENTKIT_PROBE_SCRIPT="$hung_probe_script" \
+        AGENTKIT_PROBE_BOUND_SECONDS=1 "$run_probe" 2>&1)
+fi
 hung_rc=$?
-rm -f "$hung_probe_script"
 assert_eq 1 "$hung_rc" 'run-probe.sh exits 1 when the fallback watchdog kills a hung probe'
 assert_contains "$hung_out" 'FAIL' 'run-probe.sh prints a FAIL line naming the watchdog bound'
+
+# The FAIL line and non-zero rc only prove run-probe.sh gave up waiting --
+# not that the probe's descendant actually died. Poll briefly (killing a
+# process and the OS finishing the reap aren't instantaneous) for the
+# grandchild's recorded pid to disappear, proving the watchdog's
+# process-group kill reached it too, not just the immediate wrapper.
+grandchild_pid=$(cat -- "$grandchild_pidfile" 2> /dev/null || true)
+grandchild_alive='unknown'
+if [[ -n $grandchild_pid ]]; then
+    grandchild_alive='yes'
+    poll_deadline=$((SECONDS + 2))
+    while (( SECONDS < poll_deadline )); do
+        if ! kill -0 "$grandchild_pid" 2> /dev/null; then
+            grandchild_alive='no'
+            break
+        fi
+        sleep 0.2
+    done
+fi
+assert_eq 'no' "$grandchild_alive" \
+    "run-probe.sh's watchdog also kills the hung probe's grandchild, not just the wrapper"
 
 # --- run-wrapper.mjs: the contract-injection wiring, including the ---------
 # three ported prototype defect classes and the degradation path.
