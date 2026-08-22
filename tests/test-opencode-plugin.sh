@@ -63,6 +63,38 @@ probe_rc=$?
 assert_eq 0 "$probe_rc" 'run-probe.sh exits 0 against this repository'
 assert_contains "$probe_out" 'gh=' 'run-probe.sh output contains the expected gh= line'
 
+# --- run-probe.sh fallback: forced no-timeout path still finds gh= --------
+# Exercises the AGENTKIT_PROBE_FORCE_NO_TIMEOUT test seam against the REAL
+# probe on this host: the fallback path must behave identically to the
+# timeout_bin path here, exiting 0 with the expected gh= line, comfortably
+# inside the default 10s bound.
+forced_fallback_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 "$run_probe" 2>&1)
+forced_fallback_rc=$?
+assert_eq 0 "$forced_fallback_rc" 'run-probe.sh forced-fallback path exits 0 against the real probe'
+assert_contains "$forced_fallback_out" 'gh=' 'run-probe.sh forced-fallback path still finds the gh= line'
+
+# --- run-probe.sh fallback: a hung probe is killed within the bound -------
+# Regression for the no-timeout/no-gtimeout fallback running the probe with
+# NO bound at all (a hung probe would hang this smoke test, and the whole
+# suite, forever). Points run-probe.sh at a throwaway fake probe that never
+# exits, via the AGENTKIT_PROBE_SCRIPT test seam, with the watchdog shortened
+# to 1s via AGENTKIT_PROBE_BOUND_SECONDS so this assertion itself cannot hang
+# the suite -- and an outer `timeout` is a belt-and-braces guard in case the
+# fallback's own bound were ever broken again.
+hung_probe_script=$(mktemp)
+cat > "$hung_probe_script" << 'HUNG_PROBE'
+#!/usr/bin/env bash
+cat > /dev/null # drain stdin like the real probe does
+sleep 300
+HUNG_PROBE
+chmod +x -- "$hung_probe_script"
+hung_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 AGENTKIT_PROBE_SCRIPT="$hung_probe_script" \
+    AGENTKIT_PROBE_BOUND_SECONDS=1 timeout 10 "$run_probe" 2>&1)
+hung_rc=$?
+rm -f "$hung_probe_script"
+assert_eq 1 "$hung_rc" 'run-probe.sh exits 1 when the fallback watchdog kills a hung probe'
+assert_contains "$hung_out" 'FAIL' 'run-probe.sh prints a FAIL line naming the watchdog bound'
+
 # --- run-wrapper.mjs: the contract-injection wiring, including the ---------
 # three ported prototype defect classes and the degradation path.
 wrapper_out=$(bun "$run_wrapper" 2>&1)
