@@ -1365,6 +1365,62 @@ guard_destructive_reason() {
     return 1
 }
 
+# Is $2.. present as a contiguous, EXACT-token sequence anywhere in the word
+# array named by $1 (produced by guard_tokenize_words, so a quoted argument is
+# already one word)? Word-array equality, never substring -- so `gh pr merge`
+# spelled out inside a single quoted data argument (a sed replacement script,
+# a printf payload destined for a file) can never match: quoting collapses it
+# into ONE word here, not three separate command tokens (issue #397).
+guard_words_contain_sequence() {
+    local -n __gwcs_words=$1
+    shift
+    local -a want=("$@")
+    local n=${#want[@]} i j matched
+    ((n)) || return 1
+    for ((i = 0; i + n <= ${#__gwcs_words[@]}; i++)); do
+        matched=1
+        for ((j = 0; j < n; j++)); do
+            [[ ${__gwcs_words[i + j]} == "${want[j]}" ]] || { matched=0; break; }
+        done
+        ((matched)) && return 0
+    done
+    return 1
+}
+
+# Is a `git config` invocation's tokenized word array (named by $1) SETTING
+# one of the keys that runs a command during ordinary git operations (formerly
+# matched with a `grep -E` pattern spelling the key as core\.hooksPath, etc.)?
+# Prints the offending key and returns 0 only for a genuine set; a `--get`/
+# `--get-all`/`--get-regexp`/`--get-urlmatch` READ of the exact same key is
+# never a write -- `git config --get core.hooksPath` refused as if it were
+# setting the hook path was issue #397's false positive #3. Token equality
+# (not substring) also means the key can never be matched out of a quoted
+# data argument, the same class of fix as guard_words_contain_sequence above.
+guard_git_config_write_key() {
+    local -n __ggcw_words=$1
+    local i n=${#__ggcw_words[@]} word key='' is_read=0 saw_git=0 saw_config=0
+    for ((i = 0; i < n; i++)); do
+        word=${__ggcw_words[i]}
+        if ((!saw_git)); then
+            [[ $word == git ]] && saw_git=1
+            continue
+        fi
+        if ((!saw_config)); then
+            [[ $word == config ]] && saw_config=1
+            continue
+        fi
+        case $word in
+            --get | --get-all | --get-regexp | --get-urlmatch) is_read=1 ;;
+            core.hooksPath | core.fsmonitor | core.sshCommand | \
+            filter.*.clean | filter.*.smudge | filter.*.process | diff.*.textconv)
+                key=$word ;;
+        esac
+    done
+    ((saw_git && saw_config)) || return 1
+    [[ -n $key && $is_read -eq 0 ]] || return 1
+    printf '%s' "$key"
+}
+
 guard_destructive_segment_reason() {
     local cmd=$1 stripped flattened normalized
 
@@ -1391,6 +1447,12 @@ guard_destructive_segment_reason() {
 
     stripped=$(guard_strip_git_globals "$cmd")
     normalized=$(guard_normalize_flags "$stripped")
+    # Quote-aware tokenization of this ONE segment -- a quoted argument (a sed
+    # script, a printf payload) collapses to a single word here, so the
+    # verb-position checks below can never fire on bytes inside quoted data
+    # (issue #397).
+    local -a words
+    mapfile -t words < <(guard_tokenize_words "$stripped")
 
     # Intervening tokens are tolerated: after a substitution is flattened the
     # flag is no longer adjacent to the verb. Bounded by shell separators, so a
@@ -1439,11 +1501,19 @@ guard_destructive_segment_reason() {
     # An execution key in git config runs a command during ORDINARY git
     # operations, persists after the session, and runs as the user rather than
     # the agent. It is the quietest code-execution vector in a repository.
-    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]config([[:space:]][^;&|]*)?[[:space:]](core\.hooksPath|core\.fsmonitor|filter\.[^[:space:]]+\.(clean|smudge|process)|core\.sshCommand|diff\.[^[:space:]]+\.textconv)' <<< "$cmd"; then
-        printf 'that git config key executes a command during ordinary git operations, and it outlives this session. Setting it is a decision for the user.'
+    # Token-matched, not a substring grep: a `--get` READ of the same key is
+    # never a write, and the key can never be matched out of a quoted data
+    # argument (issue #397).
+    local config_key
+    if config_key=$(guard_git_config_write_key words); then
+        printf 'that git config key (%s) executes a command during ordinary git operations, and it outlives this session. Setting it is a decision for the user.' \
+            "$config_key"
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge' <<< "$cmd"; then
+    # Exact command-token sequence, not a substring grep: `gh pr merge`
+    # spelled out inside a quoted sed/printf data argument is one word here,
+    # not three command tokens, so it can never match (issue #397).
+    if guard_words_contain_sequence words gh pr merge; then
         printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
         return 0
     fi
@@ -1818,33 +1888,57 @@ guard_protected_match() {
 # protected list afterwards. A general "commands that touch files" rule would
 # fire on every grep and be switched off within a week.
 guard_shell_write_targets() {
-    local cmd=$1 write_probe=$1
+    local cmd=$1 segments segment write_probe token
+    local -a results=()
 
-    # Redirects to device sinks discard output but do not write a protected
-    # path. Remove them before deciding whether the command is write-shaped.
-    write_probe=$(sed -E \
-        -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
-        -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
-        -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
-        <<< "$write_probe")
+    # Heredoc BODIES are data, never a write target's spelling -- a JSON/text
+    # payload that happens to mention a protected path inside a heredoc body
+    # is not editing it. Segmenting first, via the same heredoc-aware lexer
+    # guard_out_of_scope_target relies on, drops those bodies entirely; each
+    # remaining segment is then judged on its own tokens only (issue #397).
+    segments=$(guard_gh_command_segments "$cmd")
+    while IFS= read -r segment; do
+        [[ -n ${segment//[[:space:]]/} ]] || continue
 
-    # Two stages, because the alternative is parsing operands per command and
-    # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
-    # has no command word at all. Getting one of those wrong is how a rule ends
-    # up silently matching nothing.
-    #
-    # Stage one: does this command write at all? A path mentioned by grep or cat
-    # is not a target, and matching those would fire this rule constantly.
-    grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
-        <<< "$write_probe" 2> /dev/null || return 0
+        # Redirects to device sinks discard output but do not write a
+        # protected path. Remove them before deciding whether this segment is
+        # write-shaped.
+        write_probe=$(sed -E \
+            -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
+            -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
+            -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
+            <<< "$segment")
 
-    # Stage two: offer every token and let the protected list decide. A token
-    # that is not protected costs nothing; a target missed by clever parsing
-    # costs the whole guard.
-    tr -s '[:space:]' '\n' <<< "$cmd" 2> /dev/null |
-        sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
-        sed -E 's/[;|&()]+$//' |
-        grep -vE '^-|^$' || true
+        # Two stages, because the alternative is parsing operands per command
+        # and that rots: `sed -i` takes its file LAST, `tee` takes it first, a
+        # redirect has no command word at all. Getting one of those wrong is
+        # how a rule ends up silently matching nothing.
+        #
+        # Stage one: does this segment write at all? A path mentioned by grep
+        # or cat is not a target, and matching those would fire this rule
+        # constantly.
+        grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
+            <<< "$write_probe" 2> /dev/null || continue
+
+        # Stage two: offer every token and let the protected list decide. A
+        # token that is not protected costs nothing; a target missed by
+        # clever parsing costs the whole guard. A `NAME=value` shell-variable
+        # assignment token is never a file target -- the same assignment
+        # shape guard_heredoc_consumer_is_shell already recognises and skips
+        # as an env prefix, not a path (issue #397, e.g. a leading
+        # `agentkit=/home/.../skills` before the real command word).
+        while IFS= read -r token; do
+            [[ -n $token ]] || continue
+            [[ $token == -* ]] && continue
+            [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]] && continue
+            results+=("$token")
+        done < <(tr -s '[:space:]' '\n' <<< "$segment" 2> /dev/null |
+            sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+            sed -E 's/[;|&()]+$//')
+    done <<< "$segments"
+
+    ((${#results[@]})) && printf '%s\n' "${results[@]}"
+    return 0
 }
 
 # Every path a tool call is about to write. Covers the file-edit tools of both

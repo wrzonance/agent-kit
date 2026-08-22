@@ -916,9 +916,13 @@ for plumbing in 'git update-ref refs/heads/main abc123' \
     assert_eq 'deny' "$(decision "$out")" "refuses plumbing: $plumbing"
 done
 
-# The read-only and no-op forms of the same verbs stay usable.
+# The read-only and no-op forms of the same verbs stay usable. `--get` is a
+# READ of core.hooksPath specifically -- issue #397's false positive #3, where
+# `git config --get core.hooksPath` was refused as if it were setting the
+# hook path that "outlives the session".
 for readonly_form in 'git gc' 'git reflog' 'git symbolic-ref --short HEAD' \
-    'git config user.name' 'git config --get remote.origin.url'; do
+    'git config user.name' 'git config --get remote.origin.url' \
+    'git config --get core.hooksPath'; do
     out=$(pre_input "$repo" "$readonly_form" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "leaves the harmless form: $readonly_form"
 done
@@ -931,6 +935,49 @@ for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
     out=$(pre_input "$repo" "$safe" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "allows the ordinary form: $safe"
 done
+
+# --- issue #397: guards parse argv, not raw command TEXT --------------------
+# Four reported false positives, each costing a root turn because the
+# documented remedy ("make the same call again") only teaches vaguer prose:
+# a heredoc data body that happened to mention a protected path, `gh pr merge`
+# spelled out inside a sed/printf DATA argument (twice, independently), and
+# `git config --get` misread as setting the key it was reading.
+
+# 1. A heredoc BODY is data. Text inside it that spells a protected path is
+# not editing that path -- only the segment BEFORE the heredoc opens names a
+# real write target (.agent/dispatch-plan.json here, which is not protected).
+issue397_heredoc_cmd=$(printf 'cat > .agent/dispatch-plan.json <<EOF\n{"note": "avoid touching .github/workflows/ files"}\nEOF\n')
+out=$(pre_input "$repo" "$issue397_heredoc_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a protected-path mention inside a heredoc JSON body is not an edit of it (issue #397)'
+
+# 2 & 5. `gh pr merge` spelled out inside a quoted sed/printf DATA argument is
+# one word here (guard_tokenize_words honors the quoting), not three separate
+# command tokens, so the merge guard never matches it.
+for data_string_cmd in \
+    "sed -i 's/foo/note: gh pr merge later/' MEMORY.md" \
+    "printf 'gate-override: ask before gh pr merge --merge\n' >> gate.txt"; do
+    out=$(pre_input "$repo" "$data_string_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a 'gh pr merge' phrase inside quoted data is not the command (issue #397): $data_string_cmd"
+done
+
+# The real verb, unquoted and in command position, remains denied every time.
+out=$(pre_input "$repo" 'gh pr merge 42 --squash' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'gh pr merge as the actual verb remains denied (issue #397)'
+
+# 3. `--get` is a read, never a write, of the exact same key; setting it
+# remains denied.
+out=$(pre_input "$repo" 'git config --get core.hooksPath' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'git config --get core.hooksPath is a read, not a set (issue #397)'
+out=$(pre_input "$repo" 'git config core.hooksPath /tmp/evil' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'setting core.hooksPath remains denied (issue #397)'
+
+# A redirection into a genuinely protected path remains denied too.
+out=$(pre_input "$repo" 'printf x > .github/workflows/x.yml' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a real redirect into .github/workflows/ remains denied (issue #397)'
 
 # --- issue #351: a single-file `rm` is not a recursive root delete ---------
 # `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
@@ -2041,6 +2088,18 @@ assert_eq 'deny' "$(decision "$boundary_alias_out")" \
     'an external alias resolving into the root checkout is denied'
 assert_contains "$boundary_alias_out" "$boundary_feature/src/file.txt" \
     'external-alias denial supplies the contracted worktree correction'
+
+# 4. A leading `NAME=value` shell-variable assignment is never a write target.
+# `agentkit=/home/.../skills` tokenized out of the whole command line used to
+# be handed to the worktree-boundary guard as if it were a path, which then
+# failed to resolve the bogus concatenated candidate and denied the call --
+# even though the command's real, unrelated write target sits inside the
+# contracted worktree (issue #397).
+boundary_assignment_out=$(pre_input "$boundary_feature" \
+    "agentkit=/home/user/.claude/plugins/cache/agentkit/skills printf x > $boundary_feature/src/out.txt" \
+    'worktree-boundary-assignment' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_assignment_out")" \
+    'a leading NAME=value shell assignment is never mistaken for a write target (issue #397)'
 
 # Evidence is security-sensitive state: a symlinked evidence parent is refused
 # before mkdir/chmod/append, so a tool call cannot redirect the ledger outside
