@@ -1,0 +1,4 @@
+# Fixture: cap present but different from cap-old-match.toml -- the
+# "differing values silently change parallelism" gate case.
+[features.multi_agent_v2]
+max_concurrent_threads_per_session = 6
