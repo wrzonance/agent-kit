@@ -94,6 +94,8 @@ printf '%s\n' 'posted id=901 url=https://example.invalid/901 verified=exact'
 EOF
 chmod +x "$tmp/comment"
 
+# providers is a JSON array of per-provider decision objects, e.g.
+# '[{"name":"coderabbit","action":"trigger","source":"operator-instruction"}]'.
 write_auth() {
     local providers=$1
     jq -n --argjson providers "$providers" '{
@@ -110,6 +112,10 @@ write_auth_wrong_base() {
     }' >"$tmp/auth.json"
 }
 
+trigger_action() {
+    printf '[{"name":"%s","action":"trigger","source":"operator-instruction"}]' "$1"
+}
+
 run_transition() {
     TRANSITION_LOG="$tmp/transition.log" TRIGGER_BODY="$tmp/trigger.md" \
         REVIEW_TRANSITION_GH="$tmp/gh" \
@@ -119,7 +125,7 @@ run_transition() {
         --authorization-file "$tmp/auth.json" --rounds 1 --interval 1
 }
 
-write_auth '["coderabbit"]'
+write_auth "$(trigger_action coderabbit)"
 : >"$tmp/transition.log"
 out=$(run_transition)
 assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
@@ -157,7 +163,48 @@ assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
 assert_eq '1' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
     'a forged marker still allows the real request to post'
 
-write_auth_wrong_base '["coderabbit"]'
+# Issue #402: a declared trigger-capable provider can be authorized down to
+# observe/disabled for one run (an operator "no trigger" instruction) instead
+# of forcing an all-or-nothing match against the triggerable plan.
+write_auth '[{"name":"coderabbit","action":"disabled","source":"operator-instruction"}]'
+: >"$tmp/transition.log"
+out=$(run_transition)
+assert_contains "$out" 'provider=coderabbit result=DISABLED source=operator-instruction' \
+    'an operator instruction disables a declared trigger-capable provider without pinging it'
+assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
+    'an operator-disabled trigger-capable provider posts no comment'
+assert_eq '0' "$(grep -Ec 'pulls/14/reviews|pulls/14/comments' "$tmp/transition.log" || true)" \
+    'an operator-disabled trigger-capable provider fetches no review evidence'
+
+write_auth '[{"name":"coderabbit","action":"observe","source":"operator-instruction"}]'
+: >"$tmp/transition.log"
+out=$(run_transition)
+assert_contains "$out" 'provider=coderabbit result=OBSERVE_ONLY source=operator-instruction' \
+    'an operator instruction downgrades a declared trigger-capable provider to observe-only'
+assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
+    'an operator-observed trigger-capable provider posts no comment'
+
+write_auth '[{"name":"coderabbit","action":"maybe","source":"operator-instruction"}]'
+: >"$tmp/transition.log"
+set +e
+out=$(run_transition 2>"$tmp/bad-action.err")
+bad_action_rc=$?
+set -e
+assert_eq '1' "$bad_action_rc" 'an unrecognized per-provider action is refused'
+assert_contains "$(cat "$tmp/bad-action.err")" 'authorization' \
+    'the unrecognized-action refusal names the authorization boundary'
+
+write_auth '[{"name":"coderabbit","action":"trigger","source":"operator-instruction"},{"name":"coderabbit","action":"disabled","source":"operator-instruction"}]'
+: >"$tmp/transition.log"
+set +e
+out=$(run_transition 2>"$tmp/dup-name.err")
+dup_name_rc=$?
+set -e
+assert_eq '1' "$dup_name_rc" 'a duplicated provider name in the authorization record is refused'
+assert_contains "$(cat "$tmp/dup-name.err")" 'authorization' \
+    'the duplicate-name refusal names the authorization boundary'
+
+write_auth_wrong_base "$(trigger_action coderabbit)"
 : >"$tmp/transition.log"
 set +e
 out=$(run_transition 2>"$tmp/base-mismatch.err")
@@ -184,7 +231,7 @@ assert_contains "$out" 'provider=github-code-quality result=OBSERVE_ONLY' \
 assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
     'observe-only provider cannot reach comment posting'
 
-write_auth '["coderabbit"]'
+write_auth "$(trigger_action coderabbit)"
 rm -f "$tmp/missing-auth.json"
 set +e
 TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
@@ -205,7 +252,7 @@ assert_eq 'provider-resolve' "$(sed -n '1p' "$tmp/transition.log")" \
 
 # A provider that already emitted a terminal result must never be re-announced
 # as BLOCKED when a later provider in the same run dies.
-write_auth '["coderabbit"]'
+write_auth "$(trigger_action coderabbit)"
 : >"$tmp/transition.log"
 set +e
 out=$(FAIL_EVIDENCE=1 TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
@@ -249,7 +296,7 @@ assert_contains "$(cat "$transition")" 'requires Bash >= 4.4' \
 # provider_spent must be checked against the FIRST evidence fetch, before any
 # bounded activity poll -- an already-spent provider must not burn
 # rounds*interval discovering that.
-write_auth '["coderabbit"]'
+write_auth "$(trigger_action coderabbit)"
 : >"$tmp/transition.log"
 out=$(REVIEW_ACTIVITY=spent TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
     REVIEW_TRANSITION_PROVIDER_CONFIG="$tmp/provider-config" \
