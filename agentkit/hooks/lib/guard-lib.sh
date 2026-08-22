@@ -1421,6 +1421,95 @@ guard_git_config_write_key() {
     printf '%s' "$key"
 }
 
+# Does a `gh api` flag (exact token, no attached `=value` or short form) take
+# a SEPARATE next argument as its value? Used only to walk past that value
+# when hunting for the endpoint positional below -- an attached `--flag=value`
+# or short `-Fvalue` token already carries its value in the same word, so it
+# is never in this list.
+guard_gh_api_value_flag() {
+    case $1 in
+        -X | --method | -F | --field | -H | --header | --hostname | \
+        --input | -q | --jq | -p | --preview | -f | --raw-field | -t | --template)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Is a `gh api` invocation's tokenized word array (named by $1) a direct REST
+# or GraphQL pull-request MERGE mutation -- the same forge action `gh pr
+# merge` reaches, typed a different way (issue #404 adversarial follow-up)?
+# `merge-pr.sh` sends exactly this REST call, but from inside its OWN
+# subprocess: this hook inspects only the agent's Bash command line, never a
+# helper script's internals, so this check can refuse the agent typing the
+# call directly without ever seeing (or blocking) merge-pr.sh's own call.
+#
+# Matched on exact tokens from guard_tokenize_words, so a quoted data
+# argument (a sed/printf payload, a comment mentioning the route) collapses
+# to one word and can never spell out the endpoint or mutation name as
+# separate command tokens -- the same #397 protection extended to this check.
+guard_gh_api_merge_mutation_reason() {
+    local -n __ggamr_words=$1
+    local n=${#__ggamr_words[@]}
+    ((n >= 2)) || return 1
+    [[ ${__ggamr_words[0]} == gh && ${__ggamr_words[1]} == api ]] || return 1
+
+    local i word next method='GET' endpoint=''
+    local -a positionals=()
+    for ((i = 2; i < n; i++)); do
+        word=${__ggamr_words[i]}
+        case $word in
+            -X | --method)
+                if ((i + 1 < n)); then
+                    method=${__ggamr_words[i + 1]}
+                    ((i++))
+                fi
+                continue ;;
+            -X?*) method=${word#-X}; continue ;;
+            --method=*) method=${word#--method=}; continue ;;
+        esac
+        if [[ $word == -* ]]; then
+            guard_gh_api_value_flag "$word" && ((i++))
+            continue
+        fi
+        positionals+=("$word")
+    done
+    endpoint=${positionals[0]-}
+
+    # REST: PUT .../pulls/N/merge -- with or without a leading slash or the
+    # full api.github.com host, OWNER/REPO restricted to the character set a
+    # repo slug actually allows.
+    if [[ ${method^^} == PUT ]] &&
+        [[ $endpoint =~ ^(https://api\.github\.com/)?/?repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+/merge$ ]]; then
+        printf 'merging a pull request through the REST API directly is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+        return 0
+    fi
+
+    # GraphQL: the endpoint literal is "graphql"; the mutation NAME is data
+    # carried in a -f/-F/--raw-field/--field VALUE token -- the payload gh
+    # actually sends -- never the raw command text, so this cannot match a
+    # mention of the same word inside an argument that is not one of those
+    # value tokens.
+    if [[ $endpoint == graphql ]]; then
+        for ((i = 2; i < n; i++)); do
+            word=${__ggamr_words[i]}
+            case $word in
+                -f | -F | --raw-field | --field)
+                    next=${__ggamr_words[i + 1]-}
+                    [[ $next == *mergePullRequest* ]] || continue
+                    ;;
+                -f*=*mergePullRequest* | -F*=*mergePullRequest* | \
+                --raw-field=*mergePullRequest* | --field=*mergePullRequest*)
+                    ;;
+                *) continue ;;
+            esac
+            printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+            return 0
+        done
+    fi
+
+    return 1
+}
+
 guard_destructive_segment_reason() {
     local cmd=$1 stripped flattened normalized
 
@@ -1521,11 +1610,27 @@ guard_destructive_segment_reason() {
     # verb is refused unconditionally, including under an operator override,
     # because the override the operator actually wants is already available
     # through that path; nothing here should ever teach "retype it and it
-    # goes through". `merge-pr.sh` itself calls `gh api -X PUT
-    # repos/.../pulls/N/merge`, which shares no `gh pr merge` token sequence
-    # with this pattern and is therefore never caught by it.
+    # goes through".
+    #
+    # That rule covers the porcelain spelling only -- an adversarial review
+    # found the same forge action reachable, unrefused, by typing the REST or
+    # GraphQL mutation directly (`gh api -X PUT .../pulls/N/merge`, or `gh api
+    # graphql` with a `mergePullRequest` mutation): no `gh pr merge` token
+    # sequence appears in either, so this check alone let an agent bypass the
+    # authorization/gate/serialization contract entirely. guard_gh_api_merge_
+    # mutation_reason below refuses those two shapes for the identical reason.
+    # It does NOT also catch `merge-pr.sh`'s own call: this hook inspects only
+    # the AGENT's Bash command line, and that call runs inside merge-pr.sh's
+    # own subprocess, a separate command line this hook never sees -- so
+    # invoking merge-pr.sh itself (the sanctioned path) is unaffected by
+    # either check.
     if guard_words_contain_sequence words gh pr merge; then
         printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result -- this gh pr merge porcelain form stays refused even under that authorization.'
+        return 0
+    fi
+    local api_merge_reason
+    if api_merge_reason=$(guard_gh_api_merge_mutation_reason words); then
+        printf '%s' "$api_merge_reason"
         return 0
     fi
     if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then

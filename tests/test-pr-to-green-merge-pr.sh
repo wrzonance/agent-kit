@@ -356,15 +356,22 @@ assert_contains "$out" 'branch_delete=ok ref=feat/issue-3' \
     'a branch name that prefixes another branch still deletes via the singular GET route'
 
 # --- issue #404: the one merge rule, enforced against this script's own call
-# The PreToolUse merge guard (agentkit/hooks/lib/guard-lib.sh) refuses the `gh
-# pr merge` porcelain verb unconditionally, but the same guard must never
-# refuse THIS script's own mutation call -- an agent that dispatches
-# merge-pr.sh's actual `gh api -X PUT .../pulls/N/merge` invocation is the
-# sanctioned path, not a bypass of it. Run the real hook against the exact
-# argv shape merge-pr.sh issues (see its `"$GH_BIN" api -X PUT
-# "repos/$repo/pulls/$pr/merge" --input "$merge_body_file"` call above) so a
-# future edit that widens this call into the refused token sequence is caught
-# here, not discovered live.
+# The PreToolUse merge guard (agentkit/hooks/lib/guard-lib.sh) refuses BOTH the
+# `gh pr merge` porcelain verb AND the direct REST/GraphQL mutation it sends
+# -- an adversarial review found the REST form (exactly the call this script
+# itself makes -- see its `"$GH_BIN" api -X PUT "repos/$repo/pulls/$pr/merge"
+# --input "$merge_body_file"` call above) was an unrefused bypass when an
+# AGENT typed it directly, since it shares no `gh pr merge` token sequence.
+#
+# That refusal is scoped to the agent's own Bash command line, never to a
+# helper script's internals: the hook inspects only the command an agent
+# actually runs, and merge-pr.sh's own `gh` invocation happens inside ITS
+# subprocess, on a command line this hook never sees. The `run_merge` tests
+# throughout this file already prove that internal call succeeds end to end
+# (the stub `gh` above receives and answers it); what remains to prove here is
+# that the SAME call, typed directly as an agent's Bash command instead of
+# dispatched through this script, is refused -- exactly the shape the P1
+# finding reported.
 hooks="$root/agentkit/hooks"
 guard_repo=$(mktemp -d "$tmp/guard-repo.XXXXXX")
 git -C "$guard_repo" init -q
@@ -378,10 +385,13 @@ guard_decision() {
     jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$out"
 }
 
-assert_eq 'allow' \
+assert_eq 'deny' \
     "$(guard_decision 'gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json')" \
-    "the guard allows merge-pr.sh's own gh api merge call (issue #404)"
+    "an agent typing this script's own REST mutation directly is refused, not a bypass (issue #404)"
 assert_eq 'deny' "$(guard_decision 'gh pr merge 9 --squash')" \
     'the same guard still refuses the gh pr merge porcelain verb (issue #404)'
+assert_eq 'allow' \
+    "$(guard_decision "$merge_pr --repo owner/repo --pr 9 --head-sha $HEAD_SHA --base main --merge-method squash --authorization-file /tmp/auth.json --gate-result /tmp/gate.txt")" \
+    'invoking this script itself -- the sanctioned entry point -- is never denied (issue #404)'
 
 finish

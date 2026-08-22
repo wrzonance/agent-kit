@@ -1003,18 +1003,57 @@ out=$(pre_input "$repo" \
 assert_eq 'allow' "$(decision "$out")" \
     'an authorization comment mentioning the phrase as data is not the command (issue #404)'
 
-# merge-pr.sh's own mutation call is a distinct token sequence -- `gh api -X
-# PUT .../pulls/N/merge` shares no `gh pr merge` sequence with the porcelain
-# pattern above -- so the sanctioned path is never itself caught by the guard
-# that blocks the porcelain form.
-out=$(pre_input "$repo" \
+# --- issue #404 adversarial follow-up: the porcelain check alone is a P1 ---
+# bypass -- the identical forge action is reachable, unrefused, by typing the
+# REST or GraphQL mutation `gh pr merge` itself sends. None of these three
+# spellings share a `gh pr merge` token sequence, so guard_words_contain_
+# sequence alone let every one of them through.
+for direct_merge in \
     'gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    'gh api --method PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    'gh api -XPUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json'; do
+    out=$(pre_input "$repo" "$direct_merge" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "the direct REST merge mutation is refused the same as the porcelain verb: $direct_merge"
+    assert_contains "$out" 'merge-pr.sh' \
+        "and names the same sanctioned alternative: $direct_merge"
+done
+
+out=$(pre_input "$repo" \
+    "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the equivalent GraphQL mergePullRequest mutation is refused too (issue #404)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and names the sanctioned alternative for the GraphQL form (issue #404)'
+
+# The neighbours that must still run: a read of the same endpoint, a PUT to a
+# different endpoint, and merge-pr.sh's own subprocess call are none of them
+# the refused shape.
+for still_allowed in \
+    'gh api -X GET repos/owner/repo/pulls/9/merge' \
+    'gh api repos/owner/repo/pulls/9/merge' \
+    'gh api -X PUT repos/owner/repo/pulls/9/requested_reviewers'; do
+    out=$(pre_input "$repo" "$still_allowed" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a non-merge or read-only gh api call is unaffected: $still_allowed"
+done
+
+# A data string mentioning the REST route as prose is not the command,
+# same argument as the porcelain case above.
+out=$(pre_input "$repo" \
+    'printf "note: do not call gh api -X PUT repos/o/r/pulls/9/merge directly\n" >> gate.txt' \
     | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
-    "merge-pr.sh's real gh api merge call is never denied (issue #404)"
+    'a data string mentioning the REST route as prose is not the command (issue #404)'
 
-# And running the script itself -- the sanctioned entry point -- is likewise
-# unaffected by the porcelain-verb rule, regardless of the flags it is given.
+# Invoking merge-pr.sh itself -- the sanctioned entry point -- is unaffected
+# by either rule: this command line names a script, not a `gh api`/`gh pr`
+# invocation, regardless of the flags it is given. The hook never sees
+# merge-pr.sh's OWN internal `gh api -X PUT` call at all -- that call runs
+# inside the script's own subprocess, on a command line this hook never
+# inspects -- which is why refusing the agent typing it directly (above) does
+# not also refuse the sanctioned path.
 out=$(pre_input "$repo" \
     'agentkit/skills/pr-to-green/scripts/merge-pr.sh --repo owner/repo --pr 9 --head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --base main --merge-method squash --authorization-file /tmp/auth.json --gate-result /tmp/gate.txt' \
     | "$hooks/pre-tool-use.sh" 2>/dev/null)

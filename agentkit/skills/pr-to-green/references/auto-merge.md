@@ -139,22 +139,35 @@ The repository's PreToolUse hook (`agentkit/hooks/lib/guard-lib.sh`) enforces
 one rule for every agent, on every invocation, independent of this skill: an
 agent-driven merge is sanctioned **only** through this script, `merge-pr.sh`,
 bound to a confirmed `--auto-merge` authorization record plus a `gate=PASS`
-review-completion result. The `gh pr merge` porcelain verb is refused
-unconditionally — including after an explicit operator authorization, and
-including a data string that merely mentions those three words (a quoted
-sed/printf argument never becomes a command). That refusal never lifts on a
-retry, by design: the retry the operator actually wants is this script, run
-through the consent, gate, and serialization contract already documented
-above, not the same porcelain verb typed again. `merge-pr.sh`'s own mutation
-call — `gh api -X PUT repos/OWNER/REPO/pulls/N/merge` — is a distinct token
-sequence the guard never matches, so this path is never itself blocked.
+review-completion result. Every other way an agent could reach the same forge
+action is refused unconditionally — including after an explicit operator
+authorization, and including a data string that merely mentions the refused
+words (a quoted sed/printf argument never becomes a command):
+
+- The `gh pr merge` porcelain verb.
+- The direct REST mutation the porcelain verb itself calls —
+  `gh api -X PUT repos/OWNER/REPO/pulls/N/merge` (`--method PUT` and the
+  attached `-XPUT` form included) — typed by the agent as its own command.
+- The equivalent GraphQL mutation — `gh api graphql` carrying a
+  `mergePullRequest` field value.
+
+None of those refusals lift on a retry, by design: the retry the operator
+actually wants is this script, run through the consent, gate, and
+serialization contract already documented above, not the same call typed a
+different way. `merge-pr.sh`'s own mutation call is that identical REST
+request, and the guard does not refuse it: the hook inspects only the
+**agent's own Bash command line**, never a helper script's internals, so
+`merge-pr.sh`'s subprocess call is a command line this hook never sees.
+Invoking `merge-pr.sh` itself — the sanctioned entry point — is therefore
+unaffected by any of the three refusals above, regardless of what it does
+internally.
 
 ## Still forbidden
 
 Identical to the non-`--auto-merge` prohibitions, restated because a merge
 step raises the cost of getting them wrong: force-push, history rewrite,
-merging a `BLOCKED` item, bypassing branch protection, the `gh pr merge`
-porcelain verb (see "PreToolUse guard alignment" above), or merging outside
-the confirmed queue. `merge-pr.sh` never retries around a forge refusal — a
-branch-protection-required-approval refusal, a stale-sha 409, or a
-not-mergeable 405 is reported verbatim and is a named stop.
+merging a `BLOCKED` item, bypassing branch protection, any of the three
+directly-typed merge forms (see "PreToolUse guard alignment" above), or
+merging outside the confirmed queue. `merge-pr.sh` never retries around a
+forge refusal — a branch-protection-required-approval refusal, a stale-sha
+409, or a not-mergeable 405 is reported verbatim and is a named stop.
