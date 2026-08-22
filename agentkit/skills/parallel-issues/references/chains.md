@@ -8,6 +8,7 @@
 - Merge-down after a predecessor advances
 - Merge order and the stacked-PR retarget
 - Never send a post-push instruction that reads as a rewrite
+- Contract-inheritance refusal and recovery
 
 Read this when `--auto-serialize` turns Step 3 conflicts into chains, and again at Phase 2
 dispatch time and at the ready-flip handoff. `SKILL.md` keeps the pinned mechanics (the
@@ -187,3 +188,41 @@ the worker itself is instructed to do. Confirmed 2026-08-21: a pre-push "fix the
 is wrong" instruction was still sitting in a worker's inbox after its push and read as license
 to force-push; word every post-push correction as a request for a new commit, never as a
 description of what the existing one should have said.
+
+## Contract-inheritance refusal and recovery
+
+A long `--auto-serialize` chain is by construction long-running: each link waits for its
+predecessor's pushed commit before its own worktree is created. `create-issue-worktree.sh`
+carries the ROOT checkout's own `.agent/env-contract.txt` into each new worktree with
+`agent-preflight.sh --inherit-session`, since `sandbox=`/`tls=`/`caches=` describe the
+*session* (which process is running commands, what it can reach), not any one worktree, and a
+fresh per-worktree probe can disagree with the root while being truthful for itself. That
+carry-forward is only trusted from a source recent enough and written by the same harness/CLI
+— there is no cryptographic session identity to check instead. The root's own contract is
+written once, at session start, and by a chain's third-or-later link it is routinely older
+than the inheritance window even though nothing about the session actually changed.
+
+Before this was fixed, staleness discarded the recorded root contract outright and fell back
+to an unqualified fresh probe in the new worktree's own process. If that fresh probe was less
+restrictive on any field than the (older, more restrictive) root contract — for example a root
+recorded as `active=unknown measured-by=hook` against a worktree that freshly measured
+`active=no measured-by=agent-shell` — `compose-worker-prompt.sh` refused to compose the
+worker prompt at all, with the reason `worktree-contract-less-restrictive-than-root` and no
+documented way forward.
+
+`agent-preflight.sh` now revalidates a same-harness stale source instead of discarding it:
+past the window it still probes fresh, but keeps whichever of the recorded and fresh readings
+is more restrictive on every field (the same never-widen comparison `apply_never_widen`
+already uses for a worktree's own prior contract), so an ordinary chain link no longer trips
+this refusal. Harness identity is still a hard requirement — a source written by a different
+harness/CLI is never inherited or revalidated, only re-probed fresh — and that case, or any
+other refusal that still reaches `compose-worker-prompt.sh`, has this recovery sequence:
+
+1. Re-run preflight at the ROOT checkout so its own `.agent/env-contract.txt` reflects the
+   current session.
+2. Re-run `agent-preflight.sh --worktree <worktree> --inherit-session <root-env-contract>`
+   for the affected worktree.
+3. Re-run `compose-worker-prompt.sh` for that link.
+
+This sequence is cheap and safe to repeat; nothing about it mutates git state or requires
+re-dispatching the link's lead.

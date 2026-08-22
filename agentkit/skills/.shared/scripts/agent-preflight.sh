@@ -115,7 +115,11 @@ Options:
                      second measurement in a differently-privileged process
                      is exactly how a session ends up with contradictory
                      contracts. A key missing from FILE falls back to a
-                     fresh probe for that key only.
+                     fresh probe for that key only. Trusted only from a
+                     same-harness source; once it is also older than
+                     INHERIT_SESSION_MAX_AGE_MINUTES, sandbox=/caches= are
+                     revalidated against a fresh probe (the more restrictive
+                     reading wins) rather than trusted or discarded outright.
   --measured-from W  Whose environment this describes: "agent-shell"
                      (default, the shell that will run commands; "agent" is
                      accepted as a backward-compatible alias for callers
@@ -731,6 +735,25 @@ caches_restriction_score() {
     esac
 }
 
+# caches='s counterpart to lib/sandbox-comparator.sh's sandbox_widened (issue
+# #372): whether $2 (a fresh caches= measurement) is LESS restrictive than $1
+# (a recorded one). Extracted out of apply_never_widen so inherit_or_probe()
+# can reuse the exact same comparison when revalidating a stale
+# --inherit-session source, rather than a second, drifting copy of the score
+# comparison living in each call site. Prints a token on stdout and returns
+# success when widened, mirroring sandbox_widened's contract, so both
+# comparators can be invoked identically by name.
+caches_widened() {
+    local recorded="$1" fresh="$2" old_score new_score
+    old_score=$(caches_restriction_score "$recorded")
+    new_score=$(caches_restriction_score "$fresh")
+    if (( new_score < old_score )); then
+        printf 'caches'
+        return 0
+    fi
+    return 1
+}
+
 # Never let a later, less-privileged-context-blind measurement overwrite a
 # more restrictive one already recorded for this worktree (issue #332): the
 # bug this guards against is real -- three preflight runs on one machine, one
@@ -762,10 +785,7 @@ apply_never_widen() {
                             fi
                         fi
                     else
-                        local old_score new_score
-                        old_score=$(caches_restriction_score "$prev_line")
-                        new_score=$(caches_restriction_score "$new_line")
-                        if (( new_score < old_score )); then
+                        if caches_widened "$prev_line" "$new_line" >/dev/null; then
                             note "keeping the more-restrictive recorded caches= (a fresh measurement would widen it): recorded=[$prev_line] fresh=[$new_line]"
                             OUT_LINES[i]="$prev_line"
                         fi
@@ -793,22 +813,55 @@ apply_never_widen() {
 # way, and agreement on WHICH harness/CLI wrote it. Neither proves same-
 # session; both are cheap, real signals, and their absence is disclosed
 # rather than silently accepted.
+#
+# issue #372: age alone used to be a hard cutoff -- past the window, the
+# recorded source was discarded outright and every line was re-probed fresh,
+# harness match or not. That is exactly wrong for a long --auto-serialize
+# chain: each link's worktree is created minutes after the last, and by the
+# third-or-later link the root's own contract (written once, at session
+# start) is reliably past the window even though nothing about the session
+# actually changed. The worktree then measures sandbox= fresh in its own
+# process, which can legitimately disagree with the root's -- and
+# compose-worker-prompt.sh's separate worktree-vs-root check then refuses
+# with worktree-contract-less-restrictive-than-root, with no documented way
+# forward (see references/chains.md).
+#
+# Same-harness identity is still a hard requirement -- a different harness/
+# CLI wrote the source, so its fields are not even known to mean the same
+# thing here, and age cannot rescue that. But same-harness alone already
+# established the source is *structurally* trustworthy; staleness only casts
+# doubt on whether it is still the MOST restrictive truth available, not on
+# whether it is a legitimate reading at all. So past the window, a same-
+# harness source is no longer treated as all-or-nothing: sandbox=/caches=
+# are revalidated -- probed fresh and compared against the recorded line with
+# the same never-widen comparators apply_never_widen already uses (
+# sandbox_widened / caches_widened) -- and whichever reading is more
+# restrictive on every field wins (see inherit_or_probe()). That can never
+# produce a worktree contract less restrictive than the recorded root line:
+# either the fresh probe was already at least as restrictive (it wins, and
+# the copy gets refreshed), or it wasn't (the recorded line is kept, exactly
+# as stale-but-restrictive as before) -- which is the actual invariant this
+# guards, not "inherit only when provably fresh". tls= carries no
+# restrictiveness ordering (existing comment on apply_never_widen), so it
+# still falls back to a fresh probe on staleness; there is nothing to
+# revalidate it against.
 readonly INHERIT_SESSION_MAX_AGE_MINUTES=30
-INHERIT_SESSION_VERIFIED=-1 # memoised: -1 unknown, 0 no, 1 yes
+INHERIT_SESSION_STATE=-1 # memoised: -1 not yet computed, 0 unusable (missing/unreadable/
+                          # harness-mismatch), 1 verified fresh and same-harness (inherit
+                          # verbatim), 2 same-harness but past the freshness window
+                          # (revalidate sandbox=/caches= against a fresh probe instead of
+                          # trusting or discarding the recorded line outright)
 
-inherit_session_verified() {
-    if (( INHERIT_SESSION_VERIFIED >= 0 )); then
-        (( INHERIT_SESSION_VERIFIED ))
-        return
-    fi
-    INHERIT_SESSION_VERIFIED=0
+compute_inherit_session_state() {
+    (( INHERIT_SESSION_STATE < 0 )) || return 0
+    INHERIT_SESSION_STATE=0
     if [[ -z "$ARG_INHERIT_SESSION" || ! -f "$ARG_INHERIT_SESSION" ||
         -L "$ARG_INHERIT_SESSION" || ! -r "$ARG_INHERIT_SESSION" ]]; then
-        return 1
+        return 0
     fi
+    local stale=0
     if [[ -z "$(find "$ARG_INHERIT_SESSION" -mmin "-$INHERIT_SESSION_MAX_AGE_MINUTES" 2>/dev/null)" ]]; then
-        note "not inheriting from $ARG_INHERIT_SESSION: older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m, so it cannot be verified as belonging to this session -- falling back to a fresh probe for sandbox=/tls=/caches="
-        return 1
+        stale=1
     fi
     local src_harness current_harness harness_id_script
     harness_id_script="$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh"
@@ -818,10 +871,14 @@ inherit_session_verified() {
     fi
     if [[ -z "$src_harness" || -z "${current_harness:-}" || "$src_harness" != "$current_harness" ]]; then
         note "not inheriting from $ARG_INHERIT_SESSION: its harness= (${src_harness:-none}) does not match this session's (${current_harness:-unknown}) -- falling back to a fresh probe for sandbox=/tls=/caches="
-        return 1
+        return 0
     fi
-    INHERIT_SESSION_VERIFIED=1
-    return 0
+    if (( stale )); then
+        note "$ARG_INHERIT_SESSION is older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m -- same harness though, so sandbox=/caches= are revalidated against a fresh probe (whichever reading is more restrictive wins) instead of being trusted verbatim or discarded outright; tls= has no restrictiveness ordering, so it falls back to a fresh probe"
+        INHERIT_SESSION_STATE=2
+    else
+        INHERIT_SESSION_STATE=1
+    fi
 }
 
 # The sandbox=, tls=, and caches= lines are properties of the SESSION -- which
@@ -831,19 +888,57 @@ inherit_session_verified() {
 # process ran that particular preflight call (agent shell vs. an
 # escalated/approval-granted one) produced a truthful-for-itself but
 # disagreeing answer. --inherit-session carries the already-authoritative
-# lines forward verbatim instead -- but only once inherit_session_verified
-# has judged the source recent and same-harness enough to trust.
+# lines forward verbatim once compute_inherit_session_state has judged the
+# source recent and same-harness enough to trust outright (state 1).
+#
+# $comparator (issue #372) is one of sandbox_widened / caches_widened, or
+# omitted for tls= (which has neither -- see the comment above
+# INHERIT_SESSION_MAX_AGE_MINUTES). It is only consulted in state 2: the
+# source is same-harness but past the freshness window, so it is revalidated
+# rather than trusted or discarded -- probe fresh, and keep whichever of the
+# recorded/fresh readings the comparator says is more restrictive. This can
+# never yield a result less restrictive than the recorded line.
 inherit_or_probe() {
-    local prefix="$1" probe_fn="$2" line=""
-    if inherit_session_verified; then
+    local prefix="$1" probe_fn="$2" comparator="${3:-}" line
+    compute_inherit_session_state
+    if (( INHERIT_SESSION_STATE == 1 )); then
         line="$(grep -m1 "^$prefix" -- "$ARG_INHERIT_SESSION" 2>/dev/null || true)"
+        if [[ -n "$line" ]]; then
+            emit "$line"
+            note "inherited $prefix from $ARG_INHERIT_SESSION verbatim (session-scoped fact, verified recent and same-harness, not re-measured)"
+            return
+        fi
+    elif (( INHERIT_SESSION_STATE == 2 )) && [[ -n "$comparator" ]]; then
+        line="$(grep -m1 "^$prefix" -- "$ARG_INHERIT_SESSION" 2>/dev/null || true)"
+        if [[ -n "$line" ]]; then
+            local idx fresh regressed_field
+            idx=${#OUT_LINES[@]}
+            "$probe_fn"
+            fresh="${OUT_LINES[$idx]}"
+            # Fail CLOSED, not open (issue #372 review finding): a comparator
+            # that fails to run for any reason -- missing lib/sandbox-
+            # comparator.sh, a future comparator name typo'd at a call site --
+            # must never read as "not widened". Guarding with `declare -F`
+            # first (the same check apply_never_widen already uses to
+            # disclose a missing sandbox_widened) lets this branch tell
+            # "comparator unavailable" apart from "comparator ran and found
+            # no regression" before ever invoking it, so an unavailable
+            # comparator keeps the recorded line -- the safe, more-
+            # restrictive default -- instead of an unguarded command-not-
+            # found exit status silently taking the "fresh wins" branch.
+            if ! declare -F "$comparator" >/dev/null; then
+                OUT_LINES[idx]="$line"
+                note "cannot verify the $prefix revalidation guard: $comparator is not defined -- keeping the recorded (older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m) line rather than treat an unmeasurable comparison as not widened (recorded=[$line] fresh=[$fresh])"
+            elif regressed_field=$("$comparator" "$line" "$fresh"); then
+                OUT_LINES[idx]="$line"
+                note "revalidated $prefix from $ARG_INHERIT_SESSION: kept the recorded line -- older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m but still the more restrictive reading; a fresh probe would widen field '$regressed_field' (recorded=[$line] fresh=[$fresh])"
+            else
+                note "revalidated $prefix from $ARG_INHERIT_SESSION: the fresh probe is at least as restrictive, so it replaces the recorded (older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m) copy (recorded=[$line] fresh=[$fresh])"
+            fi
+            return
+        fi
     fi
-    if [[ -n "$line" ]]; then
-        emit "$line"
-        note "inherited $prefix from $ARG_INHERIT_SESSION verbatim (session-scoped fact, verified recent and same-harness, not re-measured)"
-    else
-        "$probe_fn"
-    fi
+    "$probe_fn"
 }
 
 dir_writable_word() {
@@ -1236,9 +1331,9 @@ main() {
     probe_instructions
     probe_git
     probe_gh
-    inherit_or_probe 'sandbox=' probe_sandbox
+    inherit_or_probe 'sandbox=' probe_sandbox sandbox_widened
     inherit_or_probe 'tls=' probe_tls
-    inherit_or_probe 'caches=' probe_caches
+    inherit_or_probe 'caches=' probe_caches caches_widened
     probe_runners
     probe_runtime_pin
     probe_harness
