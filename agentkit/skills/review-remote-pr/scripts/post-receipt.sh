@@ -40,6 +40,17 @@
 #       expected, since a wrong root is the far more common failure than a
 #       missing file.
 #
+#       A normal (non-skip) publish still requires a completed
+#       adversarial.result.json beside the findings file, proving
+#       adversarial-run.sh actually ran. A verified skip (--skip-rationale
+#       together with --oracle) is different: adversarial-run.sh was never
+#       told to run, so publish writes a small status:"skipped" result
+#       artifact to that same path itself instead of requiring one. An
+#       existing artifact there is accepted only when it already matches this
+#       skip's rationale and oracle verbatim; anything else (a completed
+#       review, a stale result from a different skip) is refused rather than
+#       silently overwritten.
+#
 # Exit status:
 #   0   success (precheck: spent; publish: comment posted and verified)
 #   1   evidence unavailable: jq missing, --comments/findings-file
@@ -103,7 +114,10 @@ Probe mode is rejected before any receipt transport.
 The findings file is one JSON record per line. A fixed record has title,
 verdict=fixed, and sha; a declined record has title, verdict=declined, and
 rationale. Use an empty file for a clean review. --skip-rationale and --oracle
-are optional and must be given together, for a verified trivial-diff skip.
+are optional and must be given together, for a verified trivial-diff skip. A
+verified skip does not require a prior adversarial-run.sh call: publish writes
+its own status:"skipped" result artifact beside the findings file instead of
+requiring the completed one only the runner produces.
 
 Exit status: see the script header comment.
 EOF
@@ -305,10 +319,21 @@ validate_publish_args() {
 # receipt could therefore be published without adversarial-run.sh ever running.
 # The ledger lives beside the runner's result, so require that result here and
 # derive the counts from the ledger's own severities.
+#
+# A verified skip is the one path that is deliberately allowed to publish
+# without adversarial-run.sh ever having run -- that is the entire point of
+# --skip-rationale/--oracle. Requiring the runner's completed result for that
+# path made the documented-skip contract a dead end (issue #391): the agent
+# had to either run the review it was told it could skip, or fabricate the
+# result file. write_skip_result mints the result artifact itself instead.
 validate_runner_provenance() {
     local run_dir result
     run_dir=$(dirname -- "$FINDINGS_FILE")
     result=$run_dir/adversarial.result.json
+    if [[ -n $SKIP_RATIONALE ]]; then
+        write_skip_result "$result"
+        return 0
+    fi
     [[ -f $result && ! -L $result && -O $result ]] ||
         evidence_unavailable "a validated adversarial review result is required beside the findings file: $result"
     jq -s -e '
@@ -322,6 +347,39 @@ validate_runner_provenance() {
             (.verdict.findings | type) == "array")
     ' "$result" >/dev/null 2>&1 ||
         evidence_unavailable "adversarial review result is not a completed validated result: $result"
+}
+
+# Writes (or idempotently accepts) the verified-skip result artifact at PATH.
+# An existing artifact is trusted only when it already matches this skip's
+# rationale and oracle verbatim -- a completed review result, or a stale skip
+# result from a different rationale/oracle, is refused rather than silently
+# overwritten, since this path is durable evidence that a review either ran or
+# was deliberately, verifiably skipped.
+write_skip_result() {
+    local path=$1 tmp
+    if [[ -e $path ]]; then
+        [[ -f $path && ! -L $path && -O $path ]] ||
+            evidence_unavailable "a result artifact blocks the verified-skip result: $path"
+        jq -e --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" '
+            type == "object" and .status == "skipped" and
+            .skipRationale == $rationale and .oracle == $oracle
+        ' "$path" >/dev/null 2>&1 && return 0
+        evidence_unavailable "an existing adversarial review result does not match this verified skip: $path"
+    fi
+    tmp="$path.tmp"
+    if [[ -e $tmp ]]; then
+        [[ -f $tmp && ! -L $tmp && -O $tmp ]] ||
+            evidence_unavailable "refusing to reuse a result temp artifact not owned by this user: $tmp"
+        rm -f -- "$tmp" ||
+            evidence_unavailable "could not clear a stale result temp artifact: $tmp"
+    fi
+    jq -cn --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" \
+        '{status: "skipped", skipRationale: $rationale, oracle: $oracle}' >"$tmp" ||
+        evidence_unavailable "could not encode the verified-skip result artifact: $tmp"
+    chmod 600 -- "$tmp" ||
+        evidence_unavailable "could not secure the verified-skip result artifact: $tmp"
+    mv -f -- "$tmp" "$path" ||
+        evidence_unavailable "could not publish the verified-skip result artifact: $path"
 }
 
 
