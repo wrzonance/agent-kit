@@ -1404,6 +1404,29 @@ assert_eq 'deny' "$(decision "$out")" 'a repository-declared path is protected t
 out=$(edit_input "$ext" '.github/workflows/ci.yml' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'and declaring paths does not replace the defaults'
 
+# --- absence of .agent/config.env must not fail the guard open (issue #368) --
+# guard_protected_match() used to declare `declared` INSIDE the
+# `-r $root/.agent/config.env` branch but read it after the branch closed.
+# Under `set -uo pipefail` an un-onboarded repository -- one with no
+# .agent/config.env at all -- tripped "unbound variable", the hook's ERR trap
+# fired, and the whole guard silently allowed. Absence of .agent/config.env is
+# the default case, not an error, and must apply the same built-in protected
+# list as an onboarded repository, with the same denial.
+noconf=$(make_repo)
+out_absent=$(edit_input "$noconf" '.github/workflows/ci.yml' "$(fresh_sid)" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out_absent")" \
+    'a protected edit is denied with no .agent/config.env present'
+
+printf 'AGENT_REPO_SLUG=e/e\n' > "$noconf/.agent/config.env"
+out_present=$(edit_input "$noconf" '.github/workflows/ci.yml' "$(fresh_sid)" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out_present")" \
+    'the same edit is denied once .agent/config.env exists but declares nothing extra'
+
+assert_eq "$out_absent" "$out_present" \
+    'the denial carries the same reason whether or not .agent/config.env exists'
+
 # The patch format carries its paths inside the payload text, not in a field.
 patch=$(jq -nc --arg cwd "$repo" --arg sid "$(fresh_sid)" \
     '{cwd:$cwd,hook_event_name:"PreToolUse",session_id:$sid,tool_name:"apply_patch",

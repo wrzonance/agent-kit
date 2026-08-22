@@ -1794,8 +1794,11 @@ guard_protected_match() {
     # same rule covers both forms an agent might use.
     [[ -z $root || $candidate != "$root"/* ]] || candidate=${candidate#"$root"/}
 
+    # Declared unconditionally: a repository with no .agent/config.env (the
+    # default, un-onboarded case) must fall through to the built-in list below
+    # rather than trip `set -u` and skip the guard entirely (issue #368).
+    local declared=''
     if [[ -n $root && -r $root/.agent/config.env ]]; then
-        local declared
         declared=$(sed -n 's/^[[:space:]]*AGENT_PROTECTED_PATHS[[:space:]]*=[[:space:]]*//p' \
             "$root/.agent/config.env" 2> /dev/null | tail -1)
         if [[ -n $declared ]]; then
