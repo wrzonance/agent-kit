@@ -2036,4 +2036,104 @@ assert_eq 'allow' "$(decision "$evidence_symlink_out")" \
 assert_eq yes "$( [[ ! -e $evidence_outside/paths-touched.ndjson ]] && printf yes || printf no )" \
     'a symlinked evidence parent receives no paths-touched record'
 
+# --- regression: guard_resolve_roots must not fail the hook open when a
+# parsed cd/-C candidate directory does not exist (issue #369). Its last
+# statement used to be a bare `[[ -d $candidate ]] && guard_add_root
+# "$candidate"` -- an ordinary "this optional extra root does not exist" is
+# expected, not an error, but that shape made the FUNCTION's own return status
+# track the test's falseness. Both hooks call it as a bare simple command
+# under `trap ... ERR`, so a missing candidate directory tripped the trap and
+# fell straight into allow/emit_empty before any guard had run, silently
+# skipping every downstream check for that command.
+nonexistent_dir_369="$tmp/nonexistent-dir-issue-369"
+
+# Unit-level: the function itself must always return 0, regardless of whether
+# the parsed candidate directory exists.
+guard_rc_369=1
+(
+    source "$hooks/lib/guard-lib.sh"
+    guard_resolve_roots "$repo" "cd $nonexistent_dir_369 && ls"
+) > /dev/null 2>&1
+guard_rc_369=$?
+assert_eq '0' "$guard_rc_369" \
+    'guard_resolve_roots returns 0 when the parsed candidate directory does not exist'
+
+# End-to-end: PreToolUse must still classify and advise on the scope
+# violation instead of failing the hook open. cd into a directory that does
+# not exist, then read a file outside the workspace -- the ERR trap used to
+# fire on the guard_resolve_roots call before this classification ever ran,
+# so the hook emitted a bare {} with no advisory at all.
+guard_log_369="$tmp/guard-log-369"
+mkdir -p "$guard_log_369"
+cd369_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cd $nonexistent_dir_369 && cat /home/user-sibling/notes" \
+    "$cd369_sid" | GUARD_LOG_ROOT="$guard_log_369" "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a cd into a nonexistent directory does not deny the out-of-scope read that follows'
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'PreToolUse emits the scope advisory instead of a bare {} for a nonexistent cd target'
+assert_eq yes "$( [[ ! -e $guard_log_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'PreToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
+
+# PostToolUse calls guard_resolve_roots on the same command shape and must
+# stay equally silent about it.
+guard_log_post_369="$tmp/guard-log-post-369"
+mkdir -p "$guard_log_post_369"
+post_out_369=$(post_input "$repo" "cd $nonexistent_dir_369 && ls" "$(fresh_sid)" |
+    GUARD_LOG_ROOT="$guard_log_post_369" "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_hook_output "$post_out_369" post-tool-use \
+    'PostToolUse still emits schema-valid JSON for a nonexistent cd target'
+assert_eq yes "$( [[ ! -e $guard_log_post_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'PostToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
+
+# --- regression: guard_log_error must resolve the repository state root,
+# never $PWD or an otherwise-inherited cwd, and must never leave a stray log
+# nested under a skills tree (issue #370). guard_log_error used to resolve
+# ${GUARD_LOG_ROOT:-$PWD}, and GUARD_LOG_ROOT is assigned nowhere in the
+# repository -- so $PWD, the hook PROCESS's inherited working directory, was
+# the only behaviour. An agent that had cd'd into agentkit/skills/ left a hook
+# process inheriting that directory, and the stray log it wrote there was
+# neither gitignored (root .gitignore's `.agent/*` is anchored to the
+# repository root) nor excluded from the plugin build, which copies the
+# skills tree wholesale.
+repo_370=$(make_repo)
+skills_like_370="$repo_370/agentkit/skills/example-skill"
+mkdir -p "$skills_like_370"
+
+# Unit-level: with roots resolved from a cwd inside a skills-tree-shaped
+# directory -- exactly what guard_resolve_roots does early in each hook --
+# guard_log_error must write to the resolved repository state root, never
+# nested under the skills-tree cwd itself.
+(
+    source "$hooks/lib/guard-lib.sh"
+    # shellcheck disable=SC2034  # read by guard_log_error, sourced from a
+    # dynamic path shellcheck cannot follow
+    GUARD_HOOK_NAME=test-370
+    guard_resolve_roots "$skills_like_370" ''
+    guard_log_error 'unit-370'
+) > /dev/null 2>&1
+
+assert_eq yes "$( [[ ! -e $skills_like_370/.agent ]] && printf yes || printf no )" \
+    'guard_log_error with a cwd inside the skills tree writes no .agent/ there'
+assert_eq yes "$( [[ ! -e $repo_370/agentkit/skills/.agent ]] && printf yes || printf no )" \
+    'nor at the skills tree root'
+assert_eq yes "$( [[ -f $repo_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'the log instead lands at the resolved repository state root'
+assert_contains "$(cat "$repo_370/.agent/logs/hook-errors.jsonl" 2> /dev/null)" 'unit-370' \
+    'and carries the reported status'
+
+# When roots were never resolved at all -- the ERR trap firing before
+# guard_resolve_roots has run -- there is no known location to write to.
+# guard_log_error must write nothing rather than fall back to $PWD, even when
+# $PWD happens to already contain a real .agent/ directory of its own.
+unresolved_370=$(make_repo)
+(
+    cd "$unresolved_370" || exit 1
+    source "$hooks/lib/guard-lib.sh"
+    guard_log_error 'unresolved-370'
+) > /dev/null 2>&1
+# shellcheck disable=SC2016  # $PWD is the literal text being matched, not expanded
+assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
+
 finish

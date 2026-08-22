@@ -135,6 +135,17 @@ assert_not_contains "$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')
     'generated command lines carry no unattended trust flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
 
+# History freeze (issue #374): a worker's pushed commit becomes a chain
+# successor's base, so the composed issue-lead prompt must carry the freeze
+# rule in the worker's own voice -- naming both the forbidden actions and the
+# stranding consequence -- not just the reference doc's prose.
+assert_contains "$prompt" 'do not amend, rebase, reset, or force-push' \
+    'issue-lead composed prompt carries the post-push history-freeze rule'
+assert_contains "$prompt" 'report the problem and stop' \
+    'issue-lead composed prompt tells the worker to report rather than rewrite'
+assert_contains "$prompt" 'stranding that successor is the cost of every rewrite' \
+    'issue-lead composed prompt names the chain-successor stranding consequence'
+
 # Declared write set (issue #224 WS2a): the token always renders as pinned
 # globs, never as a leftover placeholder, and never as an improvised boundary.
 assert_not_contains "$prompt" '__DECLARED_WRITE_SET__' \
@@ -228,6 +239,16 @@ assert_not_contains "$fix_prompt" "$shared_reference" \
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
 assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
+
+# History freeze (issue #374): a fix-batch worker also commits and pushes its
+# own branch, so it carries the same post-push freeze rule, adapted for a
+# worker with no chain-successor concept of its own.
+assert_contains "$fix_prompt" 'do not amend, rebase, reset, or force-push' \
+    'fix-batch composed prompt carries the post-push history-freeze rule'
+assert_contains "$fix_prompt" 'report the problem and stop' \
+    'fix-batch composed prompt tells the worker to report rather than rewrite'
+assert_contains "$fix_prompt" 'stranding it is the cost of even a cosmetic rewrite' \
+    'fix-batch composed prompt names the stranding consequence'
 
 assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$compose" \
     --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \

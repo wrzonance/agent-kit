@@ -124,6 +124,13 @@ assert_eq '' "$found" 'no test material is packaged'
 assert_eq 'no' "$([[ -e $stage/agentkit/skills/.system ]] && echo yes || echo no)" \
     'the vendored system-skills tree is not packaged'
 
+# --- no stray hook-error log ships ------------------------------------------
+# .agent/ is per-machine hook/session state; a stray hook-errors.jsonl written
+# from a cwd inside the skills tree must never reach a plugin consumer,
+# regardless of where in the copied tree it landed (issue #370).
+found_agent=$(find "$stage" -name '.agent' | head -1)
+assert_eq '' "$found_agent" 'no .agent/ directory is packaged anywhere in the built plugin'
+
 # --- codex installs it -----------------------------------------------------
 export CODEX_HOME="$tmp/codexhome"
 mkdir -p "$CODEX_HOME"
