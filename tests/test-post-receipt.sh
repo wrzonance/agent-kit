@@ -232,10 +232,16 @@ assert_eq '' "$(cat "$tmp/gh.log")" \
     'count mismatch happens before receipt transport'
 
 # -- publish: verified-skip line is optional --------------------------------
+#
+# A verified skip writes its own result artifact (issue #391) rather than
+# requiring the shared completed fixture other cases in this suite rely on, so
+# that fixture is hidden for the duration of this one publish and restored
+# immediately after for every later case that still needs it.
 
 : >"$tmp/gh.log"
 reset_not_spent
 reset_findings
+mv -- "$tmp/adversarial.result.json" "$tmp/adversarial.result.json.hidden"
 run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider \
@@ -243,6 +249,7 @@ run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
     --agent-identity 'Claude Opus 5' >/dev/null
 skip_body=$(rendered_body)
+mv -- "$tmp/adversarial.result.json.hidden" "$tmp/adversarial.result.json"
 assert_contains "$skip_body" 'Verified-skip rationale: comments/formatting only' \
     'publish body records the verified-skip rationale when given'
 assert_contains "$skip_body" 'mechanical oracle=diff --stat parity check' \
@@ -515,5 +522,127 @@ swapped_rc=$?
 assert_eq '13' "$swapped_rc" 'publish refuses a severity split the ledger does not support'
 assert_contains "$swapped" 'ledger severities are P1=0 P2=1' \
     'the refusal names the split the ledger actually holds'
+
+# --- verified skip publishes without a prior adversarial-run.sh call --------
+# (issue #391) A documented skip never runs adversarial-run.sh, so no
+# adversarial.result.json exists yet. publish must write that result artifact
+# itself instead of refusing the whole skip path for a file only the runner it
+# was told it could skip would produce.
+
+skip_dir="$tmp/skip-run"
+mkdir -p "$skip_dir"
+chmod 700 "$skip_dir"
+skip_findings="$skip_dir/findings.ndjson"
+: >"$skip_findings"
+
+fresh_comments() {
+    local path=$1
+    printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$path"
+}
+
+skip_comments="$tmp/skip-not-spent.json"
+fresh_comments "$skip_comments"
+
+: >"$tmp/gh.log"
+skip_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$skip_findings" --pr 401 --repo owner/repo \
+    --comments "$skip_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5')
+skip_rc=$?
+assert_eq '0' "$skip_rc" \
+    'publish succeeds for a verified skip with no prior adversarial-run.sh call'
+assert_contains "$skip_out" 'posted id=501' \
+    'the verified-skip publish surfaces gh-comment.sh'"'"' confirmation'
+assert_eq 'yes' "$([[ -f $skip_dir/adversarial.result.json ]] && printf yes || printf no)" \
+    'publish writes its own result artifact for a verified skip'
+
+skip_result_status=$(jq -r '.status' "$skip_dir/adversarial.result.json")
+assert_eq 'skipped' "$skip_result_status" \
+    'the skip result artifact records status=skipped'
+skip_result_rationale=$(jq -r '.skipRationale' "$skip_dir/adversarial.result.json")
+assert_eq 'comments/formatting only' "$skip_result_rationale" \
+    'the skip result artifact records the skip rationale'
+skip_result_oracle=$(jq -r '.oracle' "$skip_dir/adversarial.result.json")
+assert_eq 'diff --stat parity check' "$skip_result_oracle" \
+    'the skip result artifact records the mechanical oracle'
+
+skip_publish_body=$(jq -r '.body' "$tmp/payload.json")
+assert_contains "$skip_publish_body" "$marker" \
+    'the verified-skip publish body carries the spent marker'
+assert_contains "$skip_publish_body" 'Verified-skip rationale: comments/formatting only' \
+    'the verified-skip publish body records the rationale'
+
+# precheck now reports spent, using the comments artifact record_spend rewrote
+skip_precheck_out=$("$script" precheck --comments "$skip_comments")
+skip_precheck_rc=$?
+assert_eq '0' "$skip_precheck_rc" 'precheck reports spent after a verified-skip publish'
+assert_eq 'spent' "$skip_precheck_out" 'precheck prints spent after a verified-skip publish'
+
+# -- verified skip: an existing matching skip result is accepted idempotently -
+
+skip_comments2="$tmp/skip-not-spent-2.json"
+fresh_comments "$skip_comments2"
+: >"$tmp/gh.log"
+skip_out2=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$skip_findings" --pr 402 --repo owner/repo \
+    --comments "$skip_comments2" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5')
+skip_rc2=$?
+assert_eq '0' "$skip_rc2" \
+    'publish accepts an already-matching verified-skip result idempotently'
+assert_contains "$skip_out2" 'posted id=501' \
+    'the idempotent verified-skip publish reaches the transport'
+
+# -- verified skip: a mismatched existing skip result is refused ------------
+
+skip_comments3="$tmp/skip-not-spent-3.json"
+fresh_comments "$skip_comments3"
+mismatch_skip_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$skip_findings" --pr 403 --repo owner/repo \
+    --comments "$skip_comments3" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'a different rationale' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+mismatch_skip_rc=$?
+assert_eq '1' "$mismatch_skip_rc" \
+    'publish refuses a verified skip whose rationale/oracle does not match the existing result'
+assert_contains "$mismatch_skip_out" 'does not match this verified skip' \
+    'the mismatch refusal names the reason'
+
+# -- verified skip: a real completed result is never overwritten ------------
+
+completed_dir="$tmp/skip-vs-completed"
+mkdir -p "$completed_dir"
+chmod 700 "$completed_dir"
+completed_findings="$completed_dir/findings.ndjson"
+: >"$completed_findings"
+printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}' \
+    >"$completed_dir/adversarial.result.json"
+chmod 600 -- "$completed_dir/adversarial.result.json"
+
+skip_comments4="$tmp/skip-not-spent-4.json"
+fresh_comments "$skip_comments4"
+completed_vs_skip_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$completed_findings" --pr 404 --repo owner/repo \
+    --comments "$skip_comments4" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+completed_vs_skip_rc=$?
+assert_eq '1' "$completed_vs_skip_rc" \
+    'publish refuses to overwrite a real completed result with a verified-skip result'
+assert_contains "$completed_vs_skip_out" 'does not match this verified skip' \
+    'the overwrite refusal names the reason'
+completed_result_status=$(jq -r '.status' "$completed_dir/adversarial.result.json")
+assert_eq 'completed' "$completed_result_status" \
+    'the real completed result is left untouched by the refused skip'
 
 finish
