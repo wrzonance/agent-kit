@@ -45,6 +45,7 @@ Output (stdout carries only these lines):
   moved #42 -> "In review" on project #3 "Example Board" (board.json, 1 call)
   moved #42 -> "In review" on project #3 "Example Board" (board.json, 2 calls)
   no-op: issue #42 is not on any project board
+  no-op: issue #42 project board membership could not be read; not moved
   no-op: project #3 "Example Board" has no Status field
   no-op: project #3 "Example Board" has no matching Status option "In review"
   moved=1 no-op=0 of=1
@@ -58,7 +59,9 @@ exists to avoid. So it reports "moved" even when the card was already in the
 target status; only the slower paths can report the "already" no-op above.
 Callers must treat "moved" as covering both "moved" and "already there".
 
-Exit status: 0 on a move or a no-op, 1 on bad arguments or an API error.
+Exit status: 0 on a move or a no-op (an unreadable board membership included --
+a board move must never fail the real work it is annotating), 1 on bad
+arguments or an API error unrelated to reading board membership.
 EOF
 }
 
@@ -172,8 +175,24 @@ cached_mutation_rejected=0
 # Query the issue's own project memberships instead of enumerating every
 # project in the organization. --paginate follows projectItems connections
 # past the first page; jq -s combines the page responses into one item array.
-issue_project_items() {
-    local issue_number=$1 query memberships
+#
+# A freshly-created issue can briefly resolve to repository.issue == null on
+# this GraphQL lookup even though REST already created it (REST and the
+# GraphQL index are not synchronous) -- that is a transient read, not a real
+# absence, so it is retried a bounded number of times before being reported
+# as unreadable. A small bounded retry does not need to be configurable in
+# production; the delay is overridable only so tests can run it at zero cost.
+readonly ISSUE_MEMBERSHIP_ATTEMPTS=3
+readonly ISSUE_MEMBERSHIP_RETRY_DELAY=${MOVE_ITEM_MEMBERSHIP_RETRY_DELAY:-2}
+
+# One membership-read attempt. Exit status:
+#   0  success; the memberships JSON array is printed to stdout.
+#   1  transient: the gh call itself failed, or repository.issue resolved to
+#      null (the replication-lag case above). The caller retries this one.
+#   2  the response had some other unexpected shape -- a genuinely malformed
+#      response, not the null-issue case -- and is not retried.
+issue_project_items_once() {
+    local issue_number=$1 query memberships result
     # shellcheck disable=SC2016
     query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
       repository(owner:$owner, name:$name) {
@@ -195,12 +214,42 @@ issue_project_items() {
         -f "owner=$owner" -f "name=$repository_name" -F "number=$issue_number" \
         -f "query=$query" 2>/dev/null) || return 1
     [[ -n $memberships ]] || return 1
-    jq -s -c '
+
+    # Tag the shape instead of raising a jq error(): a raised error's own exit
+    # code cannot distinguish "issue resolved null" from "some other malformed
+    # shape", and the null-issue case must be handled explicitly, not folded
+    # into the generic malformed branch.
+    result=$(jq -s -c '
         if all(.[]; .data.repository.issue.projectItems? | type == "object")
-        then [.[].data.repository.issue.projectItems.nodes[]?]
-        else error("issue project membership response is malformed")
+        then {status: "ok", items: [.[].data.repository.issue.projectItems.nodes[]?]}
+        elif any(.[]; .data.repository.issue == null)
+        then {status: "null-issue"}
+        else {status: "malformed"}
         end
-    ' <<< "$memberships"
+    ' <<< "$memberships") || return 2
+    [[ -n $result ]] || return 2
+
+    case $(jq -r '.status' <<< "$result") in
+        ok) jq -c '.items' <<< "$result"; return 0 ;;
+        null-issue) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Retries issue_project_items_once a bounded number of times on a transient
+# read (rc 1), and gives up immediately on a genuinely malformed response
+# (rc 2). Same exit-status contract as issue_project_items_once, minus the
+# distinction the caller no longer needs: 0 success, non-zero unreadable.
+issue_project_items() {
+    local issue_number=$1 attempt=1 rc=0
+    while :; do
+        issue_project_items_once "$issue_number" && return 0
+        rc=$?
+        ((rc == 1)) || return "$rc"
+        ((attempt < ISSUE_MEMBERSHIP_ATTEMPTS)) || return "$rc"
+        ((++attempt))
+        sleep "$ISSUE_MEMBERSHIP_RETRY_DELAY"
+    done
 }
 
 # ---------------------------------------------------------------- .agent/ ---
@@ -572,7 +621,7 @@ try_known_board() {
 # terminal no-op, not permission to scan every project in the organization.
 try_declared_memberships() {
     local project_number project_id project_title field_id option_id project_owner
-    local memberships membership_count item_id current_status issue_number
+    local memberships membership_count item_id current_status issue_number read_rc
 
     ((all_boards == 0)) || return 1
     board_readable || return 1
@@ -588,7 +637,17 @@ try_declared_memberships() {
 
     for issue_number in "${issue_numbers[@]}"; do
         [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
-        memberships=$(issue_project_items "$issue_number") || return 2
+        read_rc=0
+        memberships=$(issue_project_items "$issue_number") || read_rc=$?
+        if ((read_rc != 0)); then
+            # A board move is bookkeeping; it must never abort the workstream
+            # it is annotating -- an unreadable membership is reported as its
+            # own no-op, distinct from a genuine "not on any board" outcome,
+            # and the batch continues with the next issue.
+            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved"
+            completed_issues[$issue_number]=1
+            continue
+        fi
         membership_count=$(jq 'length' <<< "$memberships") || return 2
         item_id=$(jq -r --arg project "$project_id" --arg number "$project_number" \
             --arg owner "$project_owner" '
@@ -638,11 +697,20 @@ try_declared_memberships() {
 # matching board's Status field without listing that board's cards.
 process_project_memberships() {
     local memberships issue_number item_id project_number project_id project_title project_owner
-    local current_status fields_json status_field_id option_id
+    local current_status fields_json status_field_id option_id read_rc
 
     ((all_boards == 1)) || return 1
     for issue_number in "${issue_numbers[@]}"; do
-        memberships=$(issue_project_items "$issue_number") || return 2
+        read_rc=0
+        memberships=$(issue_project_items "$issue_number") || read_rc=$?
+        if ((read_rc != 0)); then
+            # Same never-fail-the-workstream contract as the declared-board
+            # path: an unreadable membership is its own no-op, distinct from
+            # a genuine "not on any board" outcome, and the batch continues.
+            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved"
+            completed_issues[$issue_number]=1
+            continue
+        fi
         if [[ $(jq 'length' <<< "$memberships") == 0 ]]; then
             report_noop "no-op: issue #$issue_number is not on any project board"
             completed_issues[$issue_number]=1

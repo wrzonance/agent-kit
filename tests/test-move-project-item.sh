@@ -4,7 +4,10 @@
 # Exit codes follow this script's own long-standing contract (0 move-or-no-op,
 # 1 bad arguments or API error), not the tree-wide "2 = usage" convention. It
 # predates that convention and its usage block documents 1; changing it would
-# break callers for no benefit.
+# break callers for no benefit. One carved-out exception: an unreadable issue
+# project-membership read (a null-issue GraphQL resolver, a malformed
+# response, or the gh call itself failing) is a no-op, not an API error --
+# a board move must never abort the workstream it is annotating (#385).
 set -uo pipefail
 
 TEST_NAME='move-project-item'
@@ -24,7 +27,21 @@ set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
   *"api graphql"*)
-      if [[ -n \${MULTI_BOARD:-} ]]; then
+      if [[ -n \${NULL_ISSUE:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":null}}}'
+      elif [[ -n \${MALFORMED_MEMBERSHIP:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":"not-an-object"}}}}'
+      elif [[ -n \${TRANSIENT_THEN_OK:-} ]]; then
+          attempts=0
+          [[ ! -f \${GH_MEMBERSHIP_ATTEMPTS_FILE:?} ]] || attempts=\$(<"\$GH_MEMBERSHIP_ATTEMPTS_FILE")
+          attempts=\$((attempts + 1))
+          printf '%s\n' "\$attempts" > "\$GH_MEMBERSHIP_ATTEMPTS_FILE"
+          if ((attempts >= \${TRANSIENT_SUCCEEDS_ON_ATTEMPT:-3})); then
+              printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+          else
+              printf '%s\n' '{"data":{"repository":{"issue":null}}}'
+          fi
+      elif [[ -n \${MULTI_BOARD:-} ]]; then
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
             {"id":"PVTI_example57","project":{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}},
             {"id":"PVTI_example58b","project":{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
@@ -125,6 +142,7 @@ run_mv() {
     local requested_repository=${TEST_REPOSITORY:-example-org/example-repo}
     shift
     GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
+        MOVE_ITEM_MEMBERSHIP_RETRY_DELAY="${MOVE_ITEM_MEMBERSHIP_RETRY_DELAY:-0}" \
         "$mv_sh" --repo-root "$repo" --repository "$requested_repository" "$@"
 }
 
@@ -354,6 +372,8 @@ assert_not_contains "$out" 'Warning: could not list items for project' \
     'a declared-board miss suppresses unrelated-project warnings'
 assert_contains "$out" 'no-op: issue #58 is not on any project board' \
     'a declared-board miss reports one terminal no-op'
+assert_not_contains "$out" 'could not be read' \
+    'a genuine board absence is never conflated with an unreadable membership read'
 
 # Numeric project numbers are only a fallback within the declared project
 # owner. A same-number project owned by another organization is unrelated.
@@ -604,5 +624,55 @@ assert_contains "$out" 'no-op: issue #57 is not on any project board' \
     'an empty project response reports the first issue'
 assert_contains "$out" 'no-op: issue #58 is not on any project board' \
     'an empty project response reports the second issue'
+
+# --- issue project-membership read reliability (#385) ----------------------
+# A board move must never fail the real work: a membership read that cannot
+# be resolved -- transiently or otherwise -- is a no-op, distinct from a
+# genuine "not on any board" outcome, and never a fatal exit.
+
+# A GraphQL repository.issue resolver that keeps returning null (the
+# REST/GraphQL replication-lag case) is retried a bounded number of times,
+# then reported as its own distinct unreadable no-op rather than aborting.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(NULL_ISSUE=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a persistently null-issue membership read still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'a persistently null-issue membership read reports a distinct unreadable no-op'
+assert_not_contains "$out" 'is not on any project board' \
+    'an unreadable membership read is never conflated with a genuine board absence'
+assert_eq '3' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'a persistently null-issue membership read retries the bounded number of attempts'
+
+# A response whose repository.issue.projectItems is some other unexpected
+# shape (not the null-issue case) is a genuinely malformed response: it is
+# not retried, but still resolves to the same unreadable no-op, never a die.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(MALFORMED_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a malformed membership response still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'a malformed membership response reports the same distinct unreadable no-op'
+assert_eq '1' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'a malformed membership response is not retried like the transient null-issue case'
+
+# A membership read that fails on its first attempts but succeeds within the
+# retry budget recovers cleanly and reports the real outcome, not a failure.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+attempts_file="$tmp/membership-attempts"
+rm -f "$attempts_file"
+out=$(TRANSIENT_THEN_OK=1 GH_MEMBERSHIP_ATTEMPTS_FILE="$attempts_file" \
+    run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a transient membership read that recovers still exits 0'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'a transient membership read that recovers reports the real board-absence outcome'
+assert_not_contains "$out" 'could not be read' \
+    'a transient membership read that recovers is never reported as unreadable'
+assert_eq '3' "$(cat "$attempts_file")" \
+    'a transient membership read succeeds on the third attempt'
 
 finish
