@@ -61,22 +61,35 @@ and additionally consumes:
   blocks (a finding merely replied-to, with the rescan still outstanding, is
   not finished).
 
-Code-scanning completion is proven from `GET code-scanning/analyses?ref=<ref>`
-— the surface that actually records a completed analysis — not from a
-check-run's `app.slug`. GitHub records workflow-uploaded SARIF (a CodeQL
-workflow, clippy, etc.) under `app.slug=github-advanced-security`, not
+Code-scanning completion is proven from `GET code-scanning/analyses` — the
+surface that actually records a completed analysis — not from a check-run's
+`app.slug`. GitHub records workflow-uploaded SARIF (a CodeQL workflow,
+clippy, etc.) under `app.slug=github-advanced-security`, not
 `github-code-scanning`; a slug-only lookup false-blocks every head with real,
 clean analyses recorded that way, which is exactly what forced the manual
-`gh pr merge --admin` in SpecR #667 (see issue #390). The gate looks for an
-analysis whose `commit_sha` matches the current head under
+`gh pr merge --admin` in SpecR #667 (see issue #390). `ref` is always sent as
+its own query field, never string-interpolated into the URL, so a base
+branch name containing `&` or `#` cannot split or truncate the request. The
+gate looks for an analysis whose `commit_sha` matches the current head under
 `refs/pull/N/merge`; a still-running scan is read from a check run under
-either app slug, demoted to a secondary "in flight" signal only — it never by
-itself proves or disproves completion. A repository that plainly runs code
-scanning elsewhere (its base ref has recorded analyses, e.g. a cron or
-`workflow_dispatch` schedule the PR itself never triggers) is reported as
-`code-scanning: scheduled-only, last analysis <date> on <ref>` and does not
-block on scan completion for that reason alone — only a genuinely open alert
-attributed to the PR still blocks it.
+either app slug, demoted to a secondary "in flight" signal only — it can
+never by itself prove completion, only rule it out, which is why it is
+consulted *first*: a rerun or a second SARIF upload already in flight for a
+head an earlier analysis already covers must still block, not read as
+already-current. A repository that plainly runs code scanning elsewhere (its
+base ref has recorded analyses, e.g. a cron or `workflow_dispatch` schedule
+the PR itself never triggers) is reported as `code-scanning: scheduled-only,
+last analysis <date> on <ref>` and does not block on scan completion for
+that reason alone — but only once the repository's own recent analysis
+history is read and confirmed to carry no `refs/pull/*` entry at all. A
+repository whose history *does* include a pull-request analysis demonstrably
+scans PRs, so a missing analysis for THIS PR is ambiguous absence, not a
+schedule, and stays blocked (a probe that cannot even read that history
+never grants the exemption either — same fail-closed default as everywhere
+else in this gate). A scheduled-only repository still needs a genuinely
+readable, zero-count alerts line — `n/a` blocks it exactly like it blocks
+every other status; only the two-signal "never used at all" exception below
+waives that.
 
 **Never dispatch a workflow (`gh workflow run`, a `workflow_dispatch` trigger,
 or any other means) to manufacture code-scanning evidence so this gate

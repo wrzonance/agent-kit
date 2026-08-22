@@ -204,21 +204,26 @@ fi
 # workflow, clippy, etc.) under check-run app.slug=github-advanced-security,
 # not github-code-scanning -- a slug-only lookup false-blocks every head with
 # real, clean analyses recorded that way (issue #390). GET
-# code-scanning/analyses?ref=<ref> is the surface that actually records a
-# completed analysis regardless of which app posted the check run, so it is
-# the primary signal here; the check-run lookup is kept only as a secondary
-# "is a scan still running" signal, demoted from its old load-bearing role.
-# Never dispatch a workflow to manufacture analysis evidence for this gate --
-# that is gate-gaming, not a remedy (see auto-merge.md).
+# code-scanning/analyses is the surface that actually records a completed
+# analysis regardless of which app posted the check run, so it is the
+# primary signal here; the check-run lookup is kept only as a secondary "is a
+# scan still running" signal, demoted from its old load-bearing role, and is
+# consulted first precisely because it is never stale the way a matched
+# analysis can be (a rerun or a second SARIF upload can already be in flight
+# for a head an earlier analysis already covers). Never dispatch a workflow
+# to manufacture analysis evidence for this gate -- that is gate-gaming, not
+# a remedy (see auto-merge.md).
 
-# Queries code-scanning/analyses for one ref into $2. Prints "ok" (a readable
-# JSON array, possibly empty), "empty" (the endpoint's definitive 404 "no
-# analysis found" body for this ref/repo), or "error" (403, a malformed body,
-# or any other unreadable response) -- the caller must treat "error" as
-# unreadable, never as "empty".
+# Queries code-scanning/analyses for one ref into $2. ref is passed as its
+# own -f field, never interpolated into the URL -- a base branch containing
+# & or # would otherwise split or truncate the query string. Prints "ok" (a
+# readable JSON array, possibly empty), "empty" (the endpoint's definitive
+# 404 "no analysis found" body for this ref/repo), or "error" (403, a
+# malformed body, or any other unreadable response) -- the caller must treat
+# "error" as unreadable, never as "empty".
 analyses_for_ref() {
     local ref=$1 out=$2
-    if "$GH_BIN" api "repos/$repo/code-scanning/analyses?ref=$ref&per_page=100" \
+    if "$GH_BIN" api -X GET "repos/$repo/code-scanning/analyses" -f "ref=$ref" -F per_page=100 \
         >"$out" 2>"$work_dir/api.err"; then
         if jq -e 'type == "array"' "$out" >/dev/null 2>&1; then
             printf 'ok\n'
@@ -233,6 +238,24 @@ analyses_for_ref() {
     else
         printf 'error\n'
     fi
+    return 0
+}
+
+# Queries the repository's own recent analyses with no ref filter (a single
+# page, most-recent-first). Used only to discriminate a repository that
+# genuinely never scans pull requests from one whose scan for THIS PR
+# specifically is missing or failed -- see the scheduled-only branch below.
+# Prints "ok" or "error"; there is no meaningful "empty" case here, since an
+# empty array is itself a readable (if uninformative) answer.
+analyses_recent() {
+    local out=$1
+    if "$GH_BIN" api -X GET "repos/$repo/code-scanning/analyses" -F per_page=100 \
+        >"$out" 2>"$work_dir/api.err" &&
+        jq -e 'type == "array"' "$out" >/dev/null 2>&1; then
+        printf 'ok\n'
+        return 0
+    fi
+    printf 'error\n'
     return 0
 }
 
@@ -291,26 +314,53 @@ if [[ $default_setup_state == not-configured && $alerts_probe_definitive_404 == 
     cs_definitively_unused=yes
 fi
 
-# --- Resolve completion status: a matching analysis for the current head
-# wins outright; otherwise a still-running scan blocks; otherwise a
-# repository that plainly runs code scanning elsewhere (on its base ref, on
-# a schedule or workflow_dispatch never triggered by this PR) is reported,
-# not blocked; otherwise the two-signal non-use exception above applies;
-# otherwise this is the ambiguous "no evidence yet" case, and it blocks.
+# --- Resolve completion status. scan_check_run_pending is consulted FIRST,
+# unconditionally: a still-running check run (either app slug) always blocks
+# as pending, even when an earlier or partial analysis already matches the
+# current head -- a rerun or a second SARIF upload in flight is real,
+# incomplete evidence that a stale "current" read must never mask. Beyond
+# that: a matching analysis for the current head wins; otherwise an
+# unreadable primary probe blocks; otherwise a repository that plainly runs
+# code scanning elsewhere (its base ref carries analyses) AND has never
+# recorded an analysis against any refs/pull/* ref is reported scheduled-
+# only, not blocked -- a repository whose recent history DOES include a
+# pull-request analysis demonstrably scans PRs, so this PR's own missing
+# analysis is ambiguous absence, not a schedule, and stays blocked; otherwise
+# the two-signal non-use exception above applies; otherwise this is the
+# ambiguous "no evidence yet" case, and it blocks.
 cs_status=''
 cs_last_ref=''
 cs_last_date=''
-if [[ $cs_head_matches =~ ^[0-9]+$ ]] && ((cs_head_matches > 0)); then
+if scan_check_run_pending; then
+    cs_status=pending
+elif [[ $cs_head_matches =~ ^[0-9]+$ ]] && ((cs_head_matches > 0)); then
     cs_status=current
 elif [[ $pr_analyses_state == error ]]; then
     cs_status=unreadable
-elif scan_check_run_pending; then
-    cs_status=pending
 else
     base_ref="refs/heads/$base"
     base_analyses_state=$(analyses_for_ref "$base_ref" "$work_dir/cs-analyses-base.json")
+    base_has_analyses=no
     if [[ $base_analyses_state == ok ]] &&
         jq -e 'length > 0' "$work_dir/cs-analyses-base.json" >/dev/null 2>&1; then
+        base_has_analyses=yes
+    fi
+
+    # An unreadable recent-history probe never corroborates scheduled-only --
+    # this stays "no" (blocked below, same fail-closed default as everywhere
+    # else in this gate) unless the repository's history is actually read
+    # and shows no refs/pull/* analysis anywhere in it.
+    repo_confirmed_no_pr_scans=no
+    if [[ $base_has_analyses == yes ]]; then
+        recent_state=$(analyses_recent "$work_dir/cs-analyses-recent.json")
+        if [[ $recent_state == ok ]] &&
+            ! jq -e 'any(.[]?; (.ref // "") | startswith("refs/pull/"))' \
+                "$work_dir/cs-analyses-recent.json" >/dev/null 2>&1; then
+            repo_confirmed_no_pr_scans=yes
+        fi
+    fi
+
+    if [[ $base_has_analyses == yes && $repo_confirmed_no_pr_scans == yes ]]; then
         cs_status=scheduled-only
         cs_last_date=$(jq -r 'sort_by(.created_at // "") | last | .created_at // "unknown"' \
             "$work_dir/cs-analyses-base.json")
@@ -334,8 +384,12 @@ if [[ $cs_status == scheduled-only ]]; then
     printf 'code-scanning: scheduled-only, last analysis %s on %s\n' "$cs_last_date" "$cs_last_ref"
 fi
 
+# A scheduled-only repository is exempt from the completion-status block
+# above, but NOT from producing readable PR-attributable alert evidence --
+# only the two-signal "never used at all" exception waives that below. n/a
+# stays blocked for a scheduled-only repository the same as for any other.
 cs_completion_exempt=no
-[[ $cs_status == unused || $cs_status == scheduled-only ]] && cs_completion_exempt=yes
+[[ $cs_status == unused ]] && cs_completion_exempt=yes
 
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||

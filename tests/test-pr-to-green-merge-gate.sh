@@ -21,7 +21,26 @@ cat >"$tmp/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 endpoint=''
-for arg in "\$@"; do [[ \$arg == repos/* ]] && endpoint=\$arg; done
+ref_param=''
+ref_param_set=no
+prev=''
+for arg in "\$@"; do
+    [[ \$arg == repos/* ]] && endpoint=\$arg
+    if [[ \$prev == -f && \$arg == ref=* ]]; then
+        ref_param=\${arg#ref=}
+        ref_param_set=yes
+    fi
+    prev=\$arg
+done
+# F3 (issue #390 follow-up): the analyses endpoint's ref must arrive as its
+# own -f field, never embedded in the URL -- logged here so a test can assert
+# the exact argv shape, not just the resulting response.
+if [[ \$endpoint == repos/owner/repo/code-scanning/analyses ]]; then
+    {
+        for a in "\$@"; do printf 'ARG:%s\n' "\$a"; done
+        printf -- '---\n'
+    } >> "$tmp/gh-analyses-args.log"
+fi
 # Held in its own variable, never inlined literally inside a \${VAR:-...}
 # default: bash's brace-matching for that construct gets confused by the
 # unescaped { and } this JSON itself contains.
@@ -42,32 +61,51 @@ repos/owner/repo/pulls/9)
 repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
     ;;
-repos/owner/repo/code-scanning/analyses*ref=refs/pull/9/merge*)
-    case \${CS_PR_ANALYSES_MODE:-ok} in
-    ok)
-        printf '%s\n' "\${CS_PR_ANALYSES_JSON:-\$default_pr_analyses}"
+repos/owner/repo/code-scanning/analyses)
+    case "\$ref_param_set:\$ref_param" in
+    yes:refs/pull/9/merge)
+        case \${CS_PR_ANALYSES_MODE:-ok} in
+        ok)
+            printf '%s\n' "\${CS_PR_ANALYSES_JSON:-\$default_pr_analyses}"
+            ;;
+        empty)
+            printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
+            exit 1
+            ;;
+        error)
+            printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+            exit 1
+            ;;
+        esac
         ;;
-    empty)
-        printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
-        exit 1
+    yes:refs/heads/main)
+        case \${CS_BASE_ANALYSES_MODE:-empty} in
+        ok)
+            printf '%s\n' "\${CS_BASE_ANALYSES_JSON:-[]}"
+            ;;
+        empty)
+            printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
+            exit 1
+            ;;
+        error)
+            printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+            exit 1
+            ;;
+        esac
         ;;
-    error)
-        printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
-        exit 1
+    no:)
+        case \${CS_RECENT_ANALYSES_MODE:-ok} in
+        ok)
+            printf '%s\n' "\${CS_RECENT_ANALYSES_JSON:-[]}"
+            ;;
+        error)
+            printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+            exit 1
+            ;;
+        esac
         ;;
-    esac
-    ;;
-repos/owner/repo/code-scanning/analyses*ref=refs/heads/main*)
-    case \${CS_BASE_ANALYSES_MODE:-empty} in
-    ok)
-        printf '%s\n' "\${CS_BASE_ANALYSES_JSON:-[]}"
-        ;;
-    empty)
-        printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
-        exit 1
-        ;;
-    error)
-        printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+    *)
+        printf 'unexpected analyses ref param set=%s value=%s\n' "\$ref_param_set" "\$ref_param" >&2
         exit 1
         ;;
     esac
@@ -301,15 +339,85 @@ for slug in github-code-scanning github-advanced-security; do
         "the pending block is named for app.slug=$slug"
 done
 
+# --- PR #413 follow-up F1: a still-running scan blocks as pending even when
+# an earlier analysis already matches the head (a rerun or a second SARIF
+# upload in flight is real, incomplete evidence; scan_check_run_pending is
+# now consulted before the head-match short-circuit, never after it).
+
 good_digest
-sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_JSON="$(cat "$fixtures/merge-gate-honkhonk-249-analyses.json")" \
+    CS_RUNS_JSON='{"check_runs":[{"app":{"slug":"github-advanced-security"},"status":"in_progress"}]}' \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'a still-running check run blocks the merge as pending even when a matching analysis for the current head already exists'
+assert_contains "$out" 'blocked reason=code-scanning analysis has not completed for the current head' \
+    'the pending block wins over the already-matched analysis'
+
+# --- PR #413 follow-up F2: scheduled-only is granted only when the
+# repository's own recent analysis history carries NO refs/pull/* entry at
+# all; a repository that has ever analyzed a pull request demonstrably scans
+# PRs, so a missing analysis for THIS PR is ambiguous absence, not a
+# schedule -- and even when granted, scheduled-only is not exempt from the
+# alerts-line readability requirement (only the two-signal never-used
+# exception is).
+
+good_digest
+set +e
 out=$(CS_PR_ANALYSES_MODE=empty CS_BASE_ANALYSES_MODE=ok \
     CS_BASE_ANALYSES_JSON='[{"ref":"refs/heads/main","commit_sha":"cccccccccccccccccccccccccccccccccccccccc","created_at":"2026-08-15T04:00:00Z","tool":{"name":"CodeQL"}}]' \
+    CS_RECENT_ANALYSES_JSON='[{"ref":"refs/pull/7/merge","commit_sha":"dddddddddddddddddddddddddddddddddddddddd","created_at":"2026-07-01T00:00:00Z","tool":{"name":"CodeQL"}}]' \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'a repository whose recent history includes a pull-request analysis is never granted scheduled-only, even with base-ref analyses present'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'this PR is missing analysis evidence and stays blocked as absent, not scheduled-only'
+
+good_digest
+out=$(CS_PR_ANALYSES_MODE=empty CS_BASE_ANALYSES_MODE=ok \
+    CS_BASE_ANALYSES_JSON='[{"ref":"refs/heads/main","commit_sha":"cccccccccccccccccccccccccccccccccccccccc","created_at":"2026-08-15T04:00:00Z","tool":{"name":"CodeQL"}}]' \
+    CS_RECENT_ANALYSES_JSON='[]' \
     run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
-    'scheduled-only code scanning (analyses on the base ref, none for this PR) is reported, not blocked'
+    'scheduled-only code scanning (base-ref analyses exist, no PR-ref analysis anywhere in recent history) is reported, not blocked, when the alerts line is readable'
 assert_contains "$out" 'code-scanning: scheduled-only, last analysis 2026-08-15T04:00:00Z on refs/heads/main' \
     'the scheduled-only report names the last analysis date and ref'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty CS_BASE_ANALYSES_MODE=ok \
+    CS_BASE_ANALYSES_JSON='[{"ref":"refs/heads/main","commit_sha":"cccccccccccccccccccccccccccccccccccccccc","created_at":"2026-08-15T04:00:00Z","tool":{"name":"CodeQL"}}]' \
+    CS_RECENT_ANALYSES_JSON='[]' \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'a scheduled-only repository still blocks on an unreadable alerts line -- n/a is not exempted for it, only the never-used exception is'
+assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
+    'the alerts-readability block applies to scheduled-only the same as any other status'
+assert_contains "$out" 'code-scanning: scheduled-only, last analysis 2026-08-15T04:00:00Z on refs/heads/main' \
+    'the scheduled-only report still prints even though the gate blocks for the separate alerts reason'
+
+# --- PR #413 follow-up F3: the analyses endpoint's ref is sent as its own
+# -f field, never interpolated into the URL (a base branch containing & or #
+# would otherwise split or truncate the query string).
+
+good_digest
+: > "$tmp/gh-analyses-args.log"
+out=$(run_gate)
+assert_contains "$out" 'gate=PASS pr=9' 'sanity: the baseline run still passes before inspecting its recorded argv'
+analyses_argv=$(cat "$tmp/gh-analyses-args.log")
+assert_contains "$analyses_argv" $'ARG:-f\nARG:ref=refs/pull/9/merge' \
+    'the ref for the PR-ref analyses query arrives as a separate -f ref= argument, not embedded in the URL'
+assert_not_contains "$analyses_argv" 'analyses?ref=' \
+    'the endpoint token itself never carries an embedded ?ref= query string'
+assert_not_contains "$analyses_argv" 'ARG:repos/owner/repo/code-scanning/analyses?' \
+    'the logged endpoint argument is the bare path, with no query string of any kind appended'
 
 # --- F1 (accepted): a group/other-writable digest file is rejected ----------
 
