@@ -136,6 +136,20 @@ symlinked, or empty (or whitespace-only) diff record fails closed -- `payload` r
 identity for an empty diff itself, the same emptiness check the launcher already enforces before
 it ever calls this helper.
 
+### Provider tokens
+
+`peer-cli=` names a CLI; `adversarial-run.sh` checks the consent record against the
+model-provider token that CLI runs on, not the CLI name itself. `consent-record.sh grant
+--provider` accepts either spelling and normalizes it to the token below, so a grant recorded
+under the CLI name still satisfies the runner's check:
+
+| CLI (`peer-cli=`) | Provider token (`--provider`) |
+|---|---|
+| `codex` | `openai` |
+| `claude` | `anthropic` |
+
+A refused check names both the expected provider token and the one actually recorded.
+
 ## Availability and authoritative helpers
 
 Read the Step 0a environment contract; its `harness=` line identifies the running provider and its

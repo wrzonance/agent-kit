@@ -171,6 +171,21 @@ assert_contains "$(cat -- "$tmp/codex-peer.out")" 'model=gpt-5.6-terra' \
 assert_contains "$(cat -- "$tmp/codex-peer.out")" 'mode=cross-provider' \
     'Claude harness and Codex peer are genuinely cross-provider'
 
+# A grant recorded under the peer-cli= CLI name ("codex") must satisfy the
+# runner's check, which is keyed on the model-provider token ("openai") --
+# the root should never have to read the runner source to find the "right"
+# --provider token for consent-record.sh grant (#392).
+codex_alias_run="$tmp/codex-alias-run"
+grant "$codex_alias_run" codex
+codex_alias_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_alias_run") \
+    >"$tmp/codex-alias.out" 2>"$tmp/codex-alias.err" || codex_alias_rc=$?
+assert_eq 0 "$codex_alias_rc" \
+    'a consent grant recorded under the codex CLI name satisfies the runner check'
+assert_contains "$(cat -- "$tmp/codex-alias.out")" 'provider=openai' \
+    'a codex-CLI-name grant still completes the openai-provider review'
+
 write_contract claude claude "present path=$tmp/fake-claude"
 same_harness_run="$tmp/same-harness-run"
 grant "$same_harness_run" anthropic

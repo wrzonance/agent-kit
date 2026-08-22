@@ -230,6 +230,43 @@ assert_rc 0 'check accepts the explicitly granted replacement payload' -- \
 assert_rc 10 'the prior payload is not reusable after replacement' -- \
     /bin/bash "$script" check --state "$state" --provider anthropic --payload "$payload_one"
 
+# `peer-cli=` names a CLI (codex, claude); adversarial-run.sh checks the
+# consent record against the model-provider token that CLI runs on (openai,
+# anthropic). A grant recorded under either spelling must satisfy the same
+# check, so the caller never has to read the runner source to find the
+# "right" token (#392).
+codex_alias_state="$state_dir/codex-alias-record"
+grant_alias=$(/bin/bash "$script" grant --state "$codex_alias_state" --provider codex \
+    --payload "$payload_one" --source interactive)
+codex_alias_expected="cross_provider_consent=openai;scope=PR-diff;payload=$payload_one;status=granted;source=interactive"
+assert_eq "$codex_alias_expected" "$(<"$codex_alias_state")" \
+    'grant normalizes the codex CLI name to its openai provider token'
+assert_eq "$codex_alias_expected" "$grant_alias" 'grant prints the normalized record'
+assert_rc 0 "the runner's check for the Codex path accepts a grant recorded under the codex CLI name" -- \
+    /bin/bash "$script" check --state "$codex_alias_state" --provider openai --payload "$payload_one"
+assert_rc 0 'a direct check under the codex CLI name also normalizes to the same record' -- \
+    /bin/bash "$script" check --state "$codex_alias_state" --provider codex --payload "$payload_one"
+
+claude_alias_state="$state_dir/claude-alias-record"
+/bin/bash "$script" grant --state "$claude_alias_state" --provider claude \
+    --payload "$payload_one" --source interactive >/dev/null
+claude_alias_expected="cross_provider_consent=anthropic;scope=PR-diff;payload=$payload_one;status=granted;source=interactive"
+assert_eq "$claude_alias_expected" "$(<"$claude_alias_state")" \
+    'grant normalizes the claude CLI name to its anthropic provider token'
+assert_rc 0 "the runner's check for the Claude path accepts a grant recorded under the claude CLI name" -- \
+    /bin/bash "$script" check --state "$claude_alias_state" --provider anthropic --payload "$payload_one"
+
+# A refused check must name the expected provider token and, when a record
+# exists, the one actually recorded -- so a mismatch is diagnosable without
+# reading the runner source.
+mismatch_error=$(/bin/bash "$script" check --state "$codex_alias_state" --provider anthropic \
+    --payload "$payload_one" 2>&1) || true
+assert_contains "$mismatch_error" 'openai' 'a refused check names the token actually recorded'
+assert_contains "$mismatch_error" 'anthropic' 'a refused check names the expected provider token'
+no_record_error=$(/bin/bash "$script" check --state "$state_dir/never-granted" --provider openai \
+    --payload "$payload_one" 2>&1) || true
+assert_contains "$no_record_error" 'openai' 'a missing record still names the expected provider token'
+
 # There is no implicit yes/auto-grant path, and invalid source values do not
 # alter an existing record.
 before=$(<"$state")
