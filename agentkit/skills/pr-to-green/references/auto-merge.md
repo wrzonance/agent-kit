@@ -64,10 +64,21 @@ and additionally consumes:
 The gate treats an unreadable surface as blocked, never as clean: a
 `code-scanning n/a` line (the endpoint 403/404s), a missing/malformed digest
 line, or a digest that cannot be parsed all print a `blocked reason=...` line
-and exit non-zero. `gate=PASS pr=N sha=<head>` is the only signal that
-authorizes `merge-pr.sh`, and it is bound to that exact PR and head — save its
-verbatim stdout, because `merge-pr.sh` requires it. Re-run the gate after any
-push or base advance — a passed gate for an earlier head never carries forward.
+and exit non-zero. The one exception is a repository corroborated as not
+using code scanning at all, via two independent readable signals together:
+`code-scanning/default-setup` reporting `not-configured`, plus the alerts
+endpoint returning the definitive `404 "no analysis found"` body. Either
+signal missing still blocks — a 403 or a malformed body keep gating, since
+neither readably proves code scanning is unused. The exception clears only
+when no code-scanning analysis has ever been recorded for the repository at
+all, so an advanced (workflow-based) CodeQL setup that has not yet uploaded
+its first SARIF result falls *inside* the exception rather than outside it —
+there is no evidence to miss yet, and the gate resumes blocking it the
+moment that first upload lands. `gate=PASS pr=N sha=<head>` is
+the only signal that authorizes `merge-pr.sh`, and it is bound to that exact
+PR and head — save its verbatim stdout, because `merge-pr.sh` requires it.
+Re-run the gate after any push or base advance — a passed gate for an
+earlier head never carries forward.
 
 ## Serialization protocol
 

@@ -206,13 +206,11 @@ fi
 # change), so this queries gh directly, the same way the live PR-state read
 # above does. An unreadable completion signal is BLOCKED, same as an
 # unreadable alert count -- never treated as complete. A response with no
-# matching github-code-scanning check run is ALSO blocked, never passed
-# through as "completed": it is equally consistent with an analysis that has
-# not started yet, and absence of readable evidence is never evidence of
-# absence. This does not newly block repositories without code scanning
-# configured -- their alerts endpoint already 404s, gh-pr-state.sh already
-# emits "alerts: code-scanning n/a", and the existing digest check below
-# already blocks that as unreadable.
+# matching github-code-scanning check run is ALSO blocked, UNLESS the
+# repository is corroborated below as demonstrably not using code scanning
+# at all: otherwise it is equally consistent with an analysis that has not
+# started yet, and absence of readable evidence is never evidence of
+# absence.
 if "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
     >"$work_dir/cs-runs.json" 2>"$work_dir/api.err"; then
     cs_status=$(jq -r '
@@ -225,17 +223,50 @@ if "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
 else
     cs_status=''
 fi
+
+# --- Code scanning non-use corroboration: a repository is only established
+# as demonstrably not using code scanning via TWO independent positive
+# signals together. Signal 1 (default-setup state == not-configured) is NOT
+# sufficient alone -- a repository can run an advanced, workflow-based
+# CodeQL setup that uploads SARIF while default-setup still reads
+# not-configured, and that repository has genuine code-scanning evidence
+# that must keep being gated. Signal 2 is the alerts endpoint's definitive
+# 404 "no analysis found" body: GitHub's own readable, structured answer
+# that no analysis of any kind has ever been recorded for this repository
+# (gh still writes that JSON body to stdout on the non-2xx response). A 403,
+# a malformed body, a "configured" state, a 2xx alerts response, or either
+# probe simply failing to run leaves this "no" -- n/a is still never read as
+# "zero findings" anywhere below.
+default_setup_state=''
+if "$GH_BIN" api "repos/$repo/code-scanning/default-setup" \
+    >"$work_dir/cs-default-setup.json" 2>"$work_dir/api.err"; then
+    default_setup_state=$(jq -r '.state // empty' "$work_dir/cs-default-setup.json" 2>/dev/null) ||
+        default_setup_state=''
+fi
+alerts_probe_definitive_404=no
+if ! "$GH_BIN" api "repos/$repo/code-scanning/alerts?per_page=1" \
+    >"$work_dir/cs-alerts-probe.json" 2>"$work_dir/api.err"; then
+    if jq -e '(.status == "404") and ((.message // "") == "no analysis found")' \
+        "$work_dir/cs-alerts-probe.json" >/dev/null 2>&1; then
+        alerts_probe_definitive_404=yes
+    fi
+fi
+cs_definitively_unused=no
+if [[ $default_setup_state == not-configured && $alerts_probe_definitive_404 == yes ]]; then
+    cs_definitively_unused=yes
+fi
+
 case $cs_status in
     completed) ;;
     pending) block 'code-scanning analysis has not completed for the current head' ;;
-    none) block 'no code-scanning analysis is recorded for the current head' ;;
+    none) [[ $cs_definitively_unused == yes ]] || block 'no code-scanning analysis is recorded for the current head' ;;
     *) block 'code-scanning analysis status is unreadable for the current head' ;;
 esac
 
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||
         block 'an open code-scanning alert is attributable to this PR'
-else
+elif [[ $cs_definitively_unused != yes ]]; then
     block 'code-scanning evidence is unreadable (n/a is never treated as zero findings)'
 fi
 
