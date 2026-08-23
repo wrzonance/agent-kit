@@ -102,18 +102,43 @@ fi
 
 if ((!dry_run)) && ((refresh || force)) && ((config_tracked || board_tracked)); then
     current_branch=$(git -C "$repo_root" symbolic-ref --short -q HEAD 2> /dev/null || true)
+
+    # `refs/remotes/origin/HEAD` is only ever set by `git clone` (or an
+    # explicit `git remote set-head`); it is routinely absent after
+    # `init` + `remote add`, in many CI checkouts, and it can be pruned.
+    # Falling back to a literal guess here would silently miss a non-`main`
+    # trunk (e.g. `master`) and let a refresh patch tracked declarations
+    # directly on trunk -- the exact outcome this guard exists to prevent.
+    # Stay network-free (this check deliberately runs before the gh
+    # preflight): prefer the local remote-HEAD ref, then the repository's
+    # OWN declared AGENT_BASE_BRANCH -- a tracked config.env exists by
+    # definition whenever config_tracked is set. If neither is available,
+    # refuse rather than guess: proceeding on an unproven trunk name risks
+    # writing to trunk itself, which is the destructive direction.
     trunk_branch=$(git -C "$repo_root" symbolic-ref --short refs/remotes/origin/HEAD 2> /dev/null |
         sed 's|^origin/||' || true)
-    [[ -n $trunk_branch ]] || trunk_branch=main
+    if [[ -z $trunk_branch && -r $repo_root/.agent/config.env ]]; then
+        trunk_branch=$(sed -nE 's/^[[:space:]]*AGENT_BASE_BRANCH=[[:space:]]*(.*)$/\1/p' \
+            "$repo_root/.agent/config.env" 2> /dev/null | tail -1)
+    fi
+    if [[ -z $trunk_branch ]]; then
+        die "could not determine the trunk branch for $repo_root to check the trunk-carried refresh guard
+
+No local refs/remotes/origin/HEAD and no AGENT_BASE_BRANCH declaration were
+found. Guessing here risks patching trunk-carried .agent declarations
+directly on trunk, so refusing instead. Set the remote HEAD
+(git remote set-head origin -a) or declare AGENT_BASE_BRANCH in
+.agent/config.env, then re-run. Nothing was written."
+    fi
     if [[ -z $current_branch || $current_branch == "$trunk_branch" ]]; then
         die "refusing to refresh trunk-carried .agent declarations on ${current_branch:-a detached HEAD} (trunk: $trunk_branch)
 
 This repository commits .agent/config.env and/or .agent/board.json -- the
 documented layout for worktree fleets and CI (onboard-repo Step 7). The
-trunk-carried refresh path patches only the drifted generator-owned keys in
-the working tree, prints the diff, and leaves commit/PR to the onboarding
-flow -- it never runs against $trunk_branch itself. Check out a non-trunk branch
-and re-run:
+trunk-carried refresh path (neither --refresh nor --force runs it against
+trunk) patches only the drifted generator-owned keys in the working tree,
+prints the diff, and leaves commit/PR to the onboarding flow. Check out a
+non-trunk branch and re-run:
   $PROGRAM --refresh --repo-root $repo_root
 Nothing was written."
     fi
@@ -537,7 +562,7 @@ if ((!force)); then
         [[ -e $repo_root/.agent/$existing ]] || continue
         if { [[ $existing == config.env ]] && ((config_tracked)); } ||
             { [[ $existing == board.json ]] && ((board_tracked)); }; then
-            die ".agent/$existing already exists and is tracked (trunk-carried layout); pass --refresh on a non-trunk branch to patch its drifted keys in place, or --force to fully overwrite"
+            die ".agent/$existing already exists and is tracked (trunk-carried layout); pass --refresh or --force on a non-trunk branch to patch its drifted generator-owned keys in place -- neither flag discards a declaration on a tracked file, matching how --force already treats an untracked config.env"
         fi
         die ".agent/$existing already exists; pass --force to overwrite"
     done
@@ -585,7 +610,11 @@ assert_effective_ignore() {
 # A committed config.env (the documented layout above) gets its EXISTING file
 # line-patched in place, never regenerated from scratch, so maintainer
 # comments, ordering, and every declaration this generator does not own
-# survive untouched. Only the keys "everything above is rediscoverable from
+# survive untouched -- called for BOTH --refresh and --force on a tracked
+# file: --force never discarded a declared key even for an untracked
+# config.env ("--force regenerates DISCOVERED facts; it must not throw away
+# DECLARED ones", below), so a tracked file gets the same guarantee, not a
+# blind overwrite. Only the keys "everything above is rediscoverable from
 # the forge" owns -- the same list the carry-forward filter protects -- are
 # eligible; provider/label/command declarations are a maintainer decision
 # this script has never touched and still does not.

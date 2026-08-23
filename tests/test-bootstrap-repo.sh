@@ -546,11 +546,18 @@ printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ONBOARDED_BY=agentkit/0.
 orphan_dir=$(mktemp -d "$tmp/orphan.XXXXXX")/a/b/c
 mkdir -p "$orphan_dir"
 cp "$bs_sh" "$orphan_dir/bootstrap-repo.sh"
+# This file runs with only `-uo pipefail` (no `-e`; see lib/assert.sh), so
+# `set +e` here is a no-op today -- kept, with its matching restore below, so
+# this capture stays correct if `-e` is ever added. The bug this guards
+# against is real: restoring to `set -e` instead of `set +e` was found (by
+# an adversarial review of issue #401) to silently turn errexit ON for the
+# rest of this script, aborting every subsequent test the moment any command
+# under it returned non-zero.
 set +e
 PATH="$tmp/stub:$PATH" "$orphan_dir/bootstrap-repo.sh" \
     --repo-root "$stamp_repo" --project 7 --refresh > /dev/null 2>&1
 stamp_rc=$?
-set -e
+set +e
 # Without this the bare `|| true` would let a bootstrap that died before writing
 # anything pass the assertion below: the pre-existing config still holds the old
 # stamp, so "preserved" and "never rewritten" are indistinguishable.
@@ -581,6 +588,7 @@ before_trunk=$(cat "$repo/.agent/config.env")
 mkdir -p "$tmp/nobin"
 ln -sf "$(command -v git)" "$tmp/nobin/git"
 ln -sf "$(command -v sed)" "$tmp/nobin/sed"
+ln -sf "$(command -v tail)" "$tmp/nobin/tail"
 out=$(PATH="$tmp/nobin" /bin/bash "$bs_sh" --repo-root "$repo" --refresh 2>&1 || true)
 assert_rc 1 'refresh on trunk with a tracked config is refused' -- \
     env PATH="$tmp/nobin" /bin/bash "$bs_sh" --repo-root "$repo" --refresh
@@ -605,7 +613,7 @@ expected_generator=$(jq -r .version "$root/agentkit/.codex-plugin/plugin.json")
 repo=$(make_repo)
 git -C "$repo" symbolic-ref HEAD refs/heads/feat/issue-401
 track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
-out=$(run_bs --repo-root "$repo" --refresh 2>&1)
+out=$(run_bs --repo-root "$repo" --refresh 2>&1 || true)
 assert_rc 0 'refresh on a branch patches a tracked config' -- run_bs \
     --repo-root "$repo" --refresh
 patched=$(cat "$repo/.agent/config.env")
@@ -623,7 +631,7 @@ assert_not_contains "$out" "wrote $repo/.agent/config.env" \
 
 # --- idempotent: a second refresh with no drift changes nothing ------------
 before_second=$(cat "$repo/.agent/config.env")
-out=$(run_bs --repo-root "$repo" --refresh 2>&1)
+out=$(run_bs --repo-root "$repo" --refresh 2>&1 || true)
 assert_rc 0 'a second refresh with no drift succeeds' -- run_bs \
     --repo-root "$repo" --refresh
 assert_contains "$out" 'no drift' 'and reports nothing to patch'
@@ -637,28 +645,102 @@ mkdir -p "$repo/.agent"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=main\n' \
     > "$repo/.agent/config.env"
 git -C "$repo" add -f .agent/config.env > /dev/null 2>&1
-run_bs --repo-root "$repo" --refresh > /dev/null 2>&1
+run_bs --repo-root "$repo" --refresh > /dev/null 2>&1 || true
 assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_PROJECT_NUMBER=7' \
     'a generator-owned key absent from the tracked file is appended'
 assert_contains "$(cat "$repo/.agent/config.env")" "AGENT_ONBOARDED_BY=agentkit/$expected_generator" \
     'including the generator stamp'
 
 # --- a tracked board.json is patched too, ignoring the generatedAt churn ---
+# Tracks config.env alongside it (both, the realistic trunk-carried shape)
+# so AGENT_BASE_BRANCH is available to resolve trunk -- see the "cannot
+# determine trunk" test below for the board-only case.
 repo=$(make_repo)
 git -C "$repo" symbolic-ref HEAD refs/heads/feat/board-401
+track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
 mkdir -p "$repo/.agent"
 printf '{"schemaVersion":1,"owner":"example-org","project":{"number":99,"id":"stale","title":"Stale"},"statusField":{"id":"stale","name":"Status","options":{}},"generatedAt":"2020-01-01T00:00:00Z","fingerprint":"sha256:stale"}\n' \
     > "$repo/.agent/board.json"
 git -C "$repo" add -f .agent/board.json > /dev/null 2>&1
-out=$(run_bs --repo-root "$repo" --project 7 --refresh 2>&1)
-assert_rc 0 'refresh on a branch patches a tracked board.json' -- run_bs \
+out=$(run_bs --repo-root "$repo" --project 7 --refresh 2>&1 || true)
+assert_rc 0 'refresh on a branch patches a tracked board.json (config.env tracked too)' -- run_bs \
     --repo-root "$repo" --project 7 --refresh
 assert_eq '7' "$(jq -r '.project.number' "$repo/.agent/board.json")" \
     'the tracked board is refreshed to the discovered project'
 before_board=$(jq -S 'del(.generatedAt)' "$repo/.agent/board.json")
-run_bs --repo-root "$repo" --project 7 --refresh > /dev/null 2>&1
+run_bs --repo-root "$repo" --project 7 --refresh > /dev/null 2>&1 || true
 after_board=$(jq -S 'del(.generatedAt)' "$repo/.agent/board.json")
 assert_eq "$before_board" "$after_board" \
     'a second refresh with no real drift leaves the board content unchanged'
+
+# --- adversarial review finding 1: a non-`main` trunk with no origin/HEAD --
+# refs/remotes/origin/HEAD is only ever set by `git clone` (or an explicit
+# `git remote set-head`); these test repos never get one, matching `init` +
+# `remote add` and many CI checkouts. Before this fix, an absent origin/HEAD
+# fell back to a literal "main" guess, so a real `master` trunk would never
+# match and the refusal would never fire -- caught by an adversarial review
+# (Codex gpt-5.6-terra) of the original PR.
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/master
+mkdir -p "$repo/.agent"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=master\nAGENT_ONBOARDED_BY=agentkit/0.0.1\n' \
+    > "$repo/.agent/config.env"
+git -C "$repo" add -f .agent/config.env > /dev/null 2>&1
+out=$(run_bs --repo-root "$repo" --refresh 2>&1 || true)
+assert_rc 1 'a master trunk with no origin/HEAD ref is still refused' -- run_bs \
+    --repo-root "$repo" --refresh
+assert_contains "$out" 'trunk-carried' 'the refusal fires for a non-main trunk name too'
+assert_contains "$out" 'trunk: master' \
+    'trunk resolves from the tracked AGENT_BASE_BRANCH, not a literal main guess'
+
+# --- adversarial review finding 1: refuses rather than guesses -------------
+# board.json alone declares no AGENT_BASE_BRANCH, and there is no
+# origin/HEAD either: trunk cannot be established, so this must refuse
+# instead of assuming any branch (including the current one) is safe.
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/board-only
+mkdir -p "$repo/.agent"
+printf '{"schemaVersion":1,"owner":"example-org","project":{"number":7,"id":"x","title":"x"},"statusField":{"id":"x","name":"Status","options":{}}}\n' \
+    > "$repo/.agent/board.json"
+git -C "$repo" add -f .agent/board.json > /dev/null 2>&1
+out=$(run_bs --repo-root "$repo" --project 7 --refresh 2>&1 || true)
+assert_rc 1 'refresh refuses instead of guessing when trunk cannot be determined' -- run_bs \
+    --repo-root "$repo" --project 7 --refresh
+assert_contains "$out" 'could not determine the trunk branch' \
+    'the refusal names the reason: no origin/HEAD and no AGENT_BASE_BRANCH to read'
+
+# --- adversarial review finding 2: --force also patches narrowly, never a --
+# full overwrite -- consistent with how --force already preserves declared
+# keys for an UNTRACKED config.env ("--force regenerates DISCOVERED facts;
+# it must not throw away DECLARED ones", same file). Pins the chosen
+# semantics so --refresh and --force cannot silently diverge again.
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/force-401
+track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
+out=$(run_bs --repo-root "$repo" --force 2>&1 || true)
+assert_rc 0 '--force on a tracked repo, on a branch, also succeeds' -- run_bs \
+    --repo-root "$repo" --force
+force_patched=$(cat "$repo/.agent/config.env")
+force_expected=$(sed \
+    -e "s/^AGENT_PROJECT_NUMBER=99\$/AGENT_PROJECT_NUMBER=7/" \
+    -e "s/^AGENT_ONBOARDED_BY=agentkit\/0.0.1\$/AGENT_ONBOARDED_BY=agentkit\/$expected_generator/" \
+    "$here/fixtures/tracked-config.env")
+assert_eq "$force_expected" "$force_patched" \
+    '--force preserves every non-generator-owned byte on a tracked config, same as --refresh'
+assert_contains "$force_patched" 'AGENT_CMD_TEST=make test' \
+    'a non-generator-owned declared command explicitly survives --force on a tracked file'
+assert_contains "$force_patched" 'AGENT_REVIEW_PROVIDERS=coderabbit' \
+    'and a declared provider choice explicitly survives --force too'
+assert_not_contains "$out" "wrote $repo/.agent/config.env" \
+    '--force on a tracked config is reported as a refresh/patch, never as a fresh write'
+
+# The pre-existing no-force refusal (file exists, neither flag passed) must
+# not promise a full overwrite either, now that --force does not perform one.
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/force-message
+track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
+out=$(env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 2>&1 || true)
+assert_not_contains "$out" 'fully overwrite' \
+    'the plain-run refusal no longer promises a full overwrite from --force'
 
 finish
