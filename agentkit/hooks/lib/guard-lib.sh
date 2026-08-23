@@ -1153,6 +1153,109 @@ guard_heredoc_substitutions() {
     done
 }
 
+# Replace the CONTENT of every unescaped single-quoted span in $1 with `#`
+# filler, preserving length and every character outside single quotes --
+# quote delimiters included -- verbatim. `#` can never introduce a new `$(`
+# or backtick, so a `$(...)`/backtick spelled inside a single-quoted argument
+# (which the shell never expands: single quotes suppress ALL expansion) can
+# no longer be mistaken by a later scan for a real, executing substitution.
+# Double-quote and escape state are tracked too, but only so a literal `'`
+# appearing INSIDE an outer double-quoted string is never misread as opening
+# single-quote mode -- the same quote state machine guard_tokenize_words
+# uses, single-quote branch checked first exactly as the shell itself reads
+# it (backslash has no escaping meaning inside single quotes at all).
+guard_mask_single_quotes() {
+    local input=$1 out='' quote='' escaped=0 char i length
+    length=${#input}
+    for ((i = 0; i < length; i++)); do
+        char=${input:i:1}
+        if [[ $quote == "'" ]]; then
+            if [[ $char == "'" ]]; then
+                quote=''
+                out+=$char
+            else
+                out+='#'
+            fi
+            continue
+        fi
+        if ((escaped)); then
+            out+=$char
+            escaped=0
+            continue
+        fi
+        if [[ $char == \\ ]]; then
+            out+=$char
+            escaped=1
+            continue
+        fi
+        if [[ $quote == '"' ]]; then
+            out+=$char
+            [[ $char == '"' ]] && quote=''
+            continue
+        fi
+        case $char in
+            "'" | '"') quote=$char; out+=$char ;;
+            *) out+=$char ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Every $(...) / `...` substitution in a command SEGMENT (as opposed to
+# guard_heredoc_substitutions' heredoc BODY) that the shell will actually
+# evaluate before the segment's outer command runs -- including one spelled
+# inside an outer DOUBLE-quoted argument, which guard_tokenize_words correctly
+# treats as one WORD later on (it is one argument) but which still executes
+# its substitution first. A single-quoted argument's `$(...)`/backtick text is
+# inert data, never executed, and must never be extracted: this walks a
+# single-quote-MASKED copy of $1 (via guard_mask_single_quotes) to decide
+# where a live delimiter sits, reusing guard_heredoc_substitutions' own
+# depth-counting algorithm for the boundary math, but slices the payload TEXT
+# out of the original, UNMASKED $1 at the same offsets (masking preserves
+# length and every non-single-quoted character 1:1) -- so a nested
+# single-quoted data argument inside the payload itself survives intact for
+# the recursive destructive-command check to re-tokenize on its own terms,
+# rather than arriving pre-shredded into `#` filler (issue #397 follow-up).
+guard_segment_substitutions() {
+    local original=$1 masked
+    masked=$(guard_mask_single_quotes "$original")
+    local i=0 length=${#masked} depth start inner
+    while ((i < length)); do
+        if [[ ${masked:i:1} == '$' && ${masked:i+1:1} == '(' ]]; then
+            depth=1
+            start=$((i + 2))
+            i=$start
+            while ((i < length && depth > 0)); do
+                case ${masked:i:1} in
+                    '(') ((depth++));;
+                    ')') ((depth--));;
+                esac
+                ((i++))
+            done
+            inner=${original:start:i-start-1}
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        if [[ ${masked:i:1} == '`' ]]; then
+            start=$((i + 1))
+            i=$start
+            while ((i < length)); do
+                if [[ ${masked:i:1} == \\ ]]; then
+                    i=$((i + 2))
+                    continue
+                fi
+                [[ ${masked:i:1} == '`' ]] && break
+                ((i++))
+            done
+            inner=${original:start:i-start}
+            ((i++))
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        ((i++))
+    done
+}
+
 # Like guard_gh_command_segments (same quote/heredoc state machine, same
 # command-boundary splitting) but a heredoc BODY is not dropped unconditionally
 # -- only when it is genuinely inert. A quoted-delimiter heredoc handed to an
@@ -1365,6 +1468,105 @@ guard_destructive_reason() {
     return 1
 }
 
+# Is $2.. present as a contiguous, EXACT-token sequence anywhere in the word
+# array named by $1 (produced by guard_tokenize_words, so a quoted argument is
+# already one word)? Word-array equality, never substring -- so `gh pr merge`
+# spelled out inside a single quoted data argument (a sed replacement script,
+# a printf payload destined for a file) can never match: quoting collapses it
+# into ONE word here, not three separate command tokens (issue #397).
+guard_words_contain_sequence() {
+    local -n __gwcs_words=$1
+    shift
+    local -a want=("$@")
+    local n=${#want[@]} i j matched
+    ((n)) || return 1
+    for ((i = 0; i + n <= ${#__gwcs_words[@]}; i++)); do
+        matched=1
+        for ((j = 0; j < n; j++)); do
+            [[ ${__gwcs_words[i + j]} == "${want[j]}" ]] || { matched=0; break; }
+        done
+        ((matched)) && return 0
+    done
+    return 1
+}
+
+# Is a `git config` invocation's tokenized word array (named by $1) SETTING
+# one of the keys that runs a command during ordinary git operations (formerly
+# matched with a `grep -E` pattern spelling the key as core\.hooksPath, etc.)?
+# Prints the offending key and returns 0 only for a genuine set; a `--get`/
+# `--get-all`/`--get-regexp`/`--get-urlmatch` READ of the exact same key is
+# never a write -- `git config --get core.hooksPath` refused as if it were
+# setting the hook path was issue #397's false positive #3. Token equality
+# (not substring) also means the key can never be matched out of a quoted
+# data argument, the same class of fix as guard_words_contain_sequence above.
+guard_git_config_write_key() {
+    local -n __ggcw_words=$1
+    local i n=${#__ggcw_words[@]} word key='' is_read=0 saw_git=0 saw_config=0
+    for ((i = 0; i < n; i++)); do
+        word=${__ggcw_words[i]}
+        if ((!saw_git)); then
+            [[ $word == git ]] && saw_git=1
+            continue
+        fi
+        if ((!saw_config)); then
+            [[ $word == config ]] && saw_config=1
+            continue
+        fi
+        case $word in
+            --get | --get-all | --get-regexp | --get-urlmatch) is_read=1 ;;
+            core.hooksPath | core.fsmonitor | core.sshCommand | \
+            filter.*.clean | filter.*.smudge | filter.*.process | diff.*.textconv)
+                key=$word ;;
+        esac
+    done
+    ((saw_git && saw_config)) || return 1
+    [[ -n $key && $is_read -eq 0 ]] || return 1
+    printf '%s' "$key"
+}
+
+# Is a git invocation's UNSTRIPPED tokenized word array (named by $1) passing
+# one of the same execution keys via `-c KEY=VALUE`, the attached
+# `-cKEY=VALUE`, or `--config-env=KEY=...`? guard_strip_git_globals removes
+# every `-c`/`-C` pair before guard_git_config_write_key's word array (built
+# from the STRIPPED command) ever sees it, so `git -c core.hooksPath=/tmp/evil
+# commit` reduced to `git commit` and was allowed -- adversarial review on
+# PR #414 found this bypass (issue #397 follow-up F1). None of these three
+# forms persist past this one invocation the way `git config KEY VALUE` does,
+# but `-c core.hooksPath=/tmp/evil` still runs that hook DURING this command,
+# which is the same immediate code-execution vector, just scoped to one call
+# instead of the repository. Keep the sensitive-key set in lockstep with
+# guard_git_config_write_key's case pattern above -- token equality here too,
+# so a quoted data string mentioning `-c core.hooksPath=` can never match.
+guard_git_dash_c_write_key() {
+    local -n __ggdc_words=$1
+    local i n=${#__ggdc_words[@]} word next key='' saw_git=0
+    for ((i = 0; i < n; i++)); do
+        word=${__ggdc_words[i]}
+        if ((!saw_git)); then
+            [[ $word == git ]] && saw_git=1
+            continue
+        fi
+        case $word in
+            -c)
+                ((i + 1 < n)) || continue
+                next=${__ggdc_words[i + 1]}
+                ;;
+            -c?*) next=${word#-c} ;;
+            --config-env=*) next=${word#--config-env=} ;;
+            *) continue ;;
+        esac
+        [[ $next == *=* ]] || continue
+        case ${next%%=*} in
+            core.hooksPath | core.fsmonitor | core.sshCommand | \
+            filter.*.clean | filter.*.smudge | filter.*.process | diff.*.textconv)
+                key=${next%%=*} ;;
+        esac
+    done
+    ((saw_git)) || return 1
+    [[ -n $key ]] || return 1
+    printf '%s' "$key"
+}
+
 guard_destructive_segment_reason() {
     local cmd=$1 stripped flattened normalized
 
@@ -1389,8 +1591,45 @@ guard_destructive_segment_reason() {
         fi
     fi
 
+    # A `$(...)`/`` `...` `` substitution executes BEFORE the outer command
+    # ever uses its output -- including one written inside an outer
+    # DOUBLE-quoted argument. The tokenizer below correctly treats that whole
+    # quoted argument as ONE word (it IS one argument to the outer command),
+    # but the substitution inside it is still a separately-executed command,
+    # not inert data the way a single-quoted argument's contents are (the
+    # naive flattening above misses this: it never opens the outer double
+    # quotes, so a flattened `"$(git config core.hooksPath /tmp/evil)"`
+    # tokenizes right back into one quoted word). guard_segment_substitutions
+    # is single-quote aware, so a substitution genuinely trapped inside single
+    # quotes (never executed) is correctly left alone. Judge every extracted
+    # payload through the FULL destructive-command check, not just the two
+    # checks below, since a hidden substitution can carry any of them
+    # (issue #397 follow-up).
+    local payload payload_reason
+    while IFS= read -r payload; do
+        [[ -n $payload ]] || continue
+        if payload_reason=$(guard_destructive_segment_reason "$payload"); then
+            printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
+            return 0
+        fi
+    done < <(guard_segment_substitutions "$cmd")
+
     stripped=$(guard_strip_git_globals "$cmd")
     normalized=$(guard_normalize_flags "$stripped")
+    # Quote-aware tokenization of this ONE segment -- a quoted argument (a sed
+    # script, a printf payload) collapses to a single word here, so the
+    # verb-position checks below can never fire on bytes inside quoted data
+    # (issue #397).
+    local -a words
+    mapfile -t words < <(guard_tokenize_words "$stripped")
+    # The UNSTRIPPED word array -- guard_strip_git_globals removes every
+    # `-c KEY=VALUE` pair before `words` above ever sees it, so
+    # guard_git_dash_c_write_key (which needs that pair intact) works from
+    # this array instead (issue #397 follow-up F1).
+    local -a raw_words
+    # shellcheck disable=SC2034  # consumed by name via the
+    # guard_git_dash_c_write_key nameref below, never as ${raw_words[@]} here.
+    mapfile -t raw_words < <(guard_tokenize_words "$cmd")
 
     # Intervening tokens are tolerated: after a substitution is flattened the
     # flag is no longer adjacent to the verb. Bounded by shell separators, so a
@@ -1437,13 +1676,25 @@ guard_destructive_segment_reason() {
         return 0
     fi
     # An execution key in git config runs a command during ORDINARY git
-    # operations, persists after the session, and runs as the user rather than
-    # the agent. It is the quietest code-execution vector in a repository.
-    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]config([[:space:]][^;&|]*)?[[:space:]](core\.hooksPath|core\.fsmonitor|filter\.[^[:space:]]+\.(clean|smudge|process)|core\.sshCommand|diff\.[^[:space:]]+\.textconv)' <<< "$cmd"; then
-        printf 'that git config key executes a command during ordinary git operations, and it outlives this session. Setting it is a decision for the user.'
+    # operations, and runs as the user rather than the agent. It is the
+    # quietest code-execution vector in a repository -- whether it is set
+    # persistently (`git config KEY VALUE`, outliving this session) or scoped
+    # to one invocation (`git -c KEY=VALUE ...`/`--config-env=KEY=...`, which
+    # still executes the hook DURING that one command). Token-matched, not a
+    # substring grep: a `--get` READ of the same key is never a write, and
+    # the key can never be matched out of a quoted data argument (issue
+    # #397; the -c/--config-env form is the follow-up F1 fix).
+    local config_key
+    if config_key=$(guard_git_config_write_key words) ||
+        config_key=$(guard_git_dash_c_write_key raw_words); then
+        printf 'that git config key (%s) executes a command during git operations. Setting it is a decision for the user.' \
+            "$config_key"
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge' <<< "$cmd"; then
+    # Exact command-token sequence, not a substring grep: `gh pr merge`
+    # spelled out inside a quoted sed/printf data argument is one word here,
+    # not three command tokens, so it can never match (issue #397).
+    if guard_words_contain_sequence words gh pr merge; then
         printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
         return 0
     fi
@@ -1818,33 +2069,74 @@ guard_protected_match() {
 # protected list afterwards. A general "commands that touch files" rule would
 # fire on every grep and be switched off within a week.
 guard_shell_write_targets() {
-    local cmd=$1 write_probe=$1
+    local cmd=$1 segments segment write_probe token
+    local -a results=()
 
-    # Redirects to device sinks discard output but do not write a protected
-    # path. Remove them before deciding whether the command is write-shaped.
-    write_probe=$(sed -E \
-        -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
-        -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
-        -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
-        <<< "$write_probe")
+    # Heredoc BODIES are data, never a write target's spelling -- a JSON/text
+    # payload that happens to mention a protected path inside a heredoc body
+    # is not editing it. Segmenting first, via the same heredoc-aware lexer
+    # guard_out_of_scope_target relies on, drops those bodies entirely; each
+    # remaining segment is then judged on its own tokens only (issue #397).
+    segments=$(guard_gh_command_segments "$cmd")
+    while IFS= read -r segment; do
+        [[ -n ${segment//[[:space:]]/} ]] || continue
 
-    # Two stages, because the alternative is parsing operands per command and
-    # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
-    # has no command word at all. Getting one of those wrong is how a rule ends
-    # up silently matching nothing.
-    #
-    # Stage one: does this command write at all? A path mentioned by grep or cat
-    # is not a target, and matching those would fire this rule constantly.
-    grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
-        <<< "$write_probe" 2> /dev/null || return 0
+        # Redirects to device sinks discard output but do not write a
+        # protected path. Remove them before deciding whether this segment is
+        # write-shaped.
+        write_probe=$(sed -E \
+            -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
+            -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
+            -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
+            <<< "$segment")
 
-    # Stage two: offer every token and let the protected list decide. A token
-    # that is not protected costs nothing; a target missed by clever parsing
-    # costs the whole guard.
-    tr -s '[:space:]' '\n' <<< "$cmd" 2> /dev/null |
-        sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
-        sed -E 's/[;|&()]+$//' |
-        grep -vE '^-|^$' || true
+        # Two stages, because the alternative is parsing operands per command
+        # and that rots: `sed -i` takes its file LAST, `tee` takes it first, a
+        # redirect has no command word at all. Getting one of those wrong is
+        # how a rule ends up silently matching nothing.
+        #
+        # Stage one: does this segment write at all? A path mentioned by grep
+        # or cat is not a target, and matching those would fire this rule
+        # constantly.
+        grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
+            <<< "$write_probe" 2> /dev/null || continue
+
+        # Stage two: offer every token and let the protected list decide. A
+        # token that is not protected costs nothing; a target missed by
+        # clever parsing costs the whole guard. A LEADING `NAME=value`
+        # shell-variable assignment token is never a file target -- the same
+        # assignment shape guard_heredoc_consumer_is_shell already recognises
+        # and skips as an env prefix, not a path (issue #397, e.g. a leading
+        # `agentkit=/home/.../skills` before the real command word). That
+        # skip must end at the first non-assignment token (the command word
+        # itself, or a flag): applying it to every token unconditionally
+        # dropped `dd`'s `of=` operand -- `dd if=/dev/zero
+        # of=.github/workflows/ci.yml` lost its real target and was allowed
+        # (issue #397 follow-up F2). A LATER `key=value` token instead offers
+        # its VALUE half as a candidate; the whole token is not also kept,
+        # since a bogus `key=value`-shaped "path" can itself mis-resolve
+        # against the contracted-worktree boundary the way the original
+        # assignment bug did.
+        local seen_command=0 value
+        while IFS= read -r token; do
+            [[ -n $token ]] || continue
+            if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+                if ((seen_command)); then
+                    value=${token#*=}
+                    [[ -n $value ]] && results+=("$value")
+                fi
+                continue
+            fi
+            seen_command=1
+            [[ $token == -* ]] && continue
+            results+=("$token")
+        done < <(tr -s '[:space:]' '\n' <<< "$segment" 2> /dev/null |
+            sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+            sed -E 's/[;|&()]+$//')
+    done <<< "$segments"
+
+    ((${#results[@]})) && printf '%s\n' "${results[@]}"
+    return 0
 }
 
 # Every path a tool call is about to write. Covers the file-edit tools of both
