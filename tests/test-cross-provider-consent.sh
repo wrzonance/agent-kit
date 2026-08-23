@@ -43,6 +43,17 @@ assert_contains "$readme_text" 'Cross-provider review privacy' \
 assert_contains "$readme_text" 'Repository ownership is not' \
     'README warns that ownership does not authorize transfer'
 
+# The runner checks the consent record against the model-provider token, not
+# the peer-cli= CLI name, so the doc must give the mapping (#392).
+# shellcheck disable=SC2016  # the backticks are literal documentation text
+assert_contains "$skill_text" '| `codex` | `openai` |' \
+    'the doc gives the codex CLI to openai provider token mapping'
+# shellcheck disable=SC2016
+assert_contains "$skill_text" '| `claude` | `anthropic` |' \
+    'the doc gives the claude CLI to anthropic provider token mapping'
+assert_contains "$skill_text" 'A refused check names both the expected provider token' \
+    'the doc states the refusal names both provider tokens'
+
 # --- executable consent protocol -------------------------------------------
 # These test doubles preserve the original sender-level protocol assertions:
 # a sender, its session state, and the exact record that authorizes one payload.

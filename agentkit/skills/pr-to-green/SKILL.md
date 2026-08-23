@@ -126,17 +126,29 @@ discovery selects drafts. An explicitly named ready PR may resume an interrupted
 run. The queue helper reports `RUNNABLE`, `WAITING_FOR_MERGE`,
 `RETARGET_REQUIRED`, or `BLOCKED` and fails closed on ambiguous topology.
 
-Show the human table and the exact provider records. State every chain base to
-tip, then independent roots in queue order. When `--auto-merge` is on the
-invocation line, the displayed plan must say plainly that confirmed merges are
-included, naming the merge method and delete-branch setting. Do not mutate
-until the user confirms the displayed provider plan, verified dependency
-graph, and exact serial queue.
+Show the human table and the exact provider records, and for every declared
+trigger-capable provider state the per-run action it will be authorized for:
+`trigger` by default, or `observe`/`disabled` when the operator has instructed
+no ping for that provider on this queue. State every chain base to tip, then
+independent roots in queue order. When `--auto-merge` is on the invocation
+line, the displayed plan must say plainly that confirmed merges are included,
+naming the merge method and delete-branch setting. Do not mutate until the
+user confirms the displayed provider plan (including any per-provider
+trigger/observe/disabled decision), verified dependency graph, and exact
+serial queue.
 
 After confirmation, write an owner-only authorization JSON file containing:
 
 - `repository` and `readyTransition: true`;
-- `providers`, containing exactly the displayed triggerable providers;
+- `providers`, one record per displayed trigger-capable provider:
+  `{"name":"coderabbit","action":"trigger|observe|disabled","source":"..."}`.
+  `action` is `trigger` unless the operator instructed otherwise for that
+  provider, in which case it is `observe` or `disabled` with
+  `source:"operator-instruction"` (`source` is `"capability-default"` for an
+  unmodified `trigger`); `review-transition.sh` flips ready and, for a
+  `disabled`/`observe` action, posts nothing and reports
+  `result=DISABLED`/`OBSERVE_ONLY source=<source>` instead of requiring a
+  round trip to re-ask;
 - `queue`, with each confirmed PR's number, current state, full head SHA, and
   confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`);
 - when `--auto-merge` was confirmed: `autoMerge: true`, `mergeMethod`, and
