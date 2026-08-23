@@ -22,6 +22,8 @@ PROVIDER_CONFIG=${REVIEW_TRANSITION_PROVIDER_CONFIG:-$SHARED_DIR/review-provider
 COMMENT_HELPER=${REVIEW_TRANSITION_COMMENT:-$SCRIPT_DIR/../../review-remote-pr/scripts/gh-comment.sh}
 # shellcheck source=../../.shared/scripts/lib/review-provider-catalog.sh
 source "$SHARED_DIR/lib/review-provider-catalog.sh"
+# shellcheck source=../../.shared/scripts/lib/provider-identity.sh
+source "$SHARED_DIR/lib/provider-identity.sh"
 
 repo=''
 repo_root=''
@@ -31,6 +33,8 @@ rounds=4
 interval=60
 work_dir=''
 plan_resolved=0
+observe=0
+since=''
 declare -a providers=()
 declare -A modes=()
 declare -A emitted=()
@@ -54,6 +58,20 @@ usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --pr N
        --authorization-file FILE [--rounds 1-60] [--interval 1-3600]
+       $PROGRAM --observe --repo OWNER/REPO --pr N --since TIMESTAMP
+
+--observe is a lightweight, read-only companion query: after a --trigger run
+prints TRIGGERED/ALREADY_SPENT with a since=TIMESTAMP, poll with --observe
+--since that TIMESTAMP until it reports LANDED (a terminal CodeRabbit review
+submitted after TIMESTAMP, for the PR's OWN CURRENT head SHA -- fetched
+fresh, never trusted from a caller) instead of re-running the full
+ready-transition and provider-spend flow. Prints "provider=coderabbit
+result=LANDED state=STATE threads=N since=TIMESTAMP", or
+"provider=coderabbit result=STALE_HEAD state=STATE commit=SHA" for a
+terminal review that postdates TIMESTAMP but targets a head the PR has since
+moved past, or "provider=coderabbit result=PENDING" otherwise. Always exits
+0 -- neither PENDING nor STALE_HEAD is a failure, only "not landed for this
+head yet".
 EOF
     exit "${1:-2}"
 }
@@ -66,10 +84,83 @@ while (($#)); do
         --authorization-file) (($# >= 2)) || usage; authorization_file=$2; shift 2 ;;
         --rounds) (($# >= 2)) || usage; rounds=$2; shift 2 ;;
         --interval) (($# >= 2)) || usage; interval=$2; shift 2 ;;
+        --observe) observe=1; shift ;;
+        --since) (($# >= 2)) || usage; since=$2; shift 2 ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
 done
+
+if ((observe)); then
+    [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die '--repo must have the form OWNER/REPO'
+    [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
+    [[ -n $since ]] || die '--since is required with --observe'
+    command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
+    command -v jq >/dev/null 2>&1 || die 'jq is required; observe evidence unavailable'
+
+    work_dir=$(mktemp -d "${TMPDIR:-/tmp}/review-transition-observe.XXXXXX") ||
+        die 'could not create work directory'
+    chmod 700 "$work_dir"
+    trap 'rm -rf -- "$work_dir"' EXIT HUP INT TERM
+
+    fetch_slurped() {
+        local endpoint=$1 out=$2 label=$3
+        "$GH_BIN" api "$endpoint" --paginate --slurp >"$work_dir/$label.raw" ||
+            die "$label evidence unavailable"
+        jq 'if type == "array" and length > 0 and all(.[]; type == "array") then add else . end' \
+            "$work_dir/$label.raw" >"$out" || die "$label evidence returned malformed JSON"
+        jq -e 'type == "array"' "$out" >/dev/null 2>&1 || die "$label evidence returned malformed JSON"
+    }
+    # The live head SHA, fetched fresh rather than trusted from any caller
+    # input: the PR can advance between the trigger and this observe call, and
+    # a review submitted for the OLD head can still postdate $since and read
+    # as current if commit_id is never checked (agent-kit#395 follow-up).
+    "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" || die 'pull request metadata unavailable'
+    head_sha=$(jq -r '.head.sha // empty' "$work_dir/pr.json") || head_sha=''
+    [[ $head_sha =~ ^[0-9a-f]{40}$ ]] || die 'pull request metadata carries no full head SHA'
+
+    fetch_slurped "repos/$repo/pulls/$pr/reviews?per_page=100" "$work_dir/reviews.json" reviews
+    fetch_slurped "repos/$repo/pulls/$pr/comments?per_page=100" "$work_dir/comments.json" comments
+
+    # Same terminal-state/tie-break rule as gh-pr-state.sh's provider_state:
+    # only a genuinely submitted review (APPROVED/CHANGES_REQUESTED/COMMENTED)
+    # postdating the trigger counts at all, and only one whose OWN commit_id
+    # matches the just-fetched live head counts as LANDED. A terminal,
+    # post-trigger review that targets a different (older) commit is reported
+    # as STALE_HEAD -- distinct from PENDING, so the root does not read a
+    # real-but-stale review as "nothing happened yet" and does not read it as
+    # LANDED either, which would let a review of different code authorize
+    # this head's merge.
+    info=$(jq -r "$PROVIDER_IDENTITY_JQ"'
+        [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
+               | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED")
+               | select((.submitted_at // "") > $since) ] as $terminal
+        | ($terminal | map(select((.commit_id // "") == $head))
+            | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $current
+        | ($terminal | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $latest
+        | if $current != null then
+            ["current", $current.state, ($current.submitted_at // ""), (($current.id // 0) | tostring)] | @tsv
+          elif $latest != null then
+            ["stale", $latest.state, ($latest.commit_id // ""), ""] | @tsv
+          else empty end' --arg since "$since" --arg head "$head_sha" <"$work_dir/reviews.json") || info=""
+    if [[ -n $info ]]; then
+        kind='' state_or_commit='' info_b='' review_id=''
+        IFS=$'\t' read -r kind state_or_commit info_b review_id <<< "$info"
+        if [[ $kind == current ]]; then
+            threads=$(jq -r --argjson rid "${review_id:-0}" \
+                '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
+                <"$work_dir/comments.json")
+            printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s\n' \
+                "$state_or_commit" "$threads" "${info_b:-unknown}"
+            exit 0
+        fi
+        printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s\n' \
+            "$state_or_commit" "${info_b:-unknown}"
+        exit 0
+    fi
+    printf 'provider=coderabbit result=PENDING\n'
+    exit 0
+fi
 
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die '--repo must have the form OWNER/REPO'
 [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
@@ -238,6 +329,21 @@ provider_spent() {
     ' "$work_dir/issue-comments.json" >/dev/null
 }
 
+# The spent marker's own creation time, for callers that want to hand it to
+# --observe --since as the trigger boundary. Empty when the comment evidence
+# carries no created_at (never treated as a failure -- the caller degrades to
+# printing no since= field).
+provider_spent_at() {
+    local marker
+    marker=$(review_provider_request_marker "$1") || return 1
+    fetch_workflow_login
+    jq -r --arg marker "$marker" --arg login "$workflow_login" '
+      [ .[] | select(((.body // "") | contains($marker)) and
+          (((.user.login // "") | ascii_downcase) == ($login | ascii_downcase))) ]
+      | sort_by(.created_at // "") | last | (.created_at // empty)
+    ' "$work_dir/issue-comments.json"
+}
+
 for provider in "${providers[@]}"; do
     case ${modes[$provider]} in
         disabled)
@@ -274,7 +380,12 @@ for provider in "${providers[@]}"; do
                     fetch_provider_evidence
                     if provider_spent "$provider"; then
                         emitted[$provider]=1
-                        printf 'provider=%s result=ALREADY_SPENT\n' "$provider"
+                        spent_since=$(provider_spent_at "$provider") || spent_since=''
+                        if [[ -n $spent_since ]]; then
+                            printf 'provider=%s result=ALREADY_SPENT since=%s\n' "$provider" "$spent_since"
+                        else
+                            printf 'provider=%s result=ALREADY_SPENT\n' "$provider"
+                        fi
                         continue
                     fi
                     saw_activity=0
@@ -302,7 +413,24 @@ for provider in "${providers[@]}"; do
                     [[ $post_output == *'verified=exact'* ]] ||
                         die 'provider request returned no exact readback proof'
                     emitted[$provider]=1
-                    printf 'provider=%s result=TRIGGERED\n' "$provider"
+                    # The posted comment's own created_at is the trigger boundary a
+                    # later --observe --since call needs; a readback failure here
+                    # degrades to the plain TRIGGERED line rather than dying -- the
+                    # trigger itself already succeeded and must still be reported.
+                    trigger_id=$(sed -nE 's/.*\bid=([0-9]+).*/\1/p' <<< "$post_output" | head -n 1)
+                    trigger_since=''
+                    if [[ -n $trigger_id ]]; then
+                        if "$GH_BIN" api "repos/$repo/issues/comments/$trigger_id" \
+                            >"$work_dir/trigger-comment.json" 2>/dev/null; then
+                            trigger_since=$(jq -r '.created_at // empty' \
+                                "$work_dir/trigger-comment.json" 2>/dev/null) || trigger_since=''
+                        fi
+                    fi
+                    if [[ -n $trigger_since ]]; then
+                        printf 'provider=%s result=TRIGGERED since=%s\n' "$provider" "$trigger_since"
+                    else
+                        printf 'provider=%s result=TRIGGERED\n' "$provider"
+                    fi
                     ;;
             esac
             ;;

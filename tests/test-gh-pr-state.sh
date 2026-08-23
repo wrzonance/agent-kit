@@ -337,10 +337,18 @@ repo_declared_output=$(PATH="$tmp/case-repo-declared-tier0:$PATH" bash "$root/ag
 assert_contains "$repo_declared_output" 'base: ref=main behind=1 stale=no' \
     "this repository's own AGENT_GENERATED_PATHS declaration covers record-tier0.yml's bench/results/tier0.jsonl (agent-kit#394 regression pin)"
 
-# --- provider state: last-signal-wins over the issue comments --------------
+# --- provider state: the reviews endpoint is the terminal signal, never an
+# issue-comment phrase scan (agent-kit#395) ---------------------------------
+#
+# PR #386's regression: CodeRabbit acknowledged, then landed an APPROVED
+# review with zero actionable threads. An issue-comment phrase scan never
+# sees "actionable comments posted" on a clean approval, so it silently read
+# `coderabbit=none` for 15 one-minute rounds. The fix reads the reviews
+# endpoint directly -- an ack is a plain issue comment, never a review
+# submission, so it can never satisfy this check on its own.
 
-mkdir -p "$tmp/case-reviewed"
-cat >"$tmp/case-reviewed/gh" <<'EOF'
+mkdir -p "$tmp/case-approved-zero-threads"
+cat >"$tmp/case-approved-zero-threads/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
@@ -354,17 +362,151 @@ case " $* " in
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
         ;;
     *"issues/99/comments"*)
-        printf '%s\n' '[{"user":{"login":"coderabbitai[bot]"},"body":"Actionable comments posted: 2"}]'
+        printf '%s\n' '[{"user":{"login":"coderabbitai[bot]"},"body":"Reviewing files that changed from the base of the PR and between two most recent pushes."}]'
+        ;;
+    *"pulls/99/reviews"*)
+        printf '%s\n' '[{"id":5001,"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","submitted_at":"2026-08-22T06:36:18Z","commit_id":"1111111111"}]'
+        ;;
+    *"pulls/99/comments"*) printf '%s\n' '[]' ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-approved-zero-threads/gh"
+approved_output=$(PATH="$tmp/case-approved-zero-threads:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 99 --repo owner/repo)
+assert_contains "$approved_output" 'provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T06:36:18Z' \
+    'an APPROVED review with zero threads reports reviewed+state+threads, never none (agent-kit#395)'
+
+mkdir -p "$tmp/case-changes-requested"
+cat >"$tmp/case-changes-requested/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"issues/99/comments"*) printf '%s\n' '[]' ;;
+    *"pulls/99/reviews"*)
+        printf '%s\n' '[{"id":5002,"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2026-08-22T07:00:00Z","commit_id":"1111111111"}]'
+        ;;
+    *"pulls/99/comments"*)
+        printf '%s\n' '[{"pull_request_review_id":5002},{"pull_request_review_id":5002},{"pull_request_review_id":9999}]'
         ;;
     *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
     *) printf '%s\n' '[]' ;;
 esac
 EOF
-chmod +x "$tmp/case-reviewed/gh"
-reviewed_output=$(PATH="$tmp/case-reviewed:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+chmod +x "$tmp/case-changes-requested/gh"
+changes_requested_output=$(PATH="$tmp/case-changes-requested:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 99 --repo owner/repo)
-assert_contains "$reviewed_output" 'provider: coderabbit=reviewed' \
-    'an actionable-comments body reports provider state reviewed'
+assert_contains "$changes_requested_output" 'provider: coderabbit=reviewed state=CHANGES_REQUESTED threads=2 since=2026-08-22T07:00:00Z' \
+    'a CHANGES_REQUESTED review counts only its own review-id inline comments as threads'
+
+mkdir -p "$tmp/case-ack-only-not-reviewed"
+cat >"$tmp/case-ack-only-not-reviewed/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"issues/99/comments"*)
+        printf '%s\n' '[{"user":{"login":"coderabbitai[bot]"},"body":"Reviewing files that changed from the base of the PR and between two most recent pushes."}]'
+        ;;
+    *"pulls/99/reviews"*) printf '%s\n' '[]' ;;
+    *"pulls/99/comments"*) printf '%s\n' '[]' ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-ack-only-not-reviewed/gh"
+ack_only_output=$(PATH="$tmp/case-ack-only-not-reviewed:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 99 --repo owner/repo)
+assert_contains "$ack_only_output" 'provider: coderabbit=none' \
+    'an acknowledgement-only issue comment with no review object still reports none'
+
+mkdir -p "$tmp/case-most-recent-review-wins"
+cat >"$tmp/case-most-recent-review-wins/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"issues/99/comments"*) printf '%s\n' '[]' ;;
+    *"pulls/99/reviews"*)
+        printf '%s\n' '[{"id":4000,"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2026-08-20T00:00:00Z","commit_id":"1111111111"},{"id":4001,"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","submitted_at":"2026-08-22T00:00:00Z","commit_id":"1111111111"}]'
+        ;;
+    *"pulls/99/comments"*) printf '%s\n' '[]' ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-most-recent-review-wins/gh"
+most_recent_output=$(PATH="$tmp/case-most-recent-review-wins:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 99 --repo owner/repo)
+assert_contains "$most_recent_output" 'provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T00:00:00Z' \
+    'the most recently submitted terminal review wins over an earlier one'
+
+# --- provider state: a terminal review targeting a STALE head is never
+# reported as 'reviewed', and never silently as 'none' either (agent-kit#395
+# adversarial-review follow-up: a review of an old head can postdate the
+# trigger and look current if commit_id is never checked) ------------------
+
+mkdir -p "$tmp/case-stale-head-review"
+cat >"$tmp/case-stale-head-review/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/99 "*)
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/1111111111/check-runs"*)
+        printf '%s\n' '{"check_runs":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"issues/99/comments"*) printf '%s\n' '[]' ;;
+    *"pulls/99/reviews"*)
+        printf '%s\n' '[{"id":6000,"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","submitted_at":"2026-08-22T09:00:00Z","commit_id":"0000000000"}]'
+        ;;
+    *"pulls/99/comments"*) printf '%s\n' '[]' ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-stale-head-review/gh"
+stale_head_output=$(PATH="$tmp/case-stale-head-review:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 99 --repo owner/repo)
+assert_contains "$stale_head_output" 'provider: coderabbit=stale-head state=APPROVED commit=0000000000' \
+    'a terminal review of a different (stale) head reports stale-head, never reviewed or none'
+assert_not_contains "$stale_head_output" 'provider: coderabbit=reviewed' \
+    'a stale-head review is never mistaken for current-head evidence'
+assert_not_contains "$stale_head_output" 'provider: coderabbit=none' \
+    'a stale-head review is never mistaken for no review at all'
+
+# --- provider state: last-signal-wins over the issue comments (rate-limit
+# fallback, when no formal review object exists yet) ------------------------
 
 mkdir -p "$tmp/case-rate-limited"
 cat >"$tmp/case-rate-limited/gh" <<'EOF'
