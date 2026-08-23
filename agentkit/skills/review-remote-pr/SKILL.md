@@ -261,19 +261,23 @@ git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's 
 
 Run only declared `agent-run.sh --cmd` commands — they run directly, with no approval step. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry. 2a/3a reuse this recipe whenever `base:` reads `stale=yes`, conflicting or not; a clean merge auto-commits — skip straight to `agent-run.sh --cmd test` then `git push`.
 
-### 0c — Create the private review-artifact directory
+### 0c — Resolve the durable per-PR review-artifact directory
 
-Review payloads carry private source and review text. Create one randomly named `0700` run
-directory, carrying its path forward as `RUN_DIR` in every later block; never substitute `/tmp`, a
-PR-number-only path, or non-`0700` permissions:
+Review payloads carry private source and review text. Resolve one `0700` run directory keyed to
+this PR, carrying its path forward as `RUN_DIR` in every later block; never hand-roll a `mktemp`
+path yourself:
 
 ```bash
-RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/review-remote-pr.XXXXXXXXXX") || exit 1
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 printf 'Review artifacts: %s\n' "$RUN_DIR"
 ```
 
-Keep it for audit, remove only once triage and verification complete. Re-set it at the top of every
-later block: `: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"`
+Same path every session for this PR (`<repo>/.agent/evidence/pr-<N>`, mode `0700`, a hostile
+pre-existing path refused); falls back to `${TMPDIR:-/tmp}` only when `.agent/` is genuinely
+unwritable. Keep it for audit, remove only once triage and verification complete. Re-set it at the
+top of every later block: `: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"`
 
 ---
 

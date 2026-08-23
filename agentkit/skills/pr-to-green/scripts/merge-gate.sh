@@ -54,7 +54,8 @@ usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --pr-state-digest FILE --provider-result RESULT
-       --human-items-decided yes|no --code-quality-scan-state complete|pending
+       --human-items-decided yes|no
+       --code-quality-scan-state complete|pending|not-enabled
 EOF
     exit "${1:-2}"
 }
@@ -82,11 +83,14 @@ done
     die '--pr-state-digest must be an owned regular file, not a symlink'
 reject_writable_by_others "$digest_file" '--pr-state-digest'
 case $provider_result in
-    AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
+    AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|LANDED|STALE_HEAD|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
 esac
 case $human_decided in yes|no) ;; *) die '--human-items-decided must be yes or no' ;; esac
-case $cq_scan_state in complete|pending) ;; *) die '--code-quality-scan-state must be complete or pending' ;; esac
+case $cq_scan_state in
+    complete|pending|not-enabled) ;;
+    *) die '--code-quality-scan-state must be complete, pending, or not-enabled' ;;
+esac
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; gate evidence unavailable'
 
@@ -438,10 +442,15 @@ fi
 case $provider_result in
     TRIGGERED) block 'CodeRabbit review is still in flight for the current head' ;;
     BLOCKED) block 'CodeRabbit provider capability plan reported BLOCKED' ;;
+    STALE_HEAD) block 'CodeRabbit review is against a stale head, not evidence for the current head' ;;
 esac
 
 [[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision'
-[[ $cq_scan_state == complete ]] || block 'github-code-quality scan is still pending on the current head'
+# not-enabled (issue #403) means Code Quality is disabled for the repository
+# -- a stable fact, not a scan in flight -- so it gates exactly like
+# complete; pending is the only value that still blocks.
+[[ $cq_scan_state == complete || $cq_scan_state == not-enabled ]] ||
+    block 'github-code-quality scan is still pending on the current head'
 
 if ((${#reasons[@]} > 0)); then
     for reason in "${reasons[@]}"; do

@@ -168,7 +168,18 @@ KNOWN_OVERSIZE[parallel-issues]="1132:19468:900"
 # exist under parallel-issues, which is the exact failure this issue is about;
 # that repair is the 19533 -> 19554 difference. test-skill-size.sh's pinned
 # ratchet messages move with these numbers.
-KNOWN_OVERSIZE[review-remote-pr]="513:8234:450"
+# Issue #405 replaces Step 0c's inline `mktemp -d "${TMPDIR:-/tmp}/..."` recipe
+# with a call to the new run-dir.sh helper (a durable per-PR RUN_DIR under
+# .agent/evidence/, so a resumed session finds its prior evidence instead of
+# orphaning it), plus the resolver guard that call needs since it now touches
+# `$agentkit`. LINES is unchanged at 511 (well under the 513 ceiling -- the
+# helper-call block is one line longer than the mktemp block it replaces, and
+# the accompanying prose is a few lines longer too, but both dimensions
+# together still land inside 513). TOKENS rises 8234 -> 8337 for the guard and
+# the expanded fallback-behavior explanation, measured against this body and
+# set to the minimum that passes, never padded. Target unchanged.
+# test-skill-size.sh's pinned ratchet-message assertion moves with it.
+KNOWN_OVERSIZE[review-remote-pr]="513:8337:450"
 KNOWN_OVERSIZE[parallel-issues]="1133:19554:900"
 
 readonly MAX_BODY_LINES=500

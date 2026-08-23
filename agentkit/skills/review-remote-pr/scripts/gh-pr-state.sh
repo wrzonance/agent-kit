@@ -17,11 +17,22 @@
 # ci=0/0 none-configured rather than silently reusing the "no CI here at all"
 # 'none' word.
 #
+# A base advance whose new commits touch ONLY the repository-declared
+# AGENT_GENERATED_PATHS prefixes (e.g. a post-merge results-recording workflow
+# like record-tier0.yml) is not reported stale: without this, every such
+# commit forces a merge-down plus a full CI re-run on the next queued PR
+# (agent-kit#394). The exemption is resolved from <repo-root>/.agent/config.env
+# via repo-config.sh (--repo-root DIR, default: git toplevel) and fails closed --
+# an undeclared list, an unreadable comparison, a possibly-truncated compare
+# response (see COMPARE_FILES_PAGE_CAP), a rename whose old or new path is
+# undeclared, or any file outside the declared prefixes leaves the advance
+# staling exactly as before.
+#
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
 #   base: ref=main behind=1 stale=yes
 #   ci=3/3 green pending=0 failing=0
-#   provider: coderabbit=reviewed
+#   provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T06:36:18Z
 #   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
 #   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
 #   nitpicks: 0 unhandled
@@ -66,6 +77,13 @@ readonly AGENT_DOC_MARKER='<!-- review-remote-pr:agent-doc -->'
 # U+1F9F9 BROOM, spelled as a codepoint so this file stays ASCII and the match
 # needs no regex-engine support for \x{...}.
 readonly BROOM_CP=129529
+# GitHub's "compare two commits" REST endpoint returns at most this many
+# entries in `.files` on a single (unpaginated) page; a response carrying
+# this many or more cannot prove the full file list was read, only that at
+# least this many files changed. base_advance_is_automation_only treats that
+# as unreadable evidence and fails closed rather than risk missing an
+# out-of-page file outside the declared paths.
+readonly COMPARE_FILES_PAGE_CAP=300
 
 PR=""
 REPO=""
@@ -78,18 +96,24 @@ SAW_DIGEST=0
 PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
+HEAD_SHA=""
 BASE_REF=""
 BASE_BEHIND=""
 BASE_STATUS=unknown
 THREADS_AVAILABLE=1
 CI_NONE_CONFIGURED=0
+REPO_ROOT=""
+# Declared AGENT_GENERATED_PATHS prefixes (comma-separated); resolved once in
+# main() via resolve_automation_paths. Empty means the exemption is inert.
+AUTOMATION_PATHS=""
 # --wait-ci rounds of ci=0/0 (no registered checks at all) tolerated as
 # "pending" before reporting none-configured; see the header comment.
 readonly CI_ZERO_CHECKS_GRACE_ROUNDS=3
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME [--pr N | N] [--repo OWNER/REPO] [--digest|--full|--wait-ci]
+Usage: $PROGNAME [--pr N | N] [--repo OWNER/REPO] [--repo-root DIR]
+                 [--digest|--full|--wait-ci]
                  [--tmpdir DIR] [--rounds N] [--interval SECONDS] [-h]
 
 Prints one compact digest of a pull request's draft/mergeable state, CI, review
@@ -101,6 +125,11 @@ Required:
 Options:
   --repo OWNER/REPO      Repository. Default: derived from the current checkout
                          from the current checkout's origin remote.
+  --repo-root DIR        Local checkout to resolve AGENT_GENERATED_PATHS from,
+                         for the base-staleness exemption below. Default: the
+                         current directory's git toplevel; absent either way,
+                         the exemption stays inert and every base advance
+                         stales exactly as before.
   --digest               Print the digest only (default).
   --full                 Also write the durable artifacts later steps read, as
                          DIR/pr_N_{reviews,comments,issue_comments,threads,
@@ -113,6 +142,8 @@ Options:
   -h, --help             Show this help.
 
 Counting rules:
+  base        behind>0 stales unless every file the base gained since divergence
+              falls under a declared AGENT_GENERATED_PATHS prefix (see --repo-root).
   coderabbit/code-quality  unresolved threads owned by that known provider with no
                            human comment.
   generic     unresolved threads from other authoritative automated accounts with
@@ -124,11 +155,21 @@ Counting rules:
               /nitpick|broom-emoji/i (the body-only surfaces, which have no review
               thread), minus the threads this workflow already opened to document
               them ('$AGENT_DOC_MARKER').
-  provider    last-signal-wins scan of the PR's issue comments (oldest first, so a
-              later comment overrides an earlier one): a CodeRabbit body matching
-              /actionable comments posted|<summary>walkthrough/i means 'reviewed',
-              /review limit reached|rate limit/i means 'rate-limited', otherwise
-              'none'. Informational only -- never a trigger decision.
+  provider    the most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED)
+              CodeRabbit review on the reviews endpoint whose OWN commit_id
+              matches the current head: 'reviewed state=STATE threads=N
+              since=TIMESTAMP', where threads is that review's own
+              inline-comment count and since is its submission time. An
+              acknowledgement-only issue comment never satisfies this -- it
+              is not a review submission. A terminal review that exists but
+              targets an earlier head (the PR advanced after it was
+              requested) reports 'stale-head state=STATE commit=SHA' instead
+              -- never 'reviewed', which would misrepresent it as evidence
+              for the current head, and never 'none', which would hide that
+              a review exists at all. Absent any terminal review, falls back
+              to an issue-comment rate-limit phrase scan: /review limit
+              reached|rate limit/i means 'rate-limited', otherwise 'none'.
+              Informational only -- never a trigger decision.
   agent-docs  unresolved threads whose FIRST comment is marked
               '$AGENT_DOC_MARKER' and which carry no unmarked human-lane
               comment; eligible for this workflow to resolve at exit (Step 6).
@@ -176,6 +217,8 @@ parse_args() {
         --pr=*) PR=${1#*=}; shift ;;
         --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
         --repo=*) REPO=${1#*=}; shift ;;
+        --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
+        --repo-root=*) REPO_ROOT=${1#*=}; shift ;;
         --tmpdir) require_value "$1" "${2:-}"; OUT_DIR=$2; shift 2 ;;
         --tmpdir=*) OUT_DIR=${1#*=}; shift ;;
         --rounds) require_value "$1" "${2:-}"; ROUNDS=$2; shift 2 ;;
@@ -285,11 +328,84 @@ fetch_meta() {
     return 0
 }
 
+# Resolves AUTOMATION_PATHS once from the declared AGENT_GENERATED_PATHS key,
+# the same repository-relative comma-separated prefix list diff-facts.sh
+# already reads for its 'generated' evidence category. --repo-root wins;
+# otherwise the current directory's git toplevel; either way absent, this
+# stays empty and the staleness exemption below is inert. Never dies: a
+# missing resolver, repo root, or config file is a normal "not declared" case.
+resolve_automation_paths() {
+    [[ -n $REPO_ROOT ]] || REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
+    [[ -n $REPO_ROOT ]] || return 0
+    local resolver="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
+    [[ -x $resolver ]] || return 0
+    AUTOMATION_PATHS=$("$resolver" --repo-root "$REPO_ROOT" --get AGENT_GENERATED_PATHS 2>/dev/null) || AUTOMATION_PATHS=""
+    return 0
+}
+
+# Prefix match against the declared AUTOMATION_PATHS list, mirroring
+# diff-facts.sh's matches_generated: a trailing slash is a directory prefix,
+# leading './' is normalized away, and an empty/'.' spec matches nothing here
+# (never treat "no declaration" as "everything is generated").
+matches_automation_path() {
+    local path=$1 spec
+    local -a specs=()
+    IFS=, read -ra specs <<< "$AUTOMATION_PATHS"
+    for spec in "${specs[@]}"; do
+        [[ -n $spec ]] || continue
+        while [[ $spec == ./* ]]; do spec=${spec#./}; done
+        while [[ $spec == */ ]]; do spec=${spec%/}; done
+        [[ -n $spec && $spec != . ]] || continue
+        [[ $path == "$spec" || $path == "$spec/"* ]] && return 0
+    done
+    return 1
+}
+
+# True only when EVERY file the base gained since divergence (the files in
+# the reverse compare head...base, i.e. diff(merge-base, base)) matches a
+# declared AUTOMATION_PATHS prefix. Fails closed on anything unreadable,
+# unparsable, empty, or possibly truncated -- an empty file list proves
+# nothing was actually compared, so it is never read as "confined to
+# nothing, therefore fine", and a file count at or above
+# COMPARE_FILES_PAGE_CAP proves only a lower bound, never the full list, so
+# it is never read as "everything returned matched, therefore fine" either.
+# A renamed file carries BOTH `filename` (the new path) and
+# `previous_filename` (the old one); both must match a declared prefix, so a
+# rename that moves application code INTO a declared path -- or a declared
+# artifact OUT of one -- still fails closed on whichever side is undeclared.
+base_advance_is_automation_only() {
+    local head_ref=$1 out="$WORK_DIR/base-advance.json"
+    [[ -n $AUTOMATION_PATHS ]] || return 1
+    gh api "repos/$REPO/compare/$head_ref...$BASE_REF" \
+        >"$out" 2>"$WORK_DIR/err" || return 1
+    jq -e 'type == "object" and has("files") and (.files | type == "array")' "$out" >/dev/null 2>&1 || return 1
+    local file_count
+    file_count=$(jq -r '.files | length' "$out" 2>/dev/null) || return 1
+    [[ $file_count =~ ^[0-9]+$ ]] || return 1
+    ((file_count > 0)) || return 1
+    ((file_count < COMPARE_FILES_PAGE_CAP)) || return 1
+    local -a rows=()
+    mapfile -t rows < <(jq -r '.files[]? | [(.filename // ""), (.previous_filename // "")] | @tsv' "$out")
+    ((${#rows[@]} == file_count)) || return 1
+    local row filename previous
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r filename previous <<<"$row"
+        [[ -n $filename ]] || return 1
+        matches_automation_path "$filename" || return 1
+        [[ -z $previous ]] || matches_automation_path "$previous" || return 1
+    done
+    return 0
+}
+
 # Compare the live base and head ancestry: after parent-merge retargeting, a
 # child can be behind its new base while its old checks remain attached. The
 # PR's baseRefOid is live metadata and cannot identify what an earlier check
 # tested, so it is deliberately not used as evidence. Missing or unavailable
-# comparison data is unknown, never silently current.
+# comparison data is unknown, never silently current. A behind>0 advance
+# confined entirely to declared AGENT_GENERATED_PATHS prefixes (see
+# base_advance_is_automation_only) is reported current, not stale --
+# record-tier0.yml-style post-merge commits otherwise force a merge-down and a
+# full CI re-run on every queued PR (agent-kit#394).
 fetch_base_state() {
     BASE_REF=$(jq -r '.baseRefName // ""' <"$WORK_DIR/pr.json")
     local head_ref
@@ -313,7 +429,12 @@ fetch_base_state() {
         return 0
     fi
     if ((BASE_BEHIND > 0)); then
-        BASE_STATUS=stale
+        if base_advance_is_automation_only "$head_ref"; then
+            BASE_STATUS=current
+            note "base advance ($BASE_REF, $BASE_BEHIND commit(s)) touches only declared AGENT_GENERATED_PATHS -- not staling"
+        else
+            BASE_STATUS=stale
+        fi
     else
         BASE_STATUS=current
     fi
@@ -502,17 +623,61 @@ nitpick_count() {
 }
 
 # CodeRabbit's own check can sit green on a bare "finished" ack or a rate-limit
-# warning, so the real signal lives in the issue-comment bodies, not the check
-# conclusion. Comments arrive oldest-first from the REST endpoint, so the LAST
-# matching signal wins: a stale walkthrough from an earlier cycle must never
-# mask a rate-limit on the current trigger. Informational only -- this never
-# decides whether to trigger, retry, or wait for a review.
+# warning, and a landed review can be APPROVED/CHANGES_REQUESTED with zero
+# actionable threads -- neither a check conclusion nor an issue-comment phrase
+# scan proves a review actually landed (agent-kit#395: PR #386 read
+# coderabbit=none for 15 one-minute rounds after an APPROVED, zero-thread
+# review). The real signal is CodeRabbit's own PullRequestReview object on the
+# reviews endpoint: the initial "Reviewing files that changed..."
+# acknowledgement is posted as a plain issue comment, never as a review
+# submission, so it can never satisfy this check -- only a genuine submitted
+# review (APPROVED, CHANGES_REQUESTED, or COMMENTED; PENDING and DISMISSED are
+# excluded as non-terminal) does. Ties on submitted_at break on the higher
+# review id (insertion order). 'threads' counts this review's own inline
+# comments via pull_request_review_id -- already-fetched evidence, no extra
+# API call. Falls back to the issue-comment rate-limit phrase scan only when
+# no terminal review exists at all; that fallback never reports 'reviewed' on
+# its own, since a phrase alone is not proof a review landed.
+#
+# A terminal review's OWN commit_id must match the current head (agent-kit#395
+# follow-up): the PR can advance to a new head while a review of the OLD head
+# is still in flight and lands afterward, with a submitted_at that looks
+# perfectly current. Reporting that as 'reviewed' would present a stale
+# review as evidence for code nobody has reviewed yet. Such a review is
+# reported as 'stale-head' -- distinct from 'reviewed' (never mistaken for
+# current-head evidence) and distinct from 'none' (a review exists; it is
+# simply not for this head, so the root should not re-trigger blindly).
 provider_state() {
+    local info
+    info=$(jq -r --arg head "$HEAD_SHA" "$PROVIDER_IDENTITY_JQ"'
+        [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
+               | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED") ] as $terminal
+        | ($terminal | map(select((.commit_id // "") == $head))
+            | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $current
+        | ($terminal | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $latest
+        | if $current != null then
+            ["current", $current.state, ($current.submitted_at // ""), (($current.id // 0) | tostring)] | @tsv
+          elif $latest != null then
+            ["stale", $latest.state, ($latest.commit_id // ""), ""] | @tsv
+          else empty end' <"$WORK_DIR/reviews.json") || info=""
+    if [[ -n $info ]]; then
+        local kind state_or_commit b review_id
+        IFS=$'\t' read -r kind state_or_commit b review_id <<< "$info"
+        if [[ $kind == current ]]; then
+            local threads
+            threads=$(jq -r --argjson rid "${review_id:-0}" \
+                '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
+                <"$WORK_DIR/comments.json")
+            printf 'reviewed state=%s threads=%s since=%s' "$state_or_commit" "$threads" "${b:-unknown}"
+            return 0
+        fi
+        printf 'stale-head state=%s commit=%s' "$state_or_commit" "${b:-unknown}"
+        return 0
+    fi
     jq -r --arg re "$CR_LOGIN_RE" '
         map(select((.user.login // "") | test($re; "i")) | (.body // ""))
         | reduce .[] as $b ("none";
-            if   ($b | test("actionable comments posted|<summary>walkthrough"; "i")) then "reviewed"
-            elif ($b | test("review limit reached|rate limit"; "i"))                 then "rate-limited"
+            if ($b | test("review limit reached|rate limit"; "i")) then "rate-limited"
             else . end)' <"$WORK_DIR/issue_comments.json"
 }
 
@@ -702,6 +867,7 @@ main() {
     parse_args "$@"
     validate_args
     resolve_repo
+    resolve_automation_paths
     ((WANT_FULL)) && ensure_private_output_dir
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-pr-state.XXXXXX") || die "could not create a work directory"
     chmod 700 -- "$WORK_DIR" || die "could not secure work directory: $WORK_DIR"
@@ -713,6 +879,7 @@ main() {
         fetch_base_state
     fi
     HEAD_REF=$(jq -r '.headRefName // ""' <"$WORK_DIR/pr.json")
+    HEAD_SHA=$(jq -r '.headRefOid // ""' <"$WORK_DIR/pr.json")
     fetch_all
     ((WANT_FULL)) && save_artifacts
     print_digest

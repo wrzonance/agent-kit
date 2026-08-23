@@ -55,19 +55,26 @@ repos/owner/repo/pulls/14/reviews*)
         printf '%s\n' '[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]'
     elif [[ ${REVIEW_ACTIVITY:-none} == old ]]; then
         printf '%s\n' '[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]'
+    elif [[ ${REVIEW_ACTIVITY:-none} == landed ]]; then
+        printf '%s\n' "${OBSERVE_REVIEWS_JSON:-[]}"
     else
         printf '%s\n' '[]'
     fi
     ;;
-repos/owner/repo/pulls/14/comments*) printf '%s\n' '[]' ;;
+repos/owner/repo/pulls/14/comments*) printf '%s\n' "${OBSERVE_COMMENTS_JSON:-[]}" ;;
 repos/owner/repo/issues/14/comments*)
-    if [[ ${REVIEW_ACTIVITY:-none} == spent ]]; then
+    if [[ ${REVIEW_ACTIVITY:-none} == spent && -n ${SPENT_COMMENT_JSON:-} ]]; then
+        printf '%s\n' "$SPENT_COMMENT_JSON"
+    elif [[ ${REVIEW_ACTIVITY:-none} == spent ]]; then
         printf '%s\n' '[{"user":{"login":"workflow-account","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review"}]'
     elif [[ ${REVIEW_ACTIVITY:-none} == spent-forged ]]; then
         printf '%s\n' '[{"user":{"login":"mallory","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review"}]'
     else
         printf '%s\n' '[]'
     fi
+    ;;
+repos/owner/repo/issues/comments/901)
+    printf '{"created_at":"2026-08-22T06:30:00Z"}\n'
     ;;
 '')
     if [[ " $* " == *' api graphql '* ]]; then
@@ -130,6 +137,8 @@ write_auth "$(trigger_action coderabbit)"
 out=$(run_transition)
 assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
     'triggerable provider posts its one supported request'
+assert_contains "$out" 'provider=coderabbit result=TRIGGERED since=2026-08-22T06:30:00Z' \
+    'a TRIGGERED result carries the posted comment created_at as its since= boundary (agent-kit#395)'
 assert_eq 'provider-resolve' "$(sed -n '1p' "$tmp/transition.log")" \
     'provider configuration resolves before any PR read or mutation'
 assert_contains "$(cat "$tmp/trigger.md")" '<!-- pr-to-green:provider-request provider=coderabbit -->' \
@@ -150,6 +159,12 @@ assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT' \
     'a prior exact request is permanently spent across restarts and heads'
 assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
     'spent trigger budget causes no duplicate post'
+
+: >"$tmp/transition.log"
+out=$(SPENT_COMMENT_JSON='[{"user":{"login":"workflow-account","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review","created_at":"2026-08-21T12:00:00Z"}]' \
+    REVIEW_ACTIVITY=spent run_transition)
+assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT since=2026-08-21T12:00:00Z' \
+    'ALREADY_SPENT carries the spent markers own created_at as its since= boundary when available'
 
 : >"$tmp/transition.log"
 out=$(REVIEW_ACTIVITY=old run_transition)
@@ -307,5 +322,58 @@ assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT' \
     'a spent provider still reports ALREADY_SPENT with a multi-round budget'
 assert_eq '1' "$(grep -c 'pulls/14/reviews' "$tmp/transition.log" || true)" \
     'a spent provider is detected from the first fetch, without polling further rounds'
+
+# --- --observe: a lightweight companion query for the TRIGGERED/ALREADY_SPENT
+# since= boundary above (agent-kit#395) --------------------------------------
+# The whole point is to avoid re-running the full ready-transition/provider-
+# spend dance just to learn whether the review landed, so --observe takes
+# only --repo/--pr/--since -- no --repo-root or --authorization-file.
+
+run_observe() {
+    TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
+        bash "$transition" --observe --repo owner/repo --pr 14 --since "$1"
+}
+
+# The stub's repos/owner/repo/pulls/14 case (defined above) reports this as
+# the PR's live head SHA -- a review's own commit_id must match it to count
+# as LANDED (agent-kit#395 adversarial-review follow-up).
+readonly OBSERVE_HEAD_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7001,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-22T07:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
+    OBSERVE_COMMENTS_JSON='[{"pull_request_review_id":7001},{"pull_request_review_id":7001}]' \
+    run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=LANDED state=APPROVED threads=2 since=2026-08-22T07:00:00Z' \
+    '--observe reports LANDED once a terminal review for the current head postdates the trigger'
+
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7002,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-20T00:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
+    run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=PENDING' \
+    '--observe reports PENDING when the only review predates the trigger boundary'
+
+out=$(run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=PENDING' \
+    '--observe reports PENDING when no review exists at all'
+
+# agent-kit#395 adversarial-review follow-up: a terminal review that postdates
+# the trigger but targets a DIFFERENT (stale) commit must never read as LANDED
+# -- the PR can advance to a new head while a review of the old head is still
+# in flight and lands afterward, with a submitted_at that looks current.
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON='[{"id":7003,"user":{"login":"coderabbitai[bot]","type":"Bot"},"state":"APPROVED","submitted_at":"2026-08-22T07:00:00Z","commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' \
+    run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=STALE_HEAD state=APPROVED commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+    'a terminal review of a stale (non-current) head reports STALE_HEAD, never LANDED'
+assert_not_contains "$out" 'result=LANDED' \
+    'a stale-head review is never mistaken for landed evidence on the current head'
+
+set +e
+out=$(REVIEW_TRANSITION_GH="$tmp/gh" bash "$transition" --observe --repo owner/repo --pr 14 2>"$tmp/observe-no-since.err")
+observe_no_since_rc=$?
+set -e
+assert_eq '1' "$observe_no_since_rc" '--observe without --since is refused'
+assert_contains "$(cat "$tmp/observe-no-since.err")" '--since is required' \
+    'the refusal names the missing --since boundary'
 
 finish
