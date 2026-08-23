@@ -61,6 +61,54 @@ and additionally consumes:
   blocks (a finding merely replied-to, with the rescan still outstanding, is
   not finished).
 
+Code-scanning completion is proven from `GET code-scanning/analyses` — the
+surface that actually records a completed analysis — not from a check-run's
+`app.slug`. GitHub records workflow-uploaded SARIF (a CodeQL workflow,
+clippy, etc.) under `app.slug=github-advanced-security`, not
+`github-code-scanning`; a slug-only lookup false-blocks every head with real,
+clean analyses recorded that way, which is exactly what forced the manual
+`gh pr merge --admin` in SpecR #667 (see issue #390). `ref` is always sent as
+its own query field, never string-interpolated into the URL, so a base
+branch name containing `&` or `#` cannot split or truncate the request. The
+gate looks for an analysis under `refs/pull/N/merge` whose `commit_sha`
+matches the current head — or the PR's current `merge_commit_sha` (read from
+the same PR metadata already fetched for the live-state read, never a second
+call; a null value, e.g. not yet computed or the PR isn't mergeable, never
+widens matching). Matching both is required because a `pull_request`-event
+CodeQL/SARIF upload sets `GITHUB_SHA` to the GitHub-generated merge commit
+for that ref, not the PR's own head SHA — a head-only comparison false-
+blocked every PR scanned that way. `refs/pull/N/head` is queried too and
+matched against the head SHA alone, for tools whose workflow checks out and
+scans the head ref directly. A still-running scan is read from a check run
+under either app slug, demoted to a secondary "in flight" signal only — it
+can never by itself prove completion, only rule it out, which is why it is
+consulted *first*: a rerun or a second SARIF upload already in flight for a
+head an earlier analysis already covers must still block, not read as
+already-current. A repository that plainly runs code scanning elsewhere (its
+base ref has recorded analyses, e.g. a cron or `workflow_dispatch` schedule
+the PR itself never triggers) is reported as `code-scanning: scheduled-only,
+last analysis <date> on <ref>` and does not block on scan completion for
+that reason alone — but only once a single page (100, most-recent-first) of
+the repository's own recent analysis history is read and confirmed to carry
+no `refs/pull/*` entry at all. A repository whose history *does* include a
+pull-request analysis demonstrably scans PRs, so a missing analysis for THIS
+PR is ambiguous absence, not a schedule, and stays blocked (a probe that
+cannot even read that history never grants the exemption either — same
+fail-closed default as everywhere else in this gate; and a repository with
+more than 100 newer schedule-driven analyses could in principle push a
+genuine pull-request analysis off that first page, a residual gap the
+alerts-line requirement below still covers). A scheduled-only repository
+still needs a genuinely readable, zero-count alerts line — `n/a` blocks it
+exactly like it blocks every other status; only the two-signal "never used
+at all" exception below waives that.
+
+**Never dispatch a workflow (`gh workflow run`, a `workflow_dispatch` trigger,
+or any other means) to manufacture code-scanning evidence so this gate
+passes.** That is gate-gaming, not a remedy, regardless of who or what
+initiates it — a scheduled-only repository is expected to report
+`scheduled-only` and proceed, not be forced into producing evidence it does
+not otherwise generate for this PR.
+
 The gate treats an unreadable surface as blocked, never as clean: a
 `code-scanning n/a` line (the endpoint 403/404s), a missing/malformed digest
 line, or a digest that cannot be parsed all print a `blocked reason=...` line
@@ -137,6 +185,8 @@ harmless.
 Identical to the non-`--auto-merge` prohibitions, restated because a merge
 step raises the cost of getting them wrong: force-push, history rewrite,
 merging a `BLOCKED` item, bypassing branch protection, or merging outside the
-confirmed queue. `merge-pr.sh` never retries around a forge refusal — a
-branch-protection-required-approval refusal, a stale-sha 409, or a
-not-mergeable 405 is reported verbatim and is a named stop.
+confirmed queue. Also forbidden: dispatching a workflow to manufacture gate
+evidence (see the code-scanning section above) — a `BLOCKED` gate is a
+signal to fix or wait, never to game. `merge-pr.sh` never retries around a
+forge refusal — a branch-protection-required-approval refusal, a stale-sha
+409, or a not-mergeable 405 is reported verbatim and is a named stop.
