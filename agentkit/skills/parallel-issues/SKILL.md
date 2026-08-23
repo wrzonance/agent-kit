@@ -985,10 +985,10 @@ contract; this loop runs precheck before root launch and publishes after root re
 
 ```bash
 # The loop runs this before handing the launch to root, using the Step 1 artifact.
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 precheck_rc=0
 "$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
@@ -1012,10 +1012,10 @@ the pre-launch gate above, and the precheck must never fall through to a placeho
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # After the runner returns 0, run the ledger command once per outcome:
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
