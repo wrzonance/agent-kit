@@ -9,6 +9,13 @@
 # command approvals per poll. This makes one pass and prints a fixed-shape
 # digest — never raw JSON. --wait-ci ignores the review bot's own check when
 # deciding settledness: it can sit pending under a rate limit and never settle.
+# --wait-ci also treats zero registered checks (ci=0/0) as pending, not
+# settled, for a short grace window right after a push: GitHub has not always
+# registered the head's first check run yet, and a caller that trusted an
+# immediate 0/0 as "done" would proceed on no evidence (agent-kit#396). If the
+# window elapses with still no checks, the digest reports that explicitly as
+# ci=0/0 none-configured rather than silently reusing the "no CI here at all"
+# 'none' word.
 #
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
@@ -75,6 +82,10 @@ BASE_REF=""
 BASE_BEHIND=""
 BASE_STATUS=unknown
 THREADS_AVAILABLE=1
+CI_NONE_CONFIGURED=0
+# --wait-ci rounds of ci=0/0 (no registered checks at all) tolerated as
+# "pending" before reporting none-configured; see the header comment.
+readonly CI_ZERO_CHECKS_GRACE_ROUNDS=3
 
 usage() {
     cat <<EOF
@@ -526,10 +537,23 @@ alert_count() {
 
 wait_for_ci() {
     local round total pass pending fail pending_nb
+    local zero_rounds=0
     for ((round = 1; round <= ROUNDS; round++)); do
         fetch_meta
         fetch_base_state
         IFS=$'\t' read -r total pass pending fail pending_nb < <(ci_counts)
+        if ((total == 0)); then
+            ((++zero_rounds))
+            if ((zero_rounds >= CI_ZERO_CHECKS_GRACE_ROUNDS || round >= ROUNDS)); then
+                CI_NONE_CONFIGURED=1
+                note "round=$round/$ROUNDS no checks registered after $zero_rounds round(s) — reporting none-configured"
+                return 0
+            fi
+            note "round=$round/$ROUNDS no checks registered yet (grace $zero_rounds/$CI_ZERO_CHECKS_GRACE_ROUNDS) — treating as pending"
+            sleep "$INTERVAL"
+            continue
+        fi
+        zero_rounds=0
         if ((pending_nb == 0)); then
             note "round=$round/$ROUNDS settled checks=$total pass=$pass failing=$fail"
             return 0
@@ -569,7 +593,11 @@ print_ci_line() {
     local total pass pending fail pending_nb word
     IFS=$'\t' read -r total pass pending fail pending_nb < <(ci_counts)
     if ((total == 0)); then
-        word=none
+        if ((CI_NONE_CONFIGURED)); then
+            word=none-configured
+        else
+            word=none
+        fi
     elif ((fail > 0)); then
         word=failing
     elif ((pending > 0)); then
