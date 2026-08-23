@@ -10,15 +10,19 @@ readonly PROGRAM=${0##*/}
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
 readonly SCRIPT_DIR
 readonly RESOLVER=$SCRIPT_DIR/repo-config.sh
+# Overridable only for tests; the real path is fixed relative to this script.
+CODE_QUALITY_STATE=${REVIEW_PROVIDER_CONFIG_CODE_QUALITY_STATE:-$SCRIPT_DIR/../../review-remote-pr/scripts/code-quality-state.sh}
+readonly CODE_QUALITY_STATE
 # shellcheck source=lib/review-provider-catalog.sh
 source "$SCRIPT_DIR/lib/review-provider-catalog.sh"
 
 usage() {
-    printf 'usage: %s [--repo-root DIR]\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--probe]\n' "$PROGRAM" >&2
     exit "${1:-2}"
 }
 
 repo_root=''
+probe=no
 while (($#)); do
     case $1 in
         --repo-root)
@@ -26,6 +30,7 @@ while (($#)); do
             repo_root=$2
             shift 2
             ;;
+        --probe) probe=yes; shift ;;
         -h | --help) usage 0 ;;
         *) usage ;;
     esac
@@ -99,6 +104,36 @@ if [[ -z $declared ]]; then
     exit 0
 fi
 
+# Probes GitHub Code Quality reachability ONCE for the declared
+# github-code-quality provider (issue #403). Prints one of: enabled,
+# not-enabled, unknown. A repository slug that cannot be resolved, or a
+# probe that cannot reach a decided answer, is always "unknown" -- callers
+# must never treat "unknown" as proof the feature is disabled; only a
+# confirmed 403 "not enabled" response is.
+probe_code_quality() {
+    local repo_slug='' probe_out=''
+    repo_slug=$("$RESOLVER" --repo-root "$repo_root" --get AGENT_REPO_SLUG 2>/dev/null) || {
+        warn 'AGENT_REPO_SLUG is not declared; code-quality reachability is unknown'
+        printf 'unknown\n'
+        return 0
+    }
+    [[ -n $repo_slug ]] || {
+        printf 'unknown\n'
+        return 0
+    }
+    [[ -x $CODE_QUALITY_STATE ]] || {
+        warn "code-quality probe helper is not executable: $CODE_QUALITY_STATE"
+        printf 'unknown\n'
+        return 0
+    }
+    probe_out=$("$CODE_QUALITY_STATE" --repo "$repo_slug" --probe 2>/dev/null) || true
+    case $probe_out in
+        state=enabled) printf 'enabled\n' ;;
+        state=not-enabled) printf 'not-enabled\n' ;;
+        *) printf 'unknown\n' ;;
+    esac
+}
+
 IFS=, read -r -a providers <<< "$declared"
 for provider in "${providers[@]}"; do
     if [[ $provider == none && ${#providers[@]} -ne 1 ]]; then
@@ -111,5 +146,16 @@ for provider in "${providers[@]}"; do
         emit_none invalid
         exit 0
     }
+    if [[ $probe == yes && $provider == github-code-quality ]]; then
+        case $(probe_code_quality) in
+            not-enabled)
+                printf 'provider=%s mode=none source=declared reason=not-enabled\n' "$provider"
+                continue
+                ;;
+            unknown)
+                warn 'code-quality reachability could not be determined; treating capability as declared'
+                ;;
+        esac
+    fi
     printf 'provider=%s mode=%s source=declared\n' "$provider" "$mode"
 done
