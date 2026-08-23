@@ -560,4 +560,105 @@ assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_ONBOARDED_BY=age
 assert_contains "$(cat "$stamp_repo/.agent/config.env")" 'AGENT_PROJECT_NUMBER=7' \
     'the refresh actually rewrote the config rather than leaving it untouched'
 
+# --- trunk-carried tracked config (issue #401) ------------------------------
+# Repositories that COMMIT .agent/config.env / .agent/board.json (via a
+# .gitignore negation, then `git add`) are the documented layout for
+# worktree fleets and CI (onboard-repo Step 7). `--refresh` used to refuse
+# this case outright with no way to clear drift; it now patches only the
+# generator-owned keys in place, byte-for-byte, and only on a non-trunk branch.
+track_file() {
+    # $1=repo dir  $2=.agent/<name>  $3=source fixture/content path
+    mkdir -p "$1/.agent"
+    cp "$3" "$1/$2"
+    git -C "$1" add -f "$2" > /dev/null 2>&1
+}
+
+# --- refuses on trunk, before any network call ------------------------------
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/main
+track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
+before_trunk=$(cat "$repo/.agent/config.env")
+mkdir -p "$tmp/nobin"
+ln -sf "$(command -v git)" "$tmp/nobin/git"
+ln -sf "$(command -v sed)" "$tmp/nobin/sed"
+out=$(PATH="$tmp/nobin" /bin/bash "$bs_sh" --repo-root "$repo" --refresh 2>&1 || true)
+assert_rc 1 'refresh on trunk with a tracked config is refused' -- \
+    env PATH="$tmp/nobin" /bin/bash "$bs_sh" --repo-root "$repo" --refresh
+assert_contains "$out" 'trunk-carried' 'the refusal names the trunk-carried refresh path'
+assert_contains "$out" 'non-trunk branch' 'and tells the operator to switch branches'
+assert_not_contains "$out" 'is not installed' 'and never reaches the gh-tool preflight (no network needed to refuse)'
+after_trunk=$(cat "$repo/.agent/config.env")
+assert_eq "$before_trunk" "$after_trunk" 'the trunk refusal never touches the tracked file'
+
+# --- without --refresh/--force, an existing tracked config also names the path
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/other
+track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
+out=$(env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 2>&1 || true)
+assert_rc 1 'a plain run over a tracked config is refused without --force' -- \
+    env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7
+assert_contains "$out" 'tracked' 'the plain-run refusal says the file is tracked'
+assert_contains "$out" '--refresh' 'and names --refresh as the way to update it'
+
+# --- on a branch: refresh patches only the drifted keys, byte-for-byte -----
+expected_generator=$(jq -r .version "$root/agentkit/.codex-plugin/plugin.json")
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/issue-401
+track_file "$repo" .agent/config.env "$here/fixtures/tracked-config.env"
+out=$(run_bs --repo-root "$repo" --refresh 2>&1)
+assert_rc 0 'refresh on a branch patches a tracked config' -- run_bs \
+    --repo-root "$repo" --refresh
+patched=$(cat "$repo/.agent/config.env")
+expected=$(sed \
+    -e "s/^AGENT_PROJECT_NUMBER=99\$/AGENT_PROJECT_NUMBER=7/" \
+    -e "s/^AGENT_ONBOARDED_BY=agentkit\/0.0.1\$/AGENT_ONBOARDED_BY=agentkit\/$expected_generator/" \
+    "$here/fixtures/tracked-config.env")
+assert_eq "$expected" "$patched" \
+    'only the two drifted generator-owned keys change; every other byte is preserved'
+assert_contains "$out" 'refreshed' 'the run reports a trunk-carried refresh'
+assert_contains "$out" '-AGENT_PROJECT_NUMBER=99' 'the printed diff shows the old value removed'
+assert_contains "$out" '+AGENT_PROJECT_NUMBER=7' 'and the new value added'
+assert_not_contains "$out" "wrote $repo/.agent/config.env" \
+    'the tracked config is reported as a refresh, never as a fresh write'
+
+# --- idempotent: a second refresh with no drift changes nothing ------------
+before_second=$(cat "$repo/.agent/config.env")
+out=$(run_bs --repo-root "$repo" --refresh 2>&1)
+assert_rc 0 'a second refresh with no drift succeeds' -- run_bs \
+    --repo-root "$repo" --refresh
+assert_contains "$out" 'no drift' 'and reports nothing to patch'
+after_second=$(cat "$repo/.agent/config.env")
+assert_eq "$before_second" "$after_second" 'and leaves the file byte-identical'
+
+# --- a missing generator-owned key is appended, not silently skipped -------
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/missing-key
+mkdir -p "$repo/.agent"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=main\n' \
+    > "$repo/.agent/config.env"
+git -C "$repo" add -f .agent/config.env > /dev/null 2>&1
+run_bs --repo-root "$repo" --refresh > /dev/null 2>&1
+assert_contains "$(cat "$repo/.agent/config.env")" 'AGENT_PROJECT_NUMBER=7' \
+    'a generator-owned key absent from the tracked file is appended'
+assert_contains "$(cat "$repo/.agent/config.env")" "AGENT_ONBOARDED_BY=agentkit/$expected_generator" \
+    'including the generator stamp'
+
+# --- a tracked board.json is patched too, ignoring the generatedAt churn ---
+repo=$(make_repo)
+git -C "$repo" symbolic-ref HEAD refs/heads/feat/board-401
+mkdir -p "$repo/.agent"
+printf '{"schemaVersion":1,"owner":"example-org","project":{"number":99,"id":"stale","title":"Stale"},"statusField":{"id":"stale","name":"Status","options":{}},"generatedAt":"2020-01-01T00:00:00Z","fingerprint":"sha256:stale"}\n' \
+    > "$repo/.agent/board.json"
+git -C "$repo" add -f .agent/board.json > /dev/null 2>&1
+out=$(run_bs --repo-root "$repo" --project 7 --refresh 2>&1)
+assert_rc 0 'refresh on a branch patches a tracked board.json' -- run_bs \
+    --repo-root "$repo" --project 7 --refresh
+assert_eq '7' "$(jq -r '.project.number' "$repo/.agent/board.json")" \
+    'the tracked board is refreshed to the discovered project'
+before_board=$(jq -S 'del(.generatedAt)' "$repo/.agent/board.json")
+run_bs --repo-root "$repo" --project 7 --refresh > /dev/null 2>&1
+after_board=$(jq -S 'del(.generatedAt)' "$repo/.agent/board.json")
+assert_eq "$before_board" "$after_board" \
+    'a second refresh with no real drift leaves the board content unchanged'
+
 finish

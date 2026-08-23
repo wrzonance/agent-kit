@@ -273,6 +273,10 @@ git add -f .agent/config.env                  # trunk-carried: declarations only
 Legacy tracked declarations the user does not want carried are removed from the index as a separate migration.
 Fresh clones re-run onboarding to regenerate per-machine state; `.agent/` is excluded locally.
 
+Once trunk-carried, clear drift (`generator=stale`, `review-providers=undeclared`) with `bootstrap-repo.sh
+--refresh` on a non-trunk branch: it patches only the drifted generator-owned keys in place, byte-for-byte,
+prints the diff, and refuses on trunk — commit/PR the result through this same flow.
+
 ## Step 8 — check the harness itself
 
 ```bash
