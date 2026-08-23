@@ -231,14 +231,20 @@ build_diff() {
 
 verify_consent() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
-    local payload state=$RUN_DIR/state/cross-provider-consent
+    local payload state=$RUN_DIR/state/cross-provider-consent check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     payload=$(
         "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
             --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
-    "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
-        >/dev/null 2>&1 || die 'valid consent-record.sh check is required; refusing to launch review'
+    # Capture only stderr (order matters: dup fd2 to the substitution's pipe
+    # before redirecting fd1 away) so a mismatch names the expected and
+    # recorded provider tokens instead of a bare boolean refusal.
+    check_error=$(
+        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
+            2>&1 1>/dev/null
+    ) && return 0
+    die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
 }
 
 write_blocked_result() {
