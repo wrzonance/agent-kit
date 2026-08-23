@@ -122,7 +122,7 @@ done
 
 # Work-destroying commands. Denied every time, deliberately: unlike every other
 # rule here, the second attempt is exactly the one that must also be refused.
-if reason=$(guard_destructive_reason "$command_line"); then
+if reason=$(guard_destructive_reason "$command_line" "$cwd"); then
     deny "Refused -- $reason
 This denial does not lift on a retry. If it is genuinely what the task needs,
 the user should run it themselves."

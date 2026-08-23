@@ -1144,6 +1144,105 @@ out=$(pre_input "$repo" \
 assert_eq 'allow' "$(decision "$out")" \
     'invoking merge-pr.sh as the sanctioned entry point is never denied (issue #404)'
 
+# --- issue #404 CodeRabbit follow-up (PR #415): the merge-mutation check ---
+# located "gh"/"api" at word[0]/word[1] directly, so a leading NAME=value
+# assignment or execution wrapper before them, or a value-taking flag missing
+# from the skip list, silently carried the bypass past the check with no
+# refusal at all -- a real regression, not a data-string false positive.
+
+# 1. A leading `NAME=value` assignment before `gh` used to slip past the
+# word[0]/word[1] anchor entirely.
+out=$(pre_input "$repo" \
+    'GH_TOKEN=x gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a leading NAME=value assignment before gh api does not bypass the merge check (issue #404 CodeRabbit)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and still names the sanctioned alternative (issue #404 CodeRabbit)'
+
+# 2. Execution wrappers standing between the shell and `gh` -- the same
+# prefix guard_skip_command_prefix already resolves for a heredoc consumer.
+for wrapper_prefix in 'env' 'command' 'exec' 'sudo' 'nice' 'timeout 30' \
+    'time' 'nohup' 'xargs'; do
+    out=$(pre_input "$repo" \
+        "$wrapper_prefix gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json" \
+        | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "an execution wrapper before gh api does not bypass the merge check: $wrapper_prefix (issue #404 CodeRabbit)"
+done
+
+# 3. --cache takes a value; without it in the value-flag set, "1h" was
+# misread as the endpoint positional and the real .../merge endpoint two
+# tokens later was never seen.
+out=$(pre_input "$repo" \
+    'gh api --cache 1h -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    '--cache is skipped as a value-taking flag so the real endpoint is still found (issue #404 CodeRabbit)'
+
+# 4. A GraphQL mutation body supplied via --input (a FILE, not a -f/-F token)
+# is invisible to the token-value scan above; the guard fails closed and
+# inspects the file when it can safely resolve one inside this repository.
+graphql_merge_body="$repo/graphql-body-merge.json"
+printf '{"query": "mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"}' \
+    > "$graphql_merge_body"
+out=$(pre_input "$repo" 'gh api graphql --input graphql-body-merge.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a GraphQL mergePullRequest mutation supplied via --input is read and refused (issue #404 CodeRabbit)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and names the sanctioned alternative for the --input form (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api graphql --input=graphql-body-merge.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the attached --input=PATH form is read the same way (issue #404 CodeRabbit)'
+
+# 5. Fail closed: stdin, a path outside the repository, and a missing file
+# are all refused WITHOUT being able to read their content -- refusing what
+# cannot be verified safe, never assuming it is.
+out=$(pre_input "$repo" 'gh api graphql --input -' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a GraphQL mutation body on stdin cannot be inspected, so it is refused (issue #404 CodeRabbit)'
+
+outside_body="$tmp/graphql-body-outside.json"
+printf '{"query": "query { viewer { login } }"}' > "$outside_body"
+out=$(pre_input "$repo" "gh api graphql --input $outside_body" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a --input path outside the repository is refused even though its content is harmless (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api graphql --input does-not-exist.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a --input path that does not resolve to a real file is refused (issue #404 CodeRabbit)'
+
+# 6. The neighbours that must still run: a clean --input file inside the
+# repository, a plain -f query with no mutation, a leading assignment ahead
+# of an ordinary read, and --cache in front of a read all stay allowed.
+graphql_safe_body="$repo/graphql-body-safe.json"
+printf '{"query": "query { viewer { login } }"}' > "$graphql_safe_body"
+out=$(pre_input "$repo" 'gh api graphql --input graphql-body-safe.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a --input file that reads cleanly and does not mention mergePullRequest is allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" \
+    "gh api graphql -f query='query { viewer { login } }'" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a GraphQL query with no mergePullRequest mutation is still allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'GH_REPO=owner/repo gh api -X GET repos/owner/repo/pulls/9' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a leading assignment ahead of an ordinary read is still allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api --cache 1h -X GET repos/owner/repo/pulls/9' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    '--cache in front of a read is still allowed (issue #404 CodeRabbit)'
+
 # --- issue #351: a single-file `rm` is not a recursive root delete ---------
 # `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
 # there is. No `-r`/`-R` appears anywhere, so it must never be read as one.
@@ -1267,7 +1366,9 @@ assert_eq 'allow' "$(decision "$out")" \
 # The consumer-resolution walk skipped `env`'s own flags/NAME=value pairs to
 # reach the interpreter it execs, but stopped there -- any OTHER wrapper
 # standing in front of the interpreter (sudo, command, nohup, timeout, nice,
-# ionice, stdbuf, doas, setsid, xargs) made the function report "not a
+# ionice, stdbuf, doas, setsid, xargs, and -- added for issue #404's
+# CodeRabbit follow-up, once the walk moved into the shared guard_skip_
+# command_prefix helper -- exec, time) made the function report "not a
 # shell", so a QUOTED heredoc body handed to `sudo bash` or `timeout 5 bash`
 # was dropped as inert data and never inspected. Assembled with string
 # concatenation, not typed literally, so this file's own text is never a
@@ -1275,7 +1376,8 @@ assert_eq 'allow' "$(decision "$out")" \
 destructive_body='rm -r''f ~'
 for wrapper in 'sudo bash' 'command bash' 'nohup sh' 'timeout 5 bash' \
     'sudo -u root bash' 'timeout -s KILL 5 bash' 'nice -n 5 bash' \
-    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash'; do
+    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash' \
+    'exec bash' 'time bash'; do
     wrapped_heredoc=$(printf "%s <<'EOF'\n%s\nEOF" "$wrapper" "$destructive_body")
     out=$(pre_input "$repo" "$wrapped_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" \
