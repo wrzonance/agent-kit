@@ -96,6 +96,7 @@ SAW_DIGEST=0
 PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
+HEAD_SHA=""
 BASE_REF=""
 BASE_BEHIND=""
 BASE_STATUS=unknown
@@ -155,15 +156,20 @@ Counting rules:
               thread), minus the threads this workflow already opened to document
               them ('$AGENT_DOC_MARKER').
   provider    the most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED)
-              CodeRabbit review on the reviews endpoint: 'reviewed
-              state=STATE threads=N since=TIMESTAMP', where threads is that
-              review's own inline-comment count and since is its submission
-              time. An acknowledgement-only issue comment never satisfies
-              this -- it is not a review submission. Absent a terminal
-              review, falls back to an issue-comment rate-limit phrase scan:
-              /review limit reached|rate limit/i means 'rate-limited',
-              otherwise 'none'. Informational only -- never a trigger
-              decision.
+              CodeRabbit review on the reviews endpoint whose OWN commit_id
+              matches the current head: 'reviewed state=STATE threads=N
+              since=TIMESTAMP', where threads is that review's own
+              inline-comment count and since is its submission time. An
+              acknowledgement-only issue comment never satisfies this -- it
+              is not a review submission. A terminal review that exists but
+              targets an earlier head (the PR advanced after it was
+              requested) reports 'stale-head state=STATE commit=SHA' instead
+              -- never 'reviewed', which would misrepresent it as evidence
+              for the current head, and never 'none', which would hide that
+              a review exists at all. Absent any terminal review, falls back
+              to an issue-comment rate-limit phrase scan: /review limit
+              reached|rate limit/i means 'rate-limited', otherwise 'none'.
+              Informational only -- never a trigger decision.
   agent-docs  unresolved threads whose FIRST comment is marked
               '$AGENT_DOC_MARKER' and which carry no unmarked human-lane
               comment; eligible for this workflow to resolve at exit (Step 6).
@@ -630,25 +636,42 @@ nitpick_count() {
 # review id (insertion order). 'threads' counts this review's own inline
 # comments via pull_request_review_id -- already-fetched evidence, no extra
 # API call. Falls back to the issue-comment rate-limit phrase scan only when
-# no terminal review exists yet; that fallback never reports 'reviewed' on its
-# own, since a phrase alone is not proof a review landed.
+# no terminal review exists at all; that fallback never reports 'reviewed' on
+# its own, since a phrase alone is not proof a review landed.
+#
+# A terminal review's OWN commit_id must match the current head (agent-kit#395
+# follow-up): the PR can advance to a new head while a review of the OLD head
+# is still in flight and lands afterward, with a submitted_at that looks
+# perfectly current. Reporting that as 'reviewed' would present a stale
+# review as evidence for code nobody has reviewed yet. Such a review is
+# reported as 'stale-head' -- distinct from 'reviewed' (never mistaken for
+# current-head evidence) and distinct from 'none' (a review exists; it is
+# simply not for this head, so the root should not re-trigger blindly).
 provider_state() {
-    local review
-    review=$(jq -r "$PROVIDER_IDENTITY_JQ"'
+    local info
+    info=$(jq -r --arg head "$HEAD_SHA" "$PROVIDER_IDENTITY_JQ"'
         [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
-               | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED") ]
-        | sort_by([(.submitted_at // ""), (.id // 0)])
-        | last
-        | if . == null then empty else
-            [(.state), (.submitted_at // ""), ((.id // 0) | tostring)] | @tsv
-          end' <"$WORK_DIR/reviews.json") || review=""
-    if [[ -n $review ]]; then
-        local state submitted_at review_id threads
-        IFS=$'\t' read -r state submitted_at review_id <<< "$review"
-        threads=$(jq -r --argjson rid "${review_id:-0}" \
-            '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
-            <"$WORK_DIR/comments.json")
-        printf 'reviewed state=%s threads=%s since=%s' "$state" "$threads" "${submitted_at:-unknown}"
+               | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED") ] as $terminal
+        | ($terminal | map(select((.commit_id // "") == $head))
+            | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $current
+        | ($terminal | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $latest
+        | if $current != null then
+            ["current", $current.state, ($current.submitted_at // ""), (($current.id // 0) | tostring)] | @tsv
+          elif $latest != null then
+            ["stale", $latest.state, ($latest.commit_id // ""), ""] | @tsv
+          else empty end' <"$WORK_DIR/reviews.json") || info=""
+    if [[ -n $info ]]; then
+        local kind state_or_commit b review_id
+        IFS=$'\t' read -r kind state_or_commit b review_id <<< "$info"
+        if [[ $kind == current ]]; then
+            local threads
+            threads=$(jq -r --argjson rid "${review_id:-0}" \
+                '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
+                <"$WORK_DIR/comments.json")
+            printf 'reviewed state=%s threads=%s since=%s' "$state_or_commit" "$threads" "${b:-unknown}"
+            return 0
+        fi
+        printf 'stale-head state=%s commit=%s' "$state_or_commit" "${b:-unknown}"
         return 0
     fi
     jq -r --arg re "$CR_LOGIN_RE" '
@@ -856,6 +879,7 @@ main() {
         fetch_base_state
     fi
     HEAD_REF=$(jq -r '.headRefName // ""' <"$WORK_DIR/pr.json")
+    HEAD_SHA=$(jq -r '.headRefOid // ""' <"$WORK_DIR/pr.json")
     fetch_all
     ((WANT_FULL)) && save_artifacts
     print_digest

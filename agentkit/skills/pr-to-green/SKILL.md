@@ -187,6 +187,10 @@ It may safely resume an already-ready PR. Treat its provider result as follows:
   `review-transition.sh --observe --pr N --since TIMESTAMP` in bounded rounds,
   until it reports a landed review (or `LANDED`); never re-run the full
   ready-transition flow just to re-derive the same fact.
+- `STALE_HEAD`: a terminal review exists but targets a head the PR has since
+  moved past (it postdates the trigger, but its own head SHA does not match
+  the PR's current head) — never evidence-green; keep polling `--observe`, do
+  not re-trigger, and never treat it like `LANDED`.
 - `OBSERVE_ONLY`: consume findings and wait for provider-owned rescans; never
   manufacture a request.
 - `DISABLED`: add no provider wait or approval requirement.
