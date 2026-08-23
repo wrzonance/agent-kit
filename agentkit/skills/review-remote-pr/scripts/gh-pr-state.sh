@@ -30,7 +30,7 @@
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
 #   base: ref=main behind=1 stale=yes
 #   ci=3/3 green pending=0 failing=0
-#   provider: coderabbit=reviewed
+#   provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T06:36:18Z
 #   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
 #   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
 #   nitpicks: 0 unhandled
@@ -145,11 +145,16 @@ Counting rules:
               /nitpick|broom-emoji/i (the body-only surfaces, which have no review
               thread), minus the threads this workflow already opened to document
               them ('$AGENT_DOC_MARKER').
-  provider    last-signal-wins scan of the PR's issue comments (oldest first, so a
-              later comment overrides an earlier one): a CodeRabbit body matching
-              /actionable comments posted|<summary>walkthrough/i means 'reviewed',
-              /review limit reached|rate limit/i means 'rate-limited', otherwise
-              'none'. Informational only -- never a trigger decision.
+  provider    the most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED)
+              CodeRabbit review on the reviews endpoint: 'reviewed
+              state=STATE threads=N since=TIMESTAMP', where threads is that
+              review's own inline-comment count and since is its submission
+              time. An acknowledgement-only issue comment never satisfies
+              this -- it is not a review submission. Absent a terminal
+              review, falls back to an issue-comment rate-limit phrase scan:
+              /review limit reached|rate limit/i means 'rate-limited',
+              otherwise 'none'. Informational only -- never a trigger
+              decision.
   agent-docs  unresolved threads whose FIRST comment is marked
               '$AGENT_DOC_MARKER' and which carry no unmarked human-lane
               comment; eligible for this workflow to resolve at exit (Step 6).
@@ -588,17 +593,44 @@ nitpick_count() {
 }
 
 # CodeRabbit's own check can sit green on a bare "finished" ack or a rate-limit
-# warning, so the real signal lives in the issue-comment bodies, not the check
-# conclusion. Comments arrive oldest-first from the REST endpoint, so the LAST
-# matching signal wins: a stale walkthrough from an earlier cycle must never
-# mask a rate-limit on the current trigger. Informational only -- this never
-# decides whether to trigger, retry, or wait for a review.
+# warning, and a landed review can be APPROVED/CHANGES_REQUESTED with zero
+# actionable threads -- neither a check conclusion nor an issue-comment phrase
+# scan proves a review actually landed (agent-kit#395: PR #386 read
+# coderabbit=none for 15 one-minute rounds after an APPROVED, zero-thread
+# review). The real signal is CodeRabbit's own PullRequestReview object on the
+# reviews endpoint: the initial "Reviewing files that changed..."
+# acknowledgement is posted as a plain issue comment, never as a review
+# submission, so it can never satisfy this check -- only a genuine submitted
+# review (APPROVED, CHANGES_REQUESTED, or COMMENTED; PENDING and DISMISSED are
+# excluded as non-terminal) does. Ties on submitted_at break on the higher
+# review id (insertion order). 'threads' counts this review's own inline
+# comments via pull_request_review_id -- already-fetched evidence, no extra
+# API call. Falls back to the issue-comment rate-limit phrase scan only when
+# no terminal review exists yet; that fallback never reports 'reviewed' on its
+# own, since a phrase alone is not proof a review landed.
 provider_state() {
+    local review
+    review=$(jq -r "$PROVIDER_IDENTITY_JQ"'
+        [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
+               | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED") ]
+        | sort_by([(.submitted_at // ""), (.id // 0)])
+        | last
+        | if . == null then empty else
+            [(.state), (.submitted_at // ""), ((.id // 0) | tostring)] | @tsv
+          end' <"$WORK_DIR/reviews.json") || review=""
+    if [[ -n $review ]]; then
+        local state submitted_at review_id threads
+        IFS=$'\t' read -r state submitted_at review_id <<< "$review"
+        threads=$(jq -r --argjson rid "${review_id:-0}" \
+            '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
+            <"$WORK_DIR/comments.json")
+        printf 'reviewed state=%s threads=%s since=%s' "$state" "$threads" "${submitted_at:-unknown}"
+        return 0
+    fi
     jq -r --arg re "$CR_LOGIN_RE" '
         map(select((.user.login // "") | test($re; "i")) | (.body // ""))
         | reduce .[] as $b ("none";
-            if   ($b | test("actionable comments posted|<summary>walkthrough"; "i")) then "reviewed"
-            elif ($b | test("review limit reached|rate limit"; "i"))                 then "rate-limited"
+            if ($b | test("review limit reached|rate limit"; "i")) then "rate-limited"
             else . end)' <"$WORK_DIR/issue_comments.json"
 }
 

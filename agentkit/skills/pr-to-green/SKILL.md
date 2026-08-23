@@ -101,7 +101,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | Environment, isolated worktree, Phase A/C review loop, adversarial receipt, human gate | `../review-remote-pr/SKILL.md` and its lazy references |
 | Provider plan before mutation | `../.shared/scripts/review-provider-config.sh` |
 | Draft discovery, explicit resumption, stack graph, stable queue | `scripts/pr-queue.sh` |
-| Confirmed ready transition and provider capability action | `scripts/review-transition.sh` |
+| Confirmed ready transition and provider capability action, and its `--observe` landed-review check | `scripts/review-transition.sh` |
 | CI/provider/finding evidence | `../review-remote-pr/scripts/gh-pr-state.sh` |
 | Canonical replies and bot-response settlement | `../review-remote-pr/scripts/thread-action.sh` |
 | Post-merge retarget proof | `../parallel-issues/scripts/chain-advance.sh` |
@@ -180,8 +180,13 @@ Do not let earlier confirmation authorize a new SHA.
 Invoke `review-transition.sh` only for the current confirmed `RUNNABLE` record.
 It may safely resume an already-ready PR. Treat its provider result as follows:
 
-- `AUTO_REVIEW`, `TRIGGERED`, or `ALREADY_SPENT`: enter Phase C and consume
+- `AUTO_REVIEW`, `ALREADY_SPENT`, or `LANDED`: enter Phase C and consume
   observed findings through review-remote-pr.
+- `TRIGGERED since=TIMESTAMP`: a request was just posted with no terminal
+  review observed yet — poll `gh-pr-state.sh`'s `provider:` digest line, or
+  `review-transition.sh --observe --pr N --since TIMESTAMP` in bounded rounds,
+  until it reports a landed review (or `LANDED`); never re-run the full
+  ready-transition flow just to re-derive the same fact.
 - `OBSERVE_ONLY`: consume findings and wait for provider-owned rescans; never
   manufacture a request.
 - `DISABLED`: add no provider wait or approval requirement.

@@ -181,14 +181,21 @@ comment joins it, relabel the thread H and leave it unresolved.
 
 ## CodeRabbit state check (informational — never a trigger decision)
 
-A green "CodeRabbit" status check is NOT proof a review happened. Detect the real signal in the
-comment **body** (rate-limit warnings and bare "✅ finished" acks both leave the check green):
-`gh-pr-state.sh`'s digest carries this as its `provider: coderabbit=…` line, computed from the same
-Step 1 artifact with last-signal-wins ordering — a stale walkthrough from an earlier cycle never
-masks a rate-limit on the current trigger. No separate query is needed; read the value already
-printed by the Step 1/Step 6 `--full` call.
+A green "CodeRabbit" status check is NOT proof a review happened, and neither is an acknowledgement
+comment — CodeRabbit posts a plain "Reviewing files that changed…" issue comment before its real
+review, and that ack is never a review submission. Detect the real signal on the reviews endpoint
+itself: `gh-pr-state.sh`'s digest carries this as its `provider: coderabbit=…` line, built from the
+most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED) review object in the same Step 1
+artifact — never from an issue-comment phrase scan, which an APPROVED-with-zero-actionable-threads
+review or a CHANGES_REQUESTED-with-inline-threads-only review can both leave silent
+(agent-kit#395: PR #386 read `coderabbit=none` for 15 one-minute rounds after an APPROVED review
+landed). No separate query is needed; read the value already printed by the Step 1/Step 6 `--full`
+call.
 
-- `reviewed` → a review posted real findings; work its items (Phase C Step 5).
+- `reviewed state=APPROVED|CHANGES_REQUESTED|COMMENTED threads=N since=TIMESTAMP` → a review landed;
+  `threads` is that review's own inline-comment count (0 is a legitimate APPROVED/COMMENTED outcome,
+  not evidence of nothing having happened) and `since` is its submission time. Work its items
+  (Phase C Step 5) when threads are present.
 - `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
   provider is configured for automatic, incremental, or manual review; continue the current phase
   and leave any trigger decision to the user.
@@ -377,7 +384,7 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 | CodeRabbit review body vs inline comments | Review bodies, inline comment bodies, and PR conversation comment bodies can include actionable nitpick sections. Read full bodies from the Step 1 temp files; do not rely only on review threads. |
 | Thread already resolved | Skip — don't re-resolve. Only target `isResolved: false` threads. |
 | Multiple provider review cycles | One consolidated fix push is the provider commit budget for that round. Reconcile unresolved findings from saved state; if the provider reports incremental-review autopause, stop and report it instead of spending another trigger. |
-| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait for provider state, don't buy credits). `none` = no matching review has landed. |
+| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green, and the ack is never a review submission either. Detect the real signal on the reviews endpoint (`gh-pr-state.sh`'s `provider: coderabbit=reviewed state=… threads=… since=…`); an issue-comment `Review limit reached` = throttled — wait for provider state, don't buy credits. `none` = no terminal review has landed. |
 | Body nitpick has no thread ID | Fix or decline it anyway, then open a NEW anchored thread on the nitpick's file/lines referencing the commit and mentioning @coderabbitai. Only `PRRT_...` threads can be resolved through GraphQL. |
 | Body nitpick documented as top-level comment | A floating `gh pr comment` is disconnected from the code — CodeRabbit can't tie it to the change. Use the anchored-thread POST above; top-level comment is the 422 fallback only. |
 | Threads resolved before body nitpicks handled | Resolution can arm auto-approve. Follow the ordering above: nitpicks first, canonical replies next, acknowledged settlement last. |

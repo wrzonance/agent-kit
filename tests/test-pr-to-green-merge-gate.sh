@@ -193,6 +193,14 @@ assert_eq '1' "$rc" 'an in-flight CodeRabbit review blocks the merge'
 assert_contains "$out" 'blocked reason=CodeRabbit review is still in flight' \
     'the in-flight block names CodeRabbit'
 
+# agent-kit#395: review-transition.sh --observe confirms a terminal review
+# postdates the trigger and reports LANDED -- the gate accepts it exactly
+# like AUTO_REVIEW/ALREADY_SPENT, replacing a blind re-entry into the
+# ALREADY_SPENT dance just to learn the same fact.
+good_digest
+out=$(GATE_PROVIDER_RESULT=LANDED run_gate)
+assert_contains "$out" 'gate=PASS pr=9' 'a LANDED provider result passes the gate like AUTO_REVIEW'
+
 good_digest
 sed -i 's/coderabbit=0 unresolved/coderabbit=2 unresolved/' "$tmp/digest.txt"
 set +e

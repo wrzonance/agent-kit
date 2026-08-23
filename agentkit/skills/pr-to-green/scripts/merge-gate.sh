@@ -82,7 +82,7 @@ done
     die '--pr-state-digest must be an owned regular file, not a symlink'
 reject_writable_by_others "$digest_file" '--pr-state-digest'
 case $provider_result in
-    AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
+    AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|LANDED|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
 esac
 case $human_decided in yes|no) ;; *) die '--human-items-decided must be yes or no' ;; esac
