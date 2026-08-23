@@ -259,6 +259,15 @@ The resulting paths belong in each affected `predictedWriteSet`; they are not
 optional cleanup. Record the conflict pairs and their overlap globs in
 `conflictMap.pairs` before selection is finalized.
 
+The same declared list (`AGENT_GENERATED_PATHS` in `.agent/config.env`) also
+tells `gh-pr-state.sh` which post-merge trunk-automation commits (a
+results-recording workflow, for example) must not stale a queued PR's base --
+a base advance confined entirely to those paths reports `stale=no`, so
+`merge-gate.sh` does not block `pr-to-green`'s merge gate on it. Declare
+generated/results paths there once and both the write-set check above and
+the staleness exemption pick it up; see `agentkit/skills/onboard-repo/SKILL.md`'s
+`AGENT_GENERATED_PATHS` reference entry.
+
 After selection, never silently revise a conflict edge, predecessor, or
 successor. Append a `conflictMap.revisions` object with a non-empty `reason`
 for every post-selection change, including a successor swap. A revision that

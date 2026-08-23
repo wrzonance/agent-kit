@@ -305,7 +305,7 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_CMD_SETUP` | install before verify |
 | `AGENT_REPO_RUNNER` | command dispatcher |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
-| `AGENT_GENERATED_PATHS` | generated path prefixes |
+| `AGENT_GENERATED_PATHS` | generated path prefixes; also exempts a base advance confined to them from `gh-pr-state.sh`'s staleness check, so `merge-gate.sh` doesn't block on it (e.g. `bench/results/`, for a post-merge results workflow) |
 | `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
 | `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |

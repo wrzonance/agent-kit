@@ -142,6 +142,91 @@ assert_contains "$base_unavailable_output" 'base: ref=deleted-parent behind=unkn
 assert_contains "$(cat "$base_unavailable_err")" 'base comparison unavailable' \
     'base lookup failure emits a diagnostic without aborting the digest'
 
+# --- a base advance confined to declared AGENT_GENERATED_PATHS is not stale
+# (agent-kit#394: record-tier0.yml-style post-merge commits must not force a
+# merge-down plus a full CI re-run on every queued PR) ------------------------
+
+automation_repo_root="$tmp/automation-repo"
+mkdir -p "$automation_repo_root/.agent"
+cat >"$automation_repo_root/.agent/config.env" <<'EOF'
+AGENT_GENERATED_PATHS=bench/results/
+EOF
+
+mkdir -p "$tmp/case-automation-only"
+cat >"$tmp/case-automation-only/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/810 "*)
+        printf '%s\n' '{"number":810,"draft":false,"mergeable":true,"head":{"ref":"feat/automation","sha":"autosha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/autosha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *"compare/main...feat/automation"*)
+        printf '%s\n' '{"status":"behind","ahead_by":0,"behind_by":1,"total_commits":1,"commits":[]}'
+        ;;
+    *"compare/feat/automation...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-automation-only/gh"
+automation_only_err="$tmp/automation-only.err"
+automation_only_output=$(PATH="$tmp/case-automation-only:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 810 --repo owner/repo --repo-root "$automation_repo_root" 2>"$automation_only_err")
+assert_contains "$automation_only_output" 'base: ref=main behind=1 stale=no' \
+    'a base advance confined to declared AGENT_GENERATED_PATHS is not reported stale'
+assert_contains "$automation_only_output" 'ci=1/1 green pending=0 failing=0' \
+    'passing checks under an automation-only base advance report green, not stale'
+assert_contains "$(cat "$automation_only_err")" 'not staling' \
+    'the automation-only exemption is named in the diagnostic'
+
+# A base advance NOT entirely confined to declared paths still stales.
+mkdir -p "$tmp/case-automation-mixed"
+cat >"$tmp/case-automation-mixed/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/811 "*)
+        printf '%s\n' '{"number":811,"draft":false,"mergeable":true,"head":{"ref":"feat/mixed","sha":"mixedsha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/mixedsha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *"compare/main...feat/mixed"*)
+        printf '%s\n' '{"status":"behind","ahead_by":0,"behind_by":1,"total_commits":1,"commits":[]}'
+        ;;
+    *"compare/feat/mixed...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"},{"filename":"src/app.py"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-automation-mixed/gh"
+automation_mixed_output=$(PATH="$tmp/case-automation-mixed:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 811 --repo owner/repo --repo-root "$automation_repo_root")
+assert_contains "$automation_mixed_output" 'base: ref=main behind=1 stale=yes' \
+    'a base advance touching even one file outside declared paths still stales'
+
+# Without any AGENT_GENERATED_PATHS declaration, the same automation-only
+# advance still stales -- the exemption is strictly opt-in, never a default.
+undeclared_repo_root="$tmp/undeclared-repo"
+mkdir -p "$undeclared_repo_root"
+undeclared_output=$(PATH="$tmp/case-automation-only:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 810 --repo owner/repo --repo-root "$undeclared_repo_root")
+assert_contains "$undeclared_output" 'base: ref=main behind=1 stale=yes' \
+    'with no declared AGENT_GENERATED_PATHS the same advance still stales (opt-in only)'
+
 # --- provider state: last-signal-wins over the issue comments --------------
 
 mkdir -p "$tmp/case-reviewed"

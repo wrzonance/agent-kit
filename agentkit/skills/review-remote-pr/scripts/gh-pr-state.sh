@@ -17,6 +17,15 @@
 # ci=0/0 none-configured rather than silently reusing the "no CI here at all"
 # 'none' word.
 #
+# A base advance whose new commits touch ONLY the repository-declared
+# AGENT_GENERATED_PATHS prefixes (e.g. a post-merge results-recording workflow
+# like record-tier0.yml) is not reported stale: without this, every such
+# commit forces a merge-down plus a full CI re-run on the next queued PR
+# (agent-kit#394). The exemption is resolved from <repo-root>/.agent/config.env
+# via repo-config.sh (--repo-root DIR, default: git toplevel) and fails closed --
+# an undeclared list, an unreadable comparison, or any file outside the
+# declared prefixes leaves the advance staling exactly as before.
+#
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
 #   base: ref=main behind=1 stale=yes
@@ -83,13 +92,18 @@ BASE_BEHIND=""
 BASE_STATUS=unknown
 THREADS_AVAILABLE=1
 CI_NONE_CONFIGURED=0
+REPO_ROOT=""
+# Declared AGENT_GENERATED_PATHS prefixes (comma-separated); resolved once in
+# main() via resolve_automation_paths. Empty means the exemption is inert.
+AUTOMATION_PATHS=""
 # --wait-ci rounds of ci=0/0 (no registered checks at all) tolerated as
 # "pending" before reporting none-configured; see the header comment.
 readonly CI_ZERO_CHECKS_GRACE_ROUNDS=3
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME [--pr N | N] [--repo OWNER/REPO] [--digest|--full|--wait-ci]
+Usage: $PROGNAME [--pr N | N] [--repo OWNER/REPO] [--repo-root DIR]
+                 [--digest|--full|--wait-ci]
                  [--tmpdir DIR] [--rounds N] [--interval SECONDS] [-h]
 
 Prints one compact digest of a pull request's draft/mergeable state, CI, review
@@ -101,6 +115,11 @@ Required:
 Options:
   --repo OWNER/REPO      Repository. Default: derived from the current checkout
                          from the current checkout's origin remote.
+  --repo-root DIR        Local checkout to resolve AGENT_GENERATED_PATHS from,
+                         for the base-staleness exemption below. Default: the
+                         current directory's git toplevel; absent either way,
+                         the exemption stays inert and every base advance
+                         stales exactly as before.
   --digest               Print the digest only (default).
   --full                 Also write the durable artifacts later steps read, as
                          DIR/pr_N_{reviews,comments,issue_comments,threads,
@@ -113,6 +132,8 @@ Options:
   -h, --help             Show this help.
 
 Counting rules:
+  base        behind>0 stales unless every file the base gained since divergence
+              falls under a declared AGENT_GENERATED_PATHS prefix (see --repo-root).
   coderabbit/code-quality  unresolved threads owned by that known provider with no
                            human comment.
   generic     unresolved threads from other authoritative automated accounts with
@@ -176,6 +197,8 @@ parse_args() {
         --pr=*) PR=${1#*=}; shift ;;
         --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
         --repo=*) REPO=${1#*=}; shift ;;
+        --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
+        --repo-root=*) REPO_ROOT=${1#*=}; shift ;;
         --tmpdir) require_value "$1" "${2:-}"; OUT_DIR=$2; shift 2 ;;
         --tmpdir=*) OUT_DIR=${1#*=}; shift ;;
         --rounds) require_value "$1" "${2:-}"; ROUNDS=$2; shift 2 ;;
@@ -285,11 +308,69 @@ fetch_meta() {
     return 0
 }
 
+# Resolves AUTOMATION_PATHS once from the declared AGENT_GENERATED_PATHS key,
+# the same repository-relative comma-separated prefix list diff-facts.sh
+# already reads for its 'generated' evidence category. --repo-root wins;
+# otherwise the current directory's git toplevel; either way absent, this
+# stays empty and the staleness exemption below is inert. Never dies: a
+# missing resolver, repo root, or config file is a normal "not declared" case.
+resolve_automation_paths() {
+    [[ -n $REPO_ROOT ]] || REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
+    [[ -n $REPO_ROOT ]] || return 0
+    local resolver="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
+    [[ -x $resolver ]] || return 0
+    AUTOMATION_PATHS=$("$resolver" --repo-root "$REPO_ROOT" --get AGENT_GENERATED_PATHS 2>/dev/null) || AUTOMATION_PATHS=""
+    return 0
+}
+
+# Prefix match against the declared AUTOMATION_PATHS list, mirroring
+# diff-facts.sh's matches_generated: a trailing slash is a directory prefix,
+# leading './' is normalized away, and an empty/'.' spec matches nothing here
+# (never treat "no declaration" as "everything is generated").
+matches_automation_path() {
+    local path=$1 spec
+    local -a specs=()
+    IFS=, read -ra specs <<< "$AUTOMATION_PATHS"
+    for spec in "${specs[@]}"; do
+        [[ -n $spec ]] || continue
+        while [[ $spec == ./* ]]; do spec=${spec#./}; done
+        while [[ $spec == */ ]]; do spec=${spec%/}; done
+        [[ -n $spec && $spec != . ]] || continue
+        [[ $path == "$spec" || $path == "$spec/"* ]] && return 0
+    done
+    return 1
+}
+
+# True only when EVERY file the base gained since divergence (the files in
+# the reverse compare head...base, i.e. diff(merge-base, base)) matches a
+# declared AUTOMATION_PATHS prefix. Fails closed on anything unreadable,
+# unparsable, or empty -- an empty file list proves nothing was actually
+# compared, so it is never read as "confined to nothing, therefore fine".
+base_advance_is_automation_only() {
+    local head_ref=$1 out="$WORK_DIR/base-advance.json"
+    [[ -n $AUTOMATION_PATHS ]] || return 1
+    gh api "repos/$REPO/compare/$head_ref...$BASE_REF" \
+        >"$out" 2>"$WORK_DIR/err" || return 1
+    jq -e 'type == "object" and has("files") and (.files | type == "array")' "$out" >/dev/null 2>&1 || return 1
+    local -a files=()
+    mapfile -t files < <(jq -r '.files[]?.filename // empty' "$out")
+    ((${#files[@]} > 0)) || return 1
+    local f
+    for f in "${files[@]}"; do
+        matches_automation_path "$f" || return 1
+    done
+    return 0
+}
+
 # Compare the live base and head ancestry: after parent-merge retargeting, a
 # child can be behind its new base while its old checks remain attached. The
 # PR's baseRefOid is live metadata and cannot identify what an earlier check
 # tested, so it is deliberately not used as evidence. Missing or unavailable
-# comparison data is unknown, never silently current.
+# comparison data is unknown, never silently current. A behind>0 advance
+# confined entirely to declared AGENT_GENERATED_PATHS prefixes (see
+# base_advance_is_automation_only) is reported current, not stale --
+# record-tier0.yml-style post-merge commits otherwise force a merge-down and a
+# full CI re-run on every queued PR (agent-kit#394).
 fetch_base_state() {
     BASE_REF=$(jq -r '.baseRefName // ""' <"$WORK_DIR/pr.json")
     local head_ref
@@ -313,7 +394,12 @@ fetch_base_state() {
         return 0
     fi
     if ((BASE_BEHIND > 0)); then
-        BASE_STATUS=stale
+        if base_advance_is_automation_only "$head_ref"; then
+            BASE_STATUS=current
+            note "base advance ($BASE_REF, $BASE_BEHIND commit(s)) touches only declared AGENT_GENERATED_PATHS -- not staling"
+        else
+            BASE_STATUS=stale
+        fi
     else
         BASE_STATUS=current
     fi
@@ -702,6 +788,7 @@ main() {
     parse_args "$@"
     validate_args
     resolve_repo
+    resolve_automation_paths
     ((WANT_FULL)) && ensure_private_output_dir
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-pr-state.XXXXXX") || die "could not create a work directory"
     chmod 700 -- "$WORK_DIR" || die "could not secure work directory: $WORK_DIR"
