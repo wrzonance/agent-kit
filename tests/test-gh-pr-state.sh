@@ -218,6 +218,80 @@ automation_mixed_output=$(PATH="$tmp/case-automation-mixed:$PATH" bash "$root/ag
 assert_contains "$automation_mixed_output" 'base: ref=main behind=1 stale=yes' \
     'a base advance touching even one file outside declared paths still stales'
 
+# A compare response at GitHub's per-page file cap (300) cannot prove the
+# full file list was read -- even when every RETURNED file matches a
+# declared prefix, an out-of-page file could still be undeclared, so this
+# must fail closed (agent-kit#394 adversarial review finding 1).
+mkdir -p "$tmp/case-automation-truncated"
+truncated_files='['
+for ((_i = 0; _i < 300; _i++)); do
+    ((_i > 0)) && truncated_files+=','
+    truncated_files+="{\"filename\":\"bench/results/file${_i}.jsonl\"}"
+done
+truncated_files+=']'
+cat >"$tmp/case-automation-truncated/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case " \$* " in
+    *" api repos/owner/repo/pulls/813 "*)
+        printf '%s\n' '{"number":813,"draft":false,"mergeable":true,"head":{"ref":"feat/truncated","sha":"truncsha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/truncsha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *"compare/main...feat/truncated"*)
+        printf '%s\n' '{"status":"behind","ahead_by":0,"behind_by":300,"total_commits":300,"commits":[]}'
+        ;;
+    *"compare/feat/truncated...main"*)
+        printf '%s\n' '{"files":$truncated_files}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-automation-truncated/gh"
+automation_truncated_output=$(PATH="$tmp/case-automation-truncated:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 813 --repo owner/repo --repo-root "$automation_repo_root")
+assert_contains "$automation_truncated_output" 'base: ref=main behind=300 stale=yes' \
+    'a compare response at the 300-file page cap fails closed even when every returned file matches'
+
+# A rename FROM an undeclared path INTO a declared one must fail closed too:
+# checking only the new `filename` would let application code silently
+# relocate under bench/results/ without staling the queue (agent-kit#394
+# adversarial review finding 2).
+mkdir -p "$tmp/case-automation-rename"
+cat >"$tmp/case-automation-rename/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/814 "*)
+        printf '%s\n' '{"number":814,"draft":false,"mergeable":true,"head":{"ref":"feat/rename","sha":"renamesha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/renamesha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *"compare/main...feat/rename"*)
+        printf '%s\n' '{"status":"behind","ahead_by":0,"behind_by":1,"total_commits":1,"commits":[]}'
+        ;;
+    *"compare/feat/rename...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"},{"filename":"bench/results/app.py","previous_filename":"src/app.py","status":"renamed"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-automation-rename/gh"
+automation_rename_output=$(PATH="$tmp/case-automation-rename:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 814 --repo owner/repo --repo-root "$automation_repo_root")
+assert_contains "$automation_rename_output" 'base: ref=main behind=1 stale=yes' \
+    'a rename from an undeclared path into a declared one still stales'
+
 # Without any AGENT_GENERATED_PATHS declaration, the same automation-only
 # advance still stales -- the exemption is strictly opt-in, never a default.
 undeclared_repo_root="$tmp/undeclared-repo"
@@ -226,6 +300,42 @@ undeclared_output=$(PATH="$tmp/case-automation-only:$PATH" bash "$root/agentkit/
     --pr 810 --repo owner/repo --repo-root "$undeclared_repo_root")
 assert_contains "$undeclared_output" 'base: ref=main behind=1 stale=yes' \
     'with no declared AGENT_GENERATED_PATHS the same advance still stales (opt-in only)'
+
+# Regression pin: this repository's OWN .agent/config.env must declare a
+# prefix that actually covers record-tier0.yml's bench/results/tier0.jsonl --
+# the mechanism above being correct is not enough if agent-kit's own
+# declaration never lists the path the workflow commits (agent-kit#394).
+# This reads the real repo-root config, not a synthetic fixture; it fails the
+# moment someone trims AGENT_GENERATED_PATHS back to excluding bench/results.
+mkdir -p "$tmp/case-repo-declared-tier0"
+cat >"$tmp/case-repo-declared-tier0/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/812 "*)
+        printf '%s\n' '{"number":812,"draft":false,"mergeable":true,"head":{"ref":"feat/tier0","sha":"tier0sha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/tier0sha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *"compare/main...feat/tier0"*)
+        printf '%s\n' '{"status":"behind","ahead_by":0,"behind_by":1,"total_commits":1,"commits":[]}'
+        ;;
+    *"compare/feat/tier0...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-repo-declared-tier0/gh"
+repo_declared_output=$(PATH="$tmp/case-repo-declared-tier0:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 812 --repo owner/repo --repo-root "$root")
+assert_contains "$repo_declared_output" 'base: ref=main behind=1 stale=no' \
+    "this repository's own AGENT_GENERATED_PATHS declaration covers record-tier0.yml's bench/results/tier0.jsonl (agent-kit#394 regression pin)"
 
 # --- provider state: the reviews endpoint is the terminal signal, never an
 # issue-comment phrase scan (agent-kit#395) ---------------------------------

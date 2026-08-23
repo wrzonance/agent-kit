@@ -23,8 +23,10 @@
 # commit forces a merge-down plus a full CI re-run on the next queued PR
 # (agent-kit#394). The exemption is resolved from <repo-root>/.agent/config.env
 # via repo-config.sh (--repo-root DIR, default: git toplevel) and fails closed --
-# an undeclared list, an unreadable comparison, or any file outside the
-# declared prefixes leaves the advance staling exactly as before.
+# an undeclared list, an unreadable comparison, a possibly-truncated compare
+# response (see COMPARE_FILES_PAGE_CAP), a rename whose old or new path is
+# undeclared, or any file outside the declared prefixes leaves the advance
+# staling exactly as before.
 #
 # Digest lines (a line is omitted only when it does not apply):
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
@@ -75,6 +77,13 @@ readonly AGENT_DOC_MARKER='<!-- review-remote-pr:agent-doc -->'
 # U+1F9F9 BROOM, spelled as a codepoint so this file stays ASCII and the match
 # needs no regex-engine support for \x{...}.
 readonly BROOM_CP=129529
+# GitHub's "compare two commits" REST endpoint returns at most this many
+# entries in `.files` on a single (unpaginated) page; a response carrying
+# this many or more cannot prove the full file list was read, only that at
+# least this many files changed. base_advance_is_automation_only treats that
+# as unreadable evidence and fails closed rather than risk missing an
+# out-of-page file outside the declared paths.
+readonly COMPARE_FILES_PAGE_CAP=300
 
 PR=""
 REPO=""
@@ -349,20 +358,35 @@ matches_automation_path() {
 # True only when EVERY file the base gained since divergence (the files in
 # the reverse compare head...base, i.e. diff(merge-base, base)) matches a
 # declared AUTOMATION_PATHS prefix. Fails closed on anything unreadable,
-# unparsable, or empty -- an empty file list proves nothing was actually
-# compared, so it is never read as "confined to nothing, therefore fine".
+# unparsable, empty, or possibly truncated -- an empty file list proves
+# nothing was actually compared, so it is never read as "confined to
+# nothing, therefore fine", and a file count at or above
+# COMPARE_FILES_PAGE_CAP proves only a lower bound, never the full list, so
+# it is never read as "everything returned matched, therefore fine" either.
+# A renamed file carries BOTH `filename` (the new path) and
+# `previous_filename` (the old one); both must match a declared prefix, so a
+# rename that moves application code INTO a declared path -- or a declared
+# artifact OUT of one -- still fails closed on whichever side is undeclared.
 base_advance_is_automation_only() {
     local head_ref=$1 out="$WORK_DIR/base-advance.json"
     [[ -n $AUTOMATION_PATHS ]] || return 1
     gh api "repos/$REPO/compare/$head_ref...$BASE_REF" \
         >"$out" 2>"$WORK_DIR/err" || return 1
     jq -e 'type == "object" and has("files") and (.files | type == "array")' "$out" >/dev/null 2>&1 || return 1
-    local -a files=()
-    mapfile -t files < <(jq -r '.files[]?.filename // empty' "$out")
-    ((${#files[@]} > 0)) || return 1
-    local f
-    for f in "${files[@]}"; do
-        matches_automation_path "$f" || return 1
+    local file_count
+    file_count=$(jq -r '.files | length' "$out" 2>/dev/null) || return 1
+    [[ $file_count =~ ^[0-9]+$ ]] || return 1
+    ((file_count > 0)) || return 1
+    ((file_count < COMPARE_FILES_PAGE_CAP)) || return 1
+    local -a rows=()
+    mapfile -t rows < <(jq -r '.files[]? | [(.filename // ""), (.previous_filename // "")] | @tsv' "$out")
+    ((${#rows[@]} == file_count)) || return 1
+    local row filename previous
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r filename previous <<<"$row"
+        [[ -n $filename ]] || return 1
+        matches_automation_path "$filename" || return 1
+        [[ -z $previous ]] || matches_automation_path "$previous" || return 1
     done
     return 0
 }
