@@ -101,10 +101,21 @@ resolve_repo_root() {
 # umask, so there is no window where it is briefly more permissive). Returns
 # 1 only for a plain creation failure (the fallback-eligible case); every
 # other problem is a hostile/corrupted pre-existing path and dies outright.
+#
+# The `-L` check runs UNCONDITIONALLY, before any `-e`-gated branch -- never
+# `if [[ -e $dir ]]; then ... -L check ...`. `-e` follows a symlink to its
+# target, so for a DANGLING symlink (target does not exist) `-e` is false and
+# an `-e`-gated `-L` check is skipped entirely; `mkdir` then fails with EEXIST
+# against the link itself, `return 1` reads as "not writable", and the run
+# silently falls back to /tmp instead of refusing -- the exact fail-open this
+# function exists to prevent (issue #405 review finding). `-L` alone is true
+# for a symlink whether or not its target exists, so checking it first and
+# unconditionally closes that gap; this mirrors private_dir_ensure's own
+# loop in private-dir.sh, which checks `-L` before ever branching on `-e`.
 ensure_private_root() {
     local dir=$1 mode
+    [[ ! -L $dir ]] || die "must be an existing directory, not a symlink: $dir"
     if [[ -e $dir ]]; then
-        [[ ! -L $dir ]] || die "must be an existing directory, not a symlink: $dir"
         [[ -d $dir ]] || die "must be an existing directory, not a symlink: $dir"
         [[ -O $dir ]] || die "is not owned by this user: $dir"
         mode=$(stat -c %a -- "$dir") || die "could not inspect: $dir"
@@ -131,8 +142,10 @@ ensure_private_root() {
 TARGET=''
 try_primary() {
     local agent_dir=$REPO_ROOT/.agent evidence_dir
+    # -L checked unconditionally, before the -e branch -- see ensure_private_root's
+    # comment for why an -e-gated -L check misses a dangling symlink.
+    [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
     if [[ -e $agent_dir ]]; then
-        [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
         [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
     else
         mkdir -p -- "$agent_dir" 2>/dev/null || return 1

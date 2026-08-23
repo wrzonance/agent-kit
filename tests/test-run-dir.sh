@@ -84,6 +84,24 @@ assert_contains "$RUN_ERR" 'symlink' 'the symlink refusal names the problem'
 assert_eq no "$( [[ -e "$elsewhere/pr-1" ]] && printf yes || printf no )" \
     'a symlinked evidence directory is never followed to write elsewhere'
 
+# A DANGLING symlink (target does not exist) is the regression case: `-e`
+# follows the link and is false for a dangling target, so an `-e`-gated `-L`
+# check never runs, `mkdir` fails EEXIST against the link itself, and that
+# read as "not writable" -- silently routing evidence to the /tmp fallback
+# instead of refusing. Assert the refusal itself (RC=1, symlink named in the
+# error, primary .agent/ tree untouched), not merely "output != the primary
+# path" -- that weaker assertion would also pass on the buggy fallback.
+dangling_evidence_repo="$tmp/dangling-evidence-repo"
+mkdir -p "$dangling_evidence_repo/.agent"
+ln -s "$tmp/nonexistent-evidence-target" "$dangling_evidence_repo/.agent/evidence"
+run "$dangling_evidence_repo" 1
+assert_eq 1 "$RUN_RC" 'a DANGLING evidence symlink is refused, not silently routed to the /tmp fallback'
+assert_contains "$RUN_ERR" 'symlink' 'the dangling-evidence refusal names the problem'
+assert_not_contains "$RUN_ERR" 'not writable' \
+    'a dangling evidence symlink is refused outright, never reported as the fallback-eligible "not writable" case'
+assert_eq no "$( [[ -e "$tmp/nonexistent-evidence-target" ]] && printf yes || printf no )" \
+    'a dangling evidence symlink target is never created'
+
 file_repo="$tmp/file-repo"
 mkdir -p "$file_repo/.agent"
 : >"$file_repo/.agent/evidence"
@@ -110,6 +128,22 @@ run "$symlink_agent_repo" 1
 assert_eq 1 "$RUN_RC" 'a symlinked .agent directory is refused outright, never treated as unwritable'
 assert_contains "$RUN_ERR" 'symlink' 'the symlinked .agent refusal names the problem'
 
+# The same dangling-symlink regression, one level up: a DANGLING .agent must
+# be refused too, not read as "does not exist yet, create it" (which would
+# `mkdir -p` straight through the link) nor as "not writable" (silent
+# fallback). repo-root itself must be a real, existing directory (validated
+# separately), so only .agent underneath it is the dangling link here.
+dangling_agent_repo="$tmp/dangling-agent-repo"
+mkdir -p "$dangling_agent_repo"
+ln -s "$tmp/nonexistent-agent-target" "$dangling_agent_repo/.agent"
+run "$dangling_agent_repo" 1
+assert_eq 1 "$RUN_RC" 'a DANGLING .agent symlink is refused, not silently routed to the /tmp fallback'
+assert_contains "$RUN_ERR" 'symlink' 'the dangling-.agent refusal names the problem'
+assert_not_contains "$RUN_ERR" 'not writable' \
+    'a dangling .agent symlink is refused outright, never reported as the fallback-eligible "not writable" case'
+assert_eq no "$( [[ -e "$tmp/nonexistent-agent-target" ]] && printf yes || printf no )" \
+    'a dangling .agent symlink target is never created'
+
 # --- the leaf directory itself is validated the same way (via private_dir_ensure) --
 leaf_symlink_repo="$tmp/leaf-symlink-repo"
 mkdir -p "$leaf_symlink_repo/.agent/evidence"
@@ -119,6 +153,18 @@ mkdir -p "$leaf_elsewhere"
 ln -s "$leaf_elsewhere" "$leaf_symlink_repo/.agent/evidence/pr-9"
 run "$leaf_symlink_repo" 9
 assert_eq 1 "$RUN_RC" 'a symlinked per-PR leaf directory is refused'
+
+# A DANGLING leaf symlink goes through private_dir_ensure (private-dir.sh),
+# which already checks -L unconditionally before any -e branch -- confirming
+# the shared library does not share run-dir.sh's own fixed bug.
+leaf_dangling_repo="$tmp/leaf-dangling-repo"
+mkdir -p "$leaf_dangling_repo/.agent/evidence"
+chmod 700 -- "$leaf_dangling_repo/.agent/evidence"
+ln -s "$tmp/nonexistent-leaf-target" "$leaf_dangling_repo/.agent/evidence/pr-9"
+run "$leaf_dangling_repo" 9
+assert_eq 1 "$RUN_RC" 'a DANGLING per-PR leaf symlink is refused, not silently routed to the /tmp fallback'
+assert_not_contains "$RUN_ERR" 'not writable' \
+    'a dangling leaf symlink is refused outright, never reported as the fallback-eligible "not writable" case'
 
 # --- fallback: only a genuine .agent/ write failure triggers /tmp -----------
 fallback_repo="$tmp/fallback-repo"
@@ -157,6 +203,24 @@ RUN_OUT3=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$other_
 chmod 755 -- "$other_fallback_repo/.agent"
 assert_eq differ "$( [[ $RUN_OUT3 != "$RUN_OUT" ]] && printf differ || printf same )" \
     'two different repositories never collide on the same fallback PR path'
+
+# ensure_private_root is shared by the primary and fallback paths -- a DANGLING
+# symlink planted at the fallback root must be refused there too, not treated
+# as "not writable" (which would just recurse into the same fallback logic).
+dangling_fallback_tmpdir="$tmp/dangling-fallback-tmpdir"
+mkdir -p "$dangling_fallback_tmpdir"
+ln -s "$tmp/nonexistent-fallback-target" \
+    "$dangling_fallback_tmpdir/agent-kit-review-remote-pr.$(id -u)"
+unwritable_agent_repo="$tmp/unwritable-agent-repo"
+mkdir -p "$unwritable_agent_repo/.agent"
+chmod 555 -- "$unwritable_agent_repo/.agent"
+RUN_OUT=''; RUN_ERR=''; RUN_RC=0
+RUN_OUT=$(TMPDIR="$dangling_fallback_tmpdir" /bin/bash "$script" --pr 1 \
+    --repo-root "$unwritable_agent_repo" 2>"$tmp/.stderr") || RUN_RC=$?
+RUN_ERR=$(<"$tmp/.stderr")
+chmod 755 -- "$unwritable_agent_repo/.agent"
+assert_eq 1 "$RUN_RC" 'a DANGLING fallback-root symlink is refused, not silently reused'
+assert_contains "$RUN_ERR" 'symlink' 'the dangling-fallback-root refusal names the problem'
 
 # --- usage/help and unknown arguments ---------------------------------------
 help_rc=0
