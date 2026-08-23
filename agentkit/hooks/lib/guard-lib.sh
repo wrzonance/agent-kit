@@ -988,40 +988,44 @@ guard_has_short_flags() {
     return 0
 }
 
-# Is the consumer of a heredoc a shell interpreter? Its BODY then runs as a
-# script regardless of delimiter quoting -- quoting only controls expansion
-# INSIDE the heredoc, never whether the consumer executes what it reads.
-# `bash <<'EOF' ... rm -rf ~ ... EOF` deletes just as surely as the unquoted
-# form. Skips leading VAR=value assignments on the owning command itself,
-# then walks past every execution wrapper standing between that and the real
-# interpreter -- `env`, `sudo`/`doas`, `command`, `nohup`/`setsid`, `timeout`,
-# `nice`/`ionice`, `stdbuf`, `xargs` -- so `sudo bash`, `timeout 5 bash`, and
-# chains of these (`env FOO=1 sudo bash`) all resolve to the interpreter they
-# actually exec instead of stopping at the wrapper's own name. A wrapper not
-# in this list, or a name that isn't a wrapper at all, ends the walk and is
-# judged on its own -- that is a resolved verdict, not a guess.
+# Walks a tokenized word array (named by $1, starting at index $2, default 0),
+# skipping leading `NAME=value` shell-variable assignments and then every
+# execution wrapper standing between those and the real command word -- `env`,
+# `sudo`/`doas`, `command`/`nohup`/`setsid`/`exec`/`time`, `timeout`,
+# `nice`/`ionice`, `stdbuf`, `xargs` -- so callers judge the REAL command word
+# wherever it actually starts, the same way a shell would resolve it. `sudo
+# bash`, `timeout 5 bash`, and chains of these (`env FOO=1 sudo bash`) all
+# resolve to the interpreter they actually exec instead of stopping at the
+# wrapper's own name. A word not in this list, or a name that isn't a wrapper
+# at all, ends the walk.
 #
-# If the walk runs out of tokens while stepping over a wrapper's own flags --
-# a malformed or unrecognised invocation this function cannot confidently
-# parse -- it returns 0 (treat as shell) rather than 1. A false positive here
-# costs a refusal message; a false negative lets a destructive body through
-# unexamined, which is worse.
-guard_heredoc_consumer_is_shell() {
-    local owner=$1 word wrapper i=0
-    local -a words
-    mapfile -t words < <(guard_tokenize_words "$owner")
-    while ((i < ${#words[@]})) && [[ ${words[i]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
+# Shared by guard_heredoc_consumer_is_shell (a heredoc consumer wrapped in
+# `sudo`/`env`/etc. is still that consumer) and guard_gh_api_merge_mutation_
+# reason (issue #404 CodeRabbit follow-up: `env gh api -X PUT .../merge` and
+# `GH_TOKEN=x gh api ...` were unrefused bypasses, since that check only ever
+# looked at word[0]/word[1] directly).
+#
+# Prints the resolved index. An index at or past the array's length means the
+# walk ran out of tokens mid-wrapper (e.g. `sudo -u` with nothing after) -- a
+# malformed or unrecognised invocation this function cannot confidently
+# resolve past; the caller decides what that ambiguity means for its own
+# verdict, since a heredoc consumer and a `gh api` match default to opposite
+# fail-safe directions (treat-as-shell vs. no-match).
+guard_skip_command_prefix() {
+    local -n __gscp_words=$1
+    local i=${2:-0} word wrapper n=${#__gscp_words[@]}
+    while ((i < n)) && [[ ${__gscp_words[i]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
         ((i++))
     done
-    word=${words[i]-}
+    word=${__gscp_words[i]-}
 
     while [[ -n $word ]]; do
         wrapper=${word##*/}
         case $wrapper in
             env)
                 ((i++))
-                while ((i < ${#words[@]})); do
-                    case ${words[i]} in
+                while ((i < n)); do
+                    case ${__gscp_words[i]} in
                         -*|*=*) ((i++));;
                         *) break;;
                     esac
@@ -1029,24 +1033,24 @@ guard_heredoc_consumer_is_shell() {
                 ;;
             sudo|doas)
                 ((i++))
-                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
-                    case ${words[i]} in
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
                         -u|-g|-p|-r|-t|-C|-h|--user|--group|--prompt|--role|--type|--close-from|--host)
                             ((i += 2));;
                         *) ((i++));;
                     esac
                 done
                 ;;
-            command|nohup|setsid)
+            command|nohup|setsid|exec|time)
                 ((i++))
-                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
                     ((i++))
                 done
                 ;;
             timeout)
                 ((i++))
-                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
-                    case ${words[i]} in
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
                         -s|-k|--signal|--kill-after)
                             ((i += 2));;
                         *) ((i++));;
@@ -1057,8 +1061,8 @@ guard_heredoc_consumer_is_shell() {
                 ;;
             nice|ionice)
                 ((i++))
-                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
-                    case ${words[i]} in
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
                         -n|-c|-p|--adjustment)
                             ((i += 2));;
                         *) ((i++));;
@@ -1067,8 +1071,8 @@ guard_heredoc_consumer_is_shell() {
                 ;;
             stdbuf)
                 ((i++))
-                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
-                    case ${words[i]} in
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
                         -i|-o|-e)
                             # Bare flag (no attached value, e.g. `-o` not
                             # `-oL`) takes the next token as its value.
@@ -1079,8 +1083,8 @@ guard_heredoc_consumer_is_shell() {
                 ;;
             xargs)
                 ((i++))
-                while ((i < ${#words[@]})) && [[ ${words[i]} == -* ]]; do
-                    case ${words[i]} in
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
                         -I|-L|-n|-P|-s|-d|-E|--replace|--max-lines|--max-args|--max-procs|--max-chars|--delimiter|--eof)
                             ((i += 2));;
                         *) ((i++));;
@@ -1091,8 +1095,29 @@ guard_heredoc_consumer_is_shell() {
                 break
                 ;;
         esac
-        word=${words[i]-}
+        word=${__gscp_words[i]-}
     done
+    printf '%s' "$i"
+}
+
+# Is the consumer of a heredoc a shell interpreter? Its BODY then runs as a
+# script regardless of delimiter quoting -- quoting only controls expansion
+# INSIDE the heredoc, never whether the consumer executes what it reads.
+# `bash <<'EOF' ... rm -rf ~ ... EOF` deletes just as surely as the unquoted
+# form. Delegates the leading-assignment/wrapper walk to guard_skip_command_
+# prefix above.
+#
+# If the walk runs out of tokens while stepping over a wrapper's own flags --
+# a malformed or unrecognised invocation that function cannot confidently
+# parse -- this returns 0 (treat as shell) rather than 1. A false positive
+# here costs a refusal message; a false negative lets a destructive body
+# through unexamined, which is worse.
+guard_heredoc_consumer_is_shell() {
+    local owner=$1 i word
+    local -a words
+    mapfile -t words < <(guard_tokenize_words "$owner")
+    i=$(guard_skip_command_prefix words 0)
+    word=${words[i]-}
 
     # Ran out of tokens mid-wrapper (e.g. `sudo -u` with nothing after): the
     # real interpreter could not be confidently resolved. Treat as a shell.
@@ -1442,7 +1467,7 @@ guard_destructive_command_segments() {
 # interpreter regardless of quoting -- is recovered and judged as the command
 # it actually is (issue #364).
 guard_destructive_reason() {
-    local command_line=$1 segments segment trimmed reason
+    local command_line=$1 cwd=${2:-} segments segment trimmed reason
     local -a lines=()
 
     segments=$(guard_destructive_command_segments "$command_line")
@@ -1453,7 +1478,7 @@ guard_destructive_reason() {
     done <<< "$segments"
 
     for segment in "${lines[@]}"; do
-        if reason=$(guard_destructive_segment_reason "$segment"); then
+        if reason=$(guard_destructive_segment_reason "$segment" "$cwd"); then
             # Name the offending line once more than one command shares this
             # payload, so a multi-line script is not refused wholesale over a
             # single dangerous line -- the agent can see which one to redo.
@@ -1567,8 +1592,194 @@ guard_git_dash_c_write_key() {
     printf '%s' "$key"
 }
 
+# Does a `gh api` flag (exact token, no attached `=value` or short form) take
+# a SEPARATE next argument as its value? Used only to walk past that value
+# when hunting for the endpoint positional below -- an attached `--flag=value`
+# or short `-Fvalue` token already carries its value in the same word, so it
+# is never in this list. `--cache` was the CodeRabbit-reported gap on PR #415:
+# without it, `gh api --cache 1h -X PUT .../merge` misread `1h` as the
+# endpoint positional and the merge went unrecognised.
+guard_gh_api_value_flag() {
+    case $1 in
+        -X | --method | -F | --field | -H | --header | --hostname | \
+        --input | -q | --jq | -p | --preview | -f | --raw-field | -t | --template | \
+        --cache)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Judges a `gh api graphql --input PATH` (or `--input=PATH`) mutation body --
+# the one shape the -f/-F loop in guard_gh_api_merge_mutation_reason cannot
+# see, because the mutation lives in a FILE, never a command-line token
+# (CodeRabbit finding on PR #415). Fails CLOSED -- denies -- whenever the body
+# cannot be safely read: PATH is `-` (stdin), empty, `cwd` was never threaded
+# through (this deliberately never falls back to the hook PROCESS's own
+# $PWD -- see guard_command_target_dir's header for the prior, unrelated
+# defect that pattern caused), the path cannot be resolved to somewhere
+# inside `cwd`'s OWN repository (checked twice: the lexical candidate's
+# repository root, and again after symlink resolution via
+# guard_target_realpath, so a symlink lexically inside the repo but pointing
+# outside it still fails closed), or it is not a readable regular file. Only
+# once the file reads cleanly from inside the repository does its CONTENT
+# decide the verdict: a literal `mergePullRequest` occurrence denies, its
+# absence allows.
+guard_gh_api_graphql_input_reason() {
+    local input_path=$1 cwd=$2 reason_tail
+    reason_tail=' Pass the mutation inline via -f query=... instead so this guard can read it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+
+    if [[ -z $input_path || $input_path == '-' || -z $cwd ]]; then
+        printf 'a GraphQL mutation body supplied via --input (stdin, unnamed, or with no working directory to resolve it against) cannot be inspected for a mergePullRequest mutation, so it is refused rather than assumed safe.%s' \
+            "$reason_tail"
+        return 0
+    fi
+
+    local path_result rc=0 lexical_root lexical_candidate cwd_root real_candidate
+    path_result=$(guard_target_path "$input_path" "$cwd" 2> /dev/null) || rc=$?
+    if ((rc != 0)); then
+        printf 'a GraphQL mutation body supplied via --input %s could not be resolved to a path inside a repository, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+    lexical_root=${path_result%%$'\n'*}
+    lexical_candidate=${path_result#*$'\n'}
+    cwd_root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null)
+    if [[ -z $cwd_root || $lexical_root != "$cwd_root" ]]; then
+        printf 'a GraphQL mutation body supplied via --input %s resolves outside this repository, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+
+    if ! real_candidate=$(guard_target_realpath "$lexical_candidate" 2> /dev/null); then
+        printf 'a GraphQL mutation body supplied via --input %s could not be read, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+    if ! guard_path_inside "$cwd_root" "$real_candidate"; then
+        printf 'a GraphQL mutation body supplied via --input %s resolves outside this repository, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+    if [[ ! -f $real_candidate || ! -r $real_candidate ]]; then
+        printf 'a GraphQL mutation body supplied via --input %s is not a readable regular file, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+
+    if grep -qF -- 'mergePullRequest' "$real_candidate" 2> /dev/null; then
+        printf 'merging a pull request through a GraphQL mergePullRequest mutation supplied via --input %s is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.' \
+            "$input_path"
+        return 0
+    fi
+    return 1
+}
+
+# Is a `gh api` invocation's tokenized word array (named by $1) a direct REST
+# or GraphQL pull-request MERGE mutation -- the same forge action `gh pr
+# merge` reaches, typed a different way (issue #404 adversarial follow-up)?
+# `merge-pr.sh` sends exactly this REST call, but from inside its OWN
+# subprocess: this hook inspects only the agent's Bash command line, never a
+# helper script's internals, so this check can refuse the agent typing the
+# call directly without ever seeing (or blocking) merge-pr.sh's own call.
+#
+# Matched on exact tokens from guard_tokenize_words, so a quoted data
+# argument (a sed/printf payload, a comment mentioning the route) collapses
+# to one word and can never spell out the endpoint or mutation name as
+# separate command tokens -- the same #397 protection extended to this check.
+#
+# The command word is located via guard_skip_command_prefix, not word[0]/
+# word[1] directly: a leading `NAME=value` assignment (`GH_TOKEN=x gh api
+# ...`) or execution wrapper (`env gh api ...`, `command gh api ...`) used to
+# put "gh"/"api" one or more slots later and slip past this check entirely --
+# CodeRabbit found this on PR #415's review.
+#
+# `cwd` (optional, $2) is threaded through only for the graphql --input case
+# below; every other check here is pure argv inspection and needs no cwd.
+guard_gh_api_merge_mutation_reason() {
+    local -n __ggamr_words=$1
+    local cwd=${2:-}
+    local n=${#__ggamr_words[@]}
+    local start
+    start=$(guard_skip_command_prefix "$1" 0)
+    ((start + 1 < n)) || return 1
+    [[ ${__ggamr_words[start]} == gh && ${__ggamr_words[start + 1]} == api ]] || return 1
+
+    local i word next method='GET' endpoint=''
+    local -a positionals=()
+    for ((i = start + 2; i < n; i++)); do
+        word=${__ggamr_words[i]}
+        case $word in
+            -X | --method)
+                if ((i + 1 < n)); then
+                    method=${__ggamr_words[i + 1]}
+                    ((i++))
+                fi
+                continue ;;
+            -X?*) method=${word#-X}; continue ;;
+            --method=*) method=${word#--method=}; continue ;;
+        esac
+        if [[ $word == -* ]]; then
+            guard_gh_api_value_flag "$word" && ((i++))
+            continue
+        fi
+        positionals+=("$word")
+    done
+    endpoint=${positionals[0]-}
+
+    # REST: PUT .../pulls/N/merge -- with or without a leading slash or the
+    # full api.github.com host, OWNER/REPO restricted to the character set a
+    # repo slug actually allows.
+    if [[ ${method^^} == PUT ]] &&
+        [[ $endpoint =~ ^(https://api\.github\.com/)?/?repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+/merge$ ]]; then
+        printf 'merging a pull request through the REST API directly is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+        return 0
+    fi
+
+    # GraphQL: the endpoint literal is "graphql"; the mutation NAME is data
+    # carried in a -f/-F/--raw-field/--field VALUE token -- the payload gh
+    # actually sends -- never the raw command text, so this cannot match a
+    # mention of the same word inside an argument that is not one of those
+    # value tokens. `--input`/`--input=` instead names a FILE carrying the
+    # body -- guard_gh_api_graphql_input_reason judges that shape.
+    if [[ $endpoint == graphql ]]; then
+        local input_path='' had_input=0 graphql_input_reason
+        for ((i = start + 2; i < n; i++)); do
+            word=${__ggamr_words[i]}
+            case $word in
+                -f | -F | --raw-field | --field)
+                    next=${__ggamr_words[i + 1]-}
+                    if [[ $next == *mergePullRequest* ]]; then
+                        printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+                        return 0
+                    fi
+                    ;;
+                -f*=*mergePullRequest* | -F*=*mergePullRequest* | \
+                --raw-field=*mergePullRequest* | --field=*mergePullRequest*)
+                    printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+                    return 0
+                    ;;
+                --input)
+                    had_input=1
+                    input_path=${__ggamr_words[i + 1]-}
+                    ;;
+                --input=*)
+                    had_input=1
+                    input_path=${word#--input=}
+                    ;;
+            esac
+        done
+        if ((had_input)) &&
+            graphql_input_reason=$(guard_gh_api_graphql_input_reason "$input_path" "$cwd"); then
+            printf '%s' "$graphql_input_reason"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 guard_destructive_segment_reason() {
-    local cmd=$1 stripped flattened normalized
+    local cmd=$1 cwd=${2:-} stripped flattened normalized
 
     # A flag hidden inside a substitution reads as ordinary text to every pattern
     # below: `git push $(echo --force)` matched nothing. Flattening the
@@ -1585,7 +1796,7 @@ guard_destructive_segment_reason() {
     flattened=${flattened//[\`)]/ }
     if [[ $flattened != "$cmd" ]]; then
         local hidden
-        if hidden=$(guard_destructive_segment_reason "$flattened"); then
+        if hidden=$(guard_destructive_segment_reason "$flattened" "$cwd"); then
             printf '%s (the command hides that flag inside a substitution; write it literally if you mean it)' "$hidden"
             return 0
         fi
@@ -1608,7 +1819,7 @@ guard_destructive_segment_reason() {
     local payload payload_reason
     while IFS= read -r payload; do
         [[ -n $payload ]] || continue
-        if payload_reason=$(guard_destructive_segment_reason "$payload"); then
+        if payload_reason=$(guard_destructive_segment_reason "$payload" "$cwd"); then
             printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
             return 0
         fi
@@ -1694,8 +1905,35 @@ guard_destructive_segment_reason() {
     # Exact command-token sequence, not a substring grep: `gh pr merge`
     # spelled out inside a quoted sed/printf data argument is one word here,
     # not three command tokens, so it can never match (issue #397).
+    #
+    # The one rule (issue #404): an agent-driven merge is sanctioned ONLY
+    # through pr-to-green's merge-pr.sh, bound to a confirmed --auto-merge
+    # authorization record plus a gate=PASS review-completion result (both
+    # re-checked at the point of mutation -- see auto-merge.md). This porcelain
+    # verb is refused unconditionally, including under an operator override,
+    # because the override the operator actually wants is already available
+    # through that path; nothing here should ever teach "retype it and it
+    # goes through".
+    #
+    # That rule covers the porcelain spelling only -- an adversarial review
+    # found the same forge action reachable, unrefused, by typing the REST or
+    # GraphQL mutation directly (`gh api -X PUT .../pulls/N/merge`, or `gh api
+    # graphql` with a `mergePullRequest` mutation): no `gh pr merge` token
+    # sequence appears in either, so this check alone let an agent bypass the
+    # authorization/gate/serialization contract entirely. guard_gh_api_merge_
+    # mutation_reason below refuses those two shapes for the identical reason.
+    # It does NOT also catch `merge-pr.sh`'s own call: this hook inspects only
+    # the AGENT's Bash command line, and that call runs inside merge-pr.sh's
+    # own subprocess, a separate command line this hook never sees -- so
+    # invoking merge-pr.sh itself (the sanctioned path) is unaffected by
+    # either check.
     if guard_words_contain_sequence words gh pr merge; then
-        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
+        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result -- this gh pr merge porcelain form stays refused even under that authorization.'
+        return 0
+    fi
+    local api_merge_reason
+    if api_merge_reason=$(guard_gh_api_merge_mutation_reason words "$cwd"); then
+        printf '%s' "$api_merge_reason"
         return 0
     fi
     if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then
