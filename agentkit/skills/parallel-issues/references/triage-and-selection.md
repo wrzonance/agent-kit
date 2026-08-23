@@ -158,10 +158,48 @@ conflict analysis. The plan uses this schema:
 
 The dispatch-time artifact stays at schema version 1 while PR numbers and
 pushed heads do not exist. At the ready-flip handoff, write those verified
-facts to an owner-only merge-plan input and pass both files through
-`scripts/write-merge-plan.sh`. The helper validates that every selected issue
-appears exactly once, upgrades the dispatch plan atomically, and preserves the
-existing entries and conflict audit. The resulting shape is:
+facts to an owner-only **merge-plan input** file and pass both files through
+`scripts/write-merge-plan.sh --dispatch-plan FILE --merge-plan FILE`. This
+input carries only the ready-flip facts -- `entries` and `conflictMap` stay
+owned by the dispatch plan and are never repeated here. Its required shape is:
+
+```json
+{
+  "generatedAt": "2026-08-17T20:00:00Z",
+  "independent": [
+    {"issue": 170, "pr": 303, "branch": "feat/standalone", "chainBaseSha": null,
+     "headSha": "cccccccccccccccccccccccccccccccccccccccc"}
+  ],
+  "chains": [[
+    {"issue": 164, "pr": 301, "branch": "feat/root", "chainBaseSha": null,
+     "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"issue": 167, "pr": 302, "branch": "feat/child",
+     "chainBaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ]]
+}
+```
+
+- `generatedAt` -- **required**, an ISO-8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
+- `independent` -- **required** array of records (may be empty); each record's
+  `chainBaseSha` must be `null`.
+- `chains` -- **required** array of chains (may be empty); each chain is an
+  array of at least 2 records, ordered base-to-tip, whose first record has a
+  `null` `chainBaseSha` and whose every successor's `chainBaseSha` equals its
+  immediate predecessor's `headSha`.
+- Every record (in `independent` or inside a `chain`) carries exactly these
+  keys: `issue` (positive integer), `pr` (positive integer), `branch` (a safe
+  git ref name), `chainBaseSha` (`null` or a 40-hex-char commit SHA), `headSha`
+  (a 40-hex-char commit SHA).
+- Across the whole file, `pr`, `issue`, and `branch` values must each be
+  unique, there must be at least one record total, and the set of `issue`
+  values must match the dispatch plan's `entries[].issue` set exactly.
+
+The helper validates that every selected issue appears exactly once, upgrades
+the dispatch plan atomically, and preserves the existing entries and conflict
+audit; on a rejected input it names the first field that failed validation
+(for example `generatedAt` missing, or an out-of-order chain). The resulting
+schema-2 dispatch-plan shape is:
 
 ```json
 {

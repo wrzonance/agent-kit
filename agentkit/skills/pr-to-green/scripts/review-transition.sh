@@ -34,6 +34,8 @@ plan_resolved=0
 declare -a providers=()
 declare -A modes=()
 declare -A emitted=()
+declare -A provider_action=()
+declare -A provider_source=()
 
 die() {
     if ((plan_resolved)); then
@@ -113,7 +115,12 @@ plan_resolved=1
     die 'authorization file must be an owned regular file, not a symlink'
 jq -e --arg repo "$repo" --argjson pr "$pr" '
   type == "object" and .repository == $repo and .readyTransition == true and
-  ((.providers | type) == "array") and all(.providers[]; type == "string") and
+  ((.providers | type) == "array") and
+  all(.providers[]; type == "object" and
+    ((.name | type) == "string" and (.name | length) > 0) and
+    (.action == "trigger" or .action == "observe" or .action == "disabled") and
+    ((.source | type) == "string" and (.source | length) > 0)) and
+  ((.providers | map(.name) | unique | length) == (.providers | length)) and
   ((.queue | type) == "array") and
   ([.queue[] | select(.pr == $pr and .state == "RUNNABLE" and
     (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")) and
@@ -121,7 +128,7 @@ jq -e --arg repo "$repo" --argjson pr "$pr" '
 ' "$authorization_file" >/dev/null 2>&1 ||
     die 'authorization does not confirm this repository, runnable PR, and ready transition'
 
-mapfile -t authorized_providers < <(jq -r '.providers[]' "$authorization_file" | sort -u)
+mapfile -t authorized_providers < <(jq -r '.providers[].name' "$authorization_file" | sort -u)
 triggerable=()
 for provider in "${providers[@]}"; do
     [[ ${modes[$provider]} != triggerable ]] || triggerable+=("$provider")
@@ -131,6 +138,15 @@ if [[ $(printf '%s\n' "${authorized_providers[@]}" | sed '/^$/d') != \
       $(printf '%s\n' "${triggerable[@]}" | sed '/^$/d') ]]; then
     die 'authorization provider set does not match the trigger-capable plan'
 fi
+
+# Every trigger-capable provider carries a per-run action decision: the
+# operator's queue confirmation authorizes trigger (the capability default)
+# or explicitly opts a provider out to observe/disabled without a ping --
+# the path a "declared triggerable, operator says no" instruction takes.
+while IFS=$'\t' read -r auth_name auth_action auth_source; do
+    provider_action[$auth_name]=$auth_action
+    provider_source[$auth_name]=$auth_source
+done < <(jq -r '.providers[] | [.name, .action, .source] | @tsv' "$authorization_file")
 
 "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" ||
     die 'pull request metadata unavailable'
@@ -233,45 +249,62 @@ for provider in "${providers[@]}"; do
             printf 'provider=%s result=OBSERVE_ONLY\n' "$provider"
             ;;
         triggerable)
-            request_marker=$(review_provider_request_marker "$provider") ||
-                die "triggerable provider has no request marker: $provider"
-            request_body=$(review_provider_request "$provider") ||
-                die "triggerable provider has no request body: $provider"
-            # Checked against the first fetch, before any bounded wait: a
-            # provider whose budget is already spent has nothing left to poll
-            # for, so this must not burn rounds*interval finding that out.
-            fetch_provider_evidence
-            if provider_spent "$provider"; then
-                emitted[$provider]=1
-                printf 'provider=%s result=ALREADY_SPENT\n' "$provider"
-                continue
-            fi
-            saw_activity=0
-            for ((round = 1; round <= rounds; round++)); do
-                ((round == 1)) || fetch_provider_evidence
-                if provider_current_activity "$provider"; then
-                    saw_activity=1
-                    break
-                fi
-                ((round == rounds)) || sleep "$interval"
-            done
-            if ((saw_activity)); then
-                emitted[$provider]=1
-                printf 'provider=%s result=AUTO_REVIEW\n' "$provider"
-                continue
-            fi
-            body_file=$work_dir/provider-request.md
-            {
-                printf '%s\n' 'This was written agentically; verify its assertions:'
-                printf '%s\n' "$request_marker"
-                printf '%s\n' "$request_body"
-            } >"$body_file"
-            post_output=$(bash "$COMMENT_HELPER" --pr "$pr" --repo "$repo" \
-                --body-file "$body_file") || die 'provider request posting failed'
-            [[ $post_output == *'verified=exact'* ]] ||
-                die 'provider request returned no exact readback proof'
-            emitted[$provider]=1
-            printf 'provider=%s result=TRIGGERED\n' "$provider"
+            action=${provider_action[$provider]-}
+            [[ -n $action ]] ||
+                die "authorization carries no action for trigger-capable provider: $provider"
+            case $action in
+                disabled)
+                    emitted[$provider]=1
+                    printf 'provider=%s result=DISABLED source=%s\n' \
+                        "$provider" "${provider_source[$provider]}"
+                    ;;
+                observe)
+                    emitted[$provider]=1
+                    printf 'provider=%s result=OBSERVE_ONLY source=%s\n' \
+                        "$provider" "${provider_source[$provider]}"
+                    ;;
+                trigger)
+                    request_marker=$(review_provider_request_marker "$provider") ||
+                        die "triggerable provider has no request marker: $provider"
+                    request_body=$(review_provider_request "$provider") ||
+                        die "triggerable provider has no request body: $provider"
+                    # Checked against the first fetch, before any bounded wait: a
+                    # provider whose budget is already spent has nothing left to poll
+                    # for, so this must not burn rounds*interval finding that out.
+                    fetch_provider_evidence
+                    if provider_spent "$provider"; then
+                        emitted[$provider]=1
+                        printf 'provider=%s result=ALREADY_SPENT\n' "$provider"
+                        continue
+                    fi
+                    saw_activity=0
+                    for ((round = 1; round <= rounds; round++)); do
+                        ((round == 1)) || fetch_provider_evidence
+                        if provider_current_activity "$provider"; then
+                            saw_activity=1
+                            break
+                        fi
+                        ((round == rounds)) || sleep "$interval"
+                    done
+                    if ((saw_activity)); then
+                        emitted[$provider]=1
+                        printf 'provider=%s result=AUTO_REVIEW\n' "$provider"
+                        continue
+                    fi
+                    body_file=$work_dir/provider-request.md
+                    {
+                        printf '%s\n' 'This was written agentically; verify its assertions:'
+                        printf '%s\n' "$request_marker"
+                        printf '%s\n' "$request_body"
+                    } >"$body_file"
+                    post_output=$(bash "$COMMENT_HELPER" --pr "$pr" --repo "$repo" \
+                        --body-file "$body_file") || die 'provider request posting failed'
+                    [[ $post_output == *'verified=exact'* ]] ||
+                        die 'provider request returned no exact readback proof'
+                    emitted[$provider]=1
+                    printf 'provider=%s result=TRIGGERED\n' "$provider"
+                    ;;
+            esac
             ;;
     esac
 done
