@@ -937,11 +937,14 @@ for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
 done
 
 # --- issue #397: guards parse argv, not raw command TEXT --------------------
-# Four reported false positives, each costing a root turn because the
+# Five reported false positives, each costing a root turn because the
 # documented remedy ("make the same call again") only teaches vaguer prose:
 # a heredoc data body that happened to mention a protected path, `gh pr merge`
-# spelled out inside a sed/printf DATA argument (twice, independently), and
-# `git config --get` misread as setting the key it was reading.
+# spelled out inside a sed DATA argument, the same phrase inside a printf DATA
+# argument (SpecR's independent report), `git config --get` misread as setting
+# the key it was reading, and a leading `NAME=value` shell-variable assignment
+# misread as a write target (that fifth case is exercised separately below,
+# alongside the contracted-worktree boundary fixtures it needs).
 
 # 1. A heredoc BODY is data. Text inside it that spells a protected path is
 # not editing that path -- only the segment BEFORE the heredoc opens names a
@@ -1009,14 +1012,17 @@ out=$(pre_input "$repo" 'x=`gh pr merge 42 --squash`' | "$hooks/pre-tool-use.sh"
 assert_eq 'deny' "$(decision "$out")" \
     'a backtick-hidden gh pr merge remains denied (issue #397 follow-up)'
 
-# The single-quote-wrapped control case: no substitution ever occurs inside
-# single quotes, so this stays exactly the data-string case already proven
-# above -- confirming the new substitution-extraction pass is single-quote
-# aware rather than newly over-blocking every `$(` byte in sight.
+# Two more controls, so the new substitution-extraction pass is proven
+# single-quote aware rather than newly over-blocking every `$(` byte in
+# sight. First, a plain DOUBLE-quoted literal with no substitution at all --
+# still exactly the data-string case already proven above.
 # shellcheck disable=SC2016  # same: the literal, unexpanded text is the point.
 out=$(pre_input "$repo" 'printf %s "gh pr merge 42"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
     'a quoted data argument with no substitution is still allowed (issue #397 follow-up)'
+# Second, a genuine `$(...)` spelled inside SINGLE quotes: the shell never
+# expands anything inside single quotes, so this substitution never executes
+# and stays inert data.
 out=$(pre_input "$repo" "sed -i 's/x/\$(gh pr merge 42)/' notes.md" \
     | "$hooks/pre-tool-use.sh" 2>/dev/null)
 # shellcheck disable=SC2016  # the UNEXPANDED $(...) in the message is the point.
@@ -1030,6 +1036,32 @@ out=$(pre_input "$repo" 'echo "$(git config --get core.hooksPath)"' \
     | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
     'a --get read inside a substitution payload is still a read (issue #397 follow-up)'
+
+# --- issue #397 follow-up (adversarial review, PR #414): two more argv-vs-
+# raw-text gaps. F1: guard_strip_git_globals removes every `-c KEY=VALUE`
+# pair before the git-config execution-key check ever saw it, so a SCOPED
+# assignment via `-c` executed the same hook without ever persisting it.
+out=$(pre_input "$repo" 'git -c core.hooksPath=/tmp/evil commit -m x' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'git -c core.hooksPath=... still executes the hook for this one command (issue #397 follow-up F1)'
+out=$(pre_input "$repo" 'git -c user.name=x commit' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'git -c with a harmless key is untouched (issue #397 follow-up F1)'
+# shellcheck disable=SC2016  # the UNEXPANDED text is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+out=$(pre_input "$repo" 'printf '"'"'%s'"'"' "git -c core.hooksPath=/x"' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted data string mentioning -c core.hooksPath= is not the command (issue #397 follow-up F1)'
+
+# F2: the leading-assignment skip in guard_shell_write_targets applied to
+# EVERY token, not just the leading prefix, so `dd`'s `of=` operand vanished
+# along with it and the real write target went unchecked.
+out=$(pre_input "$repo" 'dd if=/dev/zero of=.github/workflows/ci.yml' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    "dd's of= operand is still a write target after the command word (issue #397 follow-up F2)"
 
 # --- issue #351: a single-file `rm` is not a recursive root delete ---------
 # `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
@@ -2152,6 +2184,14 @@ boundary_assignment_out=$(pre_input "$boundary_feature" \
     'worktree-boundary-assignment' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$boundary_assignment_out")" \
     'a leading NAME=value shell assignment is never mistaken for a write target (issue #397)'
+
+# The prefix filter must never drop a REAL target: the same leading
+# assignment in front of a genuinely protected redirect still denies.
+boundary_assignment_protected_out=$(pre_input "$boundary_feature" \
+    'agentkit=/home/user/.claude/plugins/cache/agentkit/skills printf x > .github/workflows/ci.yml' \
+    'worktree-boundary-assignment-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_assignment_protected_out")" \
+    'a leading NAME=value assignment never hides a real protected-path write target (issue #397 follow-up)'
 
 # Evidence is security-sensitive state: a symlinked evidence parent is refused
 # before mkdir/chmod/append, so a tool call cannot redirect the ledger outside
