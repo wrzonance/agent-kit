@@ -201,6 +201,19 @@ good_digest
 out=$(GATE_PROVIDER_RESULT=LANDED run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a LANDED provider result passes the gate like AUTO_REVIEW'
 
+# agent-kit#395 adversarial-review follow-up: a review that postdates the
+# trigger but targets a stale (non-current) head is real evidence, but not
+# for THIS head -- it must block exactly like an in-flight TRIGGERED review,
+# never pass as if it were LANDED.
+good_digest
+set +e
+out=$(GATE_PROVIDER_RESULT=STALE_HEAD run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a STALE_HEAD provider result blocks the merge'
+assert_contains "$out" 'blocked reason=CodeRabbit review is against a stale head' \
+    'the stale-head block names the reason'
+
 good_digest
 sed -i 's/coderabbit=0 unresolved/coderabbit=2 unresolved/' "$tmp/digest.txt"
 set +e
