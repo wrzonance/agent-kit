@@ -210,9 +210,11 @@ fi
 # scan still running" signal, demoted from its old load-bearing role, and is
 # consulted first precisely because it is never stale the way a matched
 # analysis can be (a rerun or a second SARIF upload can already be in flight
-# for a head an earlier analysis already covers). Never dispatch a workflow
-# to manufacture analysis evidence for this gate -- that is gate-gaming, not
-# a remedy (see auto-merge.md).
+# for a head an earlier analysis already covers). A refs/pull/N/merge-ref
+# analysis records the GitHub-generated MERGE commit as its commit_sha, not
+# the PR's own head SHA -- matching is done against both. Never dispatch a
+# workflow to manufacture analysis evidence for this gate -- that is
+# gate-gaming, not a remedy (see auto-merge.md).
 
 # Queries code-scanning/analyses for one ref into $2. ref is passed as its
 # own -f field, never interpolated into the URL -- a base branch containing
@@ -246,7 +248,13 @@ analyses_for_ref() {
 # genuinely never scans pull requests from one whose scan for THIS PR
 # specifically is missing or failed -- see the scheduled-only branch below.
 # Prints "ok" or "error"; there is no meaningful "empty" case here, since an
-# empty array is itself a readable (if uninformative) answer.
+# empty array is itself a readable (if uninformative) answer. The scheduled-
+# only exemption this feeds is bounded by this single page: a repository
+# with more than 100 newer schedule-driven analyses could push a genuine
+# refs/pull/* entry off page one and past this check. That residual gap is
+# still covered by the readable, zero-count alerts-line requirement below --
+# a false scheduled-only read still cannot pass with an unread or non-zero
+# PR-attributable alert count.
 analyses_recent() {
     local out=$1
     if "$GH_BIN" api -X GET "repos/$repo/code-scanning/analyses" -F per_page=100 \
@@ -274,12 +282,41 @@ scan_check_run_pending() {
     ' "$runs_file" >/dev/null 2>&1
 }
 
+# A pull_request-event CodeQL/SARIF upload sets GITHUB_SHA to the GitHub-
+# generated MERGE commit for the refs/pull/N/merge ref, not the PR's own
+# head SHA -- so an analysis genuinely recorded against that ref legitimately
+# carries merge_commit_sha as its commit_sha, not head_sha. Comparing only
+# against head_sha there false-blocked every such PR (issue #390 follow-up).
+# Read merge_commit_sha from the PR metadata already fetched above (no
+# second call); a null/absent value (not yet computed, or unmergeable) must
+# never widen matching, so it is only compared when non-empty. refs/pull/N/head
+# is queried too and matched against head_sha alone, for tools whose workflow
+# checks out and scans the head ref directly rather than the merge ref.
+merge_commit_sha=$(jq -r '.merge_commit_sha // empty' "$work_dir/pr.json")
+
 pr_ref="refs/pull/$pr/merge"
+pr_head_ref="refs/pull/$pr/head"
 pr_analyses_state=$(analyses_for_ref "$pr_ref" "$work_dir/cs-analyses-pr.json")
+pr_head_analyses_state=$(analyses_for_ref "$pr_head_ref" "$work_dir/cs-analyses-pr-head.json")
+
 cs_head_matches=0
 if [[ $pr_analyses_state == ok ]]; then
-    cs_head_matches=$(jq --arg sha "$head_sha" '[.[] | select(.commit_sha == $sha)] | length' \
-        "$work_dir/cs-analyses-pr.json" 2>/dev/null) || cs_head_matches=''
+    cs_head_matches=$(jq --arg sha "$head_sha" --arg msha "$merge_commit_sha" '
+        [.[] | select(.commit_sha == $sha or ($msha != "" and .commit_sha == $msha))] | length
+    ' "$work_dir/cs-analyses-pr.json" 2>/dev/null) || cs_head_matches=''
+fi
+
+cs_head_ref_matches=0
+if [[ $pr_head_analyses_state == ok ]]; then
+    cs_head_ref_matches=$(jq --arg sha "$head_sha" '[.[] | select(.commit_sha == $sha)] | length' \
+        "$work_dir/cs-analyses-pr-head.json" 2>/dev/null) || cs_head_ref_matches=''
+fi
+
+cs_any_head_match=no
+if [[ $cs_head_matches =~ ^[0-9]+$ ]] && ((cs_head_matches > 0)); then
+    cs_any_head_match=yes
+elif [[ $cs_head_ref_matches =~ ^[0-9]+$ ]] && ((cs_head_ref_matches > 0)); then
+    cs_any_head_match=yes
 fi
 
 # --- Code scanning non-use corroboration: a repository is only established
@@ -333,7 +370,7 @@ cs_last_ref=''
 cs_last_date=''
 if scan_check_run_pending; then
     cs_status=pending
-elif [[ $cs_head_matches =~ ^[0-9]+$ ]] && ((cs_head_matches > 0)); then
+elif [[ $cs_any_head_match == yes ]]; then
     cs_status=current
 elif [[ $pr_analyses_state == error ]]; then
     cs_status=unreadable

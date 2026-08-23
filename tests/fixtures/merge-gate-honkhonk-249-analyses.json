@@ -1,5 +1,6 @@
 [
   {
+    "_note": "PR #413 review (F1): commit_sha here equals this suite's HEAD_SHA to keep this fixture focused on the app.slug story (HonkHonk #249's actual evidence). merge-gate.sh now also matches a refs/pull/N/merge analysis whose commit_sha equals the PR's merge_commit_sha instead -- the real-world case for a pull_request-event upload, since GITHUB_SHA on that event is the GitHub-generated merge commit, not the head SHA. That distinct-SHA scenario has its own dedicated regression test in test-pr-to-green-merge-gate.sh, not this fixture.",
     "ref": "refs/pull/249/merge",
     "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "analysis_key": ".github/workflows/ci.yml:clippy",

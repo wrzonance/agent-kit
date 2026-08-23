@@ -55,8 +55,13 @@ repos/owner/repo/pulls/9)
     base=\${PR_BASE:-main}
     reviewers=\${PR_REQUESTED_REVIEWERS:-[]}
     teams=\${PR_REQUESTED_TEAMS:-[]}
-    printf '{"number":9,"state":"%s","draft":%s,"head":{"sha":"%s","ref":"feat/demo"},"base":{"ref":"%s"},"mergeable":%s,"requested_reviewers":%s,"requested_teams":%s}\n' \\
-        "\$state" "\$draft" "\$sha" "\$base" "\$mergeable" "\$reviewers" "\$teams"
+    if [[ -n \${PR_MERGE_SHA:-} ]]; then
+        merge_sha_json="\"\$PR_MERGE_SHA\""
+    else
+        merge_sha_json=null
+    fi
+    printf '{"number":9,"state":"%s","draft":%s,"head":{"sha":"%s","ref":"feat/demo"},"base":{"ref":"%s"},"mergeable":%s,"merge_commit_sha":%s,"requested_reviewers":%s,"requested_teams":%s}\n' \\
+        "\$state" "\$draft" "\$sha" "\$base" "\$mergeable" "\$merge_sha_json" "\$reviewers" "\$teams"
     ;;
 repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
@@ -67,6 +72,21 @@ repos/owner/repo/code-scanning/analyses)
         case \${CS_PR_ANALYSES_MODE:-ok} in
         ok)
             printf '%s\n' "\${CS_PR_ANALYSES_JSON:-\$default_pr_analyses}"
+            ;;
+        empty)
+            printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
+            exit 1
+            ;;
+        error)
+            printf '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}\n'
+            exit 1
+            ;;
+        esac
+        ;;
+    yes:refs/pull/9/head)
+        case \${CS_PR_HEAD_ANALYSES_MODE:-empty} in
+        ok)
+            printf '%s\n' "\${CS_PR_HEAD_ANALYSES_JSON:-[]}"
             ;;
         empty)
             printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
@@ -356,6 +376,54 @@ assert_eq '1' "$rc" \
 assert_contains "$out" 'blocked reason=code-scanning analysis has not completed for the current head' \
     'the pending block wins over the already-matched analysis'
 
+# --- PR #413 CodeRabbit review, F1 (Major): a refs/pull/N/merge analysis
+# legitimately records the GitHub-generated MERGE commit as its commit_sha
+# for a pull_request-event upload, not the PR's own head SHA -- comparing
+# only against head_sha there false-blocked every such PR. merge_commit_sha
+# is read from the PR metadata already fetched for the live-state read, and
+# a null value must never widen matching.
+
+readonly MERGE_SHA='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+readonly UNRELATED_SHA='ffffffffffffffffffffffffffffffffffffffff'
+
+good_digest
+out=$(PR_MERGE_SHA="$MERGE_SHA" \
+    CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$MERGE_SHA\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-20T00:00:00Z\"}]" \
+    run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'an analysis recorded against the current PR merge commit (distinct from the head SHA) passes the gate'
+
+good_digest
+set +e
+out=$(PR_MERGE_SHA="$MERGE_SHA" \
+    CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$UNRELATED_SHA\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-20T00:00:00Z\"}]" \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'an analysis matching neither the head SHA nor the current merge SHA still blocks the merge'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'the merge-SHA widening never accepts an unrelated commit_sha'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$UNRELATED_SHA\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-20T00:00:00Z\"}]" \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'with no merge_commit_sha on the PR (null, the un-mergeable/not-yet-computed default), an unrelated commit_sha never accidentally matches'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'a null merge_commit_sha never widens matching'
+
+good_digest
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_PR_HEAD_ANALYSES_MODE=ok \
+    CS_PR_HEAD_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/head\",\"commit_sha\":\"$HEAD_SHA\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-20T00:00:00Z\"}]" \
+    run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'an analysis recorded against refs/pull/N/head matching the head SHA also passes the gate, for tools that scan the head ref directly'
+
 # --- PR #413 follow-up F2: scheduled-only is granted only when the
 # repository's own recent analysis history carries NO refs/pull/* entry at
 # all; a repository that has ever analyzed a pull request demonstrably scans
@@ -402,6 +470,24 @@ assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
     'the alerts-readability block applies to scheduled-only the same as any other status'
 assert_contains "$out" 'code-scanning: scheduled-only, last analysis 2026-08-15T04:00:00Z on refs/heads/main' \
     'the scheduled-only report still prints even though the gate blocks for the separate alerts reason'
+
+# --- PR #413 CodeRabbit review, N2: an unreadable recent-history probe never
+# grants scheduled-only -- same fail-closed default as everywhere else.
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty CS_BASE_ANALYSES_MODE=ok \
+    CS_BASE_ANALYSES_JSON='[{"ref":"refs/heads/main","commit_sha":"cccccccccccccccccccccccccccccccccccccccc","created_at":"2026-08-15T04:00:00Z","tool":{"name":"CodeQL"}}]' \
+    CS_RECENT_ANALYSES_MODE=error \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'an unreadable recent-history probe never grants scheduled-only, even with base-ref analyses present'
+assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
+    'the absent block fires when the scheduled-only discriminator itself cannot be read'
+assert_not_contains "$out" 'code-scanning: scheduled-only' \
+    'no scheduled-only report is printed when the discriminator could not be confirmed'
 
 # --- PR #413 follow-up F3: the analyses endpoint's ref is sent as its own
 # -f field, never interpolated into the URL (a base branch containing & or #
