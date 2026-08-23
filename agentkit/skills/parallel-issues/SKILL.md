@@ -638,8 +638,7 @@ fi
 
 **The printed line is the evidence.** `move-github-project-item.sh` emits exactly one terminal
 stdout line per issue and board it touched; a `moved #N -> STATUS` line completes that issue's
-status/phase. Do not follow it with `gh issue view … --json projectItems`, re-invoke it, or
-interleave a second verification query. The shapes are:
+status/phase. Do not follow it with `gh issue view … --json projectItems`, re-invoke it, or interleave a second verification query. The shapes are:
 
 ```text
 moved #123 -> "In progress" on project #3 "Example Board"
@@ -647,9 +646,10 @@ no-op: issue #123 already "In progress"
 no-op: issue #123 is not on any project board
 no-op: project #3 "Example Board" has no Status field
 no-op: project #3 "Example Board" has no matching Status option "In progress"
+no-op: issue #123 project board membership could not be read; not moved
 ```
 
-Every one of those exits 0 — a board move must never fail the real work — so **exit 0 alone is not proof; a leading `moved #` or an already-target `no-op: issue #N already "STATUS"` completes the issue's phase**. Per-board warnings go to stderr, so keep the streams separate when you read the output. The helper accepts the canonical column names `Backlog`, `Ready`, `In progress`, `In review`, and `Done`; unless you pass `--all-boards` it stops at the first board it either moves *or* reports a `no-op:` for; and it needs `gh` Project access (the fleet App needs `Projects: write`).
+Every shape exits 0 — a board move must never fail real work — so exit 0 alone isn't proof; only a leading `moved #` or `no-op: issue #N already "STATUS"` completes the phase. Per-board warnings go to stderr. The helper accepts columns `Backlog`, `Ready`, `In progress`, `In review`, `Done`; without `--all-boards` it stops at the first board moved or no-op'd, and needs `gh` Project access (fleet App: `Projects: write`).
 
 ### Root canonical issue fetch and fence preparation
 

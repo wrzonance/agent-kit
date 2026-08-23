@@ -65,4 +65,18 @@ jq '.chains[0][1].branch = "../escape"' "$merge_plan" >"$tmp/bad-branch.json"
 assert_rc 1 'unsafe branch names are rejected' -- \
     "$writer" --dispatch-plan "$plan" --merge-plan "$tmp/bad-branch.json"
 
+jq 'del(.generatedAt)' "$merge_plan" >"$tmp/missing-generated-at.json"
+stderr=$("$writer" --dispatch-plan "$plan" --merge-plan "$tmp/missing-generated-at.json" 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '1' "$rc" \
+    'a merge plan missing generatedAt is rejected'
+assert_contains "$stderr" 'generatedAt' \
+    'the missing-generatedAt error names the field'
+
+jq '.independent[0] = null' "$merge_plan" >"$tmp/null-record.json"
+stderr=$("$writer" --dispatch-plan "$plan" --merge-plan "$tmp/null-record.json" 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '1' "$rc" \
+    'a merge plan with a null record is rejected'
+assert_contains "$stderr" 'independent[0]' \
+    'the null-record error names the record, not the generic fallback'
+
 finish

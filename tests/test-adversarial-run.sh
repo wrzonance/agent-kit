@@ -156,6 +156,82 @@ assert_contains "$(cat -- "$tmp/claude.out")" 'mode=cross-provider' 'receipt lin
 assert_contains "$(cat -- "$tmp/claude.out")" 'P1=1' 'receipt line counts P1 findings'
 assert_contains "$(cat -- "$tmp/claude.out")" 'P2=1' 'receipt line counts P2 findings'
 
+# A leftover findings ledger from a prior attempt in a reused RUN_DIR must be
+# rejected before the provider is ever launched -- not after paying for the
+# review, which is the defect this file regression-tests (#393).
+badmode_run="$tmp/badmode-run"
+grant "$badmode_run" anthropic
+printf '%s\n' stale >"$badmode_run/findings.ndjson"
+chmod 644 -- "$badmode_run/findings.ndjson"
+badmode_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/badmode.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$badmode_run") \
+    >"$tmp/badmode.out" 2>"$tmp/badmode.err" || badmode_rc=$?
+assert_eq 1 "$badmode_rc" 'a wrong-mode findings ledger fails before launch'
+assert_contains "$(cat -- "$tmp/badmode.err")" "$badmode_run/findings.ndjson" \
+    'wrong-mode findings ledger failure names the path'
+assert_eq no "$( [[ -e $tmp/badmode.called ]] && printf yes || printf no )" \
+    'wrong-mode findings ledger never launches the provider CLI'
+assert_eq no "$( [[ -e $badmode_run/adversarial.diff ]] && printf yes || printf no )" \
+    'wrong-mode findings ledger check happens before diff construction'
+
+symlink_run="$tmp/symlink-run"
+grant "$symlink_run" anthropic
+ln -s /etc/passwd "$symlink_run/findings.ndjson"
+symlink_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/symlink.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$symlink_run") \
+    >"$tmp/symlink.out" 2>"$tmp/symlink.err" || symlink_rc=$?
+assert_eq 1 "$symlink_rc" 'a symlinked findings ledger fails before launch'
+assert_contains "$(cat -- "$tmp/symlink.err")" "$symlink_run/findings.ndjson" \
+    'symlinked findings ledger failure names the path'
+assert_eq no "$( [[ -e $tmp/symlink.called ]] && printf yes || printf no )" \
+    'symlinked findings ledger never launches the provider CLI'
+assert_eq no "$( [[ -e $symlink_run/adversarial.diff ]] && printf yes || printf no )" \
+    'symlinked findings ledger check happens before diff construction'
+
+# A safe (owned, mode-0600, regular, non-symlink) but NON-EMPTY pre-existing
+# ledger must still be refused: silently accepting it would carry a prior
+# review's dispositions into this review's receipt (follow-up to #393, PR
+# #412 adversarial review).
+nonempty_run="$tmp/nonempty-run"
+grant "$nonempty_run" anthropic
+printf '%s\n' '{"title":"prior finding","sha":"abc1234","verdict":"declined","rationale":"stale"}' \
+    >"$nonempty_run/findings.ndjson"
+chmod 600 -- "$nonempty_run/findings.ndjson"
+nonempty_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/nonempty.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$nonempty_run") \
+    >"$tmp/nonempty.out" 2>"$tmp/nonempty.err" || nonempty_rc=$?
+assert_eq 1 "$nonempty_rc" 'a non-empty pre-existing findings ledger fails before launch'
+assert_contains "$(cat -- "$tmp/nonempty.err")" "$nonempty_run/findings.ndjson" \
+    'non-empty findings ledger failure names the path'
+assert_contains "$(cat -- "$tmp/nonempty.err")" 'prior review' \
+    'non-empty findings ledger failure explains why it is refused'
+assert_eq no "$( [[ -e $tmp/nonempty.called ]] && printf yes || printf no )" \
+    'non-empty findings ledger never launches the provider CLI'
+assert_eq no "$( [[ -e $nonempty_run/adversarial.diff ]] && printf yes || printf no )" \
+    'non-empty findings ledger check happens before diff construction'
+
+# An empty, already-owned mode-0600 ledger (e.g. pre-created by the caller
+# before launch) is a legitimate starting state and must not block the run.
+preempty_run="$tmp/preempty-run"
+grant "$preempty_run" anthropic
+: >"$preempty_run/findings.ndjson"
+chmod 600 -- "$preempty_run/findings.ndjson"
+preempty_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$preempty_run") \
+    >"$tmp/preempty.out" 2>"$tmp/preempty.err" || preempty_rc=$?
+assert_eq 0 "$preempty_rc" 'a pre-existing empty owned mode-0600 ledger allows the run to complete'
+assert_eq yes "$( [[ -f $preempty_run/findings.ndjson ]] && printf yes || printf no )" \
+    'the pre-existing empty ledger survives a completed review'
+assert_eq 0 "$(wc -c <"$preempty_run/findings.ndjson")" \
+    'the pre-existing empty ledger is left empty by the runner itself'
+
 write_contract claude codex "present path=$tmp/fake-codex"
 codex_peer_run="$tmp/codex-peer-run"
 grant "$codex_peer_run" openai
@@ -170,6 +246,21 @@ assert_contains "$(cat -- "$tmp/codex-peer.out")" 'model=gpt-5.6-terra' \
     'Claude harness receipt names the Codex peer model'
 assert_contains "$(cat -- "$tmp/codex-peer.out")" 'mode=cross-provider' \
     'Claude harness and Codex peer are genuinely cross-provider'
+
+# A grant recorded under the peer-cli= CLI name ("codex") must satisfy the
+# runner's check, which is keyed on the model-provider token ("openai") --
+# the root should never have to read the runner source to find the "right"
+# --provider token for consent-record.sh grant (#392).
+codex_alias_run="$tmp/codex-alias-run"
+grant "$codex_alias_run" codex
+codex_alias_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_alias_run") \
+    >"$tmp/codex-alias.out" 2>"$tmp/codex-alias.err" || codex_alias_rc=$?
+assert_eq 0 "$codex_alias_rc" \
+    'a consent grant recorded under the codex CLI name satisfies the runner check'
+assert_contains "$(cat -- "$tmp/codex-alias.out")" 'provider=openai' \
+    'a codex-CLI-name grant still completes the openai-provider review'
 
 write_contract claude claude "present path=$tmp/fake-claude"
 same_harness_run="$tmp/same-harness-run"

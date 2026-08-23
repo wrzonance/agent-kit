@@ -34,6 +34,10 @@ Usage:
   $PROGNAME grant --state PATH --provider NAME --payload ID --source interactive|auto-review-flag
   $PROGNAME check --state PATH --provider NAME --payload ID
 
+--provider accepts either a peer CLI name (codex, claude) or its model-provider
+token (openai, anthropic); grant and check both normalize the CLI name to its
+token, so a grant recorded under either spelling satisfies the same check.
+
 check exits 0 only for an exact granted provider/payload record, and 10 otherwise.
 EOF
 }
@@ -81,6 +85,21 @@ parse_options() {
         *) die_usage "unknown option: $1" ;;
         esac
     done
+}
+
+
+# `peer-cli=` names a CLI (codex, claude); adversarial-run.sh checks the
+# consent record against the model-provider token that CLI runs on (openai,
+# anthropic). Normalizing here means a grant recorded under either spelling
+# satisfies the same check, so the caller never has to read the runner
+# source to find the "right" token. Unknown values pass through unchanged --
+# field_is_safe still governs whether they are ultimately accepted.
+normalize_provider() {
+    case $1 in
+    codex) printf '%s' openai ;;
+    claude) printf '%s' anthropic ;;
+    *) printf '%s' "$1" ;;
+    esac
 }
 
 field_is_safe() {
@@ -218,26 +237,55 @@ disclose_command() {
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag ]] ||
         die_usage '--source must be interactive or auto-review-flag'
+    PROVIDER=$(normalize_provider "$PROVIDER")
     validate_record_fields
     validate_state_for_write
     write_record || die "cannot persist consent state: $STATE_PATH"
 }
 
 check_command() {
-    local parent record expected line_count
+    local parent record expected line_count recorded_provider
+    PROVIDER=$(normalize_provider "$PROVIDER")
     if ! field_is_safe "$PROVIDER" || ! field_is_safe "$PAYLOAD"; then
+        printf '%s: check failed: --provider and --payload must be non-empty and delimiter-free\n' \
+            "$PROGNAME" >&2
         return 10
     fi
-    parent=$(state_parent 2>/dev/null) || return 10
-    state_path_is_safe "$parent" || return 10
-    [[ -f $STATE_PATH && ! -L $STATE_PATH && -O $STATE_PATH ]] || return 10
-    line_count=$(wc -l <"$STATE_PATH" 2>/dev/null) || return 10
-    [[ $line_count -eq 1 ]] || return 10
-    record=$(cat -- "$STATE_PATH" 2>/dev/null) || return 10
+    parent=$(state_parent 2>/dev/null) || {
+        printf '%s: check failed: no consent record at %s (expected provider token: %s)\n' \
+            "$PROGNAME" "$STATE_PATH" "$PROVIDER" >&2
+        return 10
+    }
+    state_path_is_safe "$parent" || {
+        printf '%s: check failed: consent record path is not an owned mode-0600 file: %s (expected provider token: %s)\n' \
+            "$PROGNAME" "$STATE_PATH" "$PROVIDER" >&2
+        return 10
+    }
+    [[ -f $STATE_PATH && ! -L $STATE_PATH && -O $STATE_PATH ]] || {
+        printf '%s: check failed: no consent record found (expected provider token: %s)\n' \
+            "$PROGNAME" "$PROVIDER" >&2
+        return 10
+    }
+    line_count=$(wc -l <"$STATE_PATH" 2>/dev/null) || {
+        printf '%s: check failed: consent record is unreadable: %s\n' "$PROGNAME" "$STATE_PATH" >&2
+        return 10
+    }
+    [[ $line_count -eq 1 ]] || {
+        printf '%s: check failed: consent record is malformed, expected exactly one line: %s\n' \
+            "$PROGNAME" "$STATE_PATH" >&2
+        return 10
+    }
+    record=$(cat -- "$STATE_PATH" 2>/dev/null) || {
+        printf '%s: check failed: could not read consent record: %s\n' "$PROGNAME" "$STATE_PATH" >&2
+        return 10
+    }
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=interactive"
     [[ $record == "$expected" ]] && return 0
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=auto-review-flag"
     [[ $record == "$expected" ]] && return 0
+    recorded_provider=$(sed -n 's/^cross_provider_consent=\([^;]*\);.*/\1/p' <<<"$record")
+    printf '%s: check failed: expected provider token %s, recorded %s\n' \
+        "$PROGNAME" "$PROVIDER" "${recorded_provider:-<unparseable>}" >&2
     return 10
 }
 

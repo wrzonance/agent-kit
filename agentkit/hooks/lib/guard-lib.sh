@@ -1524,6 +1524,49 @@ guard_git_config_write_key() {
     printf '%s' "$key"
 }
 
+# Is a git invocation's UNSTRIPPED tokenized word array (named by $1) passing
+# one of the same execution keys via `-c KEY=VALUE`, the attached
+# `-cKEY=VALUE`, or `--config-env=KEY=...`? guard_strip_git_globals removes
+# every `-c`/`-C` pair before guard_git_config_write_key's word array (built
+# from the STRIPPED command) ever sees it, so `git -c core.hooksPath=/tmp/evil
+# commit` reduced to `git commit` and was allowed -- adversarial review on
+# PR #414 found this bypass (issue #397 follow-up F1). None of these three
+# forms persist past this one invocation the way `git config KEY VALUE` does,
+# but `-c core.hooksPath=/tmp/evil` still runs that hook DURING this command,
+# which is the same immediate code-execution vector, just scoped to one call
+# instead of the repository. Keep the sensitive-key set in lockstep with
+# guard_git_config_write_key's case pattern above -- token equality here too,
+# so a quoted data string mentioning `-c core.hooksPath=` can never match.
+guard_git_dash_c_write_key() {
+    local -n __ggdc_words=$1
+    local i n=${#__ggdc_words[@]} word next key='' saw_git=0
+    for ((i = 0; i < n; i++)); do
+        word=${__ggdc_words[i]}
+        if ((!saw_git)); then
+            [[ $word == git ]] && saw_git=1
+            continue
+        fi
+        case $word in
+            -c)
+                ((i + 1 < n)) || continue
+                next=${__ggdc_words[i + 1]}
+                ;;
+            -c?*) next=${word#-c} ;;
+            --config-env=*) next=${word#--config-env=} ;;
+            *) continue ;;
+        esac
+        [[ $next == *=* ]] || continue
+        case ${next%%=*} in
+            core.hooksPath | core.fsmonitor | core.sshCommand | \
+            filter.*.clean | filter.*.smudge | filter.*.process | diff.*.textconv)
+                key=${next%%=*} ;;
+        esac
+    done
+    ((saw_git)) || return 1
+    [[ -n $key ]] || return 1
+    printf '%s' "$key"
+}
+
 # Does a `gh api` flag (exact token, no attached `=value` or short form) take
 # a SEPARATE next argument as its value? Used only to walk past that value
 # when hunting for the endpoint positional below -- an attached `--flag=value`
@@ -1668,6 +1711,14 @@ guard_destructive_segment_reason() {
     # (issue #397).
     local -a words
     mapfile -t words < <(guard_tokenize_words "$stripped")
+    # The UNSTRIPPED word array -- guard_strip_git_globals removes every
+    # `-c KEY=VALUE` pair before `words` above ever sees it, so
+    # guard_git_dash_c_write_key (which needs that pair intact) works from
+    # this array instead (issue #397 follow-up F1).
+    local -a raw_words
+    # shellcheck disable=SC2034  # consumed by name via the
+    # guard_git_dash_c_write_key nameref below, never as ${raw_words[@]} here.
+    mapfile -t raw_words < <(guard_tokenize_words "$cmd")
 
     # Intervening tokens are tolerated: after a substitution is flattened the
     # flag is no longer adjacent to the verb. Bounded by shell separators, so a
@@ -1714,14 +1765,18 @@ guard_destructive_segment_reason() {
         return 0
     fi
     # An execution key in git config runs a command during ORDINARY git
-    # operations, persists after the session, and runs as the user rather than
-    # the agent. It is the quietest code-execution vector in a repository.
-    # Token-matched, not a substring grep: a `--get` READ of the same key is
-    # never a write, and the key can never be matched out of a quoted data
-    # argument (issue #397).
+    # operations, and runs as the user rather than the agent. It is the
+    # quietest code-execution vector in a repository -- whether it is set
+    # persistently (`git config KEY VALUE`, outliving this session) or scoped
+    # to one invocation (`git -c KEY=VALUE ...`/`--config-env=KEY=...`, which
+    # still executes the hook DURING that one command). Token-matched, not a
+    # substring grep: a `--get` READ of the same key is never a write, and
+    # the key can never be matched out of a quoted data argument (issue
+    # #397; the -c/--config-env form is the follow-up F1 fix).
     local config_key
-    if config_key=$(guard_git_config_write_key words); then
-        printf 'that git config key (%s) executes a command during ordinary git operations, and it outlives this session. Setting it is a decision for the user.' \
+    if config_key=$(guard_git_config_write_key words) ||
+        config_key=$(guard_git_dash_c_write_key raw_words); then
+        printf 'that git config key (%s) executes a command during git operations. Setting it is a decision for the user.' \
             "$config_key"
         return 0
     fi
@@ -2164,15 +2219,32 @@ guard_shell_write_targets() {
 
         # Stage two: offer every token and let the protected list decide. A
         # token that is not protected costs nothing; a target missed by
-        # clever parsing costs the whole guard. A `NAME=value` shell-variable
-        # assignment token is never a file target -- the same assignment
-        # shape guard_heredoc_consumer_is_shell already recognises and skips
-        # as an env prefix, not a path (issue #397, e.g. a leading
-        # `agentkit=/home/.../skills` before the real command word).
+        # clever parsing costs the whole guard. A LEADING `NAME=value`
+        # shell-variable assignment token is never a file target -- the same
+        # assignment shape guard_heredoc_consumer_is_shell already recognises
+        # and skips as an env prefix, not a path (issue #397, e.g. a leading
+        # `agentkit=/home/.../skills` before the real command word). That
+        # skip must end at the first non-assignment token (the command word
+        # itself, or a flag): applying it to every token unconditionally
+        # dropped `dd`'s `of=` operand -- `dd if=/dev/zero
+        # of=.github/workflows/ci.yml` lost its real target and was allowed
+        # (issue #397 follow-up F2). A LATER `key=value` token instead offers
+        # its VALUE half as a candidate; the whole token is not also kept,
+        # since a bogus `key=value`-shaped "path" can itself mis-resolve
+        # against the contracted-worktree boundary the way the original
+        # assignment bug did.
+        local seen_command=0 value
         while IFS= read -r token; do
             [[ -n $token ]] || continue
+            if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+                if ((seen_command)); then
+                    value=${token#*=}
+                    [[ -n $value ]] && results+=("$value")
+                fi
+                continue
+            fi
+            seen_command=1
             [[ $token == -* ]] && continue
-            [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]] && continue
             results+=("$token")
         done < <(tr -s '[:space:]' '\n' <<< "$segment" 2> /dev/null |
             sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
