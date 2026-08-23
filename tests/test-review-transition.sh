@@ -334,15 +334,20 @@ run_observe() {
         bash "$transition" --observe --repo owner/repo --pr 14 --since "$1"
 }
 
+# The stub's repos/owner/repo/pulls/14 case (defined above) reports this as
+# the PR's live head SHA -- a review's own commit_id must match it to count
+# as LANDED (agent-kit#395 adversarial-review follow-up).
+readonly OBSERVE_HEAD_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
 out=$(REVIEW_ACTIVITY=landed \
-    OBSERVE_REVIEWS_JSON='[{"id":7001,"user":{"login":"coderabbitai[bot]","type":"Bot"},"state":"APPROVED","submitted_at":"2026-08-22T07:00:00Z"}]' \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7001,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-22T07:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
     OBSERVE_COMMENTS_JSON='[{"pull_request_review_id":7001},{"pull_request_review_id":7001}]' \
     run_observe '2026-08-22T06:30:00Z')
 assert_contains "$out" 'provider=coderabbit result=LANDED state=APPROVED threads=2 since=2026-08-22T07:00:00Z' \
-    '--observe reports LANDED once a terminal review postdates the trigger'
+    '--observe reports LANDED once a terminal review for the current head postdates the trigger'
 
 out=$(REVIEW_ACTIVITY=landed \
-    OBSERVE_REVIEWS_JSON='[{"id":7002,"user":{"login":"coderabbitai[bot]","type":"Bot"},"state":"APPROVED","submitted_at":"2026-08-20T00:00:00Z"}]' \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7002,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-20T00:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
     run_observe '2026-08-22T06:30:00Z')
 assert_contains "$out" 'provider=coderabbit result=PENDING' \
     '--observe reports PENDING when the only review predates the trigger boundary'
@@ -350,6 +355,18 @@ assert_contains "$out" 'provider=coderabbit result=PENDING' \
 out=$(run_observe '2026-08-22T06:30:00Z')
 assert_contains "$out" 'provider=coderabbit result=PENDING' \
     '--observe reports PENDING when no review exists at all'
+
+# agent-kit#395 adversarial-review follow-up: a terminal review that postdates
+# the trigger but targets a DIFFERENT (stale) commit must never read as LANDED
+# -- the PR can advance to a new head while a review of the old head is still
+# in flight and lands afterward, with a submitted_at that looks current.
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON='[{"id":7003,"user":{"login":"coderabbitai[bot]","type":"Bot"},"state":"APPROVED","submitted_at":"2026-08-22T07:00:00Z","commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' \
+    run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=STALE_HEAD state=APPROVED commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+    'a terminal review of a stale (non-current) head reports STALE_HEAD, never LANDED'
+assert_not_contains "$out" 'result=LANDED' \
+    'a stale-head review is never mistaken for landed evidence on the current head'
 
 set +e
 out=$(REVIEW_TRANSITION_GH="$tmp/gh" bash "$transition" --observe --repo owner/repo --pr 14 2>"$tmp/observe-no-since.err")

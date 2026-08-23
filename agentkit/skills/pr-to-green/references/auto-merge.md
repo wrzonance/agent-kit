@@ -50,12 +50,16 @@ and additionally consumes:
   evidence and blocks.
 - `--provider-result RESULT` — the CodeRabbit result the confirmed
   ready/provider transition step (Section 3) printed for this head
-  (`AUTO_REVIEW`, `TRIGGERED`, `ALREADY_SPENT`, `LANDED`,
+  (`AUTO_REVIEW`, `TRIGGERED`, `ALREADY_SPENT`, `LANDED`, `STALE_HEAD`,
   `OBSERVE_ONLY`, `DISABLED`, `BLOCKED`, or `NONE` when no CodeRabbit provider
   is declared). `TRIGGERED` means a request was posted but no terminal review
   was yet observed — that is an in-flight review, and it blocks. `LANDED` is
   that step's observe-mode confirmation that a terminal review postdates the
-  trigger; it gates the merge exactly like `AUTO_REVIEW` or `ALREADY_SPENT`.
+  trigger AND targets the PR's current head; it gates the merge exactly like
+  `AUTO_REVIEW` or `ALREADY_SPENT`. `STALE_HEAD` is a terminal review that
+  postdates the trigger but targets an earlier head the PR has since moved
+  past — real review evidence, but not for this head, so it blocks exactly
+  like `TRIGGERED`.
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.

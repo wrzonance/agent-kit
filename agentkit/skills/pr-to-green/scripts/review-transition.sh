@@ -63,11 +63,15 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --pr N
 --observe is a lightweight, read-only companion query: after a --trigger run
 prints TRIGGERED/ALREADY_SPENT with a since=TIMESTAMP, poll with --observe
 --since that TIMESTAMP until it reports LANDED (a terminal CodeRabbit review
-submitted after TIMESTAMP) instead of re-running the full ready-transition
-and provider-spend flow. Prints "provider=coderabbit result=LANDED
-state=STATE threads=N since=TIMESTAMP" or "provider=coderabbit
-result=PENDING" and always exits 0 -- PENDING is not a failure, only "not
-yet".
+submitted after TIMESTAMP, for the PR's OWN CURRENT head SHA -- fetched
+fresh, never trusted from a caller) instead of re-running the full
+ready-transition and provider-spend flow. Prints "provider=coderabbit
+result=LANDED state=STATE threads=N since=TIMESTAMP", or
+"provider=coderabbit result=STALE_HEAD state=STATE commit=SHA" for a
+terminal review that postdates TIMESTAMP but targets a head the PR has since
+moved past, or "provider=coderabbit result=PENDING" otherwise. Always exits
+0 -- neither PENDING nor STALE_HEAD is a failure, only "not landed for this
+head yet".
 EOF
     exit "${1:-2}"
 }
@@ -107,29 +111,51 @@ if ((observe)); then
             "$work_dir/$label.raw" >"$out" || die "$label evidence returned malformed JSON"
         jq -e 'type == "array"' "$out" >/dev/null 2>&1 || die "$label evidence returned malformed JSON"
     }
+    # The live head SHA, fetched fresh rather than trusted from any caller
+    # input: the PR can advance between the trigger and this observe call, and
+    # a review submitted for the OLD head can still postdate $since and read
+    # as current if commit_id is never checked (agent-kit#395 follow-up).
+    "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" || die 'pull request metadata unavailable'
+    head_sha=$(jq -r '.head.sha // empty' "$work_dir/pr.json") || head_sha=''
+    [[ $head_sha =~ ^[0-9a-f]{40}$ ]] || die 'pull request metadata carries no full head SHA'
+
     fetch_slurped "repos/$repo/pulls/$pr/reviews?per_page=100" "$work_dir/reviews.json" reviews
     fetch_slurped "repos/$repo/pulls/$pr/comments?per_page=100" "$work_dir/comments.json" comments
 
     # Same terminal-state/tie-break rule as gh-pr-state.sh's provider_state:
     # only a genuinely submitted review (APPROVED/CHANGES_REQUESTED/COMMENTED)
-    # counts, and it must postdate the trigger to count as LANDED here.
-    landed=$(jq -r "$PROVIDER_IDENTITY_JQ"'
+    # postdating the trigger counts at all, and only one whose OWN commit_id
+    # matches the just-fetched live head counts as LANDED. A terminal,
+    # post-trigger review that targets a different (older) commit is reported
+    # as STALE_HEAD -- distinct from PENDING, so the root does not read a
+    # real-but-stale review as "nothing happened yet" and does not read it as
+    # LANDED either, which would let a review of different code authorize
+    # this head's merge.
+    info=$(jq -r "$PROVIDER_IDENTITY_JQ"'
         [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
                | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED")
-               | select((.submitted_at // "") > $since) ]
-        | sort_by([(.submitted_at // ""), (.id // 0)])
-        | last
-        | if . == null then empty else
-            [(.state), (.submitted_at // ""), ((.id // 0) | tostring)] | @tsv
-          end' --arg since "$since" <"$work_dir/reviews.json") || landed=""
-    if [[ -n $landed ]]; then
-        landed_state='' landed_since='' landed_review_id='' landed_threads=''
-        IFS=$'\t' read -r landed_state landed_since landed_review_id <<< "$landed"
-        landed_threads=$(jq -r --argjson rid "${landed_review_id:-0}" \
-            '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
-            <"$work_dir/comments.json")
-        printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s\n' \
-            "$landed_state" "$landed_threads" "$landed_since"
+               | select((.submitted_at // "") > $since) ] as $terminal
+        | ($terminal | map(select((.commit_id // "") == $head))
+            | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $current
+        | ($terminal | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $latest
+        | if $current != null then
+            ["current", $current.state, ($current.submitted_at // ""), (($current.id // 0) | tostring)] | @tsv
+          elif $latest != null then
+            ["stale", $latest.state, ($latest.commit_id // ""), ""] | @tsv
+          else empty end' --arg since "$since" --arg head "$head_sha" <"$work_dir/reviews.json") || info=""
+    if [[ -n $info ]]; then
+        kind='' state_or_commit='' info_b='' review_id=''
+        IFS=$'\t' read -r kind state_or_commit info_b review_id <<< "$info"
+        if [[ $kind == current ]]; then
+            threads=$(jq -r --argjson rid "${review_id:-0}" \
+                '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
+                <"$work_dir/comments.json")
+            printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s\n' \
+                "$state_or_commit" "$threads" "${info_b:-unknown}"
+            exit 0
+        fi
+        printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s\n' \
+            "$state_or_commit" "${info_b:-unknown}"
         exit 0
     fi
     printf 'provider=coderabbit result=PENDING\n'

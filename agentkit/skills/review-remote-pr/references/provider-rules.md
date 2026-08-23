@@ -215,10 +215,15 @@ review or a CHANGES_REQUESTED-with-inline-threads-only review can both leave sil
 landed). No separate query is needed; read the value already printed by the Step 1/Step 6 `--full`
 call.
 
-- `reviewed state=APPROVED|CHANGES_REQUESTED|COMMENTED threads=N since=TIMESTAMP` → a review landed;
-  `threads` is that review's own inline-comment count (0 is a legitimate APPROVED/COMMENTED outcome,
-  not evidence of nothing having happened) and `since` is its submission time. Work its items
-  (Phase C Step 5) when threads are present.
+- `reviewed state=APPROVED|CHANGES_REQUESTED|COMMENTED threads=N since=TIMESTAMP` → a review landed
+  for the PR's CURRENT head; `threads` is that review's own inline-comment count (0 is a legitimate
+  APPROVED/COMMENTED outcome, not evidence of nothing having happened) and `since` is its submission
+  time. Work its items (Phase C Step 5) when threads are present.
+- `stale-head state=STATE commit=SHA` → a terminal review exists, but its own commit differs from
+  the PR's current head — the PR advanced after the review was requested, and this review is not
+  evidence for the code being merged now (agent-kit#395 follow-up). Never treat this as `reviewed`;
+  never treat it as `none` either — a review is real and pending re-observation, not absent. Keep
+  waiting; do not re-trigger.
 - `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
   provider is configured for automatic, incremental, or manual review; continue the current phase
   and leave any trigger decision to the user.
