@@ -253,6 +253,24 @@ assert_eq '1' "$rc" 'a pending github-code-quality scan blocks the merge'
 assert_contains "$out" 'blocked reason=github-code-quality scan is still pending' \
     'the pending-scan block is named'
 
+# --- issue #403: a repository with Code Quality disabled reports the scan
+# state as not-enabled -- a stable repository fact, not a scan in flight --
+# and the gate must accept it exactly like complete, never like pending.
+
+good_digest
+out=$(GATE_CQ_STATE=not-enabled run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a not-enabled github-code-quality scan state passes the gate like complete'
+
+good_digest
+set +e
+out=$(GATE_CQ_STATE=unknown run_gate 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" '--code-quality-scan-state rejects a value other than complete, pending, or not-enabled'
+assert_contains "$out" '--code-quality-scan-state must be complete, pending, or not-enabled' \
+    'the rejection names the accepted values'
+
 good_digest
 set +e
 out=$(GATE_HUMAN_DECIDED=no run_gate)

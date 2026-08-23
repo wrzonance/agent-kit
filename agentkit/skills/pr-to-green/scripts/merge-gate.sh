@@ -54,7 +54,8 @@ usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --pr-state-digest FILE --provider-result RESULT
-       --human-items-decided yes|no --code-quality-scan-state complete|pending
+       --human-items-decided yes|no
+       --code-quality-scan-state complete|pending|not-enabled
 EOF
     exit "${1:-2}"
 }
@@ -86,7 +87,10 @@ case $provider_result in
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
 esac
 case $human_decided in yes|no) ;; *) die '--human-items-decided must be yes or no' ;; esac
-case $cq_scan_state in complete|pending) ;; *) die '--code-quality-scan-state must be complete or pending' ;; esac
+case $cq_scan_state in
+    complete|pending|not-enabled) ;;
+    *) die '--code-quality-scan-state must be complete, pending, or not-enabled' ;;
+esac
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; gate evidence unavailable'
 
@@ -442,7 +446,11 @@ case $provider_result in
 esac
 
 [[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision'
-[[ $cq_scan_state == complete ]] || block 'github-code-quality scan is still pending on the current head'
+# not-enabled (issue #403) means Code Quality is disabled for the repository
+# -- a stable fact, not a scan in flight -- so it gates exactly like
+# complete; pending is the only value that still blocks.
+[[ $cq_scan_state == complete || $cq_scan_state == not-enabled ]] ||
+    block 'github-code-quality scan is still pending on the current head'
 
 if ((${#reasons[@]} > 0)); then
     for reason in "${reasons[@]}"; do

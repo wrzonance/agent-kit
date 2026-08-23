@@ -55,14 +55,29 @@ never an H-item; H labels are human-only. A generic bot-only thread may be resol
 attributed reply. Human content anywhere in the thread moves the whole thread to the human lane,
 which is never auto-resolved. Do not invoke or trigger any provider, including a generic bot.
 
-GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint:
+GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint.
+
+A repository with GitHub Code Quality disabled 403s the findings endpoint every single time (issue #403: `AGENT_REVIEW_PROVIDERS=github-code-quality` used to be accepted at plan time regardless, and this step then died mid-gate). Probe reachability ONCE before fetching findings: a confirmed `state=not-enabled` is a stable repository fact, so skip with no findings to work rather than blocking. Any other probe outcome (a network failure, an auth/scope 403, a 5xx) is NOT proof of disablement and stays blocked, same as before:
 
 ```bash
-# Inspect Code Quality findings available through the public API (read-only).
-if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --summary; then
-    printf '%s\n' 'Code Quality findings unavailable; blocked, not no findings.' >&2
-    exit 1
-fi
+# Probe ONCE, then inspect Code Quality findings available through the
+# public API (read-only) only when the probe confirms the surface is
+# reachable.
+case $("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --probe) in
+    state=enabled)
+        if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --summary; then
+            printf '%s\n' 'Code Quality findings unavailable; blocked, not no findings.' >&2
+            exit 1
+        fi
+        ;;
+    state=not-enabled)
+        printf '%s\n' 'github-code-quality: reason=not-enabled — skipping, no findings to work.'
+        ;;
+    *)
+        printf '%s\n' 'Code Quality reachability unknown; blocked, not no findings.' >&2
+        exit 1
+        ;;
+esac
 # The PR finding comments and their IDs come from the Step 1 artifact — no re-query.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 jq -r '.[] | "\(.id)\t\(.path)\t\(.line)\t\(.commit_id)"' \
@@ -136,6 +151,14 @@ counted on the `threads:` line, so counting them here would make the number unre
 `alerts: code-scanning n/a` means the endpoint returned 403/404 — typically code scanning is not
 enabled on the repository, or the token lacks `security_events`. It is not a failure and never
 changes the exit code.
+
+`code-quality-state.sh --probe` reports Code Quality reachability the same way, but stricter:
+only a 403 whose message specifically says the feature is not enabled resolves to `state=not-enabled`
+(treated as no findings, never a block). Any other outcome — a network failure, a 5xx, or an
+auth/scope 403 with a different message — resolves to `state=unknown` and stays blocked, because
+none of those are proof the feature is disabled (issue #403). Both
+`review-provider-config.sh --probe` (the declared-provider plan) and the Step 5 recipe above run
+this probe at most once per invocation.
 
 ## Step 1a: surfacing formats
 
@@ -383,6 +406,7 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 | Waiting for a review after the ready flip | The flip's review behavior is repository/provider configuration. Report draft-phase complete; do not trigger a review yourself. |
 | Waiting for a review after a push | Re-check observed provider state in bounded rounds. Report fixes pushed; the user decides whether to trigger anything. |
 | `github-code-quality[bot]` finding remains after a fix | Wait for the next Code Quality scan and inspect the refreshed finding state. Do not manually resolve it as a substitute for the scan. |
+| Code Quality findings request 403s mid-gate | Code Quality is declared but disabled for this repository (issue #403). Probe once with `code-quality-state.sh --probe` before fetching findings; `state=not-enabled` means skip with no findings, never a block. |
 | Inaccurate Code Quality finding | Reply with a concrete reason, then use GitHub's **Dismiss finding** action with that reason. The public Code Quality REST API is read-only for findings; do not guess a mutation. |
 | Code Quality dismissal command temptation | `PUT /pulls/$PR/reviews/$REVIEW_ID/dismissals` dismisses an entire PR review, not one finding. Never use it for a single Code Quality comment. |
 | Code Quality vs code scanning API confusion | `github-code-quality[bot]` findings use the Code Quality surface. `/code-scanning/alerts/...` is a different resource; use it only after independently identifying a code-scanning alert. |
