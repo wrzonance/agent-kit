@@ -227,6 +227,42 @@ undeclared_output=$(PATH="$tmp/case-automation-only:$PATH" bash "$root/agentkit/
 assert_contains "$undeclared_output" 'base: ref=main behind=1 stale=yes' \
     'with no declared AGENT_GENERATED_PATHS the same advance still stales (opt-in only)'
 
+# Regression pin: this repository's OWN .agent/config.env must declare a
+# prefix that actually covers record-tier0.yml's bench/results/tier0.jsonl --
+# the mechanism above being correct is not enough if agent-kit's own
+# declaration never lists the path the workflow commits (agent-kit#394).
+# This reads the real repo-root config, not a synthetic fixture; it fails the
+# moment someone trims AGENT_GENERATED_PATHS back to excluding bench/results.
+mkdir -p "$tmp/case-repo-declared-tier0"
+cat >"$tmp/case-repo-declared-tier0/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/812 "*)
+        printf '%s\n' '{"number":812,"draft":false,"mergeable":true,"head":{"ref":"feat/tier0","sha":"tier0sha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/tier0sha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *"compare/main...feat/tier0"*)
+        printf '%s\n' '{"status":"behind","ahead_by":0,"behind_by":1,"total_commits":1,"commits":[]}'
+        ;;
+    *"compare/feat/tier0...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-repo-declared-tier0/gh"
+repo_declared_output=$(PATH="$tmp/case-repo-declared-tier0:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 812 --repo owner/repo --repo-root "$root")
+assert_contains "$repo_declared_output" 'base: ref=main behind=1 stale=no' \
+    "this repository's own AGENT_GENERATED_PATHS declaration covers record-tier0.yml's bench/results/tier0.jsonl (agent-kit#394 regression pin)"
+
 # --- provider state: last-signal-wins over the issue comments --------------
 
 mkdir -p "$tmp/case-reviewed"
