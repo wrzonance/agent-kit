@@ -399,7 +399,8 @@ single-line reconciliation in this shape:
 Selection funnel: requested=<slot-count> eligible=<eligible-count> dispatched=<dispatch-count> exclusions=<reason>:<count>[#<issue>,...]|none
 ```
 
-`requested` is the operator's requested slot count (bounded by the skill's maximum), `eligible`
+`requested` is the operator's supplied slot count, bounded by the skill's maximum. For automatic
+selection with no supplied count, `requested` is the effective Limits-section slot cap. `eligible`
 is the number of candidates that survived the existing triage and mechanical eligibility rules
 before conflict/serialization and the slot cap, and `dispatched` is the number actually launched
 in this wave. Group candidates not dispatched under stable categorical reasons such as

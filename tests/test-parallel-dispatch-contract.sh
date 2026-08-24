@@ -227,6 +227,9 @@ assert_contains "$text" 'Selection funnel:' \
     'parallel skill requires the named selection reconciliation line'
 assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
     'selection reconciliation is emitted once at the dispatch boundary'
+assert_contains "$normalized_text" \
+    '`pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
+    'selection keeps judgment and board mutation root-owned'
 assert_contains "$triage_and_selection_text" \
     'Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none' \
     'selection reconciliation covers a full requested queue'
@@ -238,6 +241,9 @@ assert_contains "$triage_and_selection_text" \
     'selection reconciliation covers an empty dispatch'
 assert_contains "$normalized_triage_and_selection_text" 'Each considered candidate appears exactly once' \
     'selection funnel requires mutually exclusive candidate outcomes'
+assert_contains "$normalized_triage_and_selection_text" \
+    'For automatic selection with no supplied count, `requested` is the effective Limits-section slot cap.' \
+    'automatic selection reports requested slots from the effective cap'
 assert_contains "$triage_and_selection_text" 'slot-cap' \
     'selection funnel accounts for eligible candidates beyond the requested slots'
 assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
