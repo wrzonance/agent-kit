@@ -17,6 +17,8 @@ is not another review engine.
 Reference paths resolve: open `"$agentkit/<path>"`, and read `"$agentkit/references.md"` —
 every reference and its purpose — instead of searching.
 
+Before running any multi-line recipe here or in a companion reference, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full. Every `bash` fence is a Bash recipe body; use that reference's explicit `bash -c` boundary rather than pasting the body into the harness shell.
+
 ## Flags
 
 | Flag | Effect |

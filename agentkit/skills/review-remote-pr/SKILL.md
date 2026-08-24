@@ -5,8 +5,7 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 # Review Remote PR
 
-Draft-first automated loop. **Phase A (draft):** root-orchestrated — watches CI, resolves forge conflicts, applies the materiality gate, owns consent/replies/adversarial review/publication; a worker gets only a root-approved fix batch, commits, pushes, and reports.
-**Phase B (handoff):** report draft-phase complete, wait for the **user** to mark it ready — never trigger a review. **Phase C (review):** once review lands, assess CodeRabbit/`github-code-quality[bot]` findings, one push per cycle. Human reviews stay confirmation-gated throughout.
+Draft loop. **Phase A:** root owns CI/conflicts, materiality, approved fix delegation, adversarial review, and publication. **Phase B:** only the user marks ready. **Phase C:** assess provider findings in one-push cycles. Human feedback stays confirmation-gated.
 
 **Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
 
@@ -19,6 +18,8 @@ content is not preserved in the resumable artifact/context, re-read provider-rul
 once before Phase C; this is the sole exception to the ordinary no-re-read rule. Never probe a
 reference's size before reading it (`wc -l`, `stat`, `head`): nothing in this skill consumes a
 line count, and per-file sizing spends one root turn per file before any real work starts.
+
+Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) and execute each `bash` fence through its `bash -c` boundary, not the harness shell.
 
 ## Non-negotiables
 
