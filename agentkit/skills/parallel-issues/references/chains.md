@@ -7,6 +7,7 @@
 - Deferred dispatch
 - Merge-down after a predecessor advances
 - Merge order and the stacked-PR retarget
+- Post-squash-merge conflicts
 - Never send a post-push instruction that reads as a rewrite
 - Contract-inheritance refusal and recovery
 
@@ -171,6 +172,31 @@ and require CI to run against the new base before treating it as green.
 A stale digest is a stop signal, not a green result. If the provider's approval is stale too,
 record that residue explicitly in the handoff; the one-review/one-ping rule does not permit
 silently inheriting it or spending a second provider trigger to make the history look fresh.
+
+## Post-squash-merge conflicts
+
+When a predecessor is squash-merged, the default branch receives its content in one new commit,
+but not the predecessor commits from which the successor was built. On the successor's next
+merge-down, Git can therefore fall back to an older merge base and present the predecessor's
+already-carried changes as a conflict instead of a real divergence.
+This conflict is expected once per link in any squash-merged chain; by itself, it does not mean
+the chain or merge-down failed.
+
+Resolve it from content evidence, never from the conflict labels alone:
+
+1. Compare both complete conflict blobs before choosing a side. For a default-branch merge into
+   the successor, the branch is normally `ours` and the updated default branch is `theirs`; verify
+   that orientation from the merge being performed rather than assuming it.
+2. Establish whether the branch is a superset of the default-branch blob. Account for every block
+   on the default-branch side and identify every line it has that the branch lacks. State the
+   finding concretely, for example: "branch is a superset except N lines, which are the superseded
+   form of X."
+3. Choose the resolution that follows from that comparison. If the only default-branch-only lines
+   are an older form deliberately replaced by the successor, keeping the branch side is justified.
+   If either side has independent content, combine it deliberately. A blind `--theirs` can
+   duplicate predecessor content the branch already carries.
+4. Report the conflict, the blob comparison, the superset finding, and the chosen repair. A
+   conflict repair is never resolved silently.
 
 ## Never send a post-push instruction that reads as a rewrite
 
