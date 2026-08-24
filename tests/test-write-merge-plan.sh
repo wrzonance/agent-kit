@@ -40,6 +40,19 @@ cat >"$merge_plan" <<'EOF'
 }
 EOF
 
+"$writer" --dispatch-plan "$plan" --validate-only >"$tmp/validate.out"
+assert_contains "$(cat "$tmp/validate.out")" 'schemaVersion=1 valid' \
+    'the write-time gate accepts a complete schema-1 dispatch plan'
+
+jq 'del(.schemaVersion)' "$plan" >"$tmp/missing-schema.json"
+missing_schema_rc=0
+"$writer" --dispatch-plan "$tmp/missing-schema.json" --validate-only \
+    >"$tmp/missing-schema.out" 2>"$tmp/missing-schema.err" || missing_schema_rc=$?
+assert_eq '1' "$missing_schema_rc" \
+    'a dispatch plan missing schemaVersion is rejected at the write-time gate'
+assert_contains "$(cat "$tmp/missing-schema.err")" 'schemaVersion 1' \
+    'the write-time refusal names the required dispatch schema'
+
 "$writer" --dispatch-plan "$plan" --merge-plan "$merge_plan"
 assert_eq '2' "$(jq -r '.schemaVersion' "$plan")" \
     'writer upgrades the dispatch plan to schemaVersion 2'

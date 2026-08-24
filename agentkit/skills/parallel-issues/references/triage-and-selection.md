@@ -157,7 +157,18 @@ conflict analysis. The plan uses this schema:
 ```
 
 The dispatch-time artifact stays at schema version 1 while PR numbers and
-pushed heads do not exist. At the ready-flip handoff, write those verified
+pushed heads do not exist. Immediately after atomically persisting it, run
+`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only`;
+the dispatch must not begin unless the helper prints `schemaVersion=1 valid`.
+This catches a missing or malformed schema at the write boundary instead of in
+the downstream queue consumer.
+
+`dispatch-plan` and `merge-plan` name the same owner-only file at its two
+lifecycle stages: schema 1 before the ready flip and schema 2 afterward. The
+temporary merge-plan input below is only the verified PR/head facts used to
+perform that in-place upgrade.
+
+At the ready-flip handoff, write the verified
 facts to an owner-only **merge-plan input** file and pass both files through
 `scripts/write-merge-plan.sh --dispatch-plan FILE --merge-plan FILE`. This
 input carries only the ready-flip facts -- `entries` and `conflictMap` stay

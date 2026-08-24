@@ -6,6 +6,7 @@ umask 077
 readonly PROGRAM=${0##*/}
 dispatch_plan=''
 merge_plan=''
+validate_only=0
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -13,7 +14,7 @@ die() {
 }
 
 usage() {
-    printf 'usage: %s --dispatch-plan FILE --merge-plan FILE\n' "$PROGRAM" >&2
+    printf 'usage: %s --dispatch-plan FILE (--validate-only | --merge-plan FILE)\n' "$PROGRAM" >&2
     exit "${1:-2}"
 }
 
@@ -29,17 +30,53 @@ while (($#)); do
             merge_plan=$2
             shift 2
             ;;
+        --validate-only)
+            validate_only=1
+            shift
+            ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
 done
 
-[[ -n $dispatch_plan && -n $merge_plan ]] || usage
+[[ -n $dispatch_plan ]] || usage
+if ((validate_only)); then
+    [[ -z $merge_plan ]] || usage
+else
+    [[ -n $merge_plan ]] || usage
+fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; merge-plan evidence unavailable'
-for file in "$dispatch_plan" "$merge_plan"; do
+inputs=("$dispatch_plan")
+[[ -z $merge_plan ]] || inputs+=("$merge_plan")
+for file in "${inputs[@]}"; do
     [[ -f $file && ! -L $file && -O $file ]] ||
         die "input must be an owned regular file, not a symlink: $file"
 done
+
+if ((validate_only)); then
+    jq -e '
+      def uint: type == "number" and . > 0 and floor == .;
+      def path:
+        type == "string" and length > 0 and
+        (startswith("/") | not) and (contains("\\") | not) and
+        (test("[\\r\\n]") | not) and
+        all(split("/").[]; . != "" and . != "." and . != "..");
+      type == "object" and .schemaVersion == 1 and
+      ((.entries | type) == "array" and (.entries | length) > 0) and
+      all(.entries[];
+        (type == "object") and (.issue | uint) and
+        ((.predictedWriteSet | type) == "array" and
+          (.predictedWriteSet | length) > 0) and
+        all(.predictedWriteSet[]; path)) and
+      ((.entries | map(.issue) | unique | length) == (.entries | length)) and
+      ((.conflictMap | type) == "object") and
+      ((.conflictMap.pairs | type) == "array") and
+      ((.conflictMap.revisions | type) == "array")
+    ' "$dispatch_plan" >/dev/null 2>&1 ||
+        die 'dispatch plan is invalid: expected schemaVersion 1 with entries and conflictMap'
+    printf 'dispatch-plan=%s schemaVersion=1 valid\n' "$dispatch_plan"
+    exit 0
+fi
 
 jq -e '
   type == "object" and

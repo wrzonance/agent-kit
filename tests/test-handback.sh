@@ -70,6 +70,30 @@ src/untracked.txt" "$(tr '\0' '\n' <"$valid_output")" \
     'valid handback returns the parsed argv NUL-delimited'
 assert_eq '' "$(cat -- "$tmp/valid.err")" 'valid handback keeps diagnostics off stdout and stderr'
 
+schema_two_plan="$tmp/schema-two-plan.json"
+jq '.schemaVersion = 2 |
+    .generatedAt = "2026-08-24T12:00:00Z" |
+    .independent = [{"issue":167,"pr":424,"branch":"feat/issue-167","chainBaseSha":null,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}] |
+    .chains = []' "$plan" >"$schema_two_plan"
+plan_before_schema_two=$plan
+plan=$schema_two_plan
+schema_two_rc=0
+validate "$repo" "$valid_handback" >"$tmp/schema-two.out" \
+    2>"$tmp/schema-two.err" || schema_two_rc=$?
+assert_eq '0' "$schema_two_rc" \
+    'schema-2 plan preserves enough audit data to validate a delayed handback'
+plan=$plan_before_schema_two
+
+boolean_schema_plan="$tmp/boolean-schema-plan.json"
+jq '.schemaVersion = true' "$plan" >"$boolean_schema_plan"
+plan_before_boolean_schema=$plan
+plan=$boolean_schema_plan
+boolean_schema_rc=0
+validate "$repo" "$valid_handback" >"$tmp/boolean-schema.out" \
+    2>"$tmp/boolean-schema.err" || boolean_schema_rc=$?
+assert_eq '2' "$boolean_schema_rc" 'boolean true is not schemaVersion 1'
+plan=$plan_before_boolean_schema
+
 # Predictions may be paths or globs; the validator applies repository-relative
 # glob semantics without expanding the worker's command text.
 glob_plan="$tmp/glob-plan.json"

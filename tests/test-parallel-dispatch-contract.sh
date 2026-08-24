@@ -173,6 +173,10 @@ assert_contains "$triage_and_selection_text" 'headSha' \
     'merge-plan records pin live head verification evidence'
 assert_contains "$text" 'write-merge-plan.sh' \
     'ready-flip handoff persists the machine-readable merge plan'
+assert_contains "$text" '--validate-only' \
+    'dispatch validates schema 1 immediately after persisting the plan'
+assert_contains "$triage_and_selection_text" 'same owner-only file' \
+    'dispatch-plan and merge-plan names are documented as lifecycle aliases'
 assert_contains "$triage_and_selection_text" 'shared root files' \
     'conflict analysis includes shared root files by default'
 assert_contains "$triage_and_selection_text" 'chain-conversion' \

@@ -456,12 +456,10 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan. Each entry gets a
-non-empty repository-relative `predictedWriteSet` (paths/globs), plus
-`conflictMap.pairs` and reasoned revisions; successor swaps require a revision.
-Include shared build config, lockfiles, and generated contracts in every check. See
-[references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
-for the schema and the chain-conversion/merge-down response to late overlap.
+Before dispatch, write the root-owned dispatch plan, validate via
+`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only`,
+and require `schemaVersion=1 valid`. Each entry gets a non-empty `predictedWriteSet`,
+plus `conflictMap.pairs` and revisions; include shared build/generated contracts. See [triage and selection](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets) for schema and late-overlap responses.
 
 Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
 
@@ -1072,7 +1070,8 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-At handoff, persist PRs, heads, roots, and chains with `scripts/write-merge-plan.sh`; state merge order (base first). After each predecessor, run `chain-advance.sh --retarget --pr <N> --base <default>`; verify the successor's baseRefName, `base...head`, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`.
+State merge order (base first). After each predecessor, run `chain-advance.sh --retarget --pr <N> --base <default>`; verify the successor's baseRefName, `base...head`, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
