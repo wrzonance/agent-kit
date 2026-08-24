@@ -29,7 +29,7 @@ the only thing here that consumes a line count: a **first** read of a file over 
 (this SKILL.md included) may take one bounded size probe, because that count decides whether a
 single-shot read is affordable at all.
 
-**Single issue, no chain: dispatch reference set.** Read the manifest, triage/selection rules, worker prompt, spawn contract, and six-step loop; exclude chain/serialization material and defer body/wait rules. **Review-phase references:** Do not preload review-phase references during dispatch or worker waits; read them when review reaches their condition, and read when uncertain.
+**Single issue, no chain: dispatch reference set.** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full; exclude chain/review material. **Review-phase references:** Do not preload review-phase references during dispatch/worker waits; read on reaching their conditions.
 
 ## Flags
 
@@ -69,8 +69,7 @@ red/green iteration, the full suite once per tree state before commit;
 `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
 that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
-Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full only
-when this repository declares a Compose-driven command.
+Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
@@ -453,14 +452,13 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan. Each entry gets a
-non-empty repository-relative `predictedWriteSet` (paths/globs), plus
-`conflictMap.pairs` and reasoned revisions; successor swaps require a revision.
-Include shared build config, lockfiles, and generated contracts in every check. See
+Before dispatch, write the root-owned dispatch plan. Each entry gets a non-empty
+repository-relative `predictedWriteSet` (paths/globs), `conflictMap.pairs`, and reasoned
+revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
 [references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
-for the schema and the chain-conversion/merge-down response to late overlap.
+for the schema. Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down.
 
-Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
+Combine Step 2 triage and board findings, then get approval before continuing.
 
 **With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
 colliding pair yourself, and continue. The analysis is still mandatory — `--fast-mode` removes
