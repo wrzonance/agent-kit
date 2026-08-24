@@ -342,11 +342,64 @@ assert_contains "$dispatch_handoff" 'prompt_file="$prompt_dir/issue-$issue_numbe
     'dispatch handoff composes to a per-issue file in the worker'"'"'s excluded .agent/ tree'
 assert_contains "$dispatch_handoff" 'chmod 600 -- "$prompt_file"' \
     'the composed prompt file is not world-readable'
-assert_contains "$dispatch_handoff" 'if ! "$compose_script" "${compose_args[@]}"; then' \
+assert_contains "$dispatch_handoff" 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' \
     'dispatch handoff stops when prompt composition fails'
-compose_invocations=$(grep -Fxc 'if ! "$compose_script" "${compose_args[@]}"; then' <<< "$dispatch_handoff" || true)
+compose_invocations=$(grep -Fxc 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' <<< "$dispatch_handoff" || true)
 assert_eq '1' "$compose_invocations" \
     'dispatch invokes the prompt composer exactly once per worker'
+assert_contains "$dispatch_handoff" 'classification=majority-uncovered' \
+    'dispatch reporting makes a majority-uncovered issue visible at a glance'
+assert_contains "$dispatch_handoff" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
+    'dispatch defines the root-owned plan before composing'
+assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]]' \
+    'dispatch validates the plan before passing it to the composer'
+assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
+    'dispatch consumes the composer plan-record report'
+assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
+    'dispatch records uncovered verification atomically before spawn'
+assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
+    'dispatch verifies the exact final record before spawn'
+assert_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
+    'dispatch declares report storage as associative'
+assert_contains "$dispatch_handoff" 'dispatch_verification_reports["$issue_number"]=$spec_verification' \
+    'dispatch preserves the coverage report for the final handoff'
+assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
+    'dispatch derives durable report storage from the root-owned run plan'
+assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
+    'dispatch defines durable per-issue report persistence'
+assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_report"' \
+    'dispatch atomically replaces one issue report without overwriting peers'
+assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
+    'dispatch makes the composer check the plan record before spawn'
+
+report_declaration=$(grep -F -m1 'declare -A dispatch_verification_reports' <<< "$dispatch_handoff")
+report_assignment=$(grep -F -m1 'dispatch_verification_reports["$issue_number"]=$spec_verification' <<< "$dispatch_handoff")
+multi_issue_reports=$(bash -c "$report_declaration
+issue_number=57; spec_verification=first; $report_assignment
+issue_number=54; spec_verification=second; $report_assignment
+printf '%s|%s' \"\${dispatch_verification_reports[57]}\" \"\${dispatch_verification_reports[54]}\"")
+assert_eq 'first|second' "$multi_issue_reports" \
+    'associative dispatch reporting preserves two issue handoff records'
+persist_report_function=$(awk '
+    /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}/ { exit }
+' <<< "$dispatch_handoff")
+[[ -n $persist_report_function ]] || _fail 'durable dispatch report function is extractable' 'function body is empty'
+durable_plan="$tmp/dispatch plan.md"
+: > "$durable_plan"
+first_report='spec-verification= issue=57 steps=2 covered=1 uncovered=1 uncovered-steps=2 coverage=1/2 classification=partially-covered'
+second_report='spec-verification= issue=54 steps=1 covered=1 uncovered=0 uncovered-steps=none coverage=1/1 classification=fully-covered'
+bash -c "$persist_report_function
+dispatch_plan=\$1; issue_number=57; spec_verification=\$2
+persist_dispatch_verification_report" _ "$durable_plan" "$first_report"
+bash -c "$persist_report_function
+dispatch_plan=\$1; issue_number=54; spec_verification=\$2
+persist_dispatch_verification_report" _ "$durable_plan" "$second_report"
+assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.report")" \
+    'first shell composition leaves its exact durable report'
+assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
+    'second shell composition preserves its peer and writes its own report'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
 # composed body in root context for no dispatch benefit -- twice, under an
 # approval layer that re-executes an approved command. The block emits a digest.
@@ -360,6 +413,22 @@ for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tai
 done
 assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
+assert_contains "$text" 'Include each stored `spec-verification=` report verbatim in the final handoff' \
+    'final handoff carries the dispatch-time coverage ratio and classification'
+assert_contains "$text" 'Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan`' \
+    'final handoff explicitly retrieves reports from durable run evidence'
+assert_contains "$text" 'for dispatch_report in "$dispatch_reports_dir"/issue-*.report' \
+    'final handoff enumerates every durable per-issue report'
+handoff_retrieval=$(awk '
+    /Shell state does not persist: recompute `dispatch_reports_dir`/ { armed=1 }
+    armed && /^```bash$/ { capture=1; next }
+    capture && /^```$/ { exit }
+    capture { print }
+' <<< "$text")
+durable_handoff=$(bash -c "dispatch_plan=\$1
+$handoff_retrieval" _ "$durable_plan")
+assert_eq "$second_report"$'\n'"$first_report" "$durable_handoff" \
+    'a fresh final-handoff process retrieves both exact composition reports'
 boundary_selector="$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh"
 assert_eq yes "$( [[ -x $boundary_selector ]] && printf yes || printf no )" \
     'boundary selector helper is executable'
@@ -1018,8 +1087,18 @@ assert_contains "$normalized_text" 'A mutation no recorded decision covers still
 # habit, with ONE bounded exception for a large first read.
 assert_contains "$normalized_text" 'References are read once and batched' \
     'parallel skill still reads each reference once, in batches'
+assert_contains "$normalized_text" 'The manifest is not a preload list: match each condition against the actual execution path' \
+    'reference loading follows manifest conditions on the selected execution path'
+assert_contains "$normalized_text" 'When a step names a reference file, read it in full at that step' \
+    'named references are fully loaded at their binding step'
+assert_contains "$normalized_text" 'one batched read covering several files is ideal' \
+    'references reached together are batched'
+assert_contains "$normalized_text" 'do not re-read it later in the run' \
+    'a loaded reference is not read twice'
 assert_contains "$text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
+assert_contains "$text" '`wc -l`, `stat`, `head`' \
+    'routine reference sizing forbids all named probes'
 assert_contains "$normalized_text" 'per-file sizing spends one root turn per file' \
     'the no-sizing default names its cost'
 assert_contains "$normalized_text" 'may take one bounded size probe' \
