@@ -2381,6 +2381,10 @@ guard_shell_write_targets() {
                 fi
                 redirect_target=1
             fi
+            if ((redirect_target)); then
+                token=${token#\"}; token=${token%\"}
+                token=${token#\'}; token=${token%\'}
+            fi
             [[ -n $token ]] || continue
             if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
                 if ((seen_command)); then
@@ -2393,8 +2397,22 @@ guard_shell_write_targets() {
                 [[ $token == git ]] && command_is_git=yes
             fi
             seen_command=1
+
+            # Shell permits a redirect to be attached to the preceding word.
+            # Split that destination out before classifying a Git object name;
+            # otherwise `HEAD:path>target` looks like one large revspec and the
+            # data-operand exemption drops the real target with it.
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token == *'>'* ]]; then
+                value=${token#*>}
+                value=${value#>}
+                value=${value#\"}; value=${value%\"}
+                value=${value#\'}; value=${value%\'}
+                [[ -n $value ]] && results+=("$value")
+                token=${token%%>*}
+                [[ -n $token ]] || continue
+            fi
             [[ $token == -* ]] && continue
-            if ((redirect_target == 0)) && [[ $command_is_git == yes ]] &&
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token != *'>'* ]] &&
                 { [[ $token =~ ^[^/:][^:]*:.+$ ]] ||
                     [[ $token =~ \^\{(tree|commit|tag|object)\}$ ]]; }; then
                 continue

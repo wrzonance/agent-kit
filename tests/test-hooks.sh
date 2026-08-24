@@ -2383,6 +2383,22 @@ revspec_protected_out=$(pre_input "$boundary_feature" \
 assert_eq 'deny' "$(decision "$revspec_protected_out")" \
     'a Git revspec read cannot hide a protected redirect target (issue #423)'
 
+quoted_redirect_out=$(pre_input "$boundary_feature" \
+    'printf x >".github/workflows/ci.yml"' \
+    'worktree-boundary-quoted-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$quoted_redirect_out")" \
+    'a no-space quoted redirect still exposes its protected target (issue #423 review F1)'
+assert_contains "$quoted_redirect_out" 'is under .github/workflows/' \
+    'the quoted redirect is classified as protected instead of merely unresolvable (issue #423 review F1)'
+
+attached_revspec_redirect_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt>.github/workflows/ci.yml' \
+    'worktree-boundary-attached-revspec-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$attached_revspec_redirect_out")" \
+    'an attached redirect is not discarded with its Git revspec operand (issue #423 review F2)'
+assert_contains "$attached_revspec_redirect_out" 'is under .github/workflows/' \
+    'the attached Git redirect yields its protected destination (issue #423 review F2)'
+
 revspec_unresolved_out=$(pre_input "$boundary_feature" \
     'git show HEAD:src/file.txt > missing:parent/out.txt' \
     'worktree-boundary-revspec-unresolved' | "$hooks/pre-tool-use.sh" 2>/dev/null)
