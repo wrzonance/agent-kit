@@ -103,6 +103,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | Environment, isolated worktree, Phase A/C review loop, adversarial receipt, human gate | `../review-remote-pr/SKILL.md` and its lazy references |
 | Provider plan before mutation | `../.shared/scripts/review-provider-config.sh` |
 | Draft discovery, explicit resumption, stack graph, stable queue | `scripts/pr-queue.sh` |
+| Owner-only authorization derived from the confirmed live queue | `scripts/authorize-queue.sh` |
 | Confirmed ready transition and provider capability action, and its `--observe` landed-review check | `scripts/review-transition.sh` |
 | CI/provider/finding evidence | `../review-remote-pr/scripts/gh-pr-state.sh` |
 | Canonical replies and bot-response settlement | `../review-remote-pr/scripts/thread-action.sh` |
@@ -141,7 +142,28 @@ user confirms the displayed provider plan (including any per-provider
 trigger/observe/disabled decision), verified dependency graph, and exact
 serial queue.
 
-After confirmation, write an owner-only authorization JSON file containing:
+After confirmation, derive the owner-only authorization JSON with
+`scripts/authorize-queue.sh`. Pass the same repository, merge plan or explicit
+PR selectors used for the displayed queue. The helper re-runs `pr-queue.sh`
+with JSON output and copies each head SHA and base from that verified forge
+state; it has no SHA or base arguments. For example, a confirmed non-merging
+queue with the default CodeRabbit action is recorded in one command:
+
+```bash
+"$agentkit/pr-to-green/scripts/authorize-queue.sh" \
+  --repo "$repo" --repo-root "$repo_root" --merge-plan "$merge_plan" \
+  --ready-transition --no-auto-merge \
+  --provider coderabbit:trigger:capability-default
+```
+
+Pass every displayed trigger-capable provider as
+`--provider NAME:ACTION:SOURCE`; when the capability plan has none, pass
+`--no-providers`. The ready-transition and auto-merge choices are mandatory
+arguments, so the helper never infers consent. For a confirmed merging queue,
+replace `--no-auto-merge` with `--auto-merge --merge-method METHOD` and one
+explicit `--delete-branch` or `--keep-branch` choice.
+
+The derived file contains:
 
 - `repository` and `readyTransition: true`;
 - `providers`, one record per displayed trigger-capable provider:
@@ -176,8 +198,10 @@ adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
-If Phase A changes the head, regenerate the queue and authorization evidence.
-Do not let earlier confirmation authorize a new SHA.
+If Phase A changes the head, re-display and reconfirm the advanced queue, then
+re-run the same `authorize-queue.sh` command. It atomically replaces stale
+head/base records with a fresh queue derivation. Do not let earlier
+confirmation authorize a new SHA.
 
 ### 3. Transition and consume provider state
 
