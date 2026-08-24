@@ -78,11 +78,14 @@ done
 mapfile -t entries < <(sed -n 's/^- `\$agentkit\/\([^`]*\.md\)` -- .*/\1/p' "$manifest")
 assert_eq "${#shipped[@]}" "${#entries[@]}" \
     'the manifest carries exactly one entry per shipped reference file'
+mapfile -t read_conditions < <(sed -n 's/^- `\$agentkit\/[^`]*\.md` -- .* | Read when: \([^ ].*\)$/\1/p' "$manifest")
+assert_eq "${#shipped[@]}" "${#read_conditions[@]}" \
+    'every manifest entry states when the reference must be read'
 
 # --- negative: an entry whose file does not exist ------------------------
 fixture=$tmp/missing-file
 stage_tree "$fixture"
-printf -- '- `$agentkit/.shared/never-shipped.md` -- a reference that does not exist\n' \
+printf -- '- `$agentkit/.shared/never-shipped.md` -- a reference that does not exist | Read when: testing a missing file\n' \
     >> "$fixture/references.md"
 run_lint "$fixture"
 assert_eq 1 "$LINT_RC" 'a manifest entry with no file on disk fails'
@@ -115,7 +118,7 @@ assert_contains "$LINT_OUT" '.shared/waiting.md' \
 # --- negative: structural manifest defects -------------------------------
 fixture=$tmp/duplicate
 stage_tree "$fixture"
-printf -- '- `$agentkit/.shared/wait-discipline.md` -- listed a second time\n' \
+printf -- '- `$agentkit/.shared/wait-discipline.md` -- listed a second time | Read when: testing a duplicate\n' \
     >> "$fixture/references.md"
 run_lint "$fixture"
 assert_eq 1 "$LINT_RC" 'a duplicated manifest entry fails'
@@ -123,10 +126,25 @@ assert_contains "$LINT_OUT" 'duplicate' 'the duplicate is named as such'
 
 fixture=$tmp/empty-purpose
 stage_tree "$fixture"
-sed -i 's|^- `\$agentkit/\.shared/wait-discipline\.md` -- .*|- `$agentkit/.shared/wait-discipline.md` -- |' \
+sed -i 's#^- `\$agentkit/\.shared/wait-discipline\.md` -- .*#- `$agentkit/.shared/wait-discipline.md` --  | Read when: testing an empty purpose#' \
     "$fixture/references.md"
 run_lint "$fixture"
 assert_eq 1 "$LINT_RC" 'an entry with no one-line purpose fails'
+
+fixture=$tmp/missing-read-condition
+stage_tree "$fixture"
+sed -i 's| \| Read when: .*$||' "$fixture/references.md"
+run_lint "$fixture"
+assert_eq 1 "$LINT_RC" 'an entry with no read-when condition fails'
+assert_contains "$LINT_OUT" 'Read when:' \
+    'the missing-condition violation names the required field'
+
+fixture=$tmp/empty-read-condition
+stage_tree "$fixture"
+sed -i 's#^\(- `\$agentkit/\.shared/wait-discipline\.md` -- .* | Read when:\) .*#\1 #' \
+    "$fixture/references.md"
+run_lint "$fixture"
+assert_eq 1 "$LINT_RC" 'an entry with an empty read-when condition fails'
 
 fixture=$tmp/malformed
 stage_tree "$fixture"
@@ -141,7 +159,7 @@ assert_contains "$LINT_OUT" 'malformed manifest entry' \
 # an agent following it leaves the skills tree entirely.
 fixture=$tmp/traversal
 stage_tree "$fixture"
-printf -- '- `$agentkit/../../etc/passwd.md` -- escapes the skills tree\n' \
+printf -- '- `$agentkit/../../etc/passwd.md` -- escapes the skills tree | Read when: testing traversal\n' \
     >> "$fixture/references.md"
 run_lint "$fixture"
 assert_eq 1 "$LINT_RC" 'an entry that escapes the skills tree fails'
@@ -172,7 +190,7 @@ assert_rc 0 'the helper/reference lint accepts the shipped manifest' \
     -- "$helper_lint" "$skills"
 fixture=$tmp/broken-link
 stage_tree "$fixture"
-printf -- '- `$agentkit/.shared/broken-link-target.md` -- an unresolvable link\n' \
+printf -- '- `$agentkit/.shared/broken-link-target.md` -- an unresolvable link | Read when: testing link integrity\n' \
     >> "$fixture/references.md"
 link_rc=0
 link_out=$("$helper_lint" "$fixture" 2>&1) || link_rc=$?

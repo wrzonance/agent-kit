@@ -21,13 +21,15 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
 **References are read once and batched.** Reference paths resolve: open `"$agentkit/<path>"`, and read
-`"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference file, read it in full
+`"$agentkit/references.md"` — every reference, its purpose, and its read-when condition — instead of searching. The manifest is not a preload list: match each condition against the actual execution path. When a step names a reference file, read it in full
 at that step — one batched read covering several files is ideal — and do not re-read it later
 in the run. Do not probe a reference's size before reading it (`wc -l`, `stat`, `head`):
 per-file sizing spends one root turn per file before any real work starts. One exception, and
 the only thing here that consumes a line count: a **first** read of a file over ~800 lines
 (this SKILL.md included) may take one bounded size probe, because that count decides whether a
 single-shot read is affordable at all.
+
+**Single issue, no chain: dispatch reference set.** Read the manifest, triage/selection rules, worker prompt, spawn contract, and six-step loop; exclude chain/serialization material and defer body/wait rules. **Review-phase references:** Do not preload review-phase references during dispatch or worker waits; read them when review reaches their condition, and read when uncertain.
 
 ## Flags
 
@@ -141,8 +143,6 @@ See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclo
 
 Announce which flags are active in the opening line, so the transcript records what was
 authorised rather than leaving it to be reconstructed later.
-
-**Review providers & human feedback:** follow-up loops handle CodeRabbit and `github-code-quality[bot]` per `review-remote-pr`'s provider rules — never issue a manual bot command. Human-authored reviews and comments (including feedback from the authenticated `gh` login — login equality is not agent ownership) use `review-remote-pr`'s per-item confirmation gate: surface each item with its exact proposed handling, act and reply only after explicit approval, never resolve the human's thread. Full provider table and recipes: [review-remote-pr/references/provider-rules.md](../review-remote-pr/references/provider-rules.md).
 
 ## Runtime and provider neutrality
 
@@ -471,7 +471,7 @@ the approval gate, not the reasoning that gate was there to check. Two workers e
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
 
-**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Classify each
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Classify each
 overlap first: only an **interface dependency** — one issue consumes code or contracts the
 other produces, or both mutate the same executable logic — becomes a chain edge; overlap
 confined to test files or prose does not serialize — run those in parallel and merge down

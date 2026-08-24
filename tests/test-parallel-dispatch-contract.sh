@@ -997,6 +997,23 @@ assert_contains "$normalized_text" 'this SKILL.md included' \
 assert_not_contains "$normalized_text" 'nothing in this skill consumes a line count' \
     'the skill no longer claims nothing consumes a line count while permitting a probe'
 
+# --- issue #427: reference reads follow the selected execution path ----------
+assert_contains "$normalized_text" 'Single issue, no chain: dispatch reference set' \
+    'the common single-issue path names its dispatch reference set explicitly'
+single_issue_reference_set=$(awk '
+    /Single issue, no chain: dispatch reference set/ { capture=1 }
+    capture { print }
+    capture && /Review-phase references/ { exit }
+' "$skill")
+assert_not_contains "$single_issue_reference_set" 'references/chains.md' \
+    'the single-issue no-chain dispatch set excludes chain material'
+assert_not_contains "$single_issue_reference_set" 'review-remote-pr/references/' \
+    'the dispatch set excludes review-phase references'
+assert_contains "$normalized_text" 'Do not preload review-phase references during dispatch' \
+    'review references remain gated until the review phase'
+assert_contains "$normalized_text" 'Read `references/chains.md` in full only when the selected set contains a chain' \
+    'chain material is gated on an actual selected chain'
+
 assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
 assert_contains "$text" 'cross-write-check.sh' \

@@ -40,13 +40,13 @@ if [[ ! -f $manifest ]]; then
 fi
 
 # Entry grammar, matching the manifest's own documented shape:
-#   - `$agentkit/<path>` -- <one-line purpose>
+#   - `$agentkit/<path>` -- <one-line purpose> | Read when: <condition>
 # `$agentkit` is the resolved skills tree, so <path> is simultaneously the
 # path relative to that tree and the form an agent can open without
 # reconstructing a prefix. A bare relative path would resolve only by accident
 # of where the manifest happens to sit.
 # shellcheck disable=SC2016  # $agentkit is literal manifest text, never expanded here
-readonly ENTRY_RE='^- `\$agentkit/([^`]+)` -- +([^ ].*)$'
+readonly ENTRY_RE='^- `\$agentkit/([^`]+)` -- +([^ ].*) [|] Read when: +([^ ].*)$'
 
 declare -A listed=()
 entries=0
@@ -65,7 +65,7 @@ while IFS= read -r line; do
     [[ $line == '- `$agentkit/'* ]] || continue
     entries=$((entries + 1))
     if [[ ! $line =~ $ENTRY_RE ]]; then
-        report "malformed manifest entry (expected '- \`\$agentkit/<path>\` -- <one-line purpose>'): $line"
+        report "malformed manifest entry (expected '- \`\$agentkit/<path>\` -- <one-line purpose> | Read when: <condition>'): $line"
         continue
     fi
     rel=${BASH_REMATCH[1]}
