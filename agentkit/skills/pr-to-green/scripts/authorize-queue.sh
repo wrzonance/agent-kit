@@ -11,10 +11,12 @@ QUEUE_HELPER=${AUTHORIZE_QUEUE_HELPER:-$SCRIPT_DIR/pr-queue.sh}
 repo=''
 repo_root=''
 merge_plan=''
+confirmed_queue_file=''
 ready_transition=0
 auto_merge_choice=''
 merge_method=''
 branch_choice=''
+no_providers=0
 declare -a providers=()
 declare -a prs=()
 
@@ -29,10 +31,12 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
        (--auto-merge --merge-method squash|merge|rebase
           (--delete-branch|--keep-branch) | --no-auto-merge)
        (--provider NAME:ACTION:SOURCE ... | --no-providers)
-       [--merge-plan FILE] [--pr N ...]
+       --confirmed-queue-file FILE [--merge-plan FILE] [--pr N ...]
 
 Derives .agent/pr-to-green-auth.json from fresh pr-queue.sh JSON. ACTION is
-trigger, observe, or disabled. No head SHA or base ref is accepted as input.
+trigger, observe, or disabled. FILE is the owner-only snapshot written by the
+displayed pr-queue.sh --write-confirmed-queue run. No head SHA or base ref is
+accepted as input.
 EOF
     exit "${1:-2}"
 }
@@ -48,6 +52,12 @@ while (($#)); do
             shift 2
             ;;
         --pr) (($# >= 2)) || usage; prs+=("$2"); shift 2 ;;
+        --confirmed-queue-file)
+            (($# >= 2)) || usage
+            [[ -z $confirmed_queue_file ]] || die 'only one confirmed queue file may be supplied'
+            confirmed_queue_file=$2
+            shift 2
+            ;;
         --ready-transition) ready_transition=1; shift ;;
         --auto-merge)
             [[ -z $auto_merge_choice ]] || die 'choose exactly one auto-merge mode'
@@ -72,7 +82,8 @@ while (($#)); do
             ;;
         --provider) (($# >= 2)) || usage; providers+=("$2"); shift 2 ;;
         --no-providers)
-            providers+=(__NONE__)
+            ((no_providers == 0)) || die '--no-providers may be passed only once'
+            no_providers=1
             shift
             ;;
         -h|--help) usage 0 ;;
@@ -88,6 +99,16 @@ done
 repo_root=$(cd -- "$repo_root" && pwd -P) || die 'could not resolve --repo-root'
 [[ -d $repo_root/.agent && ! -L $repo_root/.agent && -O $repo_root/.agent ]] ||
     die '.agent must be an owned directory, not a symlink'
+expected_confirmed_queue=$repo_root/.agent/pr-to-green-confirmed-queue.json
+[[ -n $confirmed_queue_file ]] || die '--confirmed-queue-file is required'
+[[ -f $confirmed_queue_file && ! -L $confirmed_queue_file && -O $confirmed_queue_file ]] ||
+    die 'confirmed queue file must be an owned regular file, not a symlink'
+confirmed_queue_file=$(realpath -- "$confirmed_queue_file") ||
+    die 'could not resolve --confirmed-queue-file'
+[[ $confirmed_queue_file == "$expected_confirmed_queue" ]] ||
+    die '--confirmed-queue-file must name .agent/pr-to-green-confirmed-queue.json under --repo-root'
+[[ $(stat -c '%a' "$confirmed_queue_file") == 600 ]] ||
+    die 'confirmed queue file must be owner-only (mode 0600)'
 ((ready_transition)) || die '--ready-transition must be passed explicitly'
 [[ -n $auto_merge_choice ]] || { usage; }
 
@@ -102,12 +123,11 @@ else
         die '--no-auto-merge cannot be combined with merge or branch-deletion options'
 fi
 
-((${#providers[@]} > 0)) ||
-    die 'pass each --provider NAME:ACTION:SOURCE or pass --no-providers explicitly'
-if ((${#providers[@]} > 1)); then
-    for provider in "${providers[@]}"; do
-        [[ $provider != __NONE__ ]] || die '--no-providers cannot be combined with --provider'
-    done
+if ((no_providers)); then
+    ((${#providers[@]} == 0)) || die '--no-providers cannot be combined with --provider'
+else
+    ((${#providers[@]} > 0)) ||
+        die 'pass each --provider NAME:ACTION:SOURCE or pass --no-providers explicitly'
 fi
 for pr in "${prs[@]}"; do
     [[ $pr =~ ^[1-9][0-9]*$ ]] || die "--pr expects a positive integer: $pr"
@@ -125,7 +145,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 : >"$work_dir/providers.jsonl"
-if [[ ${providers[0]} != __NONE__ ]]; then
+if ((no_providers == 0)); then
     declare -A seen_providers=()
     for provider in "${providers[@]}"; do
         IFS=: read -r name action source extra <<<"$provider"
@@ -159,6 +179,23 @@ jq -e '
     (.base | type) == "string" and (.base | length) > 0) and
   ((map(.pr) | unique | length) == length)
 ' "$work_dir/queue.json" >/dev/null 2>&1 || die 'queue helper returned malformed JSON'
+
+jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" '
+  type == "object" and (keys | sort) == ["queue","repository"] and
+  .repository == $repo and
+  (.queue | type) == "array" and (.queue | length) > 0 and
+  all(.queue[];
+    (keys | sort) == ["base","headSha","pr","state"] and
+    (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
+    (.state == "RUNNABLE" or .state == "WAITING_FOR_MERGE" or
+      .state == "RETARGET_REQUIRED" or .state == "BLOCKED" or
+      .state == "MERGEABLE_UNKNOWN") and
+    (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")) and
+    (.base | type) == "string" and (.base | length) > 0) and
+  ((.queue | map(.pr) | unique | length) == (.queue | length)) and
+  .queue == ($live[0] | map({pr,state,headSha:.sha,base}))
+' "$confirmed_queue_file" >/dev/null 2>&1 ||
+    die 'live queue differs from the displayed confirmation; redisplay and reconfirm before authorization'
 
 delete_branch=false
 [[ $branch_choice != delete ]] || delete_branch=true

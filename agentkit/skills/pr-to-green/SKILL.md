@@ -121,8 +121,11 @@ Establish the environment through review-remote-pr Step 0, then run
 `review-provider-config.sh` before any mutation. Retain its exact capability
 records; do not infer installed bots from checks or issue prose.
 
-Run `pr-queue.sh` with the persisted schema-v2 dispatch/merge plan when one was
-handed off by `parallel-issues`. Its `--dispatch-plan` and `--merge-plan`
+Run `pr-queue.sh --write-confirmed-queue --format table` with the persisted
+schema-v2 dispatch/merge plan when one was handed off by `parallel-issues`.
+The displayed rows and the owner-only
+`.agent/pr-to-green-confirmed-queue.json` snapshot come from that one queue
+derivation. Its `--dispatch-plan` and `--merge-plan`
 options are aliases for that same owner-only file before and after the
 ready-flip upgrade; this consumer requires the schema-2 stage. Without one, use forge derivation. Automatic
 discovery selects drafts. An explicitly named ready PR may resume an interrupted
@@ -142,14 +145,18 @@ serial queue.
 
 After confirmation, derive the owner-only authorization JSON with
 `scripts/authorize-queue.sh`. Pass the same repository, merge plan or explicit
-PR selectors used for the displayed queue. The helper re-runs `pr-queue.sh`
-with JSON output and copies each head SHA and base from that verified forge
-state; it has no SHA or base arguments. For example, a confirmed non-merging
-queue with the default CodeRabbit action is recorded in one command:
+PR selectors used for the displayed queue and the machine-written confirmed
+queue snapshot. The helper re-runs `pr-queue.sh` with JSON output, requires
+the live PR order/set, states, head SHAs, and bases to equal the displayed
+snapshot, then copies those fields from the fresh live result. It has no SHA
+or base arguments. Drift fails closed and requires redisplay/reconfirmation.
+For example, a confirmed non-merging queue with the default CodeRabbit action
+is recorded in one command:
 
 ```bash
 "$agentkit/pr-to-green/scripts/authorize-queue.sh" \
   --repo "$repo" --repo-root "$repo_root" --merge-plan "$merge_plan" \
+  --confirmed-queue-file "$repo_root/.agent/pr-to-green-confirmed-queue.json" \
   --ready-transition --no-auto-merge \
   --provider coderabbit:trigger:capability-default
 ```
@@ -196,10 +203,11 @@ adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
-If Phase A changes the head, re-display and reconfirm the advanced queue, then
-re-run the same `authorize-queue.sh` command. It atomically replaces stale
-head/base records with a fresh queue derivation. Do not let earlier
-confirmation authorize a new SHA.
+If Phase A changes the head, re-run the same displayed queue command with
+`pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
+re-run `authorize-queue.sh`. It atomically replaces stale head/base records
+only after the fresh queue exactly matches that newly confirmed snapshot. Do
+not let earlier confirmation authorize a new SHA.
 
 ### 3. Transition and consume provider state
 
