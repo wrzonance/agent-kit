@@ -41,7 +41,7 @@ case " $* " in
     *" pr edit "*) printf '%s\n' 'https://github.com/owner/repo/pull/7' ;;
     *" pr view "*)
         cat <<'JSON'
-{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}
+{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}
 JSON
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}' ;;
@@ -61,13 +61,41 @@ assert_contains "$log" 'pr view 7 --repo owner/repo' 'retarget re-reads PR metad
 assert_contains "$log" 'repos/owner/repo/compare/main...1111111111111111111111111111111111111111' \
     'retarget checks base-to-head ancestry'
 
+cat >"$tmp/gh-behind" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"parent","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[],"statusCheckRollup":[],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"behind","behind_by":3,"ahead_by":0}'
+        ;;
+    *" pr edit "*) printf '%s\n' 'edit must not run' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-behind"
+set +e
+behind_output=$(GH_LOG="$tmp/gh-behind.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-behind" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+behind_rc=$?
+set -e
+assert_eq '1' "$behind_rc" 'behind retarget refuses before mutation'
+assert_contains "$behind_output" 'behind_by=3' 'behind refusal reports the failed precondition'
+behind_log=$(<"$tmp/gh-behind.log")
+assert_not_contains "$behind_log" 'pr edit' 'behind retarget never edits the PR base'
+
 cat >"$tmp/gh-sha" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"repos/owner/repo/compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}'
@@ -104,9 +132,51 @@ empty_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-empty" bash "$advance
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 empty_rc=$?
 set -e
-assert_eq '1' "$empty_rc" 'retarget fails when no CI checks are reported'
+assert_eq '2' "$empty_rc" 'post-edit proof failure has the mutated exit status'
 assert_contains "$empty_output" 'statusCheckRollup is empty' \
     'empty CI failure names the missing evidence'
+assert_contains "$empty_output" 'applied base=main' \
+    'post-edit proof failure reports the applied base'
+
+cat >"$tmp/gh-edit-nonzero" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*)
+        [[ ${EDIT_APPLIES:-true} != true ]] || : >"$EDIT_STATE"
+        exit 19
+        ;;
+    *" pr view "*)
+        base=old-base
+        [[ ! -e $EDIT_STATE ]] || base=main
+        printf '{"number":7,"baseRefName":"%s","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[],"statusCheckRollup":[],"closingIssuesReferences":[]}\n' "$base"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-edit-nonzero"
+set +e
+edit_nonzero_output=$(EDIT_STATE="$tmp/edit-nonzero.state" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-edit-nonzero" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+edit_nonzero_rc=$?
+set -e
+assert_eq '2' "$edit_nonzero_rc" \
+    'a nonzero edit that applied the requested base reports mutation'
+assert_contains "$edit_nonzero_output" 'applied base=main' \
+    'ambiguous edit failure reports the live applied base'
+set +e
+edit_noop_output=$(EDIT_APPLIES=false EDIT_STATE="$tmp/edit-noop.state" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-edit-nonzero" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+edit_noop_rc=$?
+set -e
+assert_eq '1' "$edit_noop_rc" 'a nonzero edit with the old live base reports no mutation'
+assert_not_contains "$edit_noop_output" 'applied base=' \
+    'unapplied edit failure does not claim a requested base'
 
 cat >"$tmp/gh-stale" <<'EOF'
 #!/usr/bin/env bash
@@ -114,7 +184,10 @@ set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"old-base","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        printf '%s\n' '{"number":7,"baseRefName":"old-base","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
     *) exit 23 ;;
@@ -126,8 +199,10 @@ stale_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-stale" bash "$advance
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 stale_rc=$?
 set -e
-assert_eq '1' "$stale_rc" 'retarget fails when GitHub leaves the old base'
+assert_eq '2' "$stale_rc" 'retarget reports mutation when GitHub leaves the old base'
 assert_contains "$stale_output" 'baseRefName' 'stale base failure names the failed proof'
+assert_contains "$stale_output" 'requested=main' 'stale base failure names the requested base'
+assert_contains "$stale_output" 'actual=old-base' 'stale base failure names the live base'
 
 cat >"$tmp/gh-pending" <<'EOF'
 #!/usr/bin/env bash
@@ -148,7 +223,7 @@ pending_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pending" bash "$adv
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 pending_rc=$?
 set -e
-assert_eq '1' "$pending_rc" 'retarget fails when CI is stale or pending'
+assert_eq '2' "$pending_rc" 'retarget reports mutation when CI is stale or pending'
 assert_contains "$pending_output" 'CI' 'pending CI failure is explicit'
 
 cat >"$tmp/gh-old-approval" <<'EOF'
@@ -157,7 +232,7 @@ set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
@@ -170,7 +245,7 @@ approval_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-approval" bash
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 approval_rc=$?
 set -e
-assert_eq '1' "$approval_rc" 'retarget fails when approval is attached to an old head'
+assert_eq '2' "$approval_rc" 'retarget reports mutation when approval is attached to an old head'
 assert_contains "$approval_output" 'approval' 'stale approval remains a visible human judgment'
 
 cat >"$tmp/gh-no-link" <<'EOF'
@@ -179,7 +254,7 @@ set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[]}'
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
@@ -192,7 +267,7 @@ link_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-no-link" bash "$advanc
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 link_rc=$?
 set -e
-assert_eq '1' "$link_rc" 'retarget fails when closing linkage is absent'
+assert_eq '2' "$link_rc" 'retarget reports mutation when closing linkage is absent'
 assert_contains "$link_output" 'closingIssuesReferences' \
     'missing linkage failure names the machine proof'
 
@@ -208,7 +283,7 @@ set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2023-12-31T23:00:00Z","completedAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
@@ -221,11 +296,68 @@ prestale_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-prestale" bash "$a
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 prestale_rc=$?
 set -e
-assert_eq '1' "$prestale_rc" 'retarget refuses CI that predates the retarget on an unchanged head'
+assert_eq '2' "$prestale_rc" 'retarget reports mutation for pre-retarget CI on an unchanged head'
 assert_contains "$prestale_output" 'predates the retarget' \
     'the refusal names pre-retarget evidence as the cause'
 assert_not_contains "$prestale_output" 'retargeted pr #7' \
     'no success line is printed on pre-retarget evidence'
+
+cat >"$tmp/gh-old-check-start" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) exit 0 ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2023-12-31T23:55:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-old-check-start"
+set +e
+old_check_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-check-start" \
+    bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
+old_check_rc=$?
+set -e
+assert_eq '2' "$old_check_rc" 'a pre-retarget check remains stale after completing later'
+assert_contains "$old_check_output" 'predates the retarget' \
+    'CI freshness is classified by check origin, not completion'
+
+cat >"$tmp/gh-boundary-after-edit" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2024-01-01T00:15:00Z","completedAt":"2024-01-01T00:20:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *"/rate_limit"*)
+        if [[ -e $EDIT_STATE ]]; then
+            printf 'Date: Mon, 01 Jan 2024 00:10:00 GMT\n'
+        else
+            printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n'
+        fi
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-boundary-after-edit"
+set +e
+boundary_output=$(EDIT_STATE="$tmp/boundary-after-edit.state" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-boundary-after-edit" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+boundary_rc=$?
+set -e
+assert_eq '2' "$boundary_rc" 'approval before edit completion is stale'
+assert_contains "$boundary_output" 'current-head and post-retarget' \
+    'freshness boundary is captured only after the edit succeeds'
 
 # The same residue on the approval alone is a human judgment, not an auto-pass.
 cat >"$tmp/gh-preapproval" <<'EOF'
@@ -234,7 +366,7 @@ set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
@@ -247,7 +379,7 @@ preapproval_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-preapproval" ba
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 preapproval_rc=$?
 set -e
-assert_eq '1' "$preapproval_rc" 'retarget refuses an approval that predates the retarget'
+assert_eq '2' "$preapproval_rc" 'retarget reports mutation for an approval that predates the retarget'
 assert_contains "$preapproval_output" 'human judgment' \
     'the approval residue is reported as a human judgment, not inherited'
 
@@ -263,7 +395,7 @@ set -euo pipefail
 case " $* " in
     *" pr edit "*) exit 0 ;;
     *" pr view "*)
-        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}},{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}},{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
@@ -276,7 +408,7 @@ split_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-splitapproval" bash "
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 split_rc=$?
 set -e
-assert_eq '1' "$split_rc" 'a stale head approval plus a fresh approval of another commit is refused'
+assert_eq '2' "$split_rc" 'a post-edit split approval failure reports mutation'
 assert_contains "$split_output" 'current-head and post-retarget' \
     'the refusal names the conjunction that failed'
 assert_not_contains "$split_output" 'retargeted pr #7' \
