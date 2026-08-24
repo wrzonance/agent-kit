@@ -118,7 +118,21 @@ allowed. If you are changing it to make a failing check pass, fix the check."
     fi
 done
 
-[[ -n $command_line ]] || allow
+# File-path read tools have no shell command channel, so consult the contract
+# before the command-only guards return early. This is advisory only.
+if [[ -z $command_line ]]; then
+    if contract_line=$(guard_unresolved_instruction_read \
+        "$protect_root" "$input" "$cwd" "$command_line" "$tool_name") &&
+        guard_should_advise "$protect_root" "$session" unresolved-instruction-read; then
+        advise "This read is already answered by the environment contract: $contract_line"
+    fi
+    if [[ -n $ADVISORY_CONTEXT ]]; then
+        jq -nc --arg ctx "$ADVISORY_CONTEXT" \
+            '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$ctx}}'
+        exit 0
+    fi
+    allow
+fi
 
 # Work-destroying commands. Denied every time, deliberately: unlike every other
 # rule here, the second attempt is exactly the one that must also be refused.
@@ -201,6 +215,14 @@ if gh_body_reason=$(guard_gh_inline_body_reason "$command_line"); then
     if guard_should_advise "$protect_root" "$session" gh-inline-body; then
         advise "$gh_body_reason"
     fi
+fi
+
+# Run after every hard-denial branch so a refused compound command cannot
+# consume the once-per-session lesson without delivering it.
+if contract_line=$(guard_unresolved_instruction_read \
+    "$protect_root" "$input" "$cwd" "$command_line" "$tool_name") &&
+    guard_should_advise "$protect_root" "$session" unresolved-instruction-read; then
+    advise "This read is already answered by the environment contract: $contract_line"
 fi
 
 if [[ -n $ADVISORY_CONTEXT ]]; then

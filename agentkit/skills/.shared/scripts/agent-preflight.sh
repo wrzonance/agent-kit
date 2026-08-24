@@ -459,7 +459,8 @@ resolve_instruction_ref() {
 # AGENTS.md referenced instructions/workflow.md, instructions/github.md, etc.
 # and none of them existed in the checkout). Any relative, slash-qualified
 # *.md-looking token is a candidate reference; this makes no assumption about
-# the router's chosen directory name.
+# the router's chosen directory name. Surrounding Markdown, backticks, and @
+# sigils are deliberately not part of the match.
 router_references() {
     grep -oE '[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.md' -- "$1" 2>/dev/null | sort -u
 }
@@ -489,7 +490,10 @@ probe_instructions() {
             else
                 contains "$ref" "${unresolved[@]+"${unresolved[@]}"}" || unresolved+=("$ref")
             fi
-        done < <(router_references "$WORKTREE/$f" | head -n 24)
+        # Do not cap extraction here: the final join_capped report is the
+        # bounded surface and explicitly says how many references it omitted.
+        # An earlier head silently made every later reference look nonexistent.
+        done < <(router_references "$WORKTREE/$f")
     done
 
     # Per-directory instruction files: regular, non-symlink AGENTS.md/CLAUDE.md,

@@ -448,6 +448,13 @@ content_input() {
           tool_input:{file_path:"notes.md",command:$content}}'
 }
 
+read_input() {
+    jq -nc --arg cwd "$1" --arg path "$2" --arg sid "${3:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:"Read",tool_use_id:"t",transcript_path:null,
+          tool_input:{file_path:$path}}'
+}
+
 repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 printf '{"schemaVersion":1,"project":{"id":"PVT_x","number":7}}\n' > "$repo/.agent/board.json"
@@ -464,6 +471,36 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # The override sentence is load-bearing, not decorative. Denied once WITHOUT it,
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
+
+# --- PreToolUse: unresolved instruction reads are answered by the contract --
+unresolved_repo=$(make_repo)
+unresolved_line='instructions= root=AGENTS.md files=AGENTS.md unresolved=instructions/missing.md,instructions/other.md'
+printf '%s\n' "$unresolved_line" > "$unresolved_repo/.agent/env-contract.txt"
+unresolved_sid=$(fresh_sid)
+out=$(pre_input "$unresolved_repo" "sed -n '1,80p' instructions/missing.md" "$unresolved_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a contract-listed unresolved read remains allowed'
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'the unresolved-read advisory names the authoritative contract line'
+out=$(pre_input "$unresolved_repo" 'cat instructions/other.md' "$unresolved_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'the unresolved-read advisory fires once per session'
+
+out=$(read_input "$unresolved_repo" "$unresolved_repo/instructions/missing.md" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a file-path read tool receives the same unresolved-read advisory'
+
+quiet_repo=$(make_repo)
+printf 'instructions= root=none files=none unresolved=none\n' > "$quiet_repo/.agent/env-contract.txt"
+out=$(pre_input "$quiet_repo" 'cat instructions/missing.md' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'unresolved=none adds no advisory output'
+out=$(pre_input "$unresolved_repo" 'cat README.md' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'an unrelated read adds no unresolved-path advisory'
+out=$(pre_input "$unresolved_repo" 'grep instructions/missing.md README.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an unresolved path used only as a search pattern is not treated as a read target'
 
 # --- PreToolUse: out-of-tree walkers advise; a $HOME sweep denies once -----
 scope_repo=$(make_repo)
