@@ -61,6 +61,23 @@ if ((validate_only)); then
         (startswith("/") | not) and (contains("\\") | not) and
         (test("[\\r\\n]") | not) and
         all(split("/")[]; . != "" and . != "." and . != "..");
+      def pair:
+        if type != "object" then false else
+          ((.issues | type) == "array" and (.issues | length) == 2) and
+          all(.issues[]; uint) and (.issues[0] != .issues[1]) and
+          ((.overlap | type) == "array" and (.overlap | length) > 0) and
+          all(.overlap[]; path)
+        end;
+      def revision:
+        if type != "object" then false else
+          ((.reason | type) == "string" and (.reason | test("[^[:space:]]"))) and
+          ((has("issues") | not) or
+            (((.issues | type) == "array" and (.issues | length) > 0) and
+              all(.issues[]; uint))) and
+          ((has("paths") | not) or
+            (((.paths | type) == "array" and (.paths | length) > 0) and
+              all(.paths[]; path)))
+        end;
       type == "object" and .schemaVersion == 1 and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
@@ -71,7 +88,9 @@ if ((validate_only)); then
       ((.entries | map(.issue) | unique | length) == (.entries | length)) and
       ((.conflictMap | type) == "object") and
       ((.conflictMap.pairs | type) == "array") and
-      ((.conflictMap.revisions | type) == "array")
+      all(.conflictMap.pairs[]; pair) and
+      ((.conflictMap.revisions | type) == "array") and
+      all(.conflictMap.revisions[]; revision)
     ' "$dispatch_plan" >/dev/null 2>&1 ||
         die 'dispatch plan is invalid: expected schemaVersion 1 with entries and conflictMap'
     printf 'dispatch-plan=%s schemaVersion=1 valid\n' "$dispatch_plan"
