@@ -123,7 +123,9 @@ Establish the environment through review-remote-pr Step 0, then run
 records; do not infer installed bots from checks or issue prose.
 
 Run `pr-queue.sh` with the persisted schema-v2 dispatch/merge plan when one was
-handed off by `parallel-issues`. Without one, use forge derivation. Automatic
+handed off by `parallel-issues`. Its `--dispatch-plan` and `--merge-plan`
+options are aliases for that same owner-only file before and after the
+ready-flip upgrade; this consumer requires the schema-2 stage. Without one, use forge derivation. Automatic
 discovery selects drafts. An explicitly named ready PR may resume an interrupted
 run. The queue helper reports `RUNNABLE`, `WAITING_FOR_MERGE`,
 `RETARGET_REQUIRED`, or `BLOCKED` and fails closed on ambiguous topology.

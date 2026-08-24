@@ -12,9 +12,9 @@ description: >-
 
 # Parallel Issues
 
-Before any multi-line recipe here or in its references, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full and use its explicit `bash -c` boundary. Shell state does not persist between tool calls, so each Bash block re-derives the facts it needs.
+Read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) before recipes; use its `bash -c` boundary and self-contained blocks.
 
-Run multiple independent GitHub issues simultaneously: detect Project (v2) membership, validate against ADRs and closed PRs, analyze conflicts, brainstorm each issue with the user (or skip brainstorm for autonomous handoff via `--no-brainstorm`), create isolated worktrees, dispatch **one Codex issue lead per worktree** with the same ultracode design-first gates as Claude's Workflow harness, then drive parallel **draft-phase** loops (CI, conflicts, then ONE end-of-draft adversarial cross-review) on each PR. PRs stay drafts until the USER marks them ready; this skill never triggers a provider review. Never post `@coderabbitai review`/`full review`.
+Coordinate independent issues through Project validation, conflict analysis, user brainstorm (unless `--no-brainstorm`), isolated worktrees, one issue lead per worktree, and parallel draft-phase CI/conflict/review loops. PRs remain drafts until the user marks them ready. Never trigger provider review or post `@coderabbitai review`/`full review`.
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
@@ -450,7 +450,7 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan. Each entry gets a non-empty
+Before dispatch, write the root-owned dispatch plan; validate via `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only` and require `schemaVersion=1 valid`. Each entry gets a non-empty
 repository-relative `predictedWriteSet` (paths/globs), `conflictMap.pairs`, and reasoned
 revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
 [references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
@@ -721,19 +721,8 @@ done
 "$cross_write" "${cross_snapshot_args[@]}"
 ```
 
-The root re-checks that same snapshot immediately after each worker completion and once again
-before handoff. A check that returns `cross-write=none` is clean. A `cross-write=` line is a named
-incident: its mtime is compared with the worker's completion window, its bytes are compared with
-the matching worker worktree, and the output must be recorded before the next phase. Exact branch
-duplicates attributed to that mtime window may be disposed explicitly with
-`--dispose-duplicates`, which restores a tracked root path from `HEAD` (or removes an untracked
-duplicate); divergent or outside-window bytes are always surfaced for an explicit human
-disposition. Never fold dirt first observed inside a dispatch window into the
-handoff's "unrelated local changes" list.
-
-The snapshot also captures the root's **refs** (HEAD's ref/SHA, every branch SHA): `reset --soft`/
-`checkout`/`branch -f` move a ref with no file write, so Collect also checks reflog growth since
-the snapshot and names it `cross-ref=type=…` (`restored=yes` covers moved-then-restored).
+Re-run after each completion and at handoff. Preserve named `cross-write=`/`cross-ref=` incidents; `cross-write=none` is clean and `--dispose-duplicates` handles only exact in-window duplicates.
+Never fold dirt first observed inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs explicit disposition. Ref snapshots catch reflog-only moves.
 
 ```bash
 collect_rc=0
@@ -752,35 +741,47 @@ case "$collect_rc" in
 esac
 ```
 
-At handoff, repeat the Collect check for every dispatched worker (or one equivalent batched
-check) and preserve each `cross-write=` line with the run evidence. A divergent incident blocks
-the clean-handoff claim until the root names its disposition; it is never attributed to the
-human merely because the root checkout is dirty.
+Divergence blocks clean handoff pending root disposition; root dirt is never the human's.
 
 ### Compose the issue-lead prompt
 
-Per-issue prompt: helper fills inputs. **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
+Per-issue prompt: **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
-prompt_dir="$worktree/.agent/prompts"
-mkdir -p -- "$prompt_dir" || exit 1
-prompt_file="$prompt_dir/issue-$issue_number-lead.md"
-# worker_effort is override or AGENT_WORKER_EFFORT default.
-# write_set_globs contains predictedWriteSet globs, one per flag --
-# REQUIRED for an issue lead; never CSV (comma-bearing globs split).
-compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --output "$prompt_file")
+compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"; prompt_dir="$worktree/.agent/prompts"; mkdir -p -- "$prompt_dir" || exit 1; prompt_file="$prompt_dir/issue-$issue_number-lead.md"
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
+# write_set_globs is REQUIRED for an issue lead: one glob per flag, never CSV.
+compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --dispatch-plan "$dispatch_plan" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
-if ! "$compose_script" "${compose_args[@]}"; then
-    exit 1
-fi
+compose_output=$("$compose_script" "${compose_args[@]}") || exit 1
 chmod 600 -- "$prompt_file" || exit 1
-printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' \
-    "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
+spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ -n $spec_verification && $spec_verification != *$'\n'* ]] || exit 1
+spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
+plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
+plan_sha=${spec_verification_plan##* plan-sha=}; [[ $plan_sha =~ ^[0-9a-f]{64}$ ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
+if [[ $plan_update != none ]]; then
+    [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
+    chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
+fi
+[[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
+declare -A dispatch_verification_reports
+dispatch_verification_reports["$issue_number"]=$spec_verification
+persist_dispatch_verification_report() {
+    local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
+    [[ $issue_number =~ ^[0-9]+$ ]] || return 1; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
+    chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"; dispatch_report_tmp=$(mktemp "$dispatch_reports_dir/.issue-$issue_number.XXXXXX") || return 1
+    if ! { chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
+        rm -f -- "$dispatch_report_tmp"; return 1
+    fi
+    [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1
+}
+persist_dispatch_verification_report || exit 1
+printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${dispatch_verification_reports["$issue_number"]}" "$spec_verification_plan"
+printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 ```
 
-It prints a path and metadata digest (bytes, issue, write set), never the body — the worker's to read. It lands in the worker's excluded `.agent/` tree, surviving a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site. It also prints one `spec-verification=` line naming the spec verification steps no declared command covers; record a non-zero `uncovered` on that issue's dispatch-plan entry as `uncoveredVerification` before you spawn, so the gap is disclosed at dispatch instead of reconciled mid-implementation.
+Composer publishes once; root installs and verifies its hashed `uncoveredVerification` candidate before spawn. Store reports; `classification=majority-uncovered` is conspicuous. Coverage never blocks.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
@@ -1065,7 +1066,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-At handoff, persist the merge plan with `scripts/write-merge-plan.sh`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
@@ -1097,41 +1098,34 @@ If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll revi
 
 ## Do NOT Delete Worktrees
 
-**Never run `git worktree remove` at end of this skill.** Worktrees stay alive after PRs open and even after Phase 3 completes:
-- Reviewer (human) feedback after CodeRabbit may demand more local changes
-- CI may flake or require re-runs requiring local iteration
-- User may want to inspect/diff state before approving merge
+**Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff** naming each preserved worktree with its PR (or BLOCKED reason), the
-`.agent/` evidence it keeps (`env-contract.txt`, `logs/`), next steps (merge ✅ PRs, iterate
-in a BLOCKED worktree, re-run `/review-remote-pr NNN` after human feedback), and the cleanup
-recipe (`git worktree remove` + `git branch -d` + `git worktree prune`) labelled explicitly
-as ONLY-after-merge-AND-user-confirmation. Cleanup runs only when the user explicitly asks
-for it after merge.
+**Print a handoff** with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
+```bash
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
+[[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob
+dispatch_report_files=("$dispatch_reports_dir"/issue-*.report); ((${#dispatch_report_files[@]} > 0)) || exit 1
+for dispatch_report in "$dispatch_reports_dir"/issue-*.report; do
+    [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || exit 1; mapfile -t dispatch_report_lines < "$dispatch_report"
+    ((${#dispatch_report_lines[@]} == 1)) && [[ ${dispatch_report_lines[0]} == 'spec-verification= '* ]] || exit 1
+    printf '%s\n' "${dispatch_report_lines[0]}"
+done
+shopt -u nullglob
+```
+Cleanup requires user request after merge.
 
 ## Common Mistakes
 
-Each gate above states its own failure mode where it binds — see Step 0 (re-probing), Step 2
-(board/prior-art), Step 2b (dispatching a SKIP), Step 3/3-auto-serialize (skipping conflict
-analysis or chain ordering), Step 4 (parallel brainstorm), Phase 2 dispatch (idle slots, two
-writers, model override), Phase 3 (ready-flip, provider triggers, human-review
-confirmation). Cross-cutting classes of mistake have their detailed fix in the reference
-that owns them: model/spawn/degraded-path mistakes in
-[.shared/spawn-contract.md](../.shared/spawn-contract.md), six-step-loop skips in
-[.shared/six-step-loop.md](../.shared/six-step-loop.md), wait/poll mistakes in
-[.shared/wait-discipline.md](../.shared/wait-discipline.md), verification-cache mistakes
-in [references/trust-and-fencing.md](references/trust-and-fencing.md), and chain
-mistakes in [references/chains.md](references/chains.md). Provider/human-feedback mistakes
-(bot commands, resolving human threads, Code Quality dismissal) are owned by
-[review-remote-pr/references/provider-rules.md](../review-remote-pr/references/provider-rules.md).
+Gate-local failures are documented where they bind. Cross-cutting rules live in
+[spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md),
+[wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md),
+[chains](references/chains.md), and [provider-rules](../review-remote-pr/references/provider-rules.md).
 
 ## Limits
 
-- Max 10 issues. Issue concurrency is runtime-advertised. Include the root in the configured cap, queue overflow issues, and refill slots as they free; if the cap is unavailable, do not dispatch until the runtime owner supplies it.
+- Max 10 issues. Include root in the runtime-advertised concurrency cap; queue/refill overflow, and do not dispatch without a cap.
 - Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
-- Invoking this skill is explicit multi-agent opt-in for the issue leads. Only this root orchestrator
-  can spawn; issue leads cannot spawn helpers of their own.
-- Requires GitHub remote (`gh` CLI) with Projects v2 access: OAuth needs `read:project`/`project`; the fleet App needs `Projects: write`. Step 0 surfaces credential state before a move fails.
-- Requires the shared helpers under `${CODEX_HOME:-$HOME/.codex}/skills/.shared/scripts/` (`agent-preflight.sh`, `agent-run.sh`, `worktree-commit.sh`), the board helper under `parallel-issues/scripts/`, and `review-remote-pr/scripts/gh-pr-state.sh` for PR state. `jq` is required by the board and PR helpers
-- Works on any repo with `AGENTS.md`, `CLAUDE.md`, or equivalent local instructions and a `main` or `master` branch
-- Review timing is repository/provider configuration — polls in Step 3d are for observing findings landing, and silence is an observed state, not a trigger decision
+- Invocation opts into issue leads; only root spawns.
+- Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
+- Requires local instructions and a `main` or `master` branch.
+- Step 3d polls observe provider-configured review timing; silence is observed state, not a trigger.
