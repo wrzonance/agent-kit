@@ -2406,6 +2406,71 @@ assert_eq 'deny' "$(decision "$boundary_alias_out")" \
 assert_contains "$boundary_alias_out" "$boundary_feature/src/file.txt" \
     'external-alias denial supplies the contracted worktree correction'
 
+# Git object names are read operands, not paths the command writes. A redirect
+# makes the segment write-shaped, but must not turn a <rev>:<path> or peeled
+# <rev>^{tree} operand into a candidate write target (issue #423).
+revspec_id=0
+for revspec_read in \
+    'git show HEAD:src/file.txt' \
+    'git cat-file blob HEAD:src/file.txt' \
+    'git diff HEAD:.github/workflows/ci.yml' \
+    'git show HEAD^{tree}'; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a Git revspec read is not mistaken for a write target (issue #423): $revspec_read"
+done
+
+# Quoted Git object names may contain spaces in their path component. They are
+# still one read operand, including when a fragment looks like a path whose
+# parent cannot be resolved at the contracted-worktree boundary.
+for quoted_revspec_read in \
+    "git show 'HEAD:src/file with missing-parent/child.txt'" \
+    "git cat-file blob 'HEAD:src/file with missing-parent/child.txt'"; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$quoted_revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-quoted-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a quoted-space Git revspec remains one read operand (issue #423 review): $quoted_revspec_read"
+done
+
+# Filtering read operands must not weaken either real write-target check. A
+# protected redirect still refuses, as does an output whose parent cannot be
+# securely resolved inside the contracted worktree.
+mkdir -p "$boundary_feature/.github/workflows"
+revspec_protected_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > .github/workflows/ci.yml' \
+    'worktree-boundary-revspec-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_protected_out")" \
+    'a Git revspec read cannot hide a protected redirect target (issue #423)'
+
+quoted_redirect_out=$(pre_input "$boundary_feature" \
+    'printf x >".github/workflows/ci.yml"' \
+    'worktree-boundary-quoted-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$quoted_redirect_out")" \
+    'a no-space quoted redirect still exposes its protected target (issue #423 review F1)'
+assert_contains "$quoted_redirect_out" 'is under .github/workflows/' \
+    'the quoted redirect is classified as protected instead of merely unresolvable (issue #423 review F1)'
+
+attached_revspec_redirect_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt>.github/workflows/ci.yml' \
+    'worktree-boundary-attached-revspec-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$attached_revspec_redirect_out")" \
+    'an attached redirect is not discarded with its Git revspec operand (issue #423 review F2)'
+assert_contains "$attached_revspec_redirect_out" 'is under .github/workflows/' \
+    'the attached Git redirect yields its protected destination (issue #423 review F2)'
+
+revspec_unresolved_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > missing:parent/out.txt' \
+    'worktree-boundary-revspec-unresolved' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_unresolved_out")" \
+    'a Git revspec read cannot hide an unresolvable redirect target (issue #423)'
+assert_contains "$revspec_unresolved_out" 'could not securely resolve write target' \
+    'the unresolvable redirect still fails closed at the contracted boundary (issue #423)'
+
 # 4. A leading `NAME=value` shell-variable assignment is never a write target.
 # `agentkit=/home/.../skills` tokenized out of the whole command line used to
 # be handed to the worktree-boundary guard as if it were a path, which then
