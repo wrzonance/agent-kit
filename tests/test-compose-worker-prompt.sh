@@ -107,6 +107,27 @@ assert_eq \
     "$majority_uncovered_report" \
     'majority-uncovered verification is distinguishable at a glance'
 
+late_uncovered_spec=$'## Verification\n'
+for _step in {1..12}; do
+    late_uncovered_spec+=$'- `tools/verify`\n'
+done
+late_uncovered_spec+=$'- `tools/not-declared`\n'
+late_uncovered_plan="$tmp/late-uncovered-verification.json"
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"]}]}' \
+    > "$late_uncovered_plan"
+late_uncovered_output=$(compose_verification_report late-uncovered "$late_uncovered_spec" "$late_uncovered_plan")
+assert_contains "$late_uncovered_output" \
+    'spec-verification= issue=136 steps=13 covered=12 uncovered=1 uncovered-steps=13 coverage=12/13 classification=partially-covered' \
+    'coverage assessment includes an uncovered step beyond the rendered prompt limit'
+assert_eq '[13]' \
+    "$(jq -c '.entries[0].uncoveredVerification' "$repo/.agent/late-uncovered-prompt.md.dispatch-plan-update")" \
+    'the staged plan records the exact uncovered step beyond the prompt limit'
+late_uncovered_prompt=$(<"$repo/.agent/late-uncovered-prompt.md")
+assert_contains "$late_uncovered_prompt" 'this list stops at 12 steps' \
+    'complete coverage assessment preserves the prompt correspondence bound'
+assert_not_contains "$late_uncovered_prompt" 'spec verification step 13 ' \
+    'the thirteenth step is assessed without expanding the rendered correspondence'
+
 missing_record_plan="$tmp/missing-uncovered-verification.json"
 printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"]}]}' \
     > "$missing_record_plan"

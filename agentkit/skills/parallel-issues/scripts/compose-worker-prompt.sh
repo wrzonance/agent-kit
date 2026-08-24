@@ -527,8 +527,8 @@ emit_write_set() {
 # Like ci-gap.sh, this is a prompt to think, not an oracle: the comparison is
 # textual, it reports instead of failing, and a step it cannot cover is named
 # rather than dropped.
-SPEC_STEP_LIMIT=12
-spec_steps_truncated=0
+SPEC_STEP_RENDER_LIMIT=12
+spec_step_render_truncated=0
 declare -a spec_steps=()
 declare -a spec_step_commands=()
 declare -a spec_uncovered_steps=()
@@ -586,14 +586,6 @@ extract_spec_steps() {
             continue
         fi
         ((in_section)) || continue
-        # A bounded list: an issue body is external text, and an unbounded scan
-        # of it becomes unbounded prompt weight. The bound is disclosed rather
-        # than applied silently -- a truncated list that reads as complete is
-        # the same defect as dropping an uncovered step.
-        if ((${#spec_steps[@]} >= SPEC_STEP_LIMIT)); then
-            spec_steps_truncated=1
-            return 0
-        fi
         candidate=''
         if ((in_fence)); then
             # Inside a code block every non-blank line is a command line.
@@ -619,6 +611,13 @@ extract_spec_steps() {
         candidate=${candidate%"${candidate##*[![:space:]]}"}
         [[ -n $candidate ]] || continue
         spec_steps+=("$candidate")
+        # Coverage and the dispatch-plan record use every extracted step. Only
+        # the generated correspondence is capped: the complete issue bytes are
+        # already rendered once inside ## Spec, so repeating every index would
+        # add prompt weight without improving coverage accuracy.
+        if ((${#spec_steps[@]} > SPEC_STEP_RENDER_LIMIT)); then
+            spec_step_render_truncated=1
+        fi
     done < "$file"
     return 0
 }
@@ -759,6 +758,7 @@ emit_spec_command_precedence() {
     local index number command helper_path
     helper_path=$(shell_quote "$shared_path/agent-run.sh")
     for index in "${!spec_steps[@]}"; do
+        ((index < SPEC_STEP_RENDER_LIMIT)) || break
         number=$((index + 1))
         command=${spec_step_commands[$index]}
         if [[ -n $command ]]; then
@@ -769,9 +769,9 @@ emit_spec_command_precedence() {
                 "$number"
         fi
     done
-    if ((spec_steps_truncated)); then
+    if ((spec_step_render_truncated)); then
         printf -- '- this list stops at %d steps: the spec enumerates more. Read the rest inside `## Spec`, satisfy each through a declared command, and surface any the declared commands do not cover.\n' \
-            "$SPEC_STEP_LIMIT"
+            "$SPEC_STEP_RENDER_LIMIT"
     fi
 }
 
@@ -1032,6 +1032,6 @@ else
             "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification"
         ((dispatch_plan_supplied == 0)) || printf 'spec-verification-plan= issue=%s status=%s expected-uncovered=%s update=%s plan-sha=%s\n' \
             "$issue" "$spec_plan_record_status" "$spec_expected_uncovered" "$spec_plan_update_status" "$spec_plan_sha"
-        ((spec_steps_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_LIMIT"
+        ((spec_step_render_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_RENDER_LIMIT"
     fi
 fi
