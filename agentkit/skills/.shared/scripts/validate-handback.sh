@@ -195,8 +195,10 @@ def read_dispatch_plan(path, issue):
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         unavailable(f"dispatch plan is unreadable or invalid JSON: {error}")
-    if not isinstance(document, dict) or document.get("schemaVersion") != 1:
-        unavailable("dispatch plan must be an object with schemaVersion 1")
+    schema_version = document.get("schemaVersion") if isinstance(document, dict) else None
+    if not isinstance(document, dict) or isinstance(schema_version, bool) \
+            or schema_version not in (1, 2):
+        unavailable("dispatch plan must be an object with schemaVersion 1 or 2")
 
     entries = document.get("entries")
     if not isinstance(entries, list) or not entries:
