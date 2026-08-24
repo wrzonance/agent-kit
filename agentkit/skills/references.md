@@ -29,6 +29,7 @@ one per line, checked by that gate:
 ## Shared policy (`.shared/`) — pasted verbatim into worker prompts
 
 - `$agentkit/.shared/github-body-policy.md` -- how every `gh` body must reach the forge: through a file, never an inline string, with body bytes kept literal | Read when: immediately before the run's first GitHub body mutation
+- `$agentkit/.shared/shell-portability.md` -- the explicit Bash boundary for agent-composed recipes and the zsh, nested-quoting, and stdin hazards it prevents | Read when: before running the first multi-line shell recipe in a skill or companion reference
 - `$agentkit/.shared/six-step-loop.md` -- the six-step ultracode loop every code-bearing change follows, its reporting format, and the Review/Finish gates after it | Read when: before composing or validating an implementation-worker dispatch
 - `$agentkit/.shared/spawn-contract.md` -- the implementation-worker spawn contract: model/effort selection, the exact spawn call shape, and the degraded no-spawn path | Read when: before the first implementation-worker dispatch or degraded self-implementation
 - `$agentkit/.shared/wait-discipline.md` -- the wait/polling contract: no model turn spent waiting, named bounds, and the durable state to inspect after a completion | Read when: immediately before the first bounded wait or poll

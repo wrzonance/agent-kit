@@ -12,9 +12,7 @@ description: >-
 
 # Parallel Issues
 
-Run this skill from Bash. Every Bash block below is self-contained: shell state does not
-persist between tool calls, so each block re-derives the repository, owner, and base branch
-it needs rather than relying on variables set by an earlier block.
+Before any multi-line recipe here or in its references, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full and use its explicit `bash -c` boundary. Shell state does not persist between tool calls, so each Bash block re-derives the facts it needs.
 
 Run multiple independent GitHub issues simultaneously: detect Project (v2) membership, validate against ADRs and closed PRs, analyze conflicts, brainstorm each issue with the user (or skip brainstorm for autonomous handoff via `--no-brainstorm`), create isolated worktrees, dispatch **one Codex issue lead per worktree** with the same ultracode design-first gates as Claude's Workflow harness, then drive parallel **draft-phase** loops (CI, conflicts, then ONE end-of-draft adversarial cross-review) on each PR. PRs stay drafts until the USER marks them ready; this skill never triggers a provider review. Never post `@coderabbitai review`/`full review`.
 

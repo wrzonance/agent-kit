@@ -24,6 +24,8 @@ Operator-facing recipes and reports use the resolved absolute helper path, never
 
 Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work, since a per-machine `.agent/config.env` simply is not present in a fresh clone or CI checkout), then run the resolved `agent-run.sh --cmd <declared name>`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
 
+Before running Step 0, execute its fenced recipe through an explicit `bash -c` boundary; that bootstrap is what discovers the shared reference path. After Step 0 resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full before any later multi-line recipe and use its documented boundary.
+
 ---
 
 ## Step 0 — resolve the tree once per session

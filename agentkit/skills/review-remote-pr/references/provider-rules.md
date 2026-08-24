@@ -400,6 +400,8 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 
 ## Pitfalls
 
+Shell-composition pitfalls are centralized in ["$agentkit/.shared/shell-portability.md"](../../.shared/shell-portability.md). Read it before running any multi-line recipe; its Bash boundary, zsh differences, Python quoting rule, and pipe-plus-heredoc stdin rule are intentionally not duplicated here.
+
 | Problem | Fix |
 |---|---|
 | `resolveReviewThread` returns NOT_FOUND | You passed REST comment ID, not GraphQL thread node ID (`PRRT_...`). Fetch thread IDs via GraphQL first. |
@@ -427,5 +429,3 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 | Backticks in a comment body get command-substituted | ``-f body="Fixed in `abc1234`."`` is a double-quoted shell string, so the shell runs `abc1234` as a command and posts `Fixed in .` — the SHA vanishes silently. Never interpolate a body into a shell string. Write it to a file with a **quoted** heredoc (`<<'EOF'`) and inject varying values with `printf` arguments, then post it with `gh-comment.sh --body-file`. |
 | Posted reply body doesn't match intended text | Post through `gh-comment.sh`: it sends the file's exact bytes, re-fetches the stored comment, and `cmp`s them, printing a unified diff on mismatch. Resolve or dismiss only when it printed a stdout line AND exited `0`. |
 | Reply to comment returns 404 | URL must include PR number: `repos/$REPO/pulls/$PR/comments/$COMMENT_ID/replies`. The shorter form without `$PR` returns 404. |
-| `python3 -c "..."` fails with `unmatched "` | zsh breaks on double-quoted multi-line python. Never use `python3 -c "..."` for multi-line scripts; write the script to a file first, then run it. |
-| `cmd \| python3 << 'EOF'` SyntaxError | Pipe and heredoc both claim stdin — the shell concatenates them and Python sees the piped bytes prepended to the script. Always write the output to a file first (`cmd > file.json`), then `python3 << 'EOF'` reading the file. |
