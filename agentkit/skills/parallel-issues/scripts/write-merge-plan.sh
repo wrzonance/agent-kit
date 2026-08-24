@@ -60,7 +60,7 @@ if ((validate_only)); then
         type == "string" and length > 0 and
         (startswith("/") | not) and (contains("\\") | not) and
         (test("[\\r\\n]") | not) and
-        all(split("/").[]; . != "" and . != "." and . != "..");
+        all(split("/")[]; . != "" and . != "." and . != "..");
       type == "object" and .schemaVersion == 1 and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
