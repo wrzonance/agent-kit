@@ -427,17 +427,15 @@ referencing it) is documented in
 
 ### Step 2b: Choose the set yourself
 
-This step is for `/parallel-issues --yolo --fast-mode` invoked with no issue numbers — invoked
-with issue numbers and no thematic Backlog instruction, use them instead. **A thin Ready column
-is an invitation, not a blocker**: this procedure also runs for an attended automatic invocation
-whose eligible Ready set is thinner than the slot cap, and for a numbered invocation that names a
-thematic promotion instruction; `--fast-mode` proceeds, an attended run asks instead of refusing
-to start. Read
+Use this step for automatic selection or a numbered invocation with a thematic Backlog
+instruction; otherwise explicit issue numbers win. **A thin Ready column is an invitation, not a
+blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full before running it: `pick-issues.sh` answers the mechanical half of selection so an issue
-body cannot argue its way into a dispatch, but ranking Backlog candidates, the conflict analysis,
-the slot cap, and the batch board move are yours to apply in order. An empty selection is an
-answer; it is never a reason to widen the query, ignore a blocker, or reach for `Done`.
+in full: `pick-issues.sh` selects mechanically; it defines the remaining decisions. Emit its
+named `Selection funnel:` line exactly once after the final conflict and slot-cap decisions and
+before dispatch, including full, thin, and empty selections. It reconciles requested slots,
+eligible candidates, and dispatches, with one reason per non-dispatched candidate. An empty
+selection is an answer.
 
 ### Step 3: Conflict analysis (file-level)
 
