@@ -2339,9 +2339,15 @@ guard_shell_write_targets() {
         grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
             <<< "$write_probe" 2> /dev/null || continue
 
-        # Stage two: offer every token and let the protected list decide. A
-        # token that is not protected costs nothing; a target missed by
-        # clever parsing costs the whole guard. A LEADING `NAME=value`
+        # Stage two: offer tokens broadly and let the protected list decide,
+        # except for shell syntax and operands that are unambiguously data.
+        # Offered non-path tokens are not free: the contracted-worktree
+        # boundary deliberately refuses candidates whose parent cannot be
+        # resolved. Git's `<rev>:<path>` and peeled `<rev>^{type}` operands
+        # are the concrete case -- a redirect makes their segment write-shaped
+        # without making those read operands write targets (issue #423).
+        #
+        # A LEADING `NAME=value`
         # shell-variable assignment token is never a file target -- the same
         # assignment shape guard_heredoc_consumer_is_shell already recognises
         # and skips as an env prefix, not a path (issue #397, e.g. a leading
@@ -2355,8 +2361,30 @@ guard_shell_write_targets() {
         # since a bogus `key=value`-shaped "path" can itself mis-resolve
         # against the contracted-worktree boundary the way the original
         # assignment bug did.
-        local seen_command=0 value
+        local seen_command=0 command_is_git=no redirect_pending=0 redirect_target=0 value
+        local redirect_re='^[0-9]*>>?(.*)$'
         while IFS= read -r token; do
+            [[ -n $token ]] || continue
+
+            # Preserve enough shell redirect syntax to exempt only Git's read
+            # operands below, never the redirect destination itself. The
+            # lexer may emit `> file`, `>file`, or their fd/append forms.
+            redirect_target=0
+            if ((redirect_pending)); then
+                redirect_target=1
+                redirect_pending=0
+            elif [[ $token =~ $redirect_re ]]; then
+                token=${BASH_REMATCH[1]}
+                if [[ -z $token ]]; then
+                    redirect_pending=1
+                    continue
+                fi
+                redirect_target=1
+            fi
+            if ((redirect_target)); then
+                token=${token#\"}; token=${token%\"}
+                token=${token#\'}; token=${token%\'}
+            fi
             [[ -n $token ]] || continue
             if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
                 if ((seen_command)); then
@@ -2365,11 +2393,33 @@ guard_shell_write_targets() {
                 fi
                 continue
             fi
+            if ((!seen_command)); then
+                [[ $token == git ]] && command_is_git=yes
+            fi
             seen_command=1
+
+            # Shell permits a redirect to be attached to the preceding word.
+            # Split that destination out before classifying a Git object name;
+            # otherwise `HEAD:path>target` looks like one large revspec and the
+            # data-operand exemption drops the real target with it.
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token == *'>'* ]]; then
+                value=${token#*>}
+                value=${value#>}
+                value=${value#\"}; value=${value%\"}
+                value=${value#\'}; value=${value%\'}
+                [[ -n $value ]] && results+=("$value")
+                token=${token%%>*}
+                [[ -n $token ]] || continue
+            fi
             [[ $token == -* ]] && continue
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token != *'>'* ]] &&
+                { [[ $token =~ ^[^/:][^:]*:.+$ ]] ||
+                    [[ $token =~ \^\{(tree|commit|tag|object)\}$ ]]; }; then
+                continue
+            fi
             results+=("$token")
-        done < <(tr -s '[:space:]' '\n' <<< "$segment" 2> /dev/null |
-            sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+        done < <(guard_tokenize_words "$segment" |
+            sed -E 's/^[<]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
             sed -E 's/[;|&()]+$//')
     done <<< "$segments"
 

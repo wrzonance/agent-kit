@@ -47,6 +47,7 @@ worker_prompts_text=$(<"$worker_prompts")
 # table, the ledger/REST-first mandate, and pointers.
 triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 triage_and_selection_text=$(<"$triage_and_selection")
+normalized_triage_and_selection_text=$(tr '\n' ' ' <<<"$triage_and_selection_text" | tr -s '[:space:]' ' ')
 wait_discipline_text=$(<"$shared_wait_discipline")
 verification_isolation_text=$(<"$verification_isolation")
 reference_manifest_text=$(<"$reference_manifest")
@@ -224,6 +225,29 @@ assert_contains "$text" 'references/triage-and-selection.md' \
     'parallel skill points at the triage-and-selection reference'
 assert_contains "$text" 'references/worker-prompts.md' \
     'parallel skill points at the worker-prompts reference'
+assert_contains "$text" 'Selection funnel:' \
+    'parallel skill requires the named selection reconciliation line'
+assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
+    'selection reconciliation is emitted once at the dispatch boundary'
+assert_contains "$normalized_text" \
+    '`pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
+    'selection keeps judgment and board mutation root-owned'
+assert_contains "$triage_and_selection_text" \
+    'Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none' \
+    'selection reconciliation covers a full requested queue'
+assert_contains "$triage_and_selection_text" \
+    'Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]' \
+    'selection reconciliation covers a thin dispatch with per-candidate reasons'
+assert_contains "$triage_and_selection_text" \
+    'Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]' \
+    'selection reconciliation covers an empty dispatch'
+assert_contains "$normalized_triage_and_selection_text" 'Each considered candidate appears exactly once' \
+    'selection funnel requires mutually exclusive candidate outcomes'
+assert_contains "$normalized_triage_and_selection_text" \
+    'For automatic selection with no supplied count, `requested` is the effective Limits-section slot cap.' \
+    'automatic selection reports requested slots from the effective cap'
+assert_contains "$triage_and_selection_text" 'slot-cap' \
+    'selection funnel accounts for eligible candidates beyond the requested slots'
 assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
 assert_contains "$wait_discipline_text" 'A bounded wait must be silent until its terminal condition.' \
