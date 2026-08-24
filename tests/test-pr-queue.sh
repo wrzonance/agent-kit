@@ -11,6 +11,8 @@ TEST_NAME='pr queue'
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
+repo_root="$tmp/repo"
+mkdir -p "$repo_root/.agent"
 
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -149,6 +151,21 @@ assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
 json=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format json)
 assert_eq 'RUNNABLE' "$(jq -r '.[0].state' <<<"$json")" \
     'JSON output preserves the confirmed queue for authorization evidence'
+
+confirmed="$repo_root/.agent/pr-to-green-confirmed-queue.json"
+display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --format table)
+assert_contains "$display" '#11' 'the confirmation writer preserves the displayed queue'
+assert_eq '600' "$(stat -c '%a' "$confirmed")" \
+    'the displayed queue snapshot is owner-only'
+assert_eq '["queue","repository"]' "$(jq -c 'keys | sort' "$confirmed")" \
+    'the displayed queue snapshot has the exact narrow schema'
+assert_eq 'owner/repo' "$(jq -r '.repository' "$confirmed")" \
+    'the displayed queue snapshot is repository-bound'
+assert_eq '11:RUNNABLE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:main' \
+    "$(jq -r '.queue[0] | [.pr,.state,.headSha,.base] | join(":")' "$confirmed")" \
+    'the snapshot head and base come from the exact displayed queue derivation'
 
 : >"$tmp/gh.log"
 out=$(QUEUE_DRIFT=1 run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/drift.err")

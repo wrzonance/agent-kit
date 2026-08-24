@@ -26,8 +26,9 @@ transition grant, on receipt, before it is exercised.
 
 Step 1 passes `--auto-merge`, the confirmed `--merge-method`, and exactly one
 of `--delete-branch` or `--keep-branch` to `scripts/authorize-queue.sh`. The
-helper derives the queue fields live and adds the merge fields to the same
-owner-only authorization record:
+helper first matches the freshly derived queue against Step 1's owner-only
+displayed-queue snapshot, then derives the authorization queue fields live and
+adds the merge fields to the same owner-only record:
 
 ```json
 {"repository":"...", "readyTransition":true, "autoMerge":true,

@@ -13,6 +13,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 authorize="$root/agentkit/skills/pr-to-green/scripts/authorize-queue.sh"
 repo_root="$tmp/repo"
 mkdir -p "$repo_root/.agent"
+confirmed="$repo_root/.agent/pr-to-green-confirmed-queue.json"
 
 cat >"$tmp/pr-queue" <<'EOF'
 #!/usr/bin/env bash
@@ -34,11 +35,28 @@ run_authorize() {
     AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
         bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
         --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
+        --confirmed-queue-file "$confirmed" \
         --provider coderabbit:trigger:capability-default
+}
+
+write_confirmed() {
+    local sha=${1:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+    local include_second=${2:-yes}
+    jq -cn --arg sha "$sha" --arg includeSecond "$include_second" '{
+      repository:"owner/repo",
+      queue:([{
+        pr:14,state:"RUNNABLE",headSha:$sha,base:"main"
+      }] + (if $includeSecond == "yes" then [{
+        pr:15,state:"WAITING_FOR_MERGE",
+        headSha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",base:"feat/demo"
+      }] else [] end))
+    }' >"$confirmed"
+    chmod 600 "$confirmed"
 }
 
 : >"$tmp/merge-plan.json"
 : >"$tmp/queue.log"
+write_confirmed
 out=$(run_authorize)
 auth="$repo_root/.agent/pr-to-green-auth.json"
 assert_eq "authorization=$auth queue=2" "$out" \
@@ -61,16 +79,37 @@ assert_contains "$(cat "$tmp/queue.log")" \
 assert_contains "$(cat "$tmp/queue.log")" \
     '--format json' 'authorization consumes machine-readable live queue state'
 
+before_drift=$(sha256sum "$auth")
+head_drift_rc=0
+QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize \
+    >"$tmp/head-drift.out" 2>"$tmp/head-drift.err" || head_drift_rc=$?
+assert_eq '1' "$head_drift_rc" 'head drift after display blocks authorization'
+assert_contains "$(cat "$tmp/head-drift.err")" 'redisplay and reconfirm' \
+    'head drift names the required consent refresh'
+assert_eq "$before_drift" "$(sha256sum "$auth")" \
+    'head drift preserves the prior authorization byte-for-byte'
+
+write_confirmed cccccccccccccccccccccccccccccccccccccccc
 QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize >/dev/null
 assert_eq 'cccccccccccccccccccccccccccccccccccccccc' \
     "$(jq -r '.queue[0].headSha' "$auth")" \
-    'rerunning refreshes a stale head instead of preserving it'
+    'redisplaying and reconfirming lets a rerun derive the refreshed head live'
+
+write_confirmed cccccccccccccccccccccccccccccccccccccccc no
+set_drift_rc=0
+QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize \
+    >"$tmp/set-drift.out" 2>"$tmp/set-drift.err" || set_drift_rc=$?
+assert_eq '1' "$set_drift_rc" 'PR set drift after display blocks authorization'
+assert_contains "$(cat "$tmp/set-drift.err")" 'redisplay and reconfirm' \
+    'PR set drift names the required consent refresh'
+write_confirmed
 
 rm -f "$auth"
 missing_choice_rc=0
 AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
-    --ready-transition --provider coderabbit:trigger:capability-default \
+    --ready-transition --confirmed-queue-file "$confirmed" \
+    --provider coderabbit:trigger:capability-default \
     >"$tmp/missing.out" 2>"$tmp/missing.err" || missing_choice_rc=$?
 assert_eq '2' "$missing_choice_rc" 'auto-merge consent cannot be inferred'
 artifact_exists=false
@@ -80,6 +119,7 @@ assert_eq false "$artifact_exists" 'missing explicit consent produces no artifac
 auto_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --ready-transition --auto-merge --merge-method squash --delete-branch \
+    --confirmed-queue-file "$confirmed" \
     --provider coderabbit:observe:operator-instruction)
 assert_eq "authorization=$auth queue=2" "$auto_out" 'auto-merge record is written'
 assert_eq '["autoMerge","deleteBranch","mergeMethod","providers","queue","readyTransition","repository"]' \
@@ -99,9 +139,26 @@ assert_eq "$before_failure" "$(sha256sum "$auth")" \
 caller_sha_rc=0
 AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
-    --ready-transition --no-auto-merge --no-providers \
+    --ready-transition --no-auto-merge --no-providers --confirmed-queue-file "$confirmed" \
     --head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     >"$tmp/caller-sha.out" 2>"$tmp/caller-sha.err" || caller_sha_rc=$?
 assert_eq '2' "$caller_sha_rc" 'a caller cannot supply the authorization head SHA'
+
+sentinel_rc=0
+AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --ready-transition --no-auto-merge --confirmed-queue-file "$confirmed" \
+    --provider __NONE__ >"$tmp/sentinel.out" 2>"$tmp/sentinel.err" || sentinel_rc=$?
+assert_eq '1' "$sentinel_rc" 'the former in-band provider sentinel is rejected'
+assert_contains "$(cat "$tmp/sentinel.err")" '--provider must have the form' \
+    'sentinel injection is handled as an invalid provider value'
+
+mixed_none_rc=0
+AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --ready-transition --no-auto-merge --confirmed-queue-file "$confirmed" \
+    --no-providers --provider coderabbit:trigger:capability-default \
+    >"$tmp/mixed-none.out" 2>"$tmp/mixed-none.err" || mixed_none_rc=$?
+assert_eq '1' "$mixed_none_rc" '--no-providers cannot be mixed with provider decisions'
 
 finish
