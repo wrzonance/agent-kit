@@ -640,6 +640,127 @@ guard_contract_is_ours() {
     ((rc == 1))
 }
 
+# Print the trusted contract's instructions= line when it names any unresolved
+# router references. Kept separate so one tool call validates and reads the
+# contract once, regardless of how many shell tokens it carries.
+guard_unresolved_instruction_line() {
+    local root=$1 contract line unresolved
+    [[ -n $root ]] || return 1
+    contract="$root/.agent/env-contract.txt"
+    guard_contract_is_ours "$contract" "$root" || return 1
+    line=$(grep -m1 '^instructions=.* unresolved=' -- "$contract" 2> /dev/null) || return 1
+    unresolved=${line##* unresolved=}
+    [[ -n $unresolved && $unresolved != none ]] || return 1
+    printf '%s' "$line"
+}
+
+# True when TARGET is one of LINE's explicitly named unresolved references.
+# The list is capped; a trailing +N-more marker is disclosure, not a path, and
+# is stripped before exact matching.
+guard_unresolved_instruction_target() {
+    local root=$1 target=$2 base=${3:-$PWD} line=$4 unresolved ref
+    local target_canonical ref_canonical
+    [[ -n $root && -n $target && -n $line ]] || return 1
+    unresolved=${line##* unresolved=}
+    case $target in
+        /*) target_canonical=$(guard_scope_canonical "$target") || return 1 ;;
+        *) target_canonical=$(guard_scope_canonical "$base/$target") || return 1 ;;
+    esac
+    local IFS=,
+    local -a refs
+    read -r -a refs <<< "$unresolved"
+    for ref in "${refs[@]}"; do
+        ref=${ref%+[0-9]*-more}
+        [[ -n $ref ]] || continue
+        ref_canonical=$(guard_scope_canonical "$root/$ref") || continue
+        if [[ $target_canonical == "$ref_canonical" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Print the matching contract line when this tool call attempts to read an
+# unresolved instruction path. File-path tools and ordinary shell readers are
+# both covered; write/edit tools never enter this advisory path.
+guard_unresolved_instruction_read() {
+    local root=$1 input=$2 cwd=$3 command_line=$4 tool_name=$5
+    local target segment verb token line positional current candidate
+    local redirect_pending redirect_dest operand rg_files
+    local -a words
+
+    case $tool_name in
+        Edit|Write|MultiEdit|NotebookEdit|apply_patch) return 1;;
+    esac
+
+    line=$(guard_unresolved_instruction_line "$root") || return 1
+
+    target=$(jq -r '.tool_input.file_path // empty' <<< "$input" 2> /dev/null || true)
+    if [[ -n $target ]] &&
+        guard_unresolved_instruction_target "$root" "$target" "$cwd" "$line"; then
+        printf '%s' "$line"
+        return 0
+    fi
+
+    [[ -n $command_line ]] || return 1
+    current=$(guard_scope_canonical "$cwd") || current=$cwd
+    while IFS= read -r segment; do
+        mapfile -t words < <(guard_tokenize_words "$segment")
+        ((${#words[@]})) || continue
+        verb=${words[0]#\(}
+        if [[ $verb == cd && ${#words[@]} -ge 2 ]]; then
+            candidate=$(guard_command_dir_candidate "$current" "${words[1]}") || candidate=''
+            [[ -z $candidate ]] || current=$candidate
+            continue
+        fi
+        case $verb in
+            cat|sed|head|tail|less|more|rg|grep|wc) ;;
+            *) continue;;
+        esac
+        positional=0
+        redirect_pending=0
+        rg_files=no
+        if [[ $verb == rg ]]; then
+            for token in "${words[@]:1}"; do
+                [[ $token == --files ]] && rg_files=yes
+            done
+        fi
+        for token in "${words[@]:1}"; do
+            if ((redirect_pending)); then
+                redirect_pending=0
+                continue
+            fi
+            # Output redirects are write destinations. Preserve any operand
+            # attached before the redirect (`cat file>sink`), but never offer
+            # the destination itself to the unresolved-read matcher.
+            operand=$token
+            redirect_dest=''
+            case $token in
+                *'>>'*) operand=${token%%>>*}; redirect_dest=${token#*>>} ;;
+                *'>'*) operand=${token%%>*}; redirect_dest=${token#*>} ;;
+            esac
+            if [[ $operand != "$token" ]]; then
+                [[ -n $redirect_dest ]] || redirect_pending=1
+                [[ $operand =~ ^[0-9]*$ ]] && operand=''
+                token=$operand
+            fi
+            [[ -n $token && $token != -* ]] || continue
+            # In conventional grep/rg form the first positional is a search
+            # pattern, not a file operand. Matching its path-shaped text would
+            # turn an unrelated search into a false unresolved-read advisory.
+            if [[ $verb == grep || $verb == rg && $rg_files == no ]] &&
+                ((positional++ == 0)); then
+                continue
+            fi
+            if guard_unresolved_instruction_target "$root" "$token" "$current" "$line"; then
+                printf '%s' "$line"
+                return 0
+            fi
+        done
+    done < <(guard_gh_command_segments "$command_line")
+    return 1
+}
+
 # True when ANY candidate repository carries the file. A guard keyed to a
 # repository's own declaration should act on the repository being touched.
 guard_has_evidence() {
@@ -2339,9 +2460,15 @@ guard_shell_write_targets() {
         grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
             <<< "$write_probe" 2> /dev/null || continue
 
-        # Stage two: offer every token and let the protected list decide. A
-        # token that is not protected costs nothing; a target missed by
-        # clever parsing costs the whole guard. A LEADING `NAME=value`
+        # Stage two: offer tokens broadly and let the protected list decide,
+        # except for shell syntax and operands that are unambiguously data.
+        # Offered non-path tokens are not free: the contracted-worktree
+        # boundary deliberately refuses candidates whose parent cannot be
+        # resolved. Git's `<rev>:<path>` and peeled `<rev>^{type}` operands
+        # are the concrete case -- a redirect makes their segment write-shaped
+        # without making those read operands write targets (issue #423).
+        #
+        # A LEADING `NAME=value`
         # shell-variable assignment token is never a file target -- the same
         # assignment shape guard_heredoc_consumer_is_shell already recognises
         # and skips as an env prefix, not a path (issue #397, e.g. a leading
@@ -2355,8 +2482,30 @@ guard_shell_write_targets() {
         # since a bogus `key=value`-shaped "path" can itself mis-resolve
         # against the contracted-worktree boundary the way the original
         # assignment bug did.
-        local seen_command=0 value
+        local seen_command=0 command_is_git=no redirect_pending=0 redirect_target=0 value
+        local redirect_re='^[0-9]*>>?(.*)$'
         while IFS= read -r token; do
+            [[ -n $token ]] || continue
+
+            # Preserve enough shell redirect syntax to exempt only Git's read
+            # operands below, never the redirect destination itself. The
+            # lexer may emit `> file`, `>file`, or their fd/append forms.
+            redirect_target=0
+            if ((redirect_pending)); then
+                redirect_target=1
+                redirect_pending=0
+            elif [[ $token =~ $redirect_re ]]; then
+                token=${BASH_REMATCH[1]}
+                if [[ -z $token ]]; then
+                    redirect_pending=1
+                    continue
+                fi
+                redirect_target=1
+            fi
+            if ((redirect_target)); then
+                token=${token#\"}; token=${token%\"}
+                token=${token#\'}; token=${token%\'}
+            fi
             [[ -n $token ]] || continue
             if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
                 if ((seen_command)); then
@@ -2365,11 +2514,33 @@ guard_shell_write_targets() {
                 fi
                 continue
             fi
+            if ((!seen_command)); then
+                [[ $token == git ]] && command_is_git=yes
+            fi
             seen_command=1
+
+            # Shell permits a redirect to be attached to the preceding word.
+            # Split that destination out before classifying a Git object name;
+            # otherwise `HEAD:path>target` looks like one large revspec and the
+            # data-operand exemption drops the real target with it.
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token == *'>'* ]]; then
+                value=${token#*>}
+                value=${value#>}
+                value=${value#\"}; value=${value%\"}
+                value=${value#\'}; value=${value%\'}
+                [[ -n $value ]] && results+=("$value")
+                token=${token%%>*}
+                [[ -n $token ]] || continue
+            fi
             [[ $token == -* ]] && continue
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token != *'>'* ]] &&
+                { [[ $token =~ ^[^/:][^:]*:.+$ ]] ||
+                    [[ $token =~ \^\{(tree|commit|tag|object)\}$ ]]; }; then
+                continue
+            fi
             results+=("$token")
-        done < <(tr -s '[:space:]' '\n' <<< "$segment" 2> /dev/null |
-            sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+        done < <(guard_tokenize_words "$segment" |
+            sed -E 's/^[<]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
             sed -E 's/[;|&()]+$//')
     done <<< "$segments"
 

@@ -163,7 +163,10 @@ state and the gate above both hold:
    CI if behind, and for a stacked successor run the full
    `../parallel-issues/scripts/chain-advance.sh --retarget` proof. Its own
    gate and merge only run after that revalidation is clean. No merge may
-   start while a predecessor's post-merge revalidation is outstanding.
+   start while a predecessor's post-merge revalidation is outstanding. When
+   a squash-merged predecessor makes that merge-down conflict, follow the
+   [post-squash-merge conflict procedure](../../parallel-issues/references/chains.md#post-squash-merge-conflicts)
+   before choosing a side.
 4. A merge conflict, a failed retarget proof, or a merge refusal (see below)
    parks that item by name and continues the oldest independent runnable
    root, exactly as a non-merge block does today.
