@@ -20,6 +20,7 @@ declare -a write_set_args=()
 output=
 boundary_mode=
 dispatch_plan=
+dispatch_plan_supplied=0
 while (($#)); do
     case $1 in
         --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary|--dispatch-plan)
@@ -34,7 +35,7 @@ while (($#)); do
                 --write-set) write_set_args+=("$2") ;;
                 --output|-o) output=$2 ;;
                 --boundary) boundary_mode=$2 ;;
-                --dispatch-plan) dispatch_plan=$2 ;;
+                --dispatch-plan) dispatch_plan=$2; dispatch_plan_supplied=1 ;;
             esac
             shift 2
             ;;
@@ -42,6 +43,9 @@ while (($#)); do
         *) usage; die "unknown argument: $1" ;;
     esac
 done
+
+((dispatch_plan_supplied == 0)) || [[ -n $dispatch_plan ]] ||
+    die '--dispatch-plan requires a non-empty value'
 
 [[ $template_kind == issue-lead || $template_kind == fix-batch ]] || die '--template must be issue-lead or fix-batch'
 [[ $worktree == /* && -d $worktree ]] || die '--worktree must be an absolute directory'
@@ -779,23 +783,30 @@ if [[ $template_kind == issue-lead ]]; then
     fi
 fi
 
-# A non-zero uncovered list is dispatch evidence, not a coverage gate. When
-# the root supplies its plan, require that evidence to match exactly before
-# publishing the prompt file; zero uncovered steps always proceeds.
-verify_dispatch_plan_record() {
-    ((${#spec_uncovered_steps[@]})) || return 0
+# Report whether the root-owned plan already matches. A mismatch is evidence
+# to reconcile before spawn, never a reason to suppress this only composition.
+spec_plan_record_status=
+spec_expected_uncovered=none
+assess_dispatch_plan_record() {
     [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan && -r $dispatch_plan ]] ||
         die '--dispatch-plan must be an absolute readable regular file'
-    local uncovered_csv
-    uncovered_csv=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
-    jq -e --argjson issue "$issue" --arg indices "$uncovered_csv" '
+    if ((${#spec_uncovered_steps[@]})); then
+        spec_expected_uncovered=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
+    fi
+    spec_plan_record_status=record-required
+    if jq -e --argjson issue "$issue" --arg indices "$spec_expected_uncovered" '
         [.entries[] | select(.issue == $issue)] as $matches
         | ($matches | length) == 1
-        and ($matches[0].uncoveredVerification == ($indices | split(",") | map(tonumber)))
-    ' "$dispatch_plan" > /dev/null 2>&1 ||
-        die "dispatch-plan entry for issue $issue must record uncoveredVerification=[$uncovered_csv] before spawn"
+        and (if $indices == "none"
+             then ($matches[0] | has("uncoveredVerification") | not)
+             else ($matches[0].uncoveredVerification == ($indices | split(",") | map(tonumber)))
+             end)
+    ' "$dispatch_plan" > /dev/null 2>&1; then
+        spec_plan_record_status=recorded
+    fi
+    return 0
 }
-[[ -z $dispatch_plan ]] || verify_dispatch_plan_record
+((dispatch_plan_supplied == 0)) || assess_dispatch_plan_record
 
 emit_trust_rule() {
     printf '# Generated agent-run.sh commands carry no unattended trust flags.\n'
@@ -964,10 +975,36 @@ else
     output_dir=$(dirname -- "$output")
     [[ -d $output_dir ]] || die "output directory does not exist: $output_dir"
     output_tmp=$(mktemp "$output_dir/.compose-worker-prompt.XXXXXXXXXX") || die "could not allocate output buffer in $output_dir"
-    trap 'rm -f -- "$temporary" "$output_tmp"' EXIT HUP INT TERM
+    trap 'rm -f -- "$temporary" "$output_tmp" "${plan_update_tmp:-}"' EXIT HUP INT TERM
     cat -- "$temporary" > "$output_tmp"
     mv -f -- "$output_tmp" "$output"
     output_tmp=
+    spec_plan_update=none
+    if [[ $template_kind == issue-lead && $spec_plan_record_status == record-required ]]; then
+        spec_plan_update="$output.dispatch-plan-update"
+        [[ ! -L $spec_plan_update ]] || die "refusing symlink plan update: $spec_plan_update"
+        plan_update_tmp=$(mktemp "$output_dir/.dispatch-plan-update.XXXXXXXXXX") ||
+            die "could not allocate dispatch-plan update in $output_dir"
+        if ! jq --argjson issue "$issue" --arg expected "$spec_expected_uncovered" '
+            if ([.entries[] | select(.issue == $issue)] | length) != 1 then error("issue entry mismatch") else . end
+            | if $expected == "none" then (.entries[] | select(.issue == $issue)) |= del(.uncoveredVerification)
+              else (.entries[] | select(.issue == $issue).uncoveredVerification) = ($expected | split(",") | map(tonumber)) end
+        ' "$dispatch_plan" > "$plan_update_tmp"; then
+            rm -f -- "$plan_update_tmp"
+            die "could not prepare dispatch-plan update for issue $issue"
+        fi
+        chmod 600 -- "$plan_update_tmp"
+        mv -f -- "$plan_update_tmp" "$spec_plan_update"
+    fi
+    spec_plan_sha=
+    if [[ $template_kind == issue-lead ]] && ((dispatch_plan_supplied)); then
+        plan_hash_source=$dispatch_plan
+        [[ $spec_plan_update == none ]] || plan_hash_source=$spec_plan_update
+        spec_plan_sha=$(sha256sum -- "$plan_hash_source" | cut -d ' ' -f 1)
+        [[ $spec_plan_sha =~ ^[0-9a-f]{64}$ ]] || die 'could not hash dispatch-plan record'
+    fi
+    spec_plan_update_status=none
+    [[ $spec_plan_update == none ]] || spec_plan_update_status=staged
     # The dispatch-time gap report (issue #337). Printed only on this path,
     # where stdout is not the prompt, so it can never contaminate a composition
     # written to stdout. The root records a non-zero `uncovered` on that
@@ -993,6 +1030,8 @@ else
         printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s\n' \
             "$issue" "$spec_step_count" "$spec_covered_count" "$spec_uncovered_count" \
             "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification"
+        ((dispatch_plan_supplied == 0)) || printf 'spec-verification-plan= issue=%s status=%s expected-uncovered=%s update=%s plan-sha=%s\n' \
+            "$issue" "$spec_plan_record_status" "$spec_expected_uncovered" "$spec_plan_update_status" "$spec_plan_sha"
         ((spec_steps_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_LIMIT"
     fi
 fi

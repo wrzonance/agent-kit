@@ -310,17 +310,38 @@ assert_contains "$dispatch_handoff" 'prompt_file="$prompt_dir/issue-$issue_numbe
     'dispatch handoff composes to a per-issue file in the worker'"'"'s excluded .agent/ tree'
 assert_contains "$dispatch_handoff" 'chmod 600 -- "$prompt_file"' \
     'the composed prompt file is not world-readable'
-assert_contains "$dispatch_handoff" 'if ! compose_output=$("$compose_script" "${compose_args[@]}"); then' \
+assert_contains "$dispatch_handoff" 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' \
     'dispatch handoff stops when prompt composition fails'
-compose_invocations=$(grep -Fxc 'if ! compose_output=$("$compose_script" "${compose_args[@]}"); then' <<< "$dispatch_handoff" || true)
+compose_invocations=$(grep -Fxc 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' <<< "$dispatch_handoff" || true)
 assert_eq '1' "$compose_invocations" \
     'dispatch invokes the prompt composer exactly once per worker'
 assert_contains "$dispatch_handoff" 'classification=majority-uncovered' \
     'dispatch reporting makes a majority-uncovered issue visible at a glance'
-assert_contains "$dispatch_handoff" 'dispatch_verification_reports[issue_number]=$spec_verification' \
+assert_contains "$dispatch_handoff" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
+    'dispatch defines the root-owned plan before composing'
+assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]]' \
+    'dispatch validates the plan before passing it to the composer'
+assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
+    'dispatch consumes the composer plan-record report'
+assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
+    'dispatch records uncovered verification atomically before spawn'
+assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
+    'dispatch verifies the exact final record before spawn'
+assert_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
+    'dispatch declares report storage as associative'
+assert_contains "$dispatch_handoff" 'dispatch_verification_reports["$issue_number"]=$spec_verification' \
     'dispatch preserves the coverage report for the final handoff'
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
+
+report_declaration=$(grep -F -m1 'declare -A dispatch_verification_reports' <<< "$dispatch_handoff")
+report_assignment=$(grep -F -m1 'dispatch_verification_reports["$issue_number"]=$spec_verification' <<< "$dispatch_handoff")
+multi_issue_reports=$(bash -c "$report_declaration
+issue_number=57; spec_verification=first; $report_assignment
+issue_number=54; spec_verification=second; $report_assignment
+printf '%s|%s' \"\${dispatch_verification_reports[57]}\" \"\${dispatch_verification_reports[54]}\"")
+assert_eq 'first|second' "$multi_issue_reports" \
+    'associative dispatch reporting preserves two issue handoff records'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
 # composed body in root context for no dispatch benefit -- twice, under an
 # approval layer that re-executes an approved command. The block emits a digest.

@@ -114,20 +114,47 @@ matching_record_plan="$tmp/matching-uncovered-verification.json"
 printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"],"uncoveredVerification":[2,3]}]}' \
     > "$matching_record_plan"
 missing_record_rc=0
-compose_verification_report missing-record \
+missing_record_output=$(compose_verification_report missing-record \
     $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n' \
-    "$missing_record_plan" > /dev/null 2>&1 || missing_record_rc=$?
-assert_eq 1 "$missing_record_rc" \
-    'a missing uncoveredVerification field is caught before prompt publication and spawn'
-assert_eq "$majority_uncovered_report" \
-    "$(compose_verification_report matching-record \
+    "$missing_record_plan") || missing_record_rc=$?
+assert_eq 0 "$missing_record_rc" \
+    'a missing uncoveredVerification record does not block prompt publication'
+assert_contains "$missing_record_output" "$majority_uncovered_report" \
+    'a mismatched plan still reports the majority-uncovered ratio'
+assert_contains "$missing_record_output" \
+    'spec-verification-plan= issue=136 status=record-required expected-uncovered=2,3 update=staged plan-sha=' \
+    'a mismatched plan reports the exact record required before spawn'
+assert_eq yes "$([[ -s $repo/.agent/missing-record-prompt.md ]] && printf yes || printf no)" \
+    'a mismatched plan still publishes the only composed prompt'
+assert_eq yes "$([[ -s $repo/.agent/missing-record-prompt.md.dispatch-plan-update ]] && printf yes || printf no)" \
+    'a mismatched plan stages an exact root-owned update candidate'
+assert_eq '[2,3]' \
+    "$(jq -c '.entries[0].uncoveredVerification' "$repo/.agent/missing-record-prompt.md.dispatch-plan-update")" \
+    'the staged candidate carries the exact uncovered step indices'
+missing_record_sha=${missing_record_output##* plan-sha=}
+assert_eq "$missing_record_sha" \
+    "$(sha256sum -- "$repo/.agent/missing-record-prompt.md.dispatch-plan-update" | cut -d ' ' -f 1)" \
+    'the mismatch report pins the staged candidate bytes'
+matching_record_output=$(compose_verification_report matching-record \
         $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n' \
-        "$matching_record_plan")" \
-    'an exact uncoveredVerification record passes the pre-spawn check'
-assert_eq "$fully_covered_report" \
-    "$(compose_verification_report fully-covered-with-plan \
-        $'## Verification\n- `tools/verify`\n- `tools/full-test`\n' "$missing_record_plan")" \
+        "$matching_record_plan")
+assert_contains "$matching_record_output" \
+    'spec-verification-plan= issue=136 status=recorded expected-uncovered=2,3 update=none plan-sha=' \
+    'an exact uncoveredVerification record is reported as recorded'
+fully_with_plan_output=$(compose_verification_report fully-covered-with-plan \
+    $'## Verification\n- `tools/verify`\n- `tools/full-test`\n' "$missing_record_plan")
+assert_contains "$fully_with_plan_output" \
+    'spec-verification-plan= issue=136 status=recorded expected-uncovered=none update=none plan-sha=' \
     'coverage alone never blocks a fully covered dispatch'
+
+empty_plan_rc=0
+empty_plan_err=$(bash "$compose" --template issue-lead --boundary public-fenced \
+    --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high --dispatch-plan '' \
+    --output "$repo/.agent/empty-plan-prompt.md" 2>&1) || empty_plan_rc=$?
+assert_eq 1 "$empty_plan_rc" 'an explicitly empty --dispatch-plan is rejected'
+assert_contains "$empty_plan_err" '--dispatch-plan requires a non-empty value' \
+    'the empty-plan refusal names the invalid argument'
 
 # Restore the fixture bytes used by the broader rendering assertions below.
 printf '%s\n' "SPEC-BYTES \$(must-stay-literal)" > "$repo/.agent/fenced-spec.txt"

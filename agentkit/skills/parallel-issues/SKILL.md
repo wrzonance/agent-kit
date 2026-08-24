@@ -728,19 +728,9 @@ done
 "$cross_write" "${cross_snapshot_args[@]}"
 ```
 
-The root re-checks that same snapshot immediately after each worker completion and once again
-before handoff. A check that returns `cross-write=none` is clean. A `cross-write=` line is a named
-incident: its mtime is compared with the worker's completion window, its bytes are compared with
-the matching worker worktree, and the output must be recorded before the next phase. Exact branch
-duplicates attributed to that mtime window may be disposed explicitly with
-`--dispose-duplicates`, which restores a tracked root path from `HEAD` (or removes an untracked
-duplicate); divergent or outside-window bytes are always surfaced for an explicit human
-disposition. Never fold dirt first observed inside a dispatch window into the
-handoff's "unrelated local changes" list.
-
-The snapshot also captures the root's **refs** (HEAD's ref/SHA, every branch SHA): `reset --soft`/
-`checkout`/`branch -f` move a ref with no file write, so Collect also checks reflog growth since
-the snapshot and names it `cross-ref=type=…` (`restored=yes` covers moved-then-restored).
+Re-run after each completion and at handoff. Preserve named `cross-write=`/`cross-ref=` incidents;
+`cross-write=none` is clean. `--dispose-duplicates` handles only exact in-window duplicates.
+Never fold dirt first observed inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs explicit disposition. Ref snapshots catch reflog-only moves.
 
 ```bash
 collect_rc=0
@@ -759,35 +749,42 @@ case "$collect_rc" in
 esac
 ```
 
-At handoff, repeat the Collect check for every dispatched worker (or one equivalent batched
-check) and preserve each `cross-write=` line with the run evidence. A divergent incident blocks
-the clean-handoff claim until the root names its disposition; it is never attributed to the
-human merely because the root checkout is dirty.
+Divergence blocks clean handoff pending root disposition; root dirt is never the human's.
 
 ### Compose the issue-lead prompt
 
-Per-issue prompt: helper fills inputs. **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
+Per-issue prompt: **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
-prompt_dir="$worktree/.agent/prompts"
-mkdir -p -- "$prompt_dir" || exit 1
+prompt_dir="$worktree/.agent/prompts"; mkdir -p -- "$prompt_dir" || exit 1
 prompt_file="$prompt_dir/issue-$issue_number-lead.md"
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
+[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
 # write_set_globs is REQUIRED for an issue lead: one glob per flag, never CSV.
 compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --dispatch-plan "$dispatch_plan" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
-if ! compose_output=$("$compose_script" "${compose_args[@]}"); then
-    exit 1
-fi
+compose_output=$("$compose_script" "${compose_args[@]}") || exit 1
 chmod 600 -- "$prompt_file" || exit 1
 spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ -n $spec_verification && $spec_verification != *$'\n'* ]] || exit 1
-dispatch_verification_reports[issue_number]=$spec_verification; printf 'dispatch-report= %s\n' "${dispatch_verification_reports[issue_number]}"
-printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' \
-    "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
+spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
+plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
+plan_sha=${spec_verification_plan##* plan-sha=}
+[[ $plan_sha =~ ^[0-9a-f]{64}$ ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
+if [[ $plan_update != none ]]; then
+    [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update ]] || exit 1
+    [[ $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
+    chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
+fi
+[[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
+declare -A dispatch_verification_reports
+dispatch_verification_reports["$issue_number"]=$spec_verification
+printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${dispatch_verification_reports["$issue_number"]}" "$spec_verification_plan"
+printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 ```
 
-Keep the private prompt path for spawn and the stored `spec-verification=` report for dispatch/handoff; `classification=majority-uncovered` is conspicuous. `--dispatch-plan` requires exact non-zero `uncoveredVerification` before spawn, but coverage itself never blocks dispatch.
+Composer publishes once; root installs and verifies its hashed `uncoveredVerification` candidate before spawn. Store reports; `classification=majority-uncovered` is conspicuous. Coverage never blocks.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
@@ -1109,8 +1106,7 @@ If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll revi
 - CI may flake or require re-runs requiring local iteration
 - User may want to inspect/diff state before approving merge
 
-**Print a handoff** with every preserved worktree and PR/BLOCKED reason, its `.agent/` evidence,
-next steps, and the cleanup recipe labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff, even when coverage is complete. Cleanup runs only when the user explicitly asks after merge.
+**Print a handoff** with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Cleanup requires user request after merge.
 
 ## Common Mistakes
 
