@@ -15,6 +15,9 @@ writer="$root/agentkit/skills/parallel-issues/scripts/write-merge-plan.sh"
 plan="$tmp/dispatch-plan.json"
 merge_plan="$tmp/merge-plan.json"
 
+assert_not_contains "$(cat -- "$writer")" 'split("/").[]' \
+    'dispatch-plan validation uses jq 1.6-compatible array iteration syntax'
+
 cat >"$plan" <<'EOF'
 {
   "schemaVersion": 1,
