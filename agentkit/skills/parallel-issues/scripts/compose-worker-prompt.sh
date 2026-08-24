@@ -4,7 +4,7 @@ set -euo pipefail
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--dispatch-plan PATH] [--output PATH]\n' "$program" >&2
     printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
     printf '  --boundary is required for the issue-lead template: the dispatcher-selected issue-body trust mode\n' >&2
 }
@@ -19,9 +19,10 @@ worker_effort=
 declare -a write_set_args=()
 output=
 boundary_mode=
+dispatch_plan=
 while (($#)); do
     case $1 in
-        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary)
+        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary|--dispatch-plan)
             (($# >= 2)) || die "$1 requires a value"
             case $1 in
                 --template) template_kind=$2 ;;
@@ -33,6 +34,7 @@ while (($#)); do
                 --write-set) write_set_args+=("$2") ;;
                 --output|-o) output=$2 ;;
                 --boundary) boundary_mode=$2 ;;
+                --dispatch-plan) dispatch_plan=$2 ;;
             esac
             shift 2
             ;;
@@ -777,6 +779,24 @@ if [[ $template_kind == issue-lead ]]; then
     fi
 fi
 
+# A non-zero uncovered list is dispatch evidence, not a coverage gate. When
+# the root supplies its plan, require that evidence to match exactly before
+# publishing the prompt file; zero uncovered steps always proceeds.
+verify_dispatch_plan_record() {
+    ((${#spec_uncovered_steps[@]})) || return 0
+    [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan && -r $dispatch_plan ]] ||
+        die '--dispatch-plan must be an absolute readable regular file'
+    local uncovered_csv
+    uncovered_csv=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
+    jq -e --argjson issue "$issue" --arg indices "$uncovered_csv" '
+        [.entries[] | select(.issue == $issue)] as $matches
+        | ($matches | length) == 1
+        and ($matches[0].uncoveredVerification == ($indices | split(",") | map(tonumber)))
+    ' "$dispatch_plan" > /dev/null 2>&1 ||
+        die "dispatch-plan entry for issue $issue must record uncoveredVerification=[$uncovered_csv] before spawn"
+}
+[[ -z $dispatch_plan ]] || verify_dispatch_plan_record
+
 emit_trust_rule() {
     printf '# Generated agent-run.sh commands carry no unattended trust flags.\n'
 }
@@ -954,14 +974,25 @@ else
     # issue's dispatch-plan entry rather than leaving the worker to reconcile
     # the gap mid-implementation.
     if [[ $template_kind == issue-lead ]]; then
+        spec_step_count=${#spec_steps[@]}
+        spec_uncovered_count=${#spec_uncovered_steps[@]}
+        spec_covered_count=$((spec_step_count - spec_uncovered_count))
+        if ((spec_step_count == 0)); then
+            spec_coverage_classification=no-verification-steps
+        elif ((spec_uncovered_count == 0)); then
+            spec_coverage_classification=fully-covered
+        elif ((spec_uncovered_count > spec_covered_count)); then
+            spec_coverage_classification=majority-uncovered
+        else
+            spec_coverage_classification=partially-covered
+        fi
         uncovered_steps=none
         if ((${#spec_uncovered_steps[@]})); then
             uncovered_steps=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
         fi
-        printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s\n' \
-            "$issue" "${#spec_steps[@]}" \
-            "$((${#spec_steps[@]} - ${#spec_uncovered_steps[@]}))" \
-            "${#spec_uncovered_steps[@]}" "$uncovered_steps"
+        printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s\n' \
+            "$issue" "$spec_step_count" "$spec_covered_count" "$spec_uncovered_count" \
+            "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification"
         ((spec_steps_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_LIMIT"
     fi
 fi

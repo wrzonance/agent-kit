@@ -774,20 +774,20 @@ compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"
 prompt_dir="$worktree/.agent/prompts"
 mkdir -p -- "$prompt_dir" || exit 1
 prompt_file="$prompt_dir/issue-$issue_number-lead.md"
-# worker_effort is override or AGENT_WORKER_EFFORT default.
-# write_set_globs contains predictedWriteSet globs, one per flag --
-# REQUIRED for an issue lead; never CSV (comma-bearing globs split).
-compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --output "$prompt_file")
+# write_set_globs is REQUIRED for an issue lead: one glob per flag, never CSV.
+compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --dispatch-plan "$dispatch_plan" --output "$prompt_file")
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
-if ! "$compose_script" "${compose_args[@]}"; then
+if ! compose_output=$("$compose_script" "${compose_args[@]}"); then
     exit 1
 fi
 chmod 600 -- "$prompt_file" || exit 1
+spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ -n $spec_verification && $spec_verification != *$'\n'* ]] || exit 1
+dispatch_verification_reports[issue_number]=$spec_verification; printf 'dispatch-report= %s\n' "${dispatch_verification_reports[issue_number]}"
 printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' \
     "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 ```
 
-It prints a path and metadata digest (bytes, issue, write set), never the body — the worker's to read. It lands in the worker's excluded `.agent/` tree, surviving a re-dispatch: pass the **path**, and only where the spawn call takes inline bytes (`message:`) read it at that call site. It also prints one `spec-verification=` line naming the spec verification steps no declared command covers; record a non-zero `uncovered` on that issue's dispatch-plan entry as `uncoveredVerification` before you spawn, so the gap is disclosed at dispatch instead of reconciled mid-implementation.
+Keep the private prompt path for spawn and the stored `spec-verification=` report for dispatch/handoff; `classification=majority-uncovered` is conspicuous. `--dispatch-plan` requires exact non-zero `uncoveredVerification` before spawn, but coverage itself never blocks dispatch.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
@@ -1109,12 +1109,8 @@ If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll revi
 - CI may flake or require re-runs requiring local iteration
 - User may want to inspect/diff state before approving merge
 
-**Print a handoff** naming each preserved worktree with its PR (or BLOCKED reason), the
-`.agent/` evidence it keeps (`env-contract.txt`, `logs/`), next steps (merge ✅ PRs, iterate
-in a BLOCKED worktree, re-run `/review-remote-pr NNN` after human feedback), and the cleanup
-recipe (`git worktree remove` + `git branch -d` + `git worktree prune`) labelled explicitly
-as ONLY-after-merge-AND-user-confirmation. Cleanup runs only when the user explicitly asks
-for it after merge.
+**Print a handoff** with every preserved worktree and PR/BLOCKED reason, its `.agent/` evidence,
+next steps, and the cleanup recipe labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff, even when coverage is complete. Cleanup runs only when the user explicitly asks after merge.
 
 ## Common Mistakes
 

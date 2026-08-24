@@ -310,11 +310,17 @@ assert_contains "$dispatch_handoff" 'prompt_file="$prompt_dir/issue-$issue_numbe
     'dispatch handoff composes to a per-issue file in the worker'"'"'s excluded .agent/ tree'
 assert_contains "$dispatch_handoff" 'chmod 600 -- "$prompt_file"' \
     'the composed prompt file is not world-readable'
-assert_contains "$dispatch_handoff" 'if ! "$compose_script" "${compose_args[@]}"; then' \
+assert_contains "$dispatch_handoff" 'if ! compose_output=$("$compose_script" "${compose_args[@]}"); then' \
     'dispatch handoff stops when prompt composition fails'
-compose_invocations=$(grep -Fxc 'if ! "$compose_script" "${compose_args[@]}"; then' <<< "$dispatch_handoff" || true)
+compose_invocations=$(grep -Fxc 'if ! compose_output=$("$compose_script" "${compose_args[@]}"); then' <<< "$dispatch_handoff" || true)
 assert_eq '1' "$compose_invocations" \
     'dispatch invokes the prompt composer exactly once per worker'
+assert_contains "$dispatch_handoff" 'classification=majority-uncovered' \
+    'dispatch reporting makes a majority-uncovered issue visible at a glance'
+assert_contains "$dispatch_handoff" 'dispatch_verification_reports[issue_number]=$spec_verification' \
+    'dispatch preserves the coverage report for the final handoff'
+assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
+    'dispatch makes the composer check the plan record before spawn'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
 # composed body in root context for no dispatch benefit -- twice, under an
 # approval layer that re-executes an approved command. The block emits a digest.
@@ -328,6 +334,8 @@ for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tai
 done
 assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
+assert_contains "$text" 'Include each stored `spec-verification=` report verbatim in the final handoff' \
+    'final handoff carries the dispatch-time coverage ratio and classification'
 boundary_selector="$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh"
 assert_eq yes "$( [[ -x $boundary_selector ]] && printf yes || printf no )" \
     'boundary selector helper is executable'

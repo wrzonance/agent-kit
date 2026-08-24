@@ -74,6 +74,64 @@ prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high)
 
+compose_verification_report() {
+    local fixture=$1 spec_body=$2 dispatch_plan=${3:-} output_file
+    local -a dispatch_plan_args=()
+    output_file="$repo/.agent/$fixture-prompt.md"
+    printf '%s' "$spec_body" > "$repo/.agent/fenced-spec.txt"
+    [[ -z $dispatch_plan ]] || dispatch_plan_args=(--dispatch-plan "$dispatch_plan")
+    bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+        --worktree "$repo" --issue 136 --branch feat/issue-136 \
+        --worker-model gpt-5.6-luna --worker-effort high \
+        "${dispatch_plan_args[@]}" --output "$output_file"
+}
+
+fully_covered_report=$(compose_verification_report fully-covered \
+    $'## Verification\n- `tools/verify`\n- `tools/full-test`\n')
+assert_eq \
+    'spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered' \
+    "$fully_covered_report" \
+    'fully covered verification reports its ratio and classification'
+
+partially_covered_report=$(compose_verification_report partially-covered \
+    $'## Verification\n- `tools/verify`\n- `tools/full-test`\n- `tools/not-declared`\n')
+assert_eq \
+    'spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered' \
+    "$partially_covered_report" \
+    'partially covered verification reports its ratio and classification'
+
+majority_uncovered_report=$(compose_verification_report majority-uncovered \
+    $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n')
+assert_eq \
+    'spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered' \
+    "$majority_uncovered_report" \
+    'majority-uncovered verification is distinguishable at a glance'
+
+missing_record_plan="$tmp/missing-uncovered-verification.json"
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"]}]}' \
+    > "$missing_record_plan"
+matching_record_plan="$tmp/matching-uncovered-verification.json"
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"],"uncoveredVerification":[2,3]}]}' \
+    > "$matching_record_plan"
+missing_record_rc=0
+compose_verification_report missing-record \
+    $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n' \
+    "$missing_record_plan" > /dev/null 2>&1 || missing_record_rc=$?
+assert_eq 1 "$missing_record_rc" \
+    'a missing uncoveredVerification field is caught before prompt publication and spawn'
+assert_eq "$majority_uncovered_report" \
+    "$(compose_verification_report matching-record \
+        $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n' \
+        "$matching_record_plan")" \
+    'an exact uncoveredVerification record passes the pre-spawn check'
+assert_eq "$fully_covered_report" \
+    "$(compose_verification_report fully-covered-with-plan \
+        $'## Verification\n- `tools/verify`\n- `tools/full-test`\n' "$missing_record_plan")" \
+    'coverage alone never blocks a fully covered dispatch'
+
+# Restore the fixture bytes used by the broader rendering assertions below.
+printf '%s\n' "SPEC-BYTES \$(must-stay-literal)" > "$repo/.agent/fenced-spec.txt"
+
 assert_contains "$prompt" 'Repo: example-org/example-repo' 'issue lead receives the configured repository slug'
 assert_contains "$prompt" 'Worktree: '"$repo" 'issue lead receives the absolute worktree'
 assert_contains "$prompt" 'Branch: feat/issue-136' 'issue lead receives the requested branch'
