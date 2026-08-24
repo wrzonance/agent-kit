@@ -148,10 +148,15 @@ refresh it automatically.
 
 The ready-flip handoff must state each chain's merge order explicitly, base PR first —
 merging a mid-chain PR before its base is a broken build for whoever merges next. After each
-predecessor merges, retarget the successor to the default branch. For an agent-driven merge,
-run `chain-advance.sh --retarget --pr <N> --base <default>` and require its complete proof,
-including the refreshed `baseRefName`, `base...head` ancestry, current CI/approval evidence,
-and non-empty `closingIssuesReferences`. A stacked PR merged while still based on its
+predecessor merges, **merge the updated default branch down into the successor and publish that
+merge before retargeting**. This ordering is load-bearing: a squash merge advances the default
+branch with a commit the successor does not contain. For an agent-driven merge, only after that
+merge-down succeeds run `chain-advance.sh --retarget --pr <N> --base <default>` and require its
+complete proof, including the refreshed `baseRefName`, `base...head` ancestry, current
+CI/approval evidence, and non-empty `closingIssuesReferences`. The helper prechecks ancestry
+before editing: exit 1 means it did not confirm a base mutation (including a behind successor),
+while exit 2 means the edit succeeded but a later proof failed and stderr names the applied
+base. A stacked PR merged while still based on its
 predecessor's (now-merged) branch merges into that branch, not into the trunk — its changes
 never reach the default branch, and nothing fails loudly to say so. State all of this
 explicitly in the handoff; a reader who only sees "merge order: #67, #68" will not reconstruct

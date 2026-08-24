@@ -13,6 +13,7 @@ PR=''
 BASE=''
 REPO=''
 GH_BIN=${CHAIN_ADVANCE_GH:-gh}
+RETARGET_APPLIED=false
 
 usage() {
     cat <<EOF
@@ -21,12 +22,18 @@ Usage:
   $PROGNAME --retarget --pr N --base B [--repo OWNER/REPO]
 
 --resolve-base is read-only and prints the full commit SHA Git resolves for REF.
---retarget edits the PR base, then proves the new base, ancestry, CI, approval,
-and closing-issue linkage before reporting success.
+--retarget first proves the intended base is not ahead of the current head. It
+then edits the PR base and proves the new base, ancestry, CI, approval, and
+closing-issue linkage before reporting success. Exit 1 means no base edit was
+confirmed; exit 2 means the edit succeeded but a later proof failed.
 EOF
 }
 
 die() {
+    if [[ $RETARGET_APPLIED == true ]]; then
+        printf '%s: retarget applied base=%s; %s\n' "$PROGNAME" "$BASE" "$*" >&2
+        exit 2
+    fi
     printf '%s: %s\n' "$PROGNAME" "$*" >&2
     exit 1
 }
@@ -273,11 +280,17 @@ closing_issue_count() {
 retarget() {
     local pr_json actual_base head_ref head_sha ci_counts total pass closing_count boundary
     resolve_repo
+    pr_json=$(fetch_pr) || die "could not read PR #$PR before retarget"
+    head_sha=$(jq -r '.headRefOid // empty' <<<"$pr_json") ||
+        die 'headRefOid was unreadable before retarget'
+    [[ $head_sha =~ $SHA_RE ]] || die 'head SHA evidence was missing before retarget'
+    check_ancestry "$head_sha"
     # Captured before the edit so anything produced against the old base sorts
     # strictly below it.
     boundary=$(retarget_boundary)
     "$GH_BIN" pr edit "$PR" --repo "$REPO" --base "$BASE" >/dev/null ||
         die "could not retarget PR #$PR to base $BASE"
+    RETARGET_APPLIED=true
     pr_json=$(fetch_pr) || die "could not re-read PR #$PR after retarget"
     actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
         die 'baseRefName was unreadable after retarget'
