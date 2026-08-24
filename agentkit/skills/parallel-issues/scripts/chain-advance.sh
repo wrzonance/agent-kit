@@ -172,7 +172,7 @@ check_ci_fresh() {
     local pr_json=$1 boundary=$2 stale
     stale=$(jq -r --argjson boundary "$boundary" '
         [ .statusCheckRollup[]?
-          | (.completedAt // .startedAt // .createdAt // "") as $ts
+          | (.startedAt // .createdAt // "") as $ts
           | (.name // .context // "check") as $label
           | if ($ts | length) == 0 then $label
             else ($ts | fromdateiso8601) as $epoch
@@ -285,12 +285,21 @@ retarget() {
         die 'headRefOid was unreadable before retarget'
     [[ $head_sha =~ $SHA_RE ]] || die 'head SHA evidence was missing before retarget'
     check_ancestry "$head_sha"
-    # Captured before the edit so anything produced against the old base sorts
-    # strictly below it.
-    boundary=$(retarget_boundary)
-    "$GH_BIN" pr edit "$PR" --repo "$REPO" --base "$BASE" >/dev/null ||
-        die "could not retarget PR #$PR to base $BASE"
+    if ! "$GH_BIN" pr edit "$PR" --repo "$REPO" --base "$BASE" >/dev/null; then
+        pr_json=$(fetch_pr) ||
+            die "could not retarget PR #$PR to base $BASE or re-read the live base"
+        actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
+            die 'baseRefName was unreadable after the retarget command failed'
+        if [[ $actual_base == "$BASE" ]]; then
+            RETARGET_APPLIED=true
+            die 'retarget command failed after the requested base was applied'
+        fi
+        die "could not retarget PR #$PR to base $BASE; live base=${actual_base:-missing}"
+    fi
     RETARGET_APPLIED=true
+    # Captured after the edit so evidence produced while it was in flight sorts
+    # below the freshness boundary.
+    boundary=$(retarget_boundary)
     pr_json=$(fetch_pr) || die "could not re-read PR #$PR after retarget"
     actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
         die 'baseRefName was unreadable after retarget'
