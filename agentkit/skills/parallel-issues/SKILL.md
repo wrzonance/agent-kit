@@ -18,7 +18,7 @@ Coordinate independent issues through Project validation, conflict analysis, use
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-**References are read once and batched.** Resolve them under `"$agentkit"`; use `references.md` instead of searching, and fully read named files at their step. Do not run `wc -l` first: per-file sizing spends one root turn per file. A first read over ~800 lines (this SKILL.md included) may take one bounded size probe.
+**References are read once and batched.** Resolve them under `"$agentkit"`; use `"$agentkit/references.md"` instead of searching, and fully read named files at their step. Do not run `wc -l` first: per-file sizing spends one root turn per file. A first read over ~800 lines (this SKILL.md included) may take one bounded size probe.
 
 ## Flags
 
