@@ -515,6 +515,41 @@ mutating_match=$(bash -c '
 assert_eq '' "$mutating_match" \
     'mutating content tools return before command-shaped body content is inspected'
 
+# Relative read operands resolve from the effective directory of their shell
+# segment, not always from the hook cwd.
+mkdir -p "$unresolved_repo/instructions"
+out=$(pre_input "$unresolved_repo" 'cd instructions && cat missing.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a read after cd matches the root-relative unresolved contract path'
+out=$(pre_input "$unresolved_repo" "cat $unresolved_repo/instructions/missing.md" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'an absolute unresolved read remains matched independently of effective cwd'
+
+# Output redirection destinations are writes, never read operands. A false
+# match must not spend the session claim before the later genuine read.
+redirect_sid=$(fresh_sid)
+out=$(pre_input "$unresolved_repo" 'cat README.md > instructions/missing.md' "$redirect_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an unresolved path used only as a redirection destination stays quiet'
+out=$(pre_input "$unresolved_repo" 'cat instructions/missing.md' "$redirect_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a redirection false match does not consume the later real-read advisory'
+
+# rg normally consumes a search pattern first, but --files switches every
+# positional operand into a filesystem path.
+out=$(pre_input "$unresolved_repo" 'rg instructions/missing.md README.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'ordinary rg still skips its first positional search pattern'
+out=$(pre_input "$unresolved_repo" 'rg --files instructions/missing.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'rg --files treats its first positional as a read path'
+
 # --- PreToolUse: out-of-tree walkers advise; a $HOME sweep denies once -----
 scope_repo=$(make_repo)
 mkdir -p "$tmp/contract-cache"

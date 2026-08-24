@@ -685,7 +685,8 @@ guard_unresolved_instruction_target() {
 # both covered; write/edit tools never enter this advisory path.
 guard_unresolved_instruction_read() {
     local root=$1 input=$2 cwd=$3 command_line=$4 tool_name=$5
-    local target segment verb token line positional
+    local target segment verb token line positional current candidate
+    local redirect_pending redirect_dest operand rg_files
     local -a words
 
     case $tool_name in
@@ -702,24 +703,56 @@ guard_unresolved_instruction_read() {
     fi
 
     [[ -n $command_line ]] || return 1
+    current=$(guard_scope_canonical "$cwd") || current=$cwd
     while IFS= read -r segment; do
         mapfile -t words < <(guard_tokenize_words "$segment")
         ((${#words[@]})) || continue
         verb=${words[0]#\(}
+        if [[ $verb == cd && ${#words[@]} -ge 2 ]]; then
+            candidate=$(guard_command_dir_candidate "$current" "${words[1]}") || candidate=''
+            [[ -z $candidate ]] || current=$candidate
+            continue
+        fi
         case $verb in
             cat|sed|head|tail|less|more|rg|grep|wc) ;;
             *) continue;;
         esac
         positional=0
+        redirect_pending=0
+        rg_files=no
+        if [[ $verb == rg ]]; then
+            for token in "${words[@]:1}"; do
+                [[ $token == --files ]] && rg_files=yes
+            done
+        fi
         for token in "${words[@]:1}"; do
+            if ((redirect_pending)); then
+                redirect_pending=0
+                continue
+            fi
+            # Output redirects are write destinations. Preserve any operand
+            # attached before the redirect (`cat file>sink`), but never offer
+            # the destination itself to the unresolved-read matcher.
+            operand=$token
+            redirect_dest=''
+            case $token in
+                *'>>'*) operand=${token%%>>*}; redirect_dest=${token#*>>} ;;
+                *'>'*) operand=${token%%>*}; redirect_dest=${token#*>} ;;
+            esac
+            if [[ $operand != "$token" ]]; then
+                [[ -n $redirect_dest ]] || redirect_pending=1
+                [[ $operand =~ ^[0-9]*$ ]] && operand=''
+                token=$operand
+            fi
             [[ -n $token && $token != -* ]] || continue
             # In conventional grep/rg form the first positional is a search
             # pattern, not a file operand. Matching its path-shaped text would
             # turn an unrelated search into a false unresolved-read advisory.
-            if [[ $verb == grep || $verb == rg ]] && ((positional++ == 0)); then
+            if [[ $verb == grep || $verb == rg && $rg_files == no ]] &&
+                ((positional++ == 0)); then
                 continue
             fi
-            if guard_unresolved_instruction_target "$root" "$token" "$cwd" "$line"; then
+            if guard_unresolved_instruction_target "$root" "$token" "$current" "$line"; then
                 printf '%s' "$line"
                 return 0
             fi
