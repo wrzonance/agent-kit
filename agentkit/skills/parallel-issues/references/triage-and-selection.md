@@ -403,6 +403,36 @@ Then apply, in order:
    appears, that issue/status/phase is complete; never re-invoke the helper merely to verify or
    interleave a second move.
 
+After conflict analysis and the slot cap have fixed the dispatch set, print exactly one
+single-line reconciliation in this shape:
+
+```text
+Selection funnel: requested=<slot-count> eligible=<eligible-count> dispatched=<dispatch-count> exclusions=<reason>:<count>[#<issue>,...]|none
+```
+
+`requested` is the operator's supplied slot count, bounded by the skill's maximum. For automatic
+selection with no supplied count, `requested` is the effective Limits-section slot cap. `eligible`
+is the number of candidates that survived the existing triage and mechanical eligibility rules
+before conflict/serialization and the slot cap, and `dispatched` is the number actually launched
+in this wave. Group candidates not dispatched under stable categorical reasons such as
+`blocked-by`, `tier`, `already-implemented`, `conflict-serialized`, or `slot-cap`; use the
+specific existing verdict instead of a catch-all when one applies. Each considered candidate
+appears exactly once: either in the dispatched set or in exactly one exclusion group. When more
+than one exclusion could describe it, use the earliest terminal decision made by the existing
+selection procedure, so the groups are mutually exclusive and their counts match their issue
+lists. This is reporting only; never change eligibility to make the arithmetic look fuller.
+
+Examples cover all queue shapes:
+
+```text
+Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none
+Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
+Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]
+```
+
+The first line says the full requested count was dispatched. The second makes a thin dispatch
+legible without widening it. The third is still emitted before the empty-selection stop below.
+
 Announce the chosen set, every promoted-from-Backlog issue with its ranking reason, the
 dropped-for-conflict set, and the skipped-as-blocked set before dispatching. `--fast-mode`
 removes the approval gate, not the disclosure — it proceeds straight to dispatch on that

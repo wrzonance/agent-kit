@@ -21,13 +21,15 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
 **References are read once and batched.** Reference paths resolve: open `"$agentkit/<path>"`, and read
-`"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference file, read it in full
+`"$agentkit/references.md"` — every reference, its purpose, and its read-when condition — instead of searching. The manifest is not a preload list: match each condition against the actual execution path. When a step names a reference file, read it in full
 at that step — one batched read covering several files is ideal — and do not re-read it later
 in the run. Do not probe a reference's size before reading it (`wc -l`, `stat`, `head`):
 per-file sizing spends one root turn per file before any real work starts. One exception, and
 the only thing here that consumes a line count: a **first** read of a file over ~800 lines
 (this SKILL.md included) may take one bounded size probe, because that count decides whether a
 single-shot read is affordable at all.
+
+**Single issue, no chain: dispatch reference set.** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full; exclude chain/review material. **Review-phase references:** Do not preload review-phase references during dispatch/worker waits; read on reaching their conditions.
 
 ## Flags
 
@@ -67,8 +69,7 @@ red/green iteration, the full suite once per tree state before commit;
 `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
 that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
-Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full only
-when this repository declares a Compose-driven command.
+Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
@@ -141,8 +142,6 @@ See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclo
 
 Announce which flags are active in the opening line, so the transcript records what was
 authorised rather than leaving it to be reconstructed later.
-
-**Review providers & human feedback:** follow-up loops handle CodeRabbit and `github-code-quality[bot]` per `review-remote-pr`'s provider rules — never issue a manual bot command. Human-authored reviews and comments (including feedback from the authenticated `gh` login — login equality is not agent ownership) use `review-remote-pr`'s per-item confirmation gate: surface each item with its exact proposed handling, act and reply only after explicit approval, never resolve the human's thread. Full provider table and recipes: [review-remote-pr/references/provider-rules.md](../review-remote-pr/references/provider-rules.md).
 
 ## Runtime and provider neutrality
 
@@ -427,17 +426,14 @@ referencing it) is documented in
 
 ### Step 2b: Choose the set yourself
 
-This step is for `/parallel-issues --yolo --fast-mode` invoked with no issue numbers — invoked
-with issue numbers and no thematic Backlog instruction, use them instead. **A thin Ready column
-is an invitation, not a blocker**: this procedure also runs for an attended automatic invocation
-whose eligible Ready set is thinner than the slot cap, and for a numbered invocation that names a
-thematic promotion instruction; `--fast-mode` proceeds, an attended run asks instead of refusing
-to start. Read
+Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
+**A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full before running it: `pick-issues.sh` answers the mechanical half of selection so an issue
-body cannot argue its way into a dispatch, but ranking Backlog candidates, the conflict analysis,
-the slot cap, and the batch board move are yours to apply in order. An empty selection is an
-answer; it is never a reason to widen the query, ignore a blocker, or reach for `Done`.
+in full. `pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking,
+Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
+exactly once after the final conflict and slot-cap decisions and before dispatch. Full, thin, and
+empty sets report requested/eligible/dispatched plus one reason per exclusion. An empty selection
+is an answer.
 
 ### Step 3: Conflict analysis (file-level)
 
@@ -456,12 +452,13 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan, validate via
-`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only`,
-and require `schemaVersion=1 valid`. Each entry gets a non-empty `predictedWriteSet`,
-plus `conflictMap.pairs` and revisions; include shared build/generated contracts. See [triage and selection](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets) for schema and late-overlap responses.
+Before dispatch, write the root-owned dispatch plan; validate via `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only` and require `schemaVersion=1 valid`. Each entry gets a non-empty
+repository-relative `predictedWriteSet` (paths/globs), `conflictMap.pairs`, and reasoned
+revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
+[references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
+for the schema. Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down.
 
-Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
+Combine Step 2 triage and board findings, then get approval before continuing.
 
 **With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
 colliding pair yourself, and continue. The analysis is still mandatory — `--fast-mode` removes
@@ -469,7 +466,7 @@ the approval gate, not the reasoning that gate was there to check. Two workers e
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
 
-**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Classify each
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Classify each
 overlap first: only an **interface dependency** — one issue consumes code or contracts the
 other produces, or both mutate the same executable logic — becomes a chain edge; overlap
 confined to test files or prose does not serialize — run those in parallel and merge down
@@ -1070,8 +1067,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`.
-State merge order (base first). After each predecessor, run `chain-advance.sh --retarget --pr <N> --base <default>`; verify the successor's baseRefName, `base...head`, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
