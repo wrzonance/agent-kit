@@ -22,7 +22,7 @@ entry only when its `Read when:` condition matches the path the run has reached;
 when uncertain whether a condition matches, read the reference. Entry grammar,
 one per line, checked by that gate:
 
-```
+```text
 - `$agentkit/<path relative to the skills tree>` -- <one-line purpose> | Read when: <condition>
 ```
 

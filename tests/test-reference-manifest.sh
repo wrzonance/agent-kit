@@ -218,4 +218,23 @@ for skill in parallel-issues review-remote-pr pr-to-green; do
     fi
 done
 
+# --- chained squash-merge conflict guidance stays reachable --------------
+chains_text=$(<"$skills/parallel-issues/references/chains.md")
+auto_merge_text=$(<"$skills/pr-to-green/references/auto-merge.md")
+assert_contains "$chains_text" '- Post-squash-merge conflicts' \
+    'the chain reference contents points at post-squash conflict guidance'
+assert_contains "$chains_text" '## Post-squash-merge conflicts' \
+    'the chain reference names the post-squash conflict procedure'
+assert_contains "$chains_text" 'expected once per link' \
+    'the procedure identifies the expected conflict cadence'
+assert_contains "$chains_text" 'branch is a superset' \
+    'the procedure requires an explicit branch-superset finding'
+assert_contains "$chains_text" 'blind `--theirs`' \
+    'the procedure warns that choosing trunk blindly can duplicate content'
+assert_contains "$chains_text" 'never resolved silently' \
+    'the procedure preserves the conflict reporting rule'
+assert_contains "$auto_merge_text" \
+    '../../parallel-issues/references/chains.md#post-squash-merge-conflicts' \
+    'auto-merge serialization links to the post-squash conflict procedure'
+
 finish

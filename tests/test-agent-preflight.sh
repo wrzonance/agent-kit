@@ -115,6 +115,61 @@ assert_eq 'instructions= root=AGENTS.md files=AGENTS.md,instructions/workflow.md
     "$(grep '^instructions=' <<< "$out")" \
     'a router reference that resolves is named under files='
 
+# Router paths occur in several ordinary prose forms. Each candidate must be
+# classified as resolved or unresolved, never silently absent from both sets.
+repo=$(new_repo)
+mkdir -p "$repo/instructions"
+cat > "$repo/AGENTS.md" <<'EOF'
+[Markdown](instructions/markdown.md)
+instructions/bare.md
+`instructions/backticked.md`
+@instructions/at-path.md
+EOF
+printf 'resolved markdown target\n' > "$repo/instructions/markdown.md"
+printf 'resolved bare target\n' > "$repo/instructions/bare.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+for classified in instructions/bare.md instructions/markdown.md \
+    instructions/at-path.md instructions/backticked.md; do
+    assert_contains "$instructions_line" "$classified" \
+        "router spelling is classified under files= or unresolved=: $classified"
+done
+
+# Extraction must not silently stop before join_capped can disclose overflow.
+repo=$(new_repo)
+for n in $(seq -w 1 26); do
+    printf 'instructions/topic-%s.md\n' "$n" >> "$repo/AGENTS.md"
+done
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$(grep '^instructions=' <<< "$out")" '+2-more' \
+    'router-reference truncation is visible in the contract'
+
+# Resolution work has its own fixed reference budget. When that budget is
+# exhausted the contract must disclose the partial scan instead of implying
+# that later references were classified.
+repo=$(new_repo)
+for n in $(seq -w 1 70); do
+    printf 'instructions/bounded-%s.md\n' "$n" >> "$repo/AGENTS.md"
+done
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+assert_contains "$instructions_line" 'router-truncated=yes' \
+    'exceeding the router reference budget is explicit in the contract'
+assert_contains "$instructions_line" 'router-truncated=yes unresolved=' \
+    'truncation disclosure preserves unresolved= as the final parseable field'
+
+# Input bytes are bounded too: otherwise one enormous root router can still
+# make extraction itself unbounded even when reference resolution is capped.
+repo=$(new_repo)
+printf '%270000s\n' '' > "$repo/AGENTS.md"
+printf 'instructions/after-byte-budget.md\n' >> "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+assert_contains "$instructions_line" 'router-truncated=yes' \
+    'exceeding the router byte budget is explicit in the contract'
+assert_not_contains "$instructions_line" 'after-byte-budget.md' \
+    'references beyond the disclosed byte budget are not resolved'
+
 # --- router-with-absent-targets ---------------------------------------------
 # The exact failure mode issue #338 reports: a router names paths that do not
 # exist in this checkout. Those must be named explicitly under unresolved=,
@@ -593,7 +648,7 @@ mkdir -p "$tmpdir_home"
 chmod 000 "$tmpdir_home"
 weird_tmpdir="$tmp/weird tmpdir"
 mkdir -p "$weird_tmpdir"
-HOME="$tmpdir_home" TMPDIR="$weird_tmpdir" \
+env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME HOME="$tmpdir_home" TMPDIR="$weird_tmpdir" \
     "$script" --worktree "$tmpdir_repo" > /dev/null 2>&1
 chmod 700 "$tmpdir_home"
 tmpdir_recorded=$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")
@@ -603,7 +658,7 @@ assert_not_contains "$tmpdir_recorded" 'weird tmpdir' \
     'the whitespace-bearing TMPDIR value itself is not used as root='
 tmpdir_widen_home="$tmp/tmpdir-writable-home"
 mkdir -p "$tmpdir_widen_home"
-tmpdir_widen_err=$(HOME="$tmpdir_widen_home" \
+tmpdir_widen_err=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME HOME="$tmpdir_widen_home" \
     "$script" --worktree "$tmpdir_repo" 2>&1 > /dev/null)
 assert_contains "$tmpdir_widen_err" 'keeping the more-restrictive recorded caches=' \
     'a later home-cache-writable measurement is still caught as a widening after a whitespace-bearing TMPDIR run'
@@ -622,7 +677,7 @@ assert_contains "$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")" 'rea
 home_space_repo=$(new_repo)
 home_space_home="$tmp/weird home"
 mkdir -p "$home_space_home"
-HOME="$home_space_home" TMPDIR="$tmp" \
+env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME HOME="$home_space_home" TMPDIR="$tmp" \
     "$script" --worktree "$home_space_repo" > /dev/null 2>&1
 home_space_recorded=$(grep '^caches=' "$home_space_repo/.agent/env-contract.txt")
 assert_contains "$home_space_recorded" 'reason=home-cache-unwritable' \
@@ -632,7 +687,8 @@ assert_not_contains "$home_space_root" 'weird' \
     'the whitespace-bearing HOME value itself is not used as root= (it may still be disclosed in home-cache=)'
 home_space_widen_home="$tmp/home-space-widen-writable"
 mkdir -p "$home_space_widen_home"
-home_space_widen_err=$(HOME="$home_space_widen_home" TMPDIR="$tmp" \
+home_space_widen_err=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME \
+    HOME="$home_space_widen_home" TMPDIR="$tmp" \
     "$script" --worktree "$home_space_repo" 2>&1 > /dev/null)
 assert_contains "$home_space_widen_err" 'keeping the more-restrictive recorded caches=' \
     'a later home-cache-writable measurement is still caught as a widening after a whitespace-bearing HOME run'

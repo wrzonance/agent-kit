@@ -27,7 +27,7 @@ the only thing here that consumes a line count: a **first** read of a file over 
 (this SKILL.md included) may take one bounded size probe, because that count decides whether a
 single-shot read is affordable at all.
 
-**Single issue, no chain: dispatch reference set.** Read the manifest, triage/selection rules, worker prompt, spawn contract, and six-step loop; exclude chain/serialization material and defer body/wait rules. **Review-phase references:** Do not preload review-phase references during dispatch or worker waits; read them when review reaches their condition, and read when uncertain.
+**Single issue, no chain: dispatch reference set.** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full; exclude chain/review material. **Review-phase references:** Do not preload review-phase references during dispatch/worker waits; read on reaching their conditions.
 
 ## Flags
 
@@ -67,8 +67,7 @@ red/green iteration, the full suite once per tree state before commit;
 `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
 that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
-Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full only
-when this repository declares a Compose-driven command.
+Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
@@ -425,17 +424,14 @@ referencing it) is documented in
 
 ### Step 2b: Choose the set yourself
 
-This step is for `/parallel-issues --yolo --fast-mode` invoked with no issue numbers — invoked
-with issue numbers and no thematic Backlog instruction, use them instead. **A thin Ready column
-is an invitation, not a blocker**: this procedure also runs for an attended automatic invocation
-whose eligible Ready set is thinner than the slot cap, and for a numbered invocation that names a
-thematic promotion instruction; `--fast-mode` proceeds, an attended run asks instead of refusing
-to start. Read
+Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
+**A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full before running it: `pick-issues.sh` answers the mechanical half of selection so an issue
-body cannot argue its way into a dispatch, but ranking Backlog candidates, the conflict analysis,
-the slot cap, and the batch board move are yours to apply in order. An empty selection is an
-answer; it is never a reason to widen the query, ignore a blocker, or reach for `Done`.
+in full. `pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking,
+Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
+exactly once after the final conflict and slot-cap decisions and before dispatch. Full, thin, and
+empty sets report requested/eligible/dispatched plus one reason per exclusion. An empty selection
+is an answer.
 
 ### Step 3: Conflict analysis (file-level)
 
@@ -454,14 +450,13 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan. Each entry gets a
-non-empty repository-relative `predictedWriteSet` (paths/globs), plus
-`conflictMap.pairs` and reasoned revisions; successor swaps require a revision.
-Include shared build config, lockfiles, and generated contracts in every check. See
+Before dispatch, write the root-owned dispatch plan. Each entry gets a non-empty
+repository-relative `predictedWriteSet` (paths/globs), `conflictMap.pairs`, and reasoned
+revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
 [references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
-for the schema and the chain-conversion/merge-down response to late overlap.
+for the schema. Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down.
 
-Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
+Combine Step 2 triage and board findings, then get approval before continuing.
 
 **With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
 colliding pair yourself, and continue. The analysis is still mandatory — `--fast-mode` removes
@@ -1070,7 +1065,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-At handoff, persist PRs, heads, roots, and chains with `scripts/write-merge-plan.sh`; state merge order (base first). After each predecessor, run `chain-advance.sh --retarget --pr <N> --base <default>`; verify the successor's baseRefName, `base...head`, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, persist the merge plan with `scripts/write-merge-plan.sh`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
