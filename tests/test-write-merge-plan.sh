@@ -15,6 +15,9 @@ writer="$root/agentkit/skills/parallel-issues/scripts/write-merge-plan.sh"
 plan="$tmp/dispatch-plan.json"
 merge_plan="$tmp/merge-plan.json"
 
+assert_not_contains "$(cat -- "$writer")" 'split("/").[]' \
+    'dispatch-plan validation uses jq 1.6-compatible array iteration syntax'
+
 cat >"$plan" <<'EOF'
 {
   "schemaVersion": 1,
@@ -39,6 +42,39 @@ cat >"$merge_plan" <<'EOF'
   ]]
 }
 EOF
+
+"$writer" --dispatch-plan "$plan" --validate-only >"$tmp/validate.out"
+assert_contains "$(cat "$tmp/validate.out")" 'schemaVersion=1 valid' \
+    'the write-time gate accepts a complete schema-1 dispatch plan'
+
+jq '.conflictMap.pairs = [{"issues":[11,12],"overlap":["src/shared/**"]}] |
+    .conflictMap.revisions = [{"phase":"post-selection","reason":"retain the reviewed edge"}, {"reason":"authorize merge-down","issues":[12],"paths":["src/b"]}]' \
+    "$plan" >"$tmp/valid-conflict-members.json"
+assert_rc 0 'documented conflict-map members are accepted' -- \
+    "$writer" --dispatch-plan "$tmp/valid-conflict-members.json" --validate-only
+
+for invalid_case in pair-null pair-boolean pair-malformed revision-null revision-boolean revision-malformed; do
+    case $invalid_case in
+        pair-null) filter='.conflictMap.pairs = [null]' ;;
+        pair-boolean) filter='.conflictMap.pairs = [true]' ;;
+        pair-malformed) filter='.conflictMap.pairs = [{"issues":[11,11],"overlap":[]}]' ;;
+        revision-null) filter='.conflictMap.revisions = [null]' ;;
+        revision-boolean) filter='.conflictMap.revisions = [false]' ;;
+        revision-malformed) filter='.conflictMap.revisions = [{"reason":"","issues":[],"paths":[]}]' ;;
+    esac
+    jq "$filter" "$plan" >"$tmp/$invalid_case.json"
+    assert_rc 1 "$invalid_case conflict-map member is rejected" -- \
+        "$writer" --dispatch-plan "$tmp/$invalid_case.json" --validate-only
+done
+
+jq 'del(.schemaVersion)' "$plan" >"$tmp/missing-schema.json"
+missing_schema_rc=0
+"$writer" --dispatch-plan "$tmp/missing-schema.json" --validate-only \
+    >"$tmp/missing-schema.out" 2>"$tmp/missing-schema.err" || missing_schema_rc=$?
+assert_eq '1' "$missing_schema_rc" \
+    'a dispatch plan missing schemaVersion is rejected at the write-time gate'
+assert_contains "$(cat "$tmp/missing-schema.err")" 'schemaVersion 1' \
+    'the write-time refusal names the required dispatch schema'
 
 "$writer" --dispatch-plan "$plan" --merge-plan "$merge_plan"
 assert_eq '2' "$(jq -r '.schemaVersion' "$plan")" \

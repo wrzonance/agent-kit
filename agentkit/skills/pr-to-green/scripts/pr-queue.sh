@@ -21,8 +21,13 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 usage() {
     cat >&2 <<EOF
-usage: $PROGRAM --repo OWNER/REPO [--repo-root DIR] [--merge-plan FILE]
+usage: $PROGRAM --repo OWNER/REPO [--repo-root DIR]
+                [--merge-plan FILE, --dispatch-plan FILE]
                 [--pr N ...] [--format records|table|json]
+
+  --merge-plan FILE, --dispatch-plan FILE
+      aliases for the same file after the ready-flip upgrade; dispatch-plan
+      names its schema-1 stage and merge-plan names its schema-2 stage
 EOF
     exit "${1:-2}"
 }
@@ -125,6 +130,18 @@ plan_drift=0
 if [[ -n $merge_plan ]]; then
     [[ -f $merge_plan && ! -L $merge_plan && -O $merge_plan ]] ||
         die "--merge-plan must be an owned regular file, not a symlink: $merge_plan"
+    plan_schema=$(jq -er '
+      if type == "object" and (.schemaVersion | type) == "number"
+      then .schemaVersion else empty end
+    ' "$merge_plan" 2>/dev/null) ||
+        die 'input is not a recognized dispatch/merge plan (schemaVersion is missing or invalid)'
+    case $plan_schema in
+        1)
+            die 'schema-1 dispatch plan still needs the ready-flip upgrade; run write-merge-plan.sh'
+            ;;
+        2) ;;
+        *) die "input is not a recognized dispatch/merge plan (unsupported schemaVersion: $plan_schema)" ;;
+    esac
     jq -e '
       def uint: type == "number" and . > 0 and floor == .;
       def sha: type == "string" and test("^[0-9a-f]{40}$");
@@ -147,7 +164,7 @@ if [[ -n $merge_plan ]]; then
         (($all | map(.issue) | unique | length) == ($all | length)) and
         (($all | map(.branch) | unique | length) == ($all | length)))
     ' "$merge_plan" >/dev/null 2>&1 ||
-        die 'merge plan is malformed or contains cycles, joins, or ambiguous records'
+        die 'schema-2 merge plan has invalid topology: malformed records, cycles, joins, or ambiguity'
 
     jq '([.chains | to_entries[] as $chain |
           $chain.value | to_entries[] |

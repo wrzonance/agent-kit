@@ -176,6 +176,12 @@ assert_contains "$triage_and_selection_text" 'headSha' \
     'merge-plan records pin live head verification evidence'
 assert_contains "$text" 'write-merge-plan.sh' \
     'ready-flip handoff persists the machine-readable merge plan'
+assert_contains "$text" '--validate-only' \
+    'dispatch validates schema 1 immediately after persisting the plan'
+assert_contains "$normalized_text" 'require `schemaVersion=1 valid`' \
+    'dispatch requires the schema-1 validation success marker'
+assert_contains "$triage_and_selection_text" 'same owner-only file' \
+    'dispatch-plan and merge-plan names are documented as lifecycle aliases'
 assert_contains "$triage_and_selection_text" 'shared root files' \
     'conflict analysis includes shared root files by default'
 assert_contains "$triage_and_selection_text" 'chain-conversion' \
@@ -1132,6 +1138,18 @@ assert_contains "$normalized_text" 'Read [references/chains.md](references/chain
     'late-overlap chain conversion loads chain rules before revising the plan'
 assert_contains "$normalized_text" 'successor swaps require a revision' \
     'dispatch-plan compaction preserves the successor-swap audit rule'
+assert_contains "$normalized_text" 'non-empty repository-relative `predictedWriteSet`' \
+    'dispatch-plan compaction preserves repository-relative non-empty predictions'
+assert_contains "$normalized_text" 'shared build config, lockfiles, and generated contracts' \
+    'dispatch-plan compaction preserves shared conflict inputs'
+assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
+    'ready-flip handoff preserves the in-place lifecycle upgrade'
+assert_contains "$normalized_text" 'merge updated default down and push' \
+    'ready-flip handoff preserves the default-branch merge-down and push'
+assert_contains "$normalized_text" 'Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure' \
+    'ready-flip handoff preserves chain-advance exit semantics'
+assert_contains "$normalized_text" 'baseRefName, ancestry, CI/approval, and closing linkage' \
+    'ready-flip handoff preserves the complete successor proof'
 assert_contains "$normalized_text" 'verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted' \
     'verification isolation covers Compose and result interpretation paths'
 assert_contains "$reference_manifest_text" $'```text\n- `$agentkit/<path relative to the skills tree>`' \
