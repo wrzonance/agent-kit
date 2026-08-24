@@ -688,19 +688,18 @@ guard_unresolved_instruction_read() {
     local target segment verb token line positional
     local -a words
 
+    case $tool_name in
+        Edit|Write|MultiEdit|NotebookEdit|apply_patch) return 1;;
+    esac
+
     line=$(guard_unresolved_instruction_line "$root") || return 1
 
-    case $tool_name in
-        Edit|Write|MultiEdit|NotebookEdit|apply_patch) ;;
-        *)
-            target=$(jq -r '.tool_input.file_path // empty' <<< "$input" 2> /dev/null || true)
-            if [[ -n $target ]] &&
-                guard_unresolved_instruction_target "$root" "$target" "$cwd" "$line"; then
-                printf '%s' "$line"
-                return 0
-            fi
-            ;;
-    esac
+    target=$(jq -r '.tool_input.file_path // empty' <<< "$input" 2> /dev/null || true)
+    if [[ -n $target ]] &&
+        guard_unresolved_instruction_target "$root" "$target" "$cwd" "$line"; then
+        printf '%s' "$line"
+        return 0
+    fi
 
     [[ -n $command_line ]] || return 1
     while IFS= read -r segment; do

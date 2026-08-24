@@ -502,6 +502,19 @@ out=$(pre_input "$unresolved_repo" 'grep instructions/missing.md README.md' |
 assert_eq '' "$(pre_context "$out")" \
     'an unresolved path used only as a search pattern is not treated as a read target'
 
+# The library contract itself excludes mutating content tools. PreToolUse
+# currently clears their command channel before calling it, but keeping the
+# exclusion only in the caller lets another caller consume the session claim
+# with patch/body text that merely looks like a read command.
+mutating_input=$(content_input "$unresolved_repo" 'cat instructions/missing.md' Edit)
+mutating_match=$(bash -c '
+    source "$1"
+    guard_unresolved_instruction_read "$2" "$3" "$2" \
+        "cat instructions/missing.md" Edit
+' _ "$hooks/lib/guard-lib.sh" "$unresolved_repo" "$mutating_input" 2>/dev/null)
+assert_eq '' "$mutating_match" \
+    'mutating content tools return before command-shaped body content is inspected'
+
 # --- PreToolUse: out-of-tree walkers advise; a $HOME sweep denies once -----
 scope_repo=$(make_repo)
 mkdir -p "$tmp/contract-cache"

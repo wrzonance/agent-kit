@@ -460,9 +460,30 @@ resolve_instruction_ref() {
 # and none of them existed in the checkout). Any relative, slash-qualified
 # *.md-looking token is a candidate reference; this makes no assumption about
 # the router's chosen directory name. Surrounding Markdown, backticks, and @
-# sigils are deliberately not part of the match.
+# sigils are deliberately not part of the match. Extraction reads at most
+# 256 KiB and returns at most 64 unique references per root file; the sentinel
+# makes either exhausted budget visible to probe_instructions.
 router_references() {
-    grep -oE '[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.md' -- "$1" 2>/dev/null | sort -u
+    local file=$1 byte_cap=262144 ref_cap=64 file_size truncated=no
+    local LC_ALL=C
+    local -a refs=()
+
+    # stat is constant-work disclosure of whether head's bounded stream omits
+    # bytes; keeping file content out of a shell variable also preserves NULs.
+    file_size=$(stat -c %s -- "$file" 2> /dev/null || printf '')
+    [[ $file_size =~ ^[0-9]+$ ]] || truncated=yes
+    [[ $file_size =~ ^[0-9]+$ ]] && ((file_size <= byte_cap)) || truncated=yes
+    mapfile -t refs < <(
+        head -c "$byte_cap" -- "$file" 2> /dev/null |
+            grep -oE '[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.md' 2> /dev/null |
+            sort -u | head -n "$((ref_cap + 1))"
+    )
+    if ((${#refs[@]} > ref_cap)); then
+        refs=("${refs[@]:0:ref_cap}")
+        truncated=yes
+    fi
+    ((${#refs[@]} == 0)) || printf '%s\n' "${refs[@]}"
+    [[ $truncated == no ]] || printf '%s\n' '__AGENTKIT_ROUTER_TRUNCATED__'
 }
 
 # instructions= reports a RESOLVED SET, not a pointer: the root AGENTS.md/
@@ -476,7 +497,7 @@ router_references() {
 # worktree enumeration.
 probe_instructions() {
     local -a roots=() files=() unresolved=() subdir_files=()
-    local root_list files_list unresolved_list resolved ref f
+    local root_list files_list unresolved_list resolved ref f router_truncated=no line
 
     [[ -f "$WORKTREE/AGENTS.md" && ! -L "$WORKTREE/AGENTS.md" ]] && roots+=(AGENTS.md)
     [[ -f "$WORKTREE/CLAUDE.md" && ! -L "$WORKTREE/CLAUDE.md" ]] && roots+=(CLAUDE.md)
@@ -485,14 +506,15 @@ probe_instructions() {
         files+=("$f")
         while IFS= read -r ref; do
             [[ -n "$ref" ]] || continue
+            if [[ $ref == __AGENTKIT_ROUTER_TRUNCATED__ ]]; then
+                router_truncated=yes
+                continue
+            fi
             if resolved="$(resolve_instruction_ref "$ref")"; then
                 contains "$resolved" "${files[@]+"${files[@]}"}" || files+=("$resolved")
             else
                 contains "$ref" "${unresolved[@]+"${unresolved[@]}"}" || unresolved+=("$ref")
             fi
-        # Do not cap extraction here: the final join_capped report is the
-        # bounded surface and explicitly says how many references it omitted.
-        # An earlier head silently made every later reference look nonexistent.
         done < <(router_references "$WORKTREE/$f")
     done
 
@@ -517,7 +539,12 @@ probe_instructions() {
     if (( ${#files[@]} == 0 )); then files_list="none"; else files_list="$(join_capped 24 "${files[@]}")"; fi
     if (( ${#unresolved[@]} == 0 )); then unresolved_list="none"; else unresolved_list="$(join_capped 24 "${unresolved[@]}")"; fi
 
-    emit "instructions= root=$root_list files=$files_list unresolved=$unresolved_list"
+    if [[ $router_truncated == yes ]]; then
+        line="instructions= root=$root_list files=$files_list router-truncated=yes unresolved=$unresolved_list"
+    else
+        line="instructions= root=$root_list files=$files_list unresolved=$unresolved_list"
+    fi
+    emit "$line"
 }
 
 # A read-only real git dir is the most expensive surprise in a sandbox: it turns every

@@ -144,6 +144,32 @@ out=$("$script" --worktree "$repo" 2> /dev/null)
 assert_contains "$(grep '^instructions=' <<< "$out")" '+2-more' \
     'router-reference truncation is visible in the contract'
 
+# Resolution work has its own fixed reference budget. When that budget is
+# exhausted the contract must disclose the partial scan instead of implying
+# that later references were classified.
+repo=$(new_repo)
+for n in $(seq -w 1 70); do
+    printf 'instructions/bounded-%s.md\n' "$n" >> "$repo/AGENTS.md"
+done
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+assert_contains "$instructions_line" 'router-truncated=yes' \
+    'exceeding the router reference budget is explicit in the contract'
+assert_contains "$instructions_line" 'router-truncated=yes unresolved=' \
+    'truncation disclosure preserves unresolved= as the final parseable field'
+
+# Input bytes are bounded too: otherwise one enormous root router can still
+# make extraction itself unbounded even when reference resolution is capped.
+repo=$(new_repo)
+printf '%270000s\n' '' > "$repo/AGENTS.md"
+printf 'instructions/after-byte-budget.md\n' >> "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+assert_contains "$instructions_line" 'router-truncated=yes' \
+    'exceeding the router byte budget is explicit in the contract'
+assert_not_contains "$instructions_line" 'after-byte-budget.md' \
+    'references beyond the disclosed byte budget are not resolved'
+
 # --- router-with-absent-targets ---------------------------------------------
 # The exact failure mode issue #338 reports: a router names paths that do not
 # exist in this checkout. Those must be named explicitly under unresolved=,
