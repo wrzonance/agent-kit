@@ -21,13 +21,15 @@ Run multiple independent GitHub issues simultaneously: detect Project (v2) membe
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
 **References are read once and batched.** Reference paths resolve: open `"$agentkit/<path>"`, and read
-`"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference file, read it in full
+`"$agentkit/references.md"` — every reference, its purpose, and its read-when condition — instead of searching. The manifest is not a preload list: match each condition against the actual execution path. When a step names a reference file, read it in full
 at that step — one batched read covering several files is ideal — and do not re-read it later
 in the run. Do not probe a reference's size before reading it (`wc -l`, `stat`, `head`):
 per-file sizing spends one root turn per file before any real work starts. One exception, and
 the only thing here that consumes a line count: a **first** read of a file over ~800 lines
 (this SKILL.md included) may take one bounded size probe, because that count decides whether a
 single-shot read is affordable at all.
+
+**Single issue, no chain: dispatch reference set.** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full; exclude chain/review material. **Review-phase references:** Do not preload review-phase references during dispatch/worker waits; read on reaching their conditions.
 
 ## Flags
 
@@ -67,8 +69,7 @@ red/green iteration, the full suite once per tree state before commit;
 `build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
 that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
 
-Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full only
-when this repository declares a Compose-driven command.
+Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
 **`--auto-review` is independent.** It is valid with or without the other two, and it
 grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
@@ -141,8 +142,6 @@ See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclo
 
 Announce which flags are active in the opening line, so the transcript records what was
 authorised rather than leaving it to be reconstructed later.
-
-**Review providers & human feedback:** follow-up loops handle CodeRabbit and `github-code-quality[bot]` per `review-remote-pr`'s provider rules — never issue a manual bot command. Human-authored reviews and comments (including feedback from the authenticated `gh` login — login equality is not agent ownership) use `review-remote-pr`'s per-item confirmation gate: surface each item with its exact proposed handling, act and reply only after explicit approval, never resolve the human's thread. Full provider table and recipes: [review-remote-pr/references/provider-rules.md](../review-remote-pr/references/provider-rules.md).
 
 ## Runtime and provider neutrality
 
@@ -453,14 +452,13 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan. Each entry gets a
-non-empty repository-relative `predictedWriteSet` (paths/globs), plus
-`conflictMap.pairs` and reasoned revisions; successor swaps require a revision.
-Include shared build config, lockfiles, and generated contracts in every check. See
+Before dispatch, write the root-owned dispatch plan. Each entry gets a non-empty
+repository-relative `predictedWriteSet` (paths/globs), `conflictMap.pairs`, and reasoned
+revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
 [references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
-for the schema and the chain-conversion/merge-down response to late overlap.
+for the schema. Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down.
 
-Combine with the Step 2 triage verdicts and board findings. Get user approval. Allow adjustments before continuing.
+Combine Step 2 triage and board findings, then get approval before continuing.
 
 **With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
 colliding pair yourself, and continue. The analysis is still mandatory — `--fast-mode` removes
@@ -468,7 +466,7 @@ the approval gate, not the reasoning that gate was there to check. Two workers e
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
 
-**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Classify each
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Classify each
 overlap first: only an **interface dependency** — one issue consumes code or contracts the
 other produces, or both mutate the same executable logic — becomes a chain edge; overlap
 confined to test files or prose does not serialize — run those in parallel and merge down

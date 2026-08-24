@@ -18,6 +18,7 @@ shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
 verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
+reference_manifest="$root/agentkit/skills/references.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -49,6 +50,7 @@ triage_and_selection_text=$(<"$triage_and_selection")
 normalized_triage_and_selection_text=$(tr '\n' ' ' <<<"$triage_and_selection_text" | tr -s '[:space:]' ' ')
 wait_discipline_text=$(<"$shared_wait_discipline")
 verification_isolation_text=$(<"$verification_isolation")
+reference_manifest_text=$(<"$reference_manifest")
 worker_gate_text=$(<"$worker_gate")
 root_review_section=$(awk '
     $0 == "### Root review and draft PR after a worker push" { capture=1; next }
@@ -1020,6 +1022,45 @@ assert_contains "$normalized_text" 'this SKILL.md included' \
     'the size-probe exception admits this skill is over the threshold'
 assert_not_contains "$normalized_text" 'nothing in this skill consumes a line count' \
     'the skill no longer claims nothing consumes a line count while permitting a probe'
+
+# --- issue #427: reference reads follow the selected execution path ----------
+assert_contains "$normalized_text" 'Single issue, no chain: dispatch reference set' \
+    'the common single-issue path names its dispatch reference set explicitly'
+single_issue_reference_set=$(awk '
+    /Single issue, no chain: dispatch reference set/ { capture=1 }
+    capture { print }
+    capture && /Review-phase references/ { exit }
+' "$skill")
+assert_not_contains "$single_issue_reference_set" 'references/chains.md' \
+    'the single-issue no-chain dispatch set excludes chain material'
+assert_not_contains "$single_issue_reference_set" 'review-remote-pr/references/' \
+    'the dispatch set excludes review-phase references'
+assert_contains "$single_issue_reference_set" '"$agentkit/references.md"' \
+    'the single-issue dispatch set retains the reference manifest'
+assert_contains "$single_issue_reference_set" 'references/triage-and-selection.md' \
+    'the single-issue dispatch set retains triage and selection rules'
+assert_contains "$single_issue_reference_set" 'references/worker-prompts.md' \
+    'the single-issue dispatch set retains worker prompts'
+assert_contains "$single_issue_reference_set" '.shared/spawn-contract.md' \
+    'the single-issue dispatch set retains the spawn contract'
+assert_contains "$single_issue_reference_set" '.shared/six-step-loop.md' \
+    'the single-issue dispatch set retains the six-step loop'
+assert_contains "$normalized_text" 'Do not preload review-phase references during dispatch' \
+    'review references remain gated until the review phase'
+assert_contains "$normalized_text" 'Read `references/chains.md` in full only when the selected set contains a chain' \
+    'chain material is gated on an actual selected chain'
+assert_contains "$normalized_text" 'Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down' \
+    'late-overlap chain conversion loads chain rules before revising the plan'
+assert_contains "$normalized_text" 'successor swaps require a revision' \
+    'dispatch-plan compaction preserves the successor-swap audit rule'
+assert_contains "$normalized_text" 'verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted' \
+    'verification isolation covers Compose and result interpretation paths'
+assert_contains "$reference_manifest_text" $'```text\n- `$agentkit/<path relative to the skills tree>`' \
+    'the reference-manifest grammar fence declares text syntax'
+assert_contains "$reference_manifest_text" 'verification-isolation.md` -- Compose project isolation and how to read an `agent-run.sh` failure, including the environment-retry-eligible finding | Read when: the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted' \
+    'dispatch reads verification isolation for Compose or agent-run result interpretation'
+assert_contains "$reference_manifest_text" 'adversarial-review.md` -- the Step 1b adversarial-review contract: materiality, attribution, external-service authorization, cross-provider consent, and the exit-code table | Read when: review Phase A reaches Step 1b or any skill runs an adversarial cross-review' \
+    'dispatch reads adversarial-review for Step 1b or any cross-review caller'
 
 assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
