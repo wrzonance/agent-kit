@@ -81,6 +81,10 @@ assert_eq "${#shipped[@]}" "${#entries[@]}" \
 mapfile -t read_conditions < <(sed -n 's/^- `\$agentkit\/[^`]*\.md` -- .* | Read when: \([^ ].*\)$/\1/p' "$manifest")
 assert_eq "${#shipped[@]}" "${#read_conditions[@]}" \
     'every manifest entry states when the reference must be read'
+assert_contains "$manifest_text" 'verification-isolation.md` -- Compose project isolation and how to read an `agent-run.sh` failure, including the environment-retry-eligible finding | Read when: the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted' \
+    'verification isolation applies to Compose commands and agent-run result interpretation'
+assert_contains "$manifest_text" 'adversarial-review.md` -- the Step 1b adversarial-review contract: materiality, attribution, external-service authorization, cross-provider consent, and the exit-code table | Read when: review Phase A reaches Step 1b or any skill runs an adversarial cross-review' \
+    'adversarial review applies to Step 1b and every cross-review caller'
 
 # --- negative: an entry whose file does not exist ------------------------
 fixture=$tmp/missing-file

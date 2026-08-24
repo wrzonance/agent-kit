@@ -18,6 +18,7 @@ shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
 verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
+reference_manifest="$root/agentkit/skills/references.md"
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -48,6 +49,7 @@ triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-an
 triage_and_selection_text=$(<"$triage_and_selection")
 wait_discipline_text=$(<"$shared_wait_discipline")
 verification_isolation_text=$(<"$verification_isolation")
+reference_manifest_text=$(<"$reference_manifest")
 worker_gate_text=$(<"$worker_gate")
 root_review_section=$(awk '
     $0 == "### Root review and draft PR after a worker push" { capture=1; next }
@@ -1013,6 +1015,10 @@ assert_contains "$normalized_text" 'Do not preload review-phase references durin
     'review references remain gated until the review phase'
 assert_contains "$normalized_text" 'Read `references/chains.md` in full only when the selected set contains a chain' \
     'chain material is gated on an actual selected chain'
+assert_contains "$reference_manifest_text" 'verification-isolation.md` -- Compose project isolation and how to read an `agent-run.sh` failure, including the environment-retry-eligible finding | Read when: the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted' \
+    'dispatch reads verification isolation for Compose or agent-run result interpretation'
+assert_contains "$reference_manifest_text" 'adversarial-review.md` -- the Step 1b adversarial-review contract: materiality, attribution, external-service authorization, cross-provider consent, and the exit-code table | Read when: review Phase A reaches Step 1b or any skill runs an adversarial cross-review' \
+    'dispatch reads adversarial-review for Step 1b or any cross-review caller'
 
 assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
