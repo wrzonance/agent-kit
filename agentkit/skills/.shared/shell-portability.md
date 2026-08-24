@@ -43,7 +43,7 @@ shell syntax. Do not infer portability from a successful Bash run.
 | Hazard | Standing fix |
 |---|---|
 | Multi-line `python3 -c "..."` source breaks when shell quoting crosses lines or the source contains quotes. | Write the program to a temporary file with a quoted heredoc, then run `python3` on that file inside the Bash boundary. |
-| A pipe and heredoc both feed one command, as in `producer | python3 <<'PY'`. The heredoc occupies Python's stdin, so the piped data cannot also be its input. | Write the producer output to a file, then run the heredoc-fed program and have it read that file. |
+| A pipe and heredoc both feed one command, as in `producer \| python3 <<'PY'`. The heredoc occupies Python's stdin, so the piped data cannot also be its input. | Write the producer output to a file, then run the heredoc-fed program and have it read that file. |
 
 The Bash boundary fixes the harness-shell mismatch; it does not make nested
 quoting, unsafe interpolation, or competing stdin sources correct. Reason about

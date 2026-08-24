@@ -72,12 +72,14 @@ for required in mapfile readarray BASH_REMATCH SH_WORD_SPLIT 'array index' \
     assert_contains "$shell_policy_text" "$required" \
         "the shared shell policy covers $required"
 done
+assert_contains "$shell_policy_text" 'producer \| python3' \
+    'the pipe-plus-heredoc example escapes its GFM table delimiter'
 assert_contains "$(cat "$provider_rules")" \
     '$agentkit/.shared/shell-portability.md' \
     'provider pitfalls route shell hazards to the shared policy'
 assert_not_contains "$(cat "$provider_rules")" '`python3 -c "..."` fails' \
     'provider rules do not duplicate the moved multi-line Python hazard'
-assert_not_contains "$(cat "$provider_rules")" '`cmd \| python3' \
+assert_not_contains "$(cat "$provider_rules")" '`cmd | python3`' \
     'provider rules do not duplicate the moved pipe-plus-heredoc hazard'
 
 finish
