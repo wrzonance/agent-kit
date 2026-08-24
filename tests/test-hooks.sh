@@ -2356,6 +2356,41 @@ assert_eq 'deny' "$(decision "$boundary_alias_out")" \
 assert_contains "$boundary_alias_out" "$boundary_feature/src/file.txt" \
     'external-alias denial supplies the contracted worktree correction'
 
+# Git object names are read operands, not paths the command writes. A redirect
+# makes the segment write-shaped, but must not turn a <rev>:<path> or peeled
+# <rev>^{tree} operand into a candidate write target (issue #423).
+revspec_id=0
+for revspec_read in \
+    'git show HEAD:src/file.txt' \
+    'git cat-file blob HEAD:src/file.txt' \
+    'git diff HEAD:.github/workflows/ci.yml' \
+    'git show HEAD^{tree}'; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a Git revspec read is not mistaken for a write target (issue #423): $revspec_read"
+done
+
+# Filtering read operands must not weaken either real write-target check. A
+# protected redirect still refuses, as does an output whose parent cannot be
+# securely resolved inside the contracted worktree.
+mkdir -p "$boundary_feature/.github/workflows"
+revspec_protected_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > .github/workflows/ci.yml' \
+    'worktree-boundary-revspec-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_protected_out")" \
+    'a Git revspec read cannot hide a protected redirect target (issue #423)'
+
+revspec_unresolved_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > missing:parent/out.txt' \
+    'worktree-boundary-revspec-unresolved' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_unresolved_out")" \
+    'a Git revspec read cannot hide an unresolvable redirect target (issue #423)'
+assert_contains "$revspec_unresolved_out" 'could not securely resolve write target' \
+    'the unresolvable redirect still fails closed at the contracted boundary (issue #423)'
+
 # 4. A leading `NAME=value` shell-variable assignment is never a write target.
 # `agentkit=/home/.../skills` tokenized out of the whole command line used to
 # be handed to the worktree-boundary guard as if it were a path, which then
