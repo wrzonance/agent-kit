@@ -2418,7 +2418,7 @@ guard_shell_write_targets() {
                 continue
             fi
             results+=("$token")
-        done < <(tr -s '[:space:]' '\n' <<< "$segment" 2> /dev/null |
+        done < <(guard_tokenize_words "$segment" |
             sed -E 's/^[<]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
             sed -E 's/[;|&()]+$//')
     done <<< "$segments"

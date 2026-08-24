@@ -2373,6 +2373,20 @@ for revspec_read in \
         "a Git revspec read is not mistaken for a write target (issue #423): $revspec_read"
 done
 
+# Quoted Git object names may contain spaces in their path component. They are
+# still one read operand, including when a fragment looks like a path whose
+# parent cannot be resolved at the contracted-worktree boundary.
+for quoted_revspec_read in \
+    "git show 'HEAD:src/file with missing-parent/child.txt'" \
+    "git cat-file blob 'HEAD:src/file with missing-parent/child.txt'"; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$quoted_revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-quoted-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a quoted-space Git revspec remains one read operand (issue #423 review): $quoted_revspec_read"
+done
+
 # Filtering read operands must not weaken either real write-target check. A
 # protected redirect still refuses, as does an output whose parent cannot be
 # securely resolved inside the contracted worktree.
