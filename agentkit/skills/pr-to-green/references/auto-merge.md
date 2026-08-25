@@ -80,10 +80,17 @@ evidence into exactly one of:
   above, plus a `--retarget-proof PR:FILE` naming the exact stdout line
   `../parallel-issues/scripts/chain-advance.sh --retarget` printed for this PR
   (matching base and head, and carrying `ancestry=verified`,
-  `green:post-retarget`, `approval=current:post-retarget`, and a positive
-  `closing-issues=`). Perform the merge-down and `chain-advance.sh --retarget`
-  call itself exactly as Step 5 and `chains.md` already describe; this flag
-  only lets the resulting refresh skip redisplay.
+  `green:post-retarget`, a well-formed `approval=` token, and a positive
+  `closing-issues=`). Approval is provider policy, not mechanical base safety
+  (issue #455): the proof's `approval=` token reports
+  `current:post-retarget`, `residue:stale`, `none`, or `unknown` for the
+  record, but reconciliation never requires `current:post-retarget` — a
+  trigger/observe provider settles on the current head only after the
+  ready/provider transition that follows this proof (Step 3/4), and a
+  disabled/effective-none provider may never produce a formal approval at
+  all. Perform the merge-down and `chain-advance.sh --retarget` call itself
+  exactly as Step 5 and `chains.md` already describe; this flag only lets the
+  resulting refresh skip redisplay.
 - **a verified merge** — a confirmed PR absent from the live queue, independently
   confirmed `merged:true` from a fresh read of that PR (a PR that vanished for
   any other reason — closed unmerged, deleted, access lost — is never assumed

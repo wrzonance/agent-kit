@@ -342,11 +342,18 @@ if ((full_match_ok == 0)); then
                 proof_file=${retarget_proof_file[$recon_pr]-}
                 [[ -n $proof_file ]] ||
                     die "pr $recon_pr changed base with no --retarget-proof supplied; redisplay and reconfirm before authorization"
+                # Approval is provider policy, not mechanical base safety (issue #455):
+                # a trigger/observe provider settles on the current head only after the
+                # ready/provider transition that follows this proof, and a disabled/none
+                # provider may never produce one at all. The proof's `approval=` token is
+                # therefore checked for a well-formed value, never required to be
+                # `current:post-retarget` -- ancestry, post-retarget CI, and closing
+                # linkage stay the mandatory mechanical proof.
                 if ! { grep -Fq "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null &&
                     grep -Fq " sha=$recon_live_sha " "$proof_file" 2>/dev/null &&
                     grep -Fq 'ancestry=verified' "$proof_file" 2>/dev/null &&
                     grep -Fq 'green:post-retarget' "$proof_file" 2>/dev/null &&
-                    grep -Fq 'approval=current:post-retarget' "$proof_file" 2>/dev/null &&
+                    grep -Eq 'approval=(current:post-retarget|residue:stale|none|unknown)( |$)' "$proof_file" 2>/dev/null &&
                     grep -Eq 'closing-issues=[1-9][0-9]*$' "$proof_file" 2>/dev/null; }; then
                     die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
                 fi
