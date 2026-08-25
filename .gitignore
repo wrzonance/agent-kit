@@ -1,6 +1,11 @@
 tests/tmp/
 plugin/
 
+# opencode: @opencode-ai/plugin is a devDependency for typings only (issue
+# #319); node_modules/ is never imported at runtime and never ships (see
+# tests/build-plugin.sh, which copies only opencode/{index.js,package.json}).
+opencode/node_modules/
+
 # agentkit: .agent/ is per-machine working state; onboarding regenerates
 # declarations. Unanchored (**/) so a nested .agent/ -- e.g. one a hook wrote
 # from a cwd inside agentkit/skills/ -- can never be staged either (issue #370).
