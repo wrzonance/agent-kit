@@ -77,6 +77,12 @@ classify_work_shape() {
     pattern=$(IFS='|'; printf '%s' "${signals[*]}")
     local matched
     matched=$(grep -iE -m 1 -- "$pattern" "$file" || true)
+    # The matched bytes are untrusted issue-body text about to reach a
+    # terminal verbatim -- strip every control character (CR/LF/ESC/etc.)
+    # before anything else touches it, so an embedded OSC/ANSI escape
+    # sequence (e.g. an OSC 52 clipboard write) can never ride along in the
+    # printed evidence.
+    matched=$(printf '%s' "$matched" | tr -d '[:cntrl:]')
     # Trim surrounding whitespace (markdown indentation, list markers) and cap
     # length so one long paragraph line can't blow up the printed evidence.
     matched="${matched#"${matched%%[![:space:]]*}"}"
@@ -90,39 +96,53 @@ classify_work_shape() {
 }
 
 repo_root=''
+repo_root_supplied=0
 limit=$DEFAULT_LIMIT
+limit_supplied=0
 issues=''
+issues_supplied=0
 fuzzy=''
+fuzzy_supplied=0
 as_json=0
 classify_shape_file=''
+classify_shape_supplied=0
 
+# Every query flag tracks whether it was actually SUPPLIED, not just its
+# final value: an explicit `--limit 30` is indistinguishable from the
+# default by value alone, and would otherwise silently pass the
+# --classify-shape combination check below.
 while (($#)); do
     case $1 in
         --repo-root)
             shift
             (($#)) || die_usage '--repo-root requires a directory'
             repo_root=$1
+            repo_root_supplied=1
             ;;
         --limit)
             shift
             (($#)) || die_usage '--limit requires a number'
             limit=$1
+            limit_supplied=1
             ;;
         --issues)
             shift
             (($#)) || die_usage '--issues requires a comma-separated list'
             issues=$1
+            issues_supplied=1
             ;;
         --fuzzy)
             shift
             (($#)) || die_usage '--fuzzy requires an issue number'
             fuzzy=$1
+            fuzzy_supplied=1
             ;;
         --json) as_json=1 ;;
         --classify-shape)
             shift
             (($#)) || die_usage '--classify-shape requires a file path'
             classify_shape_file=$1
+            classify_shape_supplied=1
             ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -130,8 +150,13 @@ while (($#)); do
     shift
 done
 
-if [[ -n $classify_shape_file ]]; then
-    [[ -z $repo_root && $limit == "$DEFAULT_LIMIT" && -z $issues && -z $fuzzy && $as_json == 0 ]] ||
+# classify_shape_supplied -- never a bare `-n $classify_shape_file` check --
+# is what routes into the offline classifier: an empty `--classify-shape ""`
+# must never fall through into the live gh query path below.
+if ((classify_shape_supplied)); then
+    [[ -n $classify_shape_file ]] || die_usage '--classify-shape requires a non-empty file path'
+    ((repo_root_supplied == 0 && limit_supplied == 0 && issues_supplied == 0 &&
+        fuzzy_supplied == 0 && as_json == 0)) ||
         die_usage '--classify-shape does not combine with the query flags'
     classify_work_shape "$classify_shape_file"
     exit 0

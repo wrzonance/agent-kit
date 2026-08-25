@@ -2,7 +2,7 @@
 # Suite: triage-issues.sh --classify-shape (issue #444's work-shape axis).
 #
 # The classifier is a pure text mode: it costs no forge call and needs no gh
-# on PATH at all, unlike every other triage-issues.sh mode.
+# or jq on PATH at all, unlike every other triage-issues.sh mode.
 set -uo pipefail
 
 TEST_NAME='work-shape'
@@ -15,13 +15,14 @@ tr_sh="$root/agentkit/skills/.shared/scripts/triage-issues.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-# A PATH with only grep (no gh, no jq) -- proof this mode needs neither. The
-# script is invoked via `/bin/bash "$tr_sh"` rather than executed directly,
-# so the #!/usr/bin/env bash shebang line never has to resolve `bash` off
-# this stripped PATH (same convention as test-triage-issues.sh's
-# environment-blocked case).
+# A PATH with only grep and tr (no gh, no jq) -- proof this mode needs
+# neither. The script is invoked via `/bin/bash "$tr_sh"` rather than
+# executed directly, so the #!/usr/bin/env bash shebang line never has to
+# resolve `bash` off this stripped PATH (same convention as
+# test-triage-issues.sh's environment-blocked case).
 mkdir -p "$tmp/nogh"
 ln -s -- "$(command -v grep)" "$tmp/nogh/grep"
+ln -s -- "$(command -v tr)" "$tmp/nogh/tr"
 
 no_code_fixture="$here/fixtures/work-shape-no-code.txt"
 implementation_fixture="$here/fixtures/work-shape-implementation.txt"
@@ -80,5 +81,42 @@ assert_contains "$stderr" 'does not combine' \
 # --- exit code is always 0 on a successful classification ----------------
 assert_rc 0 'a no-code verdict exits 0' -- run_classify "$no_code_fixture"
 assert_rc 0 'an implementation verdict exits 0' -- run_classify "$implementation_fixture"
+
+# --- F1 (issue #444 review): an empty path never falls through to the live
+# gh query path -----------------------------------------------------------
+stderr=$(env PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-shape "" 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '2' "$rc" 'an empty --classify-shape path is a usage error, not a silent fall-through'
+assert_contains "$stderr" '--classify-shape' \
+    'the empty-path error names the flag'
+gh_log="$tmp/gh-empty-path.log"
+: > "$gh_log"
+mkdir -p "$tmp/withgh"
+ln -s -- "$here/stub/gh" "$tmp/withgh/gh"
+ln -s -- "$(command -v grep)" "$tmp/withgh/grep"
+ln -s -- "$(command -v tr)" "$tmp/withgh/tr"
+ln -s -- "$(command -v jq)" "$tmp/withgh/jq" 2>/dev/null || true
+GH_STUB_LOG="$gh_log" PATH="$tmp/withgh" /bin/bash "$tr_sh" --classify-shape "" > /dev/null 2>&1 || true
+assert_eq '0' "$(wc -l < "$gh_log")" \
+    'an empty --classify-shape path never reaches the live gh query'
+
+# --- F1 (issue #444 review): a query flag matching the DEFAULT value is
+# still "supplied" and still rejected in combination --------------------
+stderr=$(PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-shape "$no_code_fixture" --limit 30 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '2' "$rc" \
+    '--classify-shape rejects --limit even when its value equals the default'
+assert_contains "$stderr" 'does not combine' \
+    'the default-value-limit combination error explains why it was rejected'
+
+# --- F2 (issue #444 review): control bytes in the matched signal never
+# reach stdout verbatim -----------------------------------------------------
+# An OSC/ANSI escape sequence embedded in untrusted issue-body text must be
+# stripped before the classifier prints it as evidence.
+printf 'No commits\033]52;c;aGVsbG8=\007 trailing text\n' > "$tmp/control-chars.txt"
+out=$(run_classify "$tmp/control-chars.txt")
+assert_contains "$out" 'work-shape=no-code signal=No commits]52;c;aGVsbG8= trailing text' \
+    'the printed signal strips control bytes but keeps the surrounding text readable'
+control_byte_count=$(printf '%s' "$out" | tr -d '[:print:]\n' | wc -c)
+assert_eq '0' "$control_byte_count" \
+    'no control byte (ESC, BEL, or otherwise) reaches stdout in the printed evidence'
 
 finish
