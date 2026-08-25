@@ -231,14 +231,20 @@ build_diff() {
 
 verify_consent() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
-    local payload state=$RUN_DIR/state/cross-provider-consent
+    local payload state=$RUN_DIR/state/cross-provider-consent check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     payload=$(
         "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
             --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
-    "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
-        >/dev/null 2>&1 || die 'valid consent-record.sh check is required; refusing to launch review'
+    # Capture only stderr (order matters: dup fd2 to the substitution's pipe
+    # before redirecting fd1 away) so a mismatch names the expected and
+    # recorded provider tokens instead of a bare boolean refusal.
+    check_error=$(
+        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
+            2>&1 1>/dev/null
+    ) && return 0
+    die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
 }
 
 write_blocked_result() {
@@ -301,14 +307,35 @@ receipt_line() {
         "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict"
 }
 
-initialize_finding_ledger() {
-    local ledger=$RUN_DIR/findings.ndjson
+validate_finding_ledger_if_present() {
+    local ledger=$1
     [[ ! -L $ledger ]] || die "refusing to use a findings ledger symlink: $ledger"
     if [[ -e $ledger ]]; then
         [[ -f $ledger && -O $ledger && $(stat -c %a -- "$ledger" 2>/dev/null) == 600 ]] ||
             die "findings ledger is not an owned mode-0600 regular file: $ledger"
-        return 0
     fi
+}
+
+# Runs before the provider is ever launched, so a stale or hostile leftover
+# findings ledger (e.g. from a prior attempt in a reused RUN_DIR) fails fast
+# and names the path instead of surfacing only after the expensive review
+# call already ran. A missing ledger is fine here -- it is created once the
+# review actually completes, by initialize_finding_ledger below. A safe but
+# NON-EMPTY existing ledger is also refused: silently accepting it would
+# carry a prior review's dispositions into this review's receipt. An empty
+# 0600-owned ledger stays acceptable -- the caller may legitimately
+# pre-create one before launch.
+check_finding_ledger() {
+    local ledger=$RUN_DIR/findings.ndjson
+    validate_finding_ledger_if_present "$ledger"
+    [[ ! -s $ledger ]] ||
+        die "a findings ledger from a prior review is present; use a fresh --run-dir: $ledger"
+}
+
+initialize_finding_ledger() {
+    local ledger=$RUN_DIR/findings.ndjson
+    validate_finding_ledger_if_present "$ledger"
+    [[ -e $ledger ]] && return 0
     : >"$ledger" || die "could not create findings ledger: $ledger"
     chmod 600 -- "$ledger" || die "could not secure findings ledger: $ledger"
 }
@@ -358,6 +385,7 @@ main() {
     private_dir_ensure "$RUN_DIR" '--run-dir'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'
     prepare_owned_artifact "$RUN_DIR/adversarial.result.json"
+    check_finding_ledger
     resolve_base
     build_diff
     verify_consent

@@ -12,6 +12,7 @@ invocation line.
 - Serialization protocol
 - Merge method and branch deletion
 - Board move
+- PreToolUse guard alignment
 - Still forbidden
 
 ## Consent and the ledger record
@@ -49,17 +50,75 @@ and additionally consumes:
   evidence and blocks.
 - `--provider-result RESULT` — the CodeRabbit result the confirmed
   ready/provider transition step (Section 3) printed for this head
-  (`AUTO_REVIEW`, `TRIGGERED`, `ALREADY_SPENT`,
+  (`AUTO_REVIEW`, `TRIGGERED`, `ALREADY_SPENT`, `LANDED`, `STALE_HEAD`,
   `OBSERVE_ONLY`, `DISABLED`, `BLOCKED`, or `NONE` when no CodeRabbit provider
   is declared). `TRIGGERED` means a request was posted but no terminal review
-  was yet observed — that is an in-flight review, and it blocks.
+  was yet observed — that is an in-flight review, and it blocks. `LANDED` is
+  that step's observe-mode confirmation that a terminal review postdates the
+  trigger AND targets the PR's current head; it gates the merge exactly like
+  `AUTO_REVIEW` or `ALREADY_SPENT`. `STALE_HEAD` is a terminal review that
+  postdates the trigger but targets an earlier head the PR has since moved
+  past — real review evidence, but not for this head, so it blocks exactly
+  like `TRIGGERED`.
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.
-- `--code-quality-scan-state complete|pending` — whether the
+- `--code-quality-scan-state complete|pending|not-enabled` — whether the
   `github-code-quality` scan for the current head has finished. `pending`
   blocks (a finding merely replied-to, with the rescan still outstanding, is
-  not finished).
+  not finished). `not-enabled` (issue #403) means Code Quality is disabled
+  for the repository — a stable repository fact, not a scan in flight — and
+  gates exactly like `complete`; only a confirmed "not enabled" 403 from
+  `code-quality-state.sh --probe` earns this value, never an unreadable probe
+  (network failure, an auth/scope 403, a 5xx), which stays blocked instead.
+
+Code-scanning completion is proven from `GET code-scanning/analyses` — the
+surface that actually records a completed analysis — not from a check-run's
+`app.slug`. GitHub records workflow-uploaded SARIF (a CodeQL workflow,
+clippy, etc.) under `app.slug=github-advanced-security`, not
+`github-code-scanning`; a slug-only lookup false-blocks every head with real,
+clean analyses recorded that way, which is exactly what forced the manual
+`gh pr merge --admin` in SpecR #667 (see issue #390). `ref` is always sent as
+its own query field, never string-interpolated into the URL, so a base
+branch name containing `&` or `#` cannot split or truncate the request. The
+gate looks for an analysis under `refs/pull/N/merge` whose `commit_sha`
+matches the current head — or the PR's current `merge_commit_sha` (read from
+the same PR metadata already fetched for the live-state read, never a second
+call; a null value, e.g. not yet computed or the PR isn't mergeable, never
+widens matching). Matching both is required because a `pull_request`-event
+CodeQL/SARIF upload sets `GITHUB_SHA` to the GitHub-generated merge commit
+for that ref, not the PR's own head SHA — a head-only comparison false-
+blocked every PR scanned that way. `refs/pull/N/head` is queried too and
+matched against the head SHA alone, for tools whose workflow checks out and
+scans the head ref directly. A still-running scan is read from a check run
+under either app slug, demoted to a secondary "in flight" signal only — it
+can never by itself prove completion, only rule it out, which is why it is
+consulted *first*: a rerun or a second SARIF upload already in flight for a
+head an earlier analysis already covers must still block, not read as
+already-current. A repository that plainly runs code scanning elsewhere (its
+base ref has recorded analyses, e.g. a cron or `workflow_dispatch` schedule
+the PR itself never triggers) is reported as `code-scanning: scheduled-only,
+last analysis <date> on <ref>` and does not block on scan completion for
+that reason alone — but only once a single page (100, most-recent-first) of
+the repository's own recent analysis history is read and confirmed to carry
+no `refs/pull/*` entry at all. A repository whose history *does* include a
+pull-request analysis demonstrably scans PRs, so a missing analysis for THIS
+PR is ambiguous absence, not a schedule, and stays blocked (a probe that
+cannot even read that history never grants the exemption either — same
+fail-closed default as everywhere else in this gate; and a repository with
+more than 100 newer schedule-driven analyses could in principle push a
+genuine pull-request analysis off that first page, a residual gap the
+alerts-line requirement below still covers). A scheduled-only repository
+still needs a genuinely readable, zero-count alerts line — `n/a` blocks it
+exactly like it blocks every other status; only the two-signal "never used
+at all" exception below waives that.
+
+**Never dispatch a workflow (`gh workflow run`, a `workflow_dispatch` trigger,
+or any other means) to manufacture code-scanning evidence so this gate
+passes.** That is gate-gaming, not a remedy, regardless of who or what
+initiates it — a scheduled-only repository is expected to report
+`scheduled-only` and proceed, not be forced into producing evidence it does
+not otherwise generate for this PR.
 
 The gate treats an unreadable surface as blocked, never as clean: a
 `code-scanning n/a` line (the endpoint 403/404s), a missing/malformed digest
@@ -104,7 +163,10 @@ state and the gate above both hold:
    CI if behind, and for a stacked successor run the full
    `../parallel-issues/scripts/chain-advance.sh --retarget` proof. Its own
    gate and merge only run after that revalidation is clean. No merge may
-   start while a predecessor's post-merge revalidation is outstanding.
+   start while a predecessor's post-merge revalidation is outstanding. When
+   a squash-merged predecessor makes that merge-down conflict, follow the
+   [post-squash-merge conflict procedure](../../parallel-issues/references/chains.md#post-squash-merge-conflicts)
+   before choosing a side.
 4. A merge conflict, a failed retarget proof, or a merge refusal (see below)
    parks that item by name and continues the oldest independent runnable
    root, exactly as a non-merge block does today.
@@ -132,11 +194,44 @@ The merge step alone moves the board item to `Done`. It does not chain into
 merge, and a redundant `Done` from GitHub's own Project automation is
 harmless.
 
+## PreToolUse guard alignment
+
+The repository's PreToolUse hook (`agentkit/hooks/lib/guard-lib.sh`) enforces
+one rule for every agent, on every invocation, independent of this skill: an
+agent-driven merge is sanctioned **only** through this script, `merge-pr.sh`,
+bound to a confirmed `--auto-merge` authorization record plus a `gate=PASS`
+review-completion result. Every other way an agent could reach the same forge
+action is refused unconditionally — including after an explicit operator
+authorization, and including a data string that merely mentions the refused
+words (a quoted sed/printf argument never becomes a command):
+
+- The `gh pr merge` porcelain verb.
+- The direct REST mutation the porcelain verb itself calls —
+  `gh api -X PUT repos/OWNER/REPO/pulls/N/merge` (`--method PUT` and the
+  attached `-XPUT` form included) — typed by the agent as its own command.
+- The equivalent GraphQL mutation — `gh api graphql` carrying a
+  `mergePullRequest` field value.
+
+None of those refusals lift on a retry, by design: the retry the operator
+actually wants is this script, run through the consent, gate, and
+serialization contract already documented above, not the same call typed a
+different way. `merge-pr.sh`'s own mutation call is that identical REST
+request, and the guard does not refuse it: the hook inspects only the
+**agent's own Bash command line**, never a helper script's internals, so
+`merge-pr.sh`'s subprocess call is a command line this hook never sees.
+Invoking `merge-pr.sh` itself — the sanctioned entry point — is therefore
+unaffected by any of the three refusals above, regardless of what it does
+internally.
+
 ## Still forbidden
 
 Identical to the non-`--auto-merge` prohibitions, restated because a merge
 step raises the cost of getting them wrong: force-push, history rewrite,
-merging a `BLOCKED` item, bypassing branch protection, or merging outside the
-confirmed queue. `merge-pr.sh` never retries around a forge refusal — a
-branch-protection-required-approval refusal, a stale-sha 409, or a
-not-mergeable 405 is reported verbatim and is a named stop.
+merging a `BLOCKED` item, bypassing branch protection, any of the three
+directly-typed merge forms (see "PreToolUse guard alignment" above), or
+merging outside the confirmed queue. Also forbidden: dispatching a workflow
+to manufacture gate evidence (see the code-scanning section above) — a
+`BLOCKED` gate is a signal to fix or wait, never to game. `merge-pr.sh` never
+retries around a forge refusal — a branch-protection-required-approval
+refusal, a stale-sha 409, or a not-mergeable 405 is reported verbatim and is
+a named stop.

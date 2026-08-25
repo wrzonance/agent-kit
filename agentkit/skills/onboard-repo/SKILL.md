@@ -24,6 +24,8 @@ Operator-facing recipes and reports use the resolved absolute helper path, never
 
 Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work, since a per-machine `.agent/config.env` simply is not present in a fresh clone or CI checkout), then run the resolved `agent-run.sh --cmd <declared name>`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
 
+Before running Step 0, execute its fenced recipe through an explicit `bash -c` boundary; that bootstrap is what discovers the shared reference path. After Step 0 resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full before any later multi-line recipe and use its documented boundary.
+
 ---
 
 ## Step 0 — resolve the tree once per session
@@ -273,6 +275,10 @@ git add -f .agent/config.env                  # trunk-carried: declarations only
 Legacy tracked declarations the user does not want carried are removed from the index as a separate migration.
 Fresh clones re-run onboarding to regenerate per-machine state; `.agent/` is excluded locally.
 
+Once trunk-carried, clear drift (`generator=stale`, `review-providers=undeclared`) with `bootstrap-repo.sh
+--refresh` on a non-trunk branch: it patches only the drifted generator-owned keys in place, byte-for-byte,
+prints the diff, and refuses on trunk — commit/PR the result through this same flow.
+
 ## Step 8 — check the harness itself
 
 ```bash
@@ -305,7 +311,7 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_CMD_SETUP` | install before verify |
 | `AGENT_REPO_RUNNER` | command dispatcher |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
-| `AGENT_GENERATED_PATHS` | generated path prefixes |
+| `AGENT_GENERATED_PATHS` | generated path prefixes; also exempts a base advance confined to them from `gh-pr-state.sh`'s staleness check, so `merge-gate.sh` doesn't block on it (e.g. `bench/results/`, for a post-merge results workflow) |
 | `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
 | `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |

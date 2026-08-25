@@ -24,7 +24,11 @@ accessibility/reliability, or whenever the user asks. **Document a skip** only w
 line is mechanically verifiable and low-judgment (comments/formatting, generated output with its
 parity check, a verified immutable refresh); record the exact oracle — a line-count threshold is
 never one. Preferred reviewer: the peer CLI named by `peer-cli=`, strongest reasoning model, one
-high-effort pass, never re-run after pushing fixes.
+high-effort pass, never re-run after pushing fixes. A documented skip never runs
+`adversarial-run.sh`, so `post-receipt.sh publish --skip-rationale S --oracle S` writes its own
+`status: "skipped"` result artifact beside the findings ledger rather than requiring the completed
+one only the runner produces — the skip receipt is still the one durable spend of the review
+budget.
 
 ## Attribution across the review boundary
 
@@ -135,6 +139,20 @@ successful check against this state record. A missing, malformed, unwritable, mi
 symlinked, or empty (or whitespace-only) diff record fails closed -- `payload` refuses to mint an
 identity for an empty diff itself, the same emptiness check the launcher already enforces before
 it ever calls this helper.
+
+### Provider tokens
+
+`peer-cli=` names a CLI; `adversarial-run.sh` checks the consent record against the
+model-provider token that CLI runs on, not the CLI name itself. `consent-record.sh grant
+--provider` accepts either spelling and normalizes it to the token below, so a grant recorded
+under the CLI name still satisfies the runner's check:
+
+| CLI (`peer-cli=`) | Provider token (`--provider`) |
+|---|---|
+| `codex` | `openai` |
+| `claude` | `anthropic` |
+
+A refused check names both the expected provider token and the one actually recorded.
 
 ## Availability and authoritative helpers
 

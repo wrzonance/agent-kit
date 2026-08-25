@@ -4,7 +4,7 @@ set -euo pipefail
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--dispatch-plan PATH] [--output PATH]\n' "$program" >&2
     printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
     printf '  --boundary is required for the issue-lead template: the dispatcher-selected issue-body trust mode\n' >&2
 }
@@ -19,9 +19,11 @@ worker_effort=
 declare -a write_set_args=()
 output=
 boundary_mode=
+dispatch_plan=
+dispatch_plan_supplied=0
 while (($#)); do
     case $1 in
-        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary)
+        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary|--dispatch-plan)
             (($# >= 2)) || die "$1 requires a value"
             case $1 in
                 --template) template_kind=$2 ;;
@@ -33,6 +35,7 @@ while (($#)); do
                 --write-set) write_set_args+=("$2") ;;
                 --output|-o) output=$2 ;;
                 --boundary) boundary_mode=$2 ;;
+                --dispatch-plan) dispatch_plan=$2; dispatch_plan_supplied=1 ;;
             esac
             shift 2
             ;;
@@ -40,6 +43,9 @@ while (($#)); do
         *) usage; die "unknown argument: $1" ;;
     esac
 done
+
+((dispatch_plan_supplied == 0)) || [[ -n $dispatch_plan ]] ||
+    die '--dispatch-plan requires a non-empty value'
 
 [[ $template_kind == issue-lead || $template_kind == fix-batch ]] || die '--template must be issue-lead or fix-batch'
 [[ $worktree == /* && -d $worktree ]] || die '--worktree must be an absolute directory'
@@ -521,8 +527,8 @@ emit_write_set() {
 # Like ci-gap.sh, this is a prompt to think, not an oracle: the comparison is
 # textual, it reports instead of failing, and a step it cannot cover is named
 # rather than dropped.
-SPEC_STEP_LIMIT=12
-spec_steps_truncated=0
+SPEC_STEP_RENDER_LIMIT=12
+spec_step_render_truncated=0
 declare -a spec_steps=()
 declare -a spec_step_commands=()
 declare -a spec_uncovered_steps=()
@@ -580,14 +586,6 @@ extract_spec_steps() {
             continue
         fi
         ((in_section)) || continue
-        # A bounded list: an issue body is external text, and an unbounded scan
-        # of it becomes unbounded prompt weight. The bound is disclosed rather
-        # than applied silently -- a truncated list that reads as complete is
-        # the same defect as dropping an uncovered step.
-        if ((${#spec_steps[@]} >= SPEC_STEP_LIMIT)); then
-            spec_steps_truncated=1
-            return 0
-        fi
         candidate=''
         if ((in_fence)); then
             # Inside a code block every non-blank line is a command line.
@@ -613,6 +611,13 @@ extract_spec_steps() {
         candidate=${candidate%"${candidate##*[![:space:]]}"}
         [[ -n $candidate ]] || continue
         spec_steps+=("$candidate")
+        # Coverage and the dispatch-plan record use every extracted step. Only
+        # the generated correspondence is capped: the complete issue bytes are
+        # already rendered once inside ## Spec, so repeating every index would
+        # add prompt weight without improving coverage accuracy.
+        if ((${#spec_steps[@]} > SPEC_STEP_RENDER_LIMIT)); then
+            spec_step_render_truncated=1
+        fi
     done < "$file"
     return 0
 }
@@ -753,6 +758,7 @@ emit_spec_command_precedence() {
     local index number command helper_path
     helper_path=$(shell_quote "$shared_path/agent-run.sh")
     for index in "${!spec_steps[@]}"; do
+        ((index < SPEC_STEP_RENDER_LIMIT)) || break
         number=$((index + 1))
         command=${spec_step_commands[$index]}
         if [[ -n $command ]]; then
@@ -763,9 +769,9 @@ emit_spec_command_precedence() {
                 "$number"
         fi
     done
-    if ((spec_steps_truncated)); then
+    if ((spec_step_render_truncated)); then
         printf -- '- this list stops at %d steps: the spec enumerates more. Read the rest inside `## Spec`, satisfy each through a declared command, and surface any the declared commands do not cover.\n' \
-            "$SPEC_STEP_LIMIT"
+            "$SPEC_STEP_RENDER_LIMIT"
     fi
 }
 
@@ -776,6 +782,31 @@ if [[ $template_kind == issue-lead ]]; then
         resolve_spec_steps
     fi
 fi
+
+# Report whether the root-owned plan already matches. A mismatch is evidence
+# to reconcile before spawn, never a reason to suppress this only composition.
+spec_plan_record_status=
+spec_expected_uncovered=none
+assess_dispatch_plan_record() {
+    [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan && -r $dispatch_plan ]] ||
+        die '--dispatch-plan must be an absolute readable regular file'
+    if ((${#spec_uncovered_steps[@]})); then
+        spec_expected_uncovered=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
+    fi
+    spec_plan_record_status=record-required
+    if jq -e --argjson issue "$issue" --arg indices "$spec_expected_uncovered" '
+        [.entries[] | select(.issue == $issue)] as $matches
+        | ($matches | length) == 1
+        and (if $indices == "none"
+             then ($matches[0] | has("uncoveredVerification") | not)
+             else ($matches[0].uncoveredVerification == ($indices | split(",") | map(tonumber)))
+             end)
+    ' "$dispatch_plan" > /dev/null 2>&1; then
+        spec_plan_record_status=recorded
+    fi
+    return 0
+}
+((dispatch_plan_supplied == 0)) || assess_dispatch_plan_record
 
 emit_trust_rule() {
     printf '# Generated agent-run.sh commands carry no unattended trust flags.\n'
@@ -944,24 +975,63 @@ else
     output_dir=$(dirname -- "$output")
     [[ -d $output_dir ]] || die "output directory does not exist: $output_dir"
     output_tmp=$(mktemp "$output_dir/.compose-worker-prompt.XXXXXXXXXX") || die "could not allocate output buffer in $output_dir"
-    trap 'rm -f -- "$temporary" "$output_tmp"' EXIT HUP INT TERM
+    trap 'rm -f -- "$temporary" "$output_tmp" "${plan_update_tmp:-}"' EXIT HUP INT TERM
     cat -- "$temporary" > "$output_tmp"
     mv -f -- "$output_tmp" "$output"
     output_tmp=
+    spec_plan_update=none
+    if [[ $template_kind == issue-lead && $spec_plan_record_status == record-required ]]; then
+        spec_plan_update="$output.dispatch-plan-update"
+        [[ ! -L $spec_plan_update ]] || die "refusing symlink plan update: $spec_plan_update"
+        plan_update_tmp=$(mktemp "$output_dir/.dispatch-plan-update.XXXXXXXXXX") ||
+            die "could not allocate dispatch-plan update in $output_dir"
+        if ! jq --argjson issue "$issue" --arg expected "$spec_expected_uncovered" '
+            if ([.entries[] | select(.issue == $issue)] | length) != 1 then error("issue entry mismatch") else . end
+            | if $expected == "none" then (.entries[] | select(.issue == $issue)) |= del(.uncoveredVerification)
+              else (.entries[] | select(.issue == $issue).uncoveredVerification) = ($expected | split(",") | map(tonumber)) end
+        ' "$dispatch_plan" > "$plan_update_tmp"; then
+            rm -f -- "$plan_update_tmp"
+            die "could not prepare dispatch-plan update for issue $issue"
+        fi
+        chmod 600 -- "$plan_update_tmp"
+        mv -f -- "$plan_update_tmp" "$spec_plan_update"
+    fi
+    spec_plan_sha=
+    if [[ $template_kind == issue-lead ]] && ((dispatch_plan_supplied)); then
+        plan_hash_source=$dispatch_plan
+        [[ $spec_plan_update == none ]] || plan_hash_source=$spec_plan_update
+        spec_plan_sha=$(sha256sum -- "$plan_hash_source" | cut -d ' ' -f 1)
+        [[ $spec_plan_sha =~ ^[0-9a-f]{64}$ ]] || die 'could not hash dispatch-plan record'
+    fi
+    spec_plan_update_status=none
+    [[ $spec_plan_update == none ]] || spec_plan_update_status=staged
     # The dispatch-time gap report (issue #337). Printed only on this path,
     # where stdout is not the prompt, so it can never contaminate a composition
     # written to stdout. The root records a non-zero `uncovered` on that
     # issue's dispatch-plan entry rather than leaving the worker to reconcile
     # the gap mid-implementation.
     if [[ $template_kind == issue-lead ]]; then
+        spec_step_count=${#spec_steps[@]}
+        spec_uncovered_count=${#spec_uncovered_steps[@]}
+        spec_covered_count=$((spec_step_count - spec_uncovered_count))
+        if ((spec_step_count == 0)); then
+            spec_coverage_classification=no-verification-steps
+        elif ((spec_uncovered_count == 0)); then
+            spec_coverage_classification=fully-covered
+        elif ((spec_uncovered_count > spec_covered_count)); then
+            spec_coverage_classification=majority-uncovered
+        else
+            spec_coverage_classification=partially-covered
+        fi
         uncovered_steps=none
         if ((${#spec_uncovered_steps[@]})); then
             uncovered_steps=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
         fi
-        printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s\n' \
-            "$issue" "${#spec_steps[@]}" \
-            "$((${#spec_steps[@]} - ${#spec_uncovered_steps[@]}))" \
-            "${#spec_uncovered_steps[@]}" "$uncovered_steps"
-        ((spec_steps_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_LIMIT"
+        printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s\n' \
+            "$issue" "$spec_step_count" "$spec_covered_count" "$spec_uncovered_count" \
+            "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification"
+        ((dispatch_plan_supplied == 0)) || printf 'spec-verification-plan= issue=%s status=%s expected-uncovered=%s update=%s plan-sha=%s\n' \
+            "$issue" "$spec_plan_record_status" "$spec_expected_uncovered" "$spec_plan_update_status" "$spec_plan_sha"
+        ((spec_step_render_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_RENDER_LIMIT"
     fi
 fi

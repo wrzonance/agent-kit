@@ -448,6 +448,13 @@ content_input() {
           tool_input:{file_path:"notes.md",command:$content}}'
 }
 
+read_input() {
+    jq -nc --arg cwd "$1" --arg path "$2" --arg sid "${3:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:"Read",tool_use_id:"t",transcript_path:null,
+          tool_input:{file_path:$path}}'
+}
+
 repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 printf '{"schemaVersion":1,"project":{"id":"PVT_x","number":7}}\n' > "$repo/.agent/board.json"
@@ -464,6 +471,84 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # The override sentence is load-bearing, not decorative. Denied once WITHOUT it,
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
+
+# --- PreToolUse: unresolved instruction reads are answered by the contract --
+unresolved_repo=$(make_repo)
+unresolved_line='instructions= root=AGENTS.md files=AGENTS.md unresolved=instructions/missing.md,instructions/other.md'
+printf '%s\n' "$unresolved_line" > "$unresolved_repo/.agent/env-contract.txt"
+unresolved_sid=$(fresh_sid)
+out=$(pre_input "$unresolved_repo" "sed -n '1,80p' instructions/missing.md" "$unresolved_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a contract-listed unresolved read remains allowed'
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'the unresolved-read advisory names the authoritative contract line'
+out=$(pre_input "$unresolved_repo" 'cat instructions/other.md' "$unresolved_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'the unresolved-read advisory fires once per session'
+
+out=$(read_input "$unresolved_repo" "$unresolved_repo/instructions/missing.md" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a file-path read tool receives the same unresolved-read advisory'
+
+quiet_repo=$(make_repo)
+printf 'instructions= root=none files=none unresolved=none\n' > "$quiet_repo/.agent/env-contract.txt"
+out=$(pre_input "$quiet_repo" 'cat instructions/missing.md' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'unresolved=none adds no advisory output'
+out=$(pre_input "$unresolved_repo" 'cat README.md' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'an unrelated read adds no unresolved-path advisory'
+out=$(pre_input "$unresolved_repo" 'grep instructions/missing.md README.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an unresolved path used only as a search pattern is not treated as a read target'
+
+# The library contract itself excludes mutating content tools. PreToolUse
+# currently clears their command channel before calling it, but keeping the
+# exclusion only in the caller lets another caller consume the session claim
+# with patch/body text that merely looks like a read command.
+mutating_input=$(content_input "$unresolved_repo" 'cat instructions/missing.md' Edit)
+mutating_match=$(bash -c '
+    source "$1"
+    guard_unresolved_instruction_read "$2" "$3" "$2" \
+        "cat instructions/missing.md" Edit
+' _ "$hooks/lib/guard-lib.sh" "$unresolved_repo" "$mutating_input" 2>/dev/null)
+assert_eq '' "$mutating_match" \
+    'mutating content tools return before command-shaped body content is inspected'
+
+# Relative read operands resolve from the effective directory of their shell
+# segment, not always from the hook cwd.
+mkdir -p "$unresolved_repo/instructions"
+out=$(pre_input "$unresolved_repo" 'cd instructions && cat missing.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a read after cd matches the root-relative unresolved contract path'
+out=$(pre_input "$unresolved_repo" "cat $unresolved_repo/instructions/missing.md" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'an absolute unresolved read remains matched independently of effective cwd'
+
+# Output redirection destinations are writes, never read operands. A false
+# match must not spend the session claim before the later genuine read.
+redirect_sid=$(fresh_sid)
+out=$(pre_input "$unresolved_repo" 'cat README.md > instructions/missing.md' "$redirect_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an unresolved path used only as a redirection destination stays quiet'
+out=$(pre_input "$unresolved_repo" 'cat instructions/missing.md' "$redirect_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a redirection false match does not consume the later real-read advisory'
+
+# rg normally consumes a search pattern first, but --files switches every
+# positional operand into a filesystem path.
+out=$(pre_input "$unresolved_repo" 'rg instructions/missing.md README.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'ordinary rg still skips its first positional search pattern'
+out=$(pre_input "$unresolved_repo" 'rg --files instructions/missing.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'rg --files treats its first positional as a read path'
 
 # --- PreToolUse: out-of-tree walkers advise; a $HOME sweep denies once -----
 scope_repo=$(make_repo)
@@ -916,9 +1001,13 @@ for plumbing in 'git update-ref refs/heads/main abc123' \
     assert_eq 'deny' "$(decision "$out")" "refuses plumbing: $plumbing"
 done
 
-# The read-only and no-op forms of the same verbs stay usable.
+# The read-only and no-op forms of the same verbs stay usable. `--get` is a
+# READ of core.hooksPath specifically -- issue #397's false positive #3, where
+# `git config --get core.hooksPath` was refused as if it were setting the
+# hook path that "outlives the session".
 for readonly_form in 'git gc' 'git reflog' 'git symbolic-ref --short HEAD' \
-    'git config user.name' 'git config --get remote.origin.url'; do
+    'git config user.name' 'git config --get remote.origin.url' \
+    'git config --get core.hooksPath'; do
     out=$(pre_input "$repo" "$readonly_form" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "leaves the harmless form: $readonly_form"
 done
@@ -931,6 +1020,313 @@ for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
     out=$(pre_input "$repo" "$safe" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "allows the ordinary form: $safe"
 done
+
+# --- issue #397: guards parse argv, not raw command TEXT --------------------
+# Five reported false positives, each costing a root turn because the
+# documented remedy ("make the same call again") only teaches vaguer prose:
+# a heredoc data body that happened to mention a protected path, `gh pr merge`
+# spelled out inside a sed DATA argument, the same phrase inside a printf DATA
+# argument (SpecR's independent report), `git config --get` misread as setting
+# the key it was reading, and a leading `NAME=value` shell-variable assignment
+# misread as a write target (that fifth case is exercised separately below,
+# alongside the contracted-worktree boundary fixtures it needs).
+
+# 1. A heredoc BODY is data. Text inside it that spells a protected path is
+# not editing that path -- only the segment BEFORE the heredoc opens names a
+# real write target (.agent/dispatch-plan.json here, which is not protected).
+issue397_heredoc_cmd=$(printf 'cat > .agent/dispatch-plan.json <<EOF\n{"note": "avoid touching .github/workflows/ files"}\nEOF\n')
+out=$(pre_input "$repo" "$issue397_heredoc_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a protected-path mention inside a heredoc JSON body is not an edit of it (issue #397)'
+
+# 2 & 5. `gh pr merge` spelled out inside a quoted sed/printf DATA argument is
+# one word here (guard_tokenize_words honors the quoting), not three separate
+# command tokens, so the merge guard never matches it.
+for data_string_cmd in \
+    "sed -i 's/foo/note: gh pr merge later/' MEMORY.md" \
+    "printf 'gate-override: ask before gh pr merge --merge\n' >> gate.txt"; do
+    out=$(pre_input "$repo" "$data_string_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a 'gh pr merge' phrase inside quoted data is not the command (issue #397): $data_string_cmd"
+done
+
+# The real verb, unquoted and in command position, remains denied every time.
+out=$(pre_input "$repo" 'gh pr merge 42 --squash' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'gh pr merge as the actual verb remains denied (issue #397)'
+
+# 3. `--get` is a read, never a write, of the exact same key; setting it
+# remains denied.
+out=$(pre_input "$repo" 'git config --get core.hooksPath' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'git config --get core.hooksPath is a read, not a set (issue #397)'
+out=$(pre_input "$repo" 'git config core.hooksPath /tmp/evil' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'setting core.hooksPath remains denied (issue #397)'
+
+# A redirection into a genuinely protected path remains denied too.
+out=$(pre_input "$repo" 'printf x > .github/workflows/x.yml' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a real redirect into .github/workflows/ remains denied (issue #397)'
+
+# --- issue #397 follow-up: a `$(...)`/`...` substitution INSIDE an outer
+# double-quoted argument still executes, and must not hide behind the
+# data-string exemption above. guard_tokenize_words correctly reads the
+# outer double-quoted argument as one WORD (it is one argument to printf/
+# echo), but the shell evaluates the substitution inside it before that
+# outer command ever runs -- so it is not inert data the way a single-quoted
+# argument's contents are, and adversarial review confirmed this was still
+# an allow on this branch.
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) is the fixture: the
+# guard matches command text, so expanding it here would test a different
+# string.
+for hidden_in_dquotes in \
+    'printf "%s\n" "$(git config --local core.hooksPath /tmp/evil)"' \
+    'echo "$(gh pr merge 42 --squash)"'; do
+    out=$(pre_input "$repo" "$hidden_in_dquotes" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a live substitution inside an outer double-quoted argument is not exempt data (issue #397 follow-up): $hidden_in_dquotes"
+    assert_contains "$out" 'substitution' \
+        "and explains the hidden substitution: $hidden_in_dquotes"
+done
+
+# The backtick form was already caught by the existing hidden-flag flattening
+# (it never sits inside an outer double-quoted argument), so it must keep
+# denying unchanged.
+# shellcheck disable=SC2016,SC2006  # the UNEXPANDED backtick substitution is
+# the fixture; the deprecated backtick form is exactly what is under test.
+out=$(pre_input "$repo" 'x=`gh pr merge 42 --squash`' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick-hidden gh pr merge remains denied (issue #397 follow-up)'
+
+# Two more controls, so the new substitution-extraction pass is proven
+# single-quote aware rather than newly over-blocking every `$(` byte in
+# sight. First, a plain DOUBLE-quoted literal with no substitution at all --
+# still exactly the data-string case already proven above.
+# shellcheck disable=SC2016  # same: the literal, unexpanded text is the point.
+out=$(pre_input "$repo" 'printf %s "gh pr merge 42"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted data argument with no substitution is still allowed (issue #397 follow-up)'
+# Second, a genuine `$(...)` spelled inside SINGLE quotes: the shell never
+# expands anything inside single quotes, so this substitution never executes
+# and stays inert data.
+out=$(pre_input "$repo" "sed -i 's/x/\$(gh pr merge 42)/' notes.md" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) in the message is the point.
+assert_eq 'allow' "$(decision "$out")" \
+    'a $(...) spelled inside SINGLE quotes never executes, and stays allowed (issue #397 follow-up)'
+
+# A read-only substitution payload is still just a read once unwrapped.
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+out=$(pre_input "$repo" 'echo "$(git config --get core.hooksPath)"' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a --get read inside a substitution payload is still a read (issue #397 follow-up)'
+
+# --- issue #397 follow-up (adversarial review, PR #414): two more argv-vs-
+# raw-text gaps. F1: guard_strip_git_globals removes every `-c KEY=VALUE`
+# pair before the git-config execution-key check ever saw it, so a SCOPED
+# assignment via `-c` executed the same hook without ever persisting it.
+out=$(pre_input "$repo" 'git -c core.hooksPath=/tmp/evil commit -m x' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'git -c core.hooksPath=... still executes the hook for this one command (issue #397 follow-up F1)'
+out=$(pre_input "$repo" 'git -c user.name=x commit' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'git -c with a harmless key is untouched (issue #397 follow-up F1)'
+# shellcheck disable=SC2016  # the UNEXPANDED text is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+out=$(pre_input "$repo" 'printf '"'"'%s'"'"' "git -c core.hooksPath=/x"' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted data string mentioning -c core.hooksPath= is not the command (issue #397 follow-up F1)'
+
+# F2: the leading-assignment skip in guard_shell_write_targets applied to
+# EVERY token, not just the leading prefix, so `dd`'s `of=` operand vanished
+# along with it and the real write target went unchecked.
+out=$(pre_input "$repo" 'dd if=/dev/zero of=.github/workflows/ci.yml' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    "dd's of= operand is still a write target after the command word (issue #397 follow-up F2)"
+
+# --- issue #404: one merge rule, and the guard names its own exception -----
+# The porcelain refusal used to say only "report the PR is ready instead",
+# leaving no way to tell from the message alone whether an authorized
+# --auto-merge run was expected to hit the same wall. It must now name the
+# sanctioned alternative explicitly, so the guard doc and auto-merge.md state
+# the identical rule: an agent merge goes through merge-pr.sh, bound to a
+# confirmed authorization record and a gate=PASS result, and nowhere else.
+out=$(pre_input "$repo" 'gh pr merge 42 --squash' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'gh pr merge remains denied (issue #404)'
+assert_contains "$out" 'merge-pr.sh' \
+    'the refusal names the sanctioned alternative script (issue #404)'
+assert_contains "$out" 'gate=PASS' \
+    'and the review-completion result that path requires (issue #404)'
+
+# The exact reported evidence: an operator authorization comment that merely
+# mentions the porcelain phrase as prose/data must never trip the guard --
+# same fixture shape as the #397 data-string cases above, specific to this
+# issue's reported false positive (SpecR #667).
+out=$(pre_input "$repo" \
+    'printf "gate-override: operator authorized -- do not run gh pr merge\n" >> gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an authorization comment mentioning the phrase as data is not the command (issue #404)'
+
+# --- issue #404 adversarial follow-up: the porcelain check alone is a P1 ---
+# bypass -- the identical forge action is reachable, unrefused, by typing the
+# REST or GraphQL mutation `gh pr merge` itself sends. None of these three
+# spellings share a `gh pr merge` token sequence, so guard_words_contain_
+# sequence alone let every one of them through.
+for direct_merge in \
+    'gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    'gh api --method PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    'gh api -XPUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json'; do
+    out=$(pre_input "$repo" "$direct_merge" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "the direct REST merge mutation is refused the same as the porcelain verb: $direct_merge"
+    assert_contains "$out" 'merge-pr.sh' \
+        "and names the same sanctioned alternative: $direct_merge"
+done
+
+out=$(pre_input "$repo" \
+    "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the equivalent GraphQL mergePullRequest mutation is refused too (issue #404)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and names the sanctioned alternative for the GraphQL form (issue #404)'
+
+# The neighbours that must still run: a read of the same endpoint, a PUT to a
+# different endpoint, and merge-pr.sh's own subprocess call are none of them
+# the refused shape.
+for still_allowed in \
+    'gh api -X GET repos/owner/repo/pulls/9/merge' \
+    'gh api repos/owner/repo/pulls/9/merge' \
+    'gh api -X PUT repos/owner/repo/pulls/9/requested_reviewers'; do
+    out=$(pre_input "$repo" "$still_allowed" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a non-merge or read-only gh api call is unaffected: $still_allowed"
+done
+
+# A data string mentioning the REST route as prose is not the command,
+# same argument as the porcelain case above.
+out=$(pre_input "$repo" \
+    'printf "note: do not call gh api -X PUT repos/o/r/pulls/9/merge directly\n" >> gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a data string mentioning the REST route as prose is not the command (issue #404)'
+
+# Invoking merge-pr.sh itself -- the sanctioned entry point -- is unaffected
+# by either rule: this command line names a script, not a `gh api`/`gh pr`
+# invocation, regardless of the flags it is given. The hook never sees
+# merge-pr.sh's OWN internal `gh api -X PUT` call at all -- that call runs
+# inside the script's own subprocess, on a command line this hook never
+# inspects -- which is why refusing the agent typing it directly (above) does
+# not also refuse the sanctioned path.
+out=$(pre_input "$repo" \
+    'agentkit/skills/pr-to-green/scripts/merge-pr.sh --repo owner/repo --pr 9 --head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --base main --merge-method squash --authorization-file /tmp/auth.json --gate-result /tmp/gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'invoking merge-pr.sh as the sanctioned entry point is never denied (issue #404)'
+
+# --- issue #404 CodeRabbit follow-up (PR #415): the merge-mutation check ---
+# located "gh"/"api" at word[0]/word[1] directly, so a leading NAME=value
+# assignment or execution wrapper before them, or a value-taking flag missing
+# from the skip list, silently carried the bypass past the check with no
+# refusal at all -- a real regression, not a data-string false positive.
+
+# 1. A leading `NAME=value` assignment before `gh` used to slip past the
+# word[0]/word[1] anchor entirely.
+out=$(pre_input "$repo" \
+    'GH_TOKEN=x gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a leading NAME=value assignment before gh api does not bypass the merge check (issue #404 CodeRabbit)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and still names the sanctioned alternative (issue #404 CodeRabbit)'
+
+# 2. Execution wrappers standing between the shell and `gh` -- the same
+# prefix guard_skip_command_prefix already resolves for a heredoc consumer.
+for wrapper_prefix in 'env' 'command' 'exec' 'sudo' 'nice' 'timeout 30' \
+    'time' 'nohup' 'xargs'; do
+    out=$(pre_input "$repo" \
+        "$wrapper_prefix gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json" \
+        | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "an execution wrapper before gh api does not bypass the merge check: $wrapper_prefix (issue #404 CodeRabbit)"
+done
+
+# 3. --cache takes a value; without it in the value-flag set, "1h" was
+# misread as the endpoint positional and the real .../merge endpoint two
+# tokens later was never seen.
+out=$(pre_input "$repo" \
+    'gh api --cache 1h -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    '--cache is skipped as a value-taking flag so the real endpoint is still found (issue #404 CodeRabbit)'
+
+# 4. A GraphQL mutation body supplied via --input (a FILE, not a -f/-F token)
+# is invisible to the token-value scan above; the guard fails closed and
+# inspects the file when it can safely resolve one inside this repository.
+graphql_merge_body="$repo/graphql-body-merge.json"
+printf '{"query": "mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"}' \
+    > "$graphql_merge_body"
+out=$(pre_input "$repo" 'gh api graphql --input graphql-body-merge.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a GraphQL mergePullRequest mutation supplied via --input is read and refused (issue #404 CodeRabbit)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and names the sanctioned alternative for the --input form (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api graphql --input=graphql-body-merge.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the attached --input=PATH form is read the same way (issue #404 CodeRabbit)'
+
+# 5. Fail closed: stdin, a path outside the repository, and a missing file
+# are all refused WITHOUT being able to read their content -- refusing what
+# cannot be verified safe, never assuming it is.
+out=$(pre_input "$repo" 'gh api graphql --input -' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a GraphQL mutation body on stdin cannot be inspected, so it is refused (issue #404 CodeRabbit)'
+
+outside_body="$tmp/graphql-body-outside.json"
+printf '{"query": "query { viewer { login } }"}' > "$outside_body"
+out=$(pre_input "$repo" "gh api graphql --input $outside_body" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a --input path outside the repository is refused even though its content is harmless (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api graphql --input does-not-exist.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a --input path that does not resolve to a real file is refused (issue #404 CodeRabbit)'
+
+# 6. The neighbours that must still run: a clean --input file inside the
+# repository, a plain -f query with no mutation, a leading assignment ahead
+# of an ordinary read, and --cache in front of a read all stay allowed.
+graphql_safe_body="$repo/graphql-body-safe.json"
+printf '{"query": "query { viewer { login } }"}' > "$graphql_safe_body"
+out=$(pre_input "$repo" 'gh api graphql --input graphql-body-safe.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a --input file that reads cleanly and does not mention mergePullRequest is allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" \
+    "gh api graphql -f query='query { viewer { login } }'" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a GraphQL query with no mergePullRequest mutation is still allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'GH_REPO=owner/repo gh api -X GET repos/owner/repo/pulls/9' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a leading assignment ahead of an ordinary read is still allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api --cache 1h -X GET repos/owner/repo/pulls/9' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    '--cache in front of a read is still allowed (issue #404 CodeRabbit)'
 
 # --- issue #351: a single-file `rm` is not a recursive root delete ---------
 # `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
@@ -1055,7 +1451,9 @@ assert_eq 'allow' "$(decision "$out")" \
 # The consumer-resolution walk skipped `env`'s own flags/NAME=value pairs to
 # reach the interpreter it execs, but stopped there -- any OTHER wrapper
 # standing in front of the interpreter (sudo, command, nohup, timeout, nice,
-# ionice, stdbuf, doas, setsid, xargs) made the function report "not a
+# ionice, stdbuf, doas, setsid, xargs, and -- added for issue #404's
+# CodeRabbit follow-up, once the walk moved into the shared guard_skip_
+# command_prefix helper -- exec, time) made the function report "not a
 # shell", so a QUOTED heredoc body handed to `sudo bash` or `timeout 5 bash`
 # was dropped as inert data and never inspected. Assembled with string
 # concatenation, not typed literally, so this file's own text is never a
@@ -1063,7 +1461,8 @@ assert_eq 'allow' "$(decision "$out")" \
 destructive_body='rm -r''f ~'
 for wrapper in 'sudo bash' 'command bash' 'nohup sh' 'timeout 5 bash' \
     'sudo -u root bash' 'timeout -s KILL 5 bash' 'nice -n 5 bash' \
-    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash'; do
+    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash' \
+    'exec bash' 'time bash'; do
     wrapped_heredoc=$(printf "%s <<'EOF'\n%s\nEOF" "$wrapper" "$destructive_body")
     out=$(pre_input "$repo" "$wrapped_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" \
@@ -2041,6 +2440,91 @@ assert_eq 'deny' "$(decision "$boundary_alias_out")" \
     'an external alias resolving into the root checkout is denied'
 assert_contains "$boundary_alias_out" "$boundary_feature/src/file.txt" \
     'external-alias denial supplies the contracted worktree correction'
+
+# Git object names are read operands, not paths the command writes. A redirect
+# makes the segment write-shaped, but must not turn a <rev>:<path> or peeled
+# <rev>^{tree} operand into a candidate write target (issue #423).
+revspec_id=0
+for revspec_read in \
+    'git show HEAD:src/file.txt' \
+    'git cat-file blob HEAD:src/file.txt' \
+    'git diff HEAD:.github/workflows/ci.yml' \
+    'git show HEAD^{tree}'; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a Git revspec read is not mistaken for a write target (issue #423): $revspec_read"
+done
+
+# Quoted Git object names may contain spaces in their path component. They are
+# still one read operand, including when a fragment looks like a path whose
+# parent cannot be resolved at the contracted-worktree boundary.
+for quoted_revspec_read in \
+    "git show 'HEAD:src/file with missing-parent/child.txt'" \
+    "git cat-file blob 'HEAD:src/file with missing-parent/child.txt'"; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$quoted_revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-quoted-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a quoted-space Git revspec remains one read operand (issue #423 review): $quoted_revspec_read"
+done
+
+# Filtering read operands must not weaken either real write-target check. A
+# protected redirect still refuses, as does an output whose parent cannot be
+# securely resolved inside the contracted worktree.
+mkdir -p "$boundary_feature/.github/workflows"
+revspec_protected_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > .github/workflows/ci.yml' \
+    'worktree-boundary-revspec-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_protected_out")" \
+    'a Git revspec read cannot hide a protected redirect target (issue #423)'
+
+quoted_redirect_out=$(pre_input "$boundary_feature" \
+    'printf x >".github/workflows/ci.yml"' \
+    'worktree-boundary-quoted-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$quoted_redirect_out")" \
+    'a no-space quoted redirect still exposes its protected target (issue #423 review F1)'
+assert_contains "$quoted_redirect_out" 'is under .github/workflows/' \
+    'the quoted redirect is classified as protected instead of merely unresolvable (issue #423 review F1)'
+
+attached_revspec_redirect_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt>.github/workflows/ci.yml' \
+    'worktree-boundary-attached-revspec-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$attached_revspec_redirect_out")" \
+    'an attached redirect is not discarded with its Git revspec operand (issue #423 review F2)'
+assert_contains "$attached_revspec_redirect_out" 'is under .github/workflows/' \
+    'the attached Git redirect yields its protected destination (issue #423 review F2)'
+
+revspec_unresolved_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > missing:parent/out.txt' \
+    'worktree-boundary-revspec-unresolved' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_unresolved_out")" \
+    'a Git revspec read cannot hide an unresolvable redirect target (issue #423)'
+assert_contains "$revspec_unresolved_out" 'could not securely resolve write target' \
+    'the unresolvable redirect still fails closed at the contracted boundary (issue #423)'
+
+# 4. A leading `NAME=value` shell-variable assignment is never a write target.
+# `agentkit=/home/.../skills` tokenized out of the whole command line used to
+# be handed to the worktree-boundary guard as if it were a path, which then
+# failed to resolve the bogus concatenated candidate and denied the call --
+# even though the command's real, unrelated write target sits inside the
+# contracted worktree (issue #397).
+boundary_assignment_out=$(pre_input "$boundary_feature" \
+    "agentkit=/home/user/.claude/plugins/cache/agentkit/skills printf x > $boundary_feature/src/out.txt" \
+    'worktree-boundary-assignment' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_assignment_out")" \
+    'a leading NAME=value shell assignment is never mistaken for a write target (issue #397)'
+
+# The prefix filter must never drop a REAL target: the same leading
+# assignment in front of a genuinely protected redirect still denies.
+boundary_assignment_protected_out=$(pre_input "$boundary_feature" \
+    'agentkit=/home/user/.claude/plugins/cache/agentkit/skills printf x > .github/workflows/ci.yml' \
+    'worktree-boundary-assignment-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_assignment_protected_out")" \
+    'a leading NAME=value assignment never hides a real protected-path write target (issue #397 follow-up)'
 
 # Evidence is security-sensitive state: a symlinked evidence parent is refused
 # before mkdir/chmod/append, so a tool call cannot redirect the ledger outside

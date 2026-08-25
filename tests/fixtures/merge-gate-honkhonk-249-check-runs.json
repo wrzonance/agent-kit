@@ -1,0 +1,11 @@
+{
+  "_evidence": "issue #390 -- HonkHonk #249 (2026-08-22): the check run for a real, clean clippy analysis is filed under app.slug=github-advanced-security, never github-code-scanning. A slug-only lookup misses it entirely and false-blocks the merge even though the analysis (see merge-gate-honkhonk-249-analyses.json) is complete with zero open alerts.",
+  "check_runs": [
+    {
+      "name": "clippy",
+      "status": "completed",
+      "conclusion": "success",
+      "app": { "slug": "github-advanced-security" }
+    }
+  ]
+}
