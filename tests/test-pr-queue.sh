@@ -112,6 +112,31 @@ run_queue() {
         bash "$queue" --repo owner/repo "$@"
 }
 
+help=$(bash "$queue" --help 2>&1)
+assert_contains "$help" '--merge-plan FILE, --dispatch-plan FILE' \
+    'help documents the merge-plan and dispatch-plan aliases together'
+assert_contains "$help" 'same file after the ready-flip upgrade' \
+    'help explains the alias pair as two lifecycle stages'
+
+missing_schema="$tmp/missing-schema.json"
+jq 'del(.schemaVersion)' "$tmp/dispatch-plan.json" >"$missing_schema"
+missing_schema_rc=0
+run_queue --merge-plan "$missing_schema" --format records \
+    >"$tmp/missing-schema.out" 2>"$tmp/missing-schema.err" || missing_schema_rc=$?
+assert_eq '1' "$missing_schema_rc" 'a document without a plan schema fails closed'
+assert_contains "$(cat "$tmp/missing-schema.err")" 'not a recognized dispatch/merge plan' \
+    'an unrecognized document is not mislabeled as bad topology'
+
+schema_one="$tmp/schema-one.json"
+jq '.schemaVersion = 1 | del(.generatedAt, .independent, .chains)' \
+    "$tmp/dispatch-plan.json" >"$schema_one"
+schema_one_rc=0
+run_queue --dispatch-plan "$schema_one" --format records \
+    >"$tmp/schema-one.out" 2>"$tmp/schema-one.err" || schema_one_rc=$?
+assert_eq '1' "$schema_one_rc" 'a schema-1 dispatch plan requires its lifecycle upgrade'
+assert_contains "$(cat "$tmp/schema-one.err")" 'write-merge-plan.sh' \
+    'the stale-plan refusal names the ready-flip upgrade helper'
+
 : >"$tmp/gh.log"
 out=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format records)
 assert_eq $'pr=11 issue=11 state=RUNNABLE source=plan base=main head=feat/root sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\npr=12 issue=12 state=WAITING_FOR_MERGE source=plan base=feat/root head=feat/child sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\npr=13 issue=13 state=RUNNABLE source=plan base=main head=feat/independent sha=cccccccccccccccccccccccccccccccccccccccc' \
@@ -171,8 +196,11 @@ for mode in cycle fork wrong-base malformed; do
 done
 
 jq '.chains += [[.independent[0], .chains[0][1]]]' "$tmp/dispatch-plan.json" >"$tmp/join-plan.json"
-assert_rc 1 'a plan with a multi-predecessor join fails closed' -- env \
-    GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
-    --repo owner/repo --merge-plan "$tmp/join-plan.json" --format records
+join_rc=0
+run_queue --merge-plan "$tmp/join-plan.json" --format records \
+    >"$tmp/join.out" 2>"$tmp/join.err" || join_rc=$?
+assert_eq '1' "$join_rc" 'a plan with a multi-predecessor join fails closed'
+assert_contains "$(cat "$tmp/join.err")" 'schema-2 merge plan has invalid topology' \
+    'bad schema-2 topology is distinguished from lifecycle failures'
 
 finish

@@ -55,14 +55,29 @@ never an H-item; H labels are human-only. A generic bot-only thread may be resol
 attributed reply. Human content anywhere in the thread moves the whole thread to the human lane,
 which is never auto-resolved. Do not invoke or trigger any provider, including a generic bot.
 
-GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint:
+GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint.
+
+A repository with GitHub Code Quality disabled 403s the findings endpoint every single time (issue #403: `AGENT_REVIEW_PROVIDERS=github-code-quality` used to be accepted at plan time regardless, and this step then died mid-gate). Probe reachability ONCE before fetching findings: a confirmed `state=not-enabled` is a stable repository fact, so skip with no findings to work rather than blocking. Any other probe outcome (a network failure, an auth/scope 403, a 5xx) is NOT proof of disablement and stays blocked, same as before:
 
 ```bash
-# Inspect Code Quality findings available through the public API (read-only).
-if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --summary; then
-    printf '%s\n' 'Code Quality findings unavailable; blocked, not no findings.' >&2
-    exit 1
-fi
+# Probe ONCE, then inspect Code Quality findings available through the
+# public API (read-only) only when the probe confirms the surface is
+# reachable.
+case $("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --probe) in
+    state=enabled)
+        if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --summary; then
+            printf '%s\n' 'Code Quality findings unavailable; blocked, not no findings.' >&2
+            exit 1
+        fi
+        ;;
+    state=not-enabled)
+        printf '%s\n' 'github-code-quality: reason=not-enabled — skipping, no findings to work.'
+        ;;
+    *)
+        printf '%s\n' 'Code Quality reachability unknown; blocked, not no findings.' >&2
+        exit 1
+        ;;
+esac
 # The PR finding comments and their IDs come from the Step 1 artifact — no re-query.
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 jq -r '.[] | "\(.id)\t\(.path)\t\(.line)\t\(.commit_id)"' \
@@ -137,6 +152,14 @@ counted on the `threads:` line, so counting them here would make the number unre
 enabled on the repository, or the token lacks `security_events`. It is not a failure and never
 changes the exit code.
 
+`code-quality-state.sh --probe` reports Code Quality reachability the same way, but stricter:
+only a 403 whose message specifically says the feature is not enabled resolves to `state=not-enabled`
+(treated as no findings, never a block). Any other outcome — a network failure, a 5xx, or an
+auth/scope 403 with a different message — resolves to `state=unknown` and stays blocked, because
+none of those are proof the feature is disabled (issue #403). Both
+`review-provider-config.sh --probe` (the declared-provider plan) and the Step 5 recipe above run
+this probe at most once per invocation.
+
 ## Step 1a: surfacing formats
 
 Inspect the complete paginated review, inline-comment, issue-comment, and review-thread dumps from Step 1. Route each item through the classifier. Exclude from the human gate:
@@ -181,14 +204,26 @@ comment joins it, relabel the thread H and leave it unresolved.
 
 ## CodeRabbit state check (informational — never a trigger decision)
 
-A green "CodeRabbit" status check is NOT proof a review happened. Detect the real signal in the
-comment **body** (rate-limit warnings and bare "✅ finished" acks both leave the check green):
-`gh-pr-state.sh`'s digest carries this as its `provider: coderabbit=…` line, computed from the same
-Step 1 artifact with last-signal-wins ordering — a stale walkthrough from an earlier cycle never
-masks a rate-limit on the current trigger. No separate query is needed; read the value already
-printed by the Step 1/Step 6 `--full` call.
+A green "CodeRabbit" status check is NOT proof a review happened, and neither is an acknowledgement
+comment — CodeRabbit posts a plain "Reviewing files that changed…" issue comment before its real
+review, and that ack is never a review submission. Detect the real signal on the reviews endpoint
+itself: `gh-pr-state.sh`'s digest carries this as its `provider: coderabbit=…` line, built from the
+most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED) review object in the same Step 1
+artifact — never from an issue-comment phrase scan, which an APPROVED-with-zero-actionable-threads
+review or a CHANGES_REQUESTED-with-inline-threads-only review can both leave silent
+(agent-kit#395: PR #386 read `coderabbit=none` for 15 one-minute rounds after an APPROVED review
+landed). No separate query is needed; read the value already printed by the Step 1/Step 6 `--full`
+call.
 
-- `reviewed` → a review posted real findings; work its items (Phase C Step 5).
+- `reviewed state=APPROVED|CHANGES_REQUESTED|COMMENTED threads=N since=TIMESTAMP` → a review landed
+  for the PR's CURRENT head; `threads` is that review's own inline-comment count (0 is a legitimate
+  APPROVED/COMMENTED outcome, not evidence of nothing having happened) and `since` is its submission
+  time. Work its items (Phase C Step 5) when threads are present.
+- `stale-head state=STATE commit=SHA` → a terminal review exists, but its own commit differs from
+  the PR's current head — the PR advanced after the review was requested, and this review is not
+  evidence for the code being merged now (agent-kit#395 follow-up). Never treat this as `reviewed`;
+  never treat it as `none` either — a review is real and pending re-observation, not absent. Keep
+  waiting; do not re-trigger.
 - `none` → no matching review has landed yet. Do NOT post any review command or infer whether the
   provider is configured for automatic, incremental, or manual review; continue the current phase
   and leave any trigger decision to the user.
@@ -365,19 +400,22 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 
 ## Pitfalls
 
+Shell-composition pitfalls are centralized in ["$agentkit/.shared/shell-portability.md"](../../.shared/shell-portability.md). Read it before running any multi-line recipe; its Bash boundary, zsh differences, Python quoting rule, and pipe-plus-heredoc stdin rule are intentionally not duplicated here.
+
 | Problem | Fix |
 |---|---|
 | `resolveReviewThread` returns NOT_FOUND | You passed REST comment ID, not GraphQL thread node ID (`PRRT_...`). Fetch thread IDs via GraphQL first. |
 | Waiting for a review after the ready flip | The flip's review behavior is repository/provider configuration. Report draft-phase complete; do not trigger a review yourself. |
 | Waiting for a review after a push | Re-check observed provider state in bounded rounds. Report fixes pushed; the user decides whether to trigger anything. |
 | `github-code-quality[bot]` finding remains after a fix | Wait for the next Code Quality scan and inspect the refreshed finding state. Do not manually resolve it as a substitute for the scan. |
+| Code Quality findings request 403s mid-gate | Code Quality is declared but disabled for this repository (issue #403). Probe once with `code-quality-state.sh --probe` before fetching findings; `state=not-enabled` means skip with no findings, never a block. |
 | Inaccurate Code Quality finding | Reply with a concrete reason, then use GitHub's **Dismiss finding** action with that reason. The public Code Quality REST API is read-only for findings; do not guess a mutation. |
 | Code Quality dismissal command temptation | `PUT /pulls/$PR/reviews/$REVIEW_ID/dismissals` dismisses an entire PR review, not one finding. Never use it for a single Code Quality comment. |
 | Code Quality vs code scanning API confusion | `github-code-quality[bot]` findings use the Code Quality surface. `/code-scanning/alerts/...` is a different resource; use it only after independently identifying a code-scanning alert. |
 | CodeRabbit review body vs inline comments | Review bodies, inline comment bodies, and PR conversation comment bodies can include actionable nitpick sections. Read full bodies from the Step 1 temp files; do not rely only on review threads. |
 | Thread already resolved | Skip — don't re-resolve. Only target `isResolved: false` threads. |
 | Multiple provider review cycles | One consolidated fix push is the provider commit budget for that round. Reconcile unresolved findings from saved state; if the provider reports incremental-review autopause, stop and report it instead of spending another trigger. |
-| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green. Detect the real signal in the comment **body** (`Actionable comments posted` / `walkthrough` = reviewed; `Review limit reached` = throttled — wait for provider state, don't buy credits). `none` = no matching review has landed. |
+| CodeRabbit check green but no real review | Rate-limit warning / bare "✅ finished" ack leaves the check green, and the ack is never a review submission either. Detect the real signal on the reviews endpoint (`gh-pr-state.sh`'s `provider: coderabbit=reviewed state=… threads=… since=…`); an issue-comment `Review limit reached` = throttled — wait for provider state, don't buy credits. `none` = no terminal review has landed. |
 | Body nitpick has no thread ID | Fix or decline it anyway, then open a NEW anchored thread on the nitpick's file/lines referencing the commit and mentioning @coderabbitai. Only `PRRT_...` threads can be resolved through GraphQL. |
 | Body nitpick documented as top-level comment | A floating `gh pr comment` is disconnected from the code — CodeRabbit can't tie it to the change. Use the anchored-thread POST above; top-level comment is the 422 fallback only. |
 | Threads resolved before body nitpicks handled | Resolution can arm auto-approve. Follow the ordering above: nitpicks first, canonical replies next, acknowledged settlement last. |
@@ -391,5 +429,3 @@ Post declines as replies **on the specific code comment**, mention the relevant 
 | Backticks in a comment body get command-substituted | ``-f body="Fixed in `abc1234`."`` is a double-quoted shell string, so the shell runs `abc1234` as a command and posts `Fixed in .` — the SHA vanishes silently. Never interpolate a body into a shell string. Write it to a file with a **quoted** heredoc (`<<'EOF'`) and inject varying values with `printf` arguments, then post it with `gh-comment.sh --body-file`. |
 | Posted reply body doesn't match intended text | Post through `gh-comment.sh`: it sends the file's exact bytes, re-fetches the stored comment, and `cmp`s them, printing a unified diff on mismatch. Resolve or dismiss only when it printed a stdout line AND exited `0`. |
 | Reply to comment returns 404 | URL must include PR number: `repos/$REPO/pulls/$PR/comments/$COMMENT_ID/replies`. The shorter form without `$PR` returns 404. |
-| `python3 -c "..."` fails with `unmatched "` | zsh breaks on double-quoted multi-line python. Never use `python3 -c "..."` for multi-line scripts; write the script to a file first, then run it. |
-| `cmd \| python3 << 'EOF'` SyntaxError | Pipe and heredoc both claim stdin — the shell concatenates them and Python sees the piped bytes prepended to the script. Always write the output to a file first (`cmd > file.json`), then `python3 << 'EOF'` reading the file. |

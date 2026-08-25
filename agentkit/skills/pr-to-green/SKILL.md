@@ -17,6 +17,8 @@ is not another review engine.
 Reference paths resolve: open `"$agentkit/<path>"`, and read `"$agentkit/references.md"` —
 every reference and its purpose — instead of searching.
 
+Before running any multi-line recipe here or in a companion reference, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full. Every `bash` fence is a Bash recipe body; use that reference's explicit `bash -c` boundary rather than pasting the body into the harness shell.
+
 ## Flags
 
 | Flag | Effect |
@@ -101,7 +103,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | Environment, isolated worktree, Phase A/C review loop, adversarial receipt, human gate | `../review-remote-pr/SKILL.md` and its lazy references |
 | Provider plan before mutation | `../.shared/scripts/review-provider-config.sh` |
 | Draft discovery, explicit resumption, stack graph, stable queue | `scripts/pr-queue.sh` |
-| Confirmed ready transition and provider capability action | `scripts/review-transition.sh` |
+| Confirmed ready transition and provider capability action, and its `--observe` landed-review check | `scripts/review-transition.sh` |
 | CI/provider/finding evidence | `../review-remote-pr/scripts/gh-pr-state.sh` |
 | Canonical replies and bot-response settlement | `../review-remote-pr/scripts/thread-action.sh` |
 | Post-merge retarget proof | `../parallel-issues/scripts/chain-advance.sh` |
@@ -121,22 +123,36 @@ Establish the environment through review-remote-pr Step 0, then run
 records; do not infer installed bots from checks or issue prose.
 
 Run `pr-queue.sh` with the persisted schema-v2 dispatch/merge plan when one was
-handed off by `parallel-issues`. Without one, use forge derivation. Automatic
+handed off by `parallel-issues`. Its `--dispatch-plan` and `--merge-plan`
+options are aliases for that same owner-only file before and after the
+ready-flip upgrade; this consumer requires the schema-2 stage. Without one, use forge derivation. Automatic
 discovery selects drafts. An explicitly named ready PR may resume an interrupted
 run. The queue helper reports `RUNNABLE`, `WAITING_FOR_MERGE`,
 `RETARGET_REQUIRED`, or `BLOCKED` and fails closed on ambiguous topology.
 
-Show the human table and the exact provider records. State every chain base to
-tip, then independent roots in queue order. When `--auto-merge` is on the
-invocation line, the displayed plan must say plainly that confirmed merges are
-included, naming the merge method and delete-branch setting. Do not mutate
-until the user confirms the displayed provider plan, verified dependency
-graph, and exact serial queue.
+Show the human table and the exact provider records, and for every declared
+trigger-capable provider state the per-run action it will be authorized for:
+`trigger` by default, or `observe`/`disabled` when the operator has instructed
+no ping for that provider on this queue. State every chain base to tip, then
+independent roots in queue order. When `--auto-merge` is on the invocation
+line, the displayed plan must say plainly that confirmed merges are included,
+naming the merge method and delete-branch setting. Do not mutate until the
+user confirms the displayed provider plan (including any per-provider
+trigger/observe/disabled decision), verified dependency graph, and exact
+serial queue.
 
 After confirmation, write an owner-only authorization JSON file containing:
 
 - `repository` and `readyTransition: true`;
-- `providers`, containing exactly the displayed triggerable providers;
+- `providers`, one record per displayed trigger-capable provider:
+  `{"name":"coderabbit","action":"trigger|observe|disabled","source":"..."}`.
+  `action` is `trigger` unless the operator instructed otherwise for that
+  provider, in which case it is `observe` or `disabled` with
+  `source:"operator-instruction"` (`source` is `"capability-default"` for an
+  unmodified `trigger`); `review-transition.sh` flips ready and, for a
+  `disabled`/`observe` action, posts nothing and reports
+  `result=DISABLED`/`OBSERVE_ONLY source=<source>` instead of requiring a
+  round trip to re-ask;
 - `queue`, with each confirmed PR's number, current state, full head SHA, and
   confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`);
 - when `--auto-merge` was confirmed: `autoMerge: true`, `mergeMethod`, and
@@ -168,8 +184,17 @@ Do not let earlier confirmation authorize a new SHA.
 Invoke `review-transition.sh` only for the current confirmed `RUNNABLE` record.
 It may safely resume an already-ready PR. Treat its provider result as follows:
 
-- `AUTO_REVIEW`, `TRIGGERED`, or `ALREADY_SPENT`: enter Phase C and consume
+- `AUTO_REVIEW`, `ALREADY_SPENT`, or `LANDED`: enter Phase C and consume
   observed findings through review-remote-pr.
+- `TRIGGERED since=TIMESTAMP`: a request was just posted with no terminal
+  review observed yet — poll `gh-pr-state.sh`'s `provider:` digest line, or
+  `review-transition.sh --observe --pr N --since TIMESTAMP` in bounded rounds,
+  until it reports a landed review (or `LANDED`); never re-run the full
+  ready-transition flow just to re-derive the same fact.
+- `STALE_HEAD`: a terminal review exists but targets a head the PR has since
+  moved past (it postdates the trigger, but its own head SHA does not match
+  the PR's current head) — never evidence-green; keep polling `--observe`, do
+  not re-trigger, and never treat it like `LANDED`.
 - `OBSERVE_ONLY`: consume findings and wait for provider-owned rescans; never
   manufacture a request.
 - `DISABLED`: add no provider wait or approval requirement.

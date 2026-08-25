@@ -84,11 +84,71 @@ if [[ -z $repo_root ]]; then
 fi
 [[ -d $repo_root ]] || die_usage "not a directory: $repo_root"
 
+# --- trunk-carried declarations: refuse on trunk, before any network call --
+# Repositories that COMMIT .agent/config.env / .agent/board.json (via a
+# .gitignore negation, then `git add`) are the documented layout for
+# worktree fleets and CI (onboard-repo Step 7): a per-machine, locally
+# ignored file simply is not present in a fresh clone or a CI checkout. Ask
+# git's index, not the ignore rules, since a negation can exist without
+# anything having been committed under it yet.
+config_tracked=0
+if git -C "$repo_root" ls-files --error-unmatch -- .agent/config.env > /dev/null 2>&1; then
+    config_tracked=1
+fi
+board_tracked=0
+if git -C "$repo_root" ls-files --error-unmatch -- .agent/board.json > /dev/null 2>&1; then
+    board_tracked=1
+fi
+
+if ((!dry_run)) && ((refresh || force)) && ((config_tracked || board_tracked)); then
+    current_branch=$(git -C "$repo_root" symbolic-ref --short -q HEAD 2> /dev/null || true)
+
+    # `refs/remotes/origin/HEAD` is only ever set by `git clone` (or an
+    # explicit `git remote set-head`); it is routinely absent after
+    # `init` + `remote add`, in many CI checkouts, and it can be pruned.
+    # Falling back to a literal guess here would silently miss a non-`main`
+    # trunk (e.g. `master`) and let a refresh patch tracked declarations
+    # directly on trunk -- the exact outcome this guard exists to prevent.
+    # Stay network-free (this check deliberately runs before the gh
+    # preflight): prefer the local remote-HEAD ref, then the repository's
+    # OWN declared AGENT_BASE_BRANCH -- a tracked config.env exists by
+    # definition whenever config_tracked is set. If neither is available,
+    # refuse rather than guess: proceeding on an unproven trunk name risks
+    # writing to trunk itself, which is the destructive direction.
+    trunk_branch=$(git -C "$repo_root" symbolic-ref --short refs/remotes/origin/HEAD 2> /dev/null |
+        sed 's|^origin/||' || true)
+    if [[ -z $trunk_branch && -r $repo_root/.agent/config.env ]]; then
+        trunk_branch=$(sed -nE 's/^[[:space:]]*AGENT_BASE_BRANCH=[[:space:]]*(.*)$/\1/p' \
+            "$repo_root/.agent/config.env" 2> /dev/null | tail -1)
+    fi
+    if [[ -z $trunk_branch ]]; then
+        die "could not determine the trunk branch for $repo_root to check the trunk-carried refresh guard
+
+No local refs/remotes/origin/HEAD and no AGENT_BASE_BRANCH declaration were
+found. Guessing here risks patching trunk-carried .agent declarations
+directly on trunk, so refusing instead. Set the remote HEAD
+(git remote set-head origin -a) or declare AGENT_BASE_BRANCH in
+.agent/config.env, then re-run. Nothing was written."
+    fi
+    if [[ -z $current_branch || $current_branch == "$trunk_branch" ]]; then
+        die "refusing to refresh trunk-carried .agent declarations on ${current_branch:-a detached HEAD} (trunk: $trunk_branch)
+
+This repository commits .agent/config.env and/or .agent/board.json -- the
+documented layout for worktree fleets and CI (onboard-repo Step 7). The
+trunk-carried refresh path (neither --refresh nor --force runs it against
+trunk) patches only the drifted generator-owned keys in the working tree,
+prints the diff, and leaves commit/PR to the onboarding flow. Check out a
+non-trunk branch and re-run:
+  $PROGRAM --refresh --repo-root $repo_root
+Nothing was written."
+    fi
+fi
+
 # --- preflight: environment-blocked is exit 3, not a failure ---------------
 # This runs before ANY external command, including the coreutils used to locate
 # the resolver below. Otherwise a stripped PATH dies at 127 on `dirname` and
 # reports a missing-command error instead of the honest "gh is not installed".
-for tool in gh jq dirname readlink sha256sum date mktemp; do
+for tool in gh jq dirname readlink sha256sum date mktemp diff; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
 done
 # `gh auth status` exits NON-ZERO when any configured entry fails, even while a
@@ -499,8 +559,12 @@ fi
 
 if ((!force)); then
     for existing in config.env board.json; do
-        [[ -e $repo_root/.agent/$existing ]] &&
-            die ".agent/$existing already exists; pass --force to overwrite"
+        [[ -e $repo_root/.agent/$existing ]] || continue
+        if { [[ $existing == config.env ]] && ((config_tracked)); } ||
+            { [[ $existing == board.json ]] && ((board_tracked)); }; then
+            die ".agent/$existing already exists and is tracked (trunk-carried layout); pass --refresh or --force on a non-trunk branch to patch its drifted generator-owned keys in place -- neither flag discards a declaration on a tracked file, matching how --force already treats an untracked config.env"
+        fi
+        die ".agent/$existing already exists; pass --force to overwrite"
     done
 fi
 
@@ -530,7 +594,7 @@ fi
 assert_effective_ignore() {
     local committed_path details
     git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
-    for committed_path in .agent/config.env .agent/board.json; do
+    for committed_path in "$@"; do
         if ! git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1; then
             details=$(git -C "$repo_root" check-ignore --no-index -v -- \
                 "$committed_path" 2> /dev/null || true)
@@ -542,32 +606,152 @@ assert_effective_ignore() {
     done
 }
 
+# --- trunk-carried patch: touch only generator-owned keys, byte-for-byte ---
+# A committed config.env (the documented layout above) gets its EXISTING file
+# line-patched in place, never regenerated from scratch, so maintainer
+# comments, ordering, and every declaration this generator does not own
+# survive untouched -- called for BOTH --refresh and --force on a tracked
+# file: --force never discarded a declared key even for an untracked
+# config.env ("--force regenerates DISCOVERED facts; it must not throw away
+# DECLARED ones", below), so a tracked file gets the same guarantee, not a
+# blind overwrite. Only the keys "everything above is rediscoverable from
+# the forge" owns -- the same list the carry-forward filter protects -- are
+# eligible; provider/label/command declarations are a maintainer decision
+# this script has never touched and still does not.
+# shellcheck disable=SC2016  # single-quoted on purpose: a plain word list, not expansion
+readonly GENERATOR_OWNED_KEYS='AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_OWNER AGENT_PROJECT_NUMBER AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_WORKTREE_ROOT AGENT_ONBOARDED_BY'
+
+patch_tracked_config() {
+    local target=$1 fresh=$2
+    local key val patched updated=0 unchanged=0
+    declare -A new_val=()
+    # shellcheck disable=SC2086  # GENERATOR_OWNED_KEYS is a deliberate word list
+    for key in $GENERATOR_OWNED_KEYS; do
+        val=$(sed -nE "s/^${key}=//p" "$fresh" | tail -n 1)
+        [[ -n $val ]] && new_val[$key]=$val
+    done
+
+    if [[ ! -e $target ]]; then
+        # --reset archived the prior working-tree copy away; there is nothing
+        # left to patch, so this is a first write, same as the untracked path.
+        cp -- "$fresh" "$target"
+        printf 'wrote %s (no prior working-tree copy to patch)\n' "$target"
+        return 0
+    fi
+
+    patched=$(mktemp "$staging/config-patched.XXXXXX")
+    declare -A seen=()
+    local line matched_key value_here
+    while IFS= read -r line || [[ -n $line ]]; do
+        matched_key=''
+        for key in "${!new_val[@]}"; do
+            if [[ $line == "$key="* ]]; then
+                matched_key=$key
+                break
+            fi
+        done
+        if [[ -n $matched_key ]]; then
+            seen[$matched_key]=1
+            value_here=${line#"$matched_key"=}
+            if [[ $value_here == "${new_val[$matched_key]}" ]]; then
+                printf '%s\n' "$line" >> "$patched"
+                unchanged=$((unchanged + 1))
+            else
+                printf '%s=%s\n' "$matched_key" "${new_val[$matched_key]}" >> "$patched"
+                updated=$((updated + 1))
+            fi
+        else
+            printf '%s\n' "$line" >> "$patched"
+        fi
+    done < "$target"
+    for key in "${!new_val[@]}"; do
+        [[ -n ${seen[$key]:-} ]] && continue
+        printf '%s=%s\n' "$key" "${new_val[$key]}" >> "$patched"
+        updated=$((updated + 1))
+    done
+
+    if ((updated == 0)); then
+        rm -f -- "$patched"
+        printf 'no drift: %s already matches the discovered generator-owned keys\n' "$target"
+        return 0
+    fi
+
+    printf -- '--- %s (trunk-carried refresh) ---\n' "$target"
+    diff -u -- "$target" "$patched" || true
+    mv -- "$patched" "$target"
+    printf 'refreshed %s (trunk-carried): %d key(s) updated, %d unchanged\n' \
+        "$target" "$updated" "$unchanged"
+}
+
+# board.json is fully generator-owned (no maintainer free-form content), so
+# unlike config.env there is no line-level merge to do: only whether the
+# discovered document actually changed, ignoring the always-different
+# generatedAt timestamp so an unchanged board never churns the working tree.
+patch_tracked_board() {
+    local target=$1 fresh=$2 old_norm fresh_norm
+    if [[ ! -e $target ]]; then
+        cp -- "$fresh" "$target"
+        printf 'wrote %s (no prior working-tree copy to patch)\n' "$target"
+        return 0
+    fi
+    old_norm=$(jq -S 'del(.generatedAt)' -- "$target" 2> /dev/null) || old_norm=''
+    fresh_norm=$(jq -S 'del(.generatedAt)' -- "$fresh")
+    if [[ $old_norm == "$fresh_norm" ]]; then
+        printf 'no drift: %s already matches the discovered board\n' "$target"
+        return 0
+    fi
+    printf -- '--- %s (trunk-carried refresh) ---\n' "$target"
+    diff -u -- "$target" "$fresh" || true
+    cp -- "$fresh" "$target"
+    printf 'refreshed %s (trunk-carried)\n' "$target"
+}
+
 # Install the local rule only after every no-force/archive guard has passed,
 # then prove Git's effective oracle before creating or moving declarations.
+# A tracked config.env/board.json (the trunk-carried layout above) is
+# deliberately excluded from both checks: it is not meant to be ignored, and
+# it is patched in place below instead of installed.
 ensure_local_ignore
-assert_effective_ignore
+ignore_check_paths=()
+((config_tracked)) || ignore_check_paths+=(.agent/config.env)
+((board_tracked)) || ignore_check_paths+=(.agent/board.json)
+((${#ignore_check_paths[@]} == 0)) || assert_effective_ignore "${ignore_check_paths[@]}"
 mkdir -p -- "$repo_root/.agent"
-mv -- "$staging/.agent/config.env" "$repo_root/.agent/config.env"
-mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
 
-printf 'wrote %s/.agent/config.env\n' "$repo_root"
-printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
-    "$repo_root" "$project_num" "$option_count"
+if ((config_tracked)); then
+    patch_tracked_config "$repo_root/.agent/config.env" "$staging/.agent/config.env"
+else
+    mv -- "$staging/.agent/config.env" "$repo_root/.agent/config.env"
+    printf 'wrote %s/.agent/config.env\n' "$repo_root"
+fi
+
+if ((board_tracked)); then
+    patch_tracked_board "$repo_root/.agent/board.json" "$staging/.agent/board.json"
+else
+    mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
+    printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
+        "$repo_root" "$project_num" "$option_count"
+fi
+
 ((carried_count == 0)) ||
     printf 'carried forward %s existing declaration(s); nothing was discarded\n' "$carried_count"
 # shellcheck disable=SC2016  # emitted text is literal command syntax
 printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-contract.txt" | head -n 1); "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "%s" --report\n' \
     "$repo_root" "$repo_root"
 
-# The declarations must be ignored in the working tree. --no-index is required
-# so this remains a useful invariant for repositories migrating from tracked
-# declarations; the tracked-state note below tells the operator to untrack them.
+# The declarations must be ignored in the working tree, except a trunk-carried
+# file this run just patched in place. --no-index is required so this remains
+# a useful invariant for repositories migrating from tracked declarations;
+# the tracked-state note below tells the operator to untrack any OTHER stray
+# file.
 if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    assert_effective_ignore
+    ((${#ignore_check_paths[@]} == 0)) || assert_effective_ignore "${ignore_check_paths[@]}"
 fi
 
 tracked_declarations=$(git -C "$repo_root" ls-files -- \
     .agent/config.env .agent/board.json 2> /dev/null || true)
+((config_tracked)) && tracked_declarations=$(grep -vFx '.agent/config.env' <<< "$tracked_declarations" || true)
+((board_tracked)) && tracked_declarations=$(grep -vFx '.agent/board.json' <<< "$tracked_declarations" || true)
 if [[ -n $tracked_declarations ]]; then
     printf 'NOTE: declaration files are tracked despite the local rules; untrack when convenient:\n' >&2
     printf '%s\n' "$tracked_declarations" | sed 's/^/  /' >&2

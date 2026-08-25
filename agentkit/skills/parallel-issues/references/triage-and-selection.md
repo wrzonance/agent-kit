@@ -157,11 +157,60 @@ conflict analysis. The plan uses this schema:
 ```
 
 The dispatch-time artifact stays at schema version 1 while PR numbers and
-pushed heads do not exist. At the ready-flip handoff, write those verified
-facts to an owner-only merge-plan input and pass both files through
-`scripts/write-merge-plan.sh`. The helper validates that every selected issue
-appears exactly once, upgrades the dispatch plan atomically, and preserves the
-existing entries and conflict audit. The resulting shape is:
+pushed heads do not exist. Immediately after atomically persisting it, run
+`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only`;
+the dispatch must not begin unless the helper prints `schemaVersion=1 valid`.
+This catches a missing or malformed schema at the write boundary instead of in
+the downstream queue consumer.
+
+`dispatch-plan` and `merge-plan` name the same owner-only file at its two
+lifecycle stages: schema 1 before the ready flip and schema 2 afterward. The
+temporary merge-plan input below is only the verified PR/head facts used to
+perform that in-place upgrade.
+
+At the ready-flip handoff, write the verified
+facts to an owner-only **merge-plan input** file and pass both files through
+`scripts/write-merge-plan.sh --dispatch-plan FILE --merge-plan FILE`. This
+input carries only the ready-flip facts -- `entries` and `conflictMap` stay
+owned by the dispatch plan and are never repeated here. Its required shape is:
+
+```json
+{
+  "generatedAt": "2026-08-17T20:00:00Z",
+  "independent": [
+    {"issue": 170, "pr": 303, "branch": "feat/standalone", "chainBaseSha": null,
+     "headSha": "cccccccccccccccccccccccccccccccccccccccc"}
+  ],
+  "chains": [[
+    {"issue": 164, "pr": 301, "branch": "feat/root", "chainBaseSha": null,
+     "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"issue": 167, "pr": 302, "branch": "feat/child",
+     "chainBaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ]]
+}
+```
+
+- `generatedAt` -- **required**, an ISO-8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
+- `independent` -- **required** array of records (may be empty); each record's
+  `chainBaseSha` must be `null`.
+- `chains` -- **required** array of chains (may be empty); each chain is an
+  array of at least 2 records, ordered base-to-tip, whose first record has a
+  `null` `chainBaseSha` and whose every successor's `chainBaseSha` equals its
+  immediate predecessor's `headSha`.
+- Every record (in `independent` or inside a `chain`) carries exactly these
+  keys: `issue` (positive integer), `pr` (positive integer), `branch` (a safe
+  git ref name), `chainBaseSha` (`null` or a 40-hex-char commit SHA), `headSha`
+  (a 40-hex-char commit SHA).
+- Across the whole file, `pr`, `issue`, and `branch` values must each be
+  unique, there must be at least one record total, and the set of `issue`
+  values must match the dispatch plan's `entries[].issue` set exactly.
+
+The helper validates that every selected issue appears exactly once, upgrades
+the dispatch plan atomically, and preserves the existing entries and conflict
+audit; on a rejected input it names the first field that failed validation
+(for example `generatedAt` missing, or an out-of-order chain). The resulting
+schema-2 dispatch-plan shape is:
 
 ```json
 {
@@ -220,6 +269,15 @@ generated contracts (including the repository's equivalent names and globs).
 The resulting paths belong in each affected `predictedWriteSet`; they are not
 optional cleanup. Record the conflict pairs and their overlap globs in
 `conflictMap.pairs` before selection is finalized.
+
+The same declared list (`AGENT_GENERATED_PATHS` in `.agent/config.env`) also
+tells `gh-pr-state.sh` which post-merge trunk-automation commits (a
+results-recording workflow, for example) must not stale a queued PR's base --
+a base advance confined entirely to those paths reports `stale=no`, so
+`merge-gate.sh` does not block `pr-to-green`'s merge gate on it. Declare
+generated/results paths there once and both the write-set check above and
+the staleness exemption pick it up; see `agentkit/skills/onboard-repo/SKILL.md`'s
+`AGENT_GENERATED_PATHS` reference entry.
 
 After selection, never silently revise a conflict edge, predecessor, or
 successor. Append a `conflictMap.revisions` object with a non-empty `reason`
@@ -344,6 +402,36 @@ Then apply, in order:
    and emits one terminal `moved #N -> In progress` or `no-op:` line per issue. Once that line
    appears, that issue/status/phase is complete; never re-invoke the helper merely to verify or
    interleave a second move.
+
+After conflict analysis and the slot cap have fixed the dispatch set, print exactly one
+single-line reconciliation in this shape:
+
+```text
+Selection funnel: requested=<slot-count> eligible=<eligible-count> dispatched=<dispatch-count> exclusions=<reason>:<count>[#<issue>,...]|none
+```
+
+`requested` is the operator's supplied slot count, bounded by the skill's maximum. For automatic
+selection with no supplied count, `requested` is the effective Limits-section slot cap. `eligible`
+is the number of candidates that survived the existing triage and mechanical eligibility rules
+before conflict/serialization and the slot cap, and `dispatched` is the number actually launched
+in this wave. Group candidates not dispatched under stable categorical reasons such as
+`blocked-by`, `tier`, `already-implemented`, `conflict-serialized`, or `slot-cap`; use the
+specific existing verdict instead of a catch-all when one applies. Each considered candidate
+appears exactly once: either in the dispatched set or in exactly one exclusion group. When more
+than one exclusion could describe it, use the earliest terminal decision made by the existing
+selection procedure, so the groups are mutually exclusive and their counts match their issue
+lists. This is reporting only; never change eligibility to make the arithmetic look fuller.
+
+Examples cover all queue shapes:
+
+```text
+Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none
+Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
+Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]
+```
+
+The first line says the full requested count was dispatched. The second makes a thin dispatch
+legible without widening it. The third is still emitted before the empty-selection stop below.
 
 Announce the chosen set, every promoted-from-Backlog issue with its ranking reason, the
 dropped-for-conflict set, and the skipped-as-blocked set before dispatching. `--fast-mode`

@@ -502,8 +502,10 @@ assert_eq no "$( [[ ! -e "$failed_verdict" ]] && printf no || printf yes )" \
 assert_eq no "$( [[ ! -e "$failed_verdict.tmp" ]] && printf no || printf yes )" \
     'a non-blocked review failure removes its temporary artifact'
 
-assert_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
-    'the skill creates a random per-run artifact directory'
+assert_contains "$skill_text" 'scripts/run-dir.sh" --pr "$PR"' \
+    'the skill derives RUN_DIR from the durable run-dir.sh helper'
+assert_not_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
+    'the skill no longer hand-rolls a random per-run /tmp directory'
 assert_not_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
     'the skill leaves descendant directory security to the helpers'
 assert_not_contains "$skill_union_text" "claude_pr_\${PR}" \
@@ -512,6 +514,22 @@ assert_not_contains "$skill_union_text" "/tmp/pr_\${PR}_" \
     'the skill no longer uses shared PR-number-only state paths'
 assert_contains "$skill_text" 're-set RUN_DIR to the Step 0c output; shell state does not persist' \
     'the skill guards per-shell review-artifact directory reuse'
+assert_contains "$skill_text" '.agent/evidence/pr-<N>' \
+    'the skill documents the durable per-PR evidence path'
+assert_contains "$skill_text" 'falls back to `${TMPDIR:-/tmp}` only when' \
+    'the skill states the /tmp fallback is conditional, not a silent default'
+
+run_dir_script="$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh"
+assert_eq yes "$( [[ -x $run_dir_script ]] && printf yes || printf no )" \
+    'run-dir.sh ships executable'
+run_dir_first=$(mktemp -d)
+first_out=$(/bin/bash "$run_dir_script" --pr 405 --repo-root "$run_dir_first")
+assert_eq "$run_dir_first/.agent/evidence/pr-405" "$first_out" \
+    'run-dir.sh resolves the documented .agent/evidence/pr-<N> path'
+assert_eq 700 "$(stat -c %a -- "$first_out")" 'run-dir.sh creates the run directory at mode 0700'
+second_out=$(/bin/bash "$run_dir_script" --pr 405 --repo-root "$run_dir_first")
+assert_eq "$first_out" "$second_out" 'run-dir.sh returns the same RUN_DIR across separate invocations'
+rm -rf -- "$run_dir_first"
 assert_contains "$adversarial_text" 'Materiality — run vs. document a skip' 'the reference retains the materiality gate'
 assert_contains "$adversarial_text" 'External-service authorization' 'the reference retains the external-service boundary'
 assert_contains "$adversarial_text" 'Cross-provider consent' 'the reference retains the consent gate'
