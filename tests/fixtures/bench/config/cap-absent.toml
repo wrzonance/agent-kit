@@ -1,0 +1,5 @@
+# Fixture: no max_concurrent_threads_per_session key at all -- the
+# "absence deadlocks the unattended run by design" gate case: absence must
+# abort the trial before any spend, never proceed with an inferred default.
+[features.multi_agent_v2]
+some_unrelated_key = true
