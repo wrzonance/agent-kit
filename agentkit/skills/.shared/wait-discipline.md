@@ -48,6 +48,13 @@ processing 61 timed-out waits that each carried zero information. The defaults:
 | Draft-loop, review, or CI wait | **600 s** |
 | Helper-internal polling (`gh-pr-state.sh --wait-ci`, adversarial max-duration-seconds) | the helper's own `--rounds × --interval` / duration bound |
 
+This table is the single source for the worker-wait bound: `compose-worker-prompt.sh` parses
+the "Worker implementation wait" row at dispatch time and prints it beside each dispatched
+worker's own issue number as a `wait-bound=` line, so the orchestrator reads a number back
+instead of recalling this rule — see `parallel-issues/SKILL.md`'s "Compose the issue-lead
+prompt" step. Never duplicate this number as a literal in a script; change it here and the
+printed value follows.
+
 An early completion still returns early, so a large bound costs nothing when workers are
 fast. If the harness caps a single wait below the class default, issue the largest wait it
 permits. A wait that returns `timed_out:true` must never be re-issued at the same duration —
