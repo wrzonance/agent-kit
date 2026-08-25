@@ -24,12 +24,62 @@ if [[ ${QUEUE_FAIL:-0} == 1 ]]; then
     exit 1
 fi
 sha=${QUEUE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
-jq -cn --arg sha "$sha" '[
-  {pr:14,issue:14,state:"RUNNABLE",source:"plan",base:"main",head:"feat/demo",sha:$sha},
-  {pr:15,issue:15,state:"WAITING_FOR_MERGE",source:"plan",base:"feat/demo",head:"feat/next",sha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-]'
+base14=${QUEUE_BASE_14:-main}
+shape14=${QUEUE_SHAPE_14:-1:1:1}
+omit14=${QUEUE_OMIT_14:-0}
+base15=${QUEUE_BASE_15:-feat/demo}
+sha15=${QUEUE_SHA_15:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}
+state15=${QUEUE_STATE_15:-WAITING_FOR_MERGE}
+shape15=${QUEUE_SHAPE_15:-2:2:2}
+include16=${QUEUE_INCLUDE_16:-0}
+sha16=${QUEUE_SHA_16:-6666666666666666666666666666666666666666}
+shape16=${QUEUE_SHAPE_16:-3:3:3}
+entries='[]'
+if [[ $omit14 == 0 ]]; then
+    entries=$(jq -cn --argjson e "$entries" --arg sha "$sha" --arg base14 "$base14" --arg shape14 "$shape14" '
+      ($shape14 | split(":") | map(tonumber)) as $s14 | $e + [
+      {pr:14,issue:14,state:"RUNNABLE",source:"plan",base:$base14,head:"feat/demo",sha:$sha,
+       diffShape:{additions:$s14[0],deletions:$s14[1],changedFiles:$s14[2]}}]')
+fi
+entries=$(jq -cn --argjson e "$entries" --arg sha15 "$sha15" --arg base15 "$base15" \
+    --arg state15 "$state15" --arg shape15 "$shape15" '
+  ($shape15 | split(":") | map(tonumber)) as $s15 | $e + [
+  {pr:15,issue:15,state:$state15,source:"plan",base:$base15,head:"feat/next",sha:$sha15,
+   diffShape:{additions:$s15[0],deletions:$s15[1],changedFiles:$s15[2]}}]')
+if [[ $include16 == 1 ]]; then
+    entries=$(jq -cn --argjson e "$entries" --arg sha16 "$sha16" --arg shape16 "$shape16" '
+      ($shape16 | split(":") | map(tonumber)) as $s16 | $e + [
+      {pr:16,issue:16,state:"RUNNABLE",source:"plan",base:"main",head:"feat/root2",sha:$sha16,
+       diffShape:{additions:$s16[0],deletions:$s16[1],changedFiles:$s16[2]}}]')
+fi
+printf '%s\n' "$entries"
 EOF
 chmod +x "$tmp/pr-queue"
+
+cat >"$tmp/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_LOG"
+endpoint=''
+for arg in "$@"; do
+    [[ $arg == repos/* ]] && endpoint=$arg
+done
+case $endpoint in
+repos/owner/repo/compare/*)
+    behind=${QUEUE_COMPARE_BEHIND:-0}
+    printf '{"behind_by":%s,"status":"ahead"}\n' "$behind"
+    ;;
+repos/owner/repo/pulls/14)
+    merged=${QUEUE_PR14_MERGED:-true}
+    printf '{"number":14,"merged":%s}\n' "$merged"
+    ;;
+*)
+    printf 'unexpected endpoint: %s\n' "$endpoint" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$tmp/gh"
 
 run_authorize() {
     run_authorize_provider coderabbit:trigger:capability-default
@@ -37,26 +87,32 @@ run_authorize() {
 
 run_authorize_provider() {
     local provider=$1
+    shift || true
     AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+        AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
         bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
         --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
         --confirmed-queue-file "$confirmed" \
-        --provider "$provider"
+        --provider "$provider" "$@"
 }
 
 write_confirmed() {
     local sha=${1:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
     local include_second=${2:-yes}
     local provider=${3:-coderabbit:trigger:capability-default}
-    jq -cn --arg sha "$sha" --arg includeSecond "$include_second" --arg provider "$provider" '{
+    local base14=${4:-main}
+    jq -cn --arg sha "$sha" --arg includeSecond "$include_second" --arg provider "$provider" \
+        --arg base14 "$base14" '{
       repository:"owner/repo",
       providers:(if $provider == "__NONE__" then [] else ($provider | split(":")) as $parts |
         [{name:$parts[0],action:$parts[1],source:$parts[2]}] end),
       queue:([{
-        pr:14,state:"RUNNABLE",headSha:$sha,base:"main"
+        pr:14,state:"RUNNABLE",headSha:$sha,base:$base14,
+        diffShape:{additions:1,deletions:1,changedFiles:1}
       }] + (if $includeSecond == "yes" then [{
         pr:15,state:"WAITING_FOR_MERGE",
-        headSha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",base:"feat/demo"
+        headSha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",base:"feat/demo",
+        diffShape:{additions:2,deletions:2,changedFiles:2}
       }] else [] end))
     }' >"$confirmed"
     chmod 600 "$confirmed"
@@ -218,5 +274,166 @@ AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     --no-providers --provider coderabbit:trigger:capability-default \
     >"$tmp/mixed-none.out" 2>"$tmp/mixed-none.err" || mixed_none_rc=$?
 assert_eq '1' "$mixed_none_rc" '--no-providers cannot be mixed with provider decisions'
+
+# --- Mechanical queue advance (issue #450): no flag stays the exact-match default ---
+
+write_confirmed
+: >"$tmp/gh.log"
+no_flag_rc=0
+QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize \
+    >"$tmp/no-flag.out" 2>"$tmp/no-flag.err" || no_flag_rc=$?
+assert_eq '1' "$no_flag_rc" 'head drift without the flag still fails closed by default'
+assert_contains "$(cat "$tmp/no-flag.err")" 'redisplay and reconfirm' \
+    'the default refusal is unchanged when the flag is absent'
+assert_eq '' "$(cat "$tmp/gh.log")" \
+    'without the flag, no ancestry or merged-check gh call is ever made'
+
+# --- Root merge-down: same base, new head, matching diff shape, verified ancestry ---
+
+write_confirmed
+: >"$tmp/gh.log"
+merge_down_out=$(QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance)
+assert_eq "authorization=$auth queue=2" "$merge_down_out" \
+    'a clean root merge-down authorizes without redisplay'
+assert_eq 'cccccccccccccccccccccccccccccccccccccccc' \
+    "$(jq -r '.queue[] | select(.pr==14) | .headSha' "$auth")" \
+    'the refreshed head comes from the live re-derivation, never a hand-typed value'
+assert_contains "$(cat "$tmp/gh.log")" 'compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...cccccccccccccccccccccccccccccccccccccccc' \
+    'the merge-down is proven by comparing the previously authorized head against the live head'
+
+# --- Root merge-down: diff expansion blocks silently updating the record ---
+
+write_confirmed
+before_expand=$(sha256sum "$auth")
+expand_rc=0
+QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc QUEUE_SHAPE_14=9:9:9 \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/expand.out" 2>"$tmp/expand.err" || expand_rc=$?
+assert_eq '1' "$expand_rc" 'an expanded diff is never treated as mechanical'
+assert_contains "$(cat "$tmp/expand.err")" 'diff' \
+    'the refusal names diff expansion specifically'
+assert_eq "$before_expand" "$(sha256sum "$auth")" \
+    'a diff-expansion refusal preserves the prior authorization byte-for-byte'
+
+# --- Root merge-down: broken ancestry (history rewrite) blocks it ---
+
+write_confirmed
+ancestry_rc=0
+QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc QUEUE_COMPARE_BEHIND=1 \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/ancestry.out" 2>"$tmp/ancestry.err" || ancestry_rc=$?
+assert_eq '1' "$ancestry_rc" 'a head that is not a live descendant of the authorized head is never mechanical'
+assert_contains "$(cat "$tmp/ancestry.err")" 'ancestry' \
+    'the refusal names the broken ancestry'
+
+# --- Stacked successor retarget: valid chain-advance.sh proof authorizes the new base/head ---
+
+retarget_proof_ok="$tmp/retarget-proof-ok.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_ok"
+write_confirmed
+retarget_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_ok")
+assert_eq "authorization=$auth queue=2" "$retarget_out" \
+    'a proven stacked retarget authorizes without redisplay'
+assert_eq 'main:dddddddddddddddddddddddddddddddddddddddd' \
+    "$(jq -r '.queue[] | select(.pr==15) | [.base,.headSha] | join(":")' "$auth")" \
+    'the refreshed base and head come from the live re-derivation'
+
+# --- Stacked successor retarget: missing proof blocks it ---
+
+write_confirmed
+no_proof_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/no-proof.out" 2>"$tmp/no-proof.err" || no_proof_rc=$?
+assert_eq '1' "$no_proof_rc" 'a base change with no retarget proof is a material judgment, never mechanical'
+assert_contains "$(cat "$tmp/no-proof.err")" 'retarget' \
+    'the refusal names the missing retarget proof'
+
+# --- Stacked successor retarget: a proof for the wrong head is rejected ---
+
+retarget_proof_wrong="$tmp/retarget-proof-wrong.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=9999999999999999999999999999999999999999 ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_wrong"
+write_confirmed
+wrong_proof_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_wrong" \
+    >"$tmp/wrong-proof.out" 2>"$tmp/wrong-proof.err" || wrong_proof_rc=$?
+assert_eq '1' "$wrong_proof_rc" 'a retarget proof for a different head never authorizes the live head'
+assert_contains "$(cat "$tmp/wrong-proof.err")" 'retarget' \
+    'the mismatch is reported as a retarget-proof failure'
+
+# --- A predecessor that merged and vanished from the live queue is allowed to drop out ---
+
+write_confirmed
+vanished_out=$(QUEUE_OMIT_14=1 QUEUE_BASE_15=main \
+    QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_ok")
+assert_eq "authorization=$auth queue=1" "$vanished_out" \
+    'a merged, verified-vanished predecessor drops out of the refreshed queue'
+assert_eq '15' "$(jq -r '.queue[0].pr' "$auth")" \
+    'only the still-open successor remains authorized'
+
+# --- A vanished PR that cannot be proven merged is never silently dropped (the spike-caught bug) ---
+
+write_confirmed
+not_merged_rc=0
+QUEUE_OMIT_14=1 QUEUE_PR14_MERGED=false QUEUE_BASE_15=main \
+    QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_ok" \
+    >"$tmp/not-merged.out" 2>"$tmp/not-merged.err" || not_merged_rc=$?
+assert_eq '1' "$not_merged_rc" \
+    'a PR missing from the live queue is never assumed merged without independent proof'
+assert_contains "$(cat "$tmp/not-merged.err")" 'merged' \
+    'the refusal names the unverified disappearance'
+
+# --- A brand-new PR appearing in the live queue is a topology change, never mechanical ---
+
+write_confirmed
+added_rc=0
+QUEUE_INCLUDE_16=1 run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance >"$tmp/added.out" 2>"$tmp/added.err" || added_rc=$?
+assert_eq '1' "$added_rc" 'a PR the operator never confirmed is never silently authorized'
+
+# --- Combined: two independent roots and a squash-merged stacked successor in one queue ---
+
+jq -cn '{
+  repository:"owner/repo",
+  providers:[{name:"coderabbit",action:"trigger",source:"capability-default"}],
+  queue:[
+    {pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base:"main",
+     diffShape:{additions:1,deletions:1,changedFiles:1}},
+    {pr:15,state:"WAITING_FOR_MERGE",headSha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",base:"feat/demo",
+     diffShape:{additions:2,deletions:2,changedFiles:2}},
+    {pr:16,state:"RUNNABLE",headSha:"6666666666666666666666666666666666666666",base:"main",
+     diffShape:{additions:3,deletions:3,changedFiles:3}}
+  ]
+}' >"$confirmed"
+chmod 600 "$confirmed"
+retarget_proof_combined="$tmp/retarget-proof-combined.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_combined"
+: >"$tmp/queue.log"; : >"$tmp/gh.log"
+combined_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    QUEUE_OMIT_14=1 QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE QUEUE_INCLUDE_16=1 QUEUE_SHA_16=7777777777777777777777777777777777777777 \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
+    --confirmed-queue-file "$confirmed" \
+    --provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_combined")
+assert_eq "authorization=$auth queue=2" "$combined_out" \
+    'two independent roots and a stacked successor advance in one confirmed queue without one prompt per PR'
+assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:7777777777777777777777777777777777777777' \
+    "$(jq -r '.queue | sort_by(.pr) | map([.pr,.base,.headSha] | join(":")) | join(" ")' "$auth")" \
+    'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
 finish

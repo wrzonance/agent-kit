@@ -309,6 +309,11 @@ if ((plan_active == 0)); then
       def walk($pr):
         [$pr] + (child($pr.head.ref) as $children |
           if ($children|length) == 1 then walk($children[0]) else [] end);
+      def diff_shape:
+        if (.additions | type) == "number" and (.deletions | type) == "number" and
+           (.changed_files | type) == "number"
+        then {additions:.additions, deletions:.deletions, changedFiles:.changed_files}
+        else null end;
       ([ $prs[] | select(.base.ref == $base) ] | sort_by(.created_at, .number) |
         map(walk(.)) | add // []) as $ordered |
       if ($ordered | length) != ($prs | length) then error("cycle") else
@@ -318,7 +323,8 @@ if ((plan_active == 0)); then
                    (if .base.ref == $base then "RUNNABLE" else "WAITING_FOR_MERGE" end)
                  elif .mergeable == false then "BLOCKED"
                  else "MERGEABLE_UNKNOWN" end),
-          source:$source, base:.base.ref, head:.head.ref, sha:.head.sha
+          source:$source, base:.base.ref, head:.head.ref, sha:.head.sha,
+          diffShape:diff_shape
         })
       end
     ' "$work_dir/live.json" >"$work_dir/queue.json" 2>/dev/null ||
@@ -352,6 +358,11 @@ else
       . as $all |
       def predecessor($item):
         [ $all[] | select(.group == $item.group and .position == ($item.position - 1)) ][0];
+      def diff_shape:
+        if (.live.additions | type) == "number" and (.live.deletions | type) == "number" and
+           (.live.changed_files | type) == "number"
+        then {additions:.live.additions, deletions:.live.deletions, changedFiles:.live.changed_files}
+        else null end;
       group_by(.group) |
       map(sort_by(.position) | {created:.[0].live.created_at, members:.}) |
       sort_by(.created) |
@@ -368,7 +379,8 @@ else
                     else "WAITING_FOR_MERGE" end)
                  elif .live.mergeable == false then "BLOCKED"
                  else "MERGEABLE_UNKNOWN" end),
-          source:"plan", base:.live.base.ref, head:.live.head.ref, sha:.live.head.sha
+          source:"plan", base:.live.base.ref, head:.live.head.ref, sha:.live.head.sha,
+          diffShape:diff_shape
         })
     ' "$work_dir/planned-live.json" >"$work_dir/queue.json"
 fi
@@ -382,7 +394,7 @@ if ((write_confirmed_queue)); then
     jq --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" '{
       repository:$repo,
       providers:$providers[0],
-      queue:map({pr,state,headSha:.sha,base})
+      queue:map({pr,state,headSha:.sha,base,diffShape})
     }' "$work_dir/queue.json" >"$work_dir/confirmed-queue.json" ||
         die 'could not compose confirmed queue evidence'
     output_tmp=$(mktemp "$repo_root/.agent/.pr-to-green-confirmed-queue.XXXXXX") ||

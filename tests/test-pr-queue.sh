@@ -29,7 +29,7 @@ repos/owner/repo)
 repos/owner/repo/pulls/11)
     sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     [[ ${QUEUE_DRIFT:-0} == 0 ]] || sha=dddddddddddddddddddddddddddddddddddddddd
-    printf '{"number":11,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"%s"},"base":{"ref":"main"}}\n' "$sha"
+    printf '{"number":11,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"%s"},"base":{"ref":"main"},"additions":5,"deletions":2,"changed_files":3}\n' "$sha"
     ;;
 repos/owner/repo/pulls/12)
     printf '%s\n' '{"number":12,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/root"}}'
@@ -151,6 +151,12 @@ assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
 json=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format json)
 assert_eq 'RUNNABLE' "$(jq -r '.[0].state' <<<"$json")" \
     'JSON output preserves the confirmed queue for authorization evidence'
+assert_eq '5:2:3' "$(jq -r '.[0].diffShape | [.additions,.deletions,.changedFiles] | join(":")' <<<"$json")" \
+    'JSON output carries a diff-shape fingerprint sourced from the live PR read'
+
+json15=$(run_queue --pr 15 --format json)
+assert_eq 'null' "$(jq -r '.[0].diffShape' <<<"$json15")" \
+    'a live read carrying no diff-size fields yields a null diff-shape rather than a fabricated one'
 
 confirmed="$repo_root/.agent/pr-to-green-confirmed-queue.json"
 display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
