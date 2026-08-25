@@ -244,4 +244,67 @@ assert_contains "$grammar_usage" 'created issue' 'usage names the created-issue 
 assert_contains "$grammar_usage" 'created PR' 'usage names the created-PR kind'
 assert_contains "$grammar_usage" 'board-move' 'usage documents board-move reuse of the plain form'
 
+# Ledger validation must name the specific predicate that failed rather than
+# a single generic "invalid apply ledger" message covering all seven checks
+# (schema version, planId, the three array fields, idMap, and plan-id
+# uniqueness), matching the actionable style `init`'s plan validation already
+# uses. Each fixture below is a well-formed JSON document that breaks exactly
+# one predicate.
+# All seven fixtures reuse the same ledger path so their captured error
+# messages differ only by predicate text, never by an incidentally-unique
+# file path -- that is what makes the later distinctness check meaningful.
+predicate_ledger="$tmp/predicate-case.json"
+declare -A predicate_error=()
+declare -A predicate_fixture=(
+    [schema]='{schemaVersion: 2, planId: "fixture", plan: [{id: "a"}], applied: [], remaining: ["a"], idMap: {}}'
+    [planId]='{schemaVersion: 1, planId: "", plan: [{id: "a"}], applied: [], remaining: ["a"], idMap: {}}'
+    [plan]='{schemaVersion: 1, planId: "fixture", plan: {}, applied: [], remaining: ["a"], idMap: {}}'
+    [applied]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}], applied: {}, remaining: ["a"], idMap: {}}'
+    [remaining]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}], applied: [], remaining: {}, idMap: {}}'
+    [idMap]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}], applied: [], remaining: ["a"], idMap: []}'
+    [uniqueness]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}, {id: "a"}], applied: [], remaining: ["a"], idMap: {}}'
+)
+declare -A predicate_description=(
+    [schema]='a ledger with the wrong schemaVersion'
+    [planId]='a ledger with an empty planId'
+    [plan]='a ledger whose plan is not an array'
+    [applied]='a ledger whose applied is not an array'
+    [remaining]='a ledger whose remaining is not an array'
+    [idMap]='a ledger whose idMap is not an object'
+    [uniqueness]='a ledger with duplicate plan ids'
+)
+declare -A predicate_keyword=(
+    [schema]='schemaVersion'
+    [planId]='planId'
+    [plan]='plan'
+    [applied]='applied'
+    [remaining]='remaining'
+    [idMap]='idMap'
+    [uniqueness]='duplicate'
+)
+
+for class in schema planId plan applied remaining idMap uniqueness; do
+    jq -n "${predicate_fixture[$class]}" >"$predicate_ledger"
+    predicate_error[$class]=$(run_ledger status --ledger "$predicate_ledger" 2>&1)
+    assert_rc 1 "${predicate_description[$class]} is rejected" -- \
+        run_ledger status --ledger "$predicate_ledger"
+    assert_contains "${predicate_error[$class]}" "${predicate_keyword[$class]}" \
+        "$class refusal names ${predicate_keyword[$class]}"
+    assert_eq '1' "$(printf '%s\n' "${predicate_error[$class]}" | wc -l | tr -d ' ')" \
+        "predicate refusal for $class stays a single line"
+    assert_not_contains "${predicate_error[$class]}" '{"' \
+        "predicate refusal for $class does not dump ledger contents"
+done
+
+distinct_messages=$(printf '%s\n' "${predicate_error[@]}" | sort -u | wc -l | tr -d ' ')
+assert_eq '7' "$distinct_messages" 'each broken predicate produces a distinct message'
+
+# A ledger that fails every predicate still passes the same accept/reject
+# semantics as before this change (validation, not messaging, is unchanged):
+# it is rejected, and none of the seven checks accidentally pass it.
+still_valid_ledger="$tmp/still-valid.json"
+run_ledger init --ledger "$still_valid_ledger" --plan "$plan" >/dev/null
+assert_rc 0 'a genuinely valid ledger still validates cleanly' -- \
+    run_ledger status --ledger "$still_valid_ledger"
+
 finish

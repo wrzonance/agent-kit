@@ -137,15 +137,23 @@ release_ledger_lock() {
 
 validate_ledger() {
     [[ -f $ledger && ! -L $ledger ]] || die "ledger is not a regular file: $ledger"
-    jq -e --argjson version "$SCHEMA_VERSION" '
-      .schemaVersion == $version
-      and (.planId | type) == "string" and (.planId | length) > 0
-      and (.plan | type) == "array"
-      and (.applied | type) == "array"
-      and (.remaining | type) == "array"
-      and (.idMap | type) == "object"
-      and ([.plan[]?.id] | length == (unique | length))
-    ' "$ledger" >/dev/null 2>&1 || die "invalid apply ledger: $ledger"
+    jq -e --argjson version "$SCHEMA_VERSION" '.schemaVersion == $version' \
+        "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: schemaVersion must be $SCHEMA_VERSION: $ledger"
+    jq -e '(.planId | type) == "string" and (.planId | length) > 0' \
+        "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: planId must be a non-empty string: $ledger"
+    jq -e '(.plan | type) == "array"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: plan must be an array: $ledger"
+    jq -e '(.applied | type) == "array"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: applied must be an array: $ledger"
+    jq -e '(.remaining | type) == "array"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: remaining must be an array: $ledger"
+    jq -e '(.idMap | type) == "object"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: idMap must be an object: $ledger"
+    jq -e '([.plan[]?.id] | length == (unique | length))' \
+        "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: plan contains duplicate ids: $ledger"
 }
 
 atomic_write() {
