@@ -180,7 +180,18 @@ KNOWN_OVERSIZE[parallel-issues]="1132:19468:900"
 # set to the minimum that passes, never padded. Target unchanged.
 # test-skill-size.sh's pinned ratchet-message assertion moves with it.
 KNOWN_OVERSIZE[review-remote-pr]="513:8337:450"
-KNOWN_OVERSIZE[parallel-issues]="1133:19554:900"
+# Issue #444 adds the work-shape axis to Step 3: a candidate whose body forbids
+# branches, worktrees, commits, or pull requests is classified `no-code` and
+# HOLD-listed before Step 5 ever creates a worktree, instead of being
+# discovered mid-dispatch. The body's only change is two pointer sentences
+# (the Step 3 classification call and the dispatch-plan entry gaining an
+# optional work-shape verdict) -- the table, disposition rule, and schema
+# detail live in references/triage-and-selection.md, per the standing
+# preference to keep body growth to a pointer. LINES rises 1120 -> 1125 (still
+# under the 1133 ceiling); TOKENS rises 19554 -> 19620, measured against this
+# body and set to the minimum that passes, never padded. Line target
+# unchanged. test-skill-size.sh's pinned token-ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1133:19620:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
