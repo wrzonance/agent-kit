@@ -399,8 +399,15 @@ compute_diff_fingerprint() {
     count=$(jq 'length' "$flat" 2>/dev/null) || count=''
     [[ $count =~ ^[0-9]+$ ]] || { printf 'null' >"$out"; return 0; }
     ((count <= 300)) || { printf 'null' >"$out"; return 0; }
+    # Hunk-header line ranges (@@ -a,b +c,d @@) are position, not content: a
+    # base-only shift with no real edit changes them while every line the
+    # hunk carries stays identical. Normalize them to "@@ @@" so that shift
+    # alone never flips the fingerprint -- the hunk's own content lines,
+    # filename, and blob sha still fully participate.
     fp=$(jq -cS '
-        sort_by(.filename) | map({filename, sha:(.sha // ""), patch:(.patch // "")})
+        sort_by(.filename) | map({filename, sha:(.sha // ""),
+          patch:((.patch // "") |
+            gsub("@@ -[0-9]+(,[0-9]+)? \\+[0-9]+(,[0-9]+)? @@"; "@@ @@"))})
       ' "$flat" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}') || fp=''
     [[ $fp =~ ^[0-9a-f]{64}$ ]] || { printf 'null' >"$out"; return 0; }
     printf '"%s"' "$fp" >"$out"
