@@ -222,6 +222,100 @@ chmod 755 -- "$unwritable_agent_repo/.agent"
 assert_eq 1 "$RUN_RC" 'a DANGLING fallback-root symlink is refused, not silently reused'
 assert_contains "$RUN_ERR" 'symlink' 'the dangling-fallback-root refusal names the problem'
 
+# --- --run-id: a second stable-identifier addressing mode (issue #447) ------
+# A run that produces no pull request (e.g. parallel-issues' bulk triage,
+# before any PR exists) has no PR number to address by, but it does have the
+# invocation-level RUN_ID every skill already establishes -- so run-dir.sh
+# accepts that as an alternative selector, sharing the same private-dir
+# mechanics (mode 0700, hostile-input refusal, fallback) rather than growing
+# a second, differently-behaved helper.
+run_by_id() {
+    # run_by_id REPO_ROOT RUN_ID [EXTRA_ARGS...] -- like run(), but selects
+    # via --run-id instead of --pr.
+    local repo_root=$1 run_id=$2
+    shift 2
+    RUN_OUT=''
+    RUN_ERR=''
+    RUN_RC=0
+    RUN_OUT=$(/bin/bash "$script" --run-id "$run_id" --repo-root "$repo_root" "$@" 2>"$tmp/.stderr") || RUN_RC=$?
+    RUN_ERR=$(<"$tmp/.stderr")
+}
+
+run_id_repo="$tmp/run-id-repo"
+mkdir -p "$run_id_repo"
+run_by_id "$run_id_repo" 'parallel-issues-abc123'
+assert_eq 0 "$RUN_RC" 'a fresh repo root resolves successfully by --run-id'
+assert_eq "$run_id_repo/.agent/evidence/run-parallel-issues-abc123" "$RUN_OUT" \
+    'the primary target for --run-id is <repo>/.agent/evidence/run-<ID>'
+assert_eq 700 "$(stat -c %a -- "$RUN_OUT")" 'the --run-id run directory is created at mode 0700'
+
+# Idempotence: same run id resolves to the same directory, contents kept.
+run_id_marker="$RUN_OUT/marker"
+printf 'keep me too\n' >"$run_id_marker"
+run_by_id "$run_id_repo" 'parallel-issues-abc123'
+assert_eq "$run_id_repo/.agent/evidence/run-parallel-issues-abc123" "$RUN_OUT" \
+    'a second call for the same run id returns the identical path'
+assert_eq 'keep me too' "$(<"$run_id_marker")" 'a second call for the same run id never clobbers existing contents'
+
+# A different run id in the same repo gets its own directory.
+run_by_id "$run_id_repo" 'parallel-issues-def456'
+assert_eq "$run_id_repo/.agent/evidence/run-parallel-issues-def456" "$RUN_OUT" \
+    'a different run id resolves to its own directory'
+assert_eq no "$( [[ -e "$RUN_OUT/marker" ]] && printf yes || printf no )" \
+    'a different run id does not inherit another run id directory contents'
+
+# The pr-N and run-ID namespaces are disjoint even for the identical literal
+# value, so a PR number and an unrelated run id can never collide.
+run "$run_id_repo" 5
+pr5_out=$RUN_OUT
+run_by_id "$run_id_repo" 5
+assert_eq "$run_id_repo/.agent/evidence/run-5" "$RUN_OUT" \
+    'a --run-id value never collides with the --pr namespace, even for the same literal value'
+assert_eq differ "$( [[ $RUN_OUT != "$pr5_out" ]] && printf differ || printf same )" \
+    '--pr 5 and --run-id 5 resolve to two distinct directories'
+
+# --run-id validation happens before the value becomes a path component, the
+# same discipline as --pr.
+for bad_run_id in '' '.leading-dot' 'has a space' 'slash/in/id' '..' \
+    "$(printf 'a%.0s' $(seq 1 129))"; do
+    run_by_id "$run_id_repo" "$bad_run_id"
+    assert_eq 2 "$RUN_RC" "an invalid --run-id value ('${bad_run_id:0:20}...') is refused as a usage error"
+done
+missing_run_id_rc=0
+missing_run_id_err=$(/bin/bash "$script" --repo-root "$run_id_repo" --run-id 2>&1) || missing_run_id_rc=$?
+assert_eq 2 "$missing_run_id_rc" 'a --run-id flag with no value is a usage error'
+assert_contains "$missing_run_id_err" 'requires a value' \
+    'a --run-id flag with no value names the missing-value problem'
+
+# Neither --pr nor --run-id given is a usage error naming both options.
+neither_rc=0
+neither_err=$(/bin/bash "$script" --repo-root "$run_id_repo" 2>&1) || neither_rc=$?
+assert_eq 2 "$neither_rc" 'omitting both --pr and --run-id is a usage error'
+assert_contains "$neither_err" '--run-id' 'the omit-both rejection names --run-id as an option'
+
+# --pr and --run-id together is a usage error, not a silent pick of one.
+both_rc=0
+both_err=$(/bin/bash "$script" --pr 1 --run-id abc --repo-root "$run_id_repo" 2>&1) || both_rc=$?
+assert_eq 2 "$both_rc" '--pr and --run-id together is a usage error'
+assert_contains "$both_err" 'mutually exclusive' 'the both-given rejection names the conflict'
+
+# --- --run-id shares the fallback path with --pr ----------------------------
+run_id_fallback_repo="$tmp/run-id-fallback-repo"
+mkdir -p "$run_id_fallback_repo/.agent"
+chmod 555 -- "$run_id_fallback_repo/.agent"
+run_id_fake_tmpdir="$tmp/run-id-fake-tmpdir"
+mkdir -p "$run_id_fake_tmpdir"
+RUN_OUT=''; RUN_ERR=''; RUN_RC=0
+RUN_OUT=$(TMPDIR="$run_id_fake_tmpdir" /bin/bash "$script" --run-id my-run --repo-root "$run_id_fallback_repo" \
+    2>"$tmp/.stderr") || RUN_RC=$?
+RUN_ERR=$(<"$tmp/.stderr")
+chmod 755 -- "$run_id_fallback_repo/.agent"
+assert_eq 0 "$RUN_RC" 'an unwritable .agent/ falls back for --run-id too, rather than failing outright'
+assert_not_contains "$RUN_OUT" "$run_id_fallback_repo" \
+    'the --run-id fallback path never lands inside the unwritable repository tree'
+assert_contains "$RUN_OUT" "$run_id_fake_tmpdir/" 'the --run-id fallback path is rooted under the overridden TMPDIR'
+assert_eq 700 "$(stat -c %a -- "$RUN_OUT")" 'the --run-id fallback run directory is also created at mode 0700'
+
 # --- usage/help and unknown arguments ---------------------------------------
 help_rc=0
 help_out=$(/bin/bash "$script" --help 2>&1) || help_rc=$?
