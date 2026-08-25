@@ -6,7 +6,7 @@
 # a rejection message names instead of leaving a caller to read this file.
 #
 # Not `readonly`: this file is sourced more than once within a single process
-# in practice (review-transition.sh sources it directly, then again
+# in practice (the pr-to-green transition engine sources it directly, then again
 # transitively through provider-identity.sh), and a `readonly` array
 # assignment errors on a second source the way redefining a function does not.
 REVIEW_PROVIDER_NAMES=(coderabbit github-code-quality none)
