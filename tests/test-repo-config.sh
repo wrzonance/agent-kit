@@ -49,8 +49,33 @@ for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_NUMBER \
     assert_not_contains "$out" "export $key=" "rejects invalid $key"
 done
 assert_contains "$err" 'AGENT_UNKNOWN_KEY' 'warns about an unknown key'
+assert_contains "$err" '--list-keys' 'the unknown-key warning names a discoverable way to list accepted keys'
 assert_contains "$err" 'no equals sign' 'warns about a malformed line'
+assert_contains "$err" 'invalid value for AGENT_REVIEW_PROVIDERS' 'warns about the invalid provider declaration'
+for provider in coderabbit github-code-quality none; do
+    assert_contains "$err" "$provider" "the provider rejection names $provider as accepted"
+done
 assert_rc 0 'a fully invalid config still exits 0' -- "$rc_sh" --repo-root "$repo" --export
+
+# --- --list-keys: the accepted key set is discoverable on its own ----------
+list_out=$("$rc_sh" --list-keys 2> /dev/null)
+assert_rc 0 '--list-keys succeeds with no repo context' -- "$rc_sh" --list-keys
+for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_REVIEW_PROVIDERS AGENT_WORKER_EFFORT; do
+    assert_contains "$list_out" "$key" "--list-keys names the accepted literal key $key"
+done
+assert_contains "$list_out" 'AGENT_CMD_<NAME>' '--list-keys documents the open-ended command pattern'
+assert_contains "$list_out" 'AGENT_RUNDIR_<NAME>' '--list-keys documents the open-ended rundir pattern'
+list_out_repo=$("$rc_sh" --repo-root "$repo" --list-keys 2> /dev/null)
+assert_eq "$list_out" "$list_out_repo" '--list-keys is schema, not affected by which repo it is pointed at'
+
+# --- provider display list never drifts from the shared catalog ------------
+catalog="$root/agentkit/skills/.shared/scripts/lib/review-provider-catalog.sh"
+repo_config_providers=$(sed -n "s/^readonly REVIEW_PROVIDER_ACCEPTED_NAMES=(\(.*\))\$/\1/p" "$rc_sh" | tr ' ' '\n' | sort)
+catalog_providers=$(sed -n "s/^REVIEW_PROVIDER_NAMES=(\(.*\))\$/\1/p" "$catalog" | tr ' ' '\n' | sort)
+assert_eq 'yes' "$([[ -n $repo_config_providers ]] && printf yes || printf no)" \
+    'repo-config.sh declares a provider display list to compare'
+assert_eq "$catalog_providers" "$repo_config_providers" \
+    'repo-config.sh provider display list matches lib/review-provider-catalog.sh exactly'
 
 # --- secret rejection ------------------------------------------------------
 repo=$(make_repo config-secrets.env)
