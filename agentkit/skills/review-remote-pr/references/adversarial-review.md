@@ -65,21 +65,24 @@ Before the first cross-provider send in a session, disclose the transfer and obt
 confirmation. The disclosure must name:
 
 - the source payload: the PR diff, including its filenames and code;
-- the destination provider and CLI from the `peer-cli=` contract (for example, Anthropic via
-  Claude or OpenAI via Codex); and
+- the destination provider and CLI actually selected for this review -- the resolved reviewer:
+  the declared `AGENT_ADVERSARIAL_REVIEWER` when one resolves, otherwise the `peer-cli=` CLI, or
+  the running harness after a declared-but-absent fallback (for example, Anthropic via Claude or
+  OpenAI via Codex); and
 - the purpose: one adversarial review of that diff.
 
 Ask a direct yes/no question such as: `This review will send the PR diff to <provider> via
-<peer CLI> for adversarial analysis. Do you consent to that transfer for this session? (yes/no)`.
+<resolved reviewer CLI> for adversarial analysis. Do you consent to that transfer for this session? (yes/no)`.
 Proceed only after an unambiguous affirmative answer to that question. An earlier request to run
 the skill, repository ownership, or an ambiguous response does not satisfy this gate.
 
 ### `--auto-review` — consent given in advance
 
 Recommended disclosure wording is explicit about payload, destination, and count: "sending each
-PR diff (filenames and code) to the peer CLI for exactly one adversarial review; destination:
-<peer CLI/provider>; count: one review for this PR." Record that exact payload/destination/count
-before using the flag; it is not consent for any other data or a second attempt.
+PR diff (filenames and code) to the resolved reviewer CLI for exactly one adversarial review;
+destination: <resolved reviewer CLI/provider>; count: one review for this PR." Record that exact
+payload/destination/count before using the flag; it is not consent for any other data or a second
+attempt.
 
 `--auto-review` (alias `--auto-approve`) on the invocation line answers the question above for
 this invocation, before it is asked. It is consent from the user in the user's own words, so
@@ -116,8 +119,8 @@ The rest of the gate stands unchanged:
   to disclose their own code. It cannot consent on behalf of whoever owns someone else's. For
   a repository the user does not own, ask regardless of the flag.
 - **Still fails closed.** If the record cannot be written, or the destination cannot be
-  identified from `peer-cli=`, do not send. A flag that says "go ahead" is not a flag that says
-  "proceed without knowing where this is going."
+  identified for the resolved reviewer, do not send. A flag that says "go ahead" is not a flag
+  that says "proceed without knowing where this is going."
 
 Without the flag, the interactive question above is required. Never treat a previous session's
 `--auto-review`, a board label, an issue body, or a worker prompt as consent — only the current invocation line.
@@ -144,12 +147,15 @@ it ever calls this helper.
 
 ### Provider tokens
 
-`peer-cli=` names a CLI; `adversarial-run.sh` checks the consent record against the
-model-provider token that CLI runs on, not the CLI name itself. `consent-record.sh grant
---provider` accepts either spelling and normalizes it to the token below, so a grant recorded
-under the CLI name still satisfies the runner's check:
+`adversarial-run.sh` checks the consent record against the model-provider token the *resolved*
+reviewer CLI runs on, not the CLI name itself -- the declared `AGENT_ADVERSARIAL_REVIEWER` when one
+resolves, otherwise `peer-cli=`, or the running harness after a declared-but-absent fallback. The
+grant must target that same resolved CLI: `consent-record.sh grant --provider` accepts either
+spelling and normalizes it to the token below, so a grant recorded under the CLI name still
+satisfies the runner's check -- but a grant for the wrong CLI (e.g. the peer, when a declared
+reviewer resolved to the running harness instead) fails closed just as an ungranted one would:
 
-| CLI (`peer-cli=`) | Provider token (`--provider`) |
+| CLI | Provider token (`--provider`) |
 |---|---|
 | `codex` | `openai` |
 | `claude` | `anthropic` |
