@@ -142,7 +142,7 @@ for provider in "${providers[@]}"; do
         exit 0
     fi
     mode=$(review_provider_mode "$provider" 2>/dev/null) || {
-        warn "unknown provider '$provider'; using effective none"
+        warn "unknown provider '$provider'; accepted: $(review_provider_names); using effective none"
         emit_none invalid
         exit 0
     }

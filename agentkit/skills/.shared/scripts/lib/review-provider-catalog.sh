@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
 # Single source of review-provider capabilities and canonical identities.
 
+# Canonical accepted provider identities, in display order. Every function in
+# this file recognizes exactly these values; review_provider_names() is what
+# a rejection message names instead of leaving a caller to read this file.
+#
+# Not `readonly`: this file is sourced more than once within a single process
+# in practice (review-transition.sh sources it directly, then again
+# transitively through provider-identity.sh), and a `readonly` array
+# assignment errors on a second source the way redefining a function does not.
+REVIEW_PROVIDER_NAMES=(coderabbit github-code-quality none)
+
+review_provider_names() {
+    local out='' name
+    for name in "${REVIEW_PROVIDER_NAMES[@]}"; do
+        out+="${out:+, }$name"
+    done
+    printf '%s\n' "$out"
+}
+
 review_provider_mode() {
     case ${1:-} in
         coderabbit) printf '%s\n' triggerable ;;
