@@ -204,7 +204,9 @@ against this record before any ready-flip or provider spend, so an omitted
 
 That file is narrow evidence for `review-transition.sh`, not reusable consent
 after a head, provider plan, or queue change. Re-display and reconfirm changed
-inputs.
+inputs — except a verified mechanical advance of an already-confirmed PR (see
+Step 5 and ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md)),
+which this same confirmation durably covers.
 
 ### 2. Normalize one runnable PR
 
@@ -288,15 +290,25 @@ predecessor's post-merge revalidation is outstanding.
 Only after the predecessor is merged — by the human, or by `merge-pr.sh` under
 `--auto-merge` — may the direct successor become `RETARGET_REQUIRED`. Invoke
 `chain-advance.sh` to retarget it to the default branch and verify the live
-base. Refresh its diff, ancestry, conflicts, checks, head/base evidence,
-provider state, and closing linkage. Unexpected expansion, conflict, stale
-evidence, failed retarget, or required history rewrite blocks that successor
-instead of selecting a repair — this applies identically whether merging is
-human or automated.
+base. Refresh its diff, ancestry, conflicts, checks, head/base evidence, and
+closing linkage — those stay mandatory. Formal approval is reported as
+residue (`approval=current:post-retarget|residue:stale|none|unknown`), never
+required at this step: a trigger/observe provider settles on the current
+head only after the ready/provider transition below, and a disabled/
+effective-none provider may never produce one at all (issue #455).
+Unexpected expansion, conflict, stale mechanical evidence, failed retarget,
+or required history rewrite blocks that successor instead of selecting a
+repair — this applies identically whether merging is human or automated.
 
-Regenerate and re-confirm the queue before the successor becomes `RUNNABLE` or
-spends any provider authority. Prefer that newly unblocked successor, then
-continue serially.
+Regenerate the queue before the successor becomes `RUNNABLE` or spends any
+provider authority. A merge-down or this retarget is deterministic queue
+maintenance under the Step 1 confirmation, not new discretionary scope — refresh
+it through `authorize-queue.sh --allow-mechanical-advance` (see
+["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md))
+instead of redisplaying, unless it names a material judgment. Save
+`chain-advance.sh --retarget`'s stdout line and pass it as
+`--retarget-proof PR:FILE`; without it the base change is refused. Prefer that
+newly unblocked successor, then continue serially.
 
 ## Exit
 

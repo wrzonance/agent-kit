@@ -7,6 +7,7 @@ readonly PROGRAM=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 QUEUE_HELPER=${AUTHORIZE_QUEUE_HELPER:-$SCRIPT_DIR/pr-queue.sh}
+GH_BIN=${AUTHORIZE_QUEUE_GH:-gh}
 
 repo=''
 repo_root=''
@@ -17,12 +18,36 @@ auto_merge_choice=''
 merge_method=''
 branch_choice=''
 no_providers=0
+allow_mechanical_advance=0
 declare -a providers=()
 declare -a prs=()
+declare -A retarget_proof_file=()
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
     exit 1
+}
+
+# Ownership alone does not protect proof evidence from another user in the
+# same group -- reject a file group- or world-writable, matching merge-pr.sh's
+# authorization/gate-result file policy.
+file_mode() {
+    local path=$1 mode
+    if mode=$(stat -c %a -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
+reject_writable_by_others() {
+    local path=$1 label=$2 mode
+    mode=$(file_mode "$path") || die "could not inspect $label permissions: $path"
+    (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
 }
 
 usage() {
@@ -32,11 +57,23 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
           (--delete-branch|--keep-branch) | --no-auto-merge)
        (--provider NAME:ACTION:SOURCE ... | --no-providers)
        --confirmed-queue-file FILE [--merge-plan FILE] [--pr N ...]
+       [--allow-mechanical-advance [--retarget-proof PR:FILE ...]]
 
 Derives .agent/pr-to-green-auth.json from fresh pr-queue.sh JSON. ACTION is
 trigger, observe, or disabled. FILE is the owner-only snapshot written by the
 displayed pr-queue.sh --write-confirmed-queue run, including its provider
 decisions. No head SHA or base ref is accepted as input.
+
+--allow-mechanical-advance lets a live queue that no longer matches FILE
+exactly still authorize, but only per confirmed PR and only for a
+deterministic advance proven from live forge state: a same-base head change
+(a merge-down) with an identical diff-shape fingerprint and a verified
+ancestor relationship to the previously authorized head, a base change (a
+retarget) with a matching --retarget-proof PR:FILE naming a
+chain-advance.sh --retarget proof for that exact PR/base/head, or a
+confirmed PR's disappearance from the live queue independently verified as
+merged. Repository, provider decisions, and any PR the live queue adds are
+never covered by this and always require redisplay and reconfirmation.
 EOF
     exit "${1:-2}"
 }
@@ -86,6 +123,18 @@ while (($#)); do
             no_providers=1
             shift
             ;;
+        --allow-mechanical-advance) allow_mechanical_advance=1; shift ;;
+        --retarget-proof)
+            (($# >= 2)) || usage
+            retarget_pr=${2%%:*}
+            retarget_file=${2#*:}
+            [[ $retarget_pr =~ ^[1-9][0-9]*$ && -n $retarget_file && $retarget_file != "$2" ]] ||
+                die "--retarget-proof must have the form PR:FILE: $2"
+            [[ -z ${retarget_proof_file[$retarget_pr]+set} ]] ||
+                die "duplicate --retarget-proof for pr $retarget_pr"
+            retarget_proof_file[$retarget_pr]=$retarget_file
+            shift 2
+            ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -132,8 +181,22 @@ fi
 for pr in "${prs[@]}"; do
     [[ $pr =~ ^[1-9][0-9]*$ ]] || die "--pr expects a positive integer: $pr"
 done
+if ((${#retarget_proof_file[@]})); then
+    ((allow_mechanical_advance)) ||
+        die '--retarget-proof requires --allow-mechanical-advance'
+    for pr in "${!retarget_proof_file[@]}"; do
+        file=${retarget_proof_file[$pr]}
+        [[ -f $file && ! -L $file && -O $file ]] ||
+            die "--retarget-proof file must be an owned regular file, not a symlink: $file"
+        reject_writable_by_others "$file" '--retarget-proof file'
+    done
+fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; authorization evidence unavailable'
 [[ -x $QUEUE_HELPER ]] || die "queue helper is not executable: $QUEUE_HELPER"
+if ((allow_mechanical_advance)); then
+    command -v "$GH_BIN" >/dev/null 2>&1 ||
+        die "required tool not found: $GH_BIN"
+fi
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/authorize-queue.XXXXXX") ||
     die 'could not create work directory'
@@ -169,6 +232,8 @@ for pr in "${prs[@]}"; do queue_args+=(--pr "$pr"); done
 "$QUEUE_HELPER" "${queue_args[@]}" >"$work_dir/queue.json" ||
     die 'live queue derivation failed'
 jq -e '
+  def diff_fingerprint_ok:
+    . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   type == "array" and length > 0 and
   all(.[];
     (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
@@ -176,17 +241,25 @@ jq -e '
       .state == "RETARGET_REQUIRED" or .state == "BLOCKED" or
       .state == "MERGEABLE_UNKNOWN") and
     (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$")) and
-    (.base | type) == "string" and (.base | length) > 0) and
+    (.base | type) == "string" and (.base | length) > 0 and
+    (.diffFingerprint | diff_fingerprint_ok)) and
   ((map(.pr) | unique | length) == length)
 ' "$work_dir/queue.json" >/dev/null 2>&1 || die 'queue helper returned malformed JSON'
 
-jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
-  --slurpfile requested "$work_dir/providers.json" '
+# def base_ok is everything the displayed snapshot must always satisfy:
+# well-formed shape, this exact repository, and providers exactly as
+# displayed. --allow-mechanical-advance never relaxes any of it -- only a
+# pure `.queue` content mismatch against the fresh live read is eligible for
+# reconciliation below.
+# shellcheck disable=SC2016 # jq program: $repo/$requested are jq --arg binds, not bash expansion
+base_ok_jq='
   def provider:
     type == "object" and (keys | sort) == ["action","name","source"] and
     (.name | type) == "string" and (.name | test("^[a-z0-9][a-z0-9-]*$")) and
     (.action == "trigger" or .action == "observe" or .action == "disabled") and
     (.source | type) == "string" and (.source | length) > 0;
+  def diff_fingerprint_ok:
+    . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   def canonical: sort_by([.name,.action,.source]);
   type == "object" and (keys | sort) == ["providers","queue","repository"] and
   .repository == $repo and
@@ -195,17 +268,150 @@ jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
   ((.providers | canonical) == ($requested[0] | canonical)) and
   (.queue | type) == "array" and (.queue | length) > 0 and
   all(.queue[];
-    (keys | sort) == ["base","headSha","pr","state"] and
+    (keys | sort) == ["base","diffFingerprint","headSha","pr","state"] and
     (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
     (.state == "RUNNABLE" or .state == "WAITING_FOR_MERGE" or
       .state == "RETARGET_REQUIRED" or .state == "BLOCKED" or
       .state == "MERGEABLE_UNKNOWN") and
     (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")) and
-    (.base | type) == "string" and (.base | length) > 0) and
-  ((.queue | map(.pr) | unique | length) == (.queue | length)) and
-  .queue == ($live[0] | map({pr,state,headSha:.sha,base}))
-' "$confirmed_queue_file" >/dev/null 2>&1 ||
-    die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+    (.base | type) == "string" and (.base | length) > 0 and
+    (.diffFingerprint | diff_fingerprint_ok)) and
+  ((.queue | map(.pr) | unique | length) == (.queue | length))
+'
+full_match_ok=1
+jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
+  --slurpfile requested "$work_dir/providers.json" \
+  "$base_ok_jq"' and .queue == ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint}))' \
+  "$confirmed_queue_file" >/dev/null 2>&1 || full_match_ok=0
+
+if ((full_match_ok == 0)); then
+    ((allow_mechanical_advance)) ||
+        die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+    base_ok=1
+    jq -e --arg repo "$repo" --slurpfile requested "$work_dir/providers.json" \
+      "$base_ok_jq" "$confirmed_queue_file" >/dev/null 2>&1 || base_ok=0
+    ((base_ok)) ||
+        die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+
+    # Every confirmed PR must resolve to unchanged, a verified mechanical
+    # advance, or a verified merge -- never silently dropped. A confirmed PR
+    # absent from this classification (e.g. a bare `select()` match on zero
+    # live rows) would fail open, so the live-side lookup is wrapped in
+    # first(...) // null to force an explicit "vanished" verdict instead.
+    # F1 (issue #450 review finding): a mechanical verdict requires BOTH the
+    # confirmed PR's own prior state (never inferred from the live state
+    # alone) and an actual corresponding mutation. A state-only flip with an
+    # identical head and base -- e.g. GitHub recomputing BLOCKED/
+    # MERGEABLE_UNKNOWN to RUNNABLE with nothing else changed -- matches
+    # neither bucket below and falls through to "fail", exactly like any
+    # other unproven drift.
+    jq -n --slurpfile confirmed "$confirmed_queue_file" --slurpfile live "$work_dir/queue.json" '
+      ($confirmed[0].queue) as $confirmed |
+      ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $live |
+      {
+        added: (($live | map(.pr)) - ($confirmed | map(.pr))),
+        perPr: [ $confirmed[] | . as $c |
+          ((first($live[] | select(.pr == $c.pr))) // null) as $l |
+          # Every field is always populated with a non-empty placeholder ("-")
+          # rather than left absent: consecutive tabs in a TSV row collapse
+          # under bash `read` (tab is IFS whitespace, so IFS=$'"'"'\t'"'"' still
+          # collapses repeats), which silently shifts every later column left.
+          (if $l == null then "-" else $c.headSha end) as $confirmedHeadSha |
+          (if $l == null then "-" else ($l.headSha // "-") end) as $liveHeadSha |
+          (if $l == null then "-" else ($l.base // "-") end) as $liveBase |
+          if $l == null then {pr:$c.pr, verdict:"vanished",
+            confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
+          elif ($l.state == $c.state and $l.headSha == $c.headSha and
+                $l.base == $c.base and $l.diffFingerprint == $c.diffFingerprint) then
+            {pr:$c.pr, verdict:"unchanged",
+             confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
+          elif ($c.state == "RUNNABLE" and $l.state == "RUNNABLE" and
+                $l.base == $c.base and $l.headSha != $c.headSha and
+                $c.diffFingerprint != null and $l.diffFingerprint == $c.diffFingerprint) then
+            {pr:$c.pr, verdict:"merge-down",
+             confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
+          elif (($c.state == "WAITING_FOR_MERGE" or $c.state == "RETARGET_REQUIRED") and
+                $l.state == "RUNNABLE" and $l.base != $c.base and
+                $c.diffFingerprint != null and $l.diffFingerprint == $c.diffFingerprint) then
+            {pr:$c.pr, verdict:"retarget",
+             confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
+          else {pr:$c.pr, verdict:"fail",
+            confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase} end
+        ]
+      }
+    ' >"$work_dir/reconcile.json" || die 'could not evaluate mechanical-advance reconciliation'
+
+    added_list=$(jq -r '.added | map(tostring) | join(",")' "$work_dir/reconcile.json")
+    [[ -z $added_list ]] ||
+        die "live queue includes pr(s) $added_list that were never in the displayed confirmation; redisplay and reconfirm before authorization"
+
+    # F3 (issue #450 review finding): the retarget path previously trusted the
+    # proof file's own text without independently verifying that the live
+    # head actually descends from the previously authorized head. The same
+    # live ancestry compare merge-down already requires is run here too,
+    # before the proof is even inspected.
+    verify_ancestry() {
+        local pr=$1 confirmed_sha=$2 live_sha=$3 compare_json behind cmp_status
+        compare_json=$("$GH_BIN" api "repos/$repo/compare/$confirmed_sha...$live_sha" 2>/dev/null) ||
+            die "pr $pr: ancestry could not be read for its mechanical advance; redisplay and reconfirm before authorization"
+        behind=$(jq -r '.behind_by // empty' <<<"$compare_json" 2>/dev/null)
+        cmp_status=$(jq -r '.status // empty' <<<"$compare_json" 2>/dev/null)
+        [[ $behind == 0 && ( $cmp_status == ahead || $cmp_status == identical ) ]] ||
+            die "pr $pr: the live head fails the ancestry check against the previously authorized head; redisplay and reconfirm before authorization"
+    }
+
+    while IFS=$'\t' read -r recon_pr recon_verdict recon_confirmed_sha recon_live_sha recon_live_base; do
+        case $recon_verdict in
+            unchanged) : ;;
+            vanished)
+                merged_json=$("$GH_BIN" api "repos/$repo/pulls/$recon_pr" 2>/dev/null) || merged_json=''
+                if [[ $(jq -r '.merged // false' <<<"$merged_json" 2>/dev/null) != true ]]; then
+                    die "pr $recon_pr is missing from the live queue and is not verified merged; redisplay and reconfirm before authorization"
+                fi
+                ;;
+            merge-down)
+                verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
+                ;;
+            retarget)
+                verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
+                proof_file=${retarget_proof_file[$recon_pr]-}
+                [[ -n $proof_file ]] ||
+                    die "pr $recon_pr changed base with no --retarget-proof supplied; redisplay and reconfirm before authorization"
+                # Every required token must be present on the SAME candidate
+                # line, never satisfied piecemeal across different lines --
+                # a proof file that accumulated several PRs' chain-advance.sh
+                # lines must not let one PR's line supply the ancestry/green/
+                # approval/closing-issues tokens for another PR's base/head
+                # match. Select only lines carrying this exact PR-and-base
+                # prefix, then require the remaining tokens on that one line.
+                # Approval is provider policy, not mechanical base safety
+                # (issue #455): a trigger/observe provider settles on the
+                # current head only after the ready/provider transition that
+                # follows this proof, and a disabled/none provider may never
+                # produce one at all. The proof's `approval=` token is
+                # therefore checked for a well-formed value, never required
+                # to be `current:post-retarget` -- ancestry, post-retarget
+                # CI, and closing linkage stay the mandatory mechanical proof.
+                proof_ok=0
+                while IFS= read -r proof_line; do
+                    if [[ $proof_line == *" sha=$recon_live_sha "* &&
+                          $proof_line == *'ancestry=verified'* &&
+                          $proof_line == *'green:post-retarget'* &&
+                          $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
+                          $proof_line =~ closing-issues=[1-9][0-9]*$ ]]; then
+                        proof_ok=1
+                        break
+                    fi
+                done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
+                ((proof_ok)) ||
+                    die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
+                ;;
+            *)
+                die "pr $recon_pr changed in a way that is not a verified mechanical advance (diff expanded, not runnable, or evidence unavailable); redisplay and reconfirm before authorization"
+                ;;
+        esac
+    done < <(jq -r '.perPr[] | [.pr,.verdict,.confirmedHeadSha,.liveHeadSha,.liveBase] | @tsv' "$work_dir/reconcile.json")
+fi
 
 delete_branch=false
 [[ $branch_choice != delete ]] || delete_branch=true

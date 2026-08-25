@@ -13,7 +13,8 @@
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
 #   repo-config.sh --get KEY         # one value; exit 1 if absent
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
-#   repo-config.sh --list            # K=V lines for accepted keys
+#   repo-config.sh --list            # K=V lines for accepted keys actually declared
+#   repo-config.sh --list-keys       # the accepted key set itself, one per line
 #   repo-config.sh --canonical-keys K1,K2
 #                                    # strict, sorted canonical K=V lines
 #   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
@@ -36,7 +37,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -47,6 +48,8 @@ readonly ACCEPTED_KEYS=(
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
     AGENT_GENERATED_PATHS AGENT_ONBOARDED_BY
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
+    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL
+    AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT
 )
 
 # AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
@@ -87,6 +90,7 @@ while (($#)); do
     case $1 in
         --export) mode='export' ;;
         --list) mode='list' ;;
+        --list-keys) mode='keys' ;;
         --diagnose) mode='diagnose' ;;
         --get)
             mode='get'
@@ -128,7 +132,17 @@ while (($#)); do
     shift
 done
 
-[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --diagnose, --canonical-keys, or --resolve is required'
+[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --list-keys, --diagnose, --canonical-keys, or --resolve is required'
+
+# The accepted key set is schema, not a fact about any one repository -- print
+# it and exit before any repo-root/config-file resolution, so it works the
+# same with no arguments as it does pointed at a repo with no config yet.
+if [[ $mode == keys ]]; then
+    printf '%s\n' "${ACCEPTED_KEYS[@]}"
+    printf 'AGENT_CMD_<NAME>\n'
+    printf 'AGENT_RUNDIR_<NAME>\n'
+    exit 0
+fi
 
 if [[ $mode == resolve ]]; then
     for key in "${resolve_keys[@]}"; do
@@ -204,6 +218,21 @@ generated_paths_valid() {
     done
 }
 
+# Mirrors lib/review-provider-catalog.sh's REVIEW_PROVIDER_NAMES, for warning
+# text only. Kept as a local literal rather than sourcing that file: this
+# parser is deliberately self-contained (see the file header) so a missing or
+# broken lib file can never turn one bad declaration into a hard failure for
+# every accepted key. test-repo-config.sh pins this against the catalog.
+readonly REVIEW_PROVIDER_ACCEPTED_NAMES=(coderabbit github-code-quality none)
+
+providers_display() {
+    local out='' name
+    for name in "${REVIEW_PROVIDER_ACCEPTED_NAMES[@]}"; do
+        out+="${out:+, }$name"
+    done
+    printf '%s' "$out"
+}
+
 providers_valid() {
     local item saw_none=0 seen_coderabbit=0 seen_code_quality=0
     [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
@@ -236,6 +265,42 @@ providers_valid() {
 # explicit-authorization gate instead of silently becoming the default.
 worker_model_valid() {
     [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
+}
+
+# The adversarial reviewer is one of exactly two CLIs adversarial-run.sh knows
+# how to launch -- unlike a worker model id, this is a closed set, not open
+# policy input, so an unsupported spelling is refused outright rather than
+# kept visible for a later authorization gate.
+readonly ADVERSARIAL_REVIEWER_ACCEPTED_NAMES=(codex claude)
+
+# Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
+# `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
+# the adversarial helpers reject would pass here and only fail at launch,
+# after consent and diff construction already ran.
+readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
+
+names_display() {
+    local out='' name
+    for name in "$@"; do
+        out+="${out:+, }$name"
+    done
+    printf '%s' "$out"
+}
+
+adversarial_reviewer_valid() {
+    local item
+    for item in "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}"; do
+        [[ $item == "$1" ]] && return 0
+    done
+    return 1
+}
+
+adversarial_review_effort_valid() {
+    local item
+    for item in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
+        [[ $item == "$1" ]] && return 0
+    done
+    return 1
 }
 
 # Resolve a relative path from BASE and prove the physical result stays inside
@@ -519,6 +584,11 @@ validate() {
             [[ $value == low || $value == medium || $value == high ||
                 $value == xhigh || $value == max || $value == ultra ]]
             ;;
+        AGENT_ADVERSARIAL_REVIEWER) adversarial_reviewer_valid "$value" ;;
+        AGENT_ADVERSARIAL_REVIEW_MODEL | AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK)
+            worker_model_valid "$value"
+            ;;
+        AGENT_ADVERSARIAL_REVIEW_EFFORT) adversarial_review_effort_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)
             command_value_valid "$value" "$key" || return 1
@@ -598,7 +668,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         if [[ $key =~ $SECRET_PATTERN ]]; then
             warn "refusing credential-shaped key on line $lineno: $key"
         else
-            warn "unknown key on line $lineno, ignoring: $key"
+            warn "unknown key on line $lineno, ignoring: $key (run '$PROGRAM --list-keys' to see the accepted keys)"
         fi
         # Unknown keys are deliberately dropped. In resolve mode they are not
         # relevant to the requested declaration set.
@@ -615,6 +685,12 @@ while IFS= read -r line || [[ -n $line ]]; do
         # there isn't one, and a comment is how you say it.
         if [[ -z $value ]]; then
             warn "empty value for $key on line $lineno, ignoring -- to record that this repository has none, comment the line out instead"
+        elif [[ $key == AGENT_REVIEW_PROVIDERS ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(providers_display)"
+        elif [[ $key == AGENT_ADVERSARIAL_REVIEWER ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}")"
+        elif [[ $key == AGENT_ADVERSARIAL_REVIEW_EFFORT ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}")"
         else
             warn "invalid value for $key on line $lineno, ignoring"
         fi

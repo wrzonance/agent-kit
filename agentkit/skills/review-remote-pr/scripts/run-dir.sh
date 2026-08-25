@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-dir.sh — the durable PR -> RUN_DIR mapping.
+# run-dir.sh — the durable PR/run -> RUN_DIR mapping.
 #
 # review-remote-pr's Step 0c used to mint a randomly named directory under
 # ${TMPDIR:-/tmp} every run. That path lived only in the current shell and the
@@ -13,6 +13,19 @@
 # `.agent/evidence/pr-<N>` (see .gitignore's `**/.agent/*`); ${TMPDIR:-/tmp}
 # is used only as a genuine fallback, on hosts where `.agent/` cannot be
 # written -- never as a silent default.
+#
+# A run that never produces a pull request (e.g. parallel-issues' bulk triage,
+# before any PR exists) has no PR number to address by, so it has no way to
+# reach this guarantee -- and previously improvised a repository-relative
+# path instead, which `git status` then showed as untracked additions mixed
+# into the operator's own working tree (issue #447). `--run-id ID` is the
+# second addressing mode this adds: ID is the invocation-level RUN_ID a skill
+# already establishes once per run (see .shared/scripts/session-ledger.sh),
+# reusing that existing stable identifier rather than inventing a second
+# scheme. It resolves to `.agent/evidence/run-<ID>`, sharing every mechanic
+# --pr uses (mode 0700, hostile-input refusal, the ${TMPDIR:-/tmp} fallback);
+# the `pr-`/`run-` prefixes keep the two namespaces disjoint even when the
+# literal PR number and run id happen to match.
 set -euo pipefail
 umask 077
 
@@ -23,21 +36,27 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 
 PR=''
+RUN_ID=''
 REPO_ROOT=''
+SELECTOR=''
+readonly RUN_ID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --pr N [--repo-root DIR]
+Usage: $PROGNAME (--pr N | --run-id ID) [--repo-root DIR]
 
-Prints the private, mode-0700 review run directory for pull request N,
-creating it if needed. The same PR always resolves to the same directory, so
-a resumed session finds its prior evidence instead of orphaning it.
+Prints the private, mode-0700 run directory for pull request N, or for a
+PR-less run addressed by the stable ID (the invocation-level RUN_ID a skill
+already establishes) it was invoked with, creating it if needed. The same
+selector always resolves to the same directory, so a resumed session finds
+its prior evidence instead of orphaning it. Exactly one of --pr / --run-id is
+required; they are mutually exclusive.
 
-Primary location: DIR/.agent/evidence/pr-N (DIR defaults to \`git rev-parse
---show-toplevel\`; pass --repo-root to override, mainly for tests). Falls
-back to a private directory under \${TMPDIR:-/tmp}, keyed by both the
-repository and the PR number, only when .agent/ genuinely cannot be created
-or secured there.
+Primary location: DIR/.agent/evidence/pr-N or DIR/.agent/evidence/run-ID (DIR
+defaults to \`git rev-parse --show-toplevel\`; pass --repo-root to override,
+mainly for tests). Falls back to a private directory under \${TMPDIR:-/tmp},
+keyed by both the repository and the selector, only when .agent/ genuinely
+cannot be created or secured there.
 
 A pre-existing target that is a symlink, not a directory, not owned by this
 user, or not mode 0700 is refused rather than reused or silently widened.
@@ -64,6 +83,8 @@ parse_args() {
         case $1 in
             --pr) require_value "$1" "${2:-}"; PR=$2; shift 2 ;;
             --pr=*) PR=${1#*=}; shift ;;
+            --run-id) require_value "$1" "${2:-}"; RUN_ID=$2; shift 2 ;;
+            --run-id=*) RUN_ID=${1#*=}; shift ;;
             --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
             --repo-root=*) REPO_ROOT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -72,13 +93,33 @@ parse_args() {
     done
 }
 
-validate_pr() {
-    [[ -n $PR ]] || die_usage '--pr is required'
-    # Leading zeros rejected rather than normalized (a path component should
-    # read as the number it is), and the PR number is validated before it
-    # ever becomes part of a path -- a malformed value must never reach
-    # mkdir/stat as a traversal or option-injection vector.
-    [[ $PR =~ ^[1-9][0-9]*$ ]] || die_usage "--pr must be a positive integer without leading zeros: $PR"
+# validate_selector -- exactly one of --pr / --run-id must be set; whichever
+# it is gets validated and turned into SELECTOR, the path component shared by
+# try_primary and fallback_target. Both selectors are validated (and refused)
+# before they ever become part of a path -- a malformed value must never
+# reach mkdir/stat as a traversal or option-injection vector.
+validate_selector() {
+    if [[ -n $PR && -n $RUN_ID ]]; then
+        die_usage '--pr and --run-id are mutually exclusive'
+    fi
+    if [[ -n $PR ]]; then
+        # Leading zeros rejected rather than normalized (a path component
+        # should read as the number it is).
+        [[ $PR =~ ^[1-9][0-9]*$ ]] || die_usage "--pr must be a positive integer without leading zeros: $PR"
+        SELECTOR="pr-$PR"
+        return
+    fi
+    if [[ -n $RUN_ID ]]; then
+        # Same charset session-ledger.sh's --run-id already accepts, so the
+        # invocation-level RUN_ID a skill establishes once (parallel-issues,
+        # review-remote-pr) is always a valid path component here too -- no
+        # second identifier scheme to invent or keep in sync.
+        [[ $RUN_ID =~ $RUN_ID_RE ]] || die_usage \
+            "--run-id must use letters, numbers, ., _, :, or - (max 128 characters, starting with a letter or number): $RUN_ID"
+        SELECTOR="run-$RUN_ID"
+        return
+    fi
+    die_usage 'either --pr or --run-id is required'
 }
 
 resolve_repo_root() {
@@ -152,13 +193,13 @@ try_primary() {
     fi
     evidence_dir=$agent_dir/evidence
     ensure_private_root "$evidence_dir" || return 1
-    TARGET=$evidence_dir/pr-$PR
+    TARGET=$evidence_dir/$SELECTOR
 }
 
 # fallback_target -- sets TARGET to a deterministic (never randomly named)
 # path under ${TMPDIR:-/tmp}, namespaced by both the effective user and the
 # repository, so two checkouts (or two users on a shared host) never collide
-# on the same PR number. A genuine environment failure here has no further
+# on the same selector. A genuine environment failure here has no further
 # fallback and dies outright (also called directly, for the same subshell
 # reason as try_primary).
 fallback_target() {
@@ -168,15 +209,15 @@ fallback_target() {
     fallback_root="${TMPDIR:-/tmp}/agent-kit-review-remote-pr.$(id -u)"
     ensure_private_root "$fallback_root" ||
         die "could not create the fallback run-directory root: $fallback_root; evidence unavailable"
-    TARGET=$fallback_root/$repo_slug/pr-$PR
+    TARGET=$fallback_root/$repo_slug/$SELECTOR
 }
 
 parse_args "$@"
-validate_pr
+validate_selector
 resolve_repo_root
 
 if try_primary; then
-    private_dir_ensure "$TARGET" '--pr run directory'
+    private_dir_ensure "$TARGET" 'run directory'
     printf '%s\n' "$TARGET"
     exit 0
 fi
@@ -184,5 +225,5 @@ fi
 printf '%s: .agent/ is not writable under %s; using a private %s fallback\n' \
     "$PROGNAME" "$REPO_ROOT" "${TMPDIR:-/tmp}" >&2
 fallback_target
-private_dir_ensure "$TARGET" '--pr run directory'
+private_dir_ensure "$TARGET" 'run directory'
 printf '%s\n' "$TARGET"

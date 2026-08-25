@@ -134,16 +134,25 @@ rebase and not a promise that the old checks still describe the child:
 The cascade is complete only when each descendant has been verified against the new head that
 was merged into it. `chain-advance.sh --retarget --pr N --base B` then performs the agent-driven
 retarget proof: it re-reads `baseRefName`, checks `B...head` ancestry, requires settled green CI,
-requires an approval on the current head, and proves `closingIssuesReferences` is non-empty.
-Because `gh pr edit --base` leaves `headRefOid` untouched, and both the check rollup and provider
-approvals hang off the head commit, head-bound evidence produced against the *old* base survives
-the retarget — so the helper additionally stamps a retarget boundary from the provider's own clock
-and requires every check and the approval to postdate it. The helper exits non-zero when any proof
-is missing or stale, including when that provenance cannot be read at all. A base change does not
-re-run the workflow (`pull_request` fires on opened/synchronize/reopened, not `edited`), so this
-refusal is expected until CI is genuinely re-run against the new base. Residual approval state
-after a base change remains a human judgment: record it and stop; do not dismiss, inherit, or
-refresh it automatically.
+and proves `closingIssuesReferences` is non-empty. Because `gh pr edit --base` leaves
+`headRefOid` untouched, and both the check rollup and provider approvals hang off the head
+commit, head-bound evidence produced against the *old* base survives the retarget — so the
+helper additionally stamps a retarget boundary from the provider's own clock and requires every
+check to postdate it. The helper exits non-zero when ancestry, CI freshness, or closing linkage
+is missing or stale, including when that provenance cannot be read at all. A base change does
+not re-run the workflow (`pull_request` fires on opened/synchronize/reopened, not `edited`), so
+this refusal is expected until CI is genuinely re-run against the new base.
+
+Formal approval is provider policy, not mechanical base safety (issue #455), so it never blocks
+the retarget proof. The proof line instead reports an `approval=` token —
+`current:post-retarget` (an APPROVED review on the current head, submitted after the retarget
+boundary), `residue:stale` (an APPROVED review exists but predates the boundary or targets an
+older head), `none` (no APPROVED review at all), or `unknown` (review evidence was unreadable).
+A trigger/observe provider settles formally on the current head only after the ready/provider
+transition that follows this proof (`pr-to-green` Step 3/4); a disabled or effective-none
+provider may never produce a formal approval at all, and none is required. Residual approval
+state is always recorded, never silently dismissed, inherited, or refreshed automatically —
+but it is a record, not a gate.
 
 ## Merge order and the stacked-PR retarget
 
@@ -153,8 +162,9 @@ predecessor merges, **merge the updated default branch down into the successor a
 merge before retargeting**. This ordering is load-bearing: a squash merge advances the default
 branch with a commit the successor does not contain. For an agent-driven merge, only after that
 merge-down succeeds run `chain-advance.sh --retarget --pr <N> --base <default>` and require its
-complete proof, including the refreshed `baseRefName`, `base...head` ancestry, current
-CI/approval evidence, and non-empty `closingIssuesReferences`. The helper prechecks ancestry
+complete proof, including the refreshed `baseRefName`, `base...head` ancestry, current CI
+evidence, and non-empty `closingIssuesReferences` (its reported `approval=` token is residue,
+not a requirement — see above). The helper prechecks ancestry
 before editing: exit 1 means it did not confirm a base mutation (including a behind successor),
 while exit 2 means the edit succeeded but a later proof failed and stderr names the applied
 base. A stacked PR merged while still based on its
@@ -175,8 +185,11 @@ the chain and revalidate each open successor: use the helper's live `base...head
 comparison to detect whether the child is behind its new base, refresh the successor's state,
 and require CI to run against the new base before treating it as green.
 A stale digest is a stop signal, not a green result. If the provider's approval is stale too,
-record that residue explicitly in the handoff; the one-review/one-ping rule does not permit
-silently inheriting it or spending a second provider trigger to make the history look fresh.
+the proof reports `approval=residue:stale` in the handoff; the one-review/one-ping rule does
+not permit silently inheriting it or spending a second provider trigger to make the history
+look fresh, but a stale or absent approval never blocks the retarget itself — it is the
+ready/provider transition's job to settle formally on the current head when the configured
+provider action is trigger or observe.
 
 ## Post-squash-merge conflicts
 

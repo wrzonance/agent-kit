@@ -28,10 +28,12 @@ worker_model=''
 
 usage() {
     printf 'usage: %s --repo-root DIR (--get KEY [--worker-model ID] | --check)\n' "$PROGRAM" >&2
-    printf 'keys: skills.path harness.identity harness.trailer harness.name repo.slug base.branch\n' >&2
+    printf 'keys: skills.path skills.content harness.identity harness.trailer harness.name repo.slug base.branch\n' >&2
     printf '  harness.identity resolves to the bare harness identity (e.g. "Claude <noreply@anthropic.com>").\n' >&2
     printf '  harness.trailer resolves to the full, git-parseable trailer line built from that identity\n' >&2
     printf '  (e.g. "Co-Authored-By: Claude <noreply@anthropic.com>") -- it never returns a keyless value.\n' >&2
+    printf '  skills.content resolves to the sha256 content stamp over the shipped skill/script tree\n' >&2
+    printf '  (issue #453) -- independent of skills.path, which always stays the bare directory path.\n' >&2
     exit 2
 }
 
@@ -87,7 +89,7 @@ contract="$repo_root/.agent/env-contract.txt"
 case $mode in
     get)
         case $key in
-            skills.path|harness.identity|harness.trailer|harness.name|repo.slug|base.branch) ;;
+            skills.path|skills.content|harness.identity|harness.trailer|harness.name|repo.slug|base.branch) ;;
             *) die 2 "unknown contract key: $key" ;;
         esac
         [[ -z $worker_model || $key == harness.identity || $key == harness.trailer ]] ||
@@ -169,6 +171,9 @@ read_contract_value() {
         skills.path)
             raw=$(sed -n 's/^skills= path=//p' "$contract")
             ;;
+        skills.content)
+            raw=$(sed -n 's/^skills-content= sha256=//p' "$contract")
+            ;;
         harness.identity|harness.trailer)
             # Both keys read the same raw contract field; emit_value is what
             # composes harness.trailer into a full "Co-Authored-By: ..." line.
@@ -210,7 +215,7 @@ value=$raw
 
 if [[ -n $cache_digest ]]; then
     cache_entries=()
-    for cache_key in skills.path harness.identity harness.trailer harness.name repo.slug base.branch; do
+    for cache_key in skills.path skills.content harness.identity harness.trailer harness.name repo.slug base.branch; do
         cache_value=$(read_contract_value "$cache_key")
         [[ -n $cache_value ]] && cache_entries+=("$cache_key=$cache_value")
     done

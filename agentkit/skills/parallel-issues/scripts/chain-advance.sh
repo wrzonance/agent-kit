@@ -185,23 +185,38 @@ check_ci_fresh() {
         die "CI evidence predates the retarget (stale: $stale); re-run CI against the new base -- a stale digest is a stop signal, not a green result"
 }
 
-# Both conditions must hold for ONE review. Splitting them across two existential
-# checks would pass a PR carrying a stale approval of the current head plus a
-# fresh approval of some older commit, where no single review is both.
-check_approval_fresh() {
-    local pr_json=$1 head_sha=$2 boundary=$3 fresh
-    fresh=$(jq -r --arg head "$head_sha" --argjson boundary "$boundary" '
-        any(.reviews[]?;
-            (.state == "APPROVED")
-            and (((if (.commit | type) == "object" then .commit.oid
-                   elif (.commit | type) == "string" then .commit
-                   else .commitId end // "") | tostring) == $head)
-            and (((.submittedAt // .submitted_at // "") | length) > 0)
-            and (((.submittedAt // .submitted_at) | fromdateiso8601) > $boundary))
-    ' <<<"$pr_json") ||
-        die 'review timestamps were unreadable; approval provenance is unavailable'
-    [[ $fresh == true ]] ||
-        die 'no approval is both current-head and post-retarget; residual approval state after a base change remains a human judgment -- record the residue in the handoff and stop'
+# Approval is provider policy, not mechanical base safety (issue #455): a
+# trigger/observe provider settles on the current head only after the
+# ready/provider transition that follows this proof, and a disabled/none
+# provider may never produce one at all. Blocking retarget on approval made
+# both cases unsatisfiable, so this reports one of four tokens instead of
+# dying: `current:post-retarget` (an APPROVED review both on the current head
+# and submitted after the retarget boundary -- both conditions must hold for
+# ONE review; splitting them across two existential checks would pass a PR
+# carrying a stale approval of the current head plus a fresh approval of some
+# older commit, where no single review is both), `residue:stale` (an APPROVED
+# review exists but none satisfies both conditions -- pre-retarget residue,
+# never counted as current), `none` (no APPROVED review at all), or `unknown`
+# (review evidence was unreadable). The caller decides what, if anything, this
+# token requires.
+describe_approval() {
+    local pr_json=$1 head_sha=$2 boundary=$3 result
+    result=$(jq -r --arg head "$head_sha" --argjson boundary "$boundary" '
+        def review_sha: (if (.commit | type) == "object" then .commit.oid
+                          elif (.commit | type) == "string" then .commit
+                          else .commitId end // "") | tostring;
+        def review_ts: (.submittedAt // .submitted_at // "");
+        (.reviews // []) as $reviews
+        | (any($reviews[]; .state == "APPROVED")) as $any_approved
+        | (any($reviews[]; (.state == "APPROVED") and (review_sha == $head)
+                and ((review_ts | length) > 0)
+                and ((review_ts | fromdateiso8601) > $boundary))) as $current_fresh
+        | if $current_fresh then "current:post-retarget"
+          elif $any_approved then "residue:stale"
+          else "none" end
+    ' <<<"$pr_json") || result=unknown
+    [[ $result =~ ^(current:post-retarget|residue:stale|none)$ ]] || result=unknown
+    printf '%s\n' "$result"
 }
 
 check_ancestry() {
@@ -251,23 +266,6 @@ check_ci() {
     printf '%s\t%s\n' "$total" "$pass"
 }
 
-check_approval() {
-    local pr_json=$1 head_sha=$2 decision current
-    decision=$(jq -r '.reviewDecision // empty' <<<"$pr_json") ||
-        die 'reviewDecision was unreadable; approval evidence unavailable'
-    [[ $decision == APPROVED ]] ||
-        die "approval is not current: reviewDecision=${decision:-missing}; stale approval disposition remains human judgment"
-    current=$(jq -r --arg head "$head_sha" '
-        any(.reviews[]?;
-            (.state == "APPROVED") and
-            (((if (.commit | type) == "object" then .commit.oid
-               elif (.commit | type) == "string" then .commit
-               else .commitId end // "") | tostring) == $head))
-    ' <<<"$pr_json") || die 'reviews were unreadable; approval evidence unavailable'
-    [[ $current == true ]] ||
-        die 'approval is stale or cannot be proven current; stale approval disposition remains human judgment'
-}
-
 closing_issue_count() {
     jq -r '
         (.closingIssuesReferences // []) as $references
@@ -278,7 +276,7 @@ closing_issue_count() {
 }
 
 retarget() {
-    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count boundary
+    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count boundary approval_token
     resolve_repo
     pr_json=$(fetch_pr) || die "could not read PR #$PR before retarget"
     head_sha=$(jq -r '.headRefOid // empty' <<<"$pr_json") ||
@@ -315,14 +313,13 @@ retarget() {
     ci_counts=$(check_ci "$pr_json")
     IFS=$'\t' read -r total pass <<<"$ci_counts"
     check_ci_fresh "$pr_json" "$boundary"
-    check_approval "$pr_json" "$head_sha"
-    check_approval_fresh "$pr_json" "$head_sha" "$boundary"
+    approval_token=$(describe_approval "$pr_json" "$head_sha" "$boundary")
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=%s\n' \
-        "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$closing_count"
+    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=%s ancestry=verified closing-issues=%s\n' \
+        "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$approval_token" "$closing_count"
 }
 
 main() {
