@@ -6,7 +6,10 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -24,24 +27,50 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          # This job checks out and executes PR-author-controlled code on
+          # pull_request; persisting the token would leave it readable from
+          # .git/config to anything that tree runs.
+          persist-credentials: false
+          # bench/tier0.sh reproduces the token-benchmark epic's numbers by
+          # measuring specific historical commits (06d18cf, 53e7e8c); the
+          # default shallow clone (fetch-depth: 1) does not contain them, so
+          # the suite needs full history to run that reproduction.
+          fetch-depth: 0
+
+      - name: Install pinned ShellCheck
+        # Reference release: ShellCheck v0.11.0
+        # SHA-256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          version=0.11.0
+          archive='shellcheck-v0.11.0.linux.x86_64.tar.xz'
+          url="https://github.com/koalaman/shellcheck/releases/download/v${version}/${archive}"
+          expected_sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          download_dir=$(mktemp -d)
+          install_dir="${RUNNER_TEMP}/shellcheck-v${version}/bin"
+          trap 'rm -rf -- "$download_dir"' EXIT
+          curl --fail --location --silent --show-error --retry 3 --retry-delay 2 --retry-all-errors \
+            "$url" --output "$download_dir/$archive"
+          printf '%s  %s\n' "$expected_sha256" "$download_dir/$archive" |
+            sha256sum --check --status -
+          tar -xJf "$download_dir/$archive" -C "$download_dir"
+          mkdir -p -- "$install_dir"
+          install -m 0755 "$download_dir/shellcheck-v${version}/shellcheck" "$install_dir/shellcheck"
+          printf '%s\n' "$install_dir" >>"$GITHUB_PATH"
 
       - name: Report the interpreter
         # The tree targets bash 5.2 and one gate checks for constructs that need
         # it. A runner that quietly moved to another major version should say so
         # here rather than through a parse error halfway down the suite.
         #
-        # shellcheck is preinstalled on the GitHub ubuntu images; installing it
-        # when it is absent turns a future image change from "two gates fail
-        # with command not found" into a slower run that still tells the truth.
         run: |
           set -euo pipefail
-          command -v shellcheck > /dev/null || {
-            echo 'shellcheck absent from the image; installing'
-            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          }
           bash --version | head -1
           jq --version
-          shellcheck --version | sed -n '2p'
+          shellcheck --version
+          shellcheck --version | grep -Fx 'version: 0.11.0'
           git --version
 
       - name: Identify git
@@ -52,6 +81,18 @@ jobs:
           git config --global user.email ci@example.invalid
           git config --global user.name  'agent-kit CI'
           git config --global init.defaultBranch main
+
+      - name: Verify plugin manifest versions
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          tests/build-plugin.sh
+          if [[ -n ${RELEASE_TAG:-} ]]; then
+            tests/check-release-version.sh --tag "$RELEASE_TAG"
+          else
+            tests/check-release-version.sh
+          fi
 
       - name: Run the suite
         run: tests/run-tests.sh

@@ -24,7 +24,14 @@ cp -a "$skills/." "$dest/agentkit/skills/"
 # a third-party plugin.
 rm -rf -- "$dest/agentkit/skills/.system"
 
-find "$dest/agentkit/skills" \( -name 'test-*' -o -name fixtures -o -name stub \) \
+# .agent/ is per-machine hook/session state, never plugin content. Before this
+# guard, GUARD_LOG_ROOT was never assigned, so guard_log_error fell back to
+# $PWD -- a stray hook-errors.jsonl written while an agent's cwd was inside the
+# skills tree was not gitignored there (the root .gitignore's `.agent/*` is
+# anchored to the repository root) and this wholesale `cp -a` shipped it to
+# every plugin consumer (issue #370). Drop any .agent/ found anywhere under
+# the copied tree, independent of whether the write-time fix above holds.
+find "$dest/agentkit/skills" \( -name 'test-*' -o -name fixtures -o -name stub -o -name .agent \) \
     -exec rm -rf -- {} + 2> /dev/null || true
 
 cp -a "$root/.claude-plugin/marketplace.json" "$dest/.claude-plugin/marketplace.json"
@@ -54,6 +61,16 @@ done
 cp -a "$root/agentkit/hooks" "$dest/agentkit/hooks"
 
 jq -e . < "$dest/.claude-plugin/marketplace.json" > /dev/null
+
+# OpenCode ships as a plain ES module + package.json under opencode/, packaged
+# ALONGSIDE the Claude/Codex manifests, never touching their output: a third
+# harness surface, not a replacement. There is no assembly step -- the module
+# under opencode/ is already what ships, so this is a straight copy plus a
+# manifest sanity check, same as the two plugin.json copies above.
+mkdir -p "$dest/opencode"
+cp -a "$root/opencode/package.json" "$dest/opencode/package.json"
+cp -a "$root/opencode/index.js" "$dest/opencode/index.js"
+jq -e . < "$dest/opencode/package.json" > /dev/null
 
 # Follow the manifest's own declaration to the file rather than checking the file
 # we just copied: an orphaned hooks.json is well-formed too, so validating it

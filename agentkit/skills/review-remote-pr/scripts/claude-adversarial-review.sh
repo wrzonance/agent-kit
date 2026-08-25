@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 #
 # claude-adversarial-review.sh — one-shot, tool-isolated adversarial diff review
 # driven through Claude Code's non-interactive stream-json interface.
@@ -32,9 +33,11 @@
 # Requires: bash >= 4.2, claude >= 2.1, jq, GNU coreutils.
 
 set -euo pipefail
+umask 077
 
 readonly PROGNAME=${0##*/}
 readonly MAX_DIFF_BYTES=10485760 # Claude Code piped-stdin limit (10 MiB)
+readonly DEFAULT_MAX_DURATION_SECONDS=900
 readonly REQUIRED_FLAGS=(
 	--print
 	--model
@@ -56,17 +59,32 @@ readonly REQUIRED_FLAGS=(
 )
 
 MODE=""
+NO_PAYLOAD=0
 CLAUDE_BIN=${CLAUDE_EXECUTABLE:-claude}
 CLAUDE_RESOLVED=""
 MODEL=""
 EFFORT="xhigh"
 DIFF_PATH=""
+BASE_REF=""
+CONSENT_STATE_PATH=""
+CONSENT_PAYLOAD=""
+PR_NUMBER=""
+REPO_SLUG=""
 TRANSCRIPT_PATH=""
+OUTPUT_PATH=""
+# shellcheck disable=SC2034
+OUTPUT_TMP=""
 POLL_SECONDS=120
 MAX_BUDGET_USD="5.00"
+MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
 WORK_DIR=""
 POLLER_PID=""
 CLAUDE_PID=""
+PID_FILE=""
+STATUS_FILE=""
+STATUS_TMP=""
+HEARTBEAT_FAILURE_FILE=""
+DEADLINE_EPOCH=0
 
 usage() {
 	cat <<EOF
@@ -79,22 +97,42 @@ Required:
                              starting with "claude-" is asserted against the
                              model the session actually initialized with.
   --transcript <path>        Where to write the raw stream-json transcript.
-                             Truncated on start; parent dirs are created.
+                             Must be a fresh path in a private directory;
+                             missing parent directories are created as 0700;
+                             created exclusively with mode 0600.
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
+  --repo <owner/name>        Repository the PR belongs to. Bound into the consent
+                             payload so a PR number cannot collide across repos.
+  --pr <number>              PR number used to bind consent to the exact diff.
+  --consent-state <path>     Private consent record. Required in review mode.
 
 Options:
   --claude <path>            claude executable (default: \$CLAUDE_EXECUTABLE, else
                              the first "claude" on PATH).
+  --no-payload               Required in probe mode. The probe sends only a
+                             synthetic snippet, no PR diff, and never counts
+                             against the one-review-per-PR budget.
   --effort <level>           low|medium|high|xhigh|max (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval (default: $POLL_SECONDS).
   --max-budget-usd <amount>  Hard API spend cap, 0.01-1000 (default: $MAX_BUDGET_USD).
+  --max-duration-seconds <1-86400>
+                             Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
+  --output <path>            Additionally publish the single stdout JSON object to
+                             this path, atomically (temp sibling in the same
+                             directory, chmod 600, then rename). Written on exit 0
+                             (the completed verdict) and exit 3 (the blocked
+                             object); never created or left behind on exit 1. The
+                             path's directory must be owned by this
+                             user, non-symlink, and mode 0700; missing parent
+                             directories are created as 0700.
   -h, --help                 Show this help.
 
 Output:
   stdout                     exactly one JSON object: the final result object, or
-                             the blocked object described below.
+                             the blocked object described below. Unaffected by
+                             --output, which is additive.
   stderr                     one compact JSON progress object per --poll-seconds,
                              plus the human-readable failure reason.
 
@@ -121,21 +159,6 @@ die() {
 # verdict is obtainable here. Exit 3 keeps that distinguishable from exit 1 ("the
 # review found something"), which a caller must not confuse — treating a blocked
 # launch as a failed review is expensive.
-die_blocked() {
-	local reason=$1 detail=$2
-	printf '%s: BLOCKED (%s): %s\n' "$PROGNAME" "$reason" "$detail" >&2
-	printf '%s: take the blind-Codex adversarial-reviewer fallback; do not retry.\n' "$PROGNAME" >&2
-	jq -cn \
-		--arg blockedReason "$reason" \
-		--arg detail "$detail" \
-		--arg transcript "$TRANSCRIPT_PATH" \
-		'{status:"blocked", blockedReason:$blockedReason, detail:$detail,
-		  transcript:$transcript, fallback:"blind-codex-agent"}'
-	exit 3
-}
-
-# Collapse a captured diagnostic to one short line so it stays readable inside a
-# single-line JSON field and in the stderr message.
 squash_text() {
 	local text
 	text=$(printf '%s' "${1:-}" | tr -s '[:space:]' ' ')
@@ -148,54 +171,55 @@ squash_text() {
 # classification comes from what the CLI actually said and not only from its exit
 # status. Prints $2 when nothing matches (empty $2 means "not an environment
 # failure" — the caller should then treat it as a real failure and exit 1).
-classify_blocked_reason() {
-	local text=${1,,} reason=${2:-}
-	case $text in
-	*"credit balance"* | *"insufficient credit"* | *"budget exceeded"* | *"quota exceeded"*)
-		reason=budget-exhausted
-		;;
-	*unauthenticated* | *"invalid api key"* | *"invalid x-api-key"* | *oauth* | *authentication_error* | *"not logged in"*)
-		reason=unauthenticated
-		;;
-	*getaddrinfo* | *enotfound* | *econnrefused* | *"connection refused"* | *eai_again* | *"network is unreachable"* | *"unable to connect"*)
-		reason=network-unreachable
-		;;
-	*enotimp* | *eperm* | *eacces* | *"not permitted"* | *"permission denied"* | *"cannot execute"* | *"exec format error"*)
-		reason=exec-denied
-		;;
-	esac
-	printf '%s' "$reason"
-}
-
-# Run a short preflight command with its output captured to a FILE, never a pipe
-# (see the flush defect documented on preflight()), and bounded so a spawn that
-# wedges in a restricted sandbox cannot hang the run. timeout(1) reports 124 on
-# expiry; without coreutils timeout the command still runs, just unbounded.
 run_bounded() {
 	local seconds=$1 out_file=$2
 	shift 2
-	if command -v timeout >/dev/null 2>&1; then
-		timeout "$seconds" "$@" >"$out_file" 2>&1
+	timeout --signal=KILL "$seconds" "$@" >"$out_file" 2>&1
+}
+
+seconds_until_deadline() {
+	local now left
+	now=$(date +%s)
+	left=$((DEADLINE_EPOCH - now))
+	((left > 0)) || return 1
+	printf '%s' "$left"
+}
+
+bounded_seconds() {
+	local requested=$1 remaining
+	remaining=$(seconds_until_deadline) || return 1
+	if ((remaining < requested)); then
+		printf '%s' "$remaining"
 	else
-		"$@" >"$out_file" 2>&1
+		printf '%s' "$requested"
 	fi
 }
 
-cleanup() {
-	if [[ -n $POLLER_PID ]]; then
-		kill "$POLLER_PID" 2>/dev/null || true
-		wait "$POLLER_PID" 2>/dev/null || true
-		POLLER_PID=""
-	fi
-	if [[ -n $CLAUDE_PID ]]; then
-		kill "$CLAUDE_PID" 2>/dev/null || true
-		wait "$CLAUDE_PID" 2>/dev/null || true
-		CLAUDE_PID=""
-	fi
-	[[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
-	return 0
+die_duration() {
+	die "Claude review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
 }
 
+record_heartbeat_failure() {
+	local detail=$1
+	printf '%s\n' "$detail" >"$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true
+}
+
+heartbeat_failure_detail() {
+	local detail
+	detail=$(cat -- "$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true)
+	printf '%s' "${detail:-unknown heartbeat publication failure}"
+}
+
+record_helper_pid() {
+	PID_FILE="$TRANSCRIPT_PATH.pid"
+	[[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
+	rm -f -- "$PID_FILE"
+	printf '%s\n' "$$" >"$PID_FILE" || die "Cannot record helper PID: $PID_FILE"
+}
+
+# Review transcripts contain the complete private diff and must never be placed
+# in a shared temporary directory. The caller creates one 0700 run directory and
+# passes a fresh path inside it. Refuse anything weaker before invoking Claude.
 require_value() {
 	[[ -n ${2:-} ]] || die "option $1 requires a value"
 }
@@ -205,6 +229,7 @@ parse_args() {
 		case $1 in
 		--mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
 		--mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
+		--no-payload) NO_PAYLOAD=1 && shift ;;
 		--claude) require_value "$1" "${2:-}" && CLAUDE_BIN=$2 && shift 2 ;;
 		--claude=*) CLAUDE_BIN=${1#*=} && shift ;;
 		--model) require_value "$1" "${2:-}" && MODEL=$2 && shift 2 ;;
@@ -213,12 +238,26 @@ parse_args() {
 		--effort=*) EFFORT=${1#*=} && EFFORT=${EFFORT,,} && shift ;;
 		--diff) require_value "$1" "${2:-}" && DIFF_PATH=$2 && shift 2 ;;
 		--diff=*) DIFF_PATH=${1#*=} && shift ;;
+		--base-ref) require_value "$1" "${2:-}" && BASE_REF=$2 && shift 2 ;;
+		--base-ref=*) BASE_REF=${1#*=} && shift ;;
+		--repo) require_value "$1" "${2:-}" && REPO_SLUG=$2 && shift 2 ;;
+		--repo=*) REPO_SLUG=${1#*=} && shift ;;
+		--pr) require_value "$1" "${2:-}" && PR_NUMBER=$2 && shift 2 ;;
+		--pr=*) PR_NUMBER=${1#*=} && shift ;;
+		--consent-state|--state) require_value "$1" "${2:-}" && CONSENT_STATE_PATH=$2 && shift 2 ;;
+		--consent-state=*|--state=*) CONSENT_STATE_PATH=${1#*=} && shift ;;
+		--consent-payload) require_value "$1" "${2:-}" && CONSENT_PAYLOAD=$2 && shift 2 ;;
+		--consent-payload=*) CONSENT_PAYLOAD=${1#*=} && shift ;;
 		--transcript) require_value "$1" "${2:-}" && TRANSCRIPT_PATH=$2 && shift 2 ;;
 		--transcript=*) TRANSCRIPT_PATH=${1#*=} && shift ;;
 		--poll-seconds) require_value "$1" "${2:-}" && POLL_SECONDS=$2 && shift 2 ;;
 		--poll-seconds=*) POLL_SECONDS=${1#*=} && shift ;;
 		--max-budget-usd) require_value "$1" "${2:-}" && MAX_BUDGET_USD=$2 && shift 2 ;;
 		--max-budget-usd=*) MAX_BUDGET_USD=${1#*=} && shift ;;
+		--max-duration-seconds) require_value "$1" "${2:-}" && MAX_DURATION_SECONDS=$2 && shift 2 ;;
+		--max-duration-seconds=*) MAX_DURATION_SECONDS=${1#*=} && shift ;;
+		--output) require_value "$1" "${2:-}" && OUTPUT_PATH=$2 && shift 2 ;;
+		--output=*) OUTPUT_PATH=${1#*=} && shift ;;
 		-h | --help) usage && exit 0 ;;
 		*) usage >&2 && die "unknown argument: $1" ;;
 		esac
@@ -235,13 +274,53 @@ validate_args() {
 	esac
 	[[ $POLL_SECONDS =~ ^[0-9]+$ ]] || die "--poll-seconds must be an integer"
 	((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
+	[[ $MAX_DURATION_SECONDS =~ ^[0-9]+$ ]] || die "--max-duration-seconds must be an integer"
+	((MAX_DURATION_SECONDS >= 1 && MAX_DURATION_SECONDS <= 86400)) ||
+		die "--max-duration-seconds must be 1-86400"
 	[[ $MAX_BUDGET_USD =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--max-budget-usd must be a number"
 	awk -v v="$MAX_BUDGET_USD" 'BEGIN{exit !(v>=0.01 && v<=1000)}' ||
 		die "--max-budget-usd must be between 0.01 and 1000"
 	# Normalize away any locale-specific decimal handling before it reaches the CLI.
 	MAX_BUDGET_USD=$(LC_ALL=C printf '%.2f' "$MAX_BUDGET_USD")
-	[[ $MODE == review && -z $DIFF_PATH ]] && die "--diff is required in review mode"
+	if [[ $MODE == probe ]]; then
+		((NO_PAYLOAD == 1)) ||
+			die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
+		[[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
+			-z $BASE_REF && -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+			die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
+	else
+		((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
+	fi
+	if [[ $MODE == review ]]; then
+		[[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
+		if [[ -n $BASE_REF ]]; then
+			git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+				die "--base-ref must be a valid branch name"
+		fi
+		[[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
+		[[ $REPO_SLUG =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+			die "--repo OWNER/NAME is required in review mode"
+		[[ -n $CONSENT_STATE_PATH ]] || die "--consent-state is required in review mode"
+	fi
 	return 0
+}
+
+verify_consent() {
+	local consent_script payload
+	consent_script="$SCRIPT_DIR/consent-record.sh"
+	[[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+	local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
+	if [[ -n $BASE_REF ]]; then
+		payload_args+=(--base-ref "$BASE_REF")
+	fi
+	payload=$("$consent_script" "${payload_args[@]}") ||
+		die 'cannot derive consent payload; refusing to launch review'
+	if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
+		die 'supplied consent payload does not match the exact review diff'
+	fi
+	"$consent_script" check --state "$CONSENT_STATE_PATH" --provider anthropic \
+		--payload "$payload" >/dev/null 2>&1 ||
+		die 'valid cross-provider consent check is required; refusing to launch review'
 }
 
 # Resolve the CLI and prove the isolation/streaming flags this harness depends on
@@ -254,6 +333,7 @@ validate_args() {
 preflight() {
 	# jq first: every blocked report is emitted through it.
 	command -v jq >/dev/null || die "jq is required but was not found on PATH"
+	command -v timeout >/dev/null || die "timeout is required to enforce the review duration ceiling"
 	CLAUDE_RESOLVED=$(command -v -- "$CLAUDE_BIN" 2>/dev/null) ||
 		die_blocked claude-missing "claude executable not found: $CLAUDE_BIN"
 	[[ -x $CLAUDE_RESOLVED ]] ||
@@ -268,9 +348,11 @@ preflight() {
 # costs milliseconds and catches the sandbox-blocked launch (ENOTIMP/EPERM) that
 # would otherwise surface as an opaque failure mid-review.
 preflight_spawn() {
-	local version_file=$WORK_DIR/claude-version.txt status=0 detail
-	run_bounded 20 "$version_file" "$CLAUDE_RESOLVED" --version || status=$?
+	local version_file=$WORK_DIR/claude-version.txt status=0 detail seconds
+	seconds=$(bounded_seconds 20) || die_duration
+	run_bounded "$seconds" "$version_file" "$CLAUDE_RESOLVED" --version || status=$?
 	((status == 0)) && return 0
+	((status == 124 || status == 137)) && ! seconds_until_deadline >/dev/null && die_duration
 
 	detail=$(squash_text "$(cat -- "$version_file" 2>/dev/null || true)")
 	[[ -n $detail ]] || detail="no diagnostic emitted"
@@ -280,9 +362,11 @@ preflight_spawn() {
 }
 
 preflight_flags() {
-	local help_file=$WORK_DIR/claude-help.txt status=0 detail flag
-	run_bounded 60 "$help_file" "$CLAUDE_RESOLVED" --help || status=$?
+	local help_file=$WORK_DIR/claude-help.txt status=0 detail flag seconds
+	seconds=$(bounded_seconds 60) || die_duration
+	run_bounded "$seconds" "$help_file" "$CLAUDE_RESOLVED" --help || status=$?
 	if ((status != 0)); then
+		((status == 124 || status == 137)) && ! seconds_until_deadline >/dev/null && die_duration
 		detail=$(squash_text "$(cat -- "$help_file" 2>/dev/null || true)")
 		[[ -n $detail ]] || detail="no diagnostic emitted"
 		die_blocked "$(classify_blocked_reason "$detail" exec-denied)" \
@@ -335,6 +419,9 @@ write_review_input() {
 	local target=$1
 	if [[ $MODE == probe ]]; then
 		cat >"$target" <<'EOF'
+This is a capability probe with no payload. Review only this synthetic snippet;
+there is no PR diff and this probe never counts against the one-review-per-PR budget.
+
 Adversarially review this minimal code and return the required structured verdict:
 
 ```diff
@@ -388,10 +475,30 @@ transcript_last_label() {
 # Progress goes to stderr so stdout carries exactly one JSON object (the result or
 # the blocked report) and `$(...)` capture needs no filtering.
 emit_progress() {
-	local started=$1 now mtime bytes
+	local started=$1 now mtime bytes status_json
 	now=$(date +%s)
 	mtime=$(stat -c %Y -- "$TRANSCRIPT_PATH" 2>/dev/null) || mtime=$started
 	bytes=$(stat -c %s -- "$TRANSCRIPT_PATH" 2>/dev/null) || bytes=0
+	status_json=$(jq -cn \
+		--argjson elapsedSeconds "$((now - started))" \
+		--argjson eventCount "$(transcript_event_count)" \
+		--argjson transcriptBytes "$bytes" \
+		--argjson wallClockEpoch "$now" \
+		'{status:"running", harness:"claude", elapsedSeconds:$elapsedSeconds,
+		  eventCount:$eventCount, transcriptBytes:$transcriptBytes,
+		  wallClockEpoch:$wallClockEpoch}')
+	local failure=''
+	if ! printf '%s\n' "$status_json" >"$STATUS_TMP"; then
+		failure="printf heartbeat status failed: $STATUS_TMP"
+	elif ! chmod 600 -- "$STATUS_TMP"; then
+		failure="chmod heartbeat status failed: $STATUS_TMP"
+	elif ! mv -f -- "$STATUS_TMP" "$STATUS_FILE"; then
+		failure="mv heartbeat status failed: $STATUS_FILE"
+	fi
+	if [[ -n $failure ]]; then
+		record_heartbeat_failure "$failure"
+		return 1
+	fi
 	jq -cn \
 		--argjson runnerPid "$$" \
 		--argjson elapsedSeconds "$((now - started))" \
@@ -410,22 +517,9 @@ emit_progress() {
 # caller's `wait "$POLLER_PID"` — alive for a whole --poll-seconds AFTER the
 # review already finished (a silent 120s tax at the default interval). Waiting on
 # an asynchronous child instead makes `wait` return the moment TERM arrives.
-poll_progress() {
-	local started=$1 sleep_pid=""
-	trap 'if [[ -n $sleep_pid ]]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM
-	while :; do
-		sleep "$POLL_SECONDS" &
-		sleep_pid=$!
-		wait "$sleep_pid" 2>/dev/null || true
-		sleep_pid=""
-		emit_progress "$started"
-	done
-}
-
-# Runs Claude with tools, MCP, skills, session persistence and customizations all
-# disabled, in a throwaway working directory, with the verdict schema enforced.
 run_claude() {
 	local input_file=$1 stderr_file=$2 isolation_dir=$3 schema=$4 prompt=$5
+	local seconds
 	local -a args=(
 		--print
 		--model "$MODEL"
@@ -451,11 +545,26 @@ run_claude() {
 	# a CI cancellation would otherwise leave the API call running to completion.
 	# Blocking in `wait` lets the INT/TERM trap fire immediately and clean up.
 	local status=0
-	(cd "$isolation_dir" && exec "$CLAUDE_RESOLVED" "${args[@]}") \
-		<"$input_file" >"$TRANSCRIPT_PATH" 2>"$stderr_file" &
+	seconds=$(seconds_until_deadline) || return 124
+	(cd "$isolation_dir" && exec timeout --signal=KILL "$seconds" "$CLAUDE_RESOLVED" "${args[@]}") \
+		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
+	review_register_pid "$CLAUDE_PID"
+	while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+		if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
+			kill -TERM -- -"$CLAUDE_PID" 2>/dev/null ||
+				kill "$CLAUDE_PID" 2>/dev/null || true
+			wait "$CLAUDE_PID" 2>/dev/null || true
+			review_forget_pid "$CLAUDE_PID"
+			CLAUDE_PID=""
+			return 125
+		fi
+		sleep 0.1
+	done
 	wait "$CLAUDE_PID" || status=$?
+	review_forget_pid "$CLAUDE_PID"
 	CLAUDE_PID=""
+	[[ -s $HEARTBEAT_FAILURE_FILE ]] && return 125
 	return "$status"
 }
 
@@ -478,8 +587,11 @@ claude_failure_detail() {
 # reported, not from the exit status alone, which is 1 for both classes.
 fail_claude_exit() {
 	local exit_code=$1 stderr_file=$2 detail reason
+	if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
+		die_duration
+	fi
 	detail=$(squash_text "$(claude_failure_detail "$stderr_file")")
-	reason=$(classify_blocked_reason "$detail" "")
+	reason=$(review_classify_blocked_reason "$detail" "")
 	if [[ -n $reason ]]; then
 		die_blocked "$reason" "claude exited $exit_code: $detail"
 	fi
@@ -494,24 +606,6 @@ verify_isolation() {
 	fi
 	mcp_count=$(jq -r '(.mcp_servers // []) | length' <<<"$init")
 	((mcp_count == 0)) || die "Claude MCP isolation failed; at least one MCP server was loaded."
-}
-
-verify_verdict() {
-	local verdict=$1 kind findings_count p1_count
-	kind=$(jq -r '.verdict // ""' <<<"$verdict")
-	[[ $kind == findings || $kind == no_findings ]] || die "Claude returned an invalid verdict value."
-	findings_count=$(jq -r '(.findings // []) | length' <<<"$verdict")
-	[[ $kind == no_findings && $findings_count -ne 0 ]] &&
-		die "Claude returned findings with a no_findings verdict."
-	[[ $kind == findings && $findings_count -eq 0 ]] &&
-		die "Claude returned a findings verdict with an empty findings array."
-
-	if [[ $MODE == probe ]]; then
-		p1_count=$(jq -r '[(.findings // [])[] | select(.priority == "P1")] | length' <<<"$verdict")
-		[[ $kind == findings && $p1_count -gt 0 ]] ||
-			die "Claude probe did not return the deliberate P1 finding."
-	fi
-	return 0
 }
 
 verify_model_identity() {
@@ -532,36 +626,44 @@ verify_model_identity() {
 main() {
 	parse_args "$@"
 	validate_args
+	[[ $MODE == review ]] && verify_consent
+	local started exit_code=0
+	started=$(date +%s)
+	DEADLINE_EPOCH=$((started + MAX_DURATION_SECONDS))
 
 	WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-adversarial-XXXXXXXXXX")
-	trap cleanup EXIT
+	chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
+	HEARTBEAT_FAILURE_FILE="$WORK_DIR/heartbeat.failure"
+	trap review_cleanup EXIT
 	trap 'exit 130' INT TERM
 	local isolation_dir=$WORK_DIR/cwd
 	local input_file=$WORK_DIR/input.txt
 	local stderr_file=$WORK_DIR/stderr.log
 	mkdir -p -- "$isolation_dir"
 
+	review_prepare_transcript
+	review_prepare_output
+	record_helper_pid
 	preflight
 
-	local transcript_dir
-	transcript_dir=$(dirname -- "$TRANSCRIPT_PATH")
-	mkdir -p -- "$transcript_dir" || die "Cannot create transcript directory: $transcript_dir"
-	: >"$TRANSCRIPT_PATH" || die "Cannot write transcript: $TRANSCRIPT_PATH"
-
 	write_review_input "$input_file"
-	local schema prompt started exit_code=0
+	local schema prompt
 	schema=$(verdict_schema)
 	prompt=$(system_prompt)
 
-	started=$(date +%s)
-	poll_progress "$started" &
+	review_poll_progress "$started" &
 	POLLER_PID=$!
+	review_register_pid "$POLLER_PID"
 
 	run_claude "$input_file" "$stderr_file" "$isolation_dir" "$schema" "$prompt" || exit_code=$?
 
 	kill "$POLLER_PID" 2>/dev/null || true
 	wait "$POLLER_PID" 2>/dev/null || true
+	review_forget_pid "$POLLER_PID"
 	POLLER_PID=""
+	if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
+		die "heartbeat publication failed: $(heartbeat_failure_detail)"
+	fi
 
 	local init result
 	((exit_code == 0)) || fail_claude_exit "$exit_code" "$stderr_file"
@@ -586,10 +688,11 @@ main() {
 	local verdict init_model
 	verdict=$(jq -c '.structured_output // empty' <<<"$result")
 	[[ -n $verdict ]] || die "Claude returned no structured verdict."
-	verify_verdict "$verdict"
+	review_verify_verdict "$verdict" Claude
 	init_model=$(verify_model_identity "$init" "$result")
 
-	jq -n \
+	local final_json
+	final_json=$(jq -n \
 		--argjson exitCode "$exit_code" \
 		--arg requestedModel "$MODEL" \
 		--arg initModel "$init_model" \
@@ -602,7 +705,19 @@ main() {
 		'{status:"completed", exitCode:$exitCode, requestedModel:$requestedModel,
 		  initModel:$initModel, canonicalModels:$canonicalModels, eventCount:$eventCount,
 		  transcript:$transcript, durationApiMs:$durationApiMs, totalCostUsd:$totalCostUsd,
-		  verdict:$verdict}'
+		  verdict:$verdict}')
+	# Durable first: publish_output can die, and emitting stdout before it
+	# would hand the caller a verdict that was never published.
+	review_publish_output "$final_json"
+	printf '%s\n' "$final_json"
+}
+
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"
+die_blocked() {
+	review_die_blocked "$1" "$2" "blind-codex-agent" "blind-Codex adversarial-reviewer fallback"
 }
 
 main "$@"

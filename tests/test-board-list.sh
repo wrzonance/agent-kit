@@ -26,8 +26,9 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 repo="$tmp/repo"
 mkdir -p "$repo/.agent"
-printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
+printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7,"title":"example-board"}}\n' \
     > "$repo/.agent/board.json"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 
 # A stub board of TOTAL items that honours --limit the way the real API does:
 # it reports the true totalCount and returns at most --limit items. Getting
@@ -49,7 +50,8 @@ jq -n --argjson total $total --argjson limit "\$limit" '
     items: [ range(\$total)
              | { status: (if . == 0 then "Ready" else "Done" end),
                  title: "item \(.)",
-                 content: { number: (100 + .), type: "Issue", title: "item \(.)" } } ]
+                 content: { number: (100 + .), type: "Issue", title: "item \(.)",
+                            repository: "example-org/example-repo" } } ]
            [0:\$limit] }'
 EOF
     chmod +x "$dir/gh"
@@ -65,6 +67,8 @@ run_board() {
 # --- the whole board fits: no warning, and none deserved --------------------
 bin=$(make_gh small 12)
 out=$(run_board "$bin")
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'a complete listing identifies the board by title'
 assert_contains "$out" 'items=12 of=12' 'a complete read reports both counts agreeing'
 assert_not_contains "$out" 'TRUNCATED' 'and does not warn about a board it read fully'
 
@@ -87,6 +91,8 @@ assert_not_contains "$out" 'TRUNCATED' 'so the backstop stays quiet on an ordina
 # hand-written filter differs from the last. Answers that look like they
 # disagree are what turned a check into a loop.
 out=$(run_board "$bin" --issue 100)
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'an issue hit identifies the board by title'
 assert_contains "$out" '#100  Ready' 'a single issue is answered directly'
 assert_not_contains "$out" 'Done  (' 'without printing the board around it'
 
@@ -96,6 +102,8 @@ assert_contains "$out" '#101  Done' 'and reports the column it is actually in'
 # Absence is stated, not implied by empty output -- an empty answer reads as a
 # failed command, which invites running it again.
 out=$(run_board "$bin" --issue 999)
+assert_contains "$out" 'board=example-board project=7 owner=example-org' \
+    'an issue miss identifies the board by title'
 assert_contains "$out" 'not on this board' 'an issue that is absent is said to be absent'
 
 # An issue lookup over a truncated read cannot distinguish absent from unread,
@@ -106,6 +114,48 @@ assert_contains "$out" 'truncation, not absence' 'a miss in a partial read is qu
 # A leading # is what a human types and what an issue reference looks like.
 out=$(run_board "$bin" --issue '#100')
 assert_contains "$out" '#100  Ready' 'a leading # is accepted'
+
+# Same-number issues from different repositories must not be confused. The
+# lookup is bound to the repository declared by the target checkout.
+dupe_bin="$tmp/dupe-bin"
+mkdir -p "$dupe_bin"
+cat > "$dupe_bin/gh" << 'EOF'
+#!/usr/bin/env bash
+jq -n '{totalCount: 2, items: [
+  {status: "Done", title: "wrong repo", content: {number: 42, type: "Issue", repository: "example-org/other-repo"}},
+  {status: "Ready", title: "requested repo", content: {number: 42, type: "Issue", repository: "example-org/example-repo"}}
+]}'
+EOF
+chmod +x "$dupe_bin/gh"
+out=$(run_board "$dupe_bin" --issue 42)
+assert_contains "$out" '#42  Ready  requested repo' 'same-number issues are matched by repository'
+assert_not_contains "$out" 'wrong repo' 'a same-number issue from another repository is ignored'
+
+# Project titles are part of a whitespace-delimited header, so shell-escape
+# titles that contain whitespace without allowing an embedded newline to split
+# the header from the issue result.
+jq --arg title $'Agent Kit\nRoadmap' '.project.title = $title' \
+    "$repo/.agent/board.json" > "$tmp/titled-board.json"
+mv "$tmp/titled-board.json" "$repo/.agent/board.json"
+out=$(run_board "$bin")
+assert_contains "$out" "board=\$'Agent Kit\\nRoadmap' project=7 owner=example-org" \
+    'a multiline title stays one escaped header field'
+assert_not_contains "$out" $'board=Agent Kit\nRoadmap project=' \
+    'a multiline title does not split the header'
+out=$(run_board "$bin" --issue 100)
+assert_contains "$out" "board=\$'Agent Kit\\nRoadmap' project=7 owner=example-org" \
+    'issue lookups use the same escaped board header'
+
+jq '.project.title = "example-board"' "$repo/.agent/board.json" > "$tmp/restored-board.json"
+mv "$tmp/restored-board.json" "$repo/.agent/board.json"
+
+# Older board metadata may not have a title. The title is descriptive only, so
+# that metadata remains usable and leaves the existing field empty.
+jq 'del(.project.title)' "$repo/.agent/board.json" > "$tmp/legacy-board.json"
+mv "$tmp/legacy-board.json" "$repo/.agent/board.json"
+out=$(run_board "$bin")
+assert_contains "$out" 'board= project=7 owner=example-org' \
+    'legacy metadata keeps an empty board title fallback'
 
 assert_rc 2 'a non-numeric issue is a usage error' -- \
     env PATH="$bin:$PATH" "$script" --repo-root "$repo" --issue main
@@ -123,6 +173,31 @@ assert_contains "$out" '#101  item 1' 'asking for Done lists Done'
 
 out=$(run_board "$bin" --all)
 assert_contains "$out" '#101  item 1' '--all lists it too'
+
+# A plain listing already has every fact it needs in board.json and its one
+# project-item query. It must not spend a second request discovering the repo.
+rm "$repo/.agent/config.env"
+listing_bin="$tmp/listing-bin"
+mkdir -p "$listing_bin"
+cat > "$listing_bin/gh" <<EOF
+#!/usr/bin/env bash
+if [[ \${1:-} == repo ]]; then
+    touch "$tmp/repo-view-called"
+    exit 1
+fi
+jq -n '{totalCount: 1, items: [
+  {status: "Ready", title: "listed item", content: {number: 300, type: "Issue"}}
+]}'
+EOF
+chmod +x "$listing_bin/gh"
+out=$(run_board "$listing_bin")
+assert_contains "$out" 'items=1 of=1' 'a plain listing needs no repository lookup'
+if [[ -e $tmp/repo-view-called ]]; then
+    listing_repo_view=called
+else
+    listing_repo_view=not-called
+fi
+assert_eq not-called "$listing_repo_view" 'a plain listing makes only its project-item call'
 
 # --- the environment cannot support the query -------------------------------
 bare="$tmp/norepo"

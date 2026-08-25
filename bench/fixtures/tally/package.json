@@ -1,0 +1,10 @@
+{
+  "name": "tally",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tier-1 benchmark fixture: a small ES-module SPA (bench/fixtures/tally). No dependencies -- see bench/README.",
+  "scripts": {
+    "smoke": "node test/smoke.mjs"
+  }
+}

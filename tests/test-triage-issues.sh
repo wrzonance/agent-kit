@@ -43,6 +43,39 @@ repo=$(make_repo)
 out=$(run_triage "$repo" triage-mixed.json 2> /dev/null)
 assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'the whole triage costs one gh call'
 assert_contains "$(cat "$tmp/gh.log")" 'graphql' 'the one call is graphql'
+assert_eq 'yes' "$([[ -f "$repo/.agent/cache/triage-response.json" ]] && echo yes || echo no)" \
+    'raw triage response is persisted before parsing'
+assert_contains "$(cat "$repo/.agent/cache/triage-response.json")" '"data"' \
+    'persisted triage response retains fetched evidence'
+
+# An empty transient response must not replace a previously good raw cache.
+good_raw=$(cat "$repo/.agent/cache/triage-response.json")
+empty_response="$tmp/empty-response.json"
+: > "$empty_response"
+set +e
+GH_STUB_LOG="$tmp/gh-empty.log" GH_STUB_RESPONSE="$empty_response" PATH="$tmp/stub:$PATH" \
+    "$tr_sh" --repo-root "$repo" >"$tmp/empty.out" 2>"$tmp/empty.err"
+empty_rc=$?
+set -e
+assert_eq '1' "$empty_rc" 'an empty transient response is blocked'
+assert_eq "$good_raw" "$(cat "$repo/.agent/cache/triage-response.json")" \
+    'an empty transient response preserves the previous raw cache'
+
+# A read-only repository cache falls back to a secure temporary raw artifact,
+# while the primary digest remains usable.
+fallback_repo=$(make_repo)
+mkdir -p "$fallback_repo/.agent/cache"
+chmod 500 "$fallback_repo/.agent/cache"
+set +e
+fallback_out=$(run_triage "$fallback_repo" triage-mixed.json 2>"$tmp/fallback.err")
+fallback_rc=$?
+set -e
+chmod 700 "$fallback_repo/.agent/cache"
+assert_eq '0' "$fallback_rc" 'an unwritable repo cache does not block triage'
+assert_contains "$fallback_out" 'triage= repo=example-org/example-repo' \
+    'the primary triage digest remains usable with an unwritable cache'
+assert_contains "$(cat "$tmp/fallback.err")" 'temporary evidence cache' \
+    'cache fallback names the persistence limitation'
 
 # --- verdicts --------------------------------------------------------------
 assert_contains "$(line_for 57)" 'clean' '#57 with no referencing PR is clean'
@@ -114,6 +147,24 @@ assert_rc 0 'a partial response still exits 0' -- env \
 repo=$(make_repo)
 mkdir -p "$tmp/emptybin"
 assert_rc 3 'no gh on PATH exits 3' -- env PATH="$tmp/emptybin" /bin/bash "$tr_sh" --repo-root "$repo"
+
+# A missing parser blocks the triage evidence check rather than yielding an
+# empty issue set. Keep gh available in the stripped path so jq is the failure.
+mkdir -p "$tmp/no-jq"
+cp "$tmp/stub/gh" "$tmp/no-jq/gh"
+chmod +x "$tmp/no-jq/gh"
+repo=$(make_repo)
+set +e
+missing_parser_output=$(GH_STUB_LOG="$tmp/gh-missing-parser.log" \
+    GH_STUB_RESPONSE="$here/fixtures/triage-mixed.json" PATH="$tmp/no-jq" \
+    /bin/bash "$tr_sh" --repo-root "$repo" 2>"$tmp/triage-parser.err")
+missing_parser_rc=$?
+set -e
+assert_eq '3' "$missing_parser_rc" 'missing jq blocks triage evidence parsing'
+assert_eq '' "$missing_parser_output" 'missing jq emits no empty triage digest'
+assert_contains "$(cat "$tmp/triage-parser.err")" 'jq' 'missing triage parser error names jq'
+assert_contains "$(cat "$tmp/triage-parser.err")" 'evidence unavailable' \
+    'missing triage parser error says evidence is unavailable'
 
 # --- fuzzy is opt-in -------------------------------------------------------
 repo=$(make_repo)

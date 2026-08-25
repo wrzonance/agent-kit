@@ -5,6 +5,10 @@
 **Scope:** the agent skill tree (`parallel-issues`, `review-remote-pr`, `.shared`)
 **Predecessors:** Task 1 (bash conversion), Task 2 (`.agent/` config + single-call triage)
 
+> **2026-08-19 update:** the `Stop` hook and `stop.sh` described below were later removed
+> entirely (see the [kill-turn-gate plan](superpowers/plans/2026-08-19-kill-turn-gate.md));
+> the rest of this design stands as originally approved.
+
 ## Problem
 
 Three separate gaps, one root cause: the tree has no way to be *told* things, so it
@@ -166,7 +170,7 @@ No ecosystem name survives in the shipped tree.
 
 Resolution order:
 
-1. `AGENT_CMD_<NAME>` from `.agent/config.env`, split to argv
+1. `AGENT_CMD_<NAME>` from `.agent/config.env`, parsed to argv
 2. else the existing runner (`AGENT_REPO_RUNNER` / `.agent/runner`) invoked as
    `runner <name>`
 3. else exit 2 naming exactly which key to add
@@ -179,12 +183,13 @@ returned to the agent as normal tool output. The two cases are unrelated.
 Step 2 matters: a bespoke dispatcher **is** the runner, and `runner test` is
 already how the runner convention invokes it. No special case is required for it.
 
-**The command is argv, never a shell string.** Values are split on whitespace and
-`exec`'d directly. `;`, `|`, `&`, backticks, `$(…)`, redirects, and newlines are
-rejected at validation rather than interpreted. This also removes the shell
-question entirely — nothing passes through a login shell, so the zsh-versus-bash
-split cannot affect it. A repository that genuinely needs shell syntax uses
-`.agent/runner`, which is an executable it already controls.
+**The command is argv, never a shell string.** Unquoted spaces separate tokens;
+single or double quotes group spaces into one token, and the resulting argv is
+`exec`'d directly. `;`, `|`, `&`, backticks, `$(…)`, redirects, backslashes, and
+newlines are rejected at validation rather than interpreted. This also removes
+the shell question entirely — nothing passes through a login shell, so the
+zsh-versus-bash split cannot affect it. A repository that genuinely needs shell
+syntax uses `.agent/runner`, which is an executable it already controls.
 
 New `config.env` keys, validated as above: `AGENT_CMD_VERIFY`, `AGENT_CMD_TEST`,
 `AGENT_CMD_LINT`, `AGENT_CMD_TYPECHECK`, `AGENT_CMD_BUILD`.
@@ -252,7 +257,7 @@ non-interactive harness. This must be confirmed interactively before layer 3 is
 worth building:
 
 ```bash
-cd ~/github/WrzDJ && codex   # then ask it to run a trivial shell command
+cd ~/github/<any-repo-with-the-plugin> && codex   # then ask it to run a trivial shell command
 ```
 
 If hooks turn out not to fire in this version, layers 1 and 2 still stand on their

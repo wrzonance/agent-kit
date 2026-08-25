@@ -13,8 +13,9 @@
 #   after the files were already chosen and the change already narrated. The
 #   cause is fully detectable before any staging happens, so this wrapper probes
 #   BOTH git metadata directories for writability up front and exits 2 naming
-#   the exact offending path, telling the caller to retry the identical command
-#   with elevated filesystem permission. It never tries to elevate itself.
+#   the exact offending path. The worker hands the identical command to the
+#   top-level session, which owns any privileged retry; this helper never
+#   elevates itself.
 #
 # IT ALSO
 #   * refuses to commit onto a trunk branch (main/master/trunk),
@@ -24,24 +25,36 @@
 # EXIT CODES
 #   0  committed
 #   2  a git metadata directory is not writable -- needs elevation, then retry
+#   3  an active merge carries protected paths that attended work must park
 #   1  usage error, not a repository, trunk branch, or any git failure
 #
 set -euo pipefail
 
 readonly PROGNAME="${0##*/}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+readonly SCRIPT_DIR
+# shellcheck disable=SC1091  # sibling library is resolved at runtime
+source "$SCRIPT_DIR/lib/protected-paths.sh"
+# shellcheck disable=SC1091  # sibling library is resolved at runtime
+source "$SCRIPT_DIR/lib/trunk-policy.sh"
 
 SUBJECT=""
 BODY=""
 ALLOW_EMPTY=0
+ALLOW_BASE_INHERITED=0
+BASE_INHERITED_REF=""
+YOLO=0
 TRAILERS=()
 FILES=()
 MESSAGE_ARGS=()
 META_COMMON_DIR=""
 META_WORKTREE_DIR=""
+LOCK_FD=""
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty] [--] FILE...
+Usage: $PROGNAME --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
+                 [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
 front that the repository's git metadata directories are writable.
@@ -51,8 +64,18 @@ Options:
   --body TEXT         Commit body, added as its own paragraph. At most once.
   --trailer LINE      Trailer line, e.g. "Co-Authored-By: Name <a@example.com>".
                       Repeatable; all trailers share the final paragraph so git
-                      parses them as one trailer block.
+                      parses them as one trailer block. Every LINE must be a
+                      non-empty "Key: value" -- a value-less key, a key-less
+                      value, or an empty value is refused rather than committed.
+                      Omitted entirely, a "Co-Authored-By:" trailer is derived
+                      from this repository's environment contract instead.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
+  --allow-base-inherited BASE
+                      Name the exact merge base whose protected paths may be
+                      carried into this commit after byte-identity checks.
+  --yolo              In unattended mode, authorize --allow-base-inherited BASE
+                      when the named commit is the active merge head. Attended
+                      runs park inherited paths and preserve them in the index.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
 
@@ -62,9 +85,11 @@ Behaviour:
   * Refuses to commit while HEAD is on main, master or trunk.
   * Runs 'git diff --cached --check' after staging and aborts on its findings.
   * Anything already staged in the index is included in the commit.
+  * Every trailer -- supplied or derived -- is validated before staging and
+    verified against the commit's own parsed trailers after committing.
 
 Output (stdout, on success -- one line):
-  committed abc1234 feat(example): add widget (3 files)
+  committed 0123456789abcdef0123456789abcdef01234567 feat(example): add widget (3 files)
 
 Examples:
   $PROGNAME --message 'feat(example): add widget' src/example.ts docs/example.md
@@ -117,11 +142,106 @@ parse_args() {
                 ;;
             --trailer) need_value "$@"; TRAILERS+=("$2"); shift 2 ;;
             --allow-empty) ALLOW_EMPTY=1; shift ;;
+            --allow-base-inherited)
+                need_value "$@"
+                (( ALLOW_BASE_INHERITED == 0 )) || die 1 "--allow-base-inherited given more than once"
+                BASE_INHERITED_REF="$2"
+                ALLOW_BASE_INHERITED=1
+                shift 2
+                ;;
+            --yolo) YOLO=1; shift ;;
             --) shift; FILES+=("$@"); break ;;
             -*) die 1 "unknown option: $opt (try --help)" ;;
             *) FILES+=("$1"); shift ;;
         esac
     done
+}
+
+# Keep this list aligned with the hook's protected-path defaults. Repository
+# declarations are additive, so an agent cannot edit config.env to make an
+# inherited gate disappear.
+protected_pattern() {
+    local candidate=$1 declared root
+    candidate=${candidate#./}
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n $root && -x $SCRIPT_DIR/repo-config.sh ]]; then
+        declared=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$root" \
+            --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+    fi
+    shared_protected_pattern "$candidate" "$root" "$declared" 0
+}
+
+staged_protected_paths() {
+    local path
+    while IFS= read -r -d '' path; do
+        protected_pattern "$path" >/dev/null || continue
+        printf '%s\n' "$path"
+    done < <(git diff --cached --name-only -z --diff-filter=ACDMRTUXB)
+}
+
+park_inherited_paths() {
+    local paths=$1
+    printf '%s: merge-inherited protected paths parked/handed off (churn: merge-inherited):\n' \
+        "$PROGNAME" >&2
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        printf '  %s\n' "$path" >&2
+    done <<< "$paths"
+    printf '%s: inherited bytes remain staged; attended mode will not silently drop them.\n' \
+        "$PROGNAME" >&2
+    printf '%s: re-run with --allow-base-inherited BASE --yolo only after naming the merged base.\n' \
+        "$PROGNAME" >&2
+    exit 3
+}
+
+active_merge() {
+    local merge_head_file
+    merge_head_file=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 1
+    [[ -s $merge_head_file ]]
+}
+
+base_merge_contains() {
+    local base_commit=$1 merge_head_file head
+    merge_head_file=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 1
+    [[ -r $merge_head_file ]] || return 1
+    while IFS= read -r head; do
+        [[ $head == "$base_commit" ]] && return 0
+    done < "$merge_head_file"
+    return 1
+}
+
+# base_merge_contains requires BASE_INHERITED_REF to equal an entry in the
+# worktree's own MERGE_HEAD -- so the caller never has to be TOLD that value
+# in advance (e.g. threaded into a dispatch prompt). Whoever is about to
+# commit can always read it straight back with `git rev-parse MERGE_HEAD` at
+# commit time, since it names the exact merge the caller is mid-way through.
+# See parallel-issues/references/chains.md#merge-down-after-a-predecessor-advances
+# for the chained-worker walkthrough this backs (issue #289).
+verify_base_inherited() {
+    local paths=$1 base_commit path
+    base_commit=$(git rev-parse --verify "$BASE_INHERITED_REF^{commit}" 2>/dev/null) ||
+        die 1 "--allow-base-inherited names an unresolved base: $BASE_INHERITED_REF"
+    base_merge_contains "$base_commit" ||
+        die 1 "--allow-base-inherited base is not the active merge head: $BASE_INHERITED_REF"
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        git diff --quiet --cached "$base_commit" -- "$path" ||
+            die 1 "merge-inherited protected path differs from base $BASE_INHERITED_REF: $path"
+    done <<< "$paths"
+}
+
+guard_staged_protected_paths() {
+    local paths
+    active_merge || return 0
+    paths=$(staged_protected_paths)
+    [[ -n $paths ]] || return 0
+    if (( ALLOW_BASE_INHERITED == 1 && YOLO == 1 )); then
+        verify_base_inherited "$paths"
+        printf '%s: merge-inherited paths authorized by named base (churn: merge-inherited): %s\n' \
+            "$PROGNAME" "${paths//$'\n'/, }" >&2
+        return 0
+    fi
+    park_inherited_paths "$paths"
 }
 
 validate_args() {
@@ -130,6 +250,69 @@ validate_args() {
     if (( ${#FILES[@]} == 0 && ALLOW_EMPTY == 0 )); then
         die 1 "no FILE operands given; pass at least one file or --allow-empty"
     fi
+}
+
+# Leading/trailing whitespace trim -- the standard parameter-expansion idiom,
+# safe under `set -u` for empty and all-whitespace input alike.
+trim_ws() {
+    local var="$1"
+    var="${var#"${var%%[![:space:]]*}"}"
+    var="${var%"${var##*[![:space:]]}"}"
+    printf '%s' "$var"
+}
+
+trailer_key() { printf '%s' "${1%%:*}"; }
+trailer_value() { trim_ws "${1#*:}"; }
+
+# A trailer must be a non-empty "Key: value" line. This is the sole guard
+# against the three ways attribution has actually been lost in the field
+# (issue #305): no ':' at all (a bare identity string with no key), a key
+# with nothing after the ':' once trimmed, and -- across two separate tool
+# calls -- an empty string that reaches here as an entirely empty LINE.
+validate_trailer_line() {
+    local line="$1" key value
+    case "$line" in
+        *:*) ;;
+        *) die 1 "--trailer must be a 'Key: value' line (no ':' found): $line" ;;
+    esac
+    key="$(trailer_key "$line")"
+    value="$(trailer_value "$line")"
+    [[ "$key" =~ ^[A-Za-z0-9-]+$ ]] || die 1 \
+        "--trailer key must be a git-trailer token (letters, digits, hyphens only -- git rejects '_'): $line"
+    [[ -n "$value" ]] || die 1 "--trailer has an empty value after '$key:': $line"
+}
+
+# contract-read.sh's harness.trailer key composes a complete, git-parseable
+# "Co-Authored-By: <identity>" line -- it is the one key that never returns a
+# bare identity (see issue #345: a field literally named "trailer" that held
+# a keyless identity was the trap that let a caller pass it straight to
+# --trailer and silently drop attribution). This helper still validates and
+# post-commit-verifies whatever it gets back, rather than trusting the name.
+contract_trailer_value() {
+    local repo_root value rc=0
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die 1 \
+        "no --trailer given and no default can be derived: not inside a git repository"
+    [[ -x "$SCRIPT_DIR/contract-read.sh" ]] || die 1 \
+        "no --trailer given and no default can be derived: missing $SCRIPT_DIR/contract-read.sh"
+    value="$("$SCRIPT_DIR/contract-read.sh" --repo-root "$repo_root" --get harness.trailer 2>&1)" || rc=$?
+    (( rc == 0 )) || die 1 \
+        "no --trailer given and no default can be derived (pass --trailer explicitly): $value"
+    [[ -n "$value" ]] || die 1 \
+        "no --trailer given and no default can be derived: contract harness.trailer resolved empty -- pass --trailer explicitly"
+    printf '%s' "$value"
+}
+
+resolve_trailers() {
+    local line
+    if (( ${#TRAILERS[@]} == 0 )); then
+        # contract_trailer_value already returns a complete "Co-Authored-By: ..."
+        # line (contract-read.sh's harness.trailer composes it) -- do not
+        # prefix it again here.
+        TRAILERS+=("$(contract_trailer_value)")
+    fi
+    for line in "${TRAILERS[@]}"; do
+        validate_trailer_line "$line"
+    done
 }
 
 # --git-dir is the per-worktree metadata dir (where index.lock is created);
@@ -162,7 +345,7 @@ report_unwritable() {
     local dir="$1" consequence="$2"
     printf '%s: git metadata directory is not writable: %s\n' "$PROGNAME" "$dir" >&2
     printf '%s: %s\n' "$PROGNAME" "$consequence" >&2
-    printf '%s: nothing was staged. Retry this identical command with elevated filesystem permission for that path.\n' \
+    printf '%s: nothing was staged. This workflow uses a designed handback: hand the identical command back to the top-level session for publication, then retry it there after the path is writable.\n' \
         "$PROGNAME" >&2
     exit 2
 }
@@ -175,6 +358,22 @@ require_writable_git_dirs() {
         probe_writable "$META_COMMON_DIR" \
             || report_unwritable "$META_COMMON_DIR" \
                 "the commit would fail writing objects and refs under $META_COMMON_DIR."
+    fi
+}
+
+# The index lock only covers one git command. This descriptor covers the whole
+# stage/check/commit transaction and lives in the common directory so linked
+# worktrees contend on the same lock.
+acquire_transaction_lock() {
+    local lock_file="$META_COMMON_DIR/worktree-commit.lock"
+
+    command -v flock > /dev/null 2>&1 || die 1 \
+        "transaction lock requires 'flock' on PATH"
+    if ! exec {LOCK_FD}>"$lock_file"; then
+        die 1 "cannot open transaction lock: $lock_file"
+    fi
+    if ! flock -x "$LOCK_FD"; then
+        die 1 "cannot acquire transaction lock: $lock_file"
     fi
 }
 
@@ -193,13 +392,14 @@ refuse_trunk() {
     # makes sed exit on SIGPIPE, and under `set -o pipefail` that becomes this
     # script's exit status.
     root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
-    declared="$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH=[[:space:]]*//p
-                        /^[[:space:]]*AGENT_BASE_BRANCH=/q' \
-        "$root/.agent/config.env" 2>/dev/null | tr -d '\r')"
+    declared="$(shared_declared_trunk_branch "$root" 2>/dev/null || true)"
     if [[ -n "$declared" && "$branch" == "$declared" ]]; then
         die 1 "refusing to commit to '$branch', this repository's declared base branch -- create a feature branch first"
     fi
 
+    if ! shared_is_trunk_branch "$branch" "$root"; then
+        case "$branch" in main|master|trunk) ;; *) return 0;; esac
+    fi
     case "$branch" in
         main|master|trunk)
             die 1 "refusing to commit to trunk branch '$branch' -- create a feature branch first"
@@ -282,22 +482,58 @@ do_commit() {
 
 report_commit() {
     local sha count
-    sha="$(git rev-parse --short HEAD)"
+    sha="$(git rev-parse HEAD)"
     count="$(git show --pretty=format: --name-only --no-renames HEAD |
         awk 'NF { n++ } END { print n + 0 }')"
     printf 'committed %s %s (%s files)\n' "$sha" "$SUBJECT" "$count"
 }
 
+# Validation catches a malformed --trailer before it is ever staged, but it
+# cannot catch git's own trailer parser disagreeing with ours. Read the
+# trailers back off the commit we just made -- the way the receipt publisher
+# byte-verifies its own output -- and fail loudly, before the one-line success
+# record prints, if an intended trailer did not survive into the real commit.
+verify_trailers() {
+    local actual line key value aline akey avalue found
+    # Pin the separator this read is parsed with: a repository-local
+    # trailer.separators config that drops ':' (e.g. "=") would otherwise
+    # change how git's own pretty-format parses trailers, misreporting a real
+    # commit with a well-formed "Key: value" trailer as a verification
+    # failure purely because of repo config, not the commit itself. This
+    # helper's documented, validated syntax is always "Key: value".
+    actual="$(git -c trailer.separators=: log -1 --format='%(trailers:only=true,unfold=true)' HEAD)"
+    for line in "${TRAILERS[@]}"; do
+        key="$(trailer_key "$line")"
+        value="$(trailer_value "$line")"
+        found=0
+        while IFS= read -r aline; do
+            [[ -n "$aline" ]] || continue
+            akey="$(trailer_key "$aline")"
+            avalue="$(trailer_value "$aline")"
+            if [[ "$akey" == "$key" && "$avalue" == "$value" ]]; then
+                found=1
+                break
+            fi
+        done <<< "$actual"
+        (( found == 1 )) || die 1 \
+            "post-commit verification failed: expected trailer not found on $(git rev-parse HEAD): $line"
+    done
+}
+
 main() {
     parse_args "$@"
     validate_args
+    resolve_trailers
     resolve_git_dirs
     require_writable_git_dirs
     refuse_trunk
+    acquire_transaction_lock
     stage_files
+    guard_staged_protected_paths
     check_staged
     build_message_args
     do_commit
+    verify_trailers
     report_commit
 }
 

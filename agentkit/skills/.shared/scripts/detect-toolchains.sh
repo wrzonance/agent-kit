@@ -347,6 +347,16 @@ suggestion_name() {
     fi
 }
 
+# Config values are parsed line-wise, not sourced. Quote only tokens that need
+# grouping so a generated path such as "My Project" survives that parser as one
+# argv token while ordinary suggestions remain readable.
+config_quote_token() {
+    case $1 in
+        *' '*) printf '"%s"' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # Whether TOOL is actually available to a python component with runner
 # RUNNER. A resolved .venv is checked by binary presence, which is the
 # strongest evidence (a listed dependency is not necessarily installed); an
@@ -367,9 +377,17 @@ py_tool_present() {
 }
 
 py_bin_prefix() {
-    local runner=$1 tool=$2
+    local dir=$1 runner=$2 tool=$3 relative_runner
     if [[ $runner == */* ]]; then
-        printf '%s/%s' "$runner" "$tool"
+        # PY_RUNNER is kept repository-relative for probing, but a command
+        # paired with AGENT_RUNDIR must name argv[0] from that directory.
+        # Root components already use the repository as their rundir.
+        if [[ $dir != . && $runner == "$dir"/* ]]; then
+            relative_runner=${runner#"$dir"/}
+        else
+            relative_runner=$runner
+        fi
+        config_quote_token "$relative_runner/$tool"
     elif [[ $runner == uv ]]; then
         printf 'uv run %s' "$tool" # ecosystem-allow: detection
     else
@@ -422,16 +440,16 @@ gen_node_tasks() {
 gen_python_tasks() {
     local dir=$1 runner=$2 bin
     if py_tool_present "$dir" pytest "$runner"; then
-        bin=$(py_bin_prefix "$runner" pytest)
+        bin=$(py_bin_prefix "$dir" "$runner" pytest)
         printf 'TEST\t%s\n' "$bin"
     fi
     if py_tool_present "$dir" ruff "$runner"; then
-        bin=$(py_bin_prefix "$runner" ruff)
+        bin=$(py_bin_prefix "$dir" "$runner" ruff)
         printf 'LINT\t%s\n' "$bin"
         printf 'FORMAT\t%s format --check\n' "$bin"
     fi
     if py_tool_present "$dir" mypy "$runner"; then
-        bin=$(py_bin_prefix "$runner" mypy)
+        bin=$(py_bin_prefix "$dir" "$runner" mypy)
         printf 'TYPECHECK\t%s\n' "$bin"
     fi
 }
@@ -469,7 +487,7 @@ gen_dispatcher_tasks() {
     local script
     for script in tools/verify tools/dev/verify bin/verify scripts/verify; do
         if [[ -x "$repo_root/$script" ]]; then
-            printf 'VERIFY\t%s\n' "$script"
+            printf 'VERIFY\t%s\n' "$(config_quote_token "$script")"
             return 0
         fi
     done
@@ -556,7 +574,7 @@ print_suggestions() {
                 printf '# the paths this repository wants checked:\n'
             fi
             printf '# AGENT_CMD_%s=%s\n' "$name" "$value"
-            [[ $path == . ]] || printf '# AGENT_RUNDIR_%s=%s\n' "$name" "$path"
+            [[ $path == . ]] || printf '# AGENT_RUNDIR_%s=%s\n' "$name" "$(config_quote_token "$path")"
         done
         printf '\n'
     done <<< "$sorted"
@@ -668,6 +686,7 @@ find_drift_candidate() {
 
 print_drift() {
     local declared key value argv0 dir candidate
+    local -a argv=()
     declared=$("$self_dir/repo-config.sh" --repo-root "$repo_root" --list 2> /dev/null) || true
     [[ -n $declared ]] || return 0
 
@@ -676,17 +695,21 @@ print_drift() {
         [[ -n $value ]] || continue
         [[ -d "$repo_root/$value" ]] && continue
         candidate=$(find_drift_candidate "$value")
-        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' "$key" "$value" "$candidate"
+        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' \
+            "$key" "$(config_quote_token "$value")" "$(config_quote_token "$candidate")"
     done <<< "$declared"
 
     while IFS='=' read -r key value; do
         [[ $key == AGENT_CMD_* ]] || continue
-        argv0=${value%% *}
+        argv=()
+        mapfile -d '' -t argv < <("$self_dir/repo-config.sh" --repo-root "$repo_root" --get-argv "$key" 2> /dev/null)
+        argv0=${argv[0]:-}
         [[ $argv0 == */* ]] || continue
         dir=${argv0%/*}
         [[ -d "$repo_root/$dir" ]] && continue
         candidate=$(find_drift_candidate "$dir")
-        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' "$key" "$dir" "$candidate"
+        printf 'drift= key=%s declared=%s status=missing candidate=%s\n' \
+            "$key" "$(config_quote_token "$dir")" "$(config_quote_token "$candidate")"
     done <<< "$declared"
 }
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Suite: move-github-project-item.sh optimistic fast path and self-healing.
+# Suite: move-github-project-item.sh cached fast path and self-healing.
 #
 # Exit codes follow this script's own long-standing contract (0 move-or-no-op,
 # 1 bad arguments or API error), not the tree-wide "2 = usage" convention. It
 # predates that convention and its usage block documents 1; changing it would
-# break callers for no benefit.
+# break callers for no benefit. One carved-out exception: an unreadable issue
+# project-membership read (a null-issue GraphQL resolver, a malformed
+# response, or the gh call itself failing) is a no-op, not an API error --
+# a board move must never abort the workstream it is annotating (#385).
 set -uo pipefail
 
 TEST_NAME='move-project-item'
@@ -23,10 +26,85 @@ cat > "$tmp/stub/gh" << EOF
 set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
-  *"item-edit"*)          [[ -n \${FAIL_EDIT:-} ]] && exit 1; exit 0 ;;
-  *"project field-list"*) cat "$here/fixtures/gh-field-list.json" ;;
-  *"project item-list"*)  cat "$here/fixtures/gh-item-list.json" ;;
-  *"project list"*)       cat "$here/fixtures/gh-project-list.json" ;;
+  *"api graphql"*)
+      if [[ -n \${NULL_ISSUE:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":null}}}'
+      elif [[ -n \${MALFORMED_MEMBERSHIP:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":"not-an-object"}}}}'
+      elif [[ -n \${MISSING_NODES:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{}}}}}'
+      elif [[ -n \${TRANSIENT_THEN_OK:-} ]]; then
+          attempts=0
+          [[ ! -f \${GH_MEMBERSHIP_ATTEMPTS_FILE:?} ]] || attempts=\$(<"\$GH_MEMBERSHIP_ATTEMPTS_FILE")
+          attempts=\$((attempts + 1))
+          printf '%s\n' "\$attempts" > "\$GH_MEMBERSHIP_ATTEMPTS_FILE"
+          if ((attempts >= \${TRANSIENT_SUCCEEDS_ON_ATTEMPT:-3})); then
+              printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+          else
+              printf '%s\n' '{"data":{"repository":{"issue":null}}}'
+          fi
+      elif [[ -n \${MULTI_BOARD:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
+            {"id":"PVTI_example57","project":{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}},
+            {"id":"PVTI_example58b","project":{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
+          ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      elif [[ -n \${CROSS_OWNER_COLLISION:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
+            {"id":"PVTI_otherowner57","project":{"number":7,"id":"PVT_kwDOOtherOwner","title":"Other Owner Board","owner":{"login":"other-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
+          ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      elif [[ -n \${CROSS_BOARD_MEMBERSHIP:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[
+            {"id":"PVTI_otherboard58","project":{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board","owner":{"login":"example-org"}},"fieldValueByName":{"name":"Backlog","optionId":"opt-backlog"}}
+          ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      else
+          printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+      fi
+      ;;
+  *"item-edit"*)
+      [[ -n \${FAIL_EDIT:-} ]] && exit 1
+      if [[ -n \${FAIL_STALE_ITEM:-} && "\$*" == *"PVTI_stale57"* ]]; then exit 1; fi
+      if [[ -n \${FAIL_CACHED_ITEM:-} && "\$*" == *"PVTI_example57"* ]]; then exit 1; fi
+      exit 0
+      ;;
+  *"project view"*)       printf '{"id":"PVT_kwDOAexample1","number":7}\n' ;;
+  *"project field-list"*)
+      if [[ -n \${CUSTOM_STATUS:-} ]]; then
+          printf '{"fields":[{"id":"PVTSSF_custom","name":"Status","options":[{"id":"opt-ice","name":"Icebox"},{"id":"opt-ship","name":"Shipped"}]}]}\n'
+      else
+          cat "$here/fixtures/gh-field-list.json"
+      fi
+      ;;
+  *"project item-list"*)
+      [[ -n \${FAIL_ITEM_LIST:-} ]] && exit 1
+      if [[ -n \${LARGE_BATCH:-} ]]; then
+          jq '.items += [range(1; 10) as \$n | {id: ("PVTI_large" + (\$n | tostring)), content: {type: "Issue", number: \$n, repository: "example-org/example-repo", url: ("https://github.com/example-org/example-repo/issues/" + (\$n | tostring))}}]' "$here/fixtures/gh-item-list.json"
+      elif [[ -n "\${CURRENT_STATUS:-}" ]]; then
+          case \${STATUS_SHAPE:-direct} in
+            direct)
+              jq --arg status "\${CURRENT_STATUS:-}" '.items |= map(if .id == "PVTI_example57" then .status = \$status else . end)' "$here/fixtures/gh-item-list.json"
+              ;;
+            nodes)
+              jq --arg status "\${CURRENT_STATUS:-}" '.items |= map(if .id == "PVTI_example57" then .fieldValues = {nodes: [{field: {name: "Status"}, name: \$status}]} else . end)' "$here/fixtures/gh-item-list.json"
+              ;;
+            array)
+              jq --arg status "\${CURRENT_STATUS:-}" '.items |= map(if .id == "PVTI_example57" then .fieldValues = [{field: {name: "Status"}, name: \$status}] else . end)' "$here/fixtures/gh-item-list.json"
+              ;;
+            *) exit 1 ;;
+          esac
+      else
+          cat "$here/fixtures/gh-item-list.json"
+      fi
+      ;;
+  *"project list"*)
+      [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1
+      if [[ -n \${EMPTY_PROJECT_LIST:-} ]]; then
+          :
+      elif [[ -n \${MULTI_BOARD:-} ]]; then
+          printf '%s\\n' '{"projects":[{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board"},{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board"}]}'
+      else
+          cat "$here/fixtures/gh-project-list.json"
+      fi
+      ;;
   *) printf '{}\n' ;;
 esac
 exit 0
@@ -39,7 +117,7 @@ seed_repo() {
     git -C "$dir" init -q
     mkdir -p "$dir/.agent/cache"
     cat > "$dir/.agent/board.json" << 'EOF'
-{"schemaVersion":1,"owner":"example-org",
+{"schemaVersion":1,"repository":"example-org/example-repo","owner":"example-org",
  "project":{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board"},
  "statusField":{"id":"PVTSSF_lADOAexampleB","name":"Status",
    "options":{"Backlog":"opt-backlog","Ready":"opt-ready",
@@ -47,8 +125,10 @@ seed_repo() {
  "fingerprint":"sha256:seed"}
 EOF
     cat > "$dir/.agent/cache/board-items.json" << 'EOF'
-{"schemaVersion":1,"project":"PVT_kwDOAexample1","items":{"57":"PVTI_example57"}}
+{"schemaVersion":1,"repository":"example-org/example-repo","owner":"example-org",
+ "projectNumber":7,"project":"PVT_kwDOAexample1","items":{"57":"PVTI_example57"}}
 EOF
+    chmod 600 "$dir/.agent/board.json" "$dir/.agent/cache/board-items.json"
     printf '%s' "$dir"
 }
 
@@ -61,12 +141,32 @@ bare_repo() {
 
 run_mv() {
     local repo=$1
+    local requested_repository=${TEST_REPOSITORY:-example-org/example-repo}
     shift
     GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
-        "$mv_sh" --repo-root "$repo" --repository example-org/example-repo "$@"
+        MOVE_ITEM_MEMBERSHIP_RETRY_DELAY="${MOVE_ITEM_MEMBERSHIP_RETRY_DELAY:-0}" \
+        "$mv_sh" --repo-root "$repo" --repository "$requested_repository" "$@"
 }
 
-# --- fast path: exactly one gh call ---------------------------------------
+# The board helper parses live evidence with jq; a stripped parser must block
+# before it can print a no-op or move result.
+mkdir -p "$tmp/no-jq"
+cp "$tmp/stub/gh" "$tmp/no-jq/gh"
+chmod +x "$tmp/no-jq/gh"
+repo=$(bare_repo)
+set +e
+missing_parser_output=$(PATH="$tmp/no-jq" /bin/bash "$mv_sh" \
+    --repo-root "$repo" --repository example-org/example-repo \
+    --issue-number 57 --status 'In progress' 2>"$tmp/move-parser.err")
+missing_parser_rc=$?
+set -e
+assert_eq '1' "$missing_parser_rc" 'missing jq blocks board evidence parsing'
+assert_eq '' "$missing_parser_output" 'missing jq emits no board move result'
+assert_contains "$(cat "$tmp/move-parser.err")" 'jq' 'missing board parser error names jq'
+assert_contains "$(cat "$tmp/move-parser.err")" 'evidence unavailable' \
+    'missing board parser error says evidence is unavailable'
+
+# --- warm board.json + item cache: exactly one mutation ---------------------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
@@ -77,7 +177,180 @@ assert_contains "$log" 'PVTI_example57' 'uses the cached item id'
 assert_contains "$log" 'opt-inprog' 'uses the cached option id'
 assert_not_contains "$log" 'field-list' 'does not re-resolve the Status field'
 assert_not_contains "$log" 'item-list' 'does not re-scan the board'
+assert_contains "$out" 'board.json, 1 call' 'terminal line reports the warm-cache cost'
 assert_contains "$out" 'moved #57' 'reports the move'
+
+# The warm path deliberately never reads the card's current status before
+# mutating it, so it reports "moved" even when the card is already at the
+# target status -- pin this documented tradeoff (see usage's Output section
+# and references/grooming.md) rather than letting it drift silently.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CURRENT_STATUS='In progress' STATUS_SHAPE=direct \
+    run_mv "$repo" --issue-number 57 --status 'In progress' 2>&1)
+assert_eq '1' "$(wc -l < "$tmp/gh.log")" \
+    'a warm cache with an already-target card still costs exactly one gh call'
+assert_contains "$out" 'moved #57 -> "In progress"' \
+    'a warm cache reports moved even when the card is already at the target status'
+assert_contains "$out" 'board.json, 1 call' \
+    'the already-target warm move still reports the one-call cost'
+
+# A fully warm batch -- every requested issue already in the item cache --
+# costs one gh call per issue and never falls back to a live item-list read.
+repo=$(seed_repo)
+jq '.items["58"] = "PVTI_example58"' < "$repo/.agent/cache/board-items.json" \
+    > "$repo/.agent/cache/tmp.json"
+mv "$repo/.agent/cache/tmp.json" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_eq '2' "$(wc -l < "$tmp/gh.log")" \
+    'a fully warm batch costs exactly one gh call per issue'
+log=$(cat "$tmp/gh.log")
+assert_eq '2' "$(grep -c 'item-edit' <<< "$log" || true)" \
+    'a fully warm batch edits every issue'
+assert_not_contains "$log" 'item-list' \
+    'a fully warm batch never reads the board at all'
+assert_contains "$out" 'moved #57' 'fully warm batch reports the first moved issue'
+assert_contains "$out" 'moved #58' 'fully warm batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'board.json, 1 call' <<< "$out" || true)" \
+    'each move in a fully warm batch reports the one-call cost'
+
+# A cache bound to another repository must fail closed before mutation. The
+# live board contains the requested repository's card and IDs; foreign cached
+# values may not be sent to item-edit.
+repo=$(seed_repo)
+jq '.repository = "example-org/other-repo" | .project.id = "PVT_attacker" |
+    .statusField.id = "PVTSSF_attacker" |
+    .statusField.options.Ready = "opt-attacker"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+jq '.repository = "example-org/other-repo" | .project = "PVT_attacker" |
+    .items["57"] = "PVTI_otherrepo57"' \
+    < "$repo/.agent/cache/board-items.json" > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/board.json" "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--project-id PVT_kwDOAexample1' \
+    'foreign board cache falls back to the live project'
+assert_contains "$log" '--id PVTI_example57' \
+    'foreign item cache falls back to the requested-repository card'
+assert_not_contains "$log" 'PVT_attacker' \
+    'the foreign project never reaches item-edit'
+assert_not_contains "$log" 'PVTI_otherrepo57' \
+    'the foreign item never reaches item-edit'
+
+# An unsafe board file is never trusted for mutation, even when its contents
+# contain attacker-controlled project and field IDs.
+repo=$(seed_repo)
+jq '.project.id = "PVT_attacker" | .statusField.id = "PVTSSF_attacker" |
+    .statusField.options.Ready = "opt-attacker"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+chmod 666 "$repo/.agent/board.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--project-id PVT_kwDOAexample1' \
+    'an unsafe board file falls back to the live project'
+assert_not_contains "$log" 'PVT_attacker' \
+    'an unsafe board project never reaches item-edit'
+
+# An unsafe item cache is not trusted for the mutation either; the one-read
+# fallback selects the requested repository's live card before rewriting it.
+repo=$(seed_repo)
+jq '.items["57"] = "PVTI_attacker"' \
+    < "$repo/.agent/cache/board-items.json" > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+chmod 666 "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '--id PVTI_example57' \
+    'an unsafe item cache falls back to the requested-repository card'
+assert_not_contains "$log" 'PVTI_attacker' \
+    'an unsafe item cache never reaches item-edit'
+
+# Permission to replace a file comes from its containing directory, not the
+# file: a group/world-writable .agent/cache/ is never trusted, even when
+# board-items.json itself is perfectly safe.
+repo=$(seed_repo)
+chmod 777 "$repo/.agent/cache"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'item-list' \
+    'a group/world-writable cache directory is not trusted for the fast path'
+assert_contains "$log" '--id PVTI_example57' \
+    'a group/world-writable cache directory still falls back to the requested-repository card'
+chmod 700 "$repo/.agent/cache"
+
+# The same applies to .agent/ itself: it backs both board.json and the item
+# cache, so a writable .agent/ forces a full fallback to live discovery.
+repo=$(seed_repo)
+chmod 777 "$repo/.agent"
+: > "$tmp/gh.log"
+run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'project list' \
+    'a group/world-writable .agent/ directory falls back to full discovery'
+chmod 700 "$repo/.agent"
+
+# A rejected cached mutation invalidates that issue's cache entry before the
+# fallback. If project discovery is unavailable, the stale ID cannot remain for
+# a second invocation to retry.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+FAIL_CACHED_ITEM=1 FAIL_PROJECT_LIST=1 run_mv "$repo" --issue-number 57 --status Ready \
+    > /dev/null 2>&1 || true
+assert_eq 'null' "$(jq -r '.items["57"] // null' < "$repo/.agent/cache/board-items.json")" \
+    'a rejected cached item is removed before fallback'
+assert_eq '1' "$(grep -c -- '--id PVTI_example57' "$tmp/gh.log" || true)" \
+    'the rejected cached item is attempted only once'
+
+# A cache miss uses one live item-list read and still classifies an
+# already-target card as a no-op.
+for status_shape in direct nodes array; do
+    repo=$(seed_repo)
+    rm -f "$repo/.agent/cache/board-items.json"
+    : > "$tmp/gh.log"
+    out=$(CURRENT_STATUS='Ready' STATUS_SHAPE="$status_shape" run_mv "$repo" --issue-number 57 --status Ready 2>&1)
+    assert_contains "$out" 'no-op: issue #57 already "Ready"' \
+        "$status_shape status reports a redundant no-op"
+    assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+        "$status_shape already-target status does not call item-edit"
+done
+assert_contains "$(<"$mv_sh")" 'no-op: issue #%s already "%s"' \
+    'mover retains the exact already-target stdout shape'
+
+# The cache-miss/process_project discovery path must honor the same direct
+# Status shape and remain a no-op without issuing an item-edit mutation.
+repo=$(bare_repo)
+: > "$tmp/gh.log"
+out=$(CURRENT_STATUS='Ready' STATUS_SHAPE=direct run_mv "$repo" \
+    --issue-number 57 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #57 already "Ready"' \
+    'process_project cache miss reports an already-target no-op'
+assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'process_project cache miss does not call item-edit for an already-target issue'
+
+# An identical second move must not rewrite board.json just because generatedAt
+# is fresh. Commit the first move so the second invocation can prove it leaves
+# the repository clean as well as preserving the file byte-for-byte.
+repo=$(seed_repo)
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+git -C "$repo" add .agent
+git -C "$repo" -c user.name='test' -c user.email='test@example.invalid' \
+    commit -qm 'seed refreshed board metadata'
+before=$(sha256sum "$repo/.agent/board.json")
+sleep 1
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+after=$(sha256sum "$repo/.agent/board.json")
+assert_eq "$before" "$after" 'an identical second move preserves board.json bytes'
+assert_eq '' "$(git -C "$repo" status --short)" \
+    'an identical second move leaves the repository clean'
 
 # --- cache miss on the issue falls back -----------------------------------
 repo=$(seed_repo)
@@ -86,14 +359,86 @@ run_mv "$repo" --issue-number 99 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'item-list' 'an uncached issue falls back to discovery'
 
+# A declared board is the default discovery boundary. An issue absent from
+# that board may be on no board (or another board), but it must not trigger an
+# org-wide project scan; inspect the issue's own memberships and terminate.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" 'projectItems' \
+    'a declared-board miss checks the issue-owned project memberships'
+assert_not_contains "$log" 'project list' \
+    'a declared-board miss never scans unrelated organization projects'
+assert_not_contains "$out" 'Warning: could not list items for project' \
+    'a declared-board miss suppresses unrelated-project warnings'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'a declared-board miss reports one terminal no-op'
+assert_not_contains "$out" 'could not be read' \
+    'a genuine board absence is never conflated with an unreadable membership read'
+
+# Numeric project numbers are only a fallback within the declared project
+# owner. A same-number project owned by another organization is unrelated.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CROSS_OWNER_COLLISION=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'a cross-owner project-number collision never edits the declared board'
+assert_contains "$out" 'not on declared project #7' \
+    'a cross-owner project-number collision reports the declared-board boundary'
+assert_contains "$out" '--all-boards' \
+    'a cross-owner project-number collision points to all-boards discovery'
+
+# A membership on another accessible board is not an unboarded issue. The
+# default mode must name the declared-board boundary and point to --all-boards.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(CROSS_BOARD_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_eq '0' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'a membership on another board never edits the declared board'
+assert_contains "$out" 'not on declared project #7' \
+    'a membership on another board reports the declared-board boundary'
+assert_contains "$out" '--all-boards' \
+    'a membership on another board points to all-boards discovery'
+
+# Numeric repository and owner segments must remain GraphQL strings. gh
+# coerces digit-only values passed via -F, while -f preserves the String! type.
+repo=$(seed_repo)
+jq '.repository = "123/456" | .owner = "123"' \
+    < "$repo/.agent/board.json" > "$repo/.agent/board.tmp"
+mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
+jq '.repository = "123/456" | .owner = "123"' \
+    < "$repo/.agent/cache/board-items.json" > "$repo/.agent/cache/items.tmp"
+mv "$repo/.agent/cache/items.tmp" "$repo/.agent/cache/board-items.json"
+chmod 600 "$repo/.agent/board.json" "$repo/.agent/cache/board-items.json"
+: > "$tmp/gh.log"
+TEST_REPOSITORY=123/456 run_mv "$repo" --issue-number 58 --status Ready > /dev/null 2>&1
+log=$(cat "$tmp/gh.log")
+assert_contains "$log" '-f owner=123 -f name=456 -F number=58' \
+    'digit-only repository segments use raw GraphQL string variables'
+assert_not_contains "$log" '-F owner=123 -F name=456' \
+    'digit-only repository segments are not passed through gh numeric coercion'
+
 # --- discovery warms the cache for next time -------------------------------
+repo=$(seed_repo)
+run_mv "$repo" --issue-number 99 --status Ready > /dev/null 2>&1
 cache="$repo/.agent/cache/board-items.json"
 assert_eq 'PVTI_example99' "$(jq -r '.items["99"] // "absent"' < "$cache")" \
     'a discovered item id is written back to the cache'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"] // "absent"' < "$cache")" \
     'existing cache entries survive the write-back'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$cache")" \
+    'the item cache records the exact repository provenance'
+assert_eq '7' "$(jq -r '.projectNumber' < "$cache")" \
+    'the item cache records the project number provenance'
+assert_eq '600' "$(stat -c '%a' "$cache")" \
+    'the item cache writer applies a private mode'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/board.json")" \
+    'the board writer records the exact repository provenance'
+assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
+    'the board writer applies a private mode'
 
-# --- fresh clone: board.json committed, item cache absent -----------------
+# --- fresh clone: local board declaration, item cache absent ---------------
 # The discovery path is O(boards owned by the org), so an org with a dozen
 # boards would pay a dozen item-list calls to move one card. board.json names
 # the board, so go straight to it.
@@ -101,13 +446,24 @@ repo=$(seed_repo)
 rm -f "$repo/.agent/cache/board-items.json"
 : > "$tmp/gh.log"
 out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
-assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone costs two gh calls, not seven'
+assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone reads the declared board once before editing'
 log=$(cat "$tmp/gh.log")
 assert_not_contains "$log" 'project list' 'does not enumerate every board the owner has'
 assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
 assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
-    'and warms the cache so the next move costs one'
+    'and refreshes the cache with the live item id'
+
+# A runtime board refresh must not dirty a checkout using the blessed local
+# declaration model. The declaration is ignored in the repository-local
+# exclude, while the mover may still rewrite it atomically.
+repo=$(seed_repo)
+local_exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $local_exclude == /* ]] || local_exclude=$repo/$local_exclude
+printf '.agent/*\n' >> "$local_exclude"
+run_mv "$repo" --issue-number 57 --status 'In progress' > /dev/null 2>&1
+assert_eq '' "$(git -C "$repo" status --short)" \
+    'a runtime board move leaves local ignored declarations out of tracked status'
 
 # --- invalid status never reaches gh (fail closed) ------------------------
 repo=$(seed_repo)
@@ -118,17 +474,18 @@ assert_rc 1 'an unknown status is rejected' -- \
     --issue-number 57 --status 'Nonexistent Column'
 assert_eq '0' "$(wc -l < "$tmp/gh.log")" 'an invalid status makes no gh call at all'
 
-# --- self-heal on a rejected edit -----------------------------------------
+# --- rejected cached edit fails closed without an organization walk --------
 repo=$(seed_repo)
 : > "$tmp/gh.log"
 out=$(FAIL_EDIT=1 GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
     "$mv_sh" --repo-root "$repo" --repository example-org/example-repo \
     --issue-number 57 --status Done 2>&1 || true)
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'field-list' 'a rejected edit triggers rediscovery'
+assert_contains "$log" 'api graphql' 'a rejected edit checks issue-owned memberships'
+assert_not_contains "$log" 'project list' 'a rejected edit never scans unrelated projects'
 assert_contains "$out" 'board changed' 'prints the regenerate-and-commit notice'
 edits=$(grep -c 'item-edit' "$tmp/gh.log" || true)
-assert_eq '2' "$edits" 'retries exactly once, never loops'
+assert_eq '1' "$edits" 'a rejected cached edit is never retried blindly'
 
 # --- no cache at all behaves exactly as before ----------------------------
 repo=$(bare_repo)
@@ -136,6 +493,10 @@ repo=$(bare_repo)
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'project list' 'with no board.json it discovers as before'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/board.json")" \
+    'full discovery writes board repository provenance'
+assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
+    'full discovery writes a private board mode'
 
 # --- unrecognized schemaVersion is ignored, not fatal ---------------------
 repo=$(seed_repo)
@@ -171,7 +532,181 @@ jq '.statusField.options = {"Icebox":"opt-ice","Shipped":"opt-ship"}' \
     < "$repo/.agent/board.json" > "$repo/.agent/b.tmp"
 mv "$repo/.agent/b.tmp" "$repo/.agent/board.json"
 : > "$tmp/gh.log"
-out=$(run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
+out=$(CUSTOM_STATUS=1 run_mv "$repo" --issue-number 57 --status 'Icebox' 2>&1)
 assert_contains "$(cat "$tmp/gh.log")" 'opt-ice' 'a board-declared column outside the canonical five works'
+
+# --- batch moves share the one cache-miss read -----------------------------
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 99 --status Ready 2>&1)
+assert_contains "$out" 'moved #57' 'batch reports the first moved issue'
+assert_contains "$out" 'moved #99' 'batch reports the second moved issue'
+assert_eq '2' "$(grep -c 'board.json, 2 calls' <<< "$out" || true)" \
+    'batch keeps the measured cache-miss suffix on each move'
+assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'batch edits each issue'
+assert_eq '1' "$(grep -c 'item-list' "$tmp/gh.log" || true)" \
+    'batch shares item lookup'
+assert_eq '0' "$(grep -c 'project view' "$tmp/gh.log" || true)" \
+    'batch avoids project validation reads'
+assert_eq '0' "$(grep -c 'field-list' "$tmp/gh.log" || true)" \
+    'batch avoids Status validation reads'
+
+# A large batch must preserve every terminal evidence line when stdout is
+# captured through a pipe, and the summary makes any short capture visible.
+repo=$(seed_repo)
+: > "$tmp/large-batch.out"
+LARGE_BATCH=1 run_mv "$repo" --issue-numbers 1,2,3,4,5,6,7,8,9 --status Ready 2>&1 |
+    tee "$tmp/large-batch.out" > /dev/null
+pipe_lines=$(awk 'END { print NR + 0 }' "$tmp/large-batch.out")
+assert_eq '10' "$pipe_lines" 'a 9-issue batch emits nine evidence lines plus its summary through a pipe'
+assert_eq '9' "$(grep -c '^moved #' "$tmp/large-batch.out" || true)" \
+    'a piped large batch emits one moved line per issue'
+assert_eq 'moved=9 no-op=0 of=9' "$(tail -n 1 "$tmp/large-batch.out")" \
+    'a piped large batch ends with a completeness summary'
+
+# A moved/no-op mixture terminates the moved issue and emits one terminal
+# no-op for the issue absent from every board.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'moved #57' 'mixed batch keeps the moved outcome'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'mixed batch emits the absent issue no-op'
+assert_eq '1' "$(grep -c -- '--id PVTI_example57' "$tmp/gh.log" || true)" \
+    'mixed batch does not repeat the moved issue'
+
+# Same-number cards on a shared board remain repository-scoped in a batch.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(run_mv "$repo" --issue-numbers 57 --status Ready 2>&1)
+assert_contains "$out" 'moved #57' 'CSV batch accepts one issue'
+assert_contains "$(cat "$tmp/gh.log")" '--id PVTI_example57' \
+    'CSV batch selects the requested repository card'
+assert_not_contains "$(cat "$tmp/gh.log")" 'PVTI_otherrepo57' \
+    'CSV batch never edits the same-number card from another repository'
+
+# API failures are errors, not successful no-ops.
+repo=$(bare_repo)
+assert_rc 1 'project-list API failure exits 1' -- env FAIL_PROJECT_LIST=1 \
+    GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
+    "$mv_sh" --repo-root "$repo" --repository example-org/example-repo \
+    --issue-number 57 --status Ready
+
+# --all-boards must bypass the single-board cache and update every matching card.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(MULTI_BOARD=1 run_mv "$repo" --issue-number 57 --status Ready --all-boards 2>&1)
+assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
+    'all-boards updates the requested card on every board'
+assert_contains "$(cat "$tmp/gh.log")" 'api graphql --paginate' \
+    'all-boards paginates the issue-owned project memberships'
+assert_not_contains "$(cat "$tmp/gh.log")" 'project list' \
+    'all-boards never scans the organization project list'
+assert_not_contains "$(cat "$tmp/gh.log")" 'item-list' \
+    'all-boards never lists every board card'
+assert_contains "$out" 'project #7 "Example Board"' \
+    'all-boards reports the first board move'
+assert_contains "$out" 'project #8 "Second Board"' \
+    'all-boards reports the second board move'
+
+# An unreadable board is skipped so an unrelated board cannot abort dispatch.
+repo=$(bare_repo)
+: > "$tmp/gh.log"
+out=$(FAIL_ITEM_LIST=1 run_mv "$repo" --issue-number 57 --status Ready 2>&1)
+assert_contains "$out" 'Warning: could not list items for project #7; skipping it.' \
+    'an unreadable board is reported and skipped'
+assert_contains "$out" 'no-op: issue #57 is not on any project board' \
+    'a skipped board leaves the issue with its terminal no-op'
+
+# Empty project-list responses still emit one terminal result per requested issue.
+repo=$(bare_repo)
+out=$(EMPTY_PROJECT_LIST=1 run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #57 is not on any project board' \
+    'an empty project response reports the first issue'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'an empty project response reports the second issue'
+
+# --- issue project-membership read reliability (#385) ----------------------
+# A board move must never fail the real work: a membership read that cannot
+# be resolved -- transiently or otherwise -- is a no-op, distinct from a
+# genuine "not on any board" outcome, and never a fatal exit.
+
+# A GraphQL repository.issue resolver that keeps returning null (the
+# REST/GraphQL replication-lag case) is retried a bounded number of times,
+# then reported as its own distinct unreadable no-op rather than aborting.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(NULL_ISSUE=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a persistently null-issue membership read still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'a persistently null-issue membership read reports a distinct unreadable no-op'
+assert_not_contains "$out" 'is not on any project board' \
+    'an unreadable membership read is never conflated with a genuine board absence'
+assert_eq '3' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'a persistently null-issue membership read retries the bounded number of attempts'
+
+# A response whose repository.issue.projectItems is some other unexpected
+# shape (not the null-issue case) is a genuinely malformed response: it is
+# not retried, but still resolves to the same unreadable no-op, never a die.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(MALFORMED_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a malformed membership response still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'a malformed membership response reports the same distinct unreadable no-op'
+assert_eq '1' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'a malformed membership response is not retried like the transient null-issue case'
+
+# A response whose repository.issue.projectItems is an object but carries no
+# nodes array at all (not the "wrong type" malformed case above) must also
+# resolve to the same unreadable no-op -- not silently classified "ok" with
+# zero items, which would misreport a real membership as "not on any board".
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(MISSING_NODES=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a projectItems response missing nodes still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'a projectItems response missing nodes reports the same distinct unreadable no-op'
+assert_not_contains "$out" 'is not on any project board' \
+    'a projectItems response missing nodes is never conflated with a genuine board absence'
+assert_eq '1' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'a projectItems response missing nodes is not retried like the transient null-issue case'
+
+# A membership read that fails on its first attempts but succeeds within the
+# retry budget recovers cleanly and reports the real outcome, not a failure.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+attempts_file="$tmp/membership-attempts"
+rm -f "$attempts_file"
+out=$(TRANSIENT_THEN_OK=1 GH_MEMBERSHIP_ATTEMPTS_FILE="$attempts_file" \
+    run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a transient membership read that recovers still exits 0'
+assert_contains "$out" 'no-op: issue #58 is not on any project board' \
+    'a transient membership read that recovers reports the real board-absence outcome'
+assert_not_contains "$out" 'could not be read' \
+    'a transient membership read that recovers is never reported as unreadable'
+assert_eq '3' "$(cat "$attempts_file")" \
+    'a transient membership read succeeds on the third attempt'
+
+# process_project_memberships (the --all-boards path) is a separate code path
+# from try_declared_memberships above and has its own membership-read handling;
+# it must honor the same never-fail-the-workstream contract for an unreadable
+# membership read.
+repo=$(bare_repo)
+: > "$tmp/gh.log"
+out=$(NULL_ISSUE=1 run_mv "$repo" --issue-number 58 --status Ready --all-boards 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'all-boards: a persistently null-issue membership read still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved' \
+    'all-boards: a persistently null-issue membership read reports the distinct unreadable no-op'
+assert_not_contains "$out" 'is not on any project board' \
+    'all-boards: an unreadable membership read is never conflated with a genuine board absence'
+assert_eq '3' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
+    'all-boards: a persistently null-issue membership read retries the bounded number of attempts'
 
 finish

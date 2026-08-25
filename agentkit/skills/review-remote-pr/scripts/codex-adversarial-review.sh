@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 #
 # codex-adversarial-review.sh — one-shot, tool-isolated adversarial diff review
 # driven through the Codex CLI's non-interactive `codex exec` interface.
@@ -30,17 +31,19 @@
 #      contract). stdout carries a blocked JSON object. Callers take the other
 #      harness's reviewer immediately and never report this as a failed review.
 #
-# COST NOTE: unlike Claude Code, `codex exec` exposes no spend-ceiling flag. There
-# is no --max-budget-usd equivalent to enforce. Cost is bounded here by the diff
-# size guard (--max-diff-bytes), the model, and the reasoning effort — so keep the
-# review diff tight; see --max-diff-bytes below.
+# COST NOTE: `codex exec` exposes no provider spend-ceiling flag. This helper
+# applies an observed token ceiling to the one-shot stream and a duration ceiling
+# around the process; both are hard safety failures rather than verdicts.
 #
 # Requires: bash >= 4.2, codex CLI, jq, GNU coreutils.
 
 set -euo pipefail
+umask 077
 
 readonly PROGNAME=${0##*/}
 readonly WARN_DIFF_BYTES=262144   # 256 KiB — advise splitting beyond this
+readonly DEFAULT_MAX_DURATION_SECONDS=900
+readonly DEFAULT_MAX_TOKENS=400000
 readonly REQUIRED_FLAGS=(
     --model
     --config
@@ -55,17 +58,35 @@ readonly REQUIRED_FLAGS=(
 )
 
 MODE=""
+NO_PAYLOAD=0
 CODEX_BIN=${CODEX_EXECUTABLE:-codex}
 CODEX_RESOLVED=""
 MODEL=""
 EFFORT="xhigh"
 DIFF_PATH=""
+BASE_REF=""
+CONSENT_STATE_PATH=""
+CONSENT_PAYLOAD=""
+PR_NUMBER=""
+REPO_SLUG=""
 TRANSCRIPT_PATH=""
+OUTPUT_PATH=""
+# shellcheck disable=SC2034
+OUTPUT_TMP=""
 POLL_SECONDS=120
 MAX_DIFF_BYTES=1048576            # 1 MiB — a runaway-diff backstop, not a protocol limit
+MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
+MAX_TOKENS=$DEFAULT_MAX_TOKENS
 WORK_DIR=""
 POLLER_PID=""
 CODEX_PID=""
+LIMIT_PID=""
+LIMIT_REASON_FILE=""
+PID_FILE=""
+STATUS_FILE=""
+STATUS_TMP=""
+HEARTBEAT_FAILURE_FILE=""
+DEADLINE_EPOCH=0
 
 usage() {
     cat <<EOF
@@ -76,22 +97,41 @@ Required:
                              review: review the diff at --diff.
   --model <model>            Model for the review (e.g. gpt-5.6-terra).
   --transcript <path>        Where to write the raw JSONL event stream.
-                             Truncated on start; parent dirs are created.
+                             Must be a fresh path in a private directory;
+                             missing parent directories are created as 0700;
+                             created exclusively with mode 0600.
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
+  --repo <owner/name>        Repository the PR belongs to. Bound into the consent
+                             payload so a PR number cannot collide across repos.
+  --pr <number>              PR number used to bind consent to the exact diff.
+  --consent-state <path>     Private consent record. Required in review mode.
 
 Options:
   --codex <path>             codex executable (default: \$CODEX_EXECUTABLE, else
                              the first "codex" on PATH).
+  --no-payload               Required in probe mode. The probe sends only a
+                             synthetic snippet, no PR diff, and never counts
+                             against the one-review-per-PR budget.
   --effort <level>           Reasoning effort, passed as model_reasoning_effort
                              (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval on stderr (default: $POLL_SECONDS).
   --max-diff-bytes <n>       Reject a review diff larger than this (default: $MAX_DIFF_BYTES).
-                             \`codex exec\` has NO spend ceiling, so diff size is the
-                             primary cost lever. A warning is printed above $WARN_DIFF_BYTES
-                             bytes; split the review into coherent slices instead of
-                             sending one enormous diff.
+                             A warning is printed above $WARN_DIFF_BYTES bytes; split the
+                             review into coherent slices instead of sending one enormous diff.
+  --max-duration-seconds <1-86400>
+                             Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
+  --max-tokens <1024-1000000>
+                             Hard observed token ceiling (default: $MAX_TOKENS).
+  --output <path>            Additionally publish the single stdout JSON object to
+                             this path, atomically (temp sibling in the same
+                             directory, chmod 600, then rename). Written on exit 0
+                             (the completed verdict) and exit 3 (the blocked
+                             object); never created or left behind on exit 1. The
+                             path's directory must be owned by this
+                             user, non-symlink, and mode 0700; missing parent
+                             directories are created as 0700.
   -h, --help                 Show this help.
 
 Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
@@ -105,34 +145,39 @@ die() {
 
 # Environment-blocked: Codex cannot run here at all, so no verdict is obtainable.
 # The caller must switch to the other harness rather than treat this as a finding.
-die_blocked() {
-    local reason=$1 detail=$2
-    printf '%s: BLOCKED (%s): %s\n' "$PROGNAME" "$reason" "$detail" >&2
-    printf '%s: take the cross-harness adversarial reviewer instead; do not retry.\n' "$PROGNAME" >&2
-    jq -cn \
-        --arg blockedReason "$reason" \
-        --arg detail "$detail" \
-        --arg transcript "$TRANSCRIPT_PATH" \
-        '{status: "blocked", blockedReason: $blockedReason, detail: $detail,
-          transcript: $transcript, fallback: "cross-harness-reviewer"}'
-    exit 3
+record_helper_pid() {
+    PID_FILE="$TRANSCRIPT_PATH.pid"
+    [[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
+    rm -f -- "$PID_FILE"
+    printf '%s\n' "$$" >"$PID_FILE" || die "Cannot record helper PID: $PID_FILE"
 }
 
-cleanup() {
-    if [[ -n $POLLER_PID ]]; then
-        kill "$POLLER_PID" 2>/dev/null || true
-        wait "$POLLER_PID" 2>/dev/null || true
-        POLLER_PID=""
-    fi
-    if [[ -n $CODEX_PID ]]; then
-        kill "$CODEX_PID" 2>/dev/null || true
-        wait "$CODEX_PID" 2>/dev/null || true
-        CODEX_PID=""
-    fi
-    [[ -n $WORK_DIR && -d $WORK_DIR ]] && rm -rf -- "$WORK_DIR"
-    return 0
+seconds_until_deadline() {
+    local now left
+    now=$(date +%s)
+    left=$((DEADLINE_EPOCH - now))
+    ((left > 0)) || return 1
+    printf '%s' "$left"
 }
 
+die_duration() {
+    die "Codex review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
+}
+
+record_heartbeat_failure() {
+    local detail=$1
+    printf '%s\n' "$detail" >"$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true
+}
+
+heartbeat_failure_detail() {
+    local detail
+    detail=$(cat -- "$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true)
+    printf '%s' "${detail:-unknown heartbeat publication failure}"
+}
+
+# Review transcripts contain the complete private diff and must never be placed
+# in a shared temporary directory. The caller creates one 0700 run directory and
+# passes a fresh path inside it. Refuse anything weaker before invoking Codex.
 require_value() {
     [[ -n ${2:-} ]] || die "option $1 requires a value"
 }
@@ -142,6 +187,7 @@ parse_args() {
         case $1 in
         --mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
         --mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
+        --no-payload) NO_PAYLOAD=1 && shift ;;
         --codex) require_value "$1" "${2:-}" && CODEX_BIN=$2 && shift 2 ;;
         --codex=*) CODEX_BIN=${1#*=} && shift ;;
         --model) require_value "$1" "${2:-}" && MODEL=$2 && shift 2 ;;
@@ -150,12 +196,28 @@ parse_args() {
         --effort=*) EFFORT=${1#*=} && EFFORT=${EFFORT,,} && shift ;;
         --diff) require_value "$1" "${2:-}" && DIFF_PATH=$2 && shift 2 ;;
         --diff=*) DIFF_PATH=${1#*=} && shift ;;
+        --base-ref) require_value "$1" "${2:-}" && BASE_REF=$2 && shift 2 ;;
+        --base-ref=*) BASE_REF=${1#*=} && shift ;;
+        --repo) require_value "$1" "${2:-}" && REPO_SLUG=$2 && shift 2 ;;
+        --repo=*) REPO_SLUG=${1#*=} && shift ;;
+        --pr) require_value "$1" "${2:-}" && PR_NUMBER=$2 && shift 2 ;;
+        --pr=*) PR_NUMBER=${1#*=} && shift ;;
+        --consent-state|--state) require_value "$1" "${2:-}" && CONSENT_STATE_PATH=$2 && shift 2 ;;
+        --consent-state=*|--state=*) CONSENT_STATE_PATH=${1#*=} && shift ;;
+        --consent-payload) require_value "$1" "${2:-}" && CONSENT_PAYLOAD=$2 && shift 2 ;;
+        --consent-payload=*) CONSENT_PAYLOAD=${1#*=} && shift ;;
         --transcript) require_value "$1" "${2:-}" && TRANSCRIPT_PATH=$2 && shift 2 ;;
         --transcript=*) TRANSCRIPT_PATH=${1#*=} && shift ;;
         --poll-seconds) require_value "$1" "${2:-}" && POLL_SECONDS=$2 && shift 2 ;;
         --poll-seconds=*) POLL_SECONDS=${1#*=} && shift ;;
         --max-diff-bytes) require_value "$1" "${2:-}" && MAX_DIFF_BYTES=$2 && shift 2 ;;
         --max-diff-bytes=*) MAX_DIFF_BYTES=${1#*=} && shift ;;
+        --max-duration-seconds) require_value "$1" "${2:-}" && MAX_DURATION_SECONDS=$2 && shift 2 ;;
+        --max-duration-seconds=*) MAX_DURATION_SECONDS=${1#*=} && shift ;;
+        --max-tokens) require_value "$1" "${2:-}" && MAX_TOKENS=$2 && shift 2 ;;
+        --max-tokens=*) MAX_TOKENS=${1#*=} && shift ;;
+        --output) require_value "$1" "${2:-}" && OUTPUT_PATH=$2 && shift 2 ;;
+        --output=*) OUTPUT_PATH=${1#*=} && shift ;;
         -h | --help) usage && exit 0 ;;
         *) usage >&2 && die "unknown argument: $1" ;;
         esac
@@ -174,8 +236,51 @@ validate_args() {
     ((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
     [[ $MAX_DIFF_BYTES =~ ^[0-9]+$ ]] || die "--max-diff-bytes must be an integer"
     ((MAX_DIFF_BYTES >= 1024)) || die "--max-diff-bytes must be at least 1024"
-    [[ $MODE == review && -z $DIFF_PATH ]] && die "--diff is required in review mode"
+    [[ $MAX_DURATION_SECONDS =~ ^[0-9]+$ ]] || die "--max-duration-seconds must be an integer"
+    ((MAX_DURATION_SECONDS >= 1 && MAX_DURATION_SECONDS <= 86400)) ||
+        die "--max-duration-seconds must be 1-86400"
+    [[ $MAX_TOKENS =~ ^[0-9]+$ ]] || die "--max-tokens must be an integer"
+    ((MAX_TOKENS >= 1024 && MAX_TOKENS <= 1000000)) ||
+        die "--max-tokens must be 1024-1000000"
+    if [[ $MODE == probe ]]; then
+        ((NO_PAYLOAD == 1)) ||
+            die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
+        [[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
+            -z $BASE_REF && -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+            die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
+    else
+        ((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
+    fi
+    if [[ $MODE == review ]]; then
+        [[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
+        if [[ -n $BASE_REF ]]; then
+            git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+                die "--base-ref must be a valid branch name"
+        fi
+        [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
+        [[ $REPO_SLUG =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+            die "--repo OWNER/NAME is required in review mode"
+        [[ -n $CONSENT_STATE_PATH ]] || die "--consent-state is required in review mode"
+    fi
     return 0
+}
+
+verify_consent() {
+    local consent_script payload
+    consent_script="$SCRIPT_DIR/consent-record.sh"
+    [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+    local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
+    if [[ -n $BASE_REF ]]; then
+        payload_args+=(--base-ref "$BASE_REF")
+    fi
+    payload=$("$consent_script" "${payload_args[@]}") ||
+        die 'cannot derive consent payload; refusing to launch review'
+    if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
+        die 'supplied consent payload does not match the exact review diff'
+    fi
+    "$consent_script" check --state "$CONSENT_STATE_PATH" --provider openai \
+        --payload "$payload" >/dev/null 2>&1 ||
+        die 'valid cross-provider consent check is required; refusing to launch review'
 }
 
 # Resolve the CLI and prove the isolation flags this harness depends on still
@@ -188,6 +293,7 @@ preflight() {
     [[ -x $CODEX_RESOLVED ]] ||
         die_blocked codex-missing "codex executable is not executable: $CODEX_RESOLVED"
     command -v jq >/dev/null || die "jq is required but was not found on PATH"
+    command -v timeout >/dev/null || die "timeout is required to enforce the review duration ceiling"
 
     local help_file=$WORK_DIR/codex-help.txt
     "$CODEX_RESOLVED" exec --help >"$help_file" 2>&1 ||
@@ -239,6 +345,9 @@ EOF
     if [[ $MODE == probe ]]; then
         cat >>"$target" <<'EOF'
 
+This is a capability probe with no payload. Review only this synthetic snippet;
+there is no PR diff and this probe never counts against the one-review-per-PR budget.
+
 Adversarially review this minimal code and return the required structured verdict:
 
 ```diff
@@ -258,8 +367,11 @@ EOF
     grep -q '[^[:space:]]' -- "$resolved" || die "Review diff is empty: $resolved"
     ((bytes <= MAX_DIFF_BYTES)) ||
         die "Review diff is ${bytes} bytes, over --max-diff-bytes ($MAX_DIFF_BYTES). Split the review by coherent diff slices."
+    local estimated_tokens=$(((bytes + 3) / 4))
+    ((estimated_tokens <= MAX_TOKENS)) ||
+        die "Review diff is approximately ${estimated_tokens} input tokens, over --max-tokens $MAX_TOKENS. Raise the ceiling or split the review."
     ((bytes <= WARN_DIFF_BYTES)) ||
-        printf '%s: warning: diff is %s bytes; codex exec has no spend ceiling, consider splitting.\n' \
+        printf '%s: warning: diff is %s bytes; keep the review within --max-tokens and consider splitting.\n' \
             "$PROGNAME" "$bytes" >&2
 
     cat >>"$target" <<'EOF'
@@ -282,10 +394,30 @@ transcript_event_count() {
 }
 
 emit_progress() {
-    local started=$1 now mtime bytes
+    local started=$1 now mtime bytes status_json
     now=$(date +%s)
     mtime=$(stat -c %Y -- "$TRANSCRIPT_PATH" 2>/dev/null) || mtime=$started
     bytes=$(stat -c %s -- "$TRANSCRIPT_PATH" 2>/dev/null) || bytes=0
+    status_json=$(jq -cn \
+        --argjson elapsedSeconds "$((now - started))" \
+        --argjson eventCount "$(transcript_event_count)" \
+        --argjson transcriptBytes "$bytes" \
+        --argjson wallClockEpoch "$now" \
+        '{status: "running", harness: "codex", elapsedSeconds: $elapsedSeconds,
+          eventCount: $eventCount, transcriptBytes: $transcriptBytes,
+          wallClockEpoch: $wallClockEpoch}')
+    local failure=''
+    if ! printf '%s\n' "$status_json" >"$STATUS_TMP"; then
+        failure="printf heartbeat status failed: $STATUS_TMP"
+    elif ! chmod 600 -- "$STATUS_TMP"; then
+        failure="chmod heartbeat status failed: $STATUS_TMP"
+    elif ! mv -f -- "$STATUS_TMP" "$STATUS_FILE"; then
+        failure="mv heartbeat status failed: $STATUS_FILE"
+    fi
+    if [[ -n $failure ]]; then
+        record_heartbeat_failure "$failure"
+        return 1
+    fi
     jq -cn \
         --argjson runnerPid "$$" \
         --argjson elapsedSeconds "$((now - started))" \
@@ -297,31 +429,9 @@ emit_progress() {
           eventCount: $eventCount, transcriptBytes: $transcriptBytes}' >&2
 }
 
-poll_progress() {
-    local started=$1
-    while :; do
-        sleep "$POLL_SECONDS"
-        emit_progress "$started"
-    done
-}
-
-classify_blocked_reason() {
-    local text=$1
-    case $text in
-    *ENOTIMP* | *"Operation not permitted"* | *"Permission denied"* | *EPERM* | *EACCES*)
-        printf 'exec-denied' ;;
-    *"not logged in"* | *"Not logged in"* | *401* | *[Uu]nauthorized* | *"authentication"*)
-        printf 'unauthenticated' ;;
-    *"Connection refused"* | *getaddrinfo* | *"dns error"* | *"failed to lookup"* | *"network"*)
-        printf 'network-unreachable' ;;
-    *) printf '' ;;
-    esac
-}
-
-# Runs Codex with user config, rules files, session persistence and repo context
-# all disabled, in a throwaway non-repo directory, with the verdict schema enforced.
 run_codex() {
     local input_file=$1 stderr_file=$2 isolation_dir=$3 schema_file=$4 final_file=$5
+    local seconds
     local -a args=(
         exec
         --model "$MODEL"
@@ -339,45 +449,94 @@ run_codex() {
     )
 
     local status=0
-    "$CODEX_RESOLVED" "${args[@]}" \
-        <"$input_file" >"$TRANSCRIPT_PATH" 2>"$stderr_file" &
+    seconds=$(seconds_until_deadline) || return 124
+    timeout --signal=KILL "$seconds" "$CODEX_RESOLVED" "${args[@]}" \
+        <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
-    wait "$CODEX_PID" || status=$?
+    review_register_pid "$CODEX_PID"
+    monitor_token_limit &
+    LIMIT_PID=$!
+    review_register_pid "$LIMIT_PID"
+    local heartbeat_failed=0
+    while kill -0 "$CODEX_PID" 2>/dev/null; do
+        if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
+            kill -TERM -- -"$CODEX_PID" 2>/dev/null ||
+                kill "$CODEX_PID" 2>/dev/null || true
+            wait "$CODEX_PID" 2>/dev/null || true
+            heartbeat_failed=1
+            break
+        fi
+        sleep 0.1
+    done
+    if ((heartbeat_failed == 0)); then
+        wait "$CODEX_PID" || status=$?
+    fi
+    review_forget_pid "$CODEX_PID"
     CODEX_PID=""
+    kill "$LIMIT_PID" 2>/dev/null || true
+    wait "$LIMIT_PID" 2>/dev/null || true
+    review_forget_pid "$LIMIT_PID"
+    LIMIT_PID=""
+    [[ $(<"$LIMIT_REASON_FILE") == token-budget ]] && return 125
+    ((heartbeat_failed == 1)) && return 125
+    [[ -s $HEARTBEAT_FAILURE_FILE ]] && return 125
     return "$status"
 }
 
-verify_verdict() {
-    local verdict=$1 kind findings_count p1_count
-    kind=$(jq -r '.verdict // ""' <<<"$verdict")
-    [[ $kind == findings || $kind == no_findings ]] || die "Codex returned an invalid verdict value."
-    findings_count=$(jq -r '(.findings // []) | length' <<<"$verdict")
-    [[ $kind == no_findings && $findings_count -ne 0 ]] &&
-        die "Codex returned findings with a no_findings verdict."
-    [[ $kind == findings && $findings_count -eq 0 ]] &&
-        die "Codex returned a findings verdict with an empty findings array."
-
-    if [[ $MODE == probe ]]; then
-        p1_count=$(jq -r '[(.findings // [])[] | select(.priority == "P1")] | length' <<<"$verdict")
-        [[ $kind == findings && $p1_count -gt 0 ]] ||
-            die "Codex probe did not return the deliberate P1 finding."
+verify_token_budget() {
+    local usage
+    usage=$(token_usage_total)
+    if ! [[ $usage =~ ^[0-9]+$ ]]; then
+        printf '%s: warning: Codex omitted token usage; returning an unverified budget result.\n' \
+            "$PROGNAME" >&2
+        printf '%s' null
+        return 0
     fi
-    return 0
+    ((usage <= MAX_TOKENS)) ||
+        die "Codex review exceeded --max-tokens $MAX_TOKENS (observed $usage)"
+    printf '%s' "$usage"
 }
 
-# Best-effort model identity from the JSONL event stream. Measured against
-# codex-cli 0.147.0 the stream carries thread.started / turn.started /
-# item.completed / turn.completed and NO model field, so this normally yields
-# nothing. Claude Code's system/init does report the initialized model, so model
-# identity is verifiable there and merely advisory here -- the result object says
-# so explicitly rather than leaving a silent null.
 observed_model() {
     jq -r -s '[.[] | (.model? // .msg?.model? // .payload?.model? // empty)] | last // ""' \
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf ''
 }
 
-# turn.completed carries the only cost signal codex exec exposes. There is no
-# spend ceiling to enforce, so report actual usage and let the caller decide.
+# turn.completed carries the usage signal codex exec exposes. Normalize the
+# common field spellings to one total so the helper can enforce its ceiling.
+token_usage_total() {
+    jq -r -s '
+        [ .[] | select(.type == "turn.completed") | .usage // empty |
+          if (.total_tokens? // .totalTokens? // null) != null then
+              (.total_tokens // .totalTokens)
+          else
+              ((.input_tokens // .inputTokens // 0) +
+               (.output_tokens // .outputTokens // 0) +
+               (.reasoning_tokens // .reasoningTokens // 0) +
+               (.reasoning_output_tokens // .reasoningOutputTokens // 0))
+          end
+        ] | if length == 0 then "null" else add end' \
+        <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
+}
+
+monitor_token_limit() {
+    local usage
+    # This is same-process helper enforcement for the observed token ceiling,
+    # never a cross-cell liveness signal. Cross-cell pollers use STATUS_FILE.
+    while [[ -n $CODEX_PID ]] && kill -0 "$CODEX_PID" 2>/dev/null; do
+        usage=$(token_usage_total)
+        if [[ $usage =~ ^[0-9]+$ ]] && ((usage > MAX_TOKENS)); then
+            printf '%s\n' token-budget >"$LIMIT_REASON_FILE"
+            # timeout owns CODEX_PID and puts the reviewed command in its
+            # process group. Kill the group so the real Codex child cannot be
+            # orphaned when the observed token ceiling is exceeded.
+            kill -KILL -- -"$CODEX_PID" 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+    done
+}
+
 token_usage() {
     jq -c -s '[.[] | select(.type == "turn.completed") | .usage] | last // null' \
         <"$TRANSCRIPT_PATH" 2>/dev/null || printf 'null'
@@ -386,43 +545,59 @@ token_usage() {
 main() {
     parse_args "$@"
     validate_args
+    [[ $MODE == review ]] && verify_consent
+    local started exit_code=0
+    started=$(date +%s)
+    DEADLINE_EPOCH=$((started + MAX_DURATION_SECONDS))
 
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-adversarial-XXXXXXXXXX")
-    trap cleanup EXIT
+    chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
+    HEARTBEAT_FAILURE_FILE="$WORK_DIR/heartbeat.failure"
+    trap review_cleanup EXIT
     trap 'exit 130' INT TERM
     local isolation_dir=$WORK_DIR/cwd
     local input_file=$WORK_DIR/input.txt
     local stderr_file=$WORK_DIR/stderr.log
     local schema_file=$WORK_DIR/schema.json
     local final_file=$WORK_DIR/final.json
+    LIMIT_REASON_FILE=$WORK_DIR/limit.reason
+    : >"$LIMIT_REASON_FILE"
     mkdir -p -- "$isolation_dir"
 
+    review_prepare_transcript
+    review_prepare_output
+    record_helper_pid
     preflight
-
-    local transcript_dir
-    transcript_dir=$(dirname -- "$TRANSCRIPT_PATH")
-    mkdir -p -- "$transcript_dir" || die "Cannot create transcript directory: $transcript_dir"
-    : >"$TRANSCRIPT_PATH" || die "Cannot write transcript: $TRANSCRIPT_PATH"
 
     write_review_input "$input_file"
     verdict_schema >"$schema_file"
 
-    local started exit_code=0
-    started=$(date +%s)
-    poll_progress "$started" &
+    review_poll_progress "$started" &
     POLLER_PID=$!
+    review_register_pid "$POLLER_PID"
 
     run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
         exit_code=$?
 
     kill "$POLLER_PID" 2>/dev/null || true
     wait "$POLLER_PID" 2>/dev/null || true
+    review_forget_pid "$POLLER_PID"
     POLLER_PID=""
+
+    if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
+        die "heartbeat publication failed: $(heartbeat_failure_detail)"
+    fi
 
     local stderr_text reason
     stderr_text=$(cat -- "$stderr_file" 2>/dev/null || true)
     if ((exit_code != 0)); then
-        reason=$(classify_blocked_reason "$stderr_text")
+        if [[ $(<"$LIMIT_REASON_FILE") == token-budget ]]; then
+            die "Codex review exceeded --max-tokens $MAX_TOKENS"
+        fi
+        if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
+            die_duration
+        fi
+        reason=$(review_classify_blocked_reason "$stderr_text")
         [[ -n $reason ]] && die_blocked "$reason" "codex exec exited $exit_code: $stderr_text"
         die "Codex exited $exit_code: ${stderr_text:-no diagnostic emitted} (transcript: $TRANSCRIPT_PATH)"
     fi
@@ -430,12 +605,19 @@ main() {
     [[ -s $final_file ]] ||
         die "Codex produced no final message; the gate is blocked, not no_findings. Transcript: $TRANSCRIPT_PATH"
 
-    local verdict
+    local verdict used_tokens budget_ceiling
     verdict=$(jq -c . <"$final_file" 2>/dev/null) ||
         die "Codex final message is not valid JSON; see $TRANSCRIPT_PATH"
-    verify_verdict "$verdict"
+    review_verify_verdict "$verdict" Codex
+    used_tokens=$(verify_token_budget)
+    if [[ $used_tokens == null ]]; then
+        budget_ceiling=unverified
+    else
+        budget_ceiling=token-limit
+    fi
 
-    jq -n \
+    local final_json
+    final_json=$(jq -n \
         --argjson exitCode "$exit_code" \
         --arg harness codex \
         --arg requestedModel "$MODEL" \
@@ -444,14 +626,30 @@ main() {
         --argjson eventCount "$(transcript_event_count)" \
         --arg transcript "$TRANSCRIPT_PATH" \
         --argjson tokenUsage "$(token_usage)" \
+        --argjson maxTokens "$MAX_TOKENS" \
+        --argjson usedTokens "$used_tokens" \
+        --arg budgetCeiling "$budget_ceiling" \
         --argjson verdict "$verdict" \
         '{status: "completed", harness: $harness, exitCode: $exitCode,
           requestedModel: $requestedModel,
           observedModel: (if $observedModel == "" then null else $observedModel end),
           modelVerification: (if $observedModel == "" then "unsupported-by-codex-exec" else "observed" end),
           effort: $effort, eventCount: $eventCount, transcript: $transcript,
-          budgetCeiling: "unsupported-by-codex-exec", tokenUsage: $tokenUsage,
-          verdict: $verdict}'
+          budgetCeiling: $budgetCeiling, maxTokens: $maxTokens, usedTokens: $usedTokens,
+          tokenUsage: $tokenUsage,
+          verdict: $verdict}')
+    # Durable first: publish_output can die, and emitting stdout before it
+    # would hand the caller a verdict that was never published.
+    review_publish_output "$final_json"
+    printf '%s\n' "$final_json"
+}
+
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"
+die_blocked() {
+    review_die_blocked "$1" "$2" "cross-harness-reviewer" "cross-harness adversarial reviewer"
 }
 
 main "$@"

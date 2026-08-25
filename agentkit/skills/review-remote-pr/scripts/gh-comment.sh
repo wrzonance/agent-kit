@@ -179,6 +179,7 @@ validate_anchor_range() {
 
 require_tools() {
     local tool missing=()
+    command -v jq >/dev/null 2>&1 || die "jq not found on PATH; evidence unavailable"
     for tool in "$GH_BIN" jq diff cmp; do
         command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
     done

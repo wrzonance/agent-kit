@@ -32,6 +32,10 @@ got=$("$rc_sh" --repo-root "$repo" --get AGENT_BASE_BRANCH 2> /dev/null)
 assert_eq 'main' "$got" '--get returns a single value'
 assert_rc 1 '--get on an absent key exits 1' -- "$rc_sh" --repo-root "$repo" --get AGENT_NOPE
 
+printf 'AGENT_ONBOARDED_BY=agentkit/0.1.0\n' >> "$repo/.agent/config.env"
+stamp_out=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$stamp_out" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' 'accepts the generator stamp'
+
 # Exported lines must be safe to eval.
 eval "$out"
 assert_eq 'example-org/example-repo' "${AGENT_REPO_SLUG:-}" 'eval of --export sets the variable'
@@ -95,6 +99,12 @@ printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_contains "$out" 'AGENT_CMD_VERIFY=' 'accepts a bare name as argv[0]'
 
+# Keep accepting the historical form where the entire command value is quoted.
+printf 'AGENT_CMD_VERIFY="echo ok"\n' > "$repo/.agent/config.env"
+mapfile -d '' -t parsed < <("$rc_sh" --repo-root "$repo" --get-argv AGENT_CMD_VERIFY)
+assert_eq 'echo' "${parsed[0]:-}" 'preserves the legacy whole-value command executable'
+assert_eq 'ok' "${parsed[1]:-}" 'preserves the legacy whole-value command argument'
+
 printf 'AGENT_CMD_VERIFY=tools/../../etc/passwd\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects argv[0] traversing out of the repo'
@@ -103,11 +113,176 @@ printf 'AGENT_CMD_VERIFY=/bin/sh -c true\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an absolute argv[0]'
 
+# A command declaration is a containment contract, not a dependency-installation
+# contract. A fresh clone may not have its package manager artifacts yet, so a
+# path-shaped argv[0] remains valid when it resolves inside the repository.
+printf 'AGENT_CMD_VERIFY=tools/missing\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_VERIFY=tools/missing' \
+    'accepts an in-repo command before its dependency is installed'
+
+printf 'AGENT_CMD_VERIFY=/bin/sh\n' > "$repo/.agent/config.env"
+err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_contains "$err" 'failure: containment escape' \
+    'absolute candidates are identified as containment escapes'
+
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/not-executable"
+chmod 0644 "$repo/tools/not-executable"
+printf 'AGENT_CMD_VERIFY=tools/not-executable\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_VERIFY=tools/not-executable' \
+    'accepts an in-repo command before setup makes it executable'
+
+# Diagnostics are an explicit opt-in so normal list/bootstrap remains usable
+# before dependency installation, while operators can still audit a candidate
+# against the exact root they supplied.
+wrong_root=$(mktemp -d "$tmp/wrong-root.XXXXXX")
+diagnostic_err=$("$rc_sh" --repo-root "$wrong_root" \
+    --config-file "$repo/.agent/config.env" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $wrong_root" \
+    'diagnostics name the explicitly supplied resolution root'
+assert_contains "$diagnostic_err" "resolved candidate: $wrong_root/tools/not-executable" \
+    'diagnostics name the candidate under that root'
+assert_contains "$diagnostic_err" 'failure: missing' \
+    'wrong-root diagnostics classify the candidate as missing'
+
+diagnostic_err=$("$rc_sh" --repo-root "$repo" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $repo" \
+    'diagnostics name the real repository root'
+assert_contains "$diagnostic_err" "resolved candidate: $repo/tools/not-executable" \
+    'diagnostics name the existing candidate'
+assert_contains "$diagnostic_err" 'failure: non-executable' \
+    'diagnostics classify a present non-executable candidate'
+
+# Monorepo declarations retain their component working directory and remain
+# valid in a fresh clone where node_modules has not been installed yet.
+rm -rf -- "$repo/node_modules" "$repo/dashboard"
+printf 'AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest\nAGENT_RUNDIR_DASHBOARD_TEST=dashboard\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_DASHBOARD_TEST=node_modules/.bin/vitest' \
+    'preserves a missing dependency executable declaration'
+assert_contains "$out" 'AGENT_RUNDIR_DASHBOARD_TEST=dashboard' \
+    'preserves the monorepo command working directory'
+
+# A path-shaped argv[0] is resolved from the command's declared rundir, not
+# merely from the repository root. Otherwise this declaration passes bootstrap
+# and only fails with rc=127 after a human approves it.
+mkdir -p "$repo/dashboard" "$repo/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/root-only"
+chmod +x "$repo/tools/root-only"
+printf 'AGENT_CMD_DASH=tools/root-only\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+err=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_contains "$err" 'AGENT_CMD_DASH' \
+    'names a command whose executable is based at the wrong root'
+assert_contains "$err" "repository root '$repo'" \
+    'names the repository-root resolution base'
+assert_contains "$err" "declared rundir '$repo/dashboard'" \
+    'names the declared rundir resolution base'
+assert_contains "$err" 'fix AGENT_CMD_DASH' \
+    'names the declaration as the likely fix'
+assert_contains "$err" 'do not add a literal twin' \
+    'warns against routing around approval with a literal twin'
+
+# A command that is already relative to its declared rundir remains valid.
+printf '#!/bin/sh\nexit 0\n' > "$repo/dashboard/root-only"
+chmod +x "$repo/dashboard/root-only"
+printf 'AGENT_CMD_DASH=root-only\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_DASH=root-only' \
+    'accepts an executable found relative to the declared rundir'
+
+# Path diagnostics must use the declared rundir even when the command line
+# appears before its companion rundir line, matching the order bootstrap emits.
+printf 'AGENT_CMD_DASH=.venv/bin/missing\nAGENT_RUNDIR_DASH=dashboard\n' > "$repo/.agent/config.env"
+diagnostic_err=$($rc_sh --repo-root "$repo" --diagnose 2>&1 > /dev/null)
+assert_contains "$diagnostic_err" "resolution root: $repo/dashboard" \
+    'path validation resolves argv[0] from the declared rundir'
+assert_contains "$diagnostic_err" \
+    "resolved candidate: $repo/dashboard/.venv/bin/missing" \
+    'path diagnostics name the rundir-relative candidate'
+
+# Generated component commands put the command before its rundir. The command
+# must be deferred until the complete config is loaded, or a root-level
+# symlink to an out-of-tree environment makes the valid component command
+# disappear before its declared rundir can be considered.
+external_venv=$(mktemp -d "$tmp/external-venv.XXXXXX")
+mkdir -p "$external_venv/bin" "$repo/server/.venv/bin"
+printf '#!/bin/sh\nexit 0\n' > "$external_venv/bin/pytest"
+printf '#!/bin/sh\nexit 0\n' > "$repo/server/.venv/bin/pytest"
+chmod +x "$external_venv/bin/pytest" "$repo/server/.venv/bin/pytest"
+ln -s "$external_venv" "$repo/.venv"
+printf 'AGENT_CMD_SERVER_TEST=.venv/bin/pytest\nAGENT_RUNDIR_SERVER_TEST=server\n' > "$repo/.agent/config.env"
+out=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_SERVER_TEST=.venv/bin/pytest' \
+    'retains a generated command when its rundir follows the command'
+assert_contains "$out" 'AGENT_RUNDIR_SERVER_TEST=server' \
+    'retains the generated rundir alongside its command'
+
+# Focus declarations use the same path-shaped argv[0] containment rule as
+# ordinary command declarations.
+printf 'AGENT_CMD_TEST_FOCUS=tools/verify --only %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_TEST_FOCUS=' 'accepts a valid in-repo focus declaration'
+for bad_focus in \
+    'tools/../../outside/focus --only %s' \
+    '/bin/sh --only %s' \
+    '../outside/focus --only %s'; do
+    printf 'AGENT_CMD_TEST_FOCUS=%s\n' "$bad_focus" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+    assert_not_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+        "rejects an escaping focus declaration: $bad_focus"
+done
+
+# The executable token is interpolated nowhere; only later argument tokens may
+# carry the focused suite placeholder. A literal in-repo path named tools/%s
+# must therefore be rejected at the declaration boundary.
+printf '#!/bin/sh\nexit 0\n' > "$repo/tools/%s"
+chmod +x "$repo/tools/%s"
+printf 'AGENT_CMD_TEST_FOCUS=tools/%%s --only %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+    'rejects a focus placeholder in the executable token'
+
+# A placeholder in a later argument remains a supported declaration form.
+printf 'AGENT_CMD_TEST_FOCUS=tools/verify --label %%s\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_CMD_TEST_FOCUS=' \
+    'accepts a focus placeholder in a later argument token'
+
+# Quoted argv tokens preserve spaces without invoking a shell. The executable
+# itself may be a repository-relative path containing a space, and later args
+# may be paths or literal globs with spaces too.
+mkdir -p "$repo/My Project/tools"
+printf '#!/bin/sh\nexit 0\n' > "$repo/My Project/tools/verify"
+chmod +x "$repo/My Project/tools/verify"
+cat > "$repo/.agent/config.env" <<'CFG'
+AGENT_CMD_VERIFY="My Project/tools/verify" --input "My Project/input file"
+AGENT_RUNDIR_VERIFY="My Project"
+CFG
+out=$("$rc_sh" --repo-root "$repo" --list 2> /dev/null)
+assert_contains "$out" 'AGENT_CMD_VERIFY="My Project/tools/verify" --input "My Project/input file"' \
+    'accepts quoted argv tokens containing spaces'
+assert_contains "$out" 'AGENT_RUNDIR_VERIFY=My Project' \
+    'accepts a rundir containing a space'
+mapfile -d '' -t parsed < <("$rc_sh" --repo-root "$repo" --get-argv AGENT_CMD_VERIFY)
+assert_eq 'My Project/tools/verify' "${parsed[0]:-}" 'returns the spaced executable as one argv token'
+assert_eq '--input' "${parsed[1]:-}" 'returns an ordinary argument after a spaced executable'
+assert_eq 'My Project/input file' "${parsed[2]:-}" 'returns a spaced argument as one argv token'
+
+printf 'AGENT_CMD_VERIFY=echo "unterminated\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_CMD_VERIFY=' 'rejects an unterminated quoted argv token'
+
 # --- absent config ---------------------------------------------------------
 repo=$(mktemp -d "$tmp/repo.XXXXXX")
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_eq '' "$out" 'absent config produces no output'
 assert_rc 0 'absent config exits 0' -- "$rc_sh" --repo-root "$repo" --export
+mkdir -p "$repo/.agent"
+: > "$repo/.agent/config.env"
+resolve_out=$("$rc_sh" --repo-root "$repo" --resolve AGENT_CMD_TEST 2> /dev/null)
+assert_contains "$resolve_out" '__AGENT_CONFIG_PARSE_STATUS__' \
+    'an empty config still emits a resolve status under Bash nounset'
 
 # --- usage -----------------------------------------------------------------
 assert_rc 2 'no mode argument is a usage error' -- "$rc_sh" --repo-root "$repo"
@@ -192,6 +367,48 @@ printf 'AGENT_LABEL_AREAS=ok,$(id)\n' > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
 assert_contains "$out" 'invalid value' 'a substitution in a label is still refused'
 
+# --- worker selection declarations ----------------------------------------
+# Worker model IDs are data for the spawn policy gate. Keep the resolver's
+# boundary lexical and safe without silently narrowing the policy to today's
+# two supported models; unsupported IDs must remain visible for explicit user
+# authorization rather than being dropped as if absent.
+printf 'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra\nAGENT_WORKER_EFFORT=low\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_MODEL=gpt-5.6-luna' 'accepts the preferred worker model declaration'
+assert_contains "$out" 'AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra' 'accepts the fallback worker model declaration'
+assert_contains "$out" 'AGENT_WORKER_EFFORT=low' 'accepts a supported worker effort declaration'
+
+printf 'AGENT_WORKER_EFFORT=max\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_EFFORT=max' 'accepts the maximum worker effort declaration'
+
+printf 'AGENT_WORKER_EFFORT=ultra\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_EFFORT=ultra' 'accepts the ultra worker effort declaration'
+
+printf 'AGENT_WORKER_MODEL=gpt-9-custom\nAGENT_WORKER_MODEL_FALLBACK=provider/model-v1\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_MODEL=gpt-9-custom' \
+    'keeps a syntactically safe unsupported model for the authorization gate'
+assert_contains "$out" 'AGENT_WORKER_MODEL_FALLBACK=provider/model-v1' \
+    'keeps a syntactically safe unsupported fallback for the authorization gate'
+
+bad_worker_values=('gpt 5.6' "\$(touch PWNED)" '')
+for bad_worker_value in "${bad_worker_values[@]}"; do
+    printf 'AGENT_WORKER_MODEL=%s\n' "$bad_worker_value" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+    assert_not_contains "$out" 'AGENT_WORKER_MODEL=' \
+        "rejects an unsafe or empty worker model: ${bad_worker_value:-empty}"
+done
+
+printf 'AGENT_WORKER_EFFORT=minimal\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_WORKER_EFFORT=' 'rejects a non-spawn-enum worker effort'
+assert_contains "$out" 'invalid value for AGENT_WORKER_EFFORT' \
+    'warns when a non-spawn-enum worker effort declaration is rejected'
+
 
 # --- an empty value is a statement, not a typo ------------------------------
 # "This repository has no priority labels" is a real thing to want to record.
@@ -211,5 +428,10 @@ printf 'AGENT_REPO_SLUG=o/r\nAGENT_BASE_BRANCH=bad branch\n' > "$repo/.agent/con
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
 assert_contains "$out" 'invalid value for AGENT_BASE_BRANCH' 'a malformed value is still called invalid'
 assert_not_contains "$out" 'comment the line out' 'and is not offered the empty-value advice'
+
+# This repository's own focused runner is part of the committed command contract.
+root_config=$(<"$root/.agent/config.env")
+assert_contains "$root_config" 'AGENT_CMD_TEST_FOCUS=tests/run-tests.sh --only %s' \
+    'agent-kit declares its supported focused test selector'
 
 finish

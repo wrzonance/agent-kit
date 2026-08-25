@@ -1,0 +1,9 @@
+{
+  "title": "Resolver lesson",
+  "body": "Use the guarded contract.",
+  "labels": [{"name": "reliability"}, {"name": "area/hooks"}],
+  "comments": [
+    {"author": {"login": "maintainer"}, "body": "Please preserve atomic writes."},
+    {"author": null, "body": "A comment without an author is still data."}
+  ]
+}

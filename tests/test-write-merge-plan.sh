@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Regression coverage for the parallel-issues merge-plan handoff.
+set -euo pipefail
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+TEST_NAME='write merge plan'
+
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
+writer="$root/agentkit/skills/parallel-issues/scripts/write-merge-plan.sh"
+plan="$tmp/dispatch-plan.json"
+merge_plan="$tmp/merge-plan.json"
+
+assert_not_contains "$(cat -- "$writer")" 'split("/").[]' \
+    'dispatch-plan validation uses jq 1.6-compatible array iteration syntax'
+
+cat >"$plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [
+    {"issue": 11, "predictedWriteSet": ["src/a"]},
+    {"issue": 12, "predictedWriteSet": ["src/b"]},
+    {"issue": 13, "predictedWriteSet": ["src/c"]}
+  ],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+
+cat >"$merge_plan" <<'EOF'
+{
+  "generatedAt": "2026-08-17T20:00:00Z",
+  "independent": [
+    {"issue":13,"pr":103,"branch":"feat/independent","chainBaseSha":null,"headSha":"cccccccccccccccccccccccccccccccccccccccc"}
+  ],
+  "chains": [[
+    {"issue":11,"pr":101,"branch":"feat/root","chainBaseSha":null,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"issue":12,"pr":102,"branch":"feat/child","chainBaseSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ]]
+}
+EOF
+
+"$writer" --dispatch-plan "$plan" --validate-only >"$tmp/validate.out"
+assert_contains "$(cat "$tmp/validate.out")" 'schemaVersion=1 valid' \
+    'the write-time gate accepts a complete schema-1 dispatch plan'
+
+jq '.conflictMap.pairs = [{"issues":[11,12],"overlap":["src/shared/**"]}] |
+    .conflictMap.revisions = [{"phase":"post-selection","reason":"retain the reviewed edge"}, {"reason":"authorize merge-down","issues":[12],"paths":["src/b"]}]' \
+    "$plan" >"$tmp/valid-conflict-members.json"
+assert_rc 0 'documented conflict-map members are accepted' -- \
+    "$writer" --dispatch-plan "$tmp/valid-conflict-members.json" --validate-only
+
+for invalid_case in pair-null pair-boolean pair-malformed revision-null revision-boolean revision-malformed; do
+    case $invalid_case in
+        pair-null) filter='.conflictMap.pairs = [null]' ;;
+        pair-boolean) filter='.conflictMap.pairs = [true]' ;;
+        pair-malformed) filter='.conflictMap.pairs = [{"issues":[11,11],"overlap":[]}]' ;;
+        revision-null) filter='.conflictMap.revisions = [null]' ;;
+        revision-boolean) filter='.conflictMap.revisions = [false]' ;;
+        revision-malformed) filter='.conflictMap.revisions = [{"reason":"","issues":[],"paths":[]}]' ;;
+    esac
+    jq "$filter" "$plan" >"$tmp/$invalid_case.json"
+    assert_rc 1 "$invalid_case conflict-map member is rejected" -- \
+        "$writer" --dispatch-plan "$tmp/$invalid_case.json" --validate-only
+done
+
+jq 'del(.schemaVersion)' "$plan" >"$tmp/missing-schema.json"
+missing_schema_rc=0
+"$writer" --dispatch-plan "$tmp/missing-schema.json" --validate-only \
+    >"$tmp/missing-schema.out" 2>"$tmp/missing-schema.err" || missing_schema_rc=$?
+assert_eq '1' "$missing_schema_rc" \
+    'a dispatch plan missing schemaVersion is rejected at the write-time gate'
+assert_contains "$(cat "$tmp/missing-schema.err")" 'schemaVersion 1' \
+    'the write-time refusal names the required dispatch schema'
+
+"$writer" --dispatch-plan "$plan" --merge-plan "$merge_plan"
+assert_eq '2' "$(jq -r '.schemaVersion' "$plan")" \
+    'writer upgrades the dispatch plan to schemaVersion 2'
+assert_eq '2' "$(jq -r '.chains[0] | length' "$plan")" \
+    'writer persists each chain in base-to-tip order'
+assert_eq '103' "$(jq -r '.independent[0].pr' "$plan")" \
+    'writer persists the independent pull request set'
+assert_eq 'src/a' "$(jq -r '.entries[0].predictedWriteSet[0]' "$plan")" \
+    'writer preserves the existing dispatch audit record'
+
+before=$(sha256sum "$plan")
+jq '.chains += [[.chains[0][1]]]' "$merge_plan" >"$tmp/join.json"
+assert_rc 1 'a PR with multiple predecessors is rejected' -- \
+    "$writer" --dispatch-plan "$plan" --merge-plan "$tmp/join.json"
+assert_eq "$before" "$(sha256sum "$plan")" \
+    'a rejected merge plan leaves the dispatch plan byte-identical'
+
+jq '.chains[0][1].headSha = "short"' "$merge_plan" >"$tmp/bad-sha.json"
+assert_rc 1 'non-full recorded head SHAs are rejected' -- \
+    "$writer" --dispatch-plan "$plan" --merge-plan "$tmp/bad-sha.json"
+
+jq '.chains[0][1].branch = "../escape"' "$merge_plan" >"$tmp/bad-branch.json"
+assert_rc 1 'unsafe branch names are rejected' -- \
+    "$writer" --dispatch-plan "$plan" --merge-plan "$tmp/bad-branch.json"
+
+jq 'del(.generatedAt)' "$merge_plan" >"$tmp/missing-generated-at.json"
+stderr=$("$writer" --dispatch-plan "$plan" --merge-plan "$tmp/missing-generated-at.json" 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '1' "$rc" \
+    'a merge plan missing generatedAt is rejected'
+assert_contains "$stderr" 'generatedAt' \
+    'the missing-generatedAt error names the field'
+
+jq '.independent[0] = null' "$merge_plan" >"$tmp/null-record.json"
+stderr=$("$writer" --dispatch-plan "$plan" --merge-plan "$tmp/null-record.json" 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '1' "$rc" \
+    'a merge plan with a null record is rejected'
+assert_contains "$stderr" 'independent[0]' \
+    'the null-record error names the record, not the generic fallback'
+
+finish

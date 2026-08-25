@@ -1,0 +1,286 @@
+bench/ -- the token-benchmark epic's (#152) measurement tree
+==============================================================
+
+This directory holds the epic's deterministic and observed benchmark tiers
+and the append-only ledger they all write to. It is established by issue
+#323 (Tier 0 + the ledger) as the base a successor slice builds inside, so
+the shapes below are load-bearing -- read this before adding a tier.
+
+Design doc: docs/superpowers/specs/2026-08-13-token-benchmark-design.md
+(branch docs/token-benchmark-spec). That doc was not present on this
+directory's base branch (main) at the time issue #323 was implemented; the
+layout below follows the issue body's restated Tier-0 and ledger
+requirements directly, not the design doc's own wording.
+
+Layout
+------
+
+    bench/
+      README             -- this file: layout + ledger schema
+      tier0.sh            -- Tier 0: static resident/reachable/dispatched-
+                              template token accounting at a git SHA, no
+                              network, no model call
+      results/
+        tier0.jsonl       -- Tier 0's ledger records (one per bench/tier0.sh
+                              invocation)
+        <tierN>.jsonl      -- later tiers append their own records to their
+                              own file; see "One file per tier" below
+
+A later tier's script (bench/tierN.sh) is expected to follow the same shape:
+a single executable script under bench/, appending JSON Lines records to its
+own bench/results/*.jsonl file, sharing this same schema's key fields.
+
+One file per tier, one ledger schema
+-------------------------------------
+
+Every bench/results/*.jsonl file uses the SAME record shape and the SAME
+grouping key, so a chart or comparison script can treat the whole
+bench/results/*.jsonl glob as one logical ledger without per-tier special
+cases:
+
+Grouping key: (plugin_sha, fixture_version, model, effort)
+
+This key is NOT unique across appends -- it is a grouping/comparison key,
+not a primary key. Running a bench/*.sh script twice for the same SHA (the
+same measurement, taken again) appends a second row carrying the identical
+key, distinguished only by `measured_at`; the append-only test in
+tests/test-bench-tier0.sh deliberately re-measures the same SHA and asserts
+exactly this. That is intentional: the property this ledger actually
+guarantees is append-only (see below), not key uniqueness, and re-measuring
+a SHA -- to confirm a number, or to compare an estimator change against a
+frozen fixture -- is a normal thing to want to do without inventing a new
+fixture_version for it. A consumer that needs one row per key reduces over
+duplicates itself (latest `measured_at` wins is the natural default); a
+consumer that wants every measurement reads them all. If a future tier
+needs true uniqueness enforced by the ledger writer itself (reject-on-
+duplicate, or require a bumped fixture_version), that is a deliberate
+behavior change to make and document here, not the default.
+
+- `plugin_sha`   -- full 40-character git commit SHA the measurement was
+                    taken at (resolved via `git rev-parse --verify`, never a
+                    short or ambiguous ref).
+- `fixture_version` -- names the frozen fixture set (issue body, prior art,
+                    write set, ...) a tier's measurement was taken against,
+                    present from day one even though Tier 0 has no fixture
+                    dependency of its own. Tier 0 records use `tier0-v1`.
+                    A later tier bumps this string whenever its fixture set
+                    changes in a way that would make old and new rows
+                    incomparable.
+- `model`        -- the model identifier a tier's run used. Tier 0 makes no
+                    model call, so it uses the reserved sentinel
+                    `static-accounting` rather than a real model id -- a
+                    reader can tell a Tier-0 row apart from a real model run
+                    without inspecting anything else.
+- `effort`       -- the effort/reasoning level a tier's run used. Tier 0's
+                    sentinel is `n/a` for the same reason.
+
+Common fields on every record:
+
+- `measured_at`  -- UTC ISO-8601 instant the record was appended (`--timestamp`
+                    lets a test pin this for reproducibility).
+
+Tier-0-specific fields (bench/tier0.sh):
+
+- `resident`   -- `{bytes, tokens}` -- every `agentkit/skills/**/SKILL.md`
+                  file's own size, summed. What a session pays for a skill
+                  existing, before any reference is ever read.
+- `reachable`  -- `{bytes, tokens}` -- every `*.md` file under
+                  `agentkit/skills/` (SKILL.md + references/*.md +
+                  .shared/*.md), summed. The ceiling if every reference were
+                  read.
+- `dispatched_template` -- `{bytes, tokens, present, source}` -- the static
+                  size of `parallel-issues/references/worker-prompts.md`
+                  alone: the one reference rendered and paid on every
+                  dispatch (hit rate 1.0 by construction), per the
+                  maintainer comment on issue #323. `present` is `false` for
+                  a SHA before that file existed (e.g. `06d18cf`), in which
+                  case `bytes`/`tokens` read 0 rather than being omitted --
+                  a consumer can always read these fields without a
+                  presence check first. This is the template-only,
+                  fixture-free component of the full per-dispatch surface;
+                  the per-issue substitution byte count (issue body, prior
+                  art, write set) needs a frozen reference-dispatch fixture
+                  and belongs to a later slice, not this one.
+
+`tokens` fields are always `bytes / 4` (integer division), computed through
+the single shared estimator in tests/lib/token-estimate.sh -- the same
+function tests/lint-skill-size.sh's SKILL.md body-budget gate calls. Two
+surfaces sharing one function/constant means they cannot silently disagree
+about the same bytes; see that file's header comment.
+
+Append-only
+-----------
+
+Every bench/*.sh script only ever appends a line to its ledger file --
+never rewrites, reorders, or removes an existing line. This is what lets
+downstream charting be a pure function of the ledger: replaying it from
+scratch always reproduces the same chart, and a chart script never needs
+to guess whether a row it read might later be overwritten out from under
+it. tests/test-bench-tier0.sh asserts this property directly (a second
+invocation strictly grows the file; every previously-written line is
+byte-identical afterward).
+
+CI recording coverage
+----------------------
+
+.github/workflows/record-tier0.yml appends a bench/results/tier0.jsonl row
+for a merge to main by triggering on CI's own `workflow_run` completion
+event, not on `push` directly. That makes the contract precise: **a record
+exists for every merge whose CI run completed successfully.** It does NOT
+exist for a merge with no successful CI completion -- whether CI ran and
+failed, or CI never ran at all because something skipped it (including a
+merge/squash commit whose message contains `[skip ci]`/`[ci skip]`, which
+is ordinary user-writable text, not something this ledger controls).
+
+A commit missing from this ledger is therefore not, by itself, evidence of
+a recording bug. It means that commit was never independently verified
+green by CI -- the same reason a commit with failing tests is already,
+deliberately, absent. Treat gaps as expected for unverified merges; if you
+need to confirm whether a specific gap is a bug or an unverified merge,
+check that commit's CI run (or the absence of one) directly rather than
+assuming the ledger should be complete.
+
+Tier 1's task substrate -- Tally, the ten issues, and the gold tree
+------------------------------------------------------------------
+
+Issue #325 (slice 3 of the epic) adds the fixed, controlled task substrate
+Tier 1 measures agents against. Like issue #323's Tier 0, the epic's design
+doc (`docs/superpowers/specs/2026-08-13-token-benchmark-design.md`, branch
+`docs/token-benchmark-spec`) was NOT present on this directory's base branch
+at implementation time. Everything below follows the issue #325 body's
+restated structural requirements directly -- see "Construction decisions"
+at the end of this stanza for the specific choices the absent doc would
+otherwise have pinned down.
+
+    bench/
+      fixtures/tally/    -- the Tally skeleton: a small, dependency-free
+                             ES-module SPA (index.html + src/store.js +
+                             src/render.js + src/main.js), plus its own
+                             public smoke test (test/smoke.mjs, runnable via
+                             `node test/smoke.mjs`, no network, no bundler)
+                             and a hand-authored .agent/config.env (see
+                             below).
+      issues/*.md         -- the ten frozen issue bodies, one file each,
+                             spec-grade (a concrete, checkable Acceptance
+                             Criteria list per issue). Each carries a small
+                             structured frontmatter block
+                             (id / conflict_group / files / blocked_by)
+                             that verify-issues.py reads.
+      gold/tally/          -- the reference solution: bench/fixtures/tally
+                             with all ten issues' changes applied and
+                             merged (the two render.js issues and the three
+                             store.js issues coexist in one file each; the
+                             five disjoint issues each add one standalone
+                             module + its own test/*.smoke.mjs).
+      build-gold.sh         -- builds (syntax-checks every source file,
+                             confirms index.html's entry-point wiring) and
+                             runs (every test/*.smoke.mjs) bench/gold/tally
+                             standalone. `bench/build-gold.sh` with no
+                             arguments.
+      verify-issues.py      -- mechanically verifies bench/issues/*.md's
+                             conflict/dependency structure: exactly ten
+                             issues, exactly 2 sharing src/render.js and 3
+                             sharing src/store.js (conflicting), exactly 5
+                             touching no file any other issue touches
+                             (disjoint), and a blocked_by DAG whose longest
+                             chain is exactly depth 3. `python3
+                             bench/verify-issues.py`, no arguments, no
+                             network, stdlib only.
+      verify-config-env.sh   -- proves
+                             bench/fixtures/tally/.agent/config.env is
+                             resolver-parseable at both benchmark-arm SHAs
+                             (06d18cf, 53e7e8c): extracts
+                             repo-config.sh as it existed at each SHA and
+                             asserts every key the fixture's config.env
+                             declares actually resolves through it, not
+                             just that the resolver exits 0. `bench/
+                             verify-config-env.sh`, no arguments.
+
+The conflict/dependency structure, exactly as issue #325 fixed it:
+
+    conflict_group=render (2): tally-01, tally-02        -- both edit
+        src/render.js's header/list region in renderApp.
+    conflict_group=store  (3): tally-03, tally-04, tally-05 -- all three
+        add a new exported function to src/store.js.
+    conflict_group=none   (5, disjoint): tally-06..tally-10 -- each adds
+        exactly one standalone module (+ its own test file); no file is
+        shared between any two of them, and none touches render.js or
+        store.js.
+    blocked_by chain: tally-06 -> tally-07 -> tally-08 -> tally-09 (three
+        edges, depth 3 -- one under both arms' byte-identical chain depth
+        cap of 4). tally-10 is a second, shorter branch off tally-06
+        (depth 1) so the graph's longest path stays exactly 3.
+
+Frozen-set boundary
+--------------------
+
+bench/fixtures/**, bench/gold/**, and bench/issues/** are this slice's
+frozen set, per issue #325's "Freezing" requirement: a fixture whose exact
+bytes later changed out from under a published Tier-1 result would make
+that result silently incomparable to a re-run. Any future edit to a file
+under those three trees -- fixing a bug in the gold solution, rewording an
+issue's acceptance criteria, adjusting the base Tally skeleton -- forks
+`fixture_version` to a new string (e.g. `tier1-v2`) rather than mutating
+`tier1-v1` (or whatever a later Tier-1 ledger slice names it) in place.
+This mirrors Tier 0's `fixture_version` convention above; enforcing it
+mechanically (e.g. a hash-pin test) is left to the ledger slice that
+actually writes Tier-1 rows, per the issue body.
+
+bench/build-gold.sh and bench/verify-issues.py are tooling, not fixture
+content -- they are expected to gain fixes/features without forking
+`fixture_version`, the same way bench/tier0.sh itself is not part of Tier
+0's frozen set.
+
+Construction decisions (no design doc to defer to)
+----------------------------------------------------
+
+The design doc would have specified: Tally's exact feature list, and the
+ten issues' exact wording. In its absence, this slice made these choices,
+recorded here rather than silently implied as the design doc's own:
+
+  - Tally is a tally-counter list app (add a named counter, +/-, remove),
+    not any other app shape -- chosen only because it is small enough to
+    hand-author ten spec-grade issues against without an oracle yet.
+  - store.js and render.js are both plain pure functions (no framework, no
+    real DOM in render.js -- it returns HTML strings) specifically so the
+    base fixture and the gold tree are testable under plain `node`, with
+    no jsdom/browser dependency and therefore no network install.
+  - The five disjoint issues are each scoped to a single new standalone
+    module that is NOT wired into src/main.js. This is what makes
+    "disjoint" mean something real at the file level (no issue's
+    acceptance criteria can be satisfied by touching src/main.js), at the
+    cost of the resulting app not actually surfacing dark mode/keyboard
+    shortcuts/export/import/stats in the UI -- wiring them in is
+    explicitly out of scope for this fixture slice.
+  - The blocked_by chain is built entirely from the disjoint issue set
+    (tally-06..tally-10), not from the conflicting issues. The conflicting
+    issues are deliberately independent of each other in the blocked_by
+    graph -- the whole point of the render.js/store.js conflict pairs is
+    that they are dispatched in parallel and collide, which a blocked_by
+    edge would prevent from ever happening.
+  - bench/fixtures/tally/.agent/config.env's key set (AGENT_REPO_SLUG,
+    AGENT_BASE_BRANCH, AGENT_WORKTREE_ROOT, AGENT_BRANCH_PREFIXES,
+    AGENT_LABEL_TYPES/AREAS/PRIORITIES, AGENT_CMD_TEST) was chosen by
+    diffing agentkit/skills/.shared/scripts/repo-config.sh's ACCEPTED_KEYS
+    array at 06d18cf and 53e7e8c directly (`git show <sha>:path | grep
+    ACCEPTED_KEYS` at each) and keeping only the intersection -- not by
+    trusting the issue body's claim of "byte-identical cap strings"
+    verbatim. Every key used here is in that intersection at both SHAs.
+
+Reproducing the epic's Tier-0 numbers
+--------------------------------------
+
+    bench/tier0.sh 06d18cf
+    bench/tier0.sh 53e7e8c
+
+reproduce the epic's already-known table -- resident -59.4%, reachable
+-8.9%, both within rounding -- because both `06d18cf` and `53e7e8c` are real
+commits in this repository's own history (the compression refactor that
+split review-remote-pr and parallel-issues into dispatcher + references/).
+Measured directly against this repo:
+
+    06d18cf: resident 278317 B (~69579 tok)  reachable 278806 B (~69701 tok)
+    53e7e8c: resident 112969 B (~28242 tok)  reachable 253969 B (~63492 tok)
+
+    resident:  (69579 - 28242) / 69579 = -59.40%
+    reachable: (69701 - 63492) / 69701 =  -8.91%

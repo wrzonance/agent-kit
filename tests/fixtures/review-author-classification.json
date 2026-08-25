@@ -1,0 +1,150 @@
+[
+  {
+    "name": "advanced-security-suffix",
+    "author": {
+      "login": "github-advanced-security[bot]"
+    },
+    "want": {
+      "lane": "generic-automated",
+      "signal": "login-suffix",
+      "automated": true,
+      "login": "github-advanced-security[bot]"
+    }
+  },
+  {
+    "name": "coderabbit-known",
+    "author": {
+      "login": "coderabbitai[bot]"
+    },
+    "want": {
+      "lane": "known-provider",
+      "signal": "known-provider",
+      "provider": "coderabbit",
+      "automated": true,
+      "login": "coderabbitai[bot]"
+    }
+  },
+  {
+    "name": "unsuffixed-authoritative-bot",
+    "author": {
+      "login": "security-scanner",
+      "__typename": "Bot"
+    },
+    "want": {
+      "lane": "generic-automated",
+      "signal": "type=Bot",
+      "automated": true,
+      "login": "security-scanner"
+    }
+  },
+  {
+    "name": "rest-authoritative-bot",
+    "author": {
+      "login": "security-scanner",
+      "type": "Bot"
+    },
+    "want": {
+      "lane": "generic-automated",
+      "signal": "type=Bot",
+      "automated": true,
+      "login": "security-scanner"
+    }
+  },
+  {
+    "name": "botond-is-human",
+    "author": {
+      "login": "botond",
+      "type": "User"
+    },
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": "botond"
+    }
+  },
+  {
+    "name": "abbott-is-human",
+    "author": {
+      "login": "abbott",
+      "type": "User"
+    },
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": "abbott"
+    }
+  },
+  {
+    "name": "absent-author",
+    "author": null,
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": null
+    }
+  },
+  {
+    "name": "unqueryable-author",
+    "author": {},
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": null
+    }
+  },
+  {
+    "name": "empty-login",
+    "author": {
+      "login": ""
+    },
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": null
+    }
+  },
+  {
+    "name": "coderabbit-lookalike-is-human",
+    "author": {
+      "login": "mycoderabbit",
+      "type": "User"
+    },
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": "mycoderabbit"
+    }
+  },
+  {
+    "name": "coderabbit-prefixed-lookalike-is-human",
+    "author": {
+      "login": "coderabbit-helper",
+      "type": "User"
+    },
+    "want": {
+      "lane": "human",
+      "signal": "human",
+      "automated": false,
+      "login": "coderabbit-helper"
+    }
+  },
+  {
+    "name": "coderabbit-known-unsuffixed",
+    "author": {
+      "login": "coderabbitai"
+    },
+    "want": {
+      "lane": "known-provider",
+      "signal": "known-provider",
+      "provider": "coderabbit",
+      "automated": true,
+      "login": "coderabbitai"
+    }
+  }
+]

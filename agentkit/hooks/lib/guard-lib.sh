@@ -8,18 +8,65 @@
 
 # The exact snippet the skills use. Defined once so no message can teach a path
 # that does not resolve -- which is what these messages did after packaging moved
-# the tree, and only a live session caught it.
+# the tree, and only a live session caught it. The contract is the guarded,
+# worktree-rooted source of truth; the cache search is an explicit bootstrap for
+# a contract-absent checkout.
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
-readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-    -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
-  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"'
+readonly RESOLVE_HINT='  agentkit=
+  contract_root=$(git rev-parse --show-toplevel 2>/dev/null) || contract_root=
+  contract=
+  if [[ -n "$contract_root" ]]; then
+      contract="$contract_root/.agent/env-contract.txt"
+  fi
+  if [[ -n "$contract_root" && -r "$contract" && -f "$contract" &&
+        ! -L "$contract" && -O "$contract" ]] &&
+      ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \
+          >/dev/null 2>&1; then
+      agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+  fi
+  if [[ -z "$agentkit" ]]; then
+      # Contract-absent bootstrap: discover the installed plugin tree.
+      agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
+          "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
+          -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
+      [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+  fi
+  if [[ -n "$contract_root" && -n "$agentkit" &&
+        -x "$agentkit/.shared/scripts/contract-read.sh" ]]; then
+      contract_skills=$("$agentkit/.shared/scripts/contract-read.sh" \
+          --repo-root "$contract_root" --get skills.path 2>/dev/null)
+      [[ -z "$contract_skills" || "$contract_skills" == "$agentkit" ]] || agentkit=
+  fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
-readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|triage-issues|move-github-project-item|gh-comment'
+readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|contract-read|triage-issues|move-github-project-item|gh-comment|gh-body'
+
+GUARD_LIB_DIR=${BASH_SOURCE[0]%/*}
+[[ $GUARD_LIB_DIR != "${BASH_SOURCE[0]}" ]] || GUARD_LIB_DIR=.
+SHARED_SCRIPT_LIB=$(cd -- "$GUARD_LIB_DIR/../../skills/.shared/scripts/lib" 2>/dev/null && pwd -P) || {
+    printf 'guard-lib.sh: shared script library is unavailable relative to %s\n' \
+        "${BASH_SOURCE[0]}" >&2
+    return 2
+}
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SHARED_SCRIPT_LIB/protected-paths.sh"
 
 # Populated by guard_resolve_roots.
 roots=()
+
+# The session repository is the workspace anchor. Target guards classify every
+# command target against it instead of inferring intent from path spelling.
+workspace_root=''
+workspace_common=''
+GUARD_TARGET_CLASSIFICATION=''
+GUARD_TARGET_ROOT=''
+GUARD_SCOPE_CLASSIFICATION=''
+
+# Filesystem scope is narrower than repository targeting. `roots` may include
+# repositories named by a command so repository-scoped advice follows `cd` and
+# `git -C`; those names are untrusted input and must never authorize a walker.
+scope_roots=()
 
 guard_add_root() {
     local resolved existing
@@ -28,6 +75,236 @@ guard_add_root() {
         [[ $existing != "$resolved" ]] || return 0
     done
     roots+=("$resolved")
+}
+
+guard_repository_common() {
+    local root=$1 common
+    common=$(git -C "$root" rev-parse --git-common-dir 2> /dev/null) || return 1
+    case $common in
+        /*) ;;
+        *) common="$root/$common";;
+    esac
+    guard_scope_canonical "$common"
+}
+
+guard_fixture_path() {
+    local candidate=$1 fixture configured=${AGENT_FIXTURE_ROOTS:-}
+    local -a fixtures=(/tmp "${TMPDIR:-/tmp}") extra=()
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+    [[ -n ${AGENT_FIXTURE_ROOT:-} ]] && fixtures+=("$AGENT_FIXTURE_ROOT")
+    if [[ -n $configured ]]; then
+        local IFS=:
+        read -r -a extra <<< "$configured"
+        fixtures+=("${extra[@]}")
+    fi
+    for fixture in "${fixtures[@]}"; do
+        [[ -n $fixture ]] || continue
+        fixture=$(guard_scope_canonical "$fixture") || continue
+        [[ $candidate == "$fixture" || $candidate == "$fixture"/* ]] && return 0
+    done
+    return 1
+}
+
+# Plugin-cache roots the RUNNING harness itself loaded into this session --
+# Claude's and Codex's, since either variable may be unset while the other
+# harness is the one actually running, and getting this wrong in either
+# direction is cheap: a sibling harness's own plugin cache is still this
+# machine's harness content, never arbitrary user data (issue #335 Case 2).
+guard_harness_plugin_cache_roots() {
+    local claude_root=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}
+    local codex_root=${CODEX_HOME:-${HOME:-}/.codex}
+    [[ -n $claude_root ]] && printf '%s\n' "$claude_root/plugins/cache"
+    [[ -n $codex_root ]] && printf '%s\n' "$codex_root/plugins/cache"
+}
+
+# Is this path under a harness's own plugin-cache tree? A SKILL.md the running
+# harness injected at SessionStart (e.g. superpowers) lives here -- reading it
+# is expected, ordinary traffic, not an environment probe of foreign content.
+guard_harness_path() {
+    local candidate=$1 root
+    [[ -n $candidate ]] || return 1
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+    while IFS= read -r root; do
+        [[ -n $root ]] || continue
+        root=$(guard_scope_canonical "$root") || continue
+        [[ $candidate == "$root" || $candidate == "$root"/* ]] && return 0
+    done < <(guard_harness_plugin_cache_roots)
+    return 1
+}
+
+guard_workspace_root() {
+    local root=$1 common
+    [[ -n $workspace_root ]] || return 1
+    [[ $root == "$workspace_root" ]] && return 0
+    common=$(guard_repository_common "$root") || return 1
+    [[ -n $workspace_common && $common == "$workspace_common" ]]
+}
+
+# Classify a resolved repository root. A root with no git toplevel is handled
+# by guard_classify_target as unresolved for policy guards; scope maps it to a
+# foreign escape because that is the safe answer for a walker.
+guard_classify_root() {
+    local root=$1
+    GUARD_TARGET_ROOT=$root
+    if [[ -z $root ]]; then
+        GUARD_TARGET_CLASSIFICATION=unresolved
+    elif guard_workspace_root "$root"; then
+        if [[ $root == "$workspace_root" && -n ${AGENT_FIXTURE_ROOT:-} ]] &&
+            guard_fixture_path "$root" 2> /dev/null; then
+            GUARD_TARGET_CLASSIFICATION=fixture
+        else
+            GUARD_TARGET_CLASSIFICATION=workspace
+        fi
+    elif guard_harness_path "$root"; then
+        GUARD_TARGET_CLASSIFICATION=harness
+    elif guard_fixture_path "$root"; then
+        GUARD_TARGET_CLASSIFICATION=fixture
+    else
+        GUARD_TARGET_CLASSIFICATION=foreign
+    fi
+    printf '%s' "$GUARD_TARGET_CLASSIFICATION"
+}
+
+# Command substitutions run in a child shell, so the globals populated by the
+# classifier do not survive `classification=$(...)`. Return both values as a
+# small, explicit record for callers that need diagnostics or policy roots.
+guard_classify_root_result() {
+    guard_classify_root "$1" > /dev/null
+    printf '%s\n%s' "$GUARD_TARGET_CLASSIFICATION" "$GUARD_TARGET_ROOT"
+}
+
+guard_target_path() {
+    local target=$1 base=${2:-$PWD} candidate probe root
+    case $target in
+        /*) candidate=$target;;
+        *) candidate="$base/$target";;
+    esac
+    candidate=$(guard_scope_canonical "$candidate") || return 2
+    probe=$candidate
+    [[ -d $probe ]] || probe=${probe%/*}
+    [[ -n $probe ]] || probe=/
+    root=$(git -C "$probe" rev-parse --show-toplevel 2> /dev/null) || return 1
+    printf '%s\n%s' "$root" "$candidate"
+}
+
+guard_command_dir_candidate() {
+    local cwd=$1 candidate=$2
+    candidate=${candidate#\"}; candidate=${candidate%\"}
+    candidate=${candidate#\'}; candidate=${candidate%\'}
+    case $candidate in
+        /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*) ;;
+        *) candidate="$cwd/$candidate";;
+    esac
+    guard_scope_canonical "$candidate"
+}
+
+guard_command_target_dir() {
+    local cwd=$1 command_line=$2 target=${3:-}
+    local current segment trimmed candidate git_candidate segment_dir last_effective
+    local -a words
+    current=$(guard_scope_canonical "$cwd") || current=$cwd
+    last_effective=$current
+
+    # Walk shell segments in order, parsed the way the shell actually would --
+    # segmented via guard_gh_command_segments (which drops heredoc bodies and
+    # honors quoting when splitting on `;`/`|`/`&`) and tokenized via
+    # guard_tokenize_words (which honors quoting instead of splitting on any
+    # whitespace). A target is resolved against the directory in force at the
+    # segment that names it; a later `cd` cannot rewrite that earlier target.
+    # Git's -C is parsed only before the git subcommand, so grep's -C context
+    # flag and `git commit -C <message>` are not directories. This mirrors
+    # guard_out_of_scope_target, which callers of this function rely on to
+    # classify from parsed structure rather than raw command text (issue #335).
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
+    while IFS= read -r segment; do
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        mapfile -t words < <(guard_tokenize_words "$trimmed")
+        ((${#words[@]})) || continue
+        segment_dir=$current
+        git_candidate=''
+
+        if [[ ${words[0]} == cd && ${#words[@]} -ge 2 ]]; then
+            candidate=$(guard_command_dir_candidate "$current" "${words[1]}") || candidate=''
+            [[ -n $candidate ]] && current=$candidate
+            segment_dir=$current
+        elif [[ ${words[0]} == git ]]; then
+            local i word next
+            for ((i = 1; i < ${#words[@]}; i++)); do
+                word=${words[i]}
+                case $word in
+                    --) break;;
+                    -C)
+                        ((i + 1 < ${#words[@]})) || break
+                        next=${words[i + 1]}
+                        candidate=$(guard_command_dir_candidate "$current" "$next") || candidate=''
+                        [[ -d $candidate ]] && git_candidate=$candidate
+                        ((i++))
+                        ;;
+                    -C*)
+                        candidate=$(guard_command_dir_candidate "$current" "${word#-C}") || candidate=''
+                        [[ -d $candidate ]] && git_candidate=$candidate
+                        ;;
+                    -*) ;;
+                    *) break;;
+                esac
+            done
+            [[ -n $git_candidate ]] && segment_dir=$git_candidate
+        fi
+
+        last_effective=$segment_dir
+        if [[ -n $target && $trimmed == *"$target"* ]]; then
+            printf '%s' "$segment_dir"
+            return 0
+        fi
+    done <<< "$segments"
+    printf '%s' "$last_effective"
+}
+
+guard_command_repository_root() {
+    local cwd=$1 command_line=$2 dir
+    dir=$(guard_command_target_dir "$cwd" "$command_line") || return 1
+    git -C "$dir" rev-parse --show-toplevel 2> /dev/null
+}
+
+# Shared boundary for all repository-policy and scope guards. It resolves the
+# target path relative to the command's effective directory, then classifies
+# the resulting git root. A failed root lookup remains unresolved so policy
+# callers can fail closed exactly as they did before classification existed.
+guard_classify_target() {
+    local target=$1 cwd=$2 command_line=${3:-} base resolved candidate
+    base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
+    resolved=$(guard_target_path "$target" "$base" 2> /dev/null) || {
+        case $target in
+            /*) candidate=$target;;
+            *) candidate="$base/$target";;
+        esac
+        GUARD_TARGET_ROOT=''
+        # A plugin-cache tree need not be a git checkout at all -- when the
+        # repository-root lookup fails outright, the target may still be
+        # harness content rather than genuinely unresolved.
+        if guard_harness_path "$candidate"; then
+            GUARD_TARGET_CLASSIFICATION=harness
+        else
+            GUARD_TARGET_CLASSIFICATION=unresolved
+        fi
+        printf '%s' "$GUARD_TARGET_CLASSIFICATION"
+        return 0
+    }
+    GUARD_TARGET_ROOT=${resolved%%$'\n'*}
+    candidate=${resolved#*$'\n'}
+    if guard_harness_path "$candidate"; then
+        GUARD_TARGET_CLASSIFICATION=harness
+        printf '%s' "$GUARD_TARGET_CLASSIFICATION"
+        return 0
+    fi
+    guard_classify_root "$GUARD_TARGET_ROOT"
+}
+
+guard_classify_target_result() {
+    guard_classify_target "$1" "$2" "${3:-}" > /dev/null
+    printf '%s\n%s' "$GUARD_TARGET_CLASSIFICATION" "$GUARD_TARGET_ROOT"
 }
 
 # Every repository a command might act on -- not just the one the session started
@@ -39,19 +316,295 @@ guard_resolve_roots() {
     local cwd=$1 command_line=$2 candidate
 
     if [[ -n $cwd && -d $cwd ]]; then
+        workspace_root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || true)
+        if [[ -n $workspace_root ]]; then
+            workspace_common=$(guard_repository_common "$workspace_root" 2> /dev/null || true)
+        fi
         guard_add_root "$cwd"
     fi
 
-    # Paths the command names. Read as text and never evaluated: this parses an
-    # untrusted command line, where a substitution would execute it.
-    while IFS= read -r candidate; do
-        [[ -n $candidate ]] || continue
-        candidate=${candidate/#\~/$HOME}
-        if [[ -d $candidate ]]; then
-            guard_add_root "$candidate"
+    # Add only the effective directory selected by the segment-aware parser.
+    # Broad grep over the whole command mistakes grep context and commit
+    # message reuse flags for directory-bearing -C options.
+    candidate=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
+    # A candidate that does not exist is a normal "no optional extra root"
+    # outcome, not a failure -- but as a bare `[[ ]] && cmd` this was also the
+    # FUNCTION's own return status. Both hooks call guard_resolve_roots as a
+    # bare simple command under `trap ... ERR`, so that stray 1 fired the trap
+    # and fell straight into allow/emit_empty before any guard had run,
+    # skipping every downstream check (issue #369). An `if` with no `else`
+    # returns 0 regardless of the test, which is what this function's callers
+    # need: resolving roots always "succeeds", whether or not this particular
+    # candidate turned out to exist.
+    if [[ -d $candidate ]]; then
+        guard_add_root "$candidate"
+    fi
+    return 0
+}
+
+# Resolve only the hook's trusted working directory and its current repository.
+# Command-derived `cd`/`-C` paths intentionally never enter this list.
+guard_add_scope_root() {
+    local resolved existing
+    resolved=$(guard_scope_canonical "$1") || return 0
+    for existing in ${scope_roots[@]+"${scope_roots[@]}"}; do
+        [[ $existing != "$resolved" ]] || return 0
+    done
+    scope_roots+=("$resolved")
+}
+
+guard_resolve_scope_roots() {
+    local cwd=$1 repo
+    [[ -n $cwd && -d $cwd ]] || return 0
+    guard_add_scope_root "$cwd"
+    repo=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null) || return 0
+    guard_add_scope_root "$repo"
+}
+
+# Roots in which a dispatched worker is expected to read. The contract is the
+# source for skills and cache paths; no path from the command line is executed
+# while resolving this list.
+guard_scope_allowed_roots() {
+    local r contract skills cache
+
+    for r in ${scope_roots[@]+"${scope_roots[@]}"}; do
+        printf '%s\n' "$r"
+        contract="$r/.agent/env-contract.txt"
+        guard_contract_is_ours "$contract" "$r" || continue
+        skills=$(sed -n 's/^skills= path=//p' "$contract" 2>/dev/null | head -n 1)
+        [[ -n $skills ]] && printf '%s\n' "$skills"
+        cache=$(sed -n 's/^caches= root=\([^[:space:]]*\).*/\1/p' "$contract" 2>/dev/null | head -n 1)
+        [[ -n $cache ]] && printf '%s\n' "$cache"
+    done
+    printf '%s\n' /tmp
+}
+
+# Canonicalize a path without requiring that it exists. This makes the
+# component boundary explicit: /repo is not a parent of /repo-evil.
+guard_scope_canonical() {
+    local path=$1 component canonical=''
+    local -a components kept=()
+    case $path in
+        '~') path=${HOME:-}/;;
+        \~/*) path=${HOME:-}${path#\~};;
+        '$HOME') path=${HOME:-}/;;
+        '$HOME/'*) path=${HOME:-}${path#'$HOME'};;
+        '${HOME}') path=${HOME:-}/;;
+        '${HOME}/'*) path=${HOME:-}${path#'${HOME}'};;
+    esac
+    case $path in
+        /*) ;;
+        *) path=$PWD/$path;;
+    esac
+    IFS=/ read -r -a components <<< "$path"
+    for component in "${components[@]}"; do
+        case $component in
+            ''|.) ;;
+            ..)
+                if ((${#kept[@]})); then
+                    kept=("${kept[@]:0:${#kept[@]}-1}")
+                fi
+                ;;
+            *) kept+=("$component");;
+        esac
+    done
+    for component in "${kept[@]}"; do
+        canonical+="/$component"
+    done
+    printf '%s\n' "${canonical:-/}"
+}
+
+# Resolve existing symlink components without trusting lexical containment.
+# For a missing leaf, resolve its parent and append only that leaf. A caller
+# that cannot resolve the parent must fail closed rather than treating the
+# spelling as proof that the target stays in the worker.
+guard_target_realpath() {
+    local candidate=$1 parent base resolved
+    if [[ -e $candidate || -L $candidate ]]; then
+        realpath -e -- "$candidate" 2> /dev/null || return 2
+    else
+        parent=${candidate%/*}
+        base=${candidate##*/}
+        [[ -n $parent ]] || parent=/
+        resolved=$(realpath -e -- "$parent" 2> /dev/null) || return 2
+        printf '%s/%s\n' "$resolved" "$base"
+    fi
+}
+
+guard_path_inside() {
+    local root=$1 candidate=$2
+    [[ $candidate == "$root" || $candidate == "$root"/* ]]
+}
+
+guard_scope_path_allowed() {
+    local candidate root root_canonical
+    candidate=$(guard_scope_canonical "$1") || return 1
+    [[ -n $candidate ]] || return 1
+    while IFS= read -r root; do
+        [[ -n $root ]] || continue
+        root_canonical=$(guard_scope_canonical "$root") || continue
+        [[ -n $root_canonical ]] || continue
+        if [[ $candidate == "$root_canonical" || $candidate == "$root_canonical"/* ]]; then
+            return 0
         fi
-    done < <(grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+[^[:space:];&|]+|-C[[:space:]]+[^[:space:];&|]+' \
-        <<< "$command_line" 2> /dev/null | sed -E 's/.*(cd|-C)[[:space:]]+//' || true)
+    done < <(guard_scope_allowed_roots)
+    return 1
+}
+
+# Return the first absolute/home-expanded path outside the allowed roots when
+# a command segment is a walker/reader. Relative paths are intentionally left
+# alone: the resolved repository/cwd contract answers those without guessing.
+guard_out_of_scope_target() {
+    local command_line=$1 segment verb token cleaned has_walker=0 expr_operand=0
+    local cwd=${2:-$PWD} command_root='' command_class='' command_dir=''
+    local -a words
+    # Segmented and tokenized the way the shell actually parses the command --
+    # never by splitting the raw command TEXT on ;&| or whitespace. A heredoc
+    # BODY (data destined for a file, never executed) is dropped entirely by
+    # guard_gh_command_segments, the same quote/heredoc state machine
+    # post-tool-use.sh's pinned-path probe relies on; a quoted argument's `;`,
+    # `|`, or internal whitespace no longer masquerades as command structure
+    # or as several separate words (issue #335 Case 3 -- a heredoc-quoted `rg
+    # '/(\.shared|shared)/|...'` pattern was previously split mid-regex on the
+    # unquoted-looking `|`, and a quoted sed address argument was split on its
+    # internal spaces into fragments that looked like path segments).
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
+    # shellcheck disable=SC2034  # consumed by the sourcing PreToolUse hook
+    GUARD_SCOPE_CLASSIFICATION=''
+    command_root=$(guard_command_repository_root "$cwd" "$command_line" 2> /dev/null || true)
+    if [[ -z $command_root ]]; then
+        command_dir=$(guard_command_target_dir "$cwd" "$command_line" 2> /dev/null || true)
+        if [[ -n $command_dir && $command_dir != "$(guard_scope_canonical "$cwd")" ]]; then
+            command_root=$command_dir
+            # A temporary non-git fixture, or a harness plugin-cache tree, is
+            # still in-scope. Only an unambiguously foreign directory
+            # receives the advisory.
+            if guard_fixture_path "$command_dir"; then
+                command_class=fixture
+            elif guard_harness_path "$command_dir"; then
+                command_class=harness
+            else
+                command_class=foreign
+            fi
+        fi
+    fi
+
+    while IFS= read -r segment; do
+        [[ -n ${segment//[[:space:]]/} ]] || continue
+        mapfile -t words < <(guard_tokenize_words "$segment")
+        ((${#words[@]})) || continue
+        verb=${words[0]#\(}
+        case $verb in
+            find|rg|fd|du|cat|sed|head|tail) has_walker=1 ;;
+            grep)
+                for token in "${words[@]:1}"; do
+                    [[ $token == -* && $token != -- ]] || continue
+                    [[ $token == *r* || $token == *R* ]] && has_walker=1
+                done
+                ;;
+            ls)
+                for token in "${words[@]:1}"; do
+                    [[ $token == -* && $token != -- ]] || continue
+                    [[ $token == *R* ]] && has_walker=1
+                done
+                ;;
+        esac
+        ((has_walker)) || continue
+
+        # A relative walk inherits the command's effective directory. If that
+        # directory resolves to a foreign repository, advise even though the
+        # command never spelled an absolute path.
+        if [[ -n $command_root ]]; then
+            if [[ -z $command_class ]]; then
+                guard_classify_root "$command_root" > /dev/null
+                command_class=$GUARD_TARGET_CLASSIFICATION
+            fi
+            if [[ $command_class == foreign ]]; then
+                # shellcheck disable=SC2034  # consumed by the sourcing hook
+                GUARD_SCOPE_CLASSIFICATION=foreign
+                printf '%s' "$command_root"
+                return 0
+            fi
+        elif [[ $segment =~ (^|[[:space:];&|])cd[[:space:]]+ ]]; then
+            # shellcheck disable=SC2034  # consumed by the sourcing hook
+            GUARD_SCOPE_CLASSIFICATION=foreign
+            printf '%s' "$(guard_command_target_dir "$cwd" "$segment")"
+            return 0
+        fi
+
+        # Only the OPERAND of a known expression-taking flag is excluded from
+        # path checking -- never every token with internal whitespace. A
+        # quoted argument with a space is not proof it is an expression: it
+        # is exactly how a real foreign path containing a space gets passed
+        # (`find "/home/user/foreign repo" -name AGENTS.md` tokenizes to one
+        # argument, and that argument IS the path to flag). Skipping on
+        # whitespace alone reopened the scope guard to that quoting (adversarial
+        # review on issue #335, finding F1). Recognize the exclusion from the
+        # PRECEDING flag instead: sed's -e/--expression and grep's -e/--regexp
+        # take a pattern, never a path, regardless of what it looks like.
+        expr_operand=0
+        for token in "${words[@]:1}"; do
+            if ((expr_operand)); then
+                expr_operand=0
+                continue
+            fi
+            case $verb in
+                sed) case $token in -e | --expression) expr_operand=1; continue;; esac ;;
+                grep) case $token in -e | --regexp) expr_operand=1; continue;; esac ;;
+            esac
+            # Trailing comma/paren trimming stays for the common prose-list
+            # case ("see /a/b, /c)") -- unrelated to the expression-operand
+            # exclusion above.
+            cleaned=${token%,}; cleaned=${cleaned%)}
+            case $cleaned in
+                /*|~|~/*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
+                    if ! guard_scope_path_allowed "$cleaned"; then
+                        case $cleaned in
+                            /*)
+                                classification_result=$(guard_classify_target_result "$cleaned" "$cwd" "$command_line")
+                                command_class=${classification_result%%$'\n'*}
+                                ;;
+                            *) command_class=foreign;;
+                        esac
+                        [[ $command_class == workspace || $command_class == harness ]] && continue
+                        # shellcheck disable=SC2034  # consumed by the sourcing hook
+                        GUARD_SCOPE_CLASSIFICATION=foreign
+                        printf '%s' "$cleaned"
+                        return 0
+                    fi
+                    ;;
+            esac
+        done
+        has_walker=0
+    done <<< "$segments"
+    return 1
+}
+
+# Is an out-of-scope walker target $HOME itself, or something even broader?
+#
+# A read of one foreign path is a mis-scoped read; a walk rooted at $HOME is an
+# environment probe, and it is the worse of the two by a wide margin. It treats
+# every AGENTS.md and CLAUDE.md on the machine as a candidate instruction
+# source -- including whatever last landed in ~/Downloads, which is precisely
+# where untrusted files arrive. The contract's instructions= line already
+# answers that question for the worktree, so this class earns a denial rather
+# than the lesson guard_out_of_scope_target's caller emits for the rest.
+#
+# Ancestors of $HOME (/home, /) count too: sweeping them reaches $HOME on the
+# way past.
+guard_home_sweep_target() {
+    local target home
+    home=$(guard_scope_canonical "${HOME:-}") || return 1
+    [[ -n $home && $home != / ]] || return 1
+    target=$(guard_scope_canonical "$1") || return 1
+    [[ -n $target ]] || return 1
+    # Root is an ancestor of every absolute path, $HOME included, but the
+    # ancestor test below is a component-boundary match against
+    # "$target"/* -- and for target=/ that becomes //* (a doubled leading
+    # slash), which $home (e.g. /home/adam) never matches. Root needs its
+    # own disjunct rather than falling through the general ancestor check.
+    [[ $target == "$home" || $target == / || $home == "$target"/* ]]
 }
 
 # Is this cached contract OURS, or did the repository supply it?
@@ -71,9 +624,141 @@ guard_resolve_roots() {
 # Rejecting costs one preflight run. Accepting costs the session.
 guard_contract_is_ours() {
     local file=$1 root=${2:-}
-    [[ -n $file && ! -L $file && -f $file && -O $file ]] || return 1
+    local reader="$GUARD_LIB_DIR/../../skills/.shared/scripts/contract-read.sh"
+    if [[ -n $root && $file == "$root/.agent/env-contract.txt" ]]; then
+        [[ -x $reader ]] || return 1
+        "$reader" --repo-root "$root" --check > /dev/null 2>&1
+        return
+    fi
+    [[ -n $file && -r $file && -f $file && ! -L $file && -O $file ]] || return 1
     [[ -n $root ]] || return 0
-    ! git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1
+    local rc=0
+    git -C "$root" ls-files --error-unmatch -- "$file" > /dev/null 2>&1 || rc=$?
+    # Lockstep with contract_is_ours in contract-read.sh: only status 1 proves
+    # the path is untracked. Any other failure means git never established
+    # provenance, so refuse rather than fail open.
+    ((rc == 1))
+}
+
+# Print the trusted contract's instructions= line when it names any unresolved
+# router references. Kept separate so one tool call validates and reads the
+# contract once, regardless of how many shell tokens it carries.
+guard_unresolved_instruction_line() {
+    local root=$1 contract line unresolved
+    [[ -n $root ]] || return 1
+    contract="$root/.agent/env-contract.txt"
+    guard_contract_is_ours "$contract" "$root" || return 1
+    line=$(grep -m1 '^instructions=.* unresolved=' -- "$contract" 2> /dev/null) || return 1
+    unresolved=${line##* unresolved=}
+    [[ -n $unresolved && $unresolved != none ]] || return 1
+    printf '%s' "$line"
+}
+
+# True when TARGET is one of LINE's explicitly named unresolved references.
+# The list is capped; a trailing +N-more marker is disclosure, not a path, and
+# is stripped before exact matching.
+guard_unresolved_instruction_target() {
+    local root=$1 target=$2 base=${3:-$PWD} line=$4 unresolved ref
+    local target_canonical ref_canonical
+    [[ -n $root && -n $target && -n $line ]] || return 1
+    unresolved=${line##* unresolved=}
+    case $target in
+        /*) target_canonical=$(guard_scope_canonical "$target") || return 1 ;;
+        *) target_canonical=$(guard_scope_canonical "$base/$target") || return 1 ;;
+    esac
+    local IFS=,
+    local -a refs
+    read -r -a refs <<< "$unresolved"
+    for ref in "${refs[@]}"; do
+        ref=${ref%+[0-9]*-more}
+        [[ -n $ref ]] || continue
+        ref_canonical=$(guard_scope_canonical "$root/$ref") || continue
+        if [[ $target_canonical == "$ref_canonical" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Print the matching contract line when this tool call attempts to read an
+# unresolved instruction path. File-path tools and ordinary shell readers are
+# both covered; write/edit tools never enter this advisory path.
+guard_unresolved_instruction_read() {
+    local root=$1 input=$2 cwd=$3 command_line=$4 tool_name=$5
+    local target segment verb token line positional current candidate
+    local redirect_pending redirect_dest operand rg_files
+    local -a words
+
+    case $tool_name in
+        Edit|Write|MultiEdit|NotebookEdit|apply_patch) return 1;;
+    esac
+
+    line=$(guard_unresolved_instruction_line "$root") || return 1
+
+    target=$(jq -r '.tool_input.file_path // empty' <<< "$input" 2> /dev/null || true)
+    if [[ -n $target ]] &&
+        guard_unresolved_instruction_target "$root" "$target" "$cwd" "$line"; then
+        printf '%s' "$line"
+        return 0
+    fi
+
+    [[ -n $command_line ]] || return 1
+    current=$(guard_scope_canonical "$cwd") || current=$cwd
+    while IFS= read -r segment; do
+        mapfile -t words < <(guard_tokenize_words "$segment")
+        ((${#words[@]})) || continue
+        verb=${words[0]#\(}
+        if [[ $verb == cd && ${#words[@]} -ge 2 ]]; then
+            candidate=$(guard_command_dir_candidate "$current" "${words[1]}") || candidate=''
+            [[ -z $candidate ]] || current=$candidate
+            continue
+        fi
+        case $verb in
+            cat|sed|head|tail|less|more|rg|grep|wc) ;;
+            *) continue;;
+        esac
+        positional=0
+        redirect_pending=0
+        rg_files=no
+        if [[ $verb == rg ]]; then
+            for token in "${words[@]:1}"; do
+                [[ $token == --files ]] && rg_files=yes
+            done
+        fi
+        for token in "${words[@]:1}"; do
+            if ((redirect_pending)); then
+                redirect_pending=0
+                continue
+            fi
+            # Output redirects are write destinations. Preserve any operand
+            # attached before the redirect (`cat file>sink`), but never offer
+            # the destination itself to the unresolved-read matcher.
+            operand=$token
+            redirect_dest=''
+            case $token in
+                *'>>'*) operand=${token%%>>*}; redirect_dest=${token#*>>} ;;
+                *'>'*) operand=${token%%>*}; redirect_dest=${token#*>} ;;
+            esac
+            if [[ $operand != "$token" ]]; then
+                [[ -n $redirect_dest ]] || redirect_pending=1
+                [[ $operand =~ ^[0-9]*$ ]] && operand=''
+                token=$operand
+            fi
+            [[ -n $token && $token != -* ]] || continue
+            # In conventional grep/rg form the first positional is a search
+            # pattern, not a file operand. Matching its path-shaped text would
+            # turn an unrelated search into a false unresolved-read advisory.
+            if [[ $verb == grep || $verb == rg && $rg_files == no ]] &&
+                ((positional++ == 0)); then
+                continue
+            fi
+            if guard_unresolved_instruction_target "$root" "$token" "$current" "$line"; then
+                printf '%s' "$line"
+                return 0
+            fi
+        done
+    done < <(guard_gh_command_segments "$command_line")
+    return 1
 }
 
 # True when ANY candidate repository carries the file. A guard keyed to a
@@ -97,6 +782,157 @@ guard_state_root() {
         fi
     done
     printf '%s' "${roots[0]-}"
+}
+
+# A dispatched worker's contract names the linked worktree it is allowed to
+# edit.  The contract is accepted only when it is an untracked regular file
+# owned by this user, and only when its worktree is the current Git root under
+# the repository's conventional .worktrees/ directory.  This keeps a stale or
+# repository-supplied declaration from becoming an escape hatch.
+guard_worktree_contract() {
+    local root=$1 contract worktree main_worktree rc
+    GUARD_WORKTREE_CONTRACT_WORKTREE=''
+    GUARD_WORKTREE_CONTRACT_REPO=''
+    [[ -n $root && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 1
+    contract="$root/.agent/env-contract.txt"
+    [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] || return 1
+    rc=0
+    git -C "$root" ls-files --error-unmatch -- .agent/env-contract.txt >/dev/null 2>&1 || rc=$?
+    ((rc == 1)) || return 1
+    worktree=$(sed -n 's/^worktree=//p' "$contract" 2> /dev/null | head -n 1)
+    [[ -n $worktree && $worktree == /*/.worktrees/* ]] || return 1
+    worktree=$(guard_scope_canonical "$worktree") || return 1
+    [[ $worktree == "$root" ]] || return 1
+    main_worktree=$(git -C "$root" worktree list --porcelain 2> /dev/null |
+        sed -n 's/^worktree //p' | head -n 1) || return 1
+    [[ -n $main_worktree ]] || return 1
+    main_worktree=$(guard_scope_canonical "$main_worktree") || return 1
+    [[ $worktree == "$main_worktree/.worktrees/"* ]] || return 1
+    GUARD_WORKTREE_CONTRACT_WORKTREE=$worktree
+    GUARD_WORKTREE_CONTRACT_REPO=$main_worktree
+    return 0
+}
+
+# If a write target resolves into the main checkout while the session is
+# contracted to a linked worktree, print a corrective denial reason.  Paths in a
+# sibling worktree remain ordinary targets; only the root checkout itself is
+# the silent-cross-write boundary this guard prevents.
+guard_worktree_boundary_reason() {
+    local target=$1 cwd=$2 command_line=${3:-} base candidate actual relative source
+    local lexical_worker=no lexical_repo=no
+    guard_worktree_contract "${workspace_root:-}" || return 1
+    base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
+    case $target in
+        /*) candidate=$target;;
+        *) candidate="$base/$target";;
+    esac
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+
+    # Resolve every candidate before classifying it. An alias outside both
+    # checkout prefixes can still land in the main checkout, so lexical prefix
+    # checks must never decide whether realpath resolution happens.
+    case $candidate in
+        "$GUARD_WORKTREE_CONTRACT_WORKTREE"|"$GUARD_WORKTREE_CONTRACT_WORKTREE"/*)
+            lexical_worker=yes
+            ;;
+    esac
+    if ! actual=$(guard_target_realpath "$candidate"); then
+        [[ $lexical_worker == yes ]] || return 1
+        GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+        printf 'Refused once -- could not securely resolve write target %s while enforcing the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+            "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+            "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+        return 0
+    fi
+
+    case $candidate in
+        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*)
+            lexical_repo=yes
+            ;;
+    esac
+
+    if guard_path_inside "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$actual"; then
+        return 1
+    fi
+    if [[ $lexical_worker == yes ]]; then
+        GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+        relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
+        [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
+        [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+        printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+            "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
+            "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+        return 0
+    fi
+
+    # A sibling linked worktree remains an ordinary target. A lexical root
+    # target is retained as a denial even if a symlink happens to point at a
+    # sibling; the worker contract cannot authorize that spelling.
+    case $actual in
+        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"|\
+        "$GUARD_WORKTREE_CONTRACT_REPO/.worktrees"/*)
+            [[ $lexical_repo == yes ]] || return 1
+            source=$candidate
+            ;;
+        "$GUARD_WORKTREE_CONTRACT_REPO"|"$GUARD_WORKTREE_CONTRACT_REPO"/*)
+            source=$actual
+            ;;
+        *)
+            [[ $lexical_repo == yes ]] || return 1
+            source=$candidate
+            ;;
+    esac
+    relative=${source#"$GUARD_WORKTREE_CONTRACT_REPO"/}
+    [[ $source != "$GUARD_WORKTREE_CONTRACT_REPO" ]] || relative=''
+    GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
+    [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
+    printf 'Refused once -- write target %s resolves inside the repository root %s but outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+        "$source" "$GUARD_WORKTREE_CONTRACT_REPO" \
+        "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+}
+
+# Persist one JSONL record for each content-bearing tool call that exposes a
+# write target.  The raw command is retained for Bash calls because a target
+# alone cannot distinguish a redirect, sed -i, tee, or an edit payload during
+# post-hoc incident reconstruction.  Evidence is local .agent state, secured
+# as a private file, and every failure is deliberately non-blocking: the hook
+# must not turn an evidence filesystem hiccup into an invisible allow/deny loop.
+guard_record_write_targets() {
+    local root=$1 payload=$2 cwd=$3 command_line=$4 tool_name=$5 session=$6 tool_call_id=${7:-}
+    local agent_dir evidence_dir evidence_file targets_json record timestamp
+    local -a targets=()
+    agent_dir="$root/.agent"
+    [[ -n $root && -d $agent_dir && ! -L $agent_dir && -O $agent_dir ]] || return 0
+    mapfile -t targets < <(
+        guard_target_paths "$payload"
+        [[ -z $command_line ]] || guard_shell_write_targets "$command_line"
+    )
+    ((${#targets[@]})) || return 0
+    evidence_dir="$agent_dir/evidence"
+    if [[ -e $evidence_dir || -L $evidence_dir ]]; then
+        [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    else
+        mkdir -- "$evidence_dir" 2> /dev/null || return 0
+        [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    fi
+    chmod 700 -- "$evidence_dir" 2> /dev/null || return 0
+    evidence_file="$evidence_dir/paths-touched.ndjson"
+    if [[ -e $evidence_file || -L $evidence_file ]]; then
+        [[ -f $evidence_file && ! -L $evidence_file && -O $evidence_file ]] || return 0
+    else
+        touch -- "$evidence_file" 2> /dev/null || return 0
+        [[ -f $evidence_file && ! -L $evidence_file && -O $evidence_file ]] || return 0
+    fi
+    chmod 600 -- "$evidence_file" 2> /dev/null || return 0
+    targets_json=$(jq -nc '$ARGS.positional' --args "${targets[@]}" 2> /dev/null) || return 0
+    timestamp=$(date +%s)
+    record=$(jq -nc \
+        --arg timestamp "$timestamp" --arg session "$session" \
+        --arg tool "$tool_name" --arg call_id "$tool_call_id" --arg cwd "$cwd" \
+        --arg command "$command_line" --argjson paths "$targets_json" \
+        '{timestamp:($timestamp|tonumber),session:$session,tool:$tool,tool_call_id:$call_id,cwd:$cwd,command:$command,paths_touched:$paths}' \
+        2> /dev/null) || return 0
+    printf '%s\n' "$record" >>"$evidence_file" 2> /dev/null || true
 }
 
 # Claim "this lesson, this session" exactly once.
@@ -133,6 +969,32 @@ guard_should_advise() {
     ((rc != 1))
 }
 
+# Record issue numbers independently from the once-per-rule lesson claim. A
+# single body read is useful and should stay quiet; the first distinct second
+# number is where the digest becomes the cheaper route. mkdir is the atomic
+# state transition, so concurrent hook invocations cannot lose a number.
+guard_issue_view_is_distinct() {
+    local root=$1 session=$2 issue=$3 dir
+    [[ -n $root && $issue =~ ^[0-9]+$ ]] || return 1
+
+    session=${session//[^A-Za-z0-9._-]/_}
+    dir="$root/.agent/cache/brief/${session:-nosession}/issue-views"
+    # This feeds an advisory, so unrecordable state must SPEAK. Returning true
+    # lets guard_should_advise emit the lesson while still persisting nothing.
+    mkdir -p "$dir" 2> /dev/null || return 0
+    # Record the issue marker BEFORE electing the quiet first view: the marker
+    # mkdir is the atomic transition, so of two concurrent reads of one issue
+    # exactly one records it and neither can masquerade as a distinct second
+    # number. A marker that already exists is a re-read: quiet. Any other
+    # marker failure is unrecordable state: fail open and speak.
+    if ! mkdir "$dir/$issue" 2> /dev/null; then
+        [[ -d "$dir/$issue" ]] && return 1
+        return 0
+    fi
+    mkdir "$dir/first" 2> /dev/null && return 1
+    return 0
+}
+
 # Denial: deny ONLY on a claim that was actually recorded.
 #
 # This is the inverse of the advisory rule and it is the single most important
@@ -164,6 +1026,14 @@ guard_curriculum() {
         ".shared/scripts/worktree-commit.sh|stage and commit without sweeping working state"
         "review-remote-pr/scripts/gh-pr-state.sh|CI and review state for a pull request"
         ".shared/scripts/bootstrap-repo.sh|re-declare this repo facts; see the onboard-repo skill"
+        ".shared/scripts/onboard-refresh.sh|report onboarding drift without mutating config.env"
+        ".shared/scripts/onboard-state.sh|report the next resumable onboarding stage and environment preflight"
+        # Not a script: the manifest of every companion reference that ships,
+        # with its openable path and purpose. Named here because the
+        # references themselves live under .shared/ and <skill>/references/,
+        # which default enumeration hides -- an agent told only that they
+        # exist searches for them.
+        "references.md|every reference file that ships, with its path and purpose -- read it instead of searching"
     )
 
     [[ -d $skills ]] || return 1
@@ -200,18 +1070,18 @@ guard_strip_git_globals() {
 #
 # The rest of the guard set never blocks, because a command with a cheaper
 # alternative should run and be corrected afterwards. There is no
-# teach-after-the-fact for a force-push that already landed, and a
-# once-per-session override would refuse the first attempt and permit the
+# teach-after-the-fact for a reset --hard that already discarded the work, and
+# a once-per-session override would refuse the first attempt and permit the
 # second -- precisely backwards. So these deny every time, and say what to do
 # instead.
 #
 # Kept deliberately short. A long list of "risky" commands trains an agent to
 # treat denials as noise, which is how the one that mattered gets worked around.
 # `git clean --force -d` and `git clean -fd` do identical damage, and only the
-# second was refused. So did `git push origin +main`, `git branch --delete
-# --force main`, and `rm --recursive --force /`. None of that is obfuscation --
-# it is git's own documented spelling, and an external review found all four by
-# reading the man pages.
+# second was refused. So did `git branch --delete --force main` and
+# `rm --recursive --force /`. None of that is obfuscation -- it is git's own
+# documented spelling, and an external review found all three by reading the
+# man pages.
 #
 # That matters more than an ordinary miss, because the README told operators to
 # hand over a writable .git on the strength of these patterns refusing this
@@ -239,8 +1109,798 @@ guard_has_short_flags() {
     return 0
 }
 
+# Walks a tokenized word array (named by $1, starting at index $2, default 0),
+# skipping leading `NAME=value` shell-variable assignments and then every
+# execution wrapper standing between those and the real command word -- `env`,
+# `sudo`/`doas`, `command`/`nohup`/`setsid`/`exec`/`time`, `timeout`,
+# `nice`/`ionice`, `stdbuf`, `xargs` -- so callers judge the REAL command word
+# wherever it actually starts, the same way a shell would resolve it. `sudo
+# bash`, `timeout 5 bash`, and chains of these (`env FOO=1 sudo bash`) all
+# resolve to the interpreter they actually exec instead of stopping at the
+# wrapper's own name. A word not in this list, or a name that isn't a wrapper
+# at all, ends the walk.
+#
+# Shared by guard_heredoc_consumer_is_shell (a heredoc consumer wrapped in
+# `sudo`/`env`/etc. is still that consumer) and guard_gh_api_merge_mutation_
+# reason (issue #404 CodeRabbit follow-up: `env gh api -X PUT .../merge` and
+# `GH_TOKEN=x gh api ...` were unrefused bypasses, since that check only ever
+# looked at word[0]/word[1] directly).
+#
+# Prints the resolved index. An index at or past the array's length means the
+# walk ran out of tokens mid-wrapper (e.g. `sudo -u` with nothing after) -- a
+# malformed or unrecognised invocation this function cannot confidently
+# resolve past; the caller decides what that ambiguity means for its own
+# verdict, since a heredoc consumer and a `gh api` match default to opposite
+# fail-safe directions (treat-as-shell vs. no-match).
+guard_skip_command_prefix() {
+    local -n __gscp_words=$1
+    local i=${2:-0} word wrapper n=${#__gscp_words[@]}
+    while ((i < n)) && [[ ${__gscp_words[i]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
+        ((i++))
+    done
+    word=${__gscp_words[i]-}
+
+    while [[ -n $word ]]; do
+        wrapper=${word##*/}
+        case $wrapper in
+            env)
+                ((i++))
+                while ((i < n)); do
+                    case ${__gscp_words[i]} in
+                        -*|*=*) ((i++));;
+                        *) break;;
+                    esac
+                done
+                ;;
+            sudo|doas)
+                ((i++))
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
+                        -u|-g|-p|-r|-t|-C|-h|--user|--group|--prompt|--role|--type|--close-from|--host)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            command|nohup|setsid|exec|time)
+                ((i++))
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    ((i++))
+                done
+                ;;
+            timeout)
+                ((i++))
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
+                        -s|-k|--signal|--kill-after)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                # The DURATION is a required positional argument.
+                ((i++))
+                ;;
+            nice|ionice)
+                ((i++))
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
+                        -n|-c|-p|--adjustment)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            stdbuf)
+                ((i++))
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
+                        -i|-o|-e)
+                            # Bare flag (no attached value, e.g. `-o` not
+                            # `-oL`) takes the next token as its value.
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            xargs)
+                ((i++))
+                while ((i < n)) && [[ ${__gscp_words[i]} == -* ]]; do
+                    case ${__gscp_words[i]} in
+                        -I|-L|-n|-P|-s|-d|-E|--replace|--max-lines|--max-args|--max-procs|--max-chars|--delimiter|--eof)
+                            ((i += 2));;
+                        *) ((i++));;
+                    esac
+                done
+                ;;
+            *)
+                break
+                ;;
+        esac
+        word=${__gscp_words[i]-}
+    done
+    printf '%s' "$i"
+}
+
+# Is the consumer of a heredoc a shell interpreter? Its BODY then runs as a
+# script regardless of delimiter quoting -- quoting only controls expansion
+# INSIDE the heredoc, never whether the consumer executes what it reads.
+# `bash <<'EOF' ... rm -rf ~ ... EOF` deletes just as surely as the unquoted
+# form. Delegates the leading-assignment/wrapper walk to guard_skip_command_
+# prefix above.
+#
+# If the walk runs out of tokens while stepping over a wrapper's own flags --
+# a malformed or unrecognised invocation that function cannot confidently
+# parse -- this returns 0 (treat as shell) rather than 1. A false positive
+# here costs a refusal message; a false negative lets a destructive body
+# through unexamined, which is worse.
+guard_heredoc_consumer_is_shell() {
+    local owner=$1 i word
+    local -a words
+    mapfile -t words < <(guard_tokenize_words "$owner")
+    i=$(guard_skip_command_prefix words 0)
+    word=${words[i]-}
+
+    # Ran out of tokens mid-wrapper (e.g. `sudo -u` with nothing after): the
+    # real interpreter could not be confidently resolved. Treat as a shell.
+    ((i >= ${#words[@]} && ${#words[@]} > 0)) && [[ -z $word ]] && return 0
+
+    case ${word##*/} in
+        bash|sh|zsh|dash|ksh|ash|mksh) return 0;;
+    esac
+    return 1
+}
+
+# Every $(...) / `...` command substitution inside a heredoc BODY, inner text
+# only. An UNQUOTED delimiter (`<<EOF`, no quotes and no leading backslash)
+# means the shell expands these while it BUILDS the heredoc, before the
+# consumer ever reads it -- `cat <<EOF` with a `$(rm -rf ~)` inside deletes
+# regardless of `cat` being perfectly inert. Depth-counted so a nested
+# `$(echo $(pwd))` extracts the whole outer call, not the first `)`.
+guard_heredoc_substitutions() {
+    local body=$1
+    local i=0 length=${#body} depth start inner
+    while ((i < length)); do
+        if [[ ${body:i:1} == '$' && ${body:i+1:1} == '(' ]]; then
+            depth=1
+            start=$((i + 2))
+            i=$start
+            while ((i < length && depth > 0)); do
+                case ${body:i:1} in
+                    '(') ((depth++));;
+                    ')') ((depth--));;
+                esac
+                ((i++))
+            done
+            inner=${body:start:i-start-1}
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        if [[ ${body:i:1} == '`' ]]; then
+            start=$((i + 1))
+            i=$start
+            # Backticks do not nest the way $( ) does: the first UNESCAPED
+            # backtick closes the span. A literal backtick inside one is
+            # written `\`` -- the backslash is consumed and does not end the
+            # scan, matching how the shell itself reads a backtick span.
+            while ((i < length)); do
+                if [[ ${body:i:1} == \\ ]]; then
+                    i=$((i + 2))
+                    continue
+                fi
+                [[ ${body:i:1} == '`' ]] && break
+                ((i++))
+            done
+            inner=${body:start:i-start}
+            ((i++))
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        ((i++))
+    done
+}
+
+# Replace the CONTENT of every unescaped single-quoted span in $1 with `#`
+# filler, preserving length and every character outside single quotes --
+# quote delimiters included -- verbatim. `#` can never introduce a new `$(`
+# or backtick, so a `$(...)`/backtick spelled inside a single-quoted argument
+# (which the shell never expands: single quotes suppress ALL expansion) can
+# no longer be mistaken by a later scan for a real, executing substitution.
+# Double-quote and escape state are tracked too, but only so a literal `'`
+# appearing INSIDE an outer double-quoted string is never misread as opening
+# single-quote mode -- the same quote state machine guard_tokenize_words
+# uses, single-quote branch checked first exactly as the shell itself reads
+# it (backslash has no escaping meaning inside single quotes at all).
+guard_mask_single_quotes() {
+    local input=$1 out='' quote='' escaped=0 char i length
+    length=${#input}
+    for ((i = 0; i < length; i++)); do
+        char=${input:i:1}
+        if [[ $quote == "'" ]]; then
+            if [[ $char == "'" ]]; then
+                quote=''
+                out+=$char
+            else
+                out+='#'
+            fi
+            continue
+        fi
+        if ((escaped)); then
+            out+=$char
+            escaped=0
+            continue
+        fi
+        if [[ $char == \\ ]]; then
+            out+=$char
+            escaped=1
+            continue
+        fi
+        if [[ $quote == '"' ]]; then
+            out+=$char
+            [[ $char == '"' ]] && quote=''
+            continue
+        fi
+        case $char in
+            "'" | '"') quote=$char; out+=$char ;;
+            *) out+=$char ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Every $(...) / `...` substitution in a command SEGMENT (as opposed to
+# guard_heredoc_substitutions' heredoc BODY) that the shell will actually
+# evaluate before the segment's outer command runs -- including one spelled
+# inside an outer DOUBLE-quoted argument, which guard_tokenize_words correctly
+# treats as one WORD later on (it is one argument) but which still executes
+# its substitution first. A single-quoted argument's `$(...)`/backtick text is
+# inert data, never executed, and must never be extracted: this walks a
+# single-quote-MASKED copy of $1 (via guard_mask_single_quotes) to decide
+# where a live delimiter sits, reusing guard_heredoc_substitutions' own
+# depth-counting algorithm for the boundary math, but slices the payload TEXT
+# out of the original, UNMASKED $1 at the same offsets (masking preserves
+# length and every non-single-quoted character 1:1) -- so a nested
+# single-quoted data argument inside the payload itself survives intact for
+# the recursive destructive-command check to re-tokenize on its own terms,
+# rather than arriving pre-shredded into `#` filler (issue #397 follow-up).
+guard_segment_substitutions() {
+    local original=$1 masked
+    masked=$(guard_mask_single_quotes "$original")
+    local i=0 length=${#masked} depth start inner
+    while ((i < length)); do
+        if [[ ${masked:i:1} == '$' && ${masked:i+1:1} == '(' ]]; then
+            depth=1
+            start=$((i + 2))
+            i=$start
+            while ((i < length && depth > 0)); do
+                case ${masked:i:1} in
+                    '(') ((depth++));;
+                    ')') ((depth--));;
+                esac
+                ((i++))
+            done
+            inner=${original:start:i-start-1}
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        if [[ ${masked:i:1} == '`' ]]; then
+            start=$((i + 1))
+            i=$start
+            while ((i < length)); do
+                if [[ ${masked:i:1} == \\ ]]; then
+                    i=$((i + 2))
+                    continue
+                fi
+                [[ ${masked:i:1} == '`' ]] && break
+                ((i++))
+            done
+            inner=${original:start:i-start}
+            ((i++))
+            [[ -n $inner ]] && printf '%s\n' "$inner"
+            continue
+        fi
+        ((i++))
+    done
+}
+
+# Like guard_gh_command_segments (same quote/heredoc state machine, same
+# command-boundary splitting) but a heredoc BODY is not dropped unconditionally
+# -- only when it is genuinely inert. A quoted-delimiter heredoc handed to an
+# ordinary data sink (cat, tee, a redirect, gh's -F/@file) really is data, and
+# stays dropped -- that is the false positive issue #351 fixed. But an
+# UNQUOTED delimiter expands command substitutions before any consumer runs,
+# and a heredoc handed to a shell interpreter executes as a script regardless
+# of quoting -- both of those are commands, not data, and issue #364's review
+# is right that treating every heredoc body as inert let them through
+# unexamined. The recovered command text is recursively re-segmented (through
+# this same function) so a substitution or script body that itself contains a
+# heredoc is still fully parsed, not just pattern-matched as one blob.
+guard_destructive_command_segments() {
+    local input=$1 line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
+    local i length char next third rest k delimiter delimiter_quote terminator_line
+    local owner='' heredoc_no_expand=0 body='' bodyline sub recovered
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ -n $heredoc ]]; then
+            terminator_line=$line
+            if ((heredoc_tabstrip)); then
+                terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
+            fi
+            if [[ $terminator_line == "$heredoc" ]]; then
+                heredoc=''
+                heredoc_tabstrip=0
+                if ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; then
+                    body=''
+                elif guard_heredoc_consumer_is_shell "$owner"; then
+                    while IFS= read -r recovered; do
+                        [[ -n $recovered ]] && printf '%s\n' "$recovered"
+                    done < <(guard_destructive_command_segments "$body")
+                    body=''
+                else
+                    while IFS= read -r sub; do
+                        while IFS= read -r recovered; do
+                            [[ -n $recovered ]] && printf '%s\n' "$recovered"
+                        done < <(guard_destructive_command_segments "$sub")
+                    done < <(guard_heredoc_substitutions "$body")
+                    body=''
+                fi
+                owner=''
+                # The owner line (everything up to and including the heredoc
+                # opener, captured in $segment) is a complete command in its
+                # own right -- flush it now instead of leaving it to merge
+                # with whatever text follows. Without this, $segment keeps
+                # accumulating past the heredoc close and the NEXT command
+                # gets appended onto it before the end-of-line flush below
+                # ever runs, breaking this function's one-segment-per-command
+                # contract. `guard_destructive_reason`'s `while read -r`
+                # consumer happens to re-split on the embedded newline today,
+                # which is why that merge currently causes no misjudged
+                # command -- but a caller that reads differently (an array,
+                # a NUL-delimited read, a whole-string match) would see one
+                # merged segment instead of two, so this is fixed at the
+                # source rather than left as an implicit coupling.
+                if [[ -n $segment ]]; then
+                    printf '%s\n' "${segment%$'\n'}"
+                    segment=''
+                fi
+                continue
+            fi
+            bodyline=$line
+            if ((heredoc_tabstrip)); then
+                bodyline=${bodyline#"${bodyline%%[!$'\t']*}"}
+            fi
+            body+="$bodyline"$'\n'
+            continue
+        fi
+
+        i=0
+        length=${#line}
+        while ((i < length)); do
+            char=${line:i:1}
+            next=${line:i+1:1}
+            third=${line:i+2:1}
+
+            if [[ $quote == "'" ]]; then
+                segment+=$char
+                [[ $char == "'" ]] && quote=''
+                ((i++))
+                continue
+            fi
+            if ((escaped)); then
+                segment+=$char
+                escaped=0
+                ((i++))
+                continue
+            fi
+            if [[ $char == \\ ]]; then
+                segment+=$char
+                escaped=1
+                ((i++))
+                continue
+            fi
+            if [[ $quote == '"' ]]; then
+                segment+=$char
+                [[ $char == '"' ]] && quote=''
+                ((i++))
+                continue
+            fi
+
+            case $char in
+                "'"|'"')
+                    quote=$char
+                    segment+=$char
+                    ((i++))
+                    ;;
+                ';'|'|'|'&')
+                    printf '%s\n' "$segment"
+                    segment=''
+                    ((i++))
+                    ;;
+                '<')
+                    if [[ $next == '<' && $third != '<' ]]; then
+                        owner=$segment
+                        segment+='<<'
+                        i=$((i + 2))
+                        rest=${line:i}
+                        heredoc_tabstrip=0
+                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; heredoc_tabstrip=1; }
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        delimiter_quote=${rest:0:1}
+                        if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
+                            rest=${rest:1}
+                            k=0
+                            while ((k < ${#rest})) && [[ ${rest:k:1} != "$delimiter_quote" ]]; do
+                                ((k++))
+                            done
+                            delimiter=${rest:0:k}
+                            heredoc_no_expand=1
+                        else
+                            delimiter=${rest%%[[:space:];|&]*}
+                            # An unquoted delimiter such as `<<\EOF` disables
+                            # heredoc-body expansion the same way a quoted one
+                            # does; bash strips the backslash for the purpose
+                            # of matching the terminator, so the stored
+                            # delimiter must too, or the real terminator line
+                            # (bare "EOF") never matches "\EOF".
+                            heredoc_no_expand=0
+                            [[ $delimiter_quote == \\ ]] && heredoc_no_expand=1
+                            delimiter=${delimiter//\\/}
+                        fi
+                        [[ -n $delimiter ]] && heredoc=$delimiter
+                        body=''
+                    else
+                        segment+=$char
+                        ((i++))
+                    fi
+                    ;;
+                *)
+                    segment+=$char
+                    ((i++))
+                    ;;
+            esac
+        done
+
+        if [[ -z $heredoc && -z $quote ]]; then
+            printf '%s\n' "$segment"
+            segment=''
+        else
+            segment+=$'\n'
+        fi
+    done <<< "$input"
+}
+
+# Splits the raw command text into the segments the shell would actually
+# execute -- via guard_destructive_command_segments, a heredoc-aware sibling
+# of guard_gh_command_segments (the shared quote/heredoc state machine
+# guard_out_of_scope_target and guard_gh_inline_body_reason already rely on,
+# issue #335) -- and judges each segment on its own.
+#
+# Matching the WHOLE raw command_line as one string let unrelated text
+# contaminate the verdict: a `rm -rf ~` example quoted inside a genuinely
+# inert heredoc BODY (documentation prose, a pasted issue body) read exactly
+# like a real command, and a short flag from one segment (`gh api ... -f`)
+# could combine with an unrelated `-r` text elsewhere to manufacture a match
+# neither line actually contains. An innocuous trailing `rm -f -- "$f"` then
+# got refused for a danger that was never in the command actually being run
+# (issue #351). Segmenting first means each command is judged against its own
+# tokens only. A heredoc BODY that is genuinely data (quoted delimiter, an
+# inert consumer such as cat/tee/a redirect/gh) is dropped, exactly as before;
+# one that is not -- an unquoted substitution, or any body handed to a shell
+# interpreter regardless of quoting -- is recovered and judged as the command
+# it actually is (issue #364).
 guard_destructive_reason() {
-    local cmd=$1 stripped flattened normalized
+    local command_line=$1 cwd=${2:-} segments segment trimmed reason
+    local -a lines=()
+
+    segments=$(guard_destructive_command_segments "$command_line")
+    while IFS= read -r segment; do
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        lines+=("$trimmed")
+    done <<< "$segments"
+
+    for segment in "${lines[@]}"; do
+        if reason=$(guard_destructive_segment_reason "$segment" "$cwd"); then
+            # Name the offending line once more than one command shares this
+            # payload, so a multi-line script is not refused wholesale over a
+            # single dangerous line -- the agent can see which one to redo.
+            if ((${#lines[@]} > 1)); then
+                printf '%s (the offending line is: %s)' "$reason" "$segment"
+            else
+                printf '%s' "$reason"
+            fi
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Is $2.. present as a contiguous, EXACT-token sequence anywhere in the word
+# array named by $1 (produced by guard_tokenize_words, so a quoted argument is
+# already one word)? Word-array equality, never substring -- so `gh pr merge`
+# spelled out inside a single quoted data argument (a sed replacement script,
+# a printf payload destined for a file) can never match: quoting collapses it
+# into ONE word here, not three separate command tokens (issue #397).
+guard_words_contain_sequence() {
+    local -n __gwcs_words=$1
+    shift
+    local -a want=("$@")
+    local n=${#want[@]} i j matched
+    ((n)) || return 1
+    for ((i = 0; i + n <= ${#__gwcs_words[@]}; i++)); do
+        matched=1
+        for ((j = 0; j < n; j++)); do
+            [[ ${__gwcs_words[i + j]} == "${want[j]}" ]] || { matched=0; break; }
+        done
+        ((matched)) && return 0
+    done
+    return 1
+}
+
+# Is a `git config` invocation's tokenized word array (named by $1) SETTING
+# one of the keys that runs a command during ordinary git operations (formerly
+# matched with a `grep -E` pattern spelling the key as core\.hooksPath, etc.)?
+# Prints the offending key and returns 0 only for a genuine set; a `--get`/
+# `--get-all`/`--get-regexp`/`--get-urlmatch` READ of the exact same key is
+# never a write -- `git config --get core.hooksPath` refused as if it were
+# setting the hook path was issue #397's false positive #3. Token equality
+# (not substring) also means the key can never be matched out of a quoted
+# data argument, the same class of fix as guard_words_contain_sequence above.
+guard_git_config_write_key() {
+    local -n __ggcw_words=$1
+    local i n=${#__ggcw_words[@]} word key='' is_read=0 saw_git=0 saw_config=0
+    for ((i = 0; i < n; i++)); do
+        word=${__ggcw_words[i]}
+        if ((!saw_git)); then
+            [[ $word == git ]] && saw_git=1
+            continue
+        fi
+        if ((!saw_config)); then
+            [[ $word == config ]] && saw_config=1
+            continue
+        fi
+        case $word in
+            --get | --get-all | --get-regexp | --get-urlmatch) is_read=1 ;;
+            core.hooksPath | core.fsmonitor | core.sshCommand | \
+            filter.*.clean | filter.*.smudge | filter.*.process | diff.*.textconv)
+                key=$word ;;
+        esac
+    done
+    ((saw_git && saw_config)) || return 1
+    [[ -n $key && $is_read -eq 0 ]] || return 1
+    printf '%s' "$key"
+}
+
+# Is a git invocation's UNSTRIPPED tokenized word array (named by $1) passing
+# one of the same execution keys via `-c KEY=VALUE`, the attached
+# `-cKEY=VALUE`, or `--config-env=KEY=...`? guard_strip_git_globals removes
+# every `-c`/`-C` pair before guard_git_config_write_key's word array (built
+# from the STRIPPED command) ever sees it, so `git -c core.hooksPath=/tmp/evil
+# commit` reduced to `git commit` and was allowed -- adversarial review on
+# PR #414 found this bypass (issue #397 follow-up F1). None of these three
+# forms persist past this one invocation the way `git config KEY VALUE` does,
+# but `-c core.hooksPath=/tmp/evil` still runs that hook DURING this command,
+# which is the same immediate code-execution vector, just scoped to one call
+# instead of the repository. Keep the sensitive-key set in lockstep with
+# guard_git_config_write_key's case pattern above -- token equality here too,
+# so a quoted data string mentioning `-c core.hooksPath=` can never match.
+guard_git_dash_c_write_key() {
+    local -n __ggdc_words=$1
+    local i n=${#__ggdc_words[@]} word next key='' saw_git=0
+    for ((i = 0; i < n; i++)); do
+        word=${__ggdc_words[i]}
+        if ((!saw_git)); then
+            [[ $word == git ]] && saw_git=1
+            continue
+        fi
+        case $word in
+            -c)
+                ((i + 1 < n)) || continue
+                next=${__ggdc_words[i + 1]}
+                ;;
+            -c?*) next=${word#-c} ;;
+            --config-env=*) next=${word#--config-env=} ;;
+            *) continue ;;
+        esac
+        [[ $next == *=* ]] || continue
+        case ${next%%=*} in
+            core.hooksPath | core.fsmonitor | core.sshCommand | \
+            filter.*.clean | filter.*.smudge | filter.*.process | diff.*.textconv)
+                key=${next%%=*} ;;
+        esac
+    done
+    ((saw_git)) || return 1
+    [[ -n $key ]] || return 1
+    printf '%s' "$key"
+}
+
+# Does a `gh api` flag (exact token, no attached `=value` or short form) take
+# a SEPARATE next argument as its value? Used only to walk past that value
+# when hunting for the endpoint positional below -- an attached `--flag=value`
+# or short `-Fvalue` token already carries its value in the same word, so it
+# is never in this list. `--cache` was the CodeRabbit-reported gap on PR #415:
+# without it, `gh api --cache 1h -X PUT .../merge` misread `1h` as the
+# endpoint positional and the merge went unrecognised.
+guard_gh_api_value_flag() {
+    case $1 in
+        -X | --method | -F | --field | -H | --header | --hostname | \
+        --input | -q | --jq | -p | --preview | -f | --raw-field | -t | --template | \
+        --cache)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Judges a `gh api graphql --input PATH` (or `--input=PATH`) mutation body --
+# the one shape the -f/-F loop in guard_gh_api_merge_mutation_reason cannot
+# see, because the mutation lives in a FILE, never a command-line token
+# (CodeRabbit finding on PR #415). Fails CLOSED -- denies -- whenever the body
+# cannot be safely read: PATH is `-` (stdin), empty, `cwd` was never threaded
+# through (this deliberately never falls back to the hook PROCESS's own
+# $PWD -- see guard_command_target_dir's header for the prior, unrelated
+# defect that pattern caused), the path cannot be resolved to somewhere
+# inside `cwd`'s OWN repository (checked twice: the lexical candidate's
+# repository root, and again after symlink resolution via
+# guard_target_realpath, so a symlink lexically inside the repo but pointing
+# outside it still fails closed), or it is not a readable regular file. Only
+# once the file reads cleanly from inside the repository does its CONTENT
+# decide the verdict: a literal `mergePullRequest` occurrence denies, its
+# absence allows.
+guard_gh_api_graphql_input_reason() {
+    local input_path=$1 cwd=$2 reason_tail
+    reason_tail=' Pass the mutation inline via -f query=... instead so this guard can read it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+
+    if [[ -z $input_path || $input_path == '-' || -z $cwd ]]; then
+        printf 'a GraphQL mutation body supplied via --input (stdin, unnamed, or with no working directory to resolve it against) cannot be inspected for a mergePullRequest mutation, so it is refused rather than assumed safe.%s' \
+            "$reason_tail"
+        return 0
+    fi
+
+    local path_result rc=0 lexical_root lexical_candidate cwd_root real_candidate
+    path_result=$(guard_target_path "$input_path" "$cwd" 2> /dev/null) || rc=$?
+    if ((rc != 0)); then
+        printf 'a GraphQL mutation body supplied via --input %s could not be resolved to a path inside a repository, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+    lexical_root=${path_result%%$'\n'*}
+    lexical_candidate=${path_result#*$'\n'}
+    cwd_root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null)
+    if [[ -z $cwd_root || $lexical_root != "$cwd_root" ]]; then
+        printf 'a GraphQL mutation body supplied via --input %s resolves outside this repository, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+
+    if ! real_candidate=$(guard_target_realpath "$lexical_candidate" 2> /dev/null); then
+        printf 'a GraphQL mutation body supplied via --input %s could not be read, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+    if ! guard_path_inside "$cwd_root" "$real_candidate"; then
+        printf 'a GraphQL mutation body supplied via --input %s resolves outside this repository, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+    if [[ ! -f $real_candidate || ! -r $real_candidate ]]; then
+        printf 'a GraphQL mutation body supplied via --input %s is not a readable regular file, so it is refused rather than assumed safe.%s' \
+            "$input_path" "$reason_tail"
+        return 0
+    fi
+
+    if grep -qF -- 'mergePullRequest' "$real_candidate" 2> /dev/null; then
+        printf 'merging a pull request through a GraphQL mergePullRequest mutation supplied via --input %s is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.' \
+            "$input_path"
+        return 0
+    fi
+    return 1
+}
+
+# Is a `gh api` invocation's tokenized word array (named by $1) a direct REST
+# or GraphQL pull-request MERGE mutation -- the same forge action `gh pr
+# merge` reaches, typed a different way (issue #404 adversarial follow-up)?
+# `merge-pr.sh` sends exactly this REST call, but from inside its OWN
+# subprocess: this hook inspects only the agent's Bash command line, never a
+# helper script's internals, so this check can refuse the agent typing the
+# call directly without ever seeing (or blocking) merge-pr.sh's own call.
+#
+# Matched on exact tokens from guard_tokenize_words, so a quoted data
+# argument (a sed/printf payload, a comment mentioning the route) collapses
+# to one word and can never spell out the endpoint or mutation name as
+# separate command tokens -- the same #397 protection extended to this check.
+#
+# The command word is located via guard_skip_command_prefix, not word[0]/
+# word[1] directly: a leading `NAME=value` assignment (`GH_TOKEN=x gh api
+# ...`) or execution wrapper (`env gh api ...`, `command gh api ...`) used to
+# put "gh"/"api" one or more slots later and slip past this check entirely --
+# CodeRabbit found this on PR #415's review.
+#
+# `cwd` (optional, $2) is threaded through only for the graphql --input case
+# below; every other check here is pure argv inspection and needs no cwd.
+guard_gh_api_merge_mutation_reason() {
+    local -n __ggamr_words=$1
+    local cwd=${2:-}
+    local n=${#__ggamr_words[@]}
+    local start
+    start=$(guard_skip_command_prefix "$1" 0)
+    ((start + 1 < n)) || return 1
+    [[ ${__ggamr_words[start]} == gh && ${__ggamr_words[start + 1]} == api ]] || return 1
+
+    local i word next method='GET' endpoint=''
+    local -a positionals=()
+    for ((i = start + 2; i < n; i++)); do
+        word=${__ggamr_words[i]}
+        case $word in
+            -X | --method)
+                if ((i + 1 < n)); then
+                    method=${__ggamr_words[i + 1]}
+                    ((i++))
+                fi
+                continue ;;
+            -X?*) method=${word#-X}; continue ;;
+            --method=*) method=${word#--method=}; continue ;;
+        esac
+        if [[ $word == -* ]]; then
+            guard_gh_api_value_flag "$word" && ((i++))
+            continue
+        fi
+        positionals+=("$word")
+    done
+    endpoint=${positionals[0]-}
+
+    # REST: PUT .../pulls/N/merge -- with or without a leading slash or the
+    # full api.github.com host, OWNER/REPO restricted to the character set a
+    # repo slug actually allows.
+    if [[ ${method^^} == PUT ]] &&
+        [[ $endpoint =~ ^(https://api\.github\.com/)?/?repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+/merge$ ]]; then
+        printf 'merging a pull request through the REST API directly is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+        return 0
+    fi
+
+    # GraphQL: the endpoint literal is "graphql"; the mutation NAME is data
+    # carried in a -f/-F/--raw-field/--field VALUE token -- the payload gh
+    # actually sends -- never the raw command text, so this cannot match a
+    # mention of the same word inside an argument that is not one of those
+    # value tokens. `--input`/`--input=` instead names a FILE carrying the
+    # body -- guard_gh_api_graphql_input_reason judges that shape.
+    if [[ $endpoint == graphql ]]; then
+        local input_path='' had_input=0 graphql_input_reason
+        for ((i = start + 2; i < n; i++)); do
+            word=${__ggamr_words[i]}
+            case $word in
+                -f | -F | --raw-field | --field)
+                    next=${__ggamr_words[i + 1]-}
+                    if [[ $next == *mergePullRequest* ]]; then
+                        printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+                        return 0
+                    fi
+                    ;;
+                -f*=*mergePullRequest* | -F*=*mergePullRequest* | \
+                --raw-field=*mergePullRequest* | --field=*mergePullRequest*)
+                    printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+                    return 0
+                    ;;
+                --input)
+                    had_input=1
+                    input_path=${__ggamr_words[i + 1]-}
+                    ;;
+                --input=*)
+                    had_input=1
+                    input_path=${word#--input=}
+                    ;;
+            esac
+        done
+        if ((had_input)) &&
+            graphql_input_reason=$(guard_gh_api_graphql_input_reason "$input_path" "$cwd"); then
+            printf '%s' "$graphql_input_reason"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+guard_destructive_segment_reason() {
+    local cmd=$1 cwd=${2:-} stripped flattened normalized
 
     # A flag hidden inside a substitution reads as ordinary text to every pattern
     # below: `git push $(echo --force)` matched nothing. Flattening the
@@ -257,28 +1917,55 @@ guard_destructive_reason() {
     flattened=${flattened//[\`)]/ }
     if [[ $flattened != "$cmd" ]]; then
         local hidden
-        if hidden=$(guard_destructive_reason "$flattened"); then
+        if hidden=$(guard_destructive_segment_reason "$flattened" "$cwd"); then
             printf '%s (the command hides that flag inside a substitution; write it literally if you mean it)' "$hidden"
             return 0
         fi
     fi
 
+    # A `$(...)`/`` `...` `` substitution executes BEFORE the outer command
+    # ever uses its output -- including one written inside an outer
+    # DOUBLE-quoted argument. The tokenizer below correctly treats that whole
+    # quoted argument as ONE word (it IS one argument to the outer command),
+    # but the substitution inside it is still a separately-executed command,
+    # not inert data the way a single-quoted argument's contents are (the
+    # naive flattening above misses this: it never opens the outer double
+    # quotes, so a flattened `"$(git config core.hooksPath /tmp/evil)"`
+    # tokenizes right back into one quoted word). guard_segment_substitutions
+    # is single-quote aware, so a substitution genuinely trapped inside single
+    # quotes (never executed) is correctly left alone. Judge every extracted
+    # payload through the FULL destructive-command check, not just the two
+    # checks below, since a hidden substitution can carry any of them
+    # (issue #397 follow-up).
+    local payload payload_reason
+    while IFS= read -r payload; do
+        [[ -n $payload ]] || continue
+        if payload_reason=$(guard_destructive_segment_reason "$payload" "$cwd"); then
+            printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
+            return 0
+        fi
+    done < <(guard_segment_substitutions "$cmd")
+
     stripped=$(guard_strip_git_globals "$cmd")
     normalized=$(guard_normalize_flags "$stripped")
+    # Quote-aware tokenization of this ONE segment -- a quoted argument (a sed
+    # script, a printf payload) collapses to a single word here, so the
+    # verb-position checks below can never fire on bytes inside quoted data
+    # (issue #397).
+    local -a words
+    mapfile -t words < <(guard_tokenize_words "$stripped")
+    # The UNSTRIPPED word array -- guard_strip_git_globals removes every
+    # `-c KEY=VALUE` pair before `words` above ever sees it, so
+    # guard_git_dash_c_write_key (which needs that pair intact) works from
+    # this array instead (issue #397 follow-up F1).
+    local -a raw_words
+    # shellcheck disable=SC2034  # consumed by name via the
+    # guard_git_dash_c_write_key nameref below, never as ${raw_words[@]} here.
+    mapfile -t raw_words < <(guard_tokenize_words "$cmd")
 
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]+(--force|--force-with-lease|-f)([[:space:]]|$)' <<< "$normalized"; then
-        printf 'force-pushing rewrites history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
-        return 0
-    fi
-    # A leading + on a refspec IS --force, for that ref only, and carries no flag
-    # for a flag-shaped pattern to find.
-    if grep -qE '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]][^;&|]*)?[[:space:]]\+[^[:space:];&|]' <<< "$stripped"; then
-        printf 'a + on the refspec force-pushes that ref, rewriting history other people may already have. Push a normal commit, or ask the user to force-push themselves.'
-        return 0
-    fi
-    # Intervening tokens are tolerated, as in the push rule: after a substitution
-    # is flattened the flag is no longer adjacent to the verb. Bounded by shell
-    # separators, so a later unrelated command cannot be dragged into the match.
+    # Intervening tokens are tolerated: after a substitution is flattened the
+    # flag is no longer adjacent to the verb. Bounded by shell separators, so a
+    # later unrelated command cannot be dragged into the match.
     if grep -qE '(^|[;&|[:space:]])git[[:space:]]+reset([[:space:]][^;&|]*)?[[:space:]]--hard' <<< "$stripped"; then
         printf 'reset --hard discards uncommitted work irrecoverably. Use git stash, or commit first.'
         return 0
@@ -321,14 +2008,53 @@ guard_destructive_reason() {
         return 0
     fi
     # An execution key in git config runs a command during ORDINARY git
-    # operations, persists after the session, and runs as the user rather than
-    # the agent. It is the quietest code-execution vector in a repository.
-    if grep -qE '(^|[;&|[:space:]])git([[:space:]][^;&|]*)?[[:space:]]config([[:space:]][^;&|]*)?[[:space:]](core\.hooksPath|core\.fsmonitor|filter\.[^[:space:]]+\.(clean|smudge|process)|core\.sshCommand|diff\.[^[:space:]]+\.textconv)' <<< "$cmd"; then
-        printf 'that git config key executes a command during ordinary git operations, and it outlives this session. Setting it is a decision for the user.'
+    # operations, and runs as the user rather than the agent. It is the
+    # quietest code-execution vector in a repository -- whether it is set
+    # persistently (`git config KEY VALUE`, outliving this session) or scoped
+    # to one invocation (`git -c KEY=VALUE ...`/`--config-env=KEY=...`, which
+    # still executes the hook DURING that one command). Token-matched, not a
+    # substring grep: a `--get` READ of the same key is never a write, and
+    # the key can never be matched out of a quoted data argument (issue
+    # #397; the -c/--config-env form is the follow-up F1 fix).
+    local config_key
+    if config_key=$(guard_git_config_write_key words) ||
+        config_key=$(guard_git_dash_c_write_key raw_words); then
+        printf 'that git config key (%s) executes a command during git operations. Setting it is a decision for the user.' \
+            "$config_key"
         return 0
     fi
-    if grep -qE '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge' <<< "$cmd"; then
-        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead.'
+    # Exact command-token sequence, not a substring grep: `gh pr merge`
+    # spelled out inside a quoted sed/printf data argument is one word here,
+    # not three command tokens, so it can never match (issue #397).
+    #
+    # The one rule (issue #404): an agent-driven merge is sanctioned ONLY
+    # through pr-to-green's merge-pr.sh, bound to a confirmed --auto-merge
+    # authorization record plus a gate=PASS review-completion result (both
+    # re-checked at the point of mutation -- see auto-merge.md). This porcelain
+    # verb is refused unconditionally, including under an operator override,
+    # because the override the operator actually wants is already available
+    # through that path; nothing here should ever teach "retype it and it
+    # goes through".
+    #
+    # That rule covers the porcelain spelling only -- an adversarial review
+    # found the same forge action reachable, unrefused, by typing the REST or
+    # GraphQL mutation directly (`gh api -X PUT .../pulls/N/merge`, or `gh api
+    # graphql` with a `mergePullRequest` mutation): no `gh pr merge` token
+    # sequence appears in either, so this check alone let an agent bypass the
+    # authorization/gate/serialization contract entirely. guard_gh_api_merge_
+    # mutation_reason below refuses those two shapes for the identical reason.
+    # It does NOT also catch `merge-pr.sh`'s own call: this hook inspects only
+    # the AGENT's Bash command line, and that call runs inside merge-pr.sh's
+    # own subprocess, a separate command line this hook never sees -- so
+    # invoking merge-pr.sh itself (the sanctioned path) is unaffected by
+    # either check.
+    if guard_words_contain_sequence words gh pr merge; then
+        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result -- this gh pr merge porcelain form stays refused even under that authorization.'
+        return 0
+    fi
+    local api_merge_reason
+    if api_merge_reason=$(guard_gh_api_merge_mutation_reason words "$cwd"); then
+        printf '%s' "$api_merge_reason"
         return 0
     fi
     if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then
@@ -346,54 +2072,308 @@ guard_destructive_reason() {
     return 1
 }
 
-# Committing straight onto the trunk branch.
-#
-# Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
-# the agent did exactly that, and the onboarding commit landed on `main` of a
-# repository whose every other change arrives by pull request. Nothing objected,
-# because the trunk refusal lives in worktree-commit.sh and the skill had told
-# the agent to use plain git.
-#
-# Deny-ONCE, not always. Plenty of people commit to main on purpose -- a solo
-# repository, a docs typo, the first commit of an empty tree -- and a hard
-# refusal would be wrong in all of those. One refusal is enough to turn an
-# unnoticed default into a decision.
-#
-# Evidence rule: a repository that has not declared a trunk gets no opinion.
-# AGENT_BASE_BRANCH is what onboarding writes; origin/HEAD is the fallback, and
-# when neither answers, this stays silent rather than guessing at "main".
-guard_trunk_commit_reason() {
-    local cmd=$1 root=$2 current trunk
-    [[ -n $root ]] || return 1
+# Split shell command text at unquoted separators while dropping heredoc bodies.
+# This is intentionally a small lexer, not a shell evaluator: the hook only
+# needs command-position boundaries. Keeping quote and heredoc state prevents
+# prose such as `echo "step 1; gh ..."` and body lines such as `gh ...` from
+# becoming executable-looking segments.
+guard_gh_command_segments() {
+    local input=$1 line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
+    local i length char next third rest k delimiter delimiter_quote terminator_line
 
-    # Command position, so `git commit` in a message body or a grep pattern is
-    # not a commit. `git -C dir commit` and `git commit -m x` both qualify;
-    # --dry-run does not, since it writes nothing.
-    grep -qE '(^|[;&|])[[:space:]]*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)' \
-        <<< "$cmd" || return 1
-    grep -qE '[[:space:]]--dry-run([[:space:]]|=|$)' <<< "$cmd" && return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ -n $heredoc ]]; then
+            terminator_line=$line
+            # `<<-` permits the TERMINATOR to be tab-indented too, not only the
+            # heredoc body -- bash strips leading tabs from every line of a
+            # `<<-` heredoc, including the closing delimiter line. Comparing
+            # the raw line left a tab-indented terminator never matching, so
+            # the heredoc (and every command segment after it) was silently
+            # swallowed -- the guard failing open rather than closed.
+            if ((heredoc_tabstrip)); then
+                terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
+            fi
+            [[ $terminator_line == "$heredoc" ]] && { heredoc=''; heredoc_tabstrip=0; }
+            continue
+        fi
 
-    current=$(git -C "$root" symbolic-ref --quiet --short HEAD 2> /dev/null) || return 1
-    [[ -n $current ]] || return 1
+        i=0
+        length=${#line}
+        while ((i < length)); do
+            char=${line:i:1}
+            next=${line:i+1:1}
+            third=${line:i+2:1}
 
-    trunk=$(sed -n 's/^[[:space:]]*AGENT_BASE_BRANCH[[:space:]]*=[[:space:]]*//p' \
-        "$root/.agent/config.env" 2> /dev/null | tail -1)
-    trunk=${trunk%%[[:space:]]*}
-    if [[ -z $trunk ]]; then
-        trunk=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2> /dev/null) || true
-        trunk=${trunk#origin/}
-    fi
-    [[ -n $trunk && $current == "$trunk" ]] || return 1
+            if [[ $quote == "'" ]]; then
+                segment+=$char
+                [[ $char == "'" ]] && quote=''
+                ((i++))
+                continue
+            fi
+            if ((escaped)); then
+                segment+=$char
+                escaped=0
+                ((i++))
+                continue
+            fi
+            if [[ $char == \\ ]]; then
+                segment+=$char
+                escaped=1
+                ((i++))
+                continue
+            fi
+            if [[ $quote == '"' ]]; then
+                segment+=$char
+                [[ $char == '"' ]] && quote=''
+                ((i++))
+                continue
+            fi
 
-    printf '%s' "$current"
+            case $char in
+                "'"|'"')
+                    quote=$char
+                    segment+=$char
+                    ((i++))
+                    ;;
+                ';'|'|'|'&')
+                    printf '%s\n' "$segment"
+                    segment=''
+                    ((i++))
+                    ;;
+                '<')
+                    if [[ $next == '<' && $third != '<' ]]; then
+                        segment+='<<'
+                        i=$((i + 2))
+                        rest=${line:i}
+                        heredoc_tabstrip=0
+                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; heredoc_tabstrip=1; }
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        delimiter_quote=${rest:0:1}
+                        if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
+                            rest=${rest:1}
+                            k=0
+                            while ((k < ${#rest})) && [[ ${rest:k:1} != "$delimiter_quote" ]]; do
+                                ((k++))
+                            done
+                            delimiter=${rest:0:k}
+                        else
+                            delimiter=${rest%%[[:space:];|&]*}
+                            # An unquoted delimiter such as `<<\EOF` disables
+                            # heredoc-body expansion the same way a quoted one
+                            # does; bash strips the backslash for the purpose
+                            # of matching the terminator, so the stored
+                            # delimiter must too, or the real terminator line
+                            # (bare "EOF") never matches "\EOF".
+                            delimiter=${delimiter//\\/}
+                        fi
+                        [[ -n $delimiter ]] && heredoc=$delimiter
+                    else
+                        segment+=$char
+                        ((i++))
+                    fi
+                    ;;
+                *)
+                    segment+=$char
+                    ((i++))
+                    ;;
+            esac
+        done
+
+        if [[ -z $heredoc && -z $quote ]]; then
+            printf '%s\n' "$segment"
+            segment=''
+        else
+            segment+=$'\n'
+        fi
+    done <<< "$input"
+}
+
+# Tokenize ONE shell segment (already free of `;`/`|`/`&` structure and
+# heredoc bodies, e.g. one line from guard_gh_command_segments) into words the
+# way the shell actually would -- honoring single/double quotes and backslash
+# escapes -- rather than `read -r -a`, which splits on ANY whitespace
+# regardless of quoting. `read -r -a` turns one quoted argument containing a
+# space (a sed/grep expression, a sentence) into several separate "words", one
+# of which can look path-shaped purely because that is where the quoted text
+# happened to start (issue #335 Case 3, e.g. `sed -e "/^Return the
+# six-step/,\$d"` was previously read as the four words -e, "/^Return, the,
+# six-step/,\$d" -- the second of which passed the /* path check). Output:
+# one word per line; the quote characters themselves are consumed as syntax
+# and never appear in a word.
+guard_tokenize_words() {
+    local segment=$1 word='' quote='' escaped=0 char i length
+    length=${#segment}
+    for ((i = 0; i < length; i++)); do
+        char=${segment:i:1}
+        if ((escaped)); then
+            word+=$char
+            escaped=0
+            continue
+        fi
+        if [[ $char == \\ && $quote != "'" ]]; then
+            escaped=1
+            continue
+        fi
+        if [[ -n $quote ]]; then
+            if [[ $char == "$quote" ]]; then
+                quote=''
+            else
+                word+=$char
+            fi
+            continue
+        fi
+        case $char in
+            "'" | '"') quote=$char ;;
+            [[:space:]])
+                if [[ -n $word ]]; then
+                    printf '%s\n' "$word"
+                    word=''
+                fi
+                ;;
+            *) word+=$char ;;
+        esac
+    done
+    [[ -n $word ]] && printf '%s\n' "$word"
+}
+
+# Classify one gh body option. Output is `inline|VALUE`; file-backed and
+# unrelated options return status 1. The caller owns advancing over a separate
+# option value because it is also tokenising the command segment.
+guard_gh_body_option() {
+    local token=$1 value=${2-}
+    case $token in
+        --body|-b) printf 'inline|%s' "$value"; return 0;;
+        -b?*) printf 'inline|%s' "${token#-b}"; return 0;;
+        --body=*) printf 'inline|%s' "${token#--body=}"; return 0;;
+        -f|--raw-field|--field)
+            [[ $value == body=* ]] || return 1
+            printf 'inline|%s' "${value#body=}"; return 0;;
+        -fbody=*|--raw-field=body=*|--field=body=*)
+            printf 'inline|%s' "${token#*=}"; return 0;;
+        -F)
+            [[ $value == body=* ]] || return 1
+            value=${value#body=}
+            [[ $value != @* ]] || return 1
+            printf 'inline|%s' "$value"; return 0;;
+        -Fbody=*)
+            value=${token#*=}
+            [[ $value != @* ]] || return 1
+            printf 'inline|%s' "$value"; return 0;;
+    esac
+    return 1
+}
+
+# Inline bodies are easy to corrupt before gh receives them: shell quoting,
+# command substitution, and a literal backslash-n all change the bytes the
+# forge stores. Advise only the body-taking mutations, and only when gh is the
+# command at the start of a shell segment. Text mentioning gh in grep, printf,
+# or another quoted argument is data, not a command to inspect.
+guard_gh_inline_body_reason() {
+    local command_line=$1 segment trimmed token value operation comment=0
+    local inline=0 literal_backslash_n=0 i j start option advice
+    local -a words
+    local segments
+    segments=$(guard_gh_command_segments "$command_line")
+
+    while IFS= read -r segment; do
+        comment=0
+        inline=0
+        literal_backslash_n=0
+        trimmed=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$segment")
+        [[ -n $trimmed ]] || continue
+        read -r -a words <<< "$trimmed"
+        ((${#words[@]})) || continue
+
+        start=0
+        while ((start < ${#words[@]})) &&
+            [[ ${words[start]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
+            ((start++))
+        done
+        if [[ ${words[start]-} == env ]]; then
+            ((start++))
+            while ((start < ${#words[@]})); do
+                if [[ ${words[start]} == -i || ${words[start]} == --ignore-environment ]] ||
+                    [[ ${words[start]} =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+                    ((start++))
+                else
+                    break
+                fi
+            done
+        fi
+        [[ ${words[start]-} == gh ]] || continue
+
+        operation=''
+        for ((i = start + 1; i < ${#words[@]}; i++)); do
+            case ${words[i]} in
+                pr|issue)
+                    case ${words[i + 1]-} in
+                        create|edit) operation=${words[i]};;
+                        comment) operation=${words[i]}-comment; comment=1;;
+                    esac
+                    ;;
+                api) operation=api;;
+            esac
+            [[ -n $operation ]] && break
+        done
+        [[ -n $operation ]] || continue
+
+        for ((j = i + 1; j < ${#words[@]}; j++)); do
+            token=${words[j]}
+            value=${words[j + 1]-}
+            case $token in
+                --body|-b|-f|--raw-field|--field|-F) ((j++));;
+            esac
+            if option=$(guard_gh_body_option "$token" "$value"); then
+                inline=1
+                value=${option#*|}
+                [[ $value == *'\n'* ]] && literal_backslash_n=1
+            fi
+        done
+
+        ((inline)) || continue
+        advice='Policy: keep gh mutation bodies file-backed. Use --body-file or --input; for gh api, use -F body=@file.'
+        advice+=' For PR/issue create and edit, use the resolved gh-body.sh transport so the stored body is re-fetched and byte-verified.'
+        if ((comment)); then
+            advice+=' For comments, use gh-comment.sh --body-file so the helper preserves and verifies the exact bytes.'
+        fi
+        if ((literal_backslash_n)); then
+            advice+=' A literal \n renders as backslash-n in the posted body; write the intended newline to a file instead.'
+        fi
+        printf '%s' "$advice"
+        return 0
+    done <<< "$segments"
+    return 1
 }
 
 # A hook that fails open is invisible. Every silent failure this tree has had --
 # a SIGPIPE exit of 141, a pipefail death before the error could print -- looked
 # from outside exactly like a hook that had nothing to say. One line per
 # incident, next to the logs the runner already writes.
+#
+# The destination used to be ${GUARD_LOG_ROOT:-$PWD}, and GUARD_LOG_ROOT is
+# assigned nowhere in the repository -- so $PWD, the hook PROCESS's inherited
+# working directory, was the only behaviour. That is not the same thing as the
+# TOOL CALL's cwd: an agent cd'd into agentkit/skills/ leaves a hook process
+# inheriting that directory, and the stray log it wrote there was neither
+# gitignored (the root .gitignore's `.agent/*` is anchored to the repository
+# root) nor excluded from the plugin build, which copies the skills tree
+# wholesale (issue #370).
+#
+# guard_state_root already answers "where does this session's state live":
+# the first candidate in `roots` -- populated from the payload's .cwd by
+# guard_resolve_roots, resolved through `git rev-parse --show-toplevel` -- that
+# has an existing .agent/. That is always the real repository root, never a
+# nested subdirectory, so this reuses it exactly the way pre-tool-use.sh
+# already does for protect_root. If the ERR trap fires before roots exist yet
+# (very early in a hook, before guard_resolve_roots has run), guard_state_root
+# has nothing to resolve and returns empty -- an unknown location, so this
+# writes nothing rather than guessing. GUARD_LOG_ROOT remains an explicit
+# override for callers (tests) that want to pin the destination.
 guard_log_error() {
-    local status=${1:-?} dir="${GUARD_LOG_ROOT:-$PWD}/.agent/logs"
+    local status=${1:-?} root dir
+    root=${GUARD_LOG_ROOT:-$(guard_state_root)}
+    [[ -n $root ]] || return 0
+    dir="$root/.agent/logs"
     mkdir -p "$dir" 2> /dev/null || return 0
     printf '{"hook":"%s","status":"%s","line":"%s"}\n' \
         "${GUARD_HOOK_NAME:-unknown}" "$status" "${BASH_LINENO[0]:-unknown}" \
@@ -413,60 +2393,31 @@ guard_log_error() {
 # repository. Anything repo-specific -- migrations, generated files, a vendored
 # tree -- belongs in AGENT_PROTECTED_PATHS, because guessing at it here would be
 # wrong somewhere else.
-readonly -a GUARD_PROTECTED_DEFAULTS=(
-    '.github/workflows/'
-    '.gitlab-ci.yml'
-    '.circleci/'
-    'azure-pipelines.yml'
-    'Jenkinsfile'
-    '.githooks/'
-    '.git/hooks/'
-    '.git/config'
-    '.pre-commit-config.yaml'
-    # The harness CONFIG decides what runs; the installed plugin tree does not.
-    # A blanket '.codex/' refused an agent READING the very skill it had been
-    # asked to follow -- the guard fired on the plugin's own instructions.
-    '.codex/config.toml'
-    '.claude/settings.json'
-    '.claude/settings.local.json'
-)
-
 # Prints the matched pattern when a path is protected. Repository-declared
 # entries are additive: a repo can extend the list, never shrink it, so a
 # committed file cannot switch its own guard off.
 guard_protected_match() {
-    local candidate=$1 root=$2 pattern
-    local -a patterns=("${GUARD_PROTECTED_DEFAULTS[@]}")
-
+    local candidate=$1 root=$2
     candidate=${candidate//\\//}
     candidate=${candidate#./}
     # An absolute path inside the repository is compared repo-relative, so the
     # same rule covers both forms an agent might use.
     [[ -z $root || $candidate != "$root"/* ]] || candidate=${candidate#"$root"/}
 
+    # Declared unconditionally: a repository with no .agent/config.env (the
+    # default, un-onboarded case) must fall through to the built-in list below
+    # rather than trip `set -u` and skip the guard entirely (issue #368).
+    local declared=''
     if [[ -n $root && -r $root/.agent/config.env ]]; then
-        local declared
         declared=$(sed -n 's/^[[:space:]]*AGENT_PROTECTED_PATHS[[:space:]]*=[[:space:]]*//p' \
             "$root/.agent/config.env" 2> /dev/null | tail -1)
         if [[ -n $declared ]]; then
             local IFS=,
             read -r -a extra <<< "$declared"
-            patterns+=("${extra[@]}")
+            declared=$(IFS=,; printf '%s' "${extra[*]}")
         fi
     fi
-
-    for pattern in "${patterns[@]}"; do
-        [[ -n $pattern ]] || continue
-        pattern=${pattern#./}
-        if [[ $pattern == */ ]]; then
-            [[ $candidate == "$pattern"* || $candidate == *"/$pattern"* ]] || continue
-        else
-            [[ $candidate == "$pattern" || $candidate == *"/$pattern" ]] || continue
-        fi
-        printf '%s' "$pattern"
-        return 0
-    done
-    return 1
+    shared_protected_pattern "$candidate" "$root" "$declared"
 }
 
 # Paths a SHELL command is about to write. The edit-tool guard never sees these:
@@ -477,24 +2428,124 @@ guard_protected_match() {
 # protected list afterwards. A general "commands that touch files" rule would
 # fire on every grep and be switched off within a week.
 guard_shell_write_targets() {
-    local cmd=$1
+    local cmd=$1 segments segment write_probe token
+    local -a results=()
 
-    # Two stages, because the alternative is parsing operands per command and
-    # that rots: `sed -i` takes its file LAST, `tee` takes it first, a redirect
-    # has no command word at all. Getting one of those wrong is how a rule ends
-    # up silently matching nothing.
-    #
-    # Stage one: does this command write at all? A path mentioned by grep or cat
-    # is not a target, and matching those would fire this rule constantly.
-    grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
-        <<< "$cmd" 2> /dev/null || return 0
+    # Heredoc BODIES are data, never a write target's spelling -- a JSON/text
+    # payload that happens to mention a protected path inside a heredoc body
+    # is not editing it. Segmenting first, via the same heredoc-aware lexer
+    # guard_out_of_scope_target relies on, drops those bodies entirely; each
+    # remaining segment is then judged on its own tokens only (issue #397).
+    segments=$(guard_gh_command_segments "$cmd")
+    while IFS= read -r segment; do
+        [[ -n ${segment//[[:space:]]/} ]] || continue
 
-    # Stage two: offer every token and let the protected list decide. A token
-    # that is not protected costs nothing; a target missed by clever parsing
-    # costs the whole guard.
-    tr -s '[:space:]' '\n' <<< "$cmd" 2> /dev/null |
-        sed -E 's/^[<>]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
-        grep -vE '^-|^$' || true
+        # Redirects to device sinks discard output but do not write a
+        # protected path. Remove them before deciding whether this segment is
+        # write-shaped.
+        write_probe=$(sed -E \
+            -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
+            -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
+            -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
+            <<< "$segment")
+
+        # Two stages, because the alternative is parsing operands per command
+        # and that rots: `sed -i` takes its file LAST, `tee` takes it first, a
+        # redirect has no command word at all. Getting one of those wrong is
+        # how a rule ends up silently matching nothing.
+        #
+        # Stage one: does this segment write at all? A path mentioned by grep
+        # or cat is not a target, and matching those would fire this rule
+        # constantly.
+        grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
+            <<< "$write_probe" 2> /dev/null || continue
+
+        # Stage two: offer tokens broadly and let the protected list decide,
+        # except for shell syntax and operands that are unambiguously data.
+        # Offered non-path tokens are not free: the contracted-worktree
+        # boundary deliberately refuses candidates whose parent cannot be
+        # resolved. Git's `<rev>:<path>` and peeled `<rev>^{type}` operands
+        # are the concrete case -- a redirect makes their segment write-shaped
+        # without making those read operands write targets (issue #423).
+        #
+        # A LEADING `NAME=value`
+        # shell-variable assignment token is never a file target -- the same
+        # assignment shape guard_heredoc_consumer_is_shell already recognises
+        # and skips as an env prefix, not a path (issue #397, e.g. a leading
+        # `agentkit=/home/.../skills` before the real command word). That
+        # skip must end at the first non-assignment token (the command word
+        # itself, or a flag): applying it to every token unconditionally
+        # dropped `dd`'s `of=` operand -- `dd if=/dev/zero
+        # of=.github/workflows/ci.yml` lost its real target and was allowed
+        # (issue #397 follow-up F2). A LATER `key=value` token instead offers
+        # its VALUE half as a candidate; the whole token is not also kept,
+        # since a bogus `key=value`-shaped "path" can itself mis-resolve
+        # against the contracted-worktree boundary the way the original
+        # assignment bug did.
+        local seen_command=0 command_is_git=no redirect_pending=0 redirect_target=0 value
+        local redirect_re='^[0-9]*>>?(.*)$'
+        while IFS= read -r token; do
+            [[ -n $token ]] || continue
+
+            # Preserve enough shell redirect syntax to exempt only Git's read
+            # operands below, never the redirect destination itself. The
+            # lexer may emit `> file`, `>file`, or their fd/append forms.
+            redirect_target=0
+            if ((redirect_pending)); then
+                redirect_target=1
+                redirect_pending=0
+            elif [[ $token =~ $redirect_re ]]; then
+                token=${BASH_REMATCH[1]}
+                if [[ -z $token ]]; then
+                    redirect_pending=1
+                    continue
+                fi
+                redirect_target=1
+            fi
+            if ((redirect_target)); then
+                token=${token#\"}; token=${token%\"}
+                token=${token#\'}; token=${token%\'}
+            fi
+            [[ -n $token ]] || continue
+            if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+                if ((seen_command)); then
+                    value=${token#*=}
+                    [[ -n $value ]] && results+=("$value")
+                fi
+                continue
+            fi
+            if ((!seen_command)); then
+                [[ $token == git ]] && command_is_git=yes
+            fi
+            seen_command=1
+
+            # Shell permits a redirect to be attached to the preceding word.
+            # Split that destination out before classifying a Git object name;
+            # otherwise `HEAD:path>target` looks like one large revspec and the
+            # data-operand exemption drops the real target with it.
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token == *'>'* ]]; then
+                value=${token#*>}
+                value=${value#>}
+                value=${value#\"}; value=${value%\"}
+                value=${value#\'}; value=${value%\'}
+                [[ -n $value ]] && results+=("$value")
+                token=${token%%>*}
+                [[ -n $token ]] || continue
+            fi
+            [[ $token == -* ]] && continue
+            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token != *'>'* ]] &&
+                { [[ $token =~ ^[^/:][^:]*:.+$ ]] ||
+                    [[ $token =~ \^\{(tree|commit|tag|object)\}$ ]]; }; then
+                continue
+            fi
+            results+=("$token")
+        done < <(guard_tokenize_words "$segment" |
+            sed -E 's/^[<]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
+            sed -E 's/[;|&()]+$//')
+    done <<< "$segments"
+
+    ((${#results[@]})) && printf '%s\n' "${results[@]}"
+    return 0
 }
 
 # Every path a tool call is about to write. Covers the file-edit tools of both

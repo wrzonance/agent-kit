@@ -7,6 +7,10 @@ Commissioned before making this repository public. Kept verbatim below the
 line; findings are tracked as they are fixed, and the wording is not edited to
 match what we ended up doing.
 
+> **2026-08-19 update:** findings 3 and 6 below concern `stop.sh`, which was
+> later removed entirely rather than hardened (see the
+> [kill-turn-gate plan](superpowers/plans/2026-08-19-kill-turn-gate.md)).
+
 ---
 
 # Adversarial engineering review

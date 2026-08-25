@@ -13,13 +13,96 @@ skills="$plugin/skills"
 rc=0
 step() { printf '\n== %s\n' "$1"; }
 
+usage() {
+    printf 'Usage: %s [--only NAME[,NAME...]]\n' "${0##*/}" >&2
+    printf '  --only NAME[,NAME...]  run only the named test suites\n' >&2
+    exit "${1:-2}"
+}
+
+only=''
+while (($#)); do
+    case $1 in
+        --only)
+            (($# >= 2)) || { printf 'run-tests: --only requires a value\n' >&2; usage; }
+            only=$2
+            [[ -n $only ]] || { printf 'run-tests: --only requires a non-empty value\n' >&2; usage; }
+            [[ $only != ,* && $only != *, && $only != *,,* ]] || {
+                printf 'run-tests: --only contains an empty suite name\n' >&2
+                usage
+            }
+            shift 2
+            ;;
+        -h|--help)
+            usage 0
+            ;;
+        *)
+            printf 'run-tests: unknown argument: %s\n' "$1" >&2
+            usage
+            ;;
+    esac
+done
+
+jobs=${AGENT_TEST_JOBS:-}
+if [[ -z $jobs ]]; then
+    jobs=$(nproc 2>/dev/null || printf '1')
+fi
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || {
+    printf 'run-tests: AGENT_TEST_JOBS must be a positive integer\n' >&2
+    exit 2
+}
+
+shopt -s nullglob
+suites=()
+suite_names=()
+for suite in "$here"/test-*.sh; do
+    name=${suite##*/test-}
+    name=${name%.sh}
+    suites+=("$suite")
+    suite_names+=("$name")
+done
+
+selected=()
+selected_names=()
+if [[ -n $only ]]; then
+    IFS=, read -r -a requested <<< "$only"
+    for name in "${requested[@]}"; do
+        valid=no
+        for known in "${suite_names[@]}"; do
+            [[ $name == "$known" ]] && valid=yes && break
+        done
+        if [[ $valid == no || -z $name ]]; then
+            printf 'run-tests: unknown suite name: %s\n' "$name" >&2
+            printf 'Valid suite names: %s\n' "${suite_names[*]:-none}" >&2
+            exit 2
+        fi
+    done
+    # Discovery order is sorted by the glob, so output order is deterministic
+    # even when callers provide a different focus-list order.
+    for i in "${!suites[@]}"; do
+        for name in "${requested[@]}"; do
+            if [[ ${suite_names[i]} == "$name" ]]; then
+                selected+=("${suites[i]}")
+                selected_names+=("${suite_names[i]}")
+                break
+            fi
+        done
+    done
+else
+    selected=("${suites[@]}")
+    selected_names=("${suite_names[@]}")
+fi
+
 step 'shellcheck (shipped scripts)'
 mapfile -t scripts < <(find "$plugin" -name '*.sh' | sort)
 printf '  %d scripts\n' "${#scripts[@]}"
 # -x follows `# shellcheck source=` so the hooks' shared library is analysed as
 # part of each caller; -P SCRIPTDIR resolves those paths against each script's
 # own directory rather than the one this gate is invoked from.
-shellcheck -x -P SCRIPTDIR -S style "${scripts[@]}" || rc=1
+if ((${#scripts[@]})); then
+    shellcheck -x -P SCRIPTDIR -S style "${scripts[@]}" || rc=1
+else
+    printf '  ok (none)\n'
+fi
 
 step 'bash -n (shipped scripts)'
 for f in "${scripts[@]}"; do
@@ -61,6 +144,22 @@ step 'markdown code blocks'
 
 step 'skill helper invocations'
 "$here/lint-skill-invocations.sh" "$skills" || rc=1
+
+step 'skill size'
+"$here/lint-skill-size.sh" "$skills" || rc=1
+
+step 'helper/reference paths'
+"$here/lint-helper-refs.sh" "$skills" || rc=1
+
+step 'reference manifest'
+"$here/lint-reference-manifest.sh" "$skills" || rc=1
+
+step 'versioned plugin paths'
+# Scans the whole plugin root, not just $skills: the hooks tree ships the
+# detector this lint must not flag (agentkit/hooks/post-tool-use.sh's own
+# regex literal) alongside the skills it protects.
+"$here/lint-versioned-plugin-paths.sh" --selftest || rc=1
+"$here/lint-versioned-plugin-paths.sh" "$plugin" || rc=1
 
 step 'no vendored system skills'
 # .system/ is Codex's OWN bundled skill set (imagegen, skill-creator,
@@ -167,8 +266,38 @@ fi
 
 [[ $harness_rc -eq 0 ]] && printf '  ok\n' || rc=1
 
+step 'environment-neutrality'
+# Runtime permissions and review automation belong to the current session and
+# repository configuration. A public skill must not turn one operator's
+# measured sandbox or SaaS settings into universal instructions.
+environment_rc=0
+if grep -rniE \
+    -e 'The network is disabled inside the sandbox' \
+    -e 'Every git write needs elevation' \
+    -e 'Only the workspace is writable' \
+    -e 'automatic and incremental reviews are disabled' \
+    -e 'push(es)? trigger(s)? (no|nothing)' \
+    -e 'ready flip triggers no review' \
+    -e 'no review is automatic' \
+    -e 'Nothing is automatic' \
+    -e 'automatic reviews are off' \
+    "$skills" --include='*.md' --include='*.sh' |
+    # The preflight helper emits measured contract notes; these are runtime
+    # facts, not guidance the neutrality gate is meant to reject.
+    grep -vE '/agent-preflight\.sh:[0-9]+:.*note='; then
+    printf '  FAIL  skill guidance hardcodes runtime or provider configuration\n' >&2
+    environment_rc=1
+else
+    printf '  ok\n'
+fi
+[[ $environment_rc -eq 0 ]] || rc=1
+
 step 'org-neutrality'
-if grep -rniE 'jacobs|tango|bravo|wrzonance|thewrz|adam@|192\.168\.' \
+# The identifier list is deliberately not committed: export AGENTKIT_ORG_PATTERN
+# as a grep -E pattern of org-identifying strings (names, hosts, addresses).
+if [[ -z "${AGENTKIT_ORG_PATTERN:-}" ]]; then
+    printf '  ok (AGENTKIT_ORG_PATTERN unset; nothing to scan for)\n'
+elif grep -rniE "$AGENTKIT_ORG_PATTERN" \
     "$plugin" \
     --include='*.sh' --include='*.md' --include='*.yaml' --include='*.json'; then
     printf '  FAIL  organization-identifying text in the shipped tree\n' >&2
@@ -177,31 +306,65 @@ else
     printf '  ok\n'
 fi
 
-# The README stated eight suites and ~350 assertions while the tree carried
-# eleven and six hundred. Nobody noticed, because nothing checked -- and an
-# external review reasonably read the overstatement as a coverage claim. A count
-# in prose is a fact about the tree, so the tree gets to enforce it.
-step 'README matches the suite inventory'
-readme_suites=$(sed -n 's/.*and \([a-z]*\) suites.*/\1/p' "$root/README.md" | head -1)
-actual_suites=$(find "$here" -maxdepth 1 -name 'test-*.sh' | wc -l | tr -d ' ')
-declare -A NUMBER_WORD=(
-    [8]=eight [9]=nine [10]=ten [11]=eleven [12]=twelve [13]=thirteen
-    [14]=fourteen [15]=fifteen [16]=sixteen
-)
-expected_word=${NUMBER_WORD[$actual_suites]:-$actual_suites}
-if [[ $readme_suites == "$expected_word" ]]; then
-    printf '  ok\n'
-else
-    printf '  FAIL  README says "%s suites", tree has %s (%s)\n' \
-        "$readme_suites" "$actual_suites" "$expected_word" >&2
-    rc=1
-fi
+# There was a gate here that pinned a spelled-out suite count in the README to
+# the number of files in this directory. It was added because the README once
+# claimed eight suites over a tree of eleven, and an external review read the
+# understatement as a coverage claim.
+#
+# It is gone because the cost landed on the wrong thing. Every branch that adds
+# a suite has to edit one shared line of prose, so a run of parallel PRs pays a
+# failed CI round and a merge conflict each -- for a number nobody reads, when
+# the run prints its real totals a few lines later. The README no longer states
+# a count, which is the honest version of the same claim.
 
 step 'unit suites'
-shopt -s nullglob
-for suite in "$here"/test-*.sh; do
-    printf '\n-- %s\n' "$(basename "$suite")"
-    "$suite" || rc=1
+printf '  %d selected (jobs=%s%s)\n' "${#selected[@]}" "$jobs" \
+    "$([[ -n $only ]] && printf ', focus=%s' "$only")"
+
+suite_tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-test-suites.XXXXXX")
+trap 'rm -rf -- "$suite_tmp"' EXIT
+declare -a suite_status suite_output suite_pid active_pids=()
+declare -A pid_index=()
+
+wait_for_suite() {
+    local done_pid index status
+    if wait -n -p done_pid "${active_pids[@]}"; then
+        status=0
+    else
+        status=$?
+    fi
+    index=${pid_index[$done_pid]}
+    suite_status[index]=$status
+    unset 'pid_index[$done_pid]'
+    for index in "${!active_pids[@]}"; do
+        [[ ${active_pids[index]} == "$done_pid" ]] || continue
+        unset 'active_pids[index]'
+        break
+    done
+}
+
+for i in "${!selected[@]}"; do
+    suite_output[i]=$suite_tmp/$i.out
+    if ((jobs == 1)); then
+        "${selected[i]}" >"${suite_output[i]}" 2>&1 || suite_status[i]=$?
+    else
+        "${selected[i]}" >"${suite_output[i]}" 2>&1 &
+        suite_pid[i]=$!
+        active_pids+=("${suite_pid[i]}")
+        pid_index[${suite_pid[i]}]=$i
+        while ((${#active_pids[@]} >= jobs)); do
+            wait_for_suite
+        done
+    fi
+done
+while ((${#active_pids[@]})); do
+    wait_for_suite
+done
+
+for i in "${!selected[@]}"; do
+    printf '\n-- test-%s.sh\n' "${selected_names[i]}"
+    cat -- "${suite_output[i]}"
+    [[ ${suite_status[i]:-0} -eq 0 ]] || rc=1
 done
 
 printf '\n%s\n' "$([[ $rc -eq 0 ]] && echo 'ALL GREEN' || echo 'FAILURES ABOVE')"

@@ -18,24 +18,43 @@
 # know the repository's ecosystem: the repository declares what "test" means as
 # AGENT_CMD_TEST in .agent/config.env, else its runner is invoked as `runner test`.
 #
-# Usage: agent-run.sh [--dir PATH] [--label NAME] (--cmd NAME | [--] <command> ...)
+# Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] (--cmd NAME | [--] <command> ...)
 # Exit status: the wrapped command's status (this script's own usage errors exit 1).
 
 set -euo pipefail
 
+if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
+    printf '%s: requires Bash >= 4 (invoked interpreter: %s); run this helper with bash, not zsh\n' \
+        "${0##*/}" "${SHELL:-unknown}" >&2
+    exit 2
+fi
+
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
   --label NAME   Label used in the log file name (default: the command's basename).
+  --force        Execute a named command even when green evidence is current.
+  --only NAME[,NAME...]  For --cmd test, use the repository's
+                 AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
+  --resolve NAME Query a named command without executing it. Prints declared,
+                 runner, or unresolved and exits 0, 4, or 3 respectively; exit 2
+                 is reserved for a fatal unsupported-interpreter guard.
   --cmd NAME     Run the command this repository declares under that name, instead
                  of spelling one out. Mutually exclusive with a literal command.
   --             End of options; everything after it is the command.
   -h, --help     Show this help and exit 0.
+
+Compose isolation: a deterministic per-worktree COMPOSE_PROJECT_NAME is exported
+for declared commands, overriding a repository .env value or a compose-file
+top-level name:. A literal -p/--project-name in the declaration outranks that
+export, so isolation cannot be established and the run exits 5 without executing.
+Serialize full-suite verification and set AGENT_COMPOSE_SERIALIZED=1 to assert no
+concurrent full-suite run, or drop the flag from the declaration.
 
 Environment:
   AGENT_CACHE_ROOT    Force cache dirs under this root (otherwise a fallback root
@@ -44,9 +63,10 @@ Environment:
 
 Repository declarations (<git-toplevel>/.agent/config.env):
   AGENT_RUNDIR_<NAME> Directory to run that command in, relative to the repo root.
-  AGENT_CMD_<NAME>    What `--cmd <name>` runs here. Values are argv: split on
-                      whitespace and exec'd directly, never through a shell. A
-                      path-shaped first word must resolve inside the repository.
+  AGENT_CMD_<NAME>    What `--cmd <name>` runs here. Values are argv: spaces
+                      inside single/double quotes stay in one token, then argv
+                      is exec'd directly, never through a shell. A path-shaped
+                      first token must resolve inside the repository.
   AGENT_REPO_RUNNER   Runner to delegate to, as a repository-relative path.
 
 Output:
@@ -70,7 +90,15 @@ die() {
 dir_opt=
 label=
 cmd_name=
+resolve_name=
 cmd=()
+focus_opt=''
+focus_requested=0
+force_cmd=0
+literal_root_fallback=no
+literal_token=''
+literal_execution_base=''
+literal_repository_base=''
 # Set when the command came from an AGENT_CMD_* declaration, which is the whole
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
@@ -79,12 +107,23 @@ if_declared=0
 while (($#)); do
     case $1 in
         --if-declared) if_declared=1; shift ;;
-        --dir|--label|--cmd)
+        --force)
+            force_cmd=1
+            shift
+            ;;
+        --only)
+            (($# >= 2)) || die 'Missing value for --only.'
+            focus_requested=1
+            focus_opt=$2
+            shift 2
+            ;;
+        --dir|--label|--cmd|--resolve)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
                 --dir) dir_opt=$2 ;;
                 --label) label=$2 ;;
-                *) cmd_name=$2 ;;
+                --cmd) cmd_name=$2 ;;
+                --resolve) resolve_name=$2 ;;
             esac
             shift 2
             ;;
@@ -107,10 +146,25 @@ while (($#)); do
     esac
 done
 
-if [[ -n $cmd_name ]]; then
+if ((focus_requested)); then
+    [[ -n $focus_opt ]] || die '--only requires a non-empty value.'
+    [[ -n $cmd_name ]] || die '--only requires --cmd test.'
+fi
+
+if [[ -n $resolve_name ]]; then
+    [[ -z $cmd_name ]] || die '--cmd NAME and --resolve NAME are mutually exclusive.'
+    ((${#cmd[@]} == 0)) || die '--resolve NAME and a literal command are mutually exclusive.'
+    ((focus_requested == 0)) || die '--resolve NAME cannot be combined with --only.'
+    ((force_cmd == 0)) ||
+        die '--resolve NAME cannot be combined with execution flags.'
+    ((if_declared == 0)) || die '--resolve NAME cannot be combined with --if-declared.'
+elif [[ -n $cmd_name ]]; then
     ((${#cmd[@]} == 0)) || die '--cmd NAME and a literal command are mutually exclusive.'
 else
     ((${#cmd[@]})) || die 'No command given.'
+fi
+if ((force_cmd)) && [[ -z $cmd_name ]]; then
+    die '--force requires --cmd NAME.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -345,6 +399,207 @@ maybe_use_package_dir() {
     done
 }
 
+canonicalise_work_dir() {
+    local resolved
+    resolved=$(cd -- "$work_dir" 2>/dev/null && pwd -P) ||
+        die "Working directory cannot be resolved: $work_dir"
+    work_dir=$resolved
+}
+
+# Docker Compose falls back to a directory-derived project name. Worktree
+# directories are not necessarily unique by basename, and concurrent worktrees
+# must never inherit the same project. Hash the canonical git root so the value
+# is stable for this worktree, valid for Compose, and independent of caller env.
+compose_project_name_for_worktree() {
+    local digest
+    digest=$(printf '%s' "$git_top" | sha256sum | awk '{print $1}') || return 1
+    [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    printf 'agentkit-%s' "${digest:0:16}"
+}
+
+compose_static_value() {
+    local value=$1
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    value=${value#\"}
+    value=${value%\"}
+    value=${value#\'}
+    value=${value%\'}
+    [[ -n $value && $value != *'$'* && $value != \#* ]]
+}
+
+compose_argv() {
+    local token base engine_seen=0
+    for token in "${cmd[@]}"; do
+        base=${token##*/}
+        case $base in
+            docker-compose | podman-compose)
+                return 0
+                ;;
+            docker | podman)
+                # Remember the engine rather than only the previous token: global
+                # options may sit between it and its subcommand, and
+                # `docker --context ci compose` still honours --project-name.
+                # Matching on the immediate predecessor missed exactly those.
+                engine_seen=1
+                ;;
+            compose)
+                ((engine_seen)) && return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+# Positive evidence that the repository itself uses Compose, independent of
+# anything a command happened to print. Mirrors the filename shapes
+# compose_project_hardcodes recognises, but only asks whether one exists.
+compose_repo_has_compose_file() {
+    local rel
+    while IFS= read -r -d '' rel; do
+        case ${rel##*/} in
+            compose.yml | compose.yaml | compose-*.yml | compose-*.yaml | \
+            docker-compose.yml | docker-compose.yaml | docker-compose-*.yml | \
+            docker-compose-*.yaml)
+                return 0
+                ;;
+        esac
+    done < <(git -C "$git_top" ls-files --cached --others --exclude-standard -z 2>/dev/null)
+    return 1
+}
+
+# Print repository-controlled Compose project names as path:value findings.
+# This is deliberately a narrow filename/shape scan: arbitrary YAML `name:`
+# fields and unrelated environment variables are not Compose evidence.
+compose_project_hardcodes() {
+    local rel base line value token next i
+    while IFS= read -r -d '' rel; do
+        base=${rel##*/}
+        case $base in
+            .env | .env.*)
+                while IFS= read -r line || [[ -n $line ]]; do
+                    [[ $line =~ ^[[:space:]]*COMPOSE_PROJECT_NAME[[:space:]]*= ]] || continue
+                    value=${line#*=}
+                    if compose_static_value "$value"; then
+                        printf '%s:%s\n' "$rel" "$value"
+                    fi
+                done < "$git_top/$rel"
+                ;;
+            compose.yml | compose.yaml | compose-*.yml | compose-*.yaml | \
+            docker-compose.yml | docker-compose.yaml | docker-compose-*.yml | \
+            docker-compose-*.yaml)
+                while IFS= read -r line || [[ -n $line ]]; do
+                    [[ $line =~ ^name:[[:space:]]* ]] || continue
+                    value=${line#name:}
+                    if compose_static_value "$value"; then
+                        printf '%s:%s\n' "$rel" "$value"
+                    fi
+                done < <(awk '/^[^[:space:]#][^:]*:[[:space:]]*/ && $0 ~ /^name:[[:space:]]*/ { print }' "$git_top/$rel")
+                ;;
+        esac
+    done < <(git -C "$git_top" ls-files --cached --others --exclude-standard -z 2>/dev/null)
+
+    # A literal CLI project flag has precedence over COMPOSE_PROJECT_NAME and
+    # therefore defeats the per-worktree export. The declaration is already a
+    # parsed argv array, so inspect tokens without invoking a shell.
+    if compose_argv; then
+        for ((i = 0; i < ${#cmd[@]}; i++)); do
+            token=${cmd[i]}
+            value=''
+            case $token in
+                --project-name=*) value=${token#--project-name=} ;;
+                -p?*) value=${token#-p} ;;
+                -p | --project-name)
+                    ((i + 1 < ${#cmd[@]})) || continue
+                    next=${cmd[i + 1]}
+                    value=$next
+                    ((i += 1))
+                    ;;
+                COMPOSE_PROJECT_NAME=*) value=${token#COMPOSE_PROJECT_NAME=} ;;
+                *) continue ;;
+            esac
+            if compose_static_value "$value"; then
+                printf 'argv[%s]:%s\n' "$i" "$value"
+            fi
+        done
+    fi
+}
+
+# Two cases, because Compose's own precedence splits them:
+#
+#   COMPOSE_PROJECT_NAME (exported here) outranks a repository `.env` value and a
+#   compose-file top-level `name:`. Overriding those IS the isolation, and it is
+#   safe for an ephemeral verification run, so they are reported and overridden.
+#
+#   A literal -p/--project-name in the declared command outranks the export. That
+#   one cannot be overridden from here, so isolation genuinely cannot be
+#   established and every worktree would share one project. Warning and running
+#   anyway walks straight into the collision this gate exists to prevent, so that
+#   path fails closed and the caller serializes instead. Set
+#   AGENT_COMPOSE_SERIALIZED=1 to assert no concurrent full-suite run is in
+#   flight; the command then proceeds under that assertion.
+configure_compose_project() {
+    local finding project argv_findings=()
+    [[ -n $cmd_name ]] || return 0
+    project=$(compose_project_name_for_worktree) ||
+        die "cannot derive a deterministic Compose project name for $git_top"
+    export COMPOSE_PROJECT_NAME=$project
+    while IFS= read -r finding; do
+        [[ -n $finding ]] || continue
+        add_note "repository hardcodes a Compose project name: $finding"
+        printf 'agent-run: WARNING: repository hardcodes a Compose project name: %s\n' \
+            "$finding" >&2
+        [[ $finding == argv\[* ]] && argv_findings+=("$finding")
+    done < <(compose_project_hardcodes | sort -u)
+
+    ((${#argv_findings[@]})) || return 0
+    if [[ ${AGENT_COMPOSE_SERIALIZED:-} == 1 ]]; then
+        add_note "isolation-impossible accepted under AGENT_COMPOSE_SERIALIZED=1: ${argv_findings[*]}"
+        printf 'agent-run: note: isolation-impossible accepted under AGENT_COMPOSE_SERIALIZED=1\n' >&2
+        return 0
+    fi
+    printf 'agent-run: ISOLATION-IMPOSSIBLE: %s\n' "${argv_findings[*]}" >&2
+    printf 'agent-run: a declared -p/--project-name outranks COMPOSE_PROJECT_NAME, so this run cannot be isolated from sibling worktrees.\n' >&2
+    printf 'agent-run: serialize full-suite verification -- let one unchanged full-suite command finish before starting another -- then re-run with AGENT_COMPOSE_SERIALIZED=1, or remove the flag from the declaration.\n' >&2
+    exit 5
+}
+
+# A literal executable path is an ad-hoc command, not a repository declaration.
+# Prefer its relative form from the exact execution directory, then fall back to
+# the repository toplevel for the common root-relative spelling. Plain names
+# deliberately fall through to PATH lookup. When the token cannot be proven to
+# name a contained executable, leave it untouched so the wrapped command
+# supplies its normal failure status while the diagnostic records both the
+# execution cwd and the toplevel-resolution result.
+resolve_literal_executable() {
+    local token=${cmd[0]} candidate resolved
+    [[ $cmd_declared == no && $token == */* ]] || return 0
+    [[ $token != /* && -n $git_top ]] || return 0
+
+    candidate=$work_dir/$token
+    resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
+    if [[ -n $resolved && $resolved == "$git_top"/* && -x $resolved && ! -d $resolved ]]; then
+        cmd[0]=$resolved
+        add_note "ad-hoc argv[0] '$token' resolved at execution cwd: yes ($resolved); execution cwd: $work_dir"
+        refresh_cmd_str
+        return 0
+    fi
+
+    candidate=$git_top/$token
+    resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
+    if [[ -n $resolved && $resolved == "$git_top"/* && -x $resolved && ! -d $resolved ]]; then
+        cmd[0]=$resolved
+        literal_root_fallback=yes
+        literal_token=$token
+        literal_execution_base=$work_dir
+        literal_repository_base=$git_top
+        add_note "ad-hoc argv[0] '$token' resolved at toplevel fallback: yes ($resolved); execution cwd: $work_dir"
+    else
+        add_note "ad-hoc argv[0] '$token' resolved at toplevel: no; execution cwd: $work_dir"
+    fi
+    refresh_cmd_str
+}
+
 # ------------------------------------------------- repository declarations ---
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
@@ -356,12 +611,114 @@ self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 # THIS process's cwd, which is not necessarily inside the repository --dir names.
 repo_config_get() {
     local key=$1 resolver=$self_dir/repo-config.sh
+    relevant_config_add "$key"
+    if [[ -n ${resolved_config_present[$key]+yes} ]]; then
+        printf '%s' "${resolved_config_values[$key]}"
+        return 0
+    fi
     [[ -x $resolver ]] || return 1
     "$resolver" --repo-root "${git_top:-$run_dir}" --get "$key" 2>/dev/null
 }
 
 # ------------------------------------------------------------------- runner ---
 runner_path='' runner_src=''
+resolution_kind=unresolved
+declare -a relevant_config_keys=()
+declare -A resolved_config_values=() resolved_config_present=()
+declare -a resolved_command_argv=() resolved_focus_argv=()
+resolved_command_key=''
+
+relevant_config_add() {
+    local key=$1 existing
+    for existing in "${relevant_config_keys[@]}"; do
+        [[ $existing == "$key" ]] && return 0
+    done
+    relevant_config_keys+=("$key")
+}
+
+relevant_config_remove() {
+    local key=$1 existing
+    local -a retained=()
+    for existing in "${relevant_config_keys[@]}"; do
+        [[ $existing == "$key" ]] || retained+=("$existing")
+    done
+    relevant_config_keys=("${retained[@]}")
+}
+
+# Resolve all keys needed for this invocation in one parser process. The
+# resolver emits NUL-delimited records containing key, raw validated value,
+# argv-count, and parsed argv. Keeping those parsed values in memory means the
+# gate and execution cannot disagree after a second config read.
+repo_config_resolve_keys() {
+    local resolver=$self_dir/repo-config.sh key tmp diagnostics field argc i
+    local -a keys=("$@")
+    local -a resolve_args=(--repo-root "${git_top:-$run_dir}")
+    tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-config.XXXXXX") || return 1
+    diagnostics=$(mktemp "${TMPDIR:-/tmp}/agent-run-config-err.XXXXXX") || {
+        rm -f -- "$tmp"
+        return 1
+    }
+    for key in "${keys[@]}"; do
+        [[ -n $key ]] || continue
+        relevant_config_add "$key"
+        resolve_args+=(--resolve "$key")
+    done
+    if ! "$resolver" "${resolve_args[@]}" >"$tmp" 2>"$diagnostics"; then
+        cat -- "$diagnostics" >&2
+        rm -f -- "$tmp" "$diagnostics"
+        return 1
+    fi
+    resolved_rundir_mismatch=no
+    exec 3<"$tmp" || { rm -f -- "$tmp" "$diagnostics"; return 1; }
+    while IFS= read -r -d '' field <&3; do
+        key=$field
+        if [[ $key == __AGENT_CONFIG_PARSE_STATUS__ ]]; then
+            IFS= read -r -d '' field <&3 || {
+                exec 3<&-
+                rm -f -- "$tmp" "$diagnostics"
+                return 1
+            }
+            [[ $field == 0 || $field == 1 ]] || {
+                exec 3<&-
+                rm -f -- "$tmp" "$diagnostics"
+                return 1
+            }
+            continue
+        fi
+        if [[ $key == __AGENT_CONFIG_RUNDIR_MISMATCH__ ]]; then
+            IFS= read -r -d '' field <&3 || {
+                exec 3<&-
+                rm -f -- "$tmp" "$diagnostics"
+                return 1
+            }
+            resolved_rundir_mismatch=yes
+            continue
+        fi
+        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
+        resolved_config_values[$key]=$field
+        resolved_config_present[$key]=yes
+        IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
+        [[ $field =~ ^[0-9]+$ ]] || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
+        argc=$field
+        local -a parsed=()
+        for ((i = 0; i < argc; i++)); do
+            IFS= read -r -d '' field <&3 || { exec 3<&-; rm -f -- "$tmp" "$diagnostics"; return 1; }
+            parsed+=("$field")
+        done
+        if [[ $key == "$resolved_command_key" ]]; then
+            resolved_command_argv=("${parsed[@]}")
+        elif [[ $key == AGENT_CMD_TEST_FOCUS ]]; then
+            resolved_focus_argv=("${parsed[@]}")
+        fi
+    done
+    exec 3<&-
+    if [[ $resolved_rundir_mismatch == yes ]]; then
+        cat -- "$diagnostics" >&2
+        rm -f -- "$tmp" "$diagnostics"
+        die "cannot run $resolved_command_key: fix the rundir-relative declaration before running it"
+    fi
+    rm -f -- "$tmp" "$diagnostics"
+}
 
 # Sets runner_path/runner_src from an explicit declaration: $AGENT_REPO_RUNNER,
 # else the same key in .agent/config.env. Returns 1 when neither declares one. A
@@ -440,17 +797,27 @@ resolve_named_command() {
     local upper rundir
     upper=$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')
     key="AGENT_CMD_$upper"
-    declared=$(repo_config_get "$key" || true)
-    if [[ -n $declared ]]; then
-        # Word-split deliberately: the value is argv, and repo-config.sh has
-        # already refused every character a shell would interpret.
-        read -r -a cmd <<< "$declared"
+    resolved_command_key=$key
+    relevant_config_add "$key"
+    local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper")
+    ((focus_requested)) && resolve_keys+=(AGENT_CMD_TEST_FOCUS)
+    [[ -z ${AGENT_REPO_RUNNER:-} ]] && resolve_keys+=(AGENT_REPO_RUNNER)
+    repo_config_resolve_keys "${resolve_keys[@]}" || die "cannot resolve repository declarations for $key"
+    declared=${resolved_config_values[$key]:-}
+    if [[ -n ${resolved_config_present[$key]+yes} && -n $declared ]]; then
+        # The runner was parsed in the same resolver pass to close the
+        # fallback TOCTOU window, but it is not relevant when the declaration
+        # wins command resolution.
+        [[ -z ${AGENT_REPO_RUNNER:-} ]] && relevant_config_remove AGENT_REPO_RUNNER
+        cmd=("${resolved_command_argv[@]}")
+        ((${#cmd[@]})) || die "invalid argv for $key"
         cmd_declared=yes
+        resolution_kind=declared
 
         # A monorepo command usually has to run IN its component. Without this
         # the only root-runnable form of a dashboard test invocation globbed
         # into node_modules and started running a dependency's test suite.
-        rundir=$(repo_config_get "AGENT_RUNDIR_$upper" || true)
+        rundir=${resolved_config_values[AGENT_RUNDIR_$upper]:-}
         if [[ -n $rundir ]]; then
             [[ -n $git_top ]] || die "AGENT_RUNDIR_$upper is set but this is not a git repository"
             [[ -d $git_top/$rundir ]] ||
@@ -462,8 +829,11 @@ resolve_named_command() {
 
     # A bespoke dispatcher IS the runner; `runner <name>` is how the runner
     # convention already invokes it, so this needs no special case.
+    # AGENT_REPO_RUNNER is consulted only on the fallback path. If the caller
+    # supplied AGENT_REPO_RUNNER in the environment, the resolver is not read.
     if resolve_runner; then
         cmd=("$name")
+        resolution_kind=runner
         return 0
     fi
 
@@ -475,7 +845,39 @@ resolve_named_command() {
         printf 'agent-run: no command named %s declared here; skipping\n' "$name" >&2
         exit 0
     fi
+    if [[ -n $resolve_name ]]; then
+        printf 'unresolved\n'
+        exit 3
+    fi
     die "no command named '$name': declare $key in .agent/config.env, or add .agent/runner"
+}
+
+apply_test_focus() {
+    local key='AGENT_CMD_TEST_FOCUS' declared token without replaced=0 occurrences i
+    local -a focus_cmd=()
+    ((focus_requested)) || return 0
+    [[ $cmd_name == test ]] || die '--only is supported only with --cmd test.'
+
+    relevant_config_add "$key"
+    declared=${resolved_config_values[$key]:-}
+    [[ -n ${resolved_config_present[$key]+yes} && -n $declared ]] ||
+        die "--only requires $key in .agent/config.env."
+    focus_cmd=("${resolved_focus_argv[@]}")
+    ((${#focus_cmd[@]})) || die "invalid argv for $key"
+    [[ ${focus_cmd[0]} != *%s* ]] ||
+        die "$key cannot contain %s in its executable token."
+    for i in "${!focus_cmd[@]}"; do
+        token=${focus_cmd[i]}
+        without=${token//%s/}
+        [[ $without == "$token" ]] && { focus_cmd[i]=$token; continue; }
+        occurrences=$(((${#token} - ${#without}) / 2))
+        replaced=$((replaced + occurrences))
+        token=${token//%s/$focus_opt}
+        focus_cmd[i]=$token
+    done
+    ((replaced == 1)) || die "$key must contain exactly one %s placeholder."
+    cmd=("${focus_cmd[@]}")
+    cmd_declared=yes
 }
 
 # --------------------------------------------------------------------- logs ---
@@ -504,11 +906,37 @@ print_notes() {
     done
 }
 
+# Compose's dependency-start messages are often the only durable signal that
+# concurrent worktrees contended for a container, port, or network. Require
+# POSITIVE evidence that the runner itself contended for a Compose resource --
+# the declared command's resolved argv is a Compose invocation (compose_argv),
+# or the repository actually contains a Compose file -- plus a collision/
+# startup signature, so ordinary assertion and application failures remain
+# ordinary command failures. Matching signature 1 against the log text alone
+# was satisfied by any line that merely *mentions* Compose -- including a test
+# suite's own passing test names -- which reduced the check to signature 2
+# alone; a repository with no Compose file must never classify.
+compose_dependency_start_collision() {
+    local log=$1
+    { compose_argv || compose_repo_has_compose_file; } || return 1
+    grep -Eiq \
+        'dependency[[:space:][:punct:]]+failed to start|dependency[^[:cntrl:]]*(already in use|already exists|port is already allocated|conflict)|container name[^[:cntrl:]]*already in use|port is already allocated|network[^[:cntrl:]]*already exists|Error response from daemon:[[:space:]]*Conflict|driver failed programming external connectivity' \
+        "$log" 2>/dev/null
+}
+
 report_failure() {
     local rc=$1 log=$2 excerpt
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
     printf '  cwd=%s runner=none\n' "$work_dir"
     print_notes '  '
+    if compose_dependency_start_collision "$log"; then
+        printf '  classification: environment-retry-eligible — Compose dependency-start collision; not a code regression.\n'
+        printf '  retry guidance: rerun the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
+    fi
+    if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
+        printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around the resolved execution base.\n' \
+            "$literal_token" "$literal_repository_base" "$literal_execution_base"
+    fi
     excerpt=$(grep -iE 'error|fail|traceback|assert|refused|denied' "$log" 2>/dev/null | head -n 20 || true)
     [[ -n $excerpt ]] || excerpt=$(tail -n 20 "$log" 2>/dev/null || true)
     if [[ -n $excerpt ]]; then
@@ -519,42 +947,184 @@ report_failure() {
     printf 'full log: %s\n' "$log"
 }
 
-# ------------------------------------------------------------ command stamp ---
-# Record that THIS named command covered the tree as of now. The Stop hook
-# compares the stamp for the command it asks for against the files git reports as
-# changed, so the stamp is named after the command that wrote it: one file per
-# name, never a shared "something passed" flag. A single flag would let a passing
-# lint satisfy a check that asked for verify -- and a repository could disarm the
-# whole gate by declaring a trivial command under some other name.
+# ---------------------------------------------------------------- verification cache ---
+# Only commands whose names describe verification are eligible for reusable
+# green evidence. State-producing commands must run again when their ignored
+# outputs disappear, even when the checkout bytes are unchanged.
+verification_cache_eligible() {
+    case ${cmd_name:-} in
+        test|lint|typecheck|coverage|verify|check) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+hash_untracked_files() {
+    local paths path file digest link
+    paths=$(mktemp "${TMPDIR:-/tmp}/agent-run-untracked.XXXXXX") || return 1
+    if ! git -C "$git_top" ls-files --others --exclude-standard -z >"$paths"; then
+        rm -f -- "$paths"
+        return 1
+    fi
+
+    exec 3<"$paths" || {
+        rm -f -- "$paths"
+        return 1
+    }
+    while IFS= read -r -d '' path <&3; do
+        file=$git_top/$path
+        if [[ ! -e $file && ! -L $file ]]; then
+            exec 3<&-
+            rm -f -- "$paths"
+            return 1
+        fi
+        printf 'untracked\0path\0%s\0' "$path"
+        if [[ -L $file ]]; then
+            if ! link=$(readlink -- "$file"); then
+                exec 3<&-
+                rm -f -- "$paths"
+                return 1
+            fi
+            printf 'symlink\0%s\0' "$link"
+        elif digest=$(sha256sum -- "$file" | awk '{print $1}'); then
+            if [[ ! $digest =~ ^[[:xdigit:]]{64}$ ]]; then
+                exec 3<&-
+                rm -f -- "$paths"
+                return 1
+            fi
+            printf 'file\0%s\0' "$digest"
+        else
+            exec 3<&-
+            rm -f -- "$paths"
+            return 1
+        fi
+    done
+    exec 3<&-
+    rm -f -- "$paths"
+}
+
+# Green evidence is keyed to the complete checkout state that a caller can
+# observe. The status stream carries untracked paths; diff HEAD carries both
+# staged and unstaged tracked content. Untracked file contents are added from a
+# NUL-delimited manifest, so same-path edits cannot reuse stale evidence and
+# unusual filenames cannot be split by shell text parsing. Cache state is
+# ignored by git, so it does not feed back into this hash.
 #
-# What may write one is otherwise the whole contract: a SUCCESSFUL run of a
-# command the repository NAMED. A literal command is the caller's own business and
-# says nothing about whether the repository's own gate passed.
-#
-# The delegating path below never reaches here, and does not need to: a declared
-# AGENT_CMD_* is exactly what makes cmd_declared=yes and skips delegation, and it
-# is also the only thing the Stop hook treats as an opt-in.
-#
-# The name is safe as a filename: resolve_named_command refuses anything but
-# lowercase letters, digits and dashes before this can run.
-#
-# Best-effort throughout -- a read-only or absent .agent/ must never turn a
-# passing run into a failing one.
-write_command_stamp() {
-    local stamp_dir
+# The resolved argv is folded in too, NUL-delimited per token: `cmd` is already
+# fully resolved by the time this runs (AGENT_CMD_<NAME> read from
+# .agent/config.env, or the runner invocation). That file is conventionally
+# gitignored, so its bytes never appear in HEAD, the tracked diff, or the
+# untracked-file manifest above -- only the resolved argv observes a changed
+# declared value. Without this, editing AGENT_CMD_TEST from `true` to `false`
+# left the tree hash unchanged and served the old green evidence back (#287).
+compute_tree_hash() {
+    local hash_input digest
+    [[ -n ${git_top:-} ]] || return 1
+    hash_input=$(mktemp "${TMPDIR:-/tmp}/agent-run-tree.XXXXXX") || return 1
+    if ! : >"$hash_input" ||
+        ! git -C "$git_top" rev-parse HEAD >>"$hash_input" ||
+        ! printf '\0' >>"$hash_input" ||
+        ! printf 'command\0%s\0focus\0%s\0' "$cmd_name" "$focus_opt" >>"$hash_input" ||
+        ! printf 'resolved\0' >>"$hash_input" ||
+        ! printf '%s\0' "${cmd[@]}" >>"$hash_input" ||
+        ! git -C "$git_top" diff HEAD >>"$hash_input" ||
+        ! printf '\0' >>"$hash_input" ||
+        ! git -C "$git_top" status --porcelain=v2 -z --untracked-files=all >>"$hash_input" ||
+        ! printf '\0work-dir\0%s\0' "$work_dir" >>"$hash_input" ||
+        ! hash_untracked_files >>"$hash_input"; then
+        rm -f -- "$hash_input"
+        return 1
+    fi
+    if ! digest=$(sha256sum -- "$hash_input" | awk '{print $1}') ||
+        [[ ! $digest =~ ^[[:xdigit:]]{64}$ ]]; then
+        rm -f -- "$hash_input"
+        return 1
+    fi
+    rm -f -- "$hash_input"
+    printf '%s' "$digest"
+}
+
+verification_cache_path() {
+    [[ -n ${git_top:-} ]] || return 1
+    printf '%s/.agent/verification-cache' "$git_top"
+}
+
+# A cache line is evidence only while its referenced log still has the exact
+# completion marker. This prevents an interrupted or hand-written line from
+# becoming a green result.
+verification_cache_hit() {
+    local tree_hash=$1 cache line log
+    ((force_cmd)) && return 1
+    verification_cache_eligible || return 1
+    cache=$(verification_cache_path 2>/dev/null || true)
+    [[ -n $cache && -r $cache ]] || return 1
+    while IFS= read -r line; do
+        [[ $line == "$tree_hash cmd=$cmd_name log="* ]] || continue
+        [[ $line == *" focus="* ]] || continue
+        log=${line#* log=}
+        log=${log% at=*}
+        [[ -f $log ]] || continue
+        grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || continue
+        printf 'agent-run: verification current: %s\n' "$log"
+        return 0
+    done < "$cache"
+    return 1
+}
+
+record_verification() {
+    local tree_hash=$1 log=$2 cache temp
     [[ -n ${git_top:-} ]] || return 0
-    [[ -n ${cmd_name:-} ]] || return 0
-    stamp_dir=$git_top/.agent/cache
-    mkdir -p -- "$stamp_dir" 2>/dev/null || return 0
-    : >"$stamp_dir/stamp-$cmd_name" 2>/dev/null || true
+    verification_cache_eligible || return 0
+    grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || return 0
+    cache=$(verification_cache_path 2>/dev/null || true)
+    [[ -n $cache && ! -L $cache ]] || return 0
+    mkdir -p -- "${cache%/*}" 2>/dev/null || return 0
+    temp=$cache.$$
+    {
+        [[ ! -e $cache ]] || cat -- "$cache"
+        printf '%s cmd=%s log=%s at=%s focus=%s\n' \
+            "$tree_hash" "$cmd_name" "$log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$focus_opt"
+    } > "$temp" 2>/dev/null || {
+        rm -f -- "$temp" 2>/dev/null || true
+        return 0
+    }
+    chmod 600 -- "$temp" 2>/dev/null || true
+    mv -f -- "$temp" "$cache" 2>/dev/null || rm -f -- "$temp" 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------- main ---
 if [[ -n $cmd_name ]]; then
     resolve_named_command "$cmd_name"
+    apply_test_focus
+elif [[ -n $resolve_name ]]; then
+    resolve_named_command "$resolve_name"
+    printf '%s\n' "$resolution_kind"
+    case $resolution_kind in
+        declared) exit 0 ;;
+        runner) exit 4 ;;
+        *) die "unknown resolution kind: $resolution_kind" ;;
+    esac
 fi
 finalise_label
 refresh_cmd_str
+
+# Resolve the directory before verification identity is computed. This keeps
+# --dir, repository-declared rundirs, and package-root adjustments scoped to
+# the exact directory where the command will execute.
+maybe_use_package_dir
+canonicalise_work_dir
+resolve_literal_executable
+
+# Configure the per-worktree Compose namespace only for a named command, before
+# either delegation or execution so every declared command sees it.
+configure_compose_project
+
+tree_hash=''
+if verification_cache_eligible; then
+    tree_hash=$(compute_tree_hash 2>/dev/null || true)
+    if [[ -n $tree_hash ]] && verification_cache_hit "$tree_hash"; then
+        exit 0
+    fi
+fi
 
 select_caches
 detect_ca
@@ -580,7 +1150,6 @@ warn_if_root_readonly
 
 set_pythonpath
 maybe_enable_system_certs
-maybe_use_package_dir
 export AGENT_RUN_LABEL="$label"
 
 # A declared AGENT_CMD_* value is the entire command: the repository has already
@@ -640,10 +1209,13 @@ trap - INT TERM
 elapsed=$((SECONDS - started_at))
 lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
 ((lines >= 0)) || lines=0
+if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
+    printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
+fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 
 if ((rc == 0)); then
-    write_command_stamp
+    [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
     printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
 else
     report_failure "$rc" "$log_file"
