@@ -451,6 +451,63 @@ assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected= or skills-con
 assert_eq '1' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
     'the regenerated contract on disk carries skills-content= too'
 
+# --- --ensure must not serve a stamp that no longer matches the running tree
+# (P2 review follow-up on #453): presence-only checks above are not enough --
+# a contract can carry a well-formed skills-content= line whose VALUE is
+# stale if the tree this script instance actually runs from changed after the
+# contract was written. Run from a real, separate copy of the scripts tree so
+# mutating a shipped file there is indistinguishable from a plugin tree
+# actually changing content underfoot.
+ensure_build=$(mktemp -d "$tmp/ensure-build.XXXXXX")
+mkdir -p "$ensure_build/.shared/scripts"
+cp -a "$root/agentkit/skills/.shared/scripts/." "$ensure_build/.shared/scripts/"
+ensure_build_script="$ensure_build/.shared/scripts/agent-preflight.sh"
+
+ensure_repo=$(new_repo)
+"$ensure_build_script" --worktree "$ensure_repo" > /dev/null 2>&1
+first_stamp=$(sed -n 's/^skills-content= sha256=//p' "$ensure_repo/.agent/env-contract.txt")
+assert_eq '64' "${#first_stamp}" 'fixture setup: the first probe recorded a real sha256 stamp'
+
+# Unchanged tree: --ensure still takes the fast path (mtime untouched),
+# reporting the same stamp it already recorded.
+before_mtime=$(stat -c %Y "$ensure_repo/.agent/env-contract.txt")
+sleep 1
+out=$("$ensure_build_script" --ensure --worktree "$ensure_repo" 2> /dev/null)
+after_mtime=$(stat -c %Y "$ensure_repo/.agent/env-contract.txt")
+assert_eq "$before_mtime" "$after_mtime" \
+    '--ensure reuses the cached contract when the running tree is genuinely unchanged'
+assert_contains "$out" "skills-content= sha256=$first_stamp" \
+    'and the unchanged case still reports the original stamp'
+
+# Mutate one shipped file in the tree the script is actually running from.
+printf '\n# mutated for the --ensure staleness test\n' >> "$ensure_build/.shared/scripts/agent-run.sh"
+out=$("$ensure_build_script" --ensure --worktree "$ensure_repo" 2> "$tmp/ensure-content-mismatch-stderr")
+second_stamp=$(grep -m1 '^skills-content=' <<< "$out" | sed -n 's/^skills-content= sha256=//p')
+assert_eq '64' "${#second_stamp}" '--ensure recomputes a real stamp after the running tree changed'
+if [[ $second_stamp != "$first_stamp" ]]; then
+    _pass '--ensure reports a different stamp once the running tree content changed'
+else
+    _fail '--ensure reports a different stamp once the running tree content changed' \
+        "both hashed to: $first_stamp"
+fi
+assert_contains "$(cat "$tmp/ensure-content-mismatch-stderr")" 'no longer matches' \
+    '--ensure explains why it fell through to a fresh preflight'
+assert_eq "$second_stamp" \
+    "$(sed -n 's/^skills-content= sha256=//p' "$ensure_repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries the new stamp too'
+
+# A recorded skills= path= that no longer matches the running tree (a
+# contract carried into a worktree whose plugin install moved) is caught the
+# same way, and named specifically rather than folded into the content note.
+stale_path_repo=$(new_repo)
+"$ensure_build_script" --worktree "$stale_path_repo" > /dev/null 2>&1
+sed -i 's|^skills= path=.*|skills= path=/nonexistent/stale/tree|' \
+    "$stale_path_repo/.agent/env-contract.txt"
+chmod 600 "$stale_path_repo/.agent/env-contract.txt"
+path_mismatch_err=$("$ensure_build_script" --ensure --worktree "$stale_path_repo" 2>&1 > /dev/null)
+assert_contains "$path_mismatch_err" 'skills= path=' \
+    '--ensure names the skills= path= mismatch specifically when that is what changed'
+
 # Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
 # with a named requirement before doing any work instead of exposing a cryptic
 # `declare: -A: invalid option` error. Running the file through zsh reproduces

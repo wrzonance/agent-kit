@@ -1384,10 +1384,37 @@ main() {
             # rather than adding a second return path.
             if existing="$(cat -- "$WORKTREE/.agent/env-contract.txt")"; then
                 if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
-                    printf '%s\n' "$existing"
-                    return 0
+                    # Presence alone proves the KEYS exist, not that their VALUES
+                    # still describe the tree this script instance is actually
+                    # running from (issue #453 review follow-up): a contract
+                    # written by an earlier run of a DIFFERENT plugin build (or
+                    # one whose tree changed content underfoot since) would
+                    # otherwise be served forever with a stamp that no longer
+                    # matches reality -- defeating the stamp's entire purpose.
+                    # Recompute both live values -- the same cost a fresh
+                    # preflight already pays -- and only take the fast path when
+                    # BOTH match exactly.
+                    recorded_skills_path=$(sed -n 's/^skills= path=//p' <<< "$existing" | sed -n '1p')
+                    recorded_skills_content=$(sed -n 's/^skills-content= sha256=//p' <<< "$existing" | sed -n '1p')
+                    live_skills_path="$(skills_tree_root)"
+                    live_skills_content=''
+                    if command -v skills_content_hash > /dev/null 2>&1; then
+                        live_skills_content=$(skills_content_hash "$live_skills_path" 2> /dev/null || true)
+                    fi
+                    [[ -n $live_skills_content ]] || live_skills_content=unavailable
+                    if [[ $recorded_skills_path == "$live_skills_path" &&
+                        $recorded_skills_content == "$live_skills_content" ]]; then
+                        printf '%s\n' "$existing"
+                        return 0
+                    fi
+                    if [[ $recorded_skills_path != "$live_skills_path" ]]; then
+                        note "trusted contract's skills= path= no longer matches the running tree ($recorded_skills_path != $live_skills_path) -- continuing with a fresh preflight"
+                    else
+                        note "trusted contract's skills-content= no longer matches the running tree's content -- continuing with a fresh preflight"
+                    fi
+                else
+                    note 'trusted contract predates protected= or skills-content= -- continuing with a fresh preflight'
                 fi
-                note 'trusted contract predates protected= or skills-content= -- continuing with a fresh preflight'
             else
                 note 'trusted contract changed while it was being read -- continuing with a fresh preflight'
             fi
