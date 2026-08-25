@@ -206,6 +206,15 @@ KNOWN_OVERSIZE[parallel-issues]="1133:19620:900"
 # target unchanged. test-skill-size.sh's pinned token-ratchet message moves
 # with it.
 KNOWN_OVERSIZE[parallel-issues]="1133:19713:900"
+# Issue #443 adds one clause to the existing REST-routing paragraph (a
+# filtered `gh api` read still needs `-X GET`, since `-f`/`-F` alone promotes
+# it to POST) plus a pointer-text update naming the worked example that now
+# lives in references/triage-and-selection.md. LINES is unchanged at 1133
+# (still under its own ceiling); TOKENS rises 19713 -> 19743, measured
+# against the merged body (main's issue #444/#449 content plus this clause)
+# and set to the minimum that passes, never padded. Line target unchanged.
+# test-skill-size.sh's pinned token-ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1133:19743:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
