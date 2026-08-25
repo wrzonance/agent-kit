@@ -103,6 +103,16 @@ queries/mutations and PR review-thread resolution. Name the surface and reason
 at the call site when using GraphQL; a general-purpose GraphQL escape hatch is
 not an allowlist.
 
+`gh api` infers its HTTP method from the flags it's given: any `-f`/`-F`
+parameter promotes the request to POST unless `-X GET` is passed explicitly,
+so a filtered read that omits it silently becomes a write against a
+repository this run does not own. Pass `-X GET` on every REST read that
+carries `-f`/`-F`:
+
+```bash
+gh api -X GET "repos/$REPO/issues" -f labels=bug -f state=open
+```
+
 ## Prior-art adjudication (only for merged-ref, in-flight, and attempted)
 
 The digest names the pull request. Read it, then classify:

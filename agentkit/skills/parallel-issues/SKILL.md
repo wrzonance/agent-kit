@@ -401,12 +401,13 @@ Any batch that creates or edits more than one forge object carries a resumable a
 never a bare loop of individual mutations. REST routing is equally strict: issue/PR bodies,
 labels, state, comments, reviews, sub-issues, dependencies, and cross-references use
 `gh api repos/<owner>/<repo>/...`; do not use `gh issue`/`gh pr` porcelain `--json` for those
-fields. The only GraphQL-only surfaces are Projects v2 queries/mutations and PR review-thread
+fields, and a filtered read still needs `-X GET` — `-f`/`-F` alone promotes `gh api` to POST.
+The only GraphQL-only surfaces are Projects v2 queries/mutations and PR review-thread
 resolution; name the surface and reason at the call site when using GraphQL — a general-purpose
 GraphQL escape hatch is not an allowlist. Read
 [references/triage-and-selection.md](references/triage-and-selection.md#bulk-mutation-discipline-ledger-chunks-and-resource-budget)
-in full before running any bulk batch — the ledger init/chunk/record recipe and the GraphQL
-budget-artifact check live there.
+in full before running any bulk batch — the ledger init/chunk/record recipe, the GraphQL
+budget-artifact check, and a correct filtered-read example live there.
 
 Board Status is a digest column, so checking it costs nothing extra. Two immediate rules survive
 here as one-liners; the full rationale, the `--fast-mode` decision rule, and pickup order are in
