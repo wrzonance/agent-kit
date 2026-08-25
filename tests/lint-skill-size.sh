@@ -180,7 +180,41 @@ KNOWN_OVERSIZE[parallel-issues]="1132:19468:900"
 # set to the minimum that passes, never padded. Target unchanged.
 # test-skill-size.sh's pinned ratchet-message assertion moves with it.
 KNOWN_OVERSIZE[review-remote-pr]="513:8337:450"
-KNOWN_OVERSIZE[parallel-issues]="1133:19554:900"
+# Issue #444 adds the work-shape axis to Step 3: a candidate whose body forbids
+# branches, worktrees, commits, or pull requests is classified `no-code` and
+# HOLD-listed before Step 5 ever creates a worktree, instead of being
+# discovered mid-dispatch. The body's only change is two pointer sentences
+# (the Step 3 classification call and the dispatch-plan entry gaining an
+# optional work-shape verdict) -- the table, disposition rule, and schema
+# detail live in references/triage-and-selection.md, per the standing
+# preference to keep body growth to a pointer. LINES rises 1120 -> 1125 (still
+# under the 1133 ceiling); TOKENS rises 19554 -> 19620, measured against this
+# body and set to the minimum that passes, never padded. Line target
+# unchanged. test-skill-size.sh's pinned token-ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1133:19620:900"
+# Issue #449 makes the worker wait bound a datum the dispatch step prints
+# instead of a rule the orchestrator must recall: the Compose-the-issue-lead-
+# prompt block gains a one-line capture of the composer's new `wait-bound=`
+# digest line and reprints it beside that same issue's prompt=/issue= line,
+# and the Polling discipline paragraph gains one pointer sentence naming that
+# printed value instead of only restating the class default. The number
+# itself is never duplicated here -- the composer parses it from
+# .shared/wait-discipline.md's own table (see that script and file). LINES is
+# unchanged at 1133 (still under its own ceiling); TOKENS rises 19620 ->
+# 19713 for the capture/reprint lines and the pointer sentence, measured
+# against this body and set to the minimum that passes, never padded. Line
+# target unchanged. test-skill-size.sh's pinned token-ratchet message moves
+# with it.
+KNOWN_OVERSIZE[parallel-issues]="1133:19713:900"
+# Issue #443 adds one clause to the existing REST-routing paragraph (a
+# filtered `gh api` read still needs `-X GET`, since `-f`/`-F` alone promotes
+# it to POST) plus a pointer-text update naming the worked example that now
+# lives in references/triage-and-selection.md. LINES is unchanged at 1133
+# (still under its own ceiling); TOKENS rises 19713 -> 19743, measured
+# against the merged body (main's issue #444/#449 content plus this clause)
+# and set to the minimum that passes, never padded. Line target unchanged.
+# test-skill-size.sh's pinned token-ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1133:19743:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000

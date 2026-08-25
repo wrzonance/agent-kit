@@ -1,0 +1,2 @@
+No commits currently exist on the bootstrap branch; add the initial
+configuration.

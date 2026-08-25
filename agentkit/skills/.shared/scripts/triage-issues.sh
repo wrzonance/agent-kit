@@ -15,9 +15,18 @@
 # Usage:
 #   triage-issues.sh [--repo-root DIR] [--limit N] [--issues N,N,N]
 #                    [--fuzzy N] [--json]
+#   triage-issues.sh --classify-shape FILE
 #
-# Exit: 0 success (including a partial response), 1 the query failed,
-#       2 bad usage, 3 gh unavailable/unauthenticated (environment-blocked).
+# --classify-shape is a standalone, offline mode: it classifies the work
+# shape of an already-fetched issue body (the same bytes Step 3's conflict
+# analysis already read -- never a fetch performed for this check alone) and
+# exits before any gh/network preflight. It never combines with the query
+# flags above.
+#
+# Exit: 0 success (including a partial response or a --classify-shape
+#       verdict), 1 the query failed, 2 bad usage, 3 gh unavailable/
+#       unauthenticated (environment-blocked; --classify-shape never reaches
+#       this check).
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}
@@ -37,43 +46,128 @@ die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
     printf 'usage: %s [--repo-root DIR] [--limit N] [--issues N,N,N] [--fuzzy N] [--json]\n' \
         "$PROGRAM" >&2
+    printf '       %s --classify-shape FILE\n' "$PROGRAM" >&2
     exit 2
 }
 
-repo_root=''
-limit=$DEFAULT_LIMIT
-issues=''
-fuzzy=''
-as_json=0
+# Deliberately crude, but defined precisely so it is reproducible -- same
+# posture as adr_candidates below: a miss is silence (verdict
+# "implementation"), never a blocked run, and a hit is a signal to read and
+# confirm, never a final verdict on its own. Anchored to the concrete
+# mechanics (branch/commit/pull request/worktree/forge mutation) rather than
+# generic words like "read-only" or "research only", which false-positive on
+# ordinary feature prose (e.g. "add a read-only mode flag").
+#
+# Every signal requires PROHIBITIVE framing, not just the bare noun: a bare
+# `no commits?` also matches a purely descriptive sentence like "No commits
+# currently exist on the bootstrap branch; add the initial configuration",
+# which is an implementation ask, not a hold. Each alternative below is
+# either an explicit directive verb (do/does/must/should/shall not, never,
+# without) acting on the mechanics, or a bare "no X" noun phrase anchored to
+# an explicit allow/permit/create verb on either side, so a standalone
+# descriptive mention of the noun never fires.
+classify_work_shape() {
+    local file=$1
+    [[ -f $file && -r $file ]] || die_usage "--classify-shape file not readable: $file"
+    local -a signals=(
+        '\b(do|does|must|should|shall) not (open|create|make|push) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\b(do|does|must|should|shall) not (branch|commit)\b'
+        '\bnever (open|create|make|push) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\bnever (branch|commit)\b'
+        '\bwithout (opening|creating|making|pushing) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\b(prohibit|forbid|disallow)(s|ed)? (any )?(branch(es)?|worktrees?|commits?|pull requests?|forge mutations?|code changes?)'
+        '\bno (commits?|branch(es)?|pull requests?|worktrees?|forge mutations?) (are |is |may be |should be |shall be |will be )?(allowed|permitted|made|created|opened)\b'
+        '\b(make|create|open|push) no (commits?|branch(es)?|pull requests?)\b'
+        '\bno (code changes?|implementation) (are |is |should be |shall be |will be )?(allowed|permitted|needed|required|expected)\b'
+    )
+    local pattern
+    pattern=$(IFS='|'; printf '%s' "${signals[*]}")
+    local matched
+    matched=$(grep -iE -m 1 -- "$pattern" "$file" || true)
+    # The matched bytes are untrusted issue-body text about to reach a
+    # terminal verbatim -- strip every control character (CR/LF/ESC/etc.)
+    # before anything else touches it, so an embedded OSC/ANSI escape
+    # sequence (e.g. an OSC 52 clipboard write) can never ride along in the
+    # printed evidence.
+    matched=$(printf '%s' "$matched" | tr -d '[:cntrl:]')
+    # Trim surrounding whitespace (markdown indentation, list markers) and cap
+    # length so one long paragraph line can't blow up the printed evidence.
+    matched="${matched#"${matched%%[![:space:]]*}"}"
+    matched="${matched%"${matched##*[![:space:]]}"}"
+    if [[ -n $matched ]]; then
+        ((${#matched} <= 160)) || matched="${matched:0:160}..."
+        printf 'work-shape=no-code signal=%s\n' "$matched"
+    else
+        printf 'work-shape=implementation signal=-\n'
+    fi
+}
 
+repo_root=''
+repo_root_supplied=0
+limit=$DEFAULT_LIMIT
+limit_supplied=0
+issues=''
+issues_supplied=0
+fuzzy=''
+fuzzy_supplied=0
+as_json=0
+classify_shape_file=''
+classify_shape_supplied=0
+
+# Every query flag tracks whether it was actually SUPPLIED, not just its
+# final value: an explicit `--limit 30` is indistinguishable from the
+# default by value alone, and would otherwise silently pass the
+# --classify-shape combination check below.
 while (($#)); do
     case $1 in
         --repo-root)
             shift
             (($#)) || die_usage '--repo-root requires a directory'
             repo_root=$1
+            repo_root_supplied=1
             ;;
         --limit)
             shift
             (($#)) || die_usage '--limit requires a number'
             limit=$1
+            limit_supplied=1
             ;;
         --issues)
             shift
             (($#)) || die_usage '--issues requires a comma-separated list'
             issues=$1
+            issues_supplied=1
             ;;
         --fuzzy)
             shift
             (($#)) || die_usage '--fuzzy requires an issue number'
             fuzzy=$1
+            fuzzy_supplied=1
             ;;
         --json) as_json=1 ;;
+        --classify-shape)
+            shift
+            (($#)) || die_usage '--classify-shape requires a file path'
+            classify_shape_file=$1
+            classify_shape_supplied=1
+            ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
     esac
     shift
 done
+
+# classify_shape_supplied -- never a bare `-n $classify_shape_file` check --
+# is what routes into the offline classifier: an empty `--classify-shape ""`
+# must never fall through into the live gh query path below.
+if ((classify_shape_supplied)); then
+    [[ -n $classify_shape_file ]] || die_usage '--classify-shape requires a non-empty file path'
+    ((repo_root_supplied == 0 && limit_supplied == 0 && issues_supplied == 0 &&
+        fuzzy_supplied == 0 && as_json == 0)) ||
+        die_usage '--classify-shape does not combine with the query flags'
+    classify_work_shape "$classify_shape_file"
+    exit 0
+fi
 
 [[ $limit =~ ^[0-9]{1,3}$ ]] || die_usage "--limit must be a number, got: $limit"
 [[ -z $issues || $issues =~ ^[0-9]+(,[0-9]+)*$ ]] ||

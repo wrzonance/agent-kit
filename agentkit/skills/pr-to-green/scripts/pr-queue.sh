@@ -373,6 +373,61 @@ else
     ' "$work_dir/planned-live.json" >"$work_dir/queue.json"
 fi
 
+# Attach a content-sensitive diffFingerprint to every queue entry: a
+# sha256 over the sorted per-file {filename, blob sha, patch} list from
+# pulls/N/files, so a descendant commit that swaps reviewed content while
+# preserving aggregate add/delete/file counts is never mistaken for a
+# no-op merge-down (issue #450 review finding F2 -- aggregate counts are
+# not a content identity). null when the read fails, the response is not
+# a JSON array, or the PR has more files than this is willing to fetch and
+# hash (300 -- generous for a real PR, cheap to fail closed on for the
+# rare far-outlier where the endpoint's own documented truncation would
+# make an equality compare meaningless anyway); authorize-queue.sh treats
+# a null fingerprint as never eligible for a mechanical advance.
+compute_diff_fingerprint() {
+    local number=$1 out=$2 raw flat count fp
+    raw="$work_dir/pr-files-$number.raw"
+    if ! api "repos/$repo/pulls/$number/files?per_page=100" --paginate --slurp \
+        >"$raw" 2>"$work_dir/api.err"; then
+        printf 'null' >"$out"
+        return 0
+    fi
+    flat="$work_dir/pr-files-$number.json"
+    jq 'if type == "array" and length > 0 and all(.[]; type == "array") then add else . end' \
+        "$raw" >"$flat" 2>/dev/null || { printf 'null' >"$out"; return 0; }
+    jq -e 'type == "array"' "$flat" >/dev/null 2>&1 || { printf 'null' >"$out"; return 0; }
+    count=$(jq 'length' "$flat" 2>/dev/null) || count=''
+    [[ $count =~ ^[0-9]+$ ]] || { printf 'null' >"$out"; return 0; }
+    ((count <= 300)) || { printf 'null' >"$out"; return 0; }
+    # Hunk-header line ranges (@@ -a,b +c,d @@) are position, not content: a
+    # base-only shift with no real edit changes them while every line the
+    # hunk carries stays identical. Normalize them to "@@ @@" so that shift
+    # alone never flips the fingerprint -- the hunk's own content lines,
+    # filename, and blob sha still fully participate.
+    fp=$(jq -cS '
+        sort_by(.filename) | map({filename, sha:(.sha // ""),
+          patch:((.patch // "") |
+            gsub("@@ -[0-9]+(,[0-9]+)? \\+[0-9]+(,[0-9]+)? @@"; "@@ @@"))})
+      ' "$flat" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}') || fp=''
+    [[ $fp =~ ^[0-9a-f]{64}$ ]] || { printf 'null' >"$out"; return 0; }
+    printf '"%s"' "$fp" >"$out"
+}
+
+: >"$work_dir/fingerprints.jsonl"
+while IFS= read -r number; do
+    fp_out="$work_dir/fp-$number.json"
+    compute_diff_fingerprint "$number" "$fp_out"
+    jq -cn --argjson pr "$number" --argjson fp "$(cat -- "$fp_out")" \
+        '{pr:$pr, diffFingerprint:$fp}' >>"$work_dir/fingerprints.jsonl"
+done < <(jq -r '.[].pr' "$work_dir/queue.json")
+jq -s '.' "$work_dir/fingerprints.jsonl" >"$work_dir/fingerprints.json"
+jq --slurpfile fp "$work_dir/fingerprints.json" '
+  map(. as $item |
+    $item + {diffFingerprint: (([$fp[0][] | select(.pr == $item.pr) | .diffFingerprint][0]) // null)})
+' "$work_dir/queue.json" >"$work_dir/queue-with-fingerprint.json" ||
+    die 'could not attach diff fingerprints to the live queue'
+mv -f -- "$work_dir/queue-with-fingerprint.json" "$work_dir/queue.json"
+
 if ((write_confirmed_queue)); then
     confirmed_output=$repo_root/.agent/pr-to-green-confirmed-queue.json
     if [[ -e $confirmed_output &&
@@ -382,7 +437,7 @@ if ((write_confirmed_queue)); then
     jq --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" '{
       repository:$repo,
       providers:$providers[0],
-      queue:map({pr,state,headSha:.sha,base})
+      queue:map({pr,state,headSha:.sha,base,diffFingerprint})
     }' "$work_dir/queue.json" >"$work_dir/confirmed-queue.json" ||
         die 'could not compose confirmed queue evidence'
     output_tmp=$(mktemp "$repo_root/.agent/.pr-to-green-confirmed-queue.XXXXXX") ||

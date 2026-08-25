@@ -3,6 +3,7 @@
 ## Contents
 - [Bulk mutation discipline: ledger, chunks, and resource budget](#bulk-mutation-discipline-ledger-chunks-and-resource-budget) — the resumable-ledger recipe for any batch of 2+ forge writes
 - [Prior-art adjudication (only for merged-ref, in-flight, and attempted)](#prior-art-adjudication-only-for-merged-ref-in-flight-and-attempted) — reading the referenced PR and applying the ADR rules
+- [Work-shape verdict](#work-shape-verdict) — classifying implementation vs. no-code/research before Step 5 ever creates a worktree
 - [Conflict analysis and dispatch-plan write sets](#conflict-analysis-and-dispatch-plan-write-sets) — pinning predicted operands and recording revisions
 - [Board adjudication](#board-adjudication) — same-board STOP rationale, the `--fast-mode` decision rule, and pickup order
 - [Optional: fuzzy prior art](#optional-fuzzy-prior-art) — the opt-in low-yield search
@@ -17,16 +18,33 @@ that flag is in play. A `clean` verdict needs none of this file.
 Any batch that creates or edits more than one forge object carries a resumable
 apply ledger. The planning ID is the stable key; a successful mutation is
 followed immediately by one `record` call containing the returned number and
-URL. The shared helper is deliberately a ledger, not an orchestrator:
+URL. This batch has no PR yet, so its ledger and plan are transient bulk
+artifacts: they belong in the private, mode-0700 run directory addressed by
+the invocation-level `RUN_ID` SKILL.md's Session decision ledger section
+establishes — never at a bare repository-relative path, which lands as an
+untracked addition mixed into the operator's own working tree. `run-dir.sh`
+is the same helper Step 3b's `RUN_DIR` uses for PR-keyed evidence;
+`--run-id` is its addressing mode for a run that has no PR to key on. The
+shared ledger helper itself is deliberately a ledger, not an orchestrator:
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-ledger=.agent/apply-ledger.json
-plan=.agent/apply-plan.json
+bulk_dir=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --run-id "$RUN_ID" --repo-root "$repository_root") || exit 1
+ledger="$bulk_dir/apply-ledger.json"
+plan="$bulk_dir/apply-plan.json"
 apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
 "$apply_ledger" init --ledger "$ledger" --plan "$plan"
 ```
+
+`record`'s `--number` is always the mutation's subject issue/PR number, not
+the ID of whatever the mutation created underneath it: the newly created
+number for a created issue/PR, or the existing issue/PR number a comment,
+close, reopen, or board-move mutation acted on. `--url` must embed that same
+number -- either the plain `.../issues/N` or `.../pull/N` form (created
+issue/PR, and reused as-is for a close, reopen, or board-move on an existing
+one), or, for a created comment, that same form with the `#issuecomment-<id>`
+fragment GitHub's response actually returns.
 
 Before every mutation, consume only the IDs from `pending --ids`; never retry
 an ID present in `applied`. Keep chunks bounded (the default recipe is 20
@@ -139,6 +157,57 @@ rejected) against the issue:
 
 Only Clean, rescoped Partially-addressed, and ADR-cited issues continue.
 
+## Work-shape verdict
+
+Step 3's body read for conflict analysis is also the cheapest place to catch a mismatch
+between what an issue asks for and what this skill knows how to run: the standard
+worktree → branch → commit → draft-PR machinery. An issue whose body forbids branches,
+worktrees, commits, or pull requests -- or otherwise states a research/analysis-only ask
+-- is a different shape of work, and discovering that after Step 5 has already created a
+worktree is the expensive way to find out (see #444).
+
+Classify every surviving candidate exactly once, from the same body text Step 3 already
+reads for file hints -- never a second fetch performed for this check alone:
+
+```bash
+# >>> prepend THE RESOLVER (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/.shared/scripts/triage-issues.sh" --classify-shape "$body_file"
+```
+
+`$body_file` holds the issue body bytes already in hand for this candidate's conflict
+analysis, written to a file for the call. The mode is a pure text classifier: no `gh`
+call, no network, exit 0 either way.
+
+```
+work-shape=no-code signal=explicitly prohibited branches, worktrees, commits, ...
+work-shape=implementation signal=-
+```
+
+| Verdict | Signal | Disposition |
+|---|---|---|
+| `implementation` | no forbidding language found | Proceed through the standard worktree → branch → PR path |
+| `no-code` | body explicitly forbids branches, worktrees, commits, or pull requests | **HOLD** — record the matched signal as the reason, drop from the dispatch set before Step 5, never create a worktree |
+
+The `no-code` disposition is HOLD, not an alternate dispatch path: this skill defines
+exactly one end-to-end shape (worktree → branch → commit → draft PR), and improvising a
+read-only/no-PR variant per run is the failure this axis exists to stop. A future skill
+revision may define a second shape end-to-end, including where its output goes; until
+then HOLD is the only sanctioned disposition for `no-code`, the same posture as an ADR
+conflict above.
+
+Record the verdict on the dispatch-plan entry (`workShape`, and `holdReason` when
+`no-code`) so a later step or a resumed session reads it back instead of re-classifying
+-- see the `workShape`/`holdReason` fields in the
+[dispatch-plan schema](#conflict-analysis-and-dispatch-plan-write-sets). A `no-code`
+candidate counts toward the Selection funnel's `no-code-hold` exclusion category,
+printed and named exactly like any other exclusion -- never silently dropped.
+
+The classifier is deliberately crude, the same posture as the ADR token-matching above:
+a miss is silence (verdict `implementation`), never proof the issue is safe to
+implement, and a hit is a signal to read and confirm, not a final verdict on its own.
+Genuine ambiguity is a Step 3 conflict-analysis judgment call like any other.
+
 ## Conflict analysis and dispatch-plan write sets
 
 Step 3 produces a root-owned `dispatch-plan` artifact before any worker is
@@ -157,6 +226,12 @@ conflict analysis. The plan uses this schema:
       "workerEffort": "xhigh",
       "effortReason": "novel cache-ownership rewrite; three prior attempts failed",
       "uncoveredVerification": [4, 6]
+    },
+    {
+      "issue": 172,
+      "predictedWriteSet": ["docs/research/**"],
+      "workShape": "no-code",
+      "holdReason": "issue body: 'do not open a pull request for this analysis'"
     }
   ],
   "conflictMap": {
@@ -172,6 +247,20 @@ pushed heads do not exist. Immediately after atomically persisting it, run
 the dispatch must not begin unless the helper prints `schemaVersion=1 valid`.
 This catches a missing or malformed schema at the write boundary instead of in
 the downstream queue consumer.
+
+`workShape` and `holdReason` are optional and travel together: omitted entirely, an
+entry defaults to `implementation`; present, `workShape` must be `implementation` (with
+no `holdReason`) or `no-code` (with a non-empty `holdReason`) -- see
+[Work-shape verdict](#work-shape-verdict). The write-time gate rejects a `no-code` entry
+with no reason and a stray reason on an `implementation` entry, so a misclassification
+is a validation failure, never a silent pass-through. A `no-code` entry never reaches
+Step 5; it is dropped from the dispatch set before any worktree is created. Because a
+HOLD never gets a worktree, branch, PR, or head, the ready-flip upgrade to schema 2
+(below) requires the merge plan to cover only the **implementation-shaped** entries --
+those with `workShape` absent or `implementation` -- and rejects a merge plan that
+includes a `no-code` issue's number or omits any implementation issue. A `no-code`
+entry stays in `entries` at schema 2 for audit and Selection-funnel accounting; it is
+simply never expected in `independent`/`chains`.
 
 `dispatch-plan` and `merge-plan` name the same owner-only file at its two
 lifecycle stages: schema 1 before the ready flip and schema 2 afterward. The
@@ -431,6 +520,7 @@ appears exactly once: either in the dispatched set or in exactly one exclusion g
 than one exclusion could describe it, use the earliest terminal decision made by the existing
 selection procedure, so the groups are mutually exclusive and their counts match their issue
 lists. This is reporting only; never change eligibility to make the arithmetic look fuller.
+A [work-shape verdict](#work-shape-verdict) of `no-code` reports under `no-code-hold`.
 
 Examples cover all queue shapes:
 

@@ -223,7 +223,7 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
 assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1133 lines' \
     'the parallel-issues line ratchet pins the stacked ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 19554 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 19743 tokens' \
     'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these

@@ -78,13 +78,24 @@ if ((validate_only)); then
             (((.paths | type) == "array" and (.paths | length) > 0) and
               all(.paths[]; path)))
         end;
+      # workShape/holdReason are optional and travel together: a HOLD needs a
+      # named reason, and a reason with no HOLD is a stray, confusing signal.
+      # Absent entirely is the backward-compatible default (implementation).
+      def work_shape:
+        if type != "object" then false else
+          ((has("workShape") | not) and (has("holdReason") | not)) or
+          (.workShape == "implementation" and (has("holdReason") | not)) or
+          (.workShape == "no-code" and
+            (.holdReason | type) == "string" and (.holdReason | test("[^[:space:]]")))
+        end;
       type == "object" and .schemaVersion == 1 and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
         (type == "object") and (.issue | uint) and
         ((.predictedWriteSet | type) == "array" and
           (.predictedWriteSet | length) > 0) and
-        all(.predictedWriteSet[]; path)) and
+        all(.predictedWriteSet[]; path) and
+        work_shape) and
       ((.entries | map(.issue) | unique | length) == (.entries | length)) and
       ((.conflictMap | type) == "object") and
       ((.conflictMap.pairs | type) == "array") and
@@ -105,8 +116,12 @@ jq -e '
 ' "$dispatch_plan" >/dev/null 2>&1 || die 'dispatch plan has an unsupported schema'
 
 # Keep this validation declarative: merge-plan bytes are untrusted run data and
-# must never become shell syntax. Every selected issue appears exactly once,
-# roots use null chainBaseSha, and each successor pins its immediate predecessor.
+# must never become shell syntax. Every IMPLEMENTATION-shaped selected issue
+# appears exactly once (a workShape=no-code hold has no worktree/branch/PR/
+# head to record -- it stays in entries for audit/funnel accounting, but is
+# never expected in the merge plan, and its presence there is rejected as an
+# issue-set mismatch same as any other unexpected record), roots use null
+# chainBaseSha, and each successor pins its immediate predecessor.
 jq -e --slurpfile dispatch "$dispatch_plan" '
   def uint: type == "number" and . > 0 and floor == .;
   def sha: type == "string" and test("^[0-9a-f]{40}$");
@@ -141,7 +156,7 @@ jq -e --slurpfile dispatch "$dispatch_plan" '
     (($records | map(.issue) | unique | length) == ($records | length)) and
     (($records | map(.branch) | unique | length) == ($records | length)) and
     (($records | map(.issue) | sort) ==
-      ($dispatch[0].entries | map(.issue) | sort)))
+      ($dispatch[0].entries | map(select(.workShape != "no-code") | .issue) | sort)))
 ' "$merge_plan" >/dev/null 2>&1 || {
     # The boolean gate above is the sole accept/reject authority and is left
     # byte-for-byte unchanged; this second pass only names which field made it
@@ -215,8 +230,9 @@ jq -e --slurpfile dispatch "$dispatch_plan" '
               then "merge plan issue values must be unique across independent and chains"
               elif ($records | map(.branch) | unique | length) != ($records | length)
               then "merge plan branch values must be unique across independent and chains"
-              elif ($records | map(.issue) | sort) != ($dispatch[0].entries | map(.issue) | sort)
-              then "merge plan issue set does not match the dispatch plan entries"
+              elif ($records | map(.issue) | sort) !=
+                ($dispatch[0].entries | map(select(.workShape != "no-code") | .issue) | sort)
+              then "merge plan issue set does not match the dispatch plan implementation-shaped entries (a workShape=no-code hold is excluded)"
               else null
               end
           )

@@ -45,7 +45,7 @@ Output (stdout carries only these lines):
   moved #42 -> "In review" on project #3 "Example Board" (board.json, 1 call)
   moved #42 -> "In review" on project #3 "Example Board" (board.json, 2 calls)
   no-op: issue #42 is not on any project board
-  no-op: issue #42 project board membership could not be read; not moved
+  no-op: issue #42 project board membership could not be read; not moved (rate limit)
   no-op: project #3 "Example Board" has no Status field
   no-op: project #3 "Example Board" has no matching Status option "In review"
   moved=1 no-op=0 of=1
@@ -58,6 +58,12 @@ current status before mutating it -- that read is the API call this path
 exists to avoid. So it reports "moved" even when the card was already in the
 target status; only the slower paths can report the "already" no-op above.
 Callers must treat "moved" as covering both "moved" and "already there".
+
+The unreadable-membership no-op names its cause in parentheses, one of:
+"auth/scope", "rate limit", "api error", or "other" (a shape anomaly, or the
+transient read that gh's own GraphQL index lags on right after an issue is
+created). The label is always one of those four words -- never a raw error
+message, a token, or a full API response body.
 
 Exit status: 0 on a move or a no-op (an unreadable board membership included --
 a board move must never fail the real work it is annotating), 1 on bad
@@ -185,14 +191,39 @@ cached_mutation_rejected=0
 readonly ISSUE_MEMBERSHIP_ATTEMPTS=3
 readonly ISSUE_MEMBERSHIP_RETRY_DELAY=${MOVE_ITEM_MEMBERSHIP_RETRY_DELAY:-2}
 
+# Classifies why a membership read failed into a fixed, safe vocabulary --
+# never the raw stderr or response text itself, so a value embedded in an
+# error message (a token, a full response body) can never leak into board
+# evidence. One of:
+#   auth/scope    the token lacks a required scope, or access was refused
+#   rate limit    primary or secondary GraphQL rate limiting
+#   api error     the API/gh call failed for some other identifiable reason
+#   other         no error text was available to classify (a shape anomaly,
+#                 or the replication-lag "issue resolved null" case above)
+classify_membership_cause() {
+    local text=${1,,}
+    [[ -n $text ]] || { printf 'other'; return; }
+    case $text in
+        *'rate limit'*|*'abuse detection'*|*'429'*)
+            printf 'rate limit' ;;
+        *'insufficient'*|*'scope'*|*'forbidden'*|*'403'*|*'resource not accessible'*| \
+        *'bad credentials'*|*'401'*|*'saml enforcement'*|*'requires authentication'*)
+            printf 'auth/scope' ;;
+        *)
+            printf 'api error' ;;
+    esac
+}
+
 # One membership-read attempt. Exit status:
 #   0  success; the memberships JSON array is printed to stdout.
 #   1  transient: the gh call itself failed, or repository.issue resolved to
 #      null (the replication-lag case above). The caller retries this one.
+#      A classified cause is printed to stdout.
 #   2  the response had some other unexpected shape -- a genuinely malformed
-#      response, not the null-issue case -- and is not retried.
+#      response, not the null-issue case -- and is not retried. A classified
+#      cause is printed to stdout.
 issue_project_items_once() {
-    local issue_number=$1 query memberships result
+    local issue_number=$1 query memberships result gh_stderr gh_rc errors_text
     # shellcheck disable=SC2016
     query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
       repository(owner:$owner, name:$name) {
@@ -210,10 +241,37 @@ issue_project_items_once() {
         }
       }
     }'
-    memberships=$(gh api graphql --paginate \
+    gh_stderr=$(mktemp) || { printf 'other'; return 1; }
+    if memberships=$(gh api graphql --paginate \
         -f "owner=$owner" -f "name=$repository_name" -F "number=$issue_number" \
-        -f "query=$query" 2>/dev/null) || return 1
-    [[ -n $memberships ]] || return 1
+        -f "query=$query" 2>"$gh_stderr"); then
+        gh_rc=0
+    else
+        gh_rc=$?
+    fi
+    if ((gh_rc != 0)); then
+        # The gh call's own stderr is the diagnostic this classification
+        # depends on -- discarding it (as this used to) is what left every
+        # unreadable-membership no-op indistinguishable from every other one.
+        classify_membership_cause "$(cat -- "$gh_stderr" 2>/dev/null)"
+        rm -f -- "$gh_stderr"
+        return 1
+    fi
+    rm -f -- "$gh_stderr"
+    [[ -n $memberships ]] || { printf 'other'; return 1; }
+
+    # A GraphQL `errors` array is a real API failure, not the replication-lag
+    # "issue resolved null" case below -- both shapes leave
+    # `.data.repository.issue` null, so `errors` must be checked first or a
+    # rate-limited or scope-denied read is silently misread as if it were a
+    # transiently-null issue.
+    errors_text=$(jq -s -r '
+        [.[] | .errors[]? | ((.type // "") + " " + (.message // ""))] | join(" ")
+    ' <<< "$memberships" 2>/dev/null) || errors_text=''
+    if [[ -n $errors_text ]]; then
+        classify_membership_cause "$errors_text"
+        return 1
+    fi
 
     # Tag the shape instead of raising a jq error(): a raised error's own exit
     # code cannot distinguish "issue resolved null" from "some other malformed
@@ -227,29 +285,37 @@ issue_project_items_once() {
         then {status: "null-issue"}
         else {status: "malformed"}
         end
-    ' <<< "$memberships") || return 2
-    [[ -n $result ]] || return 2
+    ' <<< "$memberships") || { printf 'other'; return 2; }
+    [[ -n $result ]] || { printf 'other'; return 2; }
 
     case $(jq -r '.status' <<< "$result") in
         ok) jq -c '.items' <<< "$result"; return 0 ;;
-        null-issue) return 1 ;;
-        *) return 2 ;;
+        null-issue) printf 'other'; return 1 ;;
+        *) printf 'other'; return 2 ;;
     esac
 }
 
 # Retries issue_project_items_once a bounded number of times on a transient
 # read (rc 1), and gives up immediately on a genuinely malformed response
-# (rc 2). Same exit-status contract as issue_project_items_once, minus the
-# distinction the caller no longer needs: 0 success, non-zero unreadable.
+# (rc 2). Same exit-status contract as issue_project_items_once: 0 success
+# (the memberships JSON array on stdout), non-zero unreadable (the classified
+# cause of the LAST attempt on stdout -- earlier attempts' causes are
+# discarded, since only the final outcome is ever reported to the caller).
 issue_project_items() {
-    local issue_number=$1 attempt=1 rc=0
+    local issue_number=$1 attempt=1 rc=0 out=
     while :; do
-        issue_project_items_once "$issue_number" && return 0
-        rc=$?
-        ((rc == 1)) || return "$rc"
-        ((attempt < ISSUE_MEMBERSHIP_ATTEMPTS)) || return "$rc"
-        ((++attempt))
-        sleep "$ISSUE_MEMBERSHIP_RETRY_DELAY"
+        if out=$(issue_project_items_once "$issue_number"); then
+            rc=0
+        else
+            rc=$?
+        fi
+        if ((rc == 1)) && ((attempt < ISSUE_MEMBERSHIP_ATTEMPTS)); then
+            ((++attempt))
+            sleep "$ISSUE_MEMBERSHIP_RETRY_DELAY"
+            continue
+        fi
+        printf '%s' "$out"
+        return "$rc"
     done
 }
 
@@ -644,8 +710,10 @@ try_declared_memberships() {
             # A board move is bookkeeping; it must never abort the workstream
             # it is annotating -- an unreadable membership is reported as its
             # own no-op, distinct from a genuine "not on any board" outcome,
-            # and the batch continues with the next issue.
-            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved"
+            # and the batch continues with the next issue. $memberships now
+            # holds the classified cause (issue_project_items prints it on
+            # every non-zero return), never the raw error text.
+            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved (${memberships:-other})"
             completed_issues[$issue_number]=1
             continue
         fi
@@ -708,7 +776,8 @@ process_project_memberships() {
             # Same never-fail-the-workstream contract as the declared-board
             # path: an unreadable membership is its own no-op, distinct from
             # a genuine "not on any board" outcome, and the batch continues.
-            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved"
+            # $memberships holds the classified cause here too.
+            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved (${memberships:-other})"
             completed_issues[$issue_number]=1
             continue
         fi

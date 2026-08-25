@@ -67,6 +67,91 @@ for invalid_case in pair-null pair-boolean pair-malformed revision-null revision
         "$writer" --dispatch-plan "$tmp/$invalid_case.json" --validate-only
 done
 
+# --- workShape / holdReason (issue #444) ------------------------------
+jq '.entries[0].workShape = "no-code" | .entries[0].holdReason = "issue body prohibits branches"' \
+    "$plan" >"$tmp/work-shape-no-code.json"
+assert_rc 0 'a no-code entry with a holdReason is accepted' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-no-code.json" --validate-only
+
+jq '.entries[0].workShape = "implementation"' "$plan" >"$tmp/work-shape-implementation.json"
+assert_rc 0 'an explicit implementation workShape with no holdReason is accepted' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-implementation.json" --validate-only
+
+jq '.entries[0].workShape = "no-code"' "$plan" >"$tmp/work-shape-missing-reason.json"
+assert_rc 1 'a no-code entry with no holdReason is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-missing-reason.json" --validate-only
+
+jq '.entries[0].workShape = "no-code" | .entries[0].holdReason = "   "' \
+    "$plan" >"$tmp/work-shape-blank-reason.json"
+assert_rc 1 'a no-code entry with a blank holdReason is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-blank-reason.json" --validate-only
+
+jq '.entries[0].workShape = "implementation" | .entries[0].holdReason = "stray"' \
+    "$plan" >"$tmp/work-shape-stray-reason.json"
+assert_rc 1 'a stray holdReason on an implementation entry is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-stray-reason.json" --validate-only
+
+jq '.entries[0].holdReason = "stray, no workShape at all"' "$plan" >"$tmp/work-shape-orphan-reason.json"
+assert_rc 1 'a holdReason with no workShape at all is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-orphan-reason.json" --validate-only
+
+jq '.entries[0].workShape = "bogus"' "$plan" >"$tmp/work-shape-bogus.json"
+assert_rc 1 'an unrecognized workShape value is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-bogus.json" --validate-only
+
+# --- a workShape=no-code hold is excluded from the ready-flip issue set
+# (root-review F2, PR #463) ------------------------------------------------
+# A HOLD entry never gets a worktree/branch/PR/head, so the merge-plan
+# upgrade must compare against implementation-shaped entries only, while
+# still keeping the hold in `entries` for audit/funnel accounting.
+cat >"$tmp/held-plan-base.json" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [
+    {"issue": 21, "predictedWriteSet": ["src/x"]},
+    {"issue": 22, "predictedWriteSet": ["src/y"]},
+    {"issue": 23, "predictedWriteSet": ["docs/research"], "workShape": "no-code", "holdReason": "issue body prohibits pull requests"}
+  ],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+cat >"$tmp/held-merge-ok.json" <<'EOF'
+{
+  "generatedAt": "2026-08-17T20:00:00Z",
+  "independent": [
+    {"issue":21,"pr":201,"branch":"feat/twentyone","chainBaseSha":null,"headSha":"111111111111111111111111111111111111111a"},
+    {"issue":22,"pr":202,"branch":"feat/twentytwo","chainBaseSha":null,"headSha":"222222222222222222222222222222222222222b"}
+  ],
+  "chains": []
+}
+EOF
+
+cp "$tmp/held-plan-base.json" "$tmp/held-plan-ok.json"
+"$writer" --dispatch-plan "$tmp/held-plan-ok.json" --merge-plan "$tmp/held-merge-ok.json"
+assert_eq '2' "$(jq -r '.schemaVersion' "$tmp/held-plan-ok.json")" \
+    'a merge plan covering exactly the implementation-shaped entries upgrades to schema 2'
+assert_eq 'no-code' "$(jq -r '.entries[] | select(.issue == 23) | .workShape' "$tmp/held-plan-ok.json")" \
+    'the held entry survives the upgrade with its workShape intact'
+assert_eq 'null' "$(jq -r '.entries[] | select(.issue == 23) | .pr // "null"' "$tmp/held-plan-ok.json")" \
+    'the held entry gains no pr/branch/head record from the upgrade'
+
+cp "$tmp/held-plan-base.json" "$tmp/held-plan-includes-held.json"
+jq '.independent += [{"issue":23,"pr":203,"branch":"feat/twentythree","chainBaseSha":null,"headSha":"333333333333333333333333333333333333333c"}]' \
+    "$tmp/held-merge-ok.json" >"$tmp/held-merge-includes-held.json"
+before_held=$(sha256sum "$tmp/held-plan-includes-held.json")
+stderr=$("$writer" --dispatch-plan "$tmp/held-plan-includes-held.json" \
+    --merge-plan "$tmp/held-merge-includes-held.json" 2>&1 1>/dev/null) && rc=0 || rc=$?
+assert_eq '1' "$rc" 'a merge plan that includes the held issue is rejected'
+assert_contains "$stderr" 'no-code' \
+    'the held-issue rejection names the workShape=no-code exclusion'
+assert_eq "$before_held" "$(sha256sum "$tmp/held-plan-includes-held.json")" \
+    'a rejected held-issue merge plan leaves the dispatch plan byte-identical'
+
+cp "$tmp/held-plan-base.json" "$tmp/held-plan-missing-impl.json"
+jq '.independent = [.independent[0]]' "$tmp/held-merge-ok.json" >"$tmp/held-merge-missing-impl.json"
+assert_rc 1 'a merge plan missing an implementation issue is still rejected' -- \
+    "$writer" --dispatch-plan "$tmp/held-plan-missing-impl.json" --merge-plan "$tmp/held-merge-missing-impl.json"
+
 jq 'del(.schemaVersion)' "$plan" >"$tmp/missing-schema.json"
 missing_schema_rc=0
 "$writer" --dispatch-plan "$tmp/missing-schema.json" --validate-only \
