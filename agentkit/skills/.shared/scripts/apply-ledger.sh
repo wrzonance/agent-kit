@@ -210,9 +210,9 @@ validate_record_url() {
         die "--url must start with https://github.com/: $url"
     elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/ ]]; then
         die "--url has a malformed issue/PR number or comment fragment after /issues/ or /pull/: $url"
-    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/ ]]; then
+    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(/|$) ]]; then
         die "--url must reference /issues/N or /pull/N after the repository: $url"
-    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/ ]]; then
+    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+(/|$) ]]; then
         die "--url is missing the repository segment after the owner: $url"
     else
         die "--url is missing the owner segment after https://github.com/: $url"
