@@ -407,6 +407,198 @@ assert_contains "$(cat -- "$tmp/verdict.out")" 'P1=0' \
 assert_not_contains "$(cat -- "$tmp/verdict.out")" 'verdict=findings' \
     'a blocked review is never reported as a completed one'
 
+# --- declared adversarial-review config is trusted only from the PR's BASE
+# revision, never the working-tree checkout under review, and is ignored
+# outright when the reviewed diff itself touches .agent/config.env (root
+# review finding on PR #470, F1/P2: the working tree IS the candidate PR's
+# own HEAD, so a PR could otherwise set its own review's effort=low or point
+# the reviewer at the running harness). Each scenario below gets its own
+# throwaway origin+checkout so base-branch content can be controlled
+# precisely and independently of head content.
+
+write_contract_at() {
+    local dir=$1 harness=$2 peer=$3 state=$4 contract="$1/.agent/env-contract.txt"
+    mkdir -p -- "$dir/.agent"
+    printf '%s\n' \
+        'repo=acme/widget' \
+        "harness= name=$harness trailer=\"Test <test@example.invalid>\" other=$peer" \
+        "peer-cli= $peer $state" >"$contract"
+    chmod 600 -- "$contract"
+}
+
+# make_trust_repo BASE_CONFIG -- BASE_CONFIG is the content committed as
+# main's .agent/config.env (before it is pushed to origin), or '' for none.
+# Prints the new checkout's path.
+make_trust_repo() {
+    local base_config=$1 dir
+    dir=$(mktemp -d "$tmp/trust-repo.XXXXXX")
+    git init --bare --quiet "$dir.git"
+    git init --quiet --initial-branch=main "$dir"
+    git -C "$dir" config user.email test@example.invalid
+    git -C "$dir" config user.name test
+    git -C "$dir" remote add origin "$dir.git"
+    printf '%s\n' base >"$dir/example.txt"
+    git -C "$dir" add example.txt
+    if [[ -n $base_config ]]; then
+        mkdir -p "$dir/.agent"
+        printf '%s' "$base_config" >"$dir/.agent/config.env"
+        git -C "$dir" add .agent/config.env
+    fi
+    git -C "$dir" commit --quiet -m base
+    git -C "$dir" push --quiet -u origin main
+    printf '%s' "$dir"
+}
+
+# --- (b) the base revision's declared values are honoured when the diff
+# does not touch config.env -- and prove it is genuinely an override, not
+# agreement: the peer (claude) is present and would normally be selected.
+repo1=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=codex
+AGENT_ADVERSARIAL_REVIEW_MODEL=gpt-5.6-sol
+AGENT_ADVERSARIAL_REVIEW_EFFORT=xhigh')
+write_contract_at "$repo1" codex claude "present path=$tmp/fake-claude"
+git -C "$repo1" switch --quiet -c feature
+printf '%s\n' changed >"$repo1/example.txt"
+git -C "$repo1" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo1" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff1="$tmp/repo1.diff"
+git -C "$repo1" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff1"
+declared_run="$tmp/declared-run"
+grant "$declared_run" openai "$diff1"
+declared_rc=0
+(cd "$repo1" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$declared_run") \
+    >"$tmp/declared.out" 2>"$tmp/declared.err" || declared_rc=$?
+assert_eq 0 "$declared_rc" 'base-revision declarations are honoured when the diff leaves config.env alone'
+assert_contains "$(cat -- "$tmp/declared.out")" 'provider=openai' \
+    'AGENT_ADVERSARIAL_REVIEWER from the base revision overrides the peer-CLI provider'
+assert_contains "$(cat -- "$tmp/declared.out")" 'model=gpt-5.6-sol' \
+    'AGENT_ADVERSARIAL_REVIEW_MODEL from the base revision overrides the hardcoded model'
+assert_contains "$(cat -- "$tmp/declared.out")" 'effort=xhigh' \
+    'AGENT_ADVERSARIAL_REVIEW_EFFORT from the base revision overrides the hardcoded effort'
+assert_contains "$(cat -- "$tmp/declared.out")" 'mode=blind-fallback' \
+    'declaring the running harness itself as reviewer is blind-fallback mode'
+
+# --- a base-declared reviewer absent on this machine falls back and says so -
+repo2=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=codex
+AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=custom-fallback-model
+AGENT_ADVERSARIAL_REVIEW_EFFORT=medium')
+write_contract_at "$repo2" claude codex 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
+git -C "$repo2" switch --quiet -c feature
+printf '%s\n' changed >"$repo2/example.txt"
+git -C "$repo2" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo2" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff2="$tmp/repo2.diff"
+git -C "$repo2" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff2"
+absent_run="$tmp/absent-run"
+grant "$absent_run" anthropic "$diff2"
+absent_rc=0
+(cd "$repo2" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$absent_run") \
+    >"$tmp/absent.out" 2>"$tmp/absent.err" || absent_rc=$?
+assert_eq 0 "$absent_rc" 'a base-declared but absent reviewer still completes via fallback'
+assert_contains "$(cat -- "$tmp/absent.err")" "declared adversarial reviewer 'codex'" \
+    'the fallback is announced, naming the declared reviewer'
+assert_contains "$(cat -- "$tmp/absent.err")" 'not available on this machine' \
+    'the announcement explains why it fell back'
+assert_contains "$(cat -- "$tmp/absent.err")" "falling back to the running harness 'claude'" \
+    'the announcement names the fallback target'
+assert_contains "$(cat -- "$tmp/absent.out")" 'provider=anthropic' \
+    'the fallback lands on the running harness provider, not the absent one'
+assert_contains "$(cat -- "$tmp/absent.out")" 'model=custom-fallback-model' \
+    'AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK from the base revision supplies the fallback model'
+assert_contains "$(cat -- "$tmp/absent.out")" 'effort=medium' \
+    'AGENT_ADVERSARIAL_REVIEW_EFFORT from the base revision still applies to the fallback'
+assert_contains "$(cat -- "$tmp/absent.out")" 'mode=blind-fallback' \
+    'an absent-reviewer fallback can never be reported as cross-provider'
+
+# --- (a) a HEAD-only change to config.env is ignored outright, not merely
+# read from the (safe) base instead -- and proves it beats even a legitimate
+# base declaration: base declares xhigh, head declares low, the pinned
+# default ("high") must win over both.
+repo3=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEW_EFFORT=xhigh')
+write_contract_at "$repo3" claude codex 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
+git -C "$repo3" switch --quiet -c feature
+printf 'AGENT_ADVERSARIAL_REVIEW_EFFORT=low\n' >"$repo3/.agent/config.env"
+printf '%s\n' changed >"$repo3/example.txt"
+git -C "$repo3" commit --quiet -am 'change including config.env'
+FAKE_HEAD_OID=$(git -C "$repo3" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff3="$tmp/repo3.diff"
+git -C "$repo3" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff3"
+touched_run="$tmp/touched-run"
+grant "$touched_run" anthropic "$diff3"
+touched_rc=0
+(cd "$repo3" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$touched_run") \
+    >"$tmp/touched.out" 2>"$tmp/touched.err" || touched_rc=$?
+assert_eq 0 "$touched_rc" 'a reviewed diff touching config.env still completes, via the pinned defaults'
+assert_contains "$(cat -- "$tmp/touched.err")" 'the reviewed diff changes .agent/config.env' \
+    'the runner announces why declarations are being ignored'
+assert_contains "$(cat -- "$tmp/touched.err")" 'ignoring any declared adversarial-reviewer settings' \
+    'the announcement names what it is ignoring'
+assert_contains "$(cat -- "$tmp/touched.out")" 'effort=high' \
+    'the pinned default effort wins over both the base and the HEAD declaration'
+assert_not_contains "$(cat -- "$tmp/touched.out")" 'effort=low' \
+    "the PR's own HEAD-only declaration is never honoured"
+assert_not_contains "$(cat -- "$tmp/touched.out")" 'effort=xhigh' \
+    'even the legitimate base declaration is ignored once the diff touches the file'
+
+# --- an invalid base-declared reviewer is refused, not silently substituted -
+# repo-config.sh drops it (naming the accepted set on its own stderr, which
+# resolve_config_value discards) before adversarial-run.sh ever sees it, so
+# this must behave exactly like no declaration at all: the peer-CLI default.
+repo4=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gemini')
+write_contract_at "$repo4" codex claude "present path=$tmp/fake-claude"
+git -C "$repo4" switch --quiet -c feature
+printf '%s\n' changed >"$repo4/example.txt"
+git -C "$repo4" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo4" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff4="$tmp/repo4.diff"
+git -C "$repo4" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff4"
+invalid_reviewer_run="$tmp/invalid-reviewer-run"
+grant "$invalid_reviewer_run" anthropic "$diff4"
+invalid_reviewer_rc=0
+(cd "$repo4" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$invalid_reviewer_run") \
+    >"$tmp/invalid-reviewer.out" 2>"$tmp/invalid-reviewer.err" || invalid_reviewer_rc=$?
+assert_eq 0 "$invalid_reviewer_rc" 'an invalid base-declared reviewer still completes via the default'
+assert_contains "$(cat -- "$tmp/invalid-reviewer.out")" 'provider=anthropic' \
+    'an invalid AGENT_ADVERSARIAL_REVIEWER falls through to the peer-CLI default provider'
+assert_contains "$(cat -- "$tmp/invalid-reviewer.out")" 'mode=cross-provider' \
+    'an invalid declaration is never treated as an availability fallback'
+assert_not_contains "$(cat -- "$tmp/invalid-reviewer.err")" 'AGENT_ADVERSARIAL_REVIEWER' \
+    'adversarial-run.sh itself says nothing about a value repo-config.sh already dropped'
+
+# --- AGENT_ADVERSARIAL_REVIEW_MODEL alone, with no REVIEWER declared -------
+# A bare model id has no CLI to be interpreted against; the peer-CLI default
+# selection (and its own default model) must stay byte-identical.
+repo5=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEW_MODEL=should-be-ignored')
+write_contract_at "$repo5" codex claude "present path=$tmp/fake-claude"
+git -C "$repo5" switch --quiet -c feature
+printf '%s\n' changed >"$repo5/example.txt"
+git -C "$repo5" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo5" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff5="$tmp/repo5.diff"
+git -C "$repo5" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff5"
+bare_model_run="$tmp/bare-model-run"
+grant "$bare_model_run" anthropic "$diff5"
+bare_model_rc=0
+(cd "$repo5" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$bare_model_run") \
+    >"$tmp/bare-model.out" 2>"$tmp/bare-model.err" || bare_model_rc=$?
+assert_eq 0 "$bare_model_rc" 'an undeclared reviewer with a bare model id still completes'
+assert_contains "$(cat -- "$tmp/bare-model.out")" 'model=claude-opus-5' \
+    'a bare AGENT_ADVERSARIAL_REVIEW_MODEL is ignored without a declared reviewer'
+assert_contains "$(cat -- "$tmp/bare-model.out")" 'mode=cross-provider' \
+    'the peer-CLI default selection is unaffected'
+
+# Restore the shared fixture's env, which the scenarios above overrode.
+export FAKE_HEAD_OID=$head_oid
+
 # A tracked `.agent` symlink bypasses leaf-only provenance checks: Git tracks
 # the link itself, not the resolved `.agent/env-contract.txt` path. The runner
 # must reject it before consulting attacker-controlled reviewer facts or

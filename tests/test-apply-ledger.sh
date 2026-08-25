@@ -136,4 +136,230 @@ assert_eq '0' "$(jq '.remaining | length' <"$concurrent_ledger")" \
 assert_eq '600' "$(stat -c '%a' "$concurrent_ledger.lock")" \
     'ledger lock is owner-private'
 
+# Widened URL grammar: `record` must accept the URL form GitHub actually
+# returns for a created issue/PR comment (`#issuecomment-<id>`), keep
+# `--number` unambiguous as the mutation's subject issue/PR number, and
+# still name the failing part of a genuinely malformed URL.
+grammar_ledger="$tmp/grammar-ledger.json"
+grammar_plan="$tmp/grammar-plan.json"
+cat >"$grammar_plan" <<'EOF'
+{
+  "planId": "grammar-fixture-v1",
+  "entries": [
+    {"id": "issue-comment"},
+    {"id": "pull-comment"},
+    {"id": "bad-owner"},
+    {"id": "bad-repo"},
+    {"id": "bad-repo-no-slash"},
+    {"id": "bad-kind-no-slash"},
+    {"id": "bad-kind"},
+    {"id": "bad-number"},
+    {"id": "bad-fragment"},
+    {"id": "mismatched-number"}
+  ]
+}
+EOF
+run_ledger init --ledger "$grammar_ledger" --plan "$grammar_plan" >/dev/null
+
+assert_rc 0 'record accepts a created-issue-comment URL with its #issuecomment fragment' -- \
+    run_ledger record --ledger "$grammar_ledger" --id issue-comment --number 55 \
+    --url 'https://github.com/example/repo/issues/55#issuecomment-999001'
+assert_eq 'https://github.com/example/repo/issues/55#issuecomment-999001' \
+    "$(run_ledger status --ledger "$grammar_ledger" | jq -r '.idMap["issue-comment"].url')" \
+    'status reads back the recorded comment URL verbatim'
+assert_eq '0' "$(run_ledger pending --ledger "$grammar_ledger" --json | \
+    jq '[.remaining[] | select(. == "issue-comment")] | length')" \
+    'recording the comment mutation removes it from pending'
+
+assert_rc 0 'record accepts a created-PR-comment URL with its #issuecomment fragment' -- \
+    run_ledger record --ledger "$grammar_ledger" --id pull-comment --number 77 \
+    --url 'https://github.com/example/repo/pull/77#issuecomment-999002'
+assert_eq 'https://github.com/example/repo/pull/77#issuecomment-999002' \
+    "$(run_ledger status --ledger "$grammar_ledger" | jq -r '.idMap["pull-comment"].url')" \
+    'status reads back the recorded PR comment URL verbatim'
+
+bad_owner_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-owner --number 1 \
+    --url 'https://github.com/' 2>&1)
+assert_rc 1 'a URL missing the owner segment is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-owner --number 1 --url 'https://github.com/'
+assert_contains "$bad_owner_error" 'owner segment' 'malformed-owner refusal names the owner segment'
+
+bad_repo_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-repo --number 1 \
+    --url 'https://github.com/example/' 2>&1)
+assert_rc 1 'a URL missing the repository segment is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-repo --number 1 --url 'https://github.com/example/'
+assert_contains "$bad_repo_error" 'repository segment' 'malformed-repo refusal names the repository segment'
+
+bad_repo_no_slash_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-repo-no-slash --number 1 \
+    --url 'https://github.com/example' 2>&1)
+assert_rc 1 'a URL with only an owner segment (no trailing slash) is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-repo-no-slash --number 1 --url 'https://github.com/example'
+assert_contains "$bad_repo_no_slash_error" 'repository segment' \
+    'owner-only refusal without a trailing slash still names the repository segment'
+
+bad_kind_no_slash_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-kind-no-slash --number 1 \
+    --url 'https://github.com/example/repo' 2>&1)
+assert_rc 1 'a URL with only owner/repo (no trailing slash) is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-kind-no-slash --number 1 --url 'https://github.com/example/repo'
+assert_contains "$bad_kind_no_slash_error" '/issues/N or /pull/N' \
+    'owner/repo-only refusal without a trailing slash still names the expected path form'
+
+bad_kind_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-kind --number 1 \
+    --url 'https://github.com/example/repo/commits/1' 2>&1)
+assert_rc 1 'a URL with neither /issues/ nor /pull/ is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-kind --number 1 \
+    --url 'https://github.com/example/repo/commits/1'
+assert_contains "$bad_kind_error" '/issues/N or /pull/N' 'malformed-kind refusal names the expected path form'
+
+bad_number_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-number --number 1 \
+    --url 'https://github.com/example/repo/issues/abc' 2>&1)
+assert_rc 1 'a URL with a non-numeric issue/PR number is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-number --number 1 \
+    --url 'https://github.com/example/repo/issues/abc'
+assert_contains "$bad_number_error" 'number or comment fragment' \
+    'malformed-number refusal names the number/fragment segment'
+
+bad_fragment_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-fragment --number 55 \
+    --url 'https://github.com/example/repo/issues/55#discussion_r123' 2>&1)
+assert_rc 1 'a URL with an unsupported fragment is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-fragment --number 55 \
+    --url 'https://github.com/example/repo/issues/55#discussion_r123'
+assert_contains "$bad_fragment_error" 'number or comment fragment' \
+    'unsupported-fragment refusal names the number/fragment segment'
+
+mismatched_error=$(run_ledger record --ledger "$grammar_ledger" --id mismatched-number --number 999 \
+    --url 'https://github.com/example/repo/issues/55' 2>&1)
+assert_rc 1 '--number that disagrees with the URL-embedded number is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id mismatched-number --number 999 \
+    --url 'https://github.com/example/repo/issues/55'
+assert_contains "$mismatched_error" '--number' 'number/url mismatch refusal names --number'
+assert_contains "$mismatched_error" '--url' 'number/url mismatch refusal names --url'
+
+grammar_usage=$(run_ledger record -h)
+assert_contains "$grammar_usage" 'issues/N#issuecomment-C' \
+    'usage documents the issue-comment URL grammar'
+assert_contains "$grammar_usage" 'pull/N#issuecomment-C' \
+    'usage documents the PR-comment URL grammar'
+assert_contains "$grammar_usage" 'created issue' 'usage names the created-issue kind'
+assert_contains "$grammar_usage" 'created PR' 'usage names the created-PR kind'
+assert_contains "$grammar_usage" 'board-move' 'usage documents board-move reuse of the plain form'
+
+# A leading --help/-h must print usage and exit 0, not be consumed as the
+# subcommand: before this fix, `subcommand=$1; shift` ran before the option
+# loop ever saw -h/--help, so it fell through to the `--ledger is required`
+# refusal (exit 2) instead of answering the help request.
+leading_help_stderr="$tmp/leading-help.stderr"
+leading_help_stdout=$(run_ledger --help 2>"$leading_help_stderr")
+leading_help_rc=$?
+assert_eq '0' "$leading_help_rc" 'leading --help exits 0'
+assert_contains "$leading_help_stdout" 'Usage:' 'leading --help prints usage to stdout'
+assert_eq '' "$(<"$leading_help_stderr")" 'leading --help writes nothing to stderr'
+
+leading_h_stderr="$tmp/leading-h.stderr"
+leading_h_stdout=$(run_ledger -h 2>"$leading_h_stderr")
+leading_h_rc=$?
+assert_eq '0' "$leading_h_rc" 'leading -h exits 0'
+assert_contains "$leading_h_stdout" 'Usage:' 'leading -h prints usage to stdout'
+assert_eq '' "$(<"$leading_h_stderr")" 'leading -h writes nothing to stderr'
+
+# --help must answer before the jq/mktemp/flock dependency checks run: a host
+# missing any of them must still get usage and exit 0, not a dependency
+# error. The stub PATH below carries only bash (to exec the script's own
+# `#!/usr/bin/env bash` shebang) and cat (which usage() shells out to) --
+# deliberately no jq, mktemp, or flock.
+no_jq_path="$tmp/no-jq-path"
+mkdir -p "$no_jq_path"
+ln -s "$(command -v bash)" "$no_jq_path/bash"
+ln -s "$(command -v cat)" "$no_jq_path/cat"
+no_jq_stderr="$tmp/no-jq-help.stderr"
+no_jq_stdout=$(PATH="$no_jq_path" run_ledger --help 2>"$no_jq_stderr")
+no_jq_rc=$?
+assert_eq '0' "$no_jq_rc" '--help exits 0 even without jq/mktemp/flock on PATH'
+assert_contains "$no_jq_stdout" 'Usage:' '--help without jq/mktemp/flock still prints usage to stdout'
+assert_eq '' "$(<"$no_jq_stderr")" '--help without jq/mktemp/flock writes nothing to stderr'
+
+# <subcommand> --help/-h must behave the same way, for every subcommand --
+# pinned here so a future refactor of the leading-flag check cannot silently
+# regress the already-working case reachable through the option loop.
+for sub in init record pending status; do
+    sub_help_stderr="$tmp/sub-help-$sub.stderr"
+    sub_help_stdout=$(run_ledger "$sub" --help 2>"$sub_help_stderr")
+    sub_help_rc=$?
+    assert_eq '0' "$sub_help_rc" "$sub --help exits 0"
+    assert_contains "$sub_help_stdout" 'Usage:' "$sub --help prints usage to stdout"
+    assert_eq '' "$(<"$sub_help_stderr")" "$sub --help writes nothing to stderr"
+done
+
+# An unknown subcommand must still exit 2 with usage on stderr, even with a
+# --ledger supplied so the missing-ledger check cannot short-circuit before
+# subcommand dispatch is reached.
+unknown_ledger="$tmp/unknown-subcommand-ledger.json"
+unknown_stderr=$(run_ledger bogus --ledger "$unknown_ledger" 2>&1 >/dev/null)
+assert_rc 2 'an unknown subcommand is rejected' -- \
+    run_ledger bogus --ledger "$unknown_ledger"
+assert_contains "$unknown_stderr" 'Usage:' 'unknown subcommand prints usage to stderr'
+
+# Ledger validation must name the specific predicate that failed rather than
+# a single generic "invalid apply ledger" message covering all seven checks
+# (schema version, planId, the three array fields, idMap, and plan-id
+# uniqueness), matching the actionable style `init`'s plan validation already
+# uses. Each fixture below is a well-formed JSON document that breaks exactly
+# one predicate.
+# All seven fixtures reuse the same ledger path so their captured error
+# messages differ only by predicate text, never by an incidentally-unique
+# file path -- that is what makes the later distinctness check meaningful.
+predicate_ledger="$tmp/predicate-case.json"
+declare -A predicate_error=()
+declare -A predicate_fixture=(
+    [schema]='{schemaVersion: 2, planId: "fixture", plan: [{id: "a"}], applied: [], remaining: ["a"], idMap: {}}'
+    [planId]='{schemaVersion: 1, planId: "", plan: [{id: "a"}], applied: [], remaining: ["a"], idMap: {}}'
+    [plan]='{schemaVersion: 1, planId: "fixture", plan: {}, applied: [], remaining: ["a"], idMap: {}}'
+    [applied]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}], applied: {}, remaining: ["a"], idMap: {}}'
+    [remaining]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}], applied: [], remaining: {}, idMap: {}}'
+    [idMap]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}], applied: [], remaining: ["a"], idMap: []}'
+    [uniqueness]='{schemaVersion: 1, planId: "fixture", plan: [{id: "a"}, {id: "a"}], applied: [], remaining: ["a"], idMap: {}}'
+)
+declare -A predicate_description=(
+    [schema]='a ledger with the wrong schemaVersion'
+    [planId]='a ledger with an empty planId'
+    [plan]='a ledger whose plan is not an array'
+    [applied]='a ledger whose applied is not an array'
+    [remaining]='a ledger whose remaining is not an array'
+    [idMap]='a ledger whose idMap is not an object'
+    [uniqueness]='a ledger with duplicate plan ids'
+)
+declare -A predicate_keyword=(
+    [schema]='schemaVersion'
+    [planId]='planId'
+    [plan]='plan'
+    [applied]='applied'
+    [remaining]='remaining'
+    [idMap]='idMap'
+    [uniqueness]='duplicate'
+)
+
+for class in schema planId plan applied remaining idMap uniqueness; do
+    jq -n "${predicate_fixture[$class]}" >"$predicate_ledger"
+    predicate_error[$class]=$(run_ledger status --ledger "$predicate_ledger" 2>&1)
+    assert_rc 1 "${predicate_description[$class]} is rejected" -- \
+        run_ledger status --ledger "$predicate_ledger"
+    assert_contains "${predicate_error[$class]}" "${predicate_keyword[$class]}" \
+        "$class refusal names ${predicate_keyword[$class]}"
+    assert_eq '1' "$(printf '%s\n' "${predicate_error[$class]}" | wc -l | tr -d ' ')" \
+        "predicate refusal for $class stays a single line"
+    assert_not_contains "${predicate_error[$class]}" '{"' \
+        "predicate refusal for $class does not dump ledger contents"
+done
+
+distinct_messages=$(printf '%s\n' "${predicate_error[@]}" | sort -u | wc -l | tr -d ' ')
+assert_eq '7' "$distinct_messages" 'each broken predicate produces a distinct message'
+
+# A ledger that fails every predicate still passes the same accept/reject
+# semantics as before this change (validation, not messaging, is unchanged):
+# it is rejected, and none of the seven checks accidentally pass it.
+still_valid_ledger="$tmp/still-valid.json"
+run_ledger init --ledger "$still_valid_ledger" --plan "$plan" >/dev/null
+assert_rc 0 'a genuinely valid ledger still validates cleanly' -- \
+    run_ledger status --ledger "$still_valid_ledger"
+
 finish

@@ -235,6 +235,12 @@ the skill markdown, the ecosystem, harness, and environment neutrality gates, an
 behavioural suites. CI runs the same script on every push and pull request. The suite
 needs `shellcheck` and `python3` in addition to the runtime requirements below.
 
+## Releasing
+
+See [RELEASING.md](RELEASING.md): version-consistency gate, and how to tell whether an
+installed plugin copy still matches `main` via the environment contract's `skills-content=`
+stamp rather than trusting the version string alone.
+
 ## Repository layout
 
 ```

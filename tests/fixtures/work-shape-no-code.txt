@@ -1,0 +1,3 @@
+This is analysis work. The maintainer has explicitly prohibited branches,
+worktrees, edits, commits, pull requests, and forge mutations for this issue.
+Please post findings as a comment instead.

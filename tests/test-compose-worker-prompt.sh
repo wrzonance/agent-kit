@@ -26,6 +26,20 @@ assert_not_contains "$compose_source" 'runner_resolves' \
 assert_not_contains "$compose_source" 'declared_runner_resolves' \
     'composer has no mirrored declared-runner resolution function'
 
+# Issue #449: the dispatch-time wait bound is PARSED from wait-discipline.md's
+# own table, never a second hardcoded copy -- deriving the expectation the
+# same way (rather than pinning "900" here) means this test still passes if
+# the table's bound is ever deliberately changed, and still fails if the
+# composer ever stops reading the table.
+wait_discipline_file="$root/agentkit/skills/.shared/wait-discipline.md"
+expected_wait_bound_seconds=$(grep -m1 'Worker implementation wait' "$wait_discipline_file" | grep -oE '[0-9]+' | head -n1)
+assert_eq yes "$([[ $expected_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] && printf yes || printf no)" \
+    'wait-discipline.md names a positive worker wait bound to derive the expectation from'
+assert_contains "$compose_source" 'Worker implementation wait' \
+    'composer parses the wait bound from the wait-discipline.md table row, not a hardcoded literal'
+assert_contains "$compose_source" '.shared/wait-discipline.md' \
+    'composer resolves wait-discipline.md relative to the shared skills tree'
+
 make_repo() {
     local dir=$1 contract=$2
     mkdir -p "$dir/.agent"
@@ -86,26 +100,31 @@ compose_verification_report() {
         "${dispatch_plan_args[@]}" --output "$output_file"
 }
 
+expected_wait_bound_line="wait-bound= issue=136 seconds=$expected_wait_bound_seconds class=worker"
+
 fully_covered_report=$(compose_verification_report fully-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n')
 assert_eq \
-    'spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered' \
+    "spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered
+$expected_wait_bound_line" \
     "$fully_covered_report" \
-    'fully covered verification reports its ratio and classification'
+    'fully covered verification reports its ratio and classification, and its wait bound'
 
 partially_covered_report=$(compose_verification_report partially-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n- `tools/not-declared`\n')
 assert_eq \
-    'spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered' \
+    "spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered
+$expected_wait_bound_line" \
     "$partially_covered_report" \
-    'partially covered verification reports its ratio and classification'
+    'partially covered verification reports its ratio and classification, and its wait bound'
 
 majority_uncovered_report=$(compose_verification_report majority-uncovered \
     $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n')
 assert_eq \
-    'spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered' \
+    "spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered
+$expected_wait_bound_line" \
     "$majority_uncovered_report" \
-    'majority-uncovered verification is distinguishable at a glance'
+    'majority-uncovered verification is distinguishable at a glance, and its wait bound is still reported'
 
 late_uncovered_spec=$'## Verification\n'
 for _step in {1..12}; do
@@ -140,7 +159,8 @@ missing_record_output=$(compose_verification_report missing-record \
     "$missing_record_plan") || missing_record_rc=$?
 assert_eq 0 "$missing_record_rc" \
     'a missing uncoveredVerification record does not block prompt publication'
-assert_contains "$missing_record_output" "$majority_uncovered_report" \
+majority_uncovered_spec_line=$(head -n1 <<< "$majority_uncovered_report")
+assert_contains "$missing_record_output" "$majority_uncovered_spec_line" \
     'a mismatched plan still reports the majority-uncovered ratio'
 assert_contains "$missing_record_output" \
     'spec-verification-plan= issue=136 status=record-required expected-uncovered=2,3 update=staged plan-sha=' \
@@ -152,7 +172,8 @@ assert_eq yes "$([[ -s $repo/.agent/missing-record-prompt.md.dispatch-plan-updat
 assert_eq '[2,3]' \
     "$(jq -c '.entries[0].uncoveredVerification' "$repo/.agent/missing-record-prompt.md.dispatch-plan-update")" \
     'the staged candidate carries the exact uncovered step indices'
-missing_record_sha=${missing_record_output##* plan-sha=}
+missing_record_plan_line=$(grep -E '^spec-verification-plan= ' <<< "$missing_record_output")
+missing_record_sha=${missing_record_plan_line##* plan-sha=}
 assert_eq "$missing_record_sha" \
     "$(sha256sum -- "$repo/.agent/missing-record-prompt.md.dispatch-plan-update" | cut -d ' ' -f 1)" \
     'the mismatch report pins the staged candidate bytes'
@@ -355,6 +376,15 @@ assert_contains "$fix_prompt" 'report the problem and stop' \
     'fix-batch composed prompt tells the worker to report rather than rewrite'
 assert_contains "$fix_prompt" 'stranding it is the cost of even a cosmetic rewrite' \
     'fix-batch composed prompt names the stranding consequence'
+
+# Issue #449: a fix-batch worker shares the same 900s-minimum "Worker
+# implementation wait" row as an issue lead, so its dispatch-time digest also
+# carries a wait-bound line.
+fix_batch_digest=$(bash "$compose" --template fix-batch --worktree "$repo" \
+    --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --output "$tmp/fix-batch-wait.md")
+assert_contains "$fix_batch_digest" "$expected_wait_bound_line" \
+    'fix-batch dispatch also emits a per-worker wait bound at composition time'
 
 assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$compose" \
     --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
