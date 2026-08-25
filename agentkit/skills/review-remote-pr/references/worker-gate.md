@@ -40,6 +40,14 @@ and the next review cycle.
 
 ## Environment-refusal fallback
 
+A refused harness patch *tool* is not a refused *shell*: before a worker reports an environment
+refusal it probes the shell with a trivial write and names what it tried, reporting the refusal
+only once that probe fails too. See [../../.shared/six-step-loop.md](../../.shared/six-step-loop.md)'s
+"How to write a file" for the full write-mechanism preference order (harness tool, then whole-file
+shell write, then a scripted surgical edit) and the hand-authored-unified-diff prohibition —
+`git apply` matches byte-exact context a model cannot reconstruct from memory. A worker that stops
+mid-change leaves the tree coherent, fully applied or fully reverted, never partial.
+
 The unstaged publication handback survives only as an environment-refusal fallback. If
 `worktree-commit.sh` exits 2, nothing is committed: stop and return the scoped dirty files,
 diffstat, green log, branch, and one exact ready-to-run commit invocation with the expanded trailer;

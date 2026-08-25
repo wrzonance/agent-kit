@@ -105,6 +105,15 @@ Pass `--` whenever the command's first token starts with `-`; always passing it 
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 __COMPOSE_ISOLATION__
 
+## How to write a file
+
+Use, in preference order: your own edit/patch tool; a whole-file shell write when that tool is
+refused; a scripted surgical edit only when neither applies. Never hand-author a unified diff for
+`git apply` — it matches byte-exact context lines you cannot reconstruct from memory, so a
+mismatch reads as a corrupt patch, not a permission refusal. A refused patch tool is not a refused
+shell: probe the shell with a trivial write before reporting an environment refusal, and name what
+you tried. Leave an interrupted change fully applied or fully reverted — never partial.
+
 ## File-image freshness (MANDATORY before generating a patch)
 
 Before generating any patch, re-read the target file if any intervening action could have modified it.
@@ -435,6 +444,15 @@ say about a trust record.>
 __DECLARED_COMMANDS__
 
 __COMPOSE_ISOLATION__
+
+## How to write a file
+
+Use, in preference order: your own edit/patch tool; a whole-file shell write when that tool is
+refused; a scripted surgical edit only when neither applies. Never hand-author a unified diff for
+`git apply` — it matches byte-exact context lines you cannot reconstruct from memory, so a
+mismatch reads as a corrupt patch, not a permission refusal. A refused patch tool is not a refused
+shell: probe the shell with a trivial write before reporting an environment refusal, and name what
+you tried. Leave an interrupted change fully applied or fully reverted — never partial.
 
 ## File-image freshness (MANDATORY before generating a patch)
 

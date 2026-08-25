@@ -48,6 +48,21 @@ implementation begins only at Stage 6.
    actually fails, make it pass minimally (green), refactor, and run scoped checks through
    `agent-run.sh`. Run the full suite the same way at the final task.
 
+## How to write a file
+
+Step 6's writes go through one of three mechanisms, in preference order: the harness's own
+edit/patch tool; a whole-file shell write (heredoc, `cat >`, or equivalent) when that tool is
+refused; a scripted surgical edit (`sed`, a short script) only when neither applies. Never
+hand-author a unified diff and feed it to `git apply` — that command matches byte-exact context
+lines, which a model reconstructing a file's surroundings from memory cannot supply, so every
+mismatch reads as a corrupt or non-applying patch, not as a permissions failure.
+
+A refused harness patch *tool* is not a refused *shell*. Before reporting an environment refusal,
+probe the shell with a trivial write (write, then read back, a scratch file) and name exactly
+what you tried; report the refusal only once that probe fails too. If a change is interrupted
+partway, leave the tree coherent — fully applied or fully reverted, never a partial edit one
+`git commit -a` away from becoming real.
+
 ## Reporting format (must be explicit)
 
 Report the checklist and its status; do not collapse the first five steps into "design" or
