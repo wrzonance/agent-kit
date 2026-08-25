@@ -51,6 +51,16 @@ command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
 command -v mktemp >/dev/null 2>&1 || die 'mktemp is not installed'
 command -v flock >/dev/null 2>&1 || die 'flock is not installed; ledger mutations cannot be serialized'
 
+# A leading -h/--help must answer the help request before it is treated as a
+# subcommand name -- otherwise it is consumed by `subcommand=$1; shift` below
+# and the option loop's own -h|--help case never runs.
+case $1 in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+esac
+
 subcommand=$1
 shift
 ledger=
