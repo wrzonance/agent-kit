@@ -50,6 +50,18 @@ else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
 
+# --- skills-content= is a content stamp, independent of skills= path= (#453) -
+skills_content_line=$(grep '^skills-content=' <<< "$out")
+skills_path_line=$(grep -m1 '^skills=' <<< "$out")
+assert_not_contains "$skills_path_line" 'content=' \
+    'skills= path= carries no stamp of its own -- the record is unaffected by skills-content='
+if [[ $skills_content_line =~ ^skills-content=\ sha256=([[:xdigit:]]{64}|unavailable)$ ]]; then
+    _pass 'skills-content= carries a 64-hex sha256 stamp or an explicit unavailable'
+else
+    _fail 'skills-content= carries a 64-hex sha256 stamp or an explicit unavailable' \
+        "got: $skills_content_line"
+fi
+
 # --ensure must not silently discard operands whose documented semantics belong
 # to a full probe. Fail closed before checking the fast-path contract instead.
 assert_rc 2 '--ensure rejects an explicit --write target' -- \
@@ -360,7 +372,7 @@ assert_contains "$protected_line" 'repo-declared="docs/adrs/,infra/terraform.tf"
 # The header's OUTPUT comment is the contract every consumer parses exact
 # prefixes against. Adding protected= without updating both the header and the
 # emission order would silently desynchronize documentation from behaviour.
-header_line=$(grep -m1 '^#   skills= path= repo=' "$script")
+header_line=$(grep -m1 '^#   skills= path= skills-content= repo=' "$script")
 assert_contains "$header_line" ' protected= instructions=' \
     'the header documents protected= immediately after config= and before instructions='
 mapfile -t expected_tokens < <(tr -s ' ' '\n' <<< "${header_line#\#}")
@@ -419,6 +431,25 @@ assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
     '--ensure still reports protected= for an up-to-date contract'
 assert_eq "$before_mtime" "$after_mtime" \
     '--ensure reuses an up-to-date contract instead of rewriting it'
+
+# --- --ensure must not serve a contract that predates skills-content= (#453) -
+# Same migration hazard as protected= above, for the newer key: a contract
+# written before this change is still provenance-trusted, so without this
+# check --ensure would keep serving one with no content stamp forever.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+grep -v '^skills-content=' "$repo/.agent/env-contract.txt" > "$tmp/stale-contract"
+mv "$tmp/stale-contract" "$repo/.agent/env-contract.txt"
+chmod 600 "$repo/.agent/env-contract.txt"
+assert_eq '0' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
+    'fixture setup: the stale contract really has no skills-content= line'
+out=$("$script" --ensure --worktree "$repo" 2> "$tmp/ensure-stderr")
+assert_eq '1' "$(grep -c '^skills-content=' <<< "$out")" \
+    '--ensure regenerates a contract that predates skills-content= rather than serving it'
+assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected= or skills-content=' \
+    'and says why it fell through to a fresh preflight'
+assert_eq '1' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries skills-content= too'
 
 # Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
 # with a named requirement before doing any work instead of exposing a cryptic
