@@ -244,6 +244,61 @@ assert_contains "$grammar_usage" 'created issue' 'usage names the created-issue 
 assert_contains "$grammar_usage" 'created PR' 'usage names the created-PR kind'
 assert_contains "$grammar_usage" 'board-move' 'usage documents board-move reuse of the plain form'
 
+# A leading --help/-h must print usage and exit 0, not be consumed as the
+# subcommand: before this fix, `subcommand=$1; shift` ran before the option
+# loop ever saw -h/--help, so it fell through to the `--ledger is required`
+# refusal (exit 2) instead of answering the help request.
+leading_help_stderr="$tmp/leading-help.stderr"
+leading_help_stdout=$(run_ledger --help 2>"$leading_help_stderr")
+leading_help_rc=$?
+assert_eq '0' "$leading_help_rc" 'leading --help exits 0'
+assert_contains "$leading_help_stdout" 'Usage:' 'leading --help prints usage to stdout'
+assert_eq '' "$(<"$leading_help_stderr")" 'leading --help writes nothing to stderr'
+
+leading_h_stderr="$tmp/leading-h.stderr"
+leading_h_stdout=$(run_ledger -h 2>"$leading_h_stderr")
+leading_h_rc=$?
+assert_eq '0' "$leading_h_rc" 'leading -h exits 0'
+assert_contains "$leading_h_stdout" 'Usage:' 'leading -h prints usage to stdout'
+assert_eq '' "$(<"$leading_h_stderr")" 'leading -h writes nothing to stderr'
+
+# --help must answer before the jq/mktemp/flock dependency checks run: a host
+# missing any of them must still get usage and exit 0, not a dependency
+# error. The stub PATH below carries only bash (to exec the script's own
+# `#!/usr/bin/env bash` shebang) and cat (which usage() shells out to) --
+# deliberately no jq, mktemp, or flock.
+no_jq_path="$tmp/no-jq-path"
+mkdir -p "$no_jq_path"
+ln -s "$(command -v bash)" "$no_jq_path/bash"
+ln -s "$(command -v cat)" "$no_jq_path/cat"
+no_jq_stderr="$tmp/no-jq-help.stderr"
+no_jq_stdout=$(PATH="$no_jq_path" run_ledger --help 2>"$no_jq_stderr")
+no_jq_rc=$?
+assert_eq '0' "$no_jq_rc" '--help exits 0 even without jq/mktemp/flock on PATH'
+assert_contains "$no_jq_stdout" 'Usage:' '--help without jq/mktemp/flock still prints usage to stdout'
+assert_eq '' "$(<"$no_jq_stderr")" '--help without jq/mktemp/flock writes nothing to stderr'
+
+# <subcommand> --help/-h must behave the same way, for every subcommand --
+# pinned here so a future refactor of the leading-flag check cannot silently
+# regress the already-working case reachable through the option loop.
+for sub in init record pending status; do
+    sub_help_stderr="$tmp/sub-help-$sub.stderr"
+    sub_help_stdout=$(run_ledger "$sub" --help 2>"$sub_help_stderr")
+    sub_help_rc=$?
+    assert_eq '0' "$sub_help_rc" "$sub --help exits 0"
+    assert_contains "$sub_help_stdout" 'Usage:' "$sub --help prints usage to stdout"
+    assert_eq '' "$(<"$sub_help_stderr")" "$sub --help writes nothing to stderr"
+done
+
+# An unknown subcommand must still exit 2 with usage on stderr, even with a
+# --ledger supplied so the missing-ledger check cannot short-circuit before
+# subcommand dispatch is reached.
+unknown_ledger="$tmp/unknown-subcommand-ledger.json"
+unknown_stderr=$(run_ledger bogus --ledger "$unknown_ledger" 2>&1 >/dev/null)
+assert_rc 2 'an unknown subcommand is rejected' -- \
+    run_ledger bogus --ledger "$unknown_ledger"
+assert_contains "$unknown_stderr" 'Usage:' 'unknown subcommand prints usage to stderr'
+
 # Ledger validation must name the specific predicate that failed rather than
 # a single generic "invalid apply ledger" message covering all seven checks
 # (schema version, planId, the three array fields, idMap, and plan-id
