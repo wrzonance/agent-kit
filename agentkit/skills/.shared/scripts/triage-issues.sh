@@ -15,9 +15,18 @@
 # Usage:
 #   triage-issues.sh [--repo-root DIR] [--limit N] [--issues N,N,N]
 #                    [--fuzzy N] [--json]
+#   triage-issues.sh --classify-shape FILE
 #
-# Exit: 0 success (including a partial response), 1 the query failed,
-#       2 bad usage, 3 gh unavailable/unauthenticated (environment-blocked).
+# --classify-shape is a standalone, offline mode: it classifies the work
+# shape of an already-fetched issue body (the same bytes Step 3's conflict
+# analysis already read -- never a fetch performed for this check alone) and
+# exits before any gh/network preflight. It never combines with the query
+# flags above.
+#
+# Exit: 0 success (including a partial response or a --classify-shape
+#       verdict), 1 the query failed, 2 bad usage, 3 gh unavailable/
+#       unauthenticated (environment-blocked; --classify-shape never reaches
+#       this check).
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}
@@ -37,7 +46,47 @@ die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
     printf 'usage: %s [--repo-root DIR] [--limit N] [--issues N,N,N] [--fuzzy N] [--json]\n' \
         "$PROGRAM" >&2
+    printf '       %s --classify-shape FILE\n' "$PROGRAM" >&2
     exit 2
+}
+
+# Deliberately crude, but defined precisely so it is reproducible -- same
+# posture as adr_candidates below: a miss is silence (verdict
+# "implementation"), never a blocked run, and a hit is a signal to read and
+# confirm, never a final verdict on its own. Anchored to the concrete
+# mechanics (branch/commit/pull request/worktree/forge mutation) rather than
+# generic words like "read-only" or "research only", which false-positive on
+# ordinary feature prose (e.g. "add a read-only mode flag").
+classify_work_shape() {
+    local file=$1
+    [[ -f $file && -r $file ]] || die_usage "--classify-shape file not readable: $file"
+    local -a signals=(
+        '\bno (new )?branch(es)?\b'
+        '\bno worktrees?\b'
+        '\bno commits?\b'
+        '\bno pull requests?\b'
+        '\bno forge mutations?\b'
+        '\bdo not (open|create|make) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\bdo not (branch|commit)\b'
+        '\bwithout (opening|creating) (a |any )?(pull requests?|branch(es)?)'
+        '\bno code changes?\b'
+        '\bno implementation\b'
+        '\b(prohibit|forbid|disallow)(s|ed)? (any )?(branch(es)?|worktrees?|commits?|pull requests?|forge mutations?)'
+    )
+    local pattern
+    pattern=$(IFS='|'; printf '%s' "${signals[*]}")
+    local matched
+    matched=$(grep -iE -m 1 -- "$pattern" "$file" || true)
+    # Trim surrounding whitespace (markdown indentation, list markers) and cap
+    # length so one long paragraph line can't blow up the printed evidence.
+    matched="${matched#"${matched%%[![:space:]]*}"}"
+    matched="${matched%"${matched##*[![:space:]]}"}"
+    if [[ -n $matched ]]; then
+        ((${#matched} <= 160)) || matched="${matched:0:160}..."
+        printf 'work-shape=no-code signal=%s\n' "$matched"
+    else
+        printf 'work-shape=implementation signal=-\n'
+    fi
 }
 
 repo_root=''
@@ -45,6 +94,7 @@ limit=$DEFAULT_LIMIT
 issues=''
 fuzzy=''
 as_json=0
+classify_shape_file=''
 
 while (($#)); do
     case $1 in
@@ -69,11 +119,23 @@ while (($#)); do
             fuzzy=$1
             ;;
         --json) as_json=1 ;;
+        --classify-shape)
+            shift
+            (($#)) || die_usage '--classify-shape requires a file path'
+            classify_shape_file=$1
+            ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
     esac
     shift
 done
+
+if [[ -n $classify_shape_file ]]; then
+    [[ -z $repo_root && $limit == "$DEFAULT_LIMIT" && -z $issues && -z $fuzzy && $as_json == 0 ]] ||
+        die_usage '--classify-shape does not combine with the query flags'
+    classify_work_shape "$classify_shape_file"
+    exit 0
+fi
 
 [[ $limit =~ ^[0-9]{1,3}$ ]] || die_usage "--limit must be a number, got: $limit"
 [[ -z $issues || $issues =~ ^[0-9]+(,[0-9]+)*$ ]] ||

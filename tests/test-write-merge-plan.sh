@@ -67,6 +67,38 @@ for invalid_case in pair-null pair-boolean pair-malformed revision-null revision
         "$writer" --dispatch-plan "$tmp/$invalid_case.json" --validate-only
 done
 
+# --- workShape / holdReason (issue #444) ------------------------------
+jq '.entries[0].workShape = "no-code" | .entries[0].holdReason = "issue body prohibits branches"' \
+    "$plan" >"$tmp/work-shape-no-code.json"
+assert_rc 0 'a no-code entry with a holdReason is accepted' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-no-code.json" --validate-only
+
+jq '.entries[0].workShape = "implementation"' "$plan" >"$tmp/work-shape-implementation.json"
+assert_rc 0 'an explicit implementation workShape with no holdReason is accepted' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-implementation.json" --validate-only
+
+jq '.entries[0].workShape = "no-code"' "$plan" >"$tmp/work-shape-missing-reason.json"
+assert_rc 1 'a no-code entry with no holdReason is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-missing-reason.json" --validate-only
+
+jq '.entries[0].workShape = "no-code" | .entries[0].holdReason = "   "' \
+    "$plan" >"$tmp/work-shape-blank-reason.json"
+assert_rc 1 'a no-code entry with a blank holdReason is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-blank-reason.json" --validate-only
+
+jq '.entries[0].workShape = "implementation" | .entries[0].holdReason = "stray"' \
+    "$plan" >"$tmp/work-shape-stray-reason.json"
+assert_rc 1 'a stray holdReason on an implementation entry is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-stray-reason.json" --validate-only
+
+jq '.entries[0].holdReason = "stray, no workShape at all"' "$plan" >"$tmp/work-shape-orphan-reason.json"
+assert_rc 1 'a holdReason with no workShape at all is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-orphan-reason.json" --validate-only
+
+jq '.entries[0].workShape = "bogus"' "$plan" >"$tmp/work-shape-bogus.json"
+assert_rc 1 'an unrecognized workShape value is rejected' -- \
+    "$writer" --dispatch-plan "$tmp/work-shape-bogus.json" --validate-only
+
 jq 'del(.schemaVersion)' "$plan" >"$tmp/missing-schema.json"
 missing_schema_rc=0
 "$writer" --dispatch-plan "$tmp/missing-schema.json" --validate-only \

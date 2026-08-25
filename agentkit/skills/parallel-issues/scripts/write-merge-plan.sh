@@ -78,13 +78,24 @@ if ((validate_only)); then
             (((.paths | type) == "array" and (.paths | length) > 0) and
               all(.paths[]; path)))
         end;
+      # workShape/holdReason are optional and travel together: a HOLD needs a
+      # named reason, and a reason with no HOLD is a stray, confusing signal.
+      # Absent entirely is the backward-compatible default (implementation).
+      def work_shape:
+        if type != "object" then false else
+          ((has("workShape") | not) and (has("holdReason") | not)) or
+          (.workShape == "implementation" and (has("holdReason") | not)) or
+          (.workShape == "no-code" and
+            (.holdReason | type) == "string" and (.holdReason | test("[^[:space:]]")))
+        end;
       type == "object" and .schemaVersion == 1 and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
         (type == "object") and (.issue | uint) and
         ((.predictedWriteSet | type) == "array" and
           (.predictedWriteSet | length) > 0) and
-        all(.predictedWriteSet[]; path)) and
+        all(.predictedWriteSet[]; path) and
+        work_shape) and
       ((.entries | map(.issue) | unique | length) == (.entries | length)) and
       ((.conflictMap | type) == "object") and
       ((.conflictMap.pairs | type) == "array") and

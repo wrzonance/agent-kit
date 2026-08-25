@@ -1,0 +1,2 @@
+Add a retry wrapper around the HTTP client. Acceptance criteria: unit tests
+cover the 429 case; open a pull request with the fix.
