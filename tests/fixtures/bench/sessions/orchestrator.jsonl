@@ -1,0 +1,12 @@
+{"type":"session_meta","payload":{"id":"trial-fixture-0001","timestamp":"2026-08-20T10:00:00.000Z","cwd":"/repo","originator":"orchestrator","cli_version":"0.148.0","model":"gpt-5.6-luna"}}
+{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low","cwd":"/repo"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/parallel-issues/references/triage-and-selection.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"ok"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":300}}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"sed -n '1,40p' agentkit/skills/parallel-issues/references/triage-and-selection.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"ok"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"c3","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/.shared/spawn-contract.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c3","output":"ok"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":150}}}
+{"type":"event_msg","payload":{"type":"task_complete","payload":{}}}
+{"type":"bench_trial_meta","payload":{"run_id":"trial-fixture-0001","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"tier1-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":["tally-01","tally-02","tally-03","tally-04","tally-05","tally-06","tally-07","tally-08","tally-09","tally-10"],"chain_plan":[["tally-06","tally-07","tally-08","tally-09"],["tally-06","tally-10"]],"serialization_events":[{"pair":["tally-02","tally-04"],"reason":"conflict_group:render"},{"pair":["tally-07","tally-08"],"reason":"conflict_group:store"},{"pair":["tally-07","tally-09"],"reason":"conflict_group:store"}],"retry_events":[],"worker_count":2,"wall_clock_seconds":842,"exit_condition":"complete"}}
