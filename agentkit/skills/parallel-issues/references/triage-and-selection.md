@@ -28,6 +28,15 @@ apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
 "$apply_ledger" init --ledger "$ledger" --plan "$plan"
 ```
 
+`record`'s `--number` is always the mutation's subject issue/PR number, not
+the ID of whatever the mutation created underneath it: the newly created
+number for a created issue/PR, or the existing issue/PR number a comment,
+close, reopen, or board-move mutation acted on. `--url` must embed that same
+number -- either the plain `.../issues/N` or `.../pull/N` form (created
+issue/PR, and reused as-is for a close, reopen, or board-move on an existing
+one), or, for a created comment, that same form with the `#issuecomment-<id>`
+fragment GitHub's response actually returns.
+
 Before every mutation, consume only the IDs from `pending --ids`; never retry
 an ID present in `applied`. Keep chunks bounded (the default recipe is 20
 objects), and persist after every success:

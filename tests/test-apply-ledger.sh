@@ -136,4 +136,96 @@ assert_eq '0' "$(jq '.remaining | length' <"$concurrent_ledger")" \
 assert_eq '600' "$(stat -c '%a' "$concurrent_ledger.lock")" \
     'ledger lock is owner-private'
 
+# Widened URL grammar: `record` must accept the URL form GitHub actually
+# returns for a created issue/PR comment (`#issuecomment-<id>`), keep
+# `--number` unambiguous as the mutation's subject issue/PR number, and
+# still name the failing part of a genuinely malformed URL.
+grammar_ledger="$tmp/grammar-ledger.json"
+grammar_plan="$tmp/grammar-plan.json"
+cat >"$grammar_plan" <<'EOF'
+{
+  "planId": "grammar-fixture-v1",
+  "entries": [
+    {"id": "issue-comment"},
+    {"id": "pull-comment"},
+    {"id": "bad-owner"},
+    {"id": "bad-repo"},
+    {"id": "bad-kind"},
+    {"id": "bad-number"},
+    {"id": "bad-fragment"},
+    {"id": "mismatched-number"}
+  ]
+}
+EOF
+run_ledger init --ledger "$grammar_ledger" --plan "$grammar_plan" >/dev/null
+
+assert_rc 0 'record accepts a created-issue-comment URL with its #issuecomment fragment' -- \
+    run_ledger record --ledger "$grammar_ledger" --id issue-comment --number 55 \
+    --url 'https://github.com/example/repo/issues/55#issuecomment-999001'
+assert_eq 'https://github.com/example/repo/issues/55#issuecomment-999001' \
+    "$(run_ledger status --ledger "$grammar_ledger" | jq -r '.idMap["issue-comment"].url')" \
+    'status reads back the recorded comment URL verbatim'
+assert_eq '0' "$(run_ledger pending --ledger "$grammar_ledger" --json | \
+    jq '[.remaining[] | select(. == "issue-comment")] | length')" \
+    'recording the comment mutation removes it from pending'
+
+assert_rc 0 'record accepts a created-PR-comment URL with its #issuecomment fragment' -- \
+    run_ledger record --ledger "$grammar_ledger" --id pull-comment --number 77 \
+    --url 'https://github.com/example/repo/pull/77#issuecomment-999002'
+assert_eq 'https://github.com/example/repo/pull/77#issuecomment-999002' \
+    "$(run_ledger status --ledger "$grammar_ledger" | jq -r '.idMap["pull-comment"].url')" \
+    'status reads back the recorded PR comment URL verbatim'
+
+bad_owner_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-owner --number 1 \
+    --url 'https://github.com/' 2>&1)
+assert_rc 1 'a URL missing the owner segment is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-owner --number 1 --url 'https://github.com/'
+assert_contains "$bad_owner_error" 'owner segment' 'malformed-owner refusal names the owner segment'
+
+bad_repo_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-repo --number 1 \
+    --url 'https://github.com/example/' 2>&1)
+assert_rc 1 'a URL missing the repository segment is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-repo --number 1 --url 'https://github.com/example/'
+assert_contains "$bad_repo_error" 'repository segment' 'malformed-repo refusal names the repository segment'
+
+bad_kind_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-kind --number 1 \
+    --url 'https://github.com/example/repo/commits/1' 2>&1)
+assert_rc 1 'a URL with neither /issues/ nor /pull/ is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-kind --number 1 \
+    --url 'https://github.com/example/repo/commits/1'
+assert_contains "$bad_kind_error" '/issues/N or /pull/N' 'malformed-kind refusal names the expected path form'
+
+bad_number_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-number --number 1 \
+    --url 'https://github.com/example/repo/issues/abc' 2>&1)
+assert_rc 1 'a URL with a non-numeric issue/PR number is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-number --number 1 \
+    --url 'https://github.com/example/repo/issues/abc'
+assert_contains "$bad_number_error" 'number or comment fragment' \
+    'malformed-number refusal names the number/fragment segment'
+
+bad_fragment_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-fragment --number 55 \
+    --url 'https://github.com/example/repo/issues/55#discussion_r123' 2>&1)
+assert_rc 1 'a URL with an unsupported fragment is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-fragment --number 55 \
+    --url 'https://github.com/example/repo/issues/55#discussion_r123'
+assert_contains "$bad_fragment_error" 'number or comment fragment' \
+    'unsupported-fragment refusal names the number/fragment segment'
+
+mismatched_error=$(run_ledger record --ledger "$grammar_ledger" --id mismatched-number --number 999 \
+    --url 'https://github.com/example/repo/issues/55' 2>&1)
+assert_rc 1 '--number that disagrees with the URL-embedded number is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id mismatched-number --number 999 \
+    --url 'https://github.com/example/repo/issues/55'
+assert_contains "$mismatched_error" '--number' 'number/url mismatch refusal names --number'
+assert_contains "$mismatched_error" '--url' 'number/url mismatch refusal names --url'
+
+grammar_usage=$(run_ledger record -h)
+assert_contains "$grammar_usage" 'issues/N#issuecomment-C' \
+    'usage documents the issue-comment URL grammar'
+assert_contains "$grammar_usage" 'pull/N#issuecomment-C' \
+    'usage documents the PR-comment URL grammar'
+assert_contains "$grammar_usage" 'created issue' 'usage names the created-issue kind'
+assert_contains "$grammar_usage" 'created PR' 'usage names the created-PR kind'
+assert_contains "$grammar_usage" 'board-move' 'usage documents board-move reuse of the plain form'
+
 finish
