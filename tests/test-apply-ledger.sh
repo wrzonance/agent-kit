@@ -246,6 +246,22 @@ assert_eq '0' "$leading_h_rc" 'leading -h exits 0'
 assert_contains "$leading_h_stdout" 'Usage:' 'leading -h prints usage to stdout'
 assert_eq '' "$(<"$leading_h_stderr")" 'leading -h writes nothing to stderr'
 
+# --help must answer before the jq/mktemp/flock dependency checks run: a host
+# missing any of them must still get usage and exit 0, not a dependency
+# error. The stub PATH below carries only bash (to exec the script's own
+# `#!/usr/bin/env bash` shebang) and cat (which usage() shells out to) --
+# deliberately no jq, mktemp, or flock.
+no_jq_path="$tmp/no-jq-path"
+mkdir -p "$no_jq_path"
+ln -s "$(command -v bash)" "$no_jq_path/bash"
+ln -s "$(command -v cat)" "$no_jq_path/cat"
+no_jq_stderr="$tmp/no-jq-help.stderr"
+no_jq_stdout=$(PATH="$no_jq_path" run_ledger --help 2>"$no_jq_stderr")
+no_jq_rc=$?
+assert_eq '0' "$no_jq_rc" '--help exits 0 even without jq/mktemp/flock on PATH'
+assert_contains "$no_jq_stdout" 'Usage:' '--help without jq/mktemp/flock still prints usage to stdout'
+assert_eq '' "$(<"$no_jq_stderr")" '--help without jq/mktemp/flock writes nothing to stderr'
+
 # <subcommand> --help/-h must behave the same way, for every subcommand --
 # pinned here so a future refactor of the leading-flag check cannot silently
 # regress the already-working case reachable through the option loop.

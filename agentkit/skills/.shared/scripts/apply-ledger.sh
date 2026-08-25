@@ -47,19 +47,23 @@ EOF
 }
 
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
-command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
-command -v mktemp >/dev/null 2>&1 || die 'mktemp is not installed'
-command -v flock >/dev/null 2>&1 || die 'flock is not installed; ledger mutations cannot be serialized'
 
 # A leading -h/--help must answer the help request before it is treated as a
 # subcommand name -- otherwise it is consumed by `subcommand=$1; shift` below
-# and the option loop's own -h|--help case never runs.
+# and the option loop's own -h|--help case never runs. This also runs ahead
+# of the dependency checks below: a host missing jq/mktemp/flock must still
+# be able to print usage and exit 0 for --help, not fail with a dependency
+# error the contract this case exists for never promised to require.
 case $1 in
     -h|--help)
         usage
         exit 0
         ;;
 esac
+
+command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
+command -v mktemp >/dev/null 2>&1 || die 'mktemp is not installed'
+command -v flock >/dev/null 2>&1 || die 'flock is not installed; ledger mutations cannot be serialized'
 
 subcommand=$1
 shift
