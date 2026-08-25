@@ -116,8 +116,12 @@ jq -e '
 ' "$dispatch_plan" >/dev/null 2>&1 || die 'dispatch plan has an unsupported schema'
 
 # Keep this validation declarative: merge-plan bytes are untrusted run data and
-# must never become shell syntax. Every selected issue appears exactly once,
-# roots use null chainBaseSha, and each successor pins its immediate predecessor.
+# must never become shell syntax. Every IMPLEMENTATION-shaped selected issue
+# appears exactly once (a workShape=no-code hold has no worktree/branch/PR/
+# head to record -- it stays in entries for audit/funnel accounting, but is
+# never expected in the merge plan, and its presence there is rejected as an
+# issue-set mismatch same as any other unexpected record), roots use null
+# chainBaseSha, and each successor pins its immediate predecessor.
 jq -e --slurpfile dispatch "$dispatch_plan" '
   def uint: type == "number" and . > 0 and floor == .;
   def sha: type == "string" and test("^[0-9a-f]{40}$");
@@ -152,7 +156,7 @@ jq -e --slurpfile dispatch "$dispatch_plan" '
     (($records | map(.issue) | unique | length) == ($records | length)) and
     (($records | map(.branch) | unique | length) == ($records | length)) and
     (($records | map(.issue) | sort) ==
-      ($dispatch[0].entries | map(.issue) | sort)))
+      ($dispatch[0].entries | map(select(.workShape != "no-code") | .issue) | sort)))
 ' "$merge_plan" >/dev/null 2>&1 || {
     # The boolean gate above is the sole accept/reject authority and is left
     # byte-for-byte unchanged; this second pass only names which field made it
@@ -226,8 +230,9 @@ jq -e --slurpfile dispatch "$dispatch_plan" '
               then "merge plan issue values must be unique across independent and chains"
               elif ($records | map(.branch) | unique | length) != ($records | length)
               then "merge plan branch values must be unique across independent and chains"
-              elif ($records | map(.issue) | sort) != ($dispatch[0].entries | map(.issue) | sort)
-              then "merge plan issue set does not match the dispatch plan entries"
+              elif ($records | map(.issue) | sort) !=
+                ($dispatch[0].entries | map(select(.workShape != "no-code") | .issue) | sort)
+              then "merge plan issue set does not match the dispatch plan implementation-shaped entries (a workShape=no-code hold is excluded)"
               else null
               end
           )

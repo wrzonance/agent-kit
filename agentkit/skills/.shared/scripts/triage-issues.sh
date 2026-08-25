@@ -57,21 +57,28 @@ die_usage() {
 # mechanics (branch/commit/pull request/worktree/forge mutation) rather than
 # generic words like "read-only" or "research only", which false-positive on
 # ordinary feature prose (e.g. "add a read-only mode flag").
+#
+# Every signal requires PROHIBITIVE framing, not just the bare noun: a bare
+# `no commits?` also matches a purely descriptive sentence like "No commits
+# currently exist on the bootstrap branch; add the initial configuration",
+# which is an implementation ask, not a hold. Each alternative below is
+# either an explicit directive verb (do/does/must/should/shall not, never,
+# without) acting on the mechanics, or a bare "no X" noun phrase anchored to
+# an explicit allow/permit/create verb on either side, so a standalone
+# descriptive mention of the noun never fires.
 classify_work_shape() {
     local file=$1
     [[ -f $file && -r $file ]] || die_usage "--classify-shape file not readable: $file"
     local -a signals=(
-        '\bno (new )?branch(es)?\b'
-        '\bno worktrees?\b'
-        '\bno commits?\b'
-        '\bno pull requests?\b'
-        '\bno forge mutations?\b'
-        '\bdo not (open|create|make) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
-        '\bdo not (branch|commit)\b'
-        '\bwithout (opening|creating) (a |any )?(pull requests?|branch(es)?)'
-        '\bno code changes?\b'
-        '\bno implementation\b'
-        '\b(prohibit|forbid|disallow)(s|ed)? (any )?(branch(es)?|worktrees?|commits?|pull requests?|forge mutations?)'
+        '\b(do|does|must|should|shall) not (open|create|make|push) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\b(do|does|must|should|shall) not (branch|commit)\b'
+        '\bnever (open|create|make|push) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\bnever (branch|commit)\b'
+        '\bwithout (opening|creating|making|pushing) (a |any )?(pull requests?|branch(es)?|commits?|worktrees?)'
+        '\b(prohibit|forbid|disallow)(s|ed)? (any )?(branch(es)?|worktrees?|commits?|pull requests?|forge mutations?|code changes?)'
+        '\bno (commits?|branch(es)?|pull requests?|worktrees?|forge mutations?) (are |is |may be |should be |shall be |will be )?(allowed|permitted|made|created|opened)\b'
+        '\b(make|create|open|push) no (commits?|branch(es)?|pull requests?)\b'
+        '\bno (code changes?|implementation) (are |is |should be |shall be |will be )?(allowed|permitted|needed|required|expected)\b'
     )
     local pattern
     pattern=$(IFS='|'; printf '%s' "${signals[*]}")

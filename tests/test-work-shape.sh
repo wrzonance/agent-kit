@@ -27,6 +27,7 @@ ln -s -- "$(command -v tr)" "$tmp/nogh/tr"
 no_code_fixture="$here/fixtures/work-shape-no-code.txt"
 implementation_fixture="$here/fixtures/work-shape-implementation.txt"
 false_positive_fixture="$here/fixtures/work-shape-false-positive.txt"
+descriptive_state_fixture="$here/fixtures/work-shape-descriptive-state.txt"
 
 run_classify() {
     PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-shape "$@"
@@ -55,6 +56,15 @@ out=$(run_classify "$false_positive_fixture")
 assert_eq 'work-shape=implementation signal=-' "$out" \
     '"read-only"/"research" alone, with no branch/commit/PR mechanics, is not a signal'
 
+# --- descriptive state is not a directive (CodeRabbit finding) -----------
+# "No commits currently exist on the bootstrap branch; add the initial
+# configuration" describes present state and asks for an implementation --
+# it is not a prohibition, and a bare "no commits?" signal would wrongly
+# hold it.
+out=$(run_classify "$descriptive_state_fixture")
+assert_eq 'work-shape=implementation signal=-' "$out" \
+    'a descriptive "No commits currently exist..." sentence is not mistaken for a prohibition'
+
 # --- word boundaries, not bare substrings ---------------------------------
 # Without a leading \b, "no branch" matches inside "casino branches" -- a
 # substring hit with no boundary before "no", never an actual forbidding
@@ -82,8 +92,8 @@ assert_contains "$stderr" 'does not combine' \
 assert_rc 0 'a no-code verdict exits 0' -- run_classify "$no_code_fixture"
 assert_rc 0 'an implementation verdict exits 0' -- run_classify "$implementation_fixture"
 
-# --- F1 (issue #444 review): an empty path never falls through to the live
-# gh query path -----------------------------------------------------------
+# --- root-review F1 (PR #463): an empty path never falls through to the
+# live gh query path --------------------------------------------------------
 stderr=$(env PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-shape "" 2>&1 1>/dev/null) && rc=0 || rc=$?
 assert_eq '2' "$rc" 'an empty --classify-shape path is a usage error, not a silent fall-through'
 assert_contains "$stderr" '--classify-shape' \
@@ -99,21 +109,23 @@ GH_STUB_LOG="$gh_log" PATH="$tmp/withgh" /bin/bash "$tr_sh" --classify-shape "" 
 assert_eq '0' "$(wc -l < "$gh_log")" \
     'an empty --classify-shape path never reaches the live gh query'
 
-# --- F1 (issue #444 review): a query flag matching the DEFAULT value is
-# still "supplied" and still rejected in combination --------------------
+# --- root-review F1 (PR #463): a query flag matching the DEFAULT value is
+# still "supplied" and still rejected in combination ------------------------
 stderr=$(PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-shape "$no_code_fixture" --limit 30 2>&1 1>/dev/null) && rc=0 || rc=$?
 assert_eq '2' "$rc" \
     '--classify-shape rejects --limit even when its value equals the default'
 assert_contains "$stderr" 'does not combine' \
     'the default-value-limit combination error explains why it was rejected'
 
-# --- F2 (issue #444 review): control bytes in the matched signal never
-# reach stdout verbatim -----------------------------------------------------
+# --- root-review F2 (PR #463): control bytes in the matched signal never
+# reach stdout verbatim ------------------------------------------------------
 # An OSC/ANSI escape sequence embedded in untrusted issue-body text must be
-# stripped before the classifier prints it as evidence.
-printf 'No commits\033]52;c;aGVsbG8=\007 trailing text\n' > "$tmp/control-chars.txt"
+# stripped before the classifier prints it as evidence. The directive
+# framing ("Do not commit") is required by CodeRabbit's F1 fix above -- a
+# bare "No commits" no longer signals on its own.
+printf 'Do not commit\033]52;c;aGVsbG8=\007 to this branch.\n' > "$tmp/control-chars.txt"
 out=$(run_classify "$tmp/control-chars.txt")
-assert_contains "$out" 'work-shape=no-code signal=No commits]52;c;aGVsbG8= trailing text' \
+assert_contains "$out" 'work-shape=no-code signal=Do not commit]52;c;aGVsbG8= to this branch.' \
     'the printed signal strips control bytes but keeps the surrounding text readable'
 control_byte_count=$(printf '%s' "$out" | tr -d '[:print:]\n' | wc -c)
 assert_eq '0' "$control_byte_count" \
