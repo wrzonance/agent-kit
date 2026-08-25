@@ -7,6 +7,7 @@
 - External-service authorization
 - Cross-provider consent — first send per session
 - Availability and authoritative helpers
+- Selection precedence — declaring the reviewer
 - Read the verdict
 - Evaluate — then route into Step 5
 - Pitfalls
@@ -24,7 +25,8 @@ accessibility/reliability, or whenever the user asks. **Document a skip** only w
 line is mechanically verifiable and low-judgment (comments/formatting, generated output with its
 parity check, a verified immutable refresh); record the exact oracle — a line-count threshold is
 never one. Preferred reviewer: the peer CLI named by `peer-cli=`, strongest reasoning model, one
-high-effort pass, never re-run after pushing fixes. A documented skip never runs
+high-effort pass, never re-run after pushing fixes. A repository may declare a different reviewer,
+model, or effort instead — see "Selection precedence" below. A documented skip never runs
 `adversarial-run.sh`, so `post-receipt.sh publish --skip-rationale S --oracle S` writes its own
 `status: "skipped"` result artifact beside the findings ledger rather than requiring the completed
 one only the runner produces — the skip receipt is still the one durable spend of the review
@@ -162,6 +164,39 @@ helper, model, and provider. When the peer is absent, it selects the running har
 reviewer as the blind same-harness fallback. If the caller passes `--peer-cli-absent`, it must agree
 with the contract's `peer-cli= ... absent` fact; do not substitute another provider or manually
 replay a failed launch.
+
+### Selection precedence — declaring the reviewer
+
+The peer-CLI selection above is the default and stays the default when nothing is declared. A
+repository can override it in `.agent/config.env`, named consistently with `AGENT_WORKER_*`:
+
+| Key | Overrides |
+|---|---|
+| `AGENT_ADVERSARIAL_REVIEWER` | which CLI (`codex` or `claude`) is the reviewer, instead of `peer-cli=` |
+| `AGENT_ADVERSARIAL_REVIEW_MODEL` | the model for the declared reviewer |
+| `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` | the model used if the declared reviewer falls back (below) |
+| `AGENT_ADVERSARIAL_REVIEW_EFFORT` | reasoning effort, harness-neutral — applies whichever CLI is used |
+
+`AGENT_ADVERSARIAL_REVIEW_MODEL` and its `_FALLBACK` counterpart are only meaningful paired with a
+declared `AGENT_ADVERSARIAL_REVIEWER`: a bare model id has no CLI to be interpreted against, so
+either is ignored without it. `AGENT_ADVERSARIAL_REVIEW_EFFORT` applies regardless. The resolver
+accepts exactly `low`, `medium`, `high`, `xhigh`, `max` for effort — the same enum the provider
+helpers themselves accept (no `ultra`); an unsupported value is refused and named at declaration
+time rather than failing at launch.
+
+Availability is only ever a question for the peer slot: only two CLIs exist to declare (`codex`,
+`claude`), the running harness is definitionally present, and the contract already probed the peer
+once (`peer-cli= ... absent`). So declaring the running harness itself as reviewer is always
+honored; declaring the peer when the contract says it is absent does not silently revert to the
+peer-CLI default — the runner warns naming the declared CLI and the substitution, then falls back to
+the running harness's own CLI using `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` when declared, or that
+CLI's built-in default model otherwise. `AGENT_ADVERSARIAL_REVIEW_EFFORT`, if declared, still applies
+in that fallback. This is the same blind same-harness path used when a peer is simply absent;
+declaring a reviewer never bypasses the consent record or changes the provider-token mapping below.
+
+An invalid declaration for any of these four keys is dropped by `repo-config.sh` with a warning
+naming the accepted set, and the run proceeds on the peer-CLI default exactly as if nothing had
+been declared.
 
 The one-shot blocking entry point is:
 

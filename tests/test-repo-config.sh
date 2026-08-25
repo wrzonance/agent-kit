@@ -60,7 +60,9 @@ assert_rc 0 'a fully invalid config still exits 0' -- "$rc_sh" --repo-root "$rep
 # --- --list-keys: the accepted key set is discoverable on its own ----------
 list_out=$("$rc_sh" --list-keys 2> /dev/null)
 assert_rc 0 '--list-keys succeeds with no repo context' -- "$rc_sh" --list-keys
-for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_REVIEW_PROVIDERS AGENT_WORKER_EFFORT; do
+for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_REVIEW_PROVIDERS AGENT_WORKER_EFFORT \
+    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL \
+    AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT; do
     assert_contains "$list_out" "$key" "--list-keys names the accepted literal key $key"
 done
 assert_contains "$list_out" 'AGENT_CMD_<NAME>' '--list-keys documents the open-ended command pattern'
@@ -433,6 +435,46 @@ out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
 assert_not_contains "$out" 'AGENT_WORKER_EFFORT=' 'rejects a non-spawn-enum worker effort'
 assert_contains "$out" 'invalid value for AGENT_WORKER_EFFORT' \
     'warns when a non-spawn-enum worker effort declaration is rejected'
+
+# --- adversarial reviewer declarations --------------------------------------
+# Unlike a worker model id, the reviewer CLI is a closed two-item set (issue
+# #452): adversarial-run.sh only knows how to launch codex or claude, so an
+# unsupported spelling is refused outright rather than kept visible.
+printf 'AGENT_ADVERSARIAL_REVIEWER=codex\nAGENT_ADVERSARIAL_REVIEW_MODEL=gpt-5.6-sol\nAGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=claude-opus-5\nAGENT_ADVERSARIAL_REVIEW_EFFORT=xhigh\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEWER=codex' 'accepts a declared adversarial reviewer CLI'
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEW_MODEL=gpt-5.6-sol' \
+    'accepts a declared adversarial reviewer model'
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=claude-opus-5' \
+    'accepts a declared adversarial reviewer fallback model'
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEW_EFFORT=xhigh' \
+    'accepts a declared adversarial reviewer effort'
+
+printf 'AGENT_ADVERSARIAL_REVIEWER=claude\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEWER=claude' 'accepts claude as a declared reviewer'
+
+printf 'AGENT_ADVERSARIAL_REVIEWER=gemini\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_ADVERSARIAL_REVIEWER=' 'rejects a reviewer CLI outside the closed set'
+assert_contains "$out" 'invalid value for AGENT_ADVERSARIAL_REVIEWER on line 1, ignoring -- accepted: codex, claude' \
+    'names the accepted reviewer set when rejecting'
+
+bad_reviewer_model_values=('gpt 5.6' "\$(touch PWNED)" '')
+for bad_value in "${bad_reviewer_model_values[@]}"; do
+    printf 'AGENT_ADVERSARIAL_REVIEW_MODEL=%s\n' "$bad_value" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+    assert_not_contains "$out" 'AGENT_ADVERSARIAL_REVIEW_MODEL=' \
+        "rejects an unsafe or empty adversarial reviewer model: ${bad_value:-empty}"
+done
+
+printf 'AGENT_ADVERSARIAL_REVIEW_EFFORT=ultra\n' > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_not_contains "$out" 'AGENT_ADVERSARIAL_REVIEW_EFFORT=' \
+    'rejects ultra for the adversarial reviewer, unlike AGENT_WORKER_EFFORT'
+assert_contains "$out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_EFFORT on line 1, ignoring -- accepted: low, medium, high, xhigh, max' \
+    'names the accepted effort set, which excludes ultra because the provider helpers reject it'
 
 
 # --- an empty value is a statement, not a typo ------------------------------

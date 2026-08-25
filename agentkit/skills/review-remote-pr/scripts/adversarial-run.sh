@@ -14,6 +14,8 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 
+readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
+
 PR=''
 REPO=''
 RUN_DIR=''
@@ -21,6 +23,7 @@ PEER_CLI_ABSENT=0
 HARNESS_NAME=''
 RUNNING_PROVIDER=''
 PEER_CLI_NAME=''
+CONTRACT_ROOT=''
 BASE_REF=''
 PROVIDER=''
 MODEL=''
@@ -53,6 +56,10 @@ EOF
 die() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
     exit 1
+}
+
+warn() {
+    printf '%s: %s\n' "$PROGNAME" "$1" >&2
 }
 
 die_usage() {
@@ -94,6 +101,7 @@ load_environment_contract() {
     if ! contract_root=$(git rev-parse --show-toplevel 2>/dev/null); then
         die 'could not resolve the repository root for the environment contract'
     fi
+    CONTRACT_ROOT=$contract_root
     contract="$contract_root/.agent/env-contract.txt"
     [[ ! -L $contract_root/.agent ]] ||
         die "environment contract directory is a symlink: $contract_root/.agent"
@@ -139,12 +147,50 @@ load_environment_contract() {
     esac
 }
 
+# Best-effort read of one declared .agent/config.env key. Absent, unreadable,
+# or resolver-rejected values fall through silently -- the caller decides
+# what "not declared" means, matching every other repo-config.sh consumer in
+# this codebase (e.g. spawn-contract.md's worker_config_value).
+#
+# repo-config.sh exits 0 with empty output for --get on ANY key when
+# .agent/config.env does not exist at all (it only exits 1 for a key that is
+# genuinely absent from an existing file) -- so success alone does not mean
+# "declared". None of these keys validate to an empty string, so requiring
+# non-empty output here is exact, not a heuristic.
+resolve_config_value() {
+    local key=$1 value
+    [[ -x $REPO_CONFIG_SH ]] || return 1
+    value=$("$REPO_CONFIG_SH" --repo-root "$CONTRACT_ROOT" --get "$key" 2>/dev/null) || return 1
+    [[ -n $value ]] || return 1
+    printf '%s' "$value"
+}
+
 select_reviewer() {
-    local reviewer_cli=$PEER_CLI_NAME
-    # With no peer there is no cross-harness reviewer to select. Keep the
-    # blind fallback on the running harness so its provider cannot be
-    # mislabeled as cross-provider merely because the peer is unavailable.
-    ((PEER_CLI_ABSENT)) && reviewer_cli=$HARNESS_NAME
+    local reviewer_cli=$PEER_CLI_NAME declared_reviewer='' declared_value='' fell_back=0
+
+    if declared_reviewer=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER); then
+        reviewer_cli=$declared_reviewer
+        # AGENT_ADVERSARIAL_REVIEWER only ever names codex or claude (the
+        # resolver refuses anything else), and HARNESS_NAME/PEER_CLI_NAME are
+        # always that same two-item set with HARNESS_NAME guaranteed present
+        # (it is literally running this script). So a declared reviewer is
+        # either the running harness -- always available, no check needed --
+        # or the peer, whose availability the contract already probed once
+        # and encoded as PEER_CLI_ABSENT; re-probing here would both duplicate
+        # that work and make this depend on whatever happens to be on PATH
+        # instead of the one already-established environment fact.
+        if [[ $reviewer_cli == "$PEER_CLI_NAME" ]] && ((PEER_CLI_ABSENT)); then
+            warn "declared adversarial reviewer '$declared_reviewer' (AGENT_ADVERSARIAL_REVIEWER) is not available on this machine; falling back to the running harness '$HARNESS_NAME'"
+            reviewer_cli=$HARNESS_NAME
+            fell_back=1
+        fi
+    else
+        # With no peer there is no cross-harness reviewer to select. Keep the
+        # blind fallback on the running harness so its provider cannot be
+        # mislabeled as cross-provider merely because the peer is unavailable.
+        ((PEER_CLI_ABSENT)) && reviewer_cli=$HARNESS_NAME
+    fi
+
     case $reviewer_cli in
         codex)
             PROVIDER=openai
@@ -164,6 +210,21 @@ select_reviewer() {
             die "unsupported reviewer CLI: $reviewer_cli"
             ;;
     esac
+
+    # AGENT_ADVERSARIAL_REVIEW_MODEL names a model for the declared primary
+    # reviewer; AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK names one for the
+    # running-harness fallback slot above. Neither is meaningful without
+    # AGENT_ADVERSARIAL_REVIEWER declared -- a bare model id has no CLI to be
+    # interpreted against. AGENT_ADVERSARIAL_REVIEW_EFFORT is harness-neutral
+    # (same convention as AGENT_WORKER_EFFORT) and always applies.
+    if ((fell_back)); then
+        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK) &&
+            MODEL=$declared_value
+    elif [[ -n $declared_reviewer ]]; then
+        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_MODEL) && MODEL=$declared_value
+    fi
+    declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_EFFORT) && EFFORT=$declared_value
+
     if [[ $PROVIDER == "$RUNNING_PROVIDER" ]]; then
         MODE=blind-fallback
     else

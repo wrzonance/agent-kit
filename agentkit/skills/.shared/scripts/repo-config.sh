@@ -48,6 +48,8 @@ readonly ACCEPTED_KEYS=(
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
     AGENT_GENERATED_PATHS AGENT_ONBOARDED_BY
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
+    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL
+    AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT
 )
 
 # AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
@@ -263,6 +265,42 @@ providers_valid() {
 # explicit-authorization gate instead of silently becoming the default.
 worker_model_valid() {
     [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
+}
+
+# The adversarial reviewer is one of exactly two CLIs adversarial-run.sh knows
+# how to launch -- unlike a worker model id, this is a closed set, not open
+# policy input, so an unsupported spelling is refused outright rather than
+# kept visible for a later authorization gate.
+readonly ADVERSARIAL_REVIEWER_ACCEPTED_NAMES=(codex claude)
+
+# Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
+# `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
+# the adversarial helpers reject would pass here and only fail at launch,
+# after consent and diff construction already ran.
+readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
+
+names_display() {
+    local out='' name
+    for name in "$@"; do
+        out+="${out:+, }$name"
+    done
+    printf '%s' "$out"
+}
+
+adversarial_reviewer_valid() {
+    local item
+    for item in "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}"; do
+        [[ $item == "$1" ]] && return 0
+    done
+    return 1
+}
+
+adversarial_review_effort_valid() {
+    local item
+    for item in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
+        [[ $item == "$1" ]] && return 0
+    done
+    return 1
 }
 
 # Resolve a relative path from BASE and prove the physical result stays inside
@@ -546,6 +584,11 @@ validate() {
             [[ $value == low || $value == medium || $value == high ||
                 $value == xhigh || $value == max || $value == ultra ]]
             ;;
+        AGENT_ADVERSARIAL_REVIEWER) adversarial_reviewer_valid "$value" ;;
+        AGENT_ADVERSARIAL_REVIEW_MODEL | AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK)
+            worker_model_valid "$value"
+            ;;
+        AGENT_ADVERSARIAL_REVIEW_EFFORT) adversarial_review_effort_valid "$value" ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)
             command_value_valid "$value" "$key" || return 1
@@ -644,6 +687,10 @@ while IFS= read -r line || [[ -n $line ]]; do
             warn "empty value for $key on line $lineno, ignoring -- to record that this repository has none, comment the line out instead"
         elif [[ $key == AGENT_REVIEW_PROVIDERS ]]; then
             warn "invalid value for $key on line $lineno, ignoring -- accepted: $(providers_display)"
+        elif [[ $key == AGENT_ADVERSARIAL_REVIEWER ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}")"
+        elif [[ $key == AGENT_ADVERSARIAL_REVIEW_EFFORT ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}")"
         else
             warn "invalid value for $key on line $lineno, ignoring"
         fi
