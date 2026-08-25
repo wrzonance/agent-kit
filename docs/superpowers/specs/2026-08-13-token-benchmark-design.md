@@ -427,4 +427,12 @@ there fork `fixture_version`.
 
 Design approved 2026-08-13; amended the same day for longitudinal operation
 (results ledger, fixture freezing, drift control arm, per-merge Tier 0).
-Implementation not started.
+
+Implementation status as of 2026-08-24:
+
+- Tier 0 accounting and its append-only ledger landed in issue #323.
+- Preregistration, the frozen Tally fixture/gold/issues, and the hidden
+  acceptance oracle landed in issues #324–#326.
+- Per-merge Tier 0 recording landed in issue #328.
+- The Tier 1 container/trial harness and rollout parser remain open in issue
+  #327 (PR #389).
