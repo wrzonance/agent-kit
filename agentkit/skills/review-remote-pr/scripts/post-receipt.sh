@@ -17,28 +17,51 @@
 #       A missing parser, unreadable artifact, or invalid JSON never reports
 #       either word; it fails closed (see Exit status).
 #
-#   publish --pr N --repo OWNER/REPO --comments FILE
+#   publish --pr N --repo OWNER/REPO --comments FILE [--findings-file FILE]
 #           --provider S --model S --effort S
 #           --mode cross-provider|blind-fallback [--mode-reason S]
 #           --p1 N --p2 N
-#           [--finding 'TITLE|fixed|SHAS'] [--finding 'TITLE|declined|RATIONALE'] ...
 #           [--skip-rationale S --oracle S]
-#           --agent-identity S
+#           --agent-identity S [--require-pushed]
 #       Renders the receipt body (agentic banner, agent-doc marker, the
 #       "## Adversarial review receipt" section, exactly one spent marker,
-#       agentic footer) into a private 0600 temp file and posts it through
-#       the sibling gh-comment.sh, which byte-verifies the stored body. Runs
-#       its own precheck against --comments first and refuses to double-spend.
+#       agentic footer) from the validated NDJSON findings ledger into a private
+#       0600 temp file and posts it through the sibling gh-comment.sh, which
+#       byte-verifies the stored body. Runs its own precheck against --comments
+#       first and refuses to double-spend.
+#
+#       The findings ledger is addressed the same way finding-ledger.sh
+#       addresses it: via the RUN_DIR environment variable, which must name an
+#       owned, non-symlink, mode-0700 directory (the same checks finding-
+#       ledger.sh applies to RUN_DIR itself), and findings.ndjson is derived as
+#       $RUN_DIR/findings.ndjson. Pass --findings-file to override with an
+#       explicit path instead; when both are absent this is a usage error. A
+#       findings file that fails validation names the RUN_DIR-derived path it
+#       expected, since a wrong root is the far more common failure than a
+#       missing file.
+#
+#       A normal (non-skip) publish still requires a completed
+#       adversarial.result.json beside the findings file, proving
+#       adversarial-run.sh actually ran. A verified skip (--skip-rationale
+#       together with --oracle) is different: adversarial-run.sh was never
+#       told to run, so publish writes a small status:"skipped" result
+#       artifact to that same path itself instead of requiring one. An
+#       existing artifact there is accepted only when it already matches this
+#       skip's rationale and oracle verbatim; anything else (a completed
+#       review, a stale result from a different skip) is refused rather than
+#       silently overwritten.
 #
 # Exit status:
 #   0   success (precheck: spent; publish: comment posted and verified)
-#   1   evidence unavailable: jq missing, --comments missing/unreadable, or
-#       its JSON is invalid -- OR the downstream gh-comment.sh post/verify
-#       failed (nothing durable landed on the PR)
-#   2   usage error (bad/missing arguments, malformed --finding, or the
-#       sibling gh-comment.sh is missing)
+#   1   evidence unavailable: jq missing, --comments/findings-file
+#       missing/unreadable/invalid, live recovery unavailable, or the
+#       downstream gh-comment.sh post/verify failed with no recovered marker
+#   2   usage error (bad/missing arguments or the sibling gh-comment.sh is
+#       missing)
 #   10  precheck only: marker provably absent (not spent)
 #   11  publish only: refused -- the receipt marker is already present
+#   12  publish only: --require-pushed refused a dirty or unpushed tree
+#   13  publish only: the findings pipeline is out of order
 #
 # Requires: bash >= 4.2, jq >= 1.6. publish additionally requires the sibling
 # gh-comment.sh and everything it requires (gh, diff, cmp).
@@ -51,25 +74,21 @@ readonly RECEIPT_MARKER='<!-- adversarial-review:spent -->'
 readonly DOC_MARKER='<!-- review-remote-pr:agent-doc -->'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
 readonly UINT_RE='^(0|[1-9][0-9]*)$'
-# Kept as codepoint escapes (bash's printf interprets \uXXXX/\UXXXXXXXX in the
-# format string itself) so this source file stays ASCII -- only the rendered
-# receipt body, which is data, carries the literal UTF-8 bytes.
-EM_DASH=$(printf '\u2014')
-readonly EM_DASH
+# Keep the source ASCII; jq renders the codepoint in the durable body.
 ROBOT=$(printf '\U1F916')
 readonly ROBOT
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME precheck --comments FILE
+       $PROGNAME --require-pushed publish ...
        $PROGNAME publish --pr N --repo OWNER/REPO --comments FILE \\
+                 [--findings-file FILE] \\
                  --provider S --model S --effort S \\
                  --mode cross-provider|blind-fallback [--mode-reason S] \\
                  --p1 N --p2 N \\
-                 [--finding 'TITLE|fixed|SHAS'] \\
-                 [--finding 'TITLE|declined|RATIONALE'] ... \\
                  [--skip-rationale S --oracle S] \\
-                 --agent-identity S
+                 --agent-identity S [--require-pushed]
 
 precheck: reports whether the PR's fetched comment artifact already carries
 the stable adversarial-review spent marker.
@@ -77,14 +96,28 @@ the stable adversarial-review spent marker.
   stdout 'not-spent' and exit 10  marker provably absent
   exit 1 (stderr only, fails closed) missing jq, unreadable FILE, invalid JSON
 
-publish: renders the one-spend receipt and posts it via gh-comment.sh's
-byte-verified transport. Runs the same precheck against --comments first and
-refuses (exit 11) when the marker is already present.
+publish: validates the NDJSON findings ledger, renders the one-spend receipt,
+and posts it via gh-comment.sh's byte-verified transport. Runs the same
+precheck against --comments first and refuses (exit 11) when the marker is
+already present. --require-pushed additionally requires a clean tree whose HEAD
+is reachable from an origin/* remote-tracking ref.
 
-Repeat --finding once per confirmed finding; omit it entirely for a clean
-review (the receipt then records 'none confirmed'). --skip-rationale and
---oracle are optional and must be given together, for a verified trivial-diff
-skip.
+The findings ledger is found the same way finding-ledger.sh finds it: via the
+RUN_DIR environment variable (an owned, non-symlink, mode-0700 directory),
+deriving \$RUN_DIR/findings.ndjson. Pass --findings-file for an explicit
+override; one of RUN_DIR or --findings-file is required.
+
+Capability probes are not receipts: probe invocations send only a synthetic
+snippet, no PR diff, and never count against the one-review-per-PR budget.
+Probe mode is rejected before any receipt transport.
+
+The findings file is one JSON record per line. A fixed record has title,
+verdict=fixed, and sha; a declined record has title, verdict=declined, and
+rationale. Use an empty file for a clean review. --skip-rationale and --oracle
+are optional and must be given together, for a verified trivial-diff skip. A
+verified skip does not require a prior adversarial-run.sh call: publish writes
+its own status:"skipped" result artifact beside the findings file instead of
+requiring the completed one only the runner produces.
 
 Exit status: see the script header comment.
 EOF
@@ -92,7 +125,7 @@ EOF
 
 die_usage() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    printf 'run "%s --help" for usage\n' "$PROGNAME" >&2
+    usage >&2
     exit 2
 }
 
@@ -194,6 +227,10 @@ cmd_precheck() {
 PR=''
 REPO=''
 COMMENTS=''
+FINDINGS_FILE=''
+# Same addressing convention as finding-ledger.sh's RUN_DIR: an environment
+# variable naming the private run directory, not a CLI flag.
+RUN_DIR=${RUN_DIR:-}
 PROVIDER=''
 MODEL=''
 EFFORT=''
@@ -204,7 +241,7 @@ P2=''
 SKIP_RATIONALE=''
 ORACLE=''
 AGENT_IDENTITY=''
-FINDINGS=()
+REQUIRE_PUSHED=0
 GH_COMMENT_SCRIPT=''
 # Global, not local to cmd_publish: an EXIT trap fires after the function that
 # set it has returned, so a deferred '"$var"' expansion in the trap needs the
@@ -217,6 +254,7 @@ parse_publish_args() {
             --pr) [[ ${2-} ]] || die_usage '--pr requires a value'; PR=$2; shift 2 ;;
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; REPO=$2; shift 2 ;;
             --comments) [[ ${2-} ]] || die_usage '--comments requires a path'; COMMENTS=$2; shift 2 ;;
+            --findings-file) [[ ${2-} ]] || die_usage '--findings-file requires a path'; FINDINGS_FILE=$2; shift 2 ;;
             --provider) [[ ${2-} ]] || die_usage '--provider requires a value'; PROVIDER=$2; shift 2 ;;
             --model) [[ ${2-} ]] || die_usage '--model requires a value'; MODEL=$2; shift 2 ;;
             --effort) [[ ${2-} ]] || die_usage '--effort requires a value'; EFFORT=$2; shift 2 ;;
@@ -224,10 +262,10 @@ parse_publish_args() {
             --mode-reason) [[ ${2-} ]] || die_usage '--mode-reason requires a value'; MODE_REASON=$2; shift 2 ;;
             --p1) [[ ${2-} ]] || die_usage '--p1 requires a value'; P1=$2; shift 2 ;;
             --p2) [[ ${2-} ]] || die_usage '--p2 requires a value'; P2=$2; shift 2 ;;
-            --finding) [[ ${2-} ]] || die_usage '--finding requires a value'; FINDINGS+=("$2"); shift 2 ;;
             --skip-rationale) [[ ${2-} ]] || die_usage '--skip-rationale requires a value'; SKIP_RATIONALE=$2; shift 2 ;;
             --oracle) [[ ${2-} ]] || die_usage '--oracle requires a value'; ORACLE=$2; shift 2 ;;
             --agent-identity) [[ ${2-} ]] || die_usage '--agent-identity requires a value'; AGENT_IDENTITY=$2; shift 2 ;;
+            --require-pushed) REQUIRE_PUSHED=1; shift ;;
             -h | --help) usage; exit 0 ;;
             *) die_usage "unknown argument: $1" ;;
         esac
@@ -240,9 +278,13 @@ validate_publish_args() {
     [[ -n $REPO ]] || die_usage '--repo is required'
     [[ $REPO =~ $SLUG_RE ]] || die_usage "--repo must look like OWNER/REPO, got: $REPO"
     [[ -n $COMMENTS ]] || die_usage '--comments is required'
+    [[ -n $FINDINGS_FILE || -n $RUN_DIR ]] ||
+        die_usage '--findings-file or RUN_DIR is required'
     [[ -n $PROVIDER ]] || die_usage '--provider is required'
     [[ -n $MODEL ]] || die_usage '--model is required'
     [[ -n $EFFORT ]] || die_usage '--effort is required'
+    [[ $MODE != probe ]] ||
+        die_usage 'probes never count against the one-review-per-PR budget; probe mode cannot publish a receipt'
     # Accept the human-prose spelling ("blind fallback") as well as the
     # canonical flag value: SKILL.md's receipt prose describes the mode in
     # words, and an agent following it verbatim would otherwise get die_usage
@@ -260,8 +302,8 @@ validate_publish_args() {
         [[ -n $SKIP_RATIONALE && -n $ORACLE ]] ||
             die_usage '--skip-rationale and --oracle must be given together'
     fi
-    # Every free-text field that reaches the rendered body. --finding is
-    # checked per-field in render_finding_line, after it is split.
+    # Every free-text field that reaches the rendered body. Ledger fields are
+    # validated as a complete NDJSON document below, before any POST.
     reject_unsafe_field '--provider' "$PROVIDER"
     reject_unsafe_field '--model' "$MODEL"
     reject_unsafe_field '--effort' "$EFFORT"
@@ -269,6 +311,193 @@ validate_publish_args() {
     reject_unsafe_field '--agent-identity' "$AGENT_IDENTITY"
     reject_unsafe_field '--skip-rationale' "$SKIP_RATIONALE"
     reject_unsafe_field '--oracle' "$ORACLE"
+}
+
+# The receipt asserts that a review happened and how many findings it produced.
+# Neither was checked: an owned, well-formed but EMPTY ledger satisfies the
+# jq `all` below vacuously, and --p1/--p2 were taken on the caller's word. A
+# receipt could therefore be published without adversarial-run.sh ever running.
+# The ledger lives beside the runner's result, so require that result here and
+# derive the counts from the ledger's own severities.
+#
+# A verified skip is the one path that is deliberately allowed to publish
+# without adversarial-run.sh ever having run -- that is the entire point of
+# --skip-rationale/--oracle. Requiring the runner's completed result for that
+# path made the documented-skip contract a dead end (issue #391): the agent
+# had to either run the review it was told it could skip, or fabricate the
+# result file. write_skip_result mints the result artifact itself instead.
+validate_runner_provenance() {
+    local run_dir result
+    run_dir=$(dirname -- "$FINDINGS_FILE")
+    result=$run_dir/adversarial.result.json
+    if [[ -n $SKIP_RATIONALE ]]; then
+        write_skip_result "$result"
+        return 0
+    fi
+    [[ -f $result && ! -L $result && -O $result ]] ||
+        evidence_unavailable "a validated adversarial review result is required beside the findings file: $result"
+    jq -s -e '
+        length == 1 and
+        (.[0] |
+            type == "object" and .status == "completed" and
+            (.exitCode | type) == "number" and .exitCode == 0 and
+            (.requestedModel | type) == "string" and (.transcript | type) == "string" and
+            (.verdict | type) == "object" and
+            (.verdict.verdict == "findings" or .verdict.verdict == "no_findings") and
+            (.verdict.findings | type) == "array")
+    ' "$result" >/dev/null 2>&1 ||
+        evidence_unavailable "adversarial review result is not a completed validated result: $result"
+}
+
+# Writes (or idempotently accepts) the verified-skip result artifact at PATH.
+# An existing artifact is trusted only when it already matches this skip's
+# rationale and oracle verbatim -- a completed review result, or a stale skip
+# result from a different rationale/oracle, is refused rather than silently
+# overwritten, since this path is durable evidence that a review either ran or
+# was deliberately, verifiably skipped.
+write_skip_result() {
+    local path=$1 tmp
+    if [[ -e $path ]]; then
+        [[ -f $path && ! -L $path && -O $path ]] ||
+            evidence_unavailable "a result artifact blocks the verified-skip result: $path"
+        jq -s -e --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" '
+            length == 1 and
+            (.[0] |
+                type == "object" and .status == "skipped" and
+                .skipRationale == $rationale and .oracle == $oracle)
+        ' "$path" >/dev/null 2>&1 && return 0
+        evidence_unavailable "an existing adversarial review result does not match this verified skip: $path"
+    fi
+    tmp="$path.tmp"
+    if [[ -e $tmp ]]; then
+        [[ -f $tmp && ! -L $tmp && -O $tmp ]] ||
+            evidence_unavailable "refusing to reuse a result temp artifact not owned by this user: $tmp"
+        rm -f -- "$tmp" ||
+            evidence_unavailable "could not clear a stale result temp artifact: $tmp"
+    fi
+    jq -cn --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" \
+        '{status: "skipped", skipRationale: $rationale, oracle: $oracle}' >"$tmp" ||
+        evidence_unavailable "could not encode the verified-skip result artifact: $tmp"
+    chmod 600 -- "$tmp" ||
+        evidence_unavailable "could not secure the verified-skip result artifact: $tmp"
+    mv -f -- "$tmp" "$path" ||
+        evidence_unavailable "could not publish the verified-skip result artifact: $path"
+}
+
+
+# Mirrors finding-ledger.sh's own RUN_DIR checks exactly: RUN_DIR is the
+# private review-artifact directory, so an unowned, symlinked, or loosely
+# permissioned one is refused the same way finding-ledger.sh refuses it,
+# before this script ever looks for a findings.ndjson inside it.
+run_dir_mode() {
+    local mode
+    if mode=$(stat -c %a -- "$RUN_DIR" 2>/dev/null) &&
+        [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$RUN_DIR" 2>/dev/null) &&
+        [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
+validate_run_dir() {
+    [[ -d $RUN_DIR && ! -L $RUN_DIR && -O $RUN_DIR ]] ||
+        evidence_unavailable "RUN_DIR is not an owned directory: $RUN_DIR"
+    local mode
+    mode=$(run_dir_mode) || evidence_unavailable "could not inspect RUN_DIR mode: $RUN_DIR"
+    (( (8#$mode & 0777) == 0700 )) ||
+        evidence_unavailable "RUN_DIR must have mode 0700: $RUN_DIR"
+}
+
+# Resolves FINDINGS_FILE when --findings-file was not given: RUN_DIR must
+# already be present (validate_publish_args enforced that one of the two is
+# set) and must pass the same ownership/symlink/mode checks finding-ledger.sh
+# applies before it will trust a directory as the private run directory.
+resolve_findings_file() {
+    [[ -z $FINDINGS_FILE ]] || return 0
+    validate_run_dir
+    FINDINGS_FILE=$RUN_DIR/findings.ndjson
+}
+
+validate_findings_file() {
+    local expected=''
+    if [[ -n $RUN_DIR && $FINDINGS_FILE != "$RUN_DIR/findings.ndjson" ]]; then
+        expected=" (RUN_DIR expects $RUN_DIR/findings.ndjson)"
+    fi
+    [[ -f $FINDINGS_FILE && ! -L $FINDINGS_FILE && -O $FINDINGS_FILE && -r $FINDINGS_FILE ]] ||
+        evidence_unavailable "findings file is not an owned readable regular file: $FINDINGS_FILE${expected}"
+    command -v jq >/dev/null 2>&1 || evidence_unavailable 'jq is not installed'
+    jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" '
+        all(.[];
+          type == "object" and
+          ((keys - ["title", "severity", "verdict", "sha", "rationale"]) | length == 0) and
+          (.severity == "P1" or .severity == "P2") and
+          (.title | type == "string") and
+          (.title | length > 0) and
+          (.title | test("[\\r\\n]") | not) and
+          (.title | contains($receipt) | not) and
+          (.title | contains($doc) | not) and
+          ((.verdict == "fixed" and has("sha") and (has("rationale") | not) and
+              (.sha | type == "string" and test("^[[:xdigit:]]{7,64}(,[[:xdigit:]]{7,64})*$"))) or
+           (.verdict == "declined" and has("rationale") and (has("sha") | not) and
+              (.rationale | type == "string") and (.rationale | length > 0) and
+              (.rationale | test("[\\r\\n]") | not) and
+              (.rationale | contains($receipt) | not) and
+              (.rationale | contains($doc) | not)))
+        )
+    ' "$FINDINGS_FILE" >/dev/null 2>&1 ||
+        evidence_unavailable 'findings file must not contain a line break; it must not contain the receipt marker; it must match the ledger schema'
+
+    local finding_count total
+    finding_count=$(jq -s 'length' "$FINDINGS_FILE") ||
+        evidence_unavailable 'could not count the findings ledger'
+    total=$((P1 + P2))
+    if ((finding_count != total)); then
+        printf '%s: finding counts P1=%s P2=%s total=%s but ledger has %s record(s)\n' \
+            "$PROGNAME" "$P1" "$P2" "$total" "$finding_count" >&2
+        exit 13
+    fi
+
+    # The total alone does not pin the split: one record satisfies P1=1,P2=0 and
+    # P1=0,P2=1 equally, so the receipt could report either severity for it.
+    local ledger_p1 ledger_p2
+    ledger_p1=$(jq -s '[.[] | select(.severity == "P1")] | length' "$FINDINGS_FILE") ||
+        evidence_unavailable 'could not count P1 findings in the ledger'
+    ledger_p2=$(jq -s '[.[] | select(.severity == "P2")] | length' "$FINDINGS_FILE") ||
+        evidence_unavailable 'could not count P2 findings in the ledger'
+    if [[ $P1 != "$ledger_p1" || $P2 != "$ledger_p2" ]]; then
+        printf '%s: finding counts P1=%s P2=%s but ledger severities are P1=%s P2=%s\n' \
+            "$PROGNAME" "$P1" "$P2" "$ledger_p1" "$ledger_p2" >&2
+        exit 13
+    fi
+}
+
+refuse_push() {
+    printf '%s: --require-pushed refused: %s\n' "$PROGNAME" "$1" >&2
+    exit 12
+}
+
+require_pushed_state() {
+    command -v git >/dev/null 2>&1 || refuse_push 'git is not available'
+    local root status head refs ref
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || refuse_push 'not inside a git worktree'
+    status=$(git -C "$root" status --porcelain --untracked-files=all 2>/dev/null) ||
+        refuse_push 'could not inspect worktree status'
+    [[ -z $status ]] || refuse_push 'the worktree is dirty'
+    head=$(git -C "$root" rev-parse HEAD 2>/dev/null) || refuse_push 'could not resolve HEAD'
+    refs=$(git -C "$root" for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null) ||
+        refuse_push 'could not inspect origin remote-tracking refs'
+    while IFS= read -r ref; do
+        [[ -n $ref ]] || continue
+        if git -C "$root" merge-base --is-ancestor "$head" "$ref" >/dev/null 2>&1; then
+            return 0
+        fi
+    done <<<"$refs"
+    refuse_push "HEAD $head is not reachable from an origin/* remote-tracking ref"
 }
 
 # Resolved lazily (publish only) so precheck never depends on dirname/pwd
@@ -281,40 +510,19 @@ resolve_gh_comment_script() {
         die_usage "sibling gh-comment.sh not found or not executable: $GH_COMMENT_SCRIPT"
 }
 
-# render_finding_line 'TITLE|fixed|SHAS'  or  'TITLE|declined|RATIONALE'
-render_finding_line() {
-    local raw=$1 title verdict detail rest shas='' rationale=''
-    title=${raw%%|*}
-    rest=${raw#*|}
-    [[ $rest != "$raw" ]] || die_usage "--finding must be TITLE|VERDICT|DETAIL, got: $raw"
-    verdict=${rest%%|*}
-    detail=${rest#*|}
-    [[ $detail != "$rest" ]] || die_usage "--finding must be TITLE|VERDICT|DETAIL, got: $raw"
-    [[ -n $title ]] || die_usage "--finding has an empty TITLE: $raw"
-    [[ -n $detail ]] || die_usage "--finding has an empty DETAIL: $raw"
-    case $verdict in
-        fixed) shas=$detail ;;
-        declined) rationale=$detail ;;
-        *) die_usage "--finding VERDICT must be fixed or declined, got: $verdict ($raw)" ;;
-    esac
-    reject_unsafe_field '--finding TITLE' "$title"
-    reject_unsafe_field '--finding DETAIL' "$detail"
-    # printf arguments, never pattern substitution: in bash 5.2 an unquoted `&`
-    # in a ${var//pat/repl} replacement expands to the matched text, so a title
-    # like "R&D failure" rendered as "R__TITLE__D failure".
-    printf -- '- Confirmed finding: %s %s verdict=%s; fix commit SHA(s)=%s; decline rationale=%s\n' \
-        "$title" "$EM_DASH" "$verdict" "$shas" "$rationale"
-}
-
 render_findings_block() {
-    if ((${#FINDINGS[@]} == 0)); then
+    if [[ ! -s $FINDINGS_FILE ]]; then
         printf '%s\n' '- Confirmed finding: none confirmed'
         return 0
     fi
-    local raw
-    for raw in "${FINDINGS[@]}"; do
-        render_finding_line "$raw"
-    done
+    jq -r -s '
+      .[] |
+      if .verdict == "fixed" then
+        "- Confirmed finding: \(.title) \u2014 verdict=fixed; fix commit SHA(s)=\(.sha)"
+      else
+        "- Confirmed finding: \(.title) \u2014 verdict=declined; decline rationale=\(.rationale)"
+      end
+    ' "$FINDINGS_FILE"
 }
 
 render_skip_line() {
@@ -337,9 +545,57 @@ render_body() {
     printf '%s Co-authored by %s.\n' "$ROBOT" "$AGENT_IDENTITY"
 }
 
+recover_after_failed_publish() {
+    local post_rc=$1 gh_bin=${GH_COMMENT_GH:-gh}
+    local fresh_file fresh_err fetch_rc=0 marker_rc=0
+    command -v "$gh_bin" >/dev/null 2>&1 || {
+        printf '%s: receipt POST/verify failed (rc=%s); live recovery tool is unavailable; do not retry\n' \
+            "$PROGNAME" "$post_rc" >&2
+        exit 1
+    }
+    fresh_file=$(mktemp "${TMPDIR:-/tmp}/post-receipt-live.XXXXXXXXXX") || {
+        printf '%s: receipt POST/verify failed (rc=%s); could not create fresh recovery evidence; do not retry\n' \
+            "$PROGNAME" "$post_rc" >&2
+        exit 1
+    }
+    fresh_err="$fresh_file.err"
+    "$gh_bin" api "repos/$REPO/issues/$PR/comments" --paginate \
+        -H 'Accept: application/vnd.github+json' >"$fresh_file" 2>"$fresh_err" || fetch_rc=$?
+    if ((fetch_rc != 0)); then
+        printf '%s: receipt POST/verify failed (rc=%s); fresh live comment re-fetch failed (rc=%s); do not retry\n' \
+            "$PROGNAME" "$post_rc" "$fetch_rc" >&2
+        [[ ! -s $fresh_err ]] || head -n 10 -- "$fresh_err" >&2
+        rm -f -- "$fresh_file" "$fresh_err"
+        exit 1
+    fi
+    jq -s -e --arg marker "$RECEIPT_MARKER" \
+        'add | type == "array" and any(.[]?; ((.body // "") | contains($marker)))' \
+        "$fresh_file" >/dev/null 2>&1 || marker_rc=$?
+    if ((marker_rc == 0)); then
+        printf '%s: receipt POST/verify failed (rc=%s), but fresh live comments contain the receipt marker; do not retry\n' \
+            "$PROGNAME" "$post_rc" >&2
+        rm -f -- "$fresh_file" "$fresh_err"
+        exit 11
+    fi
+    if ((marker_rc != 1)); then
+        printf '%s: receipt POST/verify failed (rc=%s); fresh live comment evidence was invalid; do not retry\n' \
+            "$PROGNAME" "$post_rc" >&2
+        rm -f -- "$fresh_file" "$fresh_err"
+        exit 1
+    fi
+    printf '%s: receipt POST/verify failed (rc=%s); fresh live comments contain no receipt marker; retry remains blocked until this evidence is reviewed\n' \
+        "$PROGNAME" "$post_rc" >&2
+    rm -f -- "$fresh_file" "$fresh_err"
+    exit 1
+}
+
 cmd_publish() {
     parse_publish_args "$@"
     validate_publish_args
+    resolve_findings_file
+    validate_findings_file
+    validate_runner_provenance
+    ((REQUIRE_PUSHED == 0)) || require_pushed_state
     resolve_gh_comment_script
 
     local rc=0
@@ -357,8 +613,12 @@ cmd_publish() {
     trap 'rm -f -- "$RECEIPT_BODY_FILE"' EXIT
     render_body >"$RECEIPT_BODY_FILE"
 
-    "$GH_COMMENT_SCRIPT" --pr "$PR" --repo "$REPO" --body-file "$RECEIPT_BODY_FILE"
-    record_spend
+    if "$GH_COMMENT_SCRIPT" --pr "$PR" --repo "$REPO" --body-file "$RECEIPT_BODY_FILE"; then
+        record_spend
+    else
+        local post_rc=$?
+        recover_after_failed_publish "$post_rc"
+    fi
 }
 
 # The precheck above reads a snapshot fetched before this post existed, and
@@ -407,6 +667,11 @@ warn_spend_unrecorded() {
 
 main() {
     (($#)) || die_usage 'a subcommand is required: precheck or publish'
+    if [[ $1 == --require-pushed ]]; then
+        REQUIRE_PUSHED=1
+        shift
+        [[ ${1-} == publish ]] || die_usage '--require-pushed applies to publish'
+    fi
     local sub=$1
     shift
     case $sub in

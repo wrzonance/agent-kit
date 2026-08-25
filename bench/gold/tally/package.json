@@ -1,0 +1,10 @@
+{
+  "name": "tally-gold",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tier-1 benchmark reference solution (bench/gold/tally): all ten bench/issues/*.md applied. No dependencies -- see bench/README and bench/build-gold.sh.",
+  "scripts": {
+    "smoke": "node test/smoke.mjs"
+  }
+}

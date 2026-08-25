@@ -45,6 +45,7 @@ readonly ACCEPTED_KEYS=(
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
     AGENT_LABEL_TYPES AGENT_LABEL_AREAS AGENT_LABEL_PRIORITIES
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
+    AGENT_GENERATED_PATHS AGENT_ONBOARDED_BY
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
 )
 
@@ -189,14 +190,40 @@ safe_list() {
     [[ $1 =~ ^[A-Za-z0-9\ ._:/-]+(,[A-Za-z0-9\ ._:/-]+)*$ ]]
 }
 
-providers_valid() {
+# Repository-relative path prefixes used to identify generated artifacts. The
+# values are data, never shell patterns: a trailing slash is documentation for
+# a directory prefix, and each item must remain inside the repository.
+generated_paths_valid() {
     local item
+    [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
+    local -a items=()
+    IFS=, read -ra items <<< "$1"
+    ((${#items[@]})) || return 1
+    for item in "${items[@]}"; do
+        safe_relpath "$item" || return 1
+    done
+}
+
+providers_valid() {
+    local item saw_none=0 seen_coderabbit=0 seen_code_quality=0
+    [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
     local -a items=()
     IFS=, read -ra items <<< "$1"
     ((${#items[@]})) || return 1
     for item in "${items[@]}"; do
         case $item in
-            coderabbit | github-code-quality | none) ;;
+            coderabbit)
+                ((saw_none == 0 && seen_coderabbit == 0)) || return 1
+                seen_coderabbit=1
+                ;;
+            github-code-quality)
+                ((saw_none == 0 && seen_code_quality == 0)) || return 1
+                seen_code_quality=1
+                ;;
+            none)
+                ((saw_none == 0 && ${#items[@]} == 1)) || return 1
+                saw_none=1
+                ;;
             *) return 1 ;;
         esac
     done
@@ -211,21 +238,25 @@ worker_model_valid() {
     [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
 }
 
-# Resolve a repository-relative path against the repository root and prove the
-# result stays inside it. Resolution is physical, not lexical: readlink -f
-# follows symlinks, so a committed symlink pointing outside is caught as surely
-# as a `..` traversal. Prints the resolved path.
-resolve_contained() {
-    local value=$1 resolved
+# Resolve a relative path from BASE and prove the physical result stays inside
+# the repository. Resolution is physical, not lexical: readlink -f follows
+# symlinks, so a committed symlink pointing outside is caught as surely as a
+# `..` traversal. Prints the resolved path.
+resolve_contained_from() {
+    local base=$1 value=$2 resolved
     [[ $value != /* ]] || return 1
     [[ $value != *..* ]] || return 1
     # readlink -f needs the final executable to exist. readlink -m preserves
     # the physical containment check for a not-yet-installed dependency while
     # still resolving any existing symlinks in its parent directories.
-    resolved=$(cd -- "$repo_root" 2> /dev/null &&
+    resolved=$(cd -- "$base" 2> /dev/null &&
         (readlink -f -- "$value" 2> /dev/null || readlink -m -- "$value" 2> /dev/null)) || return 1
     [[ -n $resolved && $resolved == "$repo_root"/* ]] || return 1
     printf '%s' "$resolved"
+}
+
+resolve_contained() {
+    resolve_contained_from "$repo_root" "$1"
 }
 
 # The key naming a runner. agent-run.sh already executes
@@ -250,6 +281,28 @@ runner_contained() {
 # resolve inside the repository. Without this, `tools/../../outside/payload`
 # reaches exec through a key with no check at all.
 declare -a PARSED_ARGV=()
+
+# Return the physical base used to resolve a command's path-shaped argv[0].
+# value_by_key is populated for the complete config before the deferred command
+# validation pass, so command/rundir lines are valid in either order.
+command_resolution_root() {
+    local key=$1 rundir_key rundir
+    rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
+    if [[ -n ${value_by_key[$rundir_key]+yes} ]]; then
+        rundir=${value_by_key[$rundir_key]}
+        # A fresh checkout may carry the declaration before the component
+        # itself or its dependencies exist. In that case retain the historical
+        # root-based containment check; agent-run.sh will reject a missing
+        # execution directory when the command is actually selected.
+        if [[ -d $repo_root/$rundir ]]; then
+            resolve_contained "$rundir" || return 1
+        else
+            printf '%s' "$repo_root"
+        fi
+    else
+        printf '%s' "$repo_root"
+    fi
+}
 
 legacy_argv_value() {
     local value=$1 quote i
@@ -334,17 +387,25 @@ parse_argv() {
         PARSED_ARGV+=("$token")
     fi
     ((${#PARSED_ARGV[@]})) || return 1
-    [[ ${PARSED_ARGV[0]} == [[:alnum:]_]* ]] || return 1
+    # A component-rundir command commonly starts with `.venv/` or `./`; the
+    # later containment check still rejects absolute and escaping paths.
+    [[ ${PARSED_ARGV[0]} == [[:alnum:]_]* ||
+        ${PARSED_ARGV[0]} == .*/* ]] || return 1
 }
 
 safe_argv() {
-    local argv0
-    parse_argv "$1" || return 1
+    local value=$1 key=${2:-} argv0 resolution_root
+    parse_argv "$value" || return 1
     argv0=${PARSED_ARGV[0]}
     # A declaration says where the command will live, not that dependencies
     # have already been installed. Keep the boundary to containment only so a
     # fresh clone can carry node_modules/.bin/* declarations through bootstrap.
-    [[ $argv0 != */* ]] || resolve_contained "$argv0" > /dev/null || return 1
+    [[ $argv0 != */* ]] && return 0
+    resolution_root=$repo_root
+    if [[ $key =~ ^AGENT_CMD_ ]]; then
+        resolution_root=$(command_resolution_root "$key") || return 1
+    fi
+    resolve_contained_from "$resolution_root" "$argv0" > /dev/null || return 1
     return 0
 }
 
@@ -352,7 +413,7 @@ safe_argv() {
 # share one argv boundary validator. A path-shaped executable must resolve
 # inside this repository; bare names remain PATH lookups.
 command_value_valid() {
-    safe_argv "$1"
+    safe_argv "$1" "${2:-}"
 }
 
 # Explain path-shaped declaration failures at the boundary where they are
@@ -360,7 +421,7 @@ command_value_valid() {
 # genuinely bad declarations, while the reason tells an operator the smallest
 # repair. Bare PATH commands deliberately have no candidate to report.
 path_validation_diagnostic() {
-    local key=$1 value=$2 argv0='' candidate='' reason=''
+    local key=$1 value=$2 argv0='' candidate='' reason='' resolution_root=$repo_root
     case $key in
         AGENT_REPO_RUNNER) argv0=$value ;;
         AGENT_CMD_*)
@@ -383,7 +444,11 @@ path_validation_diagnostic() {
         candidate=$(readlink -f -- "$argv0" 2> /dev/null ||
             readlink -m -- "$argv0" 2> /dev/null || printf '%s' "$argv0")
     else
-        candidate=$(cd -- "$repo_root" 2> /dev/null &&
+        if [[ $key =~ ^AGENT_CMD_ ]]; then
+            resolution_root=$(command_resolution_root "$key" 2> /dev/null ||
+                printf '%s' "$repo_root")
+        fi
+        candidate=$(cd -- "$resolution_root" 2> /dev/null &&
             (readlink -f -- "$argv0" 2> /dev/null || readlink -m -- "$argv0" 2> /dev/null) || true)
     fi
     [[ -n $candidate ]] || candidate="$repo_root/$argv0"
@@ -397,7 +462,7 @@ path_validation_diagnostic() {
     else
         return 0
     fi
-    warn "path validation for $key: resolution root: $repo_root; resolved candidate: $candidate; failure: $reason"
+    warn "path validation for $key: resolution root: $resolution_root; resolved candidate: $candidate; failure: $reason"
 }
 
 # A path-shaped command token is interpreted by exec from the command's
@@ -433,6 +498,7 @@ validate() {
     local key=$1 value=$2
     case $key in
         AGENT_REPO_SLUG) [[ $value =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ;;
+        AGENT_ONBOARDED_BY) [[ $value =~ ^agentkit/[A-Za-z0-9._:-]+$ ]] ;;
         AGENT_PROJECT_OWNER) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
         AGENT_PROJECT_NUMBER) [[ $value =~ ^[0-9]{1,6}$ ]] ;;
         AGENT_BASE_BRANCH) safe_ref "$value" ;;
@@ -446,6 +512,7 @@ validate() {
         AGENT_PROTECTED_PATHS)
             safe_list "$value" && [[ $value != *..* && $value != /* && $value != *,/* ]]
             ;;
+        AGENT_GENERATED_PATHS) generated_paths_valid "$value" ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
         AGENT_WORKER_EFFORT)
@@ -454,7 +521,7 @@ validate() {
             ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)
-            command_value_valid "$value" || return 1
+            command_value_valid "$value" "$key" || return 1
             # The focused selector is interpolated into every occurrence of
             # %s. argv[0] is executable data, so accepting the placeholder
             # there would turn a suite name into the command path.
@@ -466,7 +533,7 @@ validate() {
                 return
             fi
             [[ $key =~ $CMD_KEY_PATTERN ]] || return 1
-            command_value_valid "$value"
+            command_value_valid "$value" "$key"
             ;;
     esac
 }
@@ -498,10 +565,12 @@ shell_quote() {
 
 declare -a out_keys=() out_values=()
 declare -A value_by_key=() seen_by_key=()
+declare -A invalid_command_keys=() checked_command_keys=()
 # Canonical comparison is strict for every parse error. Resolve mode keeps the
-# established warn/drop behavior, but records errors for requested keys so the
-# yolo gate can fail closed without treating unrelated config as invocation
-# input.
+# established warn/drop behavior for the file as a whole, but tracks whether a
+# parse error occurred so a caller reading __AGENT_CONFIG_PARSE_STATUS__ below
+# (e.g. review-provider-config.sh) can tell "this failed to parse" apart from
+# "this was never declared" without a second read of the config file.
 parse_failed=0
 rundir_mismatch_requested=0
 lineno=0
@@ -537,7 +606,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         continue
     fi
 
-    if ! validate "$key" "$value"; then
+    if [[ ! $key =~ ^AGENT_CMD_ ]] && ! validate "$key" "$value"; then
         path_validation_diagnostic "$key" "$value"
         # An empty value is the one rejection that looks like a deliberate
         # statement rather than a mistake -- "this repository has no priority
@@ -557,7 +626,9 @@ while IFS= read -r line || [[ -n $line ]]; do
     # Validity and diagnostics are intentionally separate. A missing or
     # non-executable dependency is a truthful fresh-clone declaration, while
     # --diagnose lets an operator audit the candidate against this root.
-    [[ $mode == diagnose ]] && path_validation_diagnostic "$key" "$value"
+    if [[ $mode == diagnose && ! $key =~ ^AGENT_CMD_ ]]; then
+        path_validation_diagnostic "$key" "$value"
+    fi
 
     # Existing readers resolve the first accepted occurrence. Preserve that
     # behavior while retaining a key-indexed view for canonical output.
@@ -568,6 +639,44 @@ while IFS= read -r line || [[ -n $line ]]; do
     out_keys+=("$key")
     out_values+=("$value")
 done < "$config_file"
+
+# Command lines are emitted before their companion rundir lines. Revalidate
+# after the complete file is parsed so the command's path boundary uses the
+# same rundir that agent-run.sh will use, regardless of declaration order.
+for key in "${out_keys[@]}"; do
+    [[ $key =~ ^AGENT_CMD_ ]] || continue
+    [[ -n ${checked_command_keys[$key]+yes} ]] && continue
+    checked_command_keys[$key]=yes
+    value=${value_by_key[$key]}
+    if ! validate "$key" "$value"; then
+        path_validation_diagnostic "$key" "$value"
+        if [[ -z $value ]]; then
+            warn "empty value for $key, ignoring -- to record that this repository has none, comment the line out instead"
+        else
+            warn "invalid value for $key, ignoring"
+        fi
+        invalid_command_keys[$key]=yes
+        [[ $mode == canonical ||
+            ( $mode == resolve && -n ${resolve_requested_keys[$key]+yes} ) ]] && parse_failed=1
+    elif [[ $mode == diagnose ]]; then
+        path_validation_diagnostic "$key" "$value"
+    fi
+done
+
+if ((${#invalid_command_keys[@]})); then
+    declare -a filtered_keys=() filtered_values=()
+    for i in "${!out_keys[@]}"; do
+        key=${out_keys[$i]}
+        [[ -n ${invalid_command_keys[$key]+yes} ]] && continue
+        filtered_keys+=("$key")
+        filtered_values+=("${out_values[$i]}")
+    done
+    out_keys=("${filtered_keys[@]}")
+    out_values=("${filtered_values[@]}")
+    for key in "${!invalid_command_keys[@]}"; do
+        unset "value_by_key[$key]" "seen_by_key[$key]"
+    done
+fi
 
 # Run after the whole file is parsed so command/rundir declarations may appear
 # in either order. Bootstrap treats this warning as a write-time validation
@@ -648,9 +757,16 @@ case $mode in
                 printf '%s\0%s\0%s\0' "$local_key" "$value" 0
             fi
         done
-        # Resolution remains warn/drop/fall-through for ordinary callers. The
-        # invocation gate consumes this marker to fail closed under --yolo
-        # without turning unrelated config mistakes into usage errors.
+        # Resolution remains warn/drop/fall-through for ordinary callers. This
+        # marker lets a caller such as review-provider-config.sh distinguish a
+        # parse failure from an undeclared key and fail closed accordingly.
+        # agent-run.sh has no invocation gate over this marker any more (that
+        # gate governed command approval and was removed with the fence): it
+        # validates the marker's format and discards it. Its own fail-closed
+        # behavior for the REQUESTED command instead falls out of
+        # resolved_config_present staying unset when that command's config
+        # line failed to parse, since resolve mode never emits a key it
+        # could not parse.
         printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
         ((rundir_mismatch_requested)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
         ;;

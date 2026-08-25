@@ -1,10 +1,12 @@
 {
   "name": "agent-kit-probe",
+  "description": "Throwaway probe marketplace for agent-kit integration tests.",
+  "owner": { "name": "wrzonance", "url": "https://github.com/wrzonance" },
   "interface": { "displayName": "Agent Kit Probe" },
   "plugins": [
     {
       "name": "agentkit-probe",
-      "source": { "source": "local", "path": "./agentkit-probe" },
+      "source": "./agentkit-probe",
       "policy": { "installation": "AVAILABLE" }
     }
   ]

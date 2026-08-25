@@ -18,11 +18,11 @@ fi
 
 # $HOME is not always writable, and that is not a failure of this tree.
 #
-# This suite is the declared VERIFY command for agent-kit itself, so Stop runs
-# it at the end of every turn. Under a workspace-scoped sandbox $HOME is
-# read-only, and a live onboarding session watched the whole suite fail here and
-# then re-ran it with elevation -- a permission escalation per turn, to satisfy
-# an integration test that was never the point of the turn.
+# This suite is the declared VERIFY command for agent-kit itself. Under a
+# workspace-scoped sandbox $HOME is read-only, and a live onboarding session
+# watched the whole suite fail here and then re-ran it with elevation -- a
+# permission escalation per turn, to satisfy an integration test that was
+# never the point of the turn.
 #
 # Probed by trying, not by checking permission bits: a read-only mount reports
 # the same bits as a writable one, and a read-only mount is the case at issue.
@@ -57,12 +57,61 @@ assert_eq './hooks/hooks.json' \
     'and the declared hooks path points at it'
 assert_eq 'yes' "$([[ -d $stage/agentkit/skills/parallel-issues ]] && echo yes || echo no)" \
     'carries the skills'
+assert_eq 'yes' "$([[ -f $stage/agentkit/skills/pr-to-green/SKILL.md ]] && echo yes || echo no)" \
+    'packages pr-to-green for both harness manifests'
+assert_eq 'yes' "$([[ -x $stage/agentkit/skills/pr-to-green/scripts/review-transition.sh ]] && echo yes || echo no)" \
+    'preserves the pr-to-green transition executable'
 assert_eq 'yes' "$([[ -x $stage/agentkit/skills/.shared/scripts/agent-run.sh ]] && echo yes || echo no)" \
     'preserves the executable bit on scripts'
-assert_eq 'yes' "$([[ -x $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \
-    'packages the hooks the manifest points at, executable'
-assert_contains "$(jq -r '.plugins[0].source.path' < "$stage/.claude-plugin/marketplace.json")" \
-    './' 'plugin source paths start with ./ as codex requires'
+assert_eq 'no' "$([[ -e $stage/agentkit/hooks/stop.sh ]] && echo yes || echo no)" \
+    'does not package the removed stop.sh turn-gate hook'
+assert_contains "$(jq -r '.plugins[0].source' < "$stage/.claude-plugin/marketplace.json")" \
+    './' 'plugin source paths start with ./ as both harnesses require'
+
+# --- opencode surface -------------------------------------------------------
+# OpenCode is a third harness, packaged alongside (never in place of) the
+# Claude/Codex manifests above: this block must not perturb any assertion
+# before it. There is no OpenCode plugin registry install to exercise here --
+# unlike Claude/Codex, OpenCode loads a local file straight out of a plugins
+# directory, so the closest thing to "installs it" is importing the shipped
+# module the way OpenCode's runtime would.
+assert_eq 'yes' "$([[ -f $stage/opencode/package.json ]] && echo yes || echo no)" \
+    'writes the opencode package manifest'
+assert_eq 'yes' "$([[ -f $stage/opencode/index.js ]] && echo yes || echo no)" \
+    'writes the opencode plugin module'
+assert_eq "$(jq -r .version < "$here/../agentkit/.codex-plugin/plugin.json" 2> /dev/null)" \
+    "$(jq -r .version < "$stage/opencode/package.json" 2> /dev/null)" \
+    'opencode manifest version matches the codex/claude manifests'
+
+if command -v node > /dev/null 2>&1; then
+    smoke_out=$(node --input-type=module -e "
+        import('file://' + process.argv[1]).then(async (m) => {
+            if (typeof m.AgentKitPlugin !== 'function') throw new Error('AgentKitPlugin missing');
+            if (typeof m.default !== 'function') throw new Error('default export missing');
+            const hooks = await m.AgentKitPlugin({});
+            if (typeof hooks !== 'object' || hooks === null) throw new Error('hooks not an object');
+            if (!('session.idle' in hooks)) throw new Error('session.idle hook missing');
+            process.stdout.write('ok');
+        }).catch((e) => { process.stderr.write(String(e)); process.exit(1); });
+    " "$stage/opencode/index.js" 2>&1)
+    assert_eq 'ok' "$smoke_out" \
+        'node imports the built opencode module with no server and no install step'
+else
+    printf '%s: node not installed, skipping opencode module smoke test\n' "$TEST_NAME"
+fi
+
+# --- claude validates it ---------------------------------------------------
+# The string source form is the one shape both schemas accept: claude rejects
+# the {"source":"local","path":...} object outright, and codex installs the
+# string form (proven below). Guarded like the codex half: absence skips, it
+# never fails the suite.
+if command -v claude > /dev/null 2>&1; then
+    validate_out=$(claude plugin validate "$stage" 2>&1 || true)
+    assert_contains "$validate_out" 'Validation passed' \
+        'claude accepts the marketplace manifest'
+else
+    printf '%s: claude not installed, skipping claude validation\n' "$TEST_NAME"
+fi
 
 # --- no test material ships ------------------------------------------------
 found=$(find "$stage" \( -name 'test-*' -o -name fixtures -o -name stub \) | head -1)
@@ -74,6 +123,13 @@ assert_eq '' "$found" 'no test material is packaged'
 # .codex-system-skills.marker into a third-party plugin.
 assert_eq 'no' "$([[ -e $stage/agentkit/skills/.system ]] && echo yes || echo no)" \
     'the vendored system-skills tree is not packaged'
+
+# --- no stray hook-error log ships ------------------------------------------
+# .agent/ is per-machine hook/session state; a stray hook-errors.jsonl written
+# from a cwd inside the skills tree must never reach a plugin consumer,
+# regardless of where in the copied tree it landed (issue #370).
+found_agent=$(find "$stage" -name '.agent' | head -1)
+assert_eq '' "$found_agent" 'no .agent/ directory is packaged anywhere in the built plugin'
 
 # --- codex installs it -----------------------------------------------------
 export CODEX_HOME="$tmp/codexhome"

@@ -12,7 +12,7 @@
 #
 # Usage:
 #   bootstrap-repo.sh [--repo-root DIR] [--project N] [--owner LOGIN]
-#                     [--dry-run] [--force] [--reset]
+#                     [--dry-run] [--force] [--refresh] [--reset]
 #
 # Exit: 0 success, 1 discovery failed or would clobber, 2 bad usage,
 #       3 gh unavailable or unauthenticated (environment-blocked).
@@ -32,7 +32,7 @@ die_blocked() {
 }
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--project N] [--dry-run] [--force] [--reset]\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--project N] [--dry-run] [--force] [--refresh] [--reset]\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -44,6 +44,7 @@ project_number=''
 board_owner=''
 dry_run=0
 force=0
+refresh=0
 reset=0
 
 while (($#)); do
@@ -65,6 +66,7 @@ while (($#)); do
             ;;
         --dry-run) dry_run=1 ;;
         --force) force=1 ;;
+        --refresh) refresh=1; force=1 ;;
         --reset) reset=1; force=1 ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -82,11 +84,71 @@ if [[ -z $repo_root ]]; then
 fi
 [[ -d $repo_root ]] || die_usage "not a directory: $repo_root"
 
+# --- trunk-carried declarations: refuse on trunk, before any network call --
+# Repositories that COMMIT .agent/config.env / .agent/board.json (via a
+# .gitignore negation, then `git add`) are the documented layout for
+# worktree fleets and CI (onboard-repo Step 7): a per-machine, locally
+# ignored file simply is not present in a fresh clone or a CI checkout. Ask
+# git's index, not the ignore rules, since a negation can exist without
+# anything having been committed under it yet.
+config_tracked=0
+if git -C "$repo_root" ls-files --error-unmatch -- .agent/config.env > /dev/null 2>&1; then
+    config_tracked=1
+fi
+board_tracked=0
+if git -C "$repo_root" ls-files --error-unmatch -- .agent/board.json > /dev/null 2>&1; then
+    board_tracked=1
+fi
+
+if ((!dry_run)) && ((refresh || force)) && ((config_tracked || board_tracked)); then
+    current_branch=$(git -C "$repo_root" symbolic-ref --short -q HEAD 2> /dev/null || true)
+
+    # `refs/remotes/origin/HEAD` is only ever set by `git clone` (or an
+    # explicit `git remote set-head`); it is routinely absent after
+    # `init` + `remote add`, in many CI checkouts, and it can be pruned.
+    # Falling back to a literal guess here would silently miss a non-`main`
+    # trunk (e.g. `master`) and let a refresh patch tracked declarations
+    # directly on trunk -- the exact outcome this guard exists to prevent.
+    # Stay network-free (this check deliberately runs before the gh
+    # preflight): prefer the local remote-HEAD ref, then the repository's
+    # OWN declared AGENT_BASE_BRANCH -- a tracked config.env exists by
+    # definition whenever config_tracked is set. If neither is available,
+    # refuse rather than guess: proceeding on an unproven trunk name risks
+    # writing to trunk itself, which is the destructive direction.
+    trunk_branch=$(git -C "$repo_root" symbolic-ref --short refs/remotes/origin/HEAD 2> /dev/null |
+        sed 's|^origin/||' || true)
+    if [[ -z $trunk_branch && -r $repo_root/.agent/config.env ]]; then
+        trunk_branch=$(sed -nE 's/^[[:space:]]*AGENT_BASE_BRANCH=[[:space:]]*(.*)$/\1/p' \
+            "$repo_root/.agent/config.env" 2> /dev/null | tail -1)
+    fi
+    if [[ -z $trunk_branch ]]; then
+        die "could not determine the trunk branch for $repo_root to check the trunk-carried refresh guard
+
+No local refs/remotes/origin/HEAD and no AGENT_BASE_BRANCH declaration were
+found. Guessing here risks patching trunk-carried .agent declarations
+directly on trunk, so refusing instead. Set the remote HEAD
+(git remote set-head origin -a) or declare AGENT_BASE_BRANCH in
+.agent/config.env, then re-run. Nothing was written."
+    fi
+    if [[ -z $current_branch || $current_branch == "$trunk_branch" ]]; then
+        die "refusing to refresh trunk-carried .agent declarations on ${current_branch:-a detached HEAD} (trunk: $trunk_branch)
+
+This repository commits .agent/config.env and/or .agent/board.json -- the
+documented layout for worktree fleets and CI (onboard-repo Step 7). The
+trunk-carried refresh path (neither --refresh nor --force runs it against
+trunk) patches only the drifted generator-owned keys in the working tree,
+prints the diff, and leaves commit/PR to the onboarding flow. Check out a
+non-trunk branch and re-run:
+  $PROGRAM --refresh --repo-root $repo_root
+Nothing was written."
+    fi
+fi
+
 # --- preflight: environment-blocked is exit 3, not a failure ---------------
 # This runs before ANY external command, including the coreutils used to locate
 # the resolver below. Otherwise a stripped PATH dies at 127 on `dirname` and
 # reports a missing-command error instead of the honest "gh is not installed".
-for tool in gh jq dirname readlink sha256sum date mktemp; do
+for tool in gh jq dirname readlink sha256sum date mktemp diff; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
 done
 # `gh auth status` exits NON-ZERO when any configured entry fails, even while a
@@ -106,6 +168,26 @@ fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 resolver="$self_dir/repo-config.sh"
+
+generator_version=$(jq -r '.version // empty' "$self_dir/../../..//.codex-plugin/plugin.json" 2> /dev/null || true)
+generator_stamp=''
+[[ -n $generator_version ]] && generator_stamp="agentkit/$generator_version"
+
+# Discovery above fails softly -- no jq, an unreadable or malformed plugin.json,
+# an install layout this relative path does not resolve in. AGENT_ONBOARDED_BY is
+# generator-owned, so the carry-forward filter further down deliberately drops the
+# previous one; with no replacement to emit, a refresh would erase the only
+# provenance record and make generator drift permanently undetectable -- the exact
+# condition the stamp exists to detect. Keep the old value when we have nothing
+# better. --reset is the one case that intends to forget it.
+if [[ -z $generator_stamp && $reset -eq 0 && -r $repo_root/.agent/config.env ]]; then
+    generator_stamp=$(sed -nE 's/^[[:space:]]*AGENT_ONBOARDED_BY=[[:space:]]*(.*)$/\1/p' \
+        "$repo_root/.agent/config.env" 2> /dev/null | tail -1)
+fi
+
+if ((refresh)) && [[ -r $repo_root/.agent/config.env && -x $self_dir/onboard-refresh.sh ]]; then
+    "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --report 2> /dev/null || true
+fi
 
 # --- discover the repository ------------------------------------------------
 # Slug and default branch in ONE call. Deliberately NOT `git remote show origin`:
@@ -281,6 +363,16 @@ if [[ -x $detector ]]; then
     suggestions=$("$detector" --repo-root "$repo_root" --format suggestions 2> /dev/null) || suggestions=''
 fi
 
+proposal_inventory=''
+if [[ -x $self_dir/onboard-refresh.sh ]]; then
+    # `|| true` would keep whatever the command printed before it died, and a
+    # half-written inventory becomes the recorded baseline that later drift is
+    # measured against. Take the status separately and keep only a clean run.
+    if ! proposal_inventory=$("$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --inventory 2> /dev/null); then
+        proposal_inventory=''
+    fi
+fi
+
 adr_dir=''
 for candidate in docs/adr docs/adrs docs/decisions docs/architecture/decisions adr doc/adr; do
     if [[ -d $repo_root/$candidate ]]; then
@@ -288,6 +380,34 @@ for candidate in docs/adr docs/adrs docs/decisions docs/architecture/decisions a
         break
     fi
 done
+
+# Provider selection is a maintainer decision, not something bootstrap can
+# infer from the forge. Keep the proposal visible until a valid declaration is
+# selected; a carried declaration then appears once as active config below.
+review_providers_declared=0
+if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
+    if grep -qE '^[[:space:]]*AGENT_REVIEW_PROVIDERS=(coderabbit|github-code-quality|none|coderabbit,github-code-quality|github-code-quality,coderabbit)[[:space:]]*$' \
+        "$repo_root/.agent/config.env" 2> /dev/null; then
+        review_providers_declared=1
+    fi
+fi
+
+# Same "propose once, then defer to the maintainer's choice" treatment as
+# review providers -- but unlike that raw-grep check, this one goes through
+# the resolver: a raw grep on `AGENT_WORKER_MODEL(_FALLBACK)?=` would count a
+# malformed value (whitespace-bearing, a command-substitution string) as
+# "declared" and wrongly suppress the proposal, even though repo-config.sh
+# itself rejects and drops that value. A syntactically safe but UNSUPPORTED
+# model id (e.g. a custom provider name) is not malformed -- the resolver
+# still resolves it, so it still counts as declared; only a value the
+# resolver actually drops does not.
+worker_model_declared=0
+if [[ -f $repo_root/.agent/config.env && $reset -eq 0 && -x $resolver ]]; then
+    if "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL > /dev/null 2>&1 ||
+        "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL_FALLBACK > /dev/null 2>&1; then
+        worker_model_declared=1
+    fi
+fi
 
 {
     printf '# .agent/config.env -- repository facts for agent skills.\n'
@@ -300,6 +420,7 @@ done
     printf 'AGENT_STATUS_VOCAB=%s\n' "$status_vocab"
     [[ -n $adr_dir ]] && printf 'AGENT_ADR_DIR=%s\n' "$adr_dir"
     printf 'AGENT_WORKTREE_ROOT=.worktrees\n'
+    [[ -n $generator_stamp ]] && printf 'AGENT_ONBOARDED_BY=%s\n' "$generator_stamp"
     if [[ -n $labels ]]; then
         printf '\n# This repository'"'"'s labels, for you to split by intent. Uncomment and\n'
         printf '# classify the ones agents should reuse instead of inventing new labels.\n'
@@ -314,6 +435,25 @@ done
         printf '%s\n' "$suggestions"
         printf '# AGENT_CMD_VERIFY=\n# AGENT_CMD_TEST=\n# AGENT_CMD_LINT=\n'
     fi
+    if ((worker_model_declared == 0)); then
+        printf '\n# Worker model/effort for dispatched implementation workers. Declare the\n'
+        printf '# TIER, not a fixed provider model: the resolver reads harness= from the\n'
+        printf '# environment contract and maps it to that harness'"'"'s own native worker\n'
+        printf '# tier, so the same declaration dispatches correctly whichever harness is\n'
+        printf '# actually running (e.g. gpt-5.6-luna on Codex, claude-sonnet-5 elsewhere).\n'
+        printf '# AGENT_WORKER_EFFORT (e.g. high) is harness-neutral and applies to any of them.\n'
+        printf '# AGENT_WORKER_MODEL=\n# AGENT_WORKER_MODEL_FALLBACK=\n# AGENT_WORKER_EFFORT=\n'
+    fi
+    if ((review_providers_declared == 0)); then
+        printf '\n# Automated review providers expected on pull requests. Choose one or more.\n'
+        printf '# Supported choices: coderabbit, github-code-quality, or none (none is exclusive).\n'
+        printf '# AGENT_REVIEW_PROVIDERS=\n'
+    fi
+    if [[ -n $proposal_inventory ]]; then
+        printf '\n# Recorded proposal inventory. These lines are observations only; they\n'
+        printf '# never declare or execute a command. Refresh replaces this block.\n'
+        printf '%s\n' "$proposal_inventory"
+    fi
     # --force regenerates DISCOVERED facts; it must not throw away DECLARED ones.
     #
     # Everything above is rediscoverable from the forge. The verify commands and
@@ -327,7 +467,7 @@ done
     # verbatim, and reported.
     if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
         carried=$(grep -E '^[[:space:]]*AGENT_[A-Z0-9_]+=' "$repo_root/.agent/config.env" 2> /dev/null |
-            grep -vE '^[[:space:]]*(AGENT_REPO_SLUG|AGENT_BASE_BRANCH|AGENT_PROJECT_OWNER|AGENT_PROJECT_NUMBER|AGENT_STATUS_VOCAB|AGENT_ADR_DIR|AGENT_WORKTREE_ROOT)=' || true)
+            grep -vE '^[[:space:]]*(AGENT_REPO_SLUG|AGENT_BASE_BRANCH|AGENT_PROJECT_OWNER|AGENT_PROJECT_NUMBER|AGENT_STATUS_VOCAB|AGENT_ADR_DIR|AGENT_WORKTREE_ROOT|AGENT_ONBOARDED_BY)=' || true)
         if [[ -n $carried ]]; then
             printf '\n# Carried forward from the previous config: declarations this generator\n'
             printf '# does not produce and therefore must not discard.\n'
@@ -363,39 +503,49 @@ jq -e '.schemaVersion and .project.id and .statusField.id and
     (.statusField.options | length > 0)' < "$staging/.agent/board.json" > /dev/null ||
     die 'the generated board.json is incomplete'
 
-# Check the target repository's ignore oracle before creating .agent or moving
-# either declaration file. A directory rule in .git/info/exclude defeats the
-# later allowlist, and discovering that after "wrote" left a partial install
-# which forced operators to add --force before they could rerun the repair.
-readonly IGNORE_MARKER='# agentkit: .agent/ is working state; these two files are the declaration'
-ignore_file="$repo_root/.gitignore"
-ignore_conflict_gate() {
-    local defeated details blocking_rule fix_file
-    git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
-    if defeated=$(git -C "$repo_root" check-ignore --no-index -- \
-        .agent/config.env .agent/board.json 2> /dev/null) && [[ -n $defeated ]]; then
-        details=$(git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env 2> /dev/null || true)
-        blocking_rule=$(printf '%s\n' "$details" | awk -F '\t' 'NR == 1 { sub(/^.*:/, "", $1); print $1 }')
-        # A narrowed .agent/* rule is compatible with the allowlist this
-        # invocation will install. Only a directory rule is dead: git refuses
-        # to descend into .agent/ and therefore cannot reach the exceptions.
-        [[ $blocking_rule =~ ^[[:space:]]*\.agent/[[:space:]]*$ ]] || return 0
-        printf 'WARNING: the allowlist has no effect -- these files are still excluded:\n' >&2
-        git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env .agent/board.json 2> /dev/null | sed 's/^/  /' >&2
-        printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
-        printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
-        printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
-        fix_file=$(git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env 2> /dev/null | cut -d: -f1 | head -n 1 || true)
-        [[ -n $fix_file ]] || fix_file=$ignore_file
-        [[ $fix_file == /* ]] || fix_file=$repo_root/$fix_file
-        fix_file=$(readlink -f -- "$fix_file" 2> /dev/null || printf '%s' "$fix_file")
-        die "onboarding cannot complete while declaration files are ignored; repair the named rule, then rerun: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$fix_file'"
+# Declarations are per-machine state. Keep the blanket rule in the repository's
+# local exclude rather than creating tracked .gitignore exceptions: a fresh
+# clone can regenerate both files without dirtying the checkout on every board
+# move. The marker makes the generated local rule identifiable and idempotent.
+readonly IGNORE_MARKER='# agentkit: .agent/ is per-machine working state; onboarding owns this local rule'
+readonly IGNORE_RULE='.agent/*'
+ignore_file=''
+if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    ignore_file=$(git -C "$repo_root" rev-parse --git-path info/exclude 2> /dev/null || true)
+    if [[ -n $ignore_file && $ignore_file != /* ]]; then
+        ignore_file=$repo_root/$ignore_file
+    fi
+fi
+
+ensure_local_ignore() {
+    [[ -n $ignore_file ]] || return 0
+    local parent
+    parent=$(dirname -- "$ignore_file")
+    mkdir -p -- "$parent" || die "could not create git exclude directory: $parent"
+    [[ -e $ignore_file ]] || : > "$ignore_file" ||
+        die "could not create local git exclude: $ignore_file"
+
+    # Migrate the old directory spelling in local state to the explicit
+    # contents rule, which is equivalent for this fully-ignored model and does
+    # not rely on negation exceptions.
+    if grep -qE '^[[:space:]]*\.agent/[[:space:]]*$' "$ignore_file" 2> /dev/null; then
+        sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$ignore_file" ||
+            die "could not update local git exclude: $ignore_file"
+    fi
+    if ! grep -Fxq "$IGNORE_RULE" "$ignore_file" 2> /dev/null; then
+        {
+            [[ ! -s $ignore_file ]] || printf '\n'
+            printf '%s\n%s\n' "$IGNORE_MARKER" "$IGNORE_RULE"
+        } >> "$ignore_file" || die "could not update local git exclude: $ignore_file"
+    elif ! grep -Fxq "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
+        printf '%s\n' "$IGNORE_MARKER" >> "$ignore_file" ||
+            die "could not update local git exclude: $ignore_file"
     fi
 }
-ignore_conflict_gate
+
+if ((dry_run)); then
+    printf 'local ignore: %s (%s)\n' "${ignore_file:-unavailable}" "$IGNORE_RULE"
+fi
 
 # --- emit or install --------------------------------------------------------
 if ((dry_run)); then
@@ -409,8 +559,12 @@ fi
 
 if ((!force)); then
     for existing in config.env board.json; do
-        [[ -e $repo_root/.agent/$existing ]] &&
-            die ".agent/$existing already exists; pass --force to overwrite"
+        [[ -e $repo_root/.agent/$existing ]] || continue
+        if { [[ $existing == config.env ]] && ((config_tracked)); } ||
+            { [[ $existing == board.json ]] && ((board_tracked)); }; then
+            die ".agent/$existing already exists and is tracked (trunk-carried layout); pass --refresh or --force on a non-trunk branch to patch its drifted generator-owned keys in place -- neither flag discards a declaration on a tracked file, matching how --force already treats an untracked config.env"
+        fi
+        die ".agent/$existing already exists; pass --force to overwrite"
     done
 fi
 
@@ -437,90 +591,171 @@ if ((reset)); then
     printf 'reset: archived %s existing declaration file(s); regenerated below\n' "$archived"
 fi
 
-mkdir -p -- "$repo_root/.agent"
-mv -- "$staging/.agent/config.env" "$repo_root/.agent/config.env"
-mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
+assert_effective_ignore() {
+    local committed_path details
+    git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
+    for committed_path in "$@"; do
+        if ! git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1; then
+            details=$(git -C "$repo_root" check-ignore --no-index -v -- \
+                "$committed_path" 2> /dev/null || true)
+            printf 'ignore rule does not exclude %s:\n' "$repo_root/$committed_path" >&2
+            [[ -n $details ]] && printf '  %s\n' "$details" >&2
+            printf 'Remove legacy .gitignore negations for .agent/config.env and .agent/board.json;\n' >&2
+            die "onboarding cannot establish local ignore for $repo_root/$committed_path; remove the negation"
+        fi
+    done
+}
 
-printf 'wrote %s/.agent/config.env\n' "$repo_root"
-printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
-    "$repo_root" "$project_num" "$option_count"
+# --- trunk-carried patch: touch only generator-owned keys, byte-for-byte ---
+# A committed config.env (the documented layout above) gets its EXISTING file
+# line-patched in place, never regenerated from scratch, so maintainer
+# comments, ordering, and every declaration this generator does not own
+# survive untouched -- called for BOTH --refresh and --force on a tracked
+# file: --force never discarded a declared key even for an untracked
+# config.env ("--force regenerates DISCOVERED facts; it must not throw away
+# DECLARED ones", below), so a tracked file gets the same guarantee, not a
+# blind overwrite. Only the keys "everything above is rediscoverable from
+# the forge" owns -- the same list the carry-forward filter protects -- are
+# eligible; provider/label/command declarations are a maintainer decision
+# this script has never touched and still does not.
+# shellcheck disable=SC2016  # single-quoted on purpose: a plain word list, not expansion
+readonly GENERATOR_OWNED_KEYS='AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_OWNER AGENT_PROJECT_NUMBER AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_WORKTREE_ROOT AGENT_ONBOARDED_BY'
+
+patch_tracked_config() {
+    local target=$1 fresh=$2
+    local key val patched updated=0 unchanged=0
+    declare -A new_val=()
+    # shellcheck disable=SC2086  # GENERATOR_OWNED_KEYS is a deliberate word list
+    for key in $GENERATOR_OWNED_KEYS; do
+        val=$(sed -nE "s/^${key}=//p" "$fresh" | tail -n 1)
+        [[ -n $val ]] && new_val[$key]=$val
+    done
+
+    if [[ ! -e $target ]]; then
+        # --reset archived the prior working-tree copy away; there is nothing
+        # left to patch, so this is a first write, same as the untracked path.
+        cp -- "$fresh" "$target"
+        printf 'wrote %s (no prior working-tree copy to patch)\n' "$target"
+        return 0
+    fi
+
+    patched=$(mktemp "$staging/config-patched.XXXXXX")
+    declare -A seen=()
+    local line matched_key value_here
+    while IFS= read -r line || [[ -n $line ]]; do
+        matched_key=''
+        for key in "${!new_val[@]}"; do
+            if [[ $line == "$key="* ]]; then
+                matched_key=$key
+                break
+            fi
+        done
+        if [[ -n $matched_key ]]; then
+            seen[$matched_key]=1
+            value_here=${line#"$matched_key"=}
+            if [[ $value_here == "${new_val[$matched_key]}" ]]; then
+                printf '%s\n' "$line" >> "$patched"
+                unchanged=$((unchanged + 1))
+            else
+                printf '%s=%s\n' "$matched_key" "${new_val[$matched_key]}" >> "$patched"
+                updated=$((updated + 1))
+            fi
+        else
+            printf '%s\n' "$line" >> "$patched"
+        fi
+    done < "$target"
+    for key in "${!new_val[@]}"; do
+        [[ -n ${seen[$key]:-} ]] && continue
+        printf '%s=%s\n' "$key" "${new_val[$key]}" >> "$patched"
+        updated=$((updated + 1))
+    done
+
+    if ((updated == 0)); then
+        rm -f -- "$patched"
+        printf 'no drift: %s already matches the discovered generator-owned keys\n' "$target"
+        return 0
+    fi
+
+    printf -- '--- %s (trunk-carried refresh) ---\n' "$target"
+    diff -u -- "$target" "$patched" || true
+    mv -- "$patched" "$target"
+    printf 'refreshed %s (trunk-carried): %d key(s) updated, %d unchanged\n' \
+        "$target" "$updated" "$unchanged"
+}
+
+# board.json is fully generator-owned (no maintainer free-form content), so
+# unlike config.env there is no line-level merge to do: only whether the
+# discovered document actually changed, ignoring the always-different
+# generatedAt timestamp so an unchanged board never churns the working tree.
+patch_tracked_board() {
+    local target=$1 fresh=$2 old_norm fresh_norm
+    if [[ ! -e $target ]]; then
+        cp -- "$fresh" "$target"
+        printf 'wrote %s (no prior working-tree copy to patch)\n' "$target"
+        return 0
+    fi
+    old_norm=$(jq -S 'del(.generatedAt)' -- "$target" 2> /dev/null) || old_norm=''
+    fresh_norm=$(jq -S 'del(.generatedAt)' -- "$fresh")
+    if [[ $old_norm == "$fresh_norm" ]]; then
+        printf 'no drift: %s already matches the discovered board\n' "$target"
+        return 0
+    fi
+    printf -- '--- %s (trunk-carried refresh) ---\n' "$target"
+    diff -u -- "$target" "$fresh" || true
+    cp -- "$fresh" "$target"
+    printf 'refreshed %s (trunk-carried)\n' "$target"
+}
+
+# Install the local rule only after every no-force/archive guard has passed,
+# then prove Git's effective oracle before creating or moving declarations.
+# A tracked config.env/board.json (the trunk-carried layout above) is
+# deliberately excluded from both checks: it is not meant to be ignored, and
+# it is patched in place below instead of installed.
+ensure_local_ignore
+ignore_check_paths=()
+((config_tracked)) || ignore_check_paths+=(.agent/config.env)
+((board_tracked)) || ignore_check_paths+=(.agent/board.json)
+((${#ignore_check_paths[@]} == 0)) || assert_effective_ignore "${ignore_check_paths[@]}"
+mkdir -p -- "$repo_root/.agent"
+
+if ((config_tracked)); then
+    patch_tracked_config "$repo_root/.agent/config.env" "$staging/.agent/config.env"
+else
+    mv -- "$staging/.agent/config.env" "$repo_root/.agent/config.env"
+    printf 'wrote %s/.agent/config.env\n' "$repo_root"
+fi
+
+if ((board_tracked)); then
+    patch_tracked_board "$repo_root/.agent/board.json" "$staging/.agent/board.json"
+else
+    mv -- "$staging/.agent/board.json" "$repo_root/.agent/board.json"
+    printf 'wrote %s/.agent/board.json  (project %s, %s status options)\n' \
+        "$repo_root" "$project_num" "$option_count"
+fi
+
 ((carried_count == 0)) ||
     printf 'carried forward %s existing declaration(s); nothing was discarded\n' "$carried_count"
 # shellcheck disable=SC2016  # emitted text is literal command syntax
 printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-contract.txt" | head -n 1); "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "%s" --report\n' \
     "$repo_root" "$repo_root"
 
-# Ignore rules are WRITTEN, not suggested.
-#
-# This printed "add to .gitignore: .agent/cache/" and left it at that, so a
-# bootstrapped repository could reach steady state with no rule at all -- which
-# is what happened in the first repository this was used on. And the suggested
-# pattern was too narrow: it left env-contract.txt stageable, and that file
-# carries the local home path, the CA bundle location, and the authenticated
-# account name.
-#
-# An allowlist states the intent directly: everything under .agent/ is working
-# state except the two declared files. With it in place, a blanket `git add`
-# is simply correct, enforced by git for every tool and every human rather than
-# by a guard that has to recognise a command shape.
-if grep -qF "$IGNORE_MARKER" "$ignore_file" 2> /dev/null; then
-    printf 'ignore rules already present in .gitignore\n'
-elif grep -qE '^[[:space:]]*\.agent/[[:space:]]*$' "$ignore_file" 2> /dev/null; then
-    # A directory rule prevents git from descending far enough to reach the
-    # explicit exceptions. Repair the common dead exception in place, then add
-    # the marker and exceptions exactly once.
-    sed -i -E 's|^[[:space:]]*\.agent/[[:space:]]*$|.agent/*|' "$ignore_file" ||
-        die "could not repair $ignore_file; run: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$ignore_file'"
-    printf 'repaired dead .agent/ ignore rule in %s\n' "$ignore_file"
-    {
-        printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
-    } >> "$ignore_file"
-elif {
-    [[ ! -s $ignore_file ]] || printf '\n'
-    printf '%s\n.agent/*\n!.agent/config.env\n!.agent/board.json\n' "$IGNORE_MARKER"
-} >> "$ignore_file" 2> /dev/null; then
-    printf 'added ignore rules to .gitignore\n'
-else
-    printf 'WARNING: could not write %s -- add these by hand:\n' "$ignore_file" >&2
-    printf '  .agent/*\n  !.agent/config.env\n  !.agent/board.json\n' >&2
+# The declarations must be ignored in the working tree, except a trunk-carried
+# file this run just patched in place. --no-index is required so this remains
+# a useful invariant for repositories migrating from tracked declarations;
+# the tracked-state note below tells the operator to untrack any OTHER stray
+# file.
+if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    ((${#ignore_check_paths[@]} == 0)) || assert_effective_ignore "${ignore_check_paths[@]}"
 fi
 
-# Having written the rule is not the same as the rule working, and only the
-# second is worth reporting. A repository carried the allowlist in .gitignore
-# and a broader `.agent/` in .git/info/exclude; git does not descend into an
-# excluded DIRECTORY, so the negation was never reached. This script said
-# "ignore rules already present" -- true of the text, false of the effect --
-# and onboarding then failed at `git add`, in a different tool, one step later.
-#
-# --no-index is required: check-ignore stays silent about a tracked path
-# otherwise, and these two files are normally tracked.
-#
-# The oracle is check-ignore WITHOUT -v: it lists only paths that are actually
-# excluded. With -v it reports the last matching pattern even when that pattern
-# is a negation, and exits 0 either way -- so a WORKING allowlist matches
-# `!.agent/config.env` and looks identical to a broken one. Decide plainly,
-# then re-ask with -v purely to name the rule.
-if git -C "$repo_root" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    if defeated=$(git -C "$repo_root" check-ignore --no-index -- \
-        .agent/config.env .agent/board.json 2> /dev/null) && [[ -n $defeated ]]; then
-        printf 'WARNING: the allowlist has no effect -- these files are still excluded:\n' >&2
-        git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env .agent/board.json 2> /dev/null | sed 's/^/  /' >&2
-        printf 'A rule ending in "/" excludes the directory itself, and git does not\n' >&2
-        printf 'descend into an excluded directory, so "!.agent/config.env" is never\n' >&2
-        printf 'reached. Narrow it (.agent/ -> .agent/*) in the file named above.\n' >&2
-        fix_file=$(git -C "$repo_root" check-ignore --no-index -v -- \
-            .agent/config.env 2> /dev/null | cut -d: -f1 | head -n 1 || true)
-        [[ -n $fix_file ]] || fix_file=$ignore_file
-        [[ $fix_file == /* ]] || fix_file=$repo_root/$fix_file
-        fix_file=$(readlink -f -- "$fix_file" 2> /dev/null || printf '%s' "$fix_file")
-        die "onboarding cannot complete while declaration files are ignored; repair the named rule, then rerun: sed -i -E 's|^[[:space:]]*\\.agent/[[:space:]]*$|.agent/*|' '$fix_file'"
-    fi
-    for committed_path in .agent/config.env .agent/board.json; do
-        if git -C "$repo_root" check-ignore --no-index -- "$committed_path" > /dev/null 2>&1; then
-            die "onboarding cannot complete: git check-ignore still excludes $repo_root/$committed_path"
-        fi
-    done
+tracked_declarations=$(git -C "$repo_root" ls-files -- \
+    .agent/config.env .agent/board.json 2> /dev/null || true)
+((config_tracked)) && tracked_declarations=$(grep -vFx '.agent/config.env' <<< "$tracked_declarations" || true)
+((board_tracked)) && tracked_declarations=$(grep -vFx '.agent/board.json' <<< "$tracked_declarations" || true)
+if [[ -n $tracked_declarations ]]; then
+    printf 'NOTE: declaration files are tracked despite the local rules; untrack when convenient:\n' >&2
+    printf '%s\n' "$tracked_declarations" | sed 's/^/  /' >&2
+    printf '  git rm --cached .agent/config.env .agent/board.json\n' >&2
 fi
 
 # Files already in the index are not affected by an ignore rule. Report them

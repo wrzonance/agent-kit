@@ -70,6 +70,8 @@ out=$(run)
 assert_contains "$out" '#10  Ready  free and ready' 'an unblocked Ready issue is selectable'
 assert_not_contains "$out" '#12' 'Backlog is not pulled from unless asked'
 assert_contains "$out" 'selectable=1' 'and the count says how many'
+assert_contains "$out" 'scanned=5 of=4' \
+    'the terminal line names scanned and board-total as two distinct fields'
 
 # --- a blocked issue is named, not silently dropped -------------------------
 assert_contains "$out" 'SKIP #11' 'a blocked issue is not selectable'
@@ -156,6 +158,68 @@ out=$(run --include-backlog --json)
 assert_eq '10' "$(jq -r '.[0].number' <<< "$out")" 'JSON leads with the Ready issue'
 assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")" \
     'JSON marks the blocked issue ineligible'
+
+# --- a truncated board read refuses to select -------------------------------
+# The regression this issue exists for: a board bigger than --limit must never
+# produce a plausible-looking subset. "candidates=3 of=123" reads as a
+# whole-board scan when it is not -- the fix refuses to answer at all instead.
+trunc_deps='{"data":{"repository":{}}}'
+
+# limit-1: the read captured fewer cards than the board declares -- truncated.
+set_board '{"totalCount":3,"items":[
+  {"status":"Ready","content":{"number":20,"type":"Issue","title":"seen",
+   "repository":"example-org/example-repo"}}]}' "$trunc_deps"
+rc=0
+out=$(run --limit 1) || rc=$?
+assert_eq '1' "$rc" 'a truncated read exits nonzero'
+assert_contains "$out" 'TRUNCATED: read 1 of 3 items' 'and names both counts'
+assert_contains "$out" 'scanned=1 of=3' 'and the pre-selection line agrees'
+assert_not_contains "$out" 'candidates=' 'no candidate line is printed'
+assert_not_contains "$out" 'selectable=' 'no selectable line is printed'
+assert_not_contains "$out" '#20' 'and no candidate/SKIP line for the seen card'
+assert_eq '1' "$(grep -c . < "$tmp/gh.log")" 'a truncated read never pays for the dependency call'
+
+# limit: the read captured exactly as many cards as the board declares -- not
+# truncated; behaviour is unchanged from before this fix.
+set_board '{"totalCount":1,"items":[
+  {"status":"Ready","content":{"number":23,"type":"Issue","title":"exactly one",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i23":{"number":23,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+rc=0
+out=$(run --limit 1) || rc=$?
+assert_eq '0' "$rc" 'a full read at the declared total is not truncated'
+assert_contains "$out" 'scanned=1 of=1' 'and reports the same distinct fields as before'
+assert_contains "$out" '#23  Ready  exactly one' 'selection still runs normally'
+
+# limit+1: the read captured more cards than the board declares (a stale or
+# undercounted totalCount) -- not truncated; more data than promised is not a
+# partial read.
+set_board '{"totalCount":1,"items":[
+  {"status":"Ready","content":{"number":21,"type":"Issue","title":"extra one",
+   "repository":"example-org/example-repo"}},
+  {"status":"Ready","content":{"number":22,"type":"Issue","title":"extra two",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i21":{"number":21,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
+    "i22":{"number":22,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+rc=0
+out=$(run) || rc=$?
+assert_eq '0' "$rc" 'more items than the declared total is not treated as truncation'
+assert_contains "$out" 'scanned=2 of=1' 'and both counts are reported as read'
+
+# --- cross-helper: pick-issues and board-list agree on the board total ------
+# Both helpers read the identical `gh project item-list` response for the same
+# board; they must not disagree about what it declared as the total.
+board_list="$root/agentkit/skills/.shared/scripts/board-list.sh"
+if [[ -x $board_list ]]; then
+    set_board "$items" "$deps"
+    pick_of=$(run | grep -o 'of=[0-9]*' | head -1 | cut -d= -f2)
+    bl_out=$(PATH="$tmp/bin:$PATH" "$board_list" --repo-root "$repo" 2>&1)
+    bl_of=$(grep -o 'of=[0-9]*' <<< "$bl_out" | head -1 | cut -d= -f2)
+    assert_eq "$bl_of" "$pick_of" \
+        'pick-issues and board-list report the same declared board total'
+fi
 
 # --- usage and environment -------------------------------------------------
 assert_rc 2 'an unknown flag is a usage error' -- \

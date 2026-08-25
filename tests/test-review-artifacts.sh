@@ -22,13 +22,16 @@ review_lib_text=$(<"$review_lib")
 run_rejected() {
     local helper=$1 transcript=$2 stderr_file=$3
     local rc=0
-    if [[ $helper == *claude* ]]; then
+    # Match the basename, never the whole path: a checkout under a directory
+    # containing "claude" would otherwise route the codex helper down the claude
+    # branch, leaving CODEX_EXECUTABLE unstubbed and invoking the real CLI.
+    if [[ ${helper##*/} == *claude* ]]; then
         CLAUDE_EXECUTABLE=/definitely/missing/claude \
-            bash "$helper" --mode probe --model claude-opus-5 \
+            bash "$helper" --mode probe --no-payload --model claude-opus-5 \
             --transcript "$transcript" > /dev/null 2>"$stderr_file" || rc=$?
     else
         CODEX_EXECUTABLE=/definitely/missing/codex \
-            bash "$helper" --mode probe --model gpt-5.6-terra \
+            bash "$helper" --mode probe --no-payload --model gpt-5.6-terra \
             --transcript "$transcript" > /dev/null 2>"$stderr_file" || rc=$?
     fi
     printf '%s' "$rc"
@@ -66,6 +69,52 @@ for helper in "$claude" "$codex"; do
     rc=$(run_rejected "$helper" "$transcript" "$err")
     assert_eq 3 "$rc" "$name safely refreshes an owned regular transcript"
 
+    nested_root="$tmp/${name}.nested.run"
+    mkdir -- "$nested_root"
+    chmod 700 -- "$nested_root"
+    nested_transcript="$nested_root/prN/state/transcript"
+    nested_err="$tmp/${name}.nested.err"
+    old_umask=$(umask)
+    umask 022
+    rc=$(run_rejected "$helper" "$nested_transcript" "$nested_err")
+    umask "$old_umask"
+    assert_eq 3 "$rc" "$name creates missing transcript parents before CLI preflight"
+    assert_eq 700 "$(stat -c %a -- "$nested_root/prN")" \
+        "$name secures the first missing transcript parent despite umask"
+    assert_eq 700 "$(stat -c %a -- "$nested_root/prN/state")" \
+        "$name secures the nested transcript parent despite umask"
+
+    untrusted_root="$tmp/${name}.untrusted.run"
+    mkdir -- "$untrusted_root"
+    chmod 700 -- "$untrusted_root"
+    untrusted_ancestor="$untrusted_root/existing"
+    mkdir -- "$untrusted_ancestor"
+    chmod 755 -- "$untrusted_ancestor"
+    untrusted_transcript="$untrusted_ancestor/child/state/transcript"
+    untrusted_err="$tmp/${name}.untrusted.err"
+    rc=$(run_rejected "$helper" "$untrusted_transcript" "$untrusted_err")
+    assert_eq 1 "$rc" "$name rejects an existing non-private transcript ancestor"
+    assert_contains "$(cat -- "$untrusted_err")" '0700' \
+        "$name explains the existing ancestor private-directory requirement"
+    assert_eq no "$( [[ ! -e "$untrusted_ancestor/child" ]] && printf no || printf yes )" \
+        "$name does not create descendants beneath an untrusted ancestor"
+
+done
+
+for helper in "$claude" "$codex"; do
+    name=${helper##*/}
+    symlink_target="$tmp/${name}.symlink-target"
+    mkdir -- "$symlink_target" "$symlink_target/child"
+    chmod 700 -- "$symlink_target" "$symlink_target/child"
+    symlink_root="$tmp/${name}.symlink-root"
+    mkdir -- "$symlink_root"
+    chmod 700 -- "$symlink_root"
+    ln -s -- "$symlink_target" "$symlink_root/link"
+    symlink_err="$tmp/${name}.symlink.err"
+    rc=$(run_rejected "$helper" "$symlink_root/link/child/transcript" "$symlink_err")
+    assert_eq 1 "$rc" "$name rejects a symlinked transcript-parent component"
+    assert_eq no "$( [[ ! -e "$symlink_target/child/transcript" ]] && printf no || printf yes )" \
+        "$name does not write through a symlinked transcript-parent component"
 done
 
 # --output: the helper's own atomic-publish flag. Covers the Claude helper's
@@ -115,6 +164,17 @@ chmod +x "$tmp/fake-claude-output-hang"
 output_run="$tmp/output.run"
 mkdir -- "$output_run"
 chmod 700 -- "$output_run"
+consent_script="$root/agentkit/skills/review-remote-pr/scripts/consent-record.sh"
+claude_consent_state="$output_run/claude-consent"
+codex_consent_state="$output_run/codex-consent"
+grant_consent() {
+    local state_path=$1 provider=$2
+    /bin/bash "$consent_script" grant --state "$state_path" --provider "$provider" \
+        --payload "$output_payload" --source interactive >/dev/null
+}
+output_payload=$(/bin/bash "$consent_script" payload --repo acme/widget --pr 24 --diff "$output_diff")
+grant_consent "$claude_consent_state" anthropic
+grant_consent "$codex_consent_state" openai
 
 # --output is documented as ADDITIVE, so it must not be allowed to name another
 # artifact. prepare_output runs after prepare_transcript and clears a
@@ -124,9 +184,11 @@ chmod 700 -- "$output_run"
 # relative spelling of the same file cannot slip past.
 for alias_helper in "$claude" "$codex"; do
     alias_name=$(basename "$alias_helper" | cut -d- -f1)
+    consent_state="$output_run/$alias_name-consent"
     alias_transcript="$output_run/$alias_name-alias.transcript"
     alias_rc=0
-    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+    bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
+        --diff "$output_diff" \
         --transcript "$alias_transcript" --output "$alias_transcript" \
         > "$tmp/$alias_name-alias.out" 2> "$tmp/$alias_name-alias.err" || alias_rc=$?
     assert_eq 1 "$alias_rc" "--output: $alias_name rejects an --output that aliases --transcript"
@@ -134,15 +196,17 @@ for alias_helper in "$claude" "$codex"; do
         "--output: $alias_name says the paths alias"
 
     alias_rel_rc=0
-    ( cd "$output_run" && bash "$alias_helper" --mode review --model m \
-        --diff "$output_diff" --transcript "$alias_name-rel.transcript" \
+    ( cd "$output_run" && bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 \
+        --consent-state "$consent_state" --diff "$output_diff" \
+        --transcript "$alias_name-rel.transcript" \
         --output "./$alias_name-rel.transcript" ) \
         > /dev/null 2> "$tmp/$alias_name-rel.err" || alias_rel_rc=$?
     assert_eq 1 "$alias_rel_rc" "--output: $alias_name rejects a relative alias of the transcript"
 
     for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
         status_rc=0
-        bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+        bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
+            --diff "$output_diff" \
             --transcript "$alias_transcript" --output "$status_alias" \
             > /dev/null 2> "$tmp/$alias_name-status.err" || status_rc=$?
         assert_eq 1 "$status_rc" \
@@ -150,7 +214,8 @@ for alias_helper in "$claude" "$codex"; do
     done
 
     alias_diff_rc=0
-    bash "$alias_helper" --mode review --model m --diff "$output_diff" \
+    bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
+        --diff "$output_diff" \
         --transcript "$output_run/$alias_name-diffalias.transcript" \
         --output "$output_diff" > /dev/null 2> "$tmp/$alias_name-diffalias.err" || alias_diff_rc=$?
     assert_eq 1 "$alias_diff_rc" "--output: $alias_name rejects an --output that aliases --diff"
@@ -163,7 +228,8 @@ success_output="$output_run/success.result.json"
 success_stdout="$tmp/output-success.stdout"
 success_rc=0
 CLAUDE_EXECUTABLE="$tmp/fake-claude-output-success" bash "$claude" \
-    --mode review --model claude-test --diff "$output_diff" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$output_diff" \
     --transcript "$output_run/success.transcript" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 \
     --output "$success_output" >"$success_stdout" || success_rc=$?
@@ -184,7 +250,7 @@ blocked_output="$output_run/blocked.result.json"
 blocked_stdout="$tmp/output-blocked.stdout"
 blocked_rc=0
 CLAUDE_EXECUTABLE=/definitely/missing/claude bash "$claude" \
-    --mode probe --model claude-test \
+    --mode probe --no-payload --model claude-test \
     --transcript "$output_run/blocked.transcript" \
     --output "$blocked_output" >"$blocked_stdout" 2>/dev/null || blocked_rc=$?
 assert_eq 3 "$blocked_rc" '--output: an environment-blocked review still exits 3'
@@ -200,7 +266,7 @@ failure_output="$output_run/failure.result.json"
 failure_err="$tmp/output-failure.err"
 failure_rc=0
 CLAUDE_EXECUTABLE="$tmp/fake-claude-output-hang" bash "$claude" \
-    --mode probe --model claude-test \
+    --mode probe --no-payload --model claude-test \
     --transcript "$output_run/failure.transcript" --poll-seconds 1 \
     --max-duration-seconds 1 --output "$failure_output" \
     >/dev/null 2>"$failure_err" || failure_rc=$?
@@ -220,7 +286,7 @@ unsafe_output="$unsafe_dir/result.json"
 unsafe_err="$tmp/output-unsafe.err"
 unsafe_rc=0
 CLAUDE_EXECUTABLE=/definitely/missing/claude bash "$claude" \
-    --mode probe --model claude-test \
+    --mode probe --no-payload --model claude-test \
     --transcript "$output_run/unsafe.transcript" \
     --output "$unsafe_output" >/dev/null 2>"$unsafe_err" || unsafe_rc=$?
 assert_eq 1 "$unsafe_rc" '--output: an unsafe output directory is refused'
@@ -264,7 +330,8 @@ codex_success_output="$output_run/codex-success.result.json"
 codex_success_stdout="$tmp/codex-output-success.stdout"
 codex_success_rc=0
 CODEX_EXECUTABLE="$tmp/fake-codex-output-success" bash "$codex" \
-    --mode review --model gpt-test --diff "$output_diff" \
+    --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
+    --diff "$output_diff" \
     --transcript "$output_run/codex-success.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-tokens 1024 \
     --output "$codex_success_output" >"$codex_success_stdout" || codex_success_rc=$?
@@ -285,7 +352,7 @@ codex_blocked_output="$output_run/codex-blocked.result.json"
 codex_blocked_stdout="$tmp/codex-output-blocked.stdout"
 codex_blocked_rc=0
 CODEX_EXECUTABLE=/definitely/missing/codex bash "$codex" \
-    --mode probe --model gpt-test \
+    --mode probe --no-payload --model gpt-test \
     --transcript "$output_run/codex-blocked.jsonl" \
     --output "$codex_blocked_output" >"$codex_blocked_stdout" 2>/dev/null || codex_blocked_rc=$?
 assert_eq 3 "$codex_blocked_rc" 'Codex --output: an environment-blocked review still exits 3'
@@ -341,8 +408,10 @@ assert_eq 1 "$state_rc" 'gh-pr-state rejects shared /tmp for durable artifacts'
 assert_contains "$(cat -- "$state_err")" '0700' 'gh-pr-state names the private directory requirement'
 
 gh() {
-    if [[ ${1:-} == pr && ${2:-} == view ]]; then
-        printf '%s\n' '{"number":1,"isDraft":true,"mergeable":"MERGEABLE","headRefName":"feat/test","headRefOid":"deadbeef","statusCheckRollup":[]}'
+    if [[ ${1:-} == api && ${2:-} == repos/owner/repo/pulls/1 ]]; then
+        printf '%s\n' '{"number":1,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"deadbeef"},"base":{"ref":"main"}}'
+    elif [[ ${1:-} == api && ${2:-} == repos/owner/repo/commits/deadbeef/check-runs* ]]; then
+        printf '%s\n' '{"check_runs":[]}'
     elif [[ ${1:-} == api && ${2:-} == graphql ]]; then
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
     else
@@ -350,6 +419,22 @@ gh() {
     fi
 }
 export -f gh
+
+state_nested_root="$tmp/state-nested.run"
+mkdir -- "$state_nested_root"
+chmod 700 -- "$state_nested_root"
+state_nested_err="$tmp/state-nested.err"
+state_nested_rc=0
+old_umask=$(umask)
+umask 022
+bash "$state" --pr 1 --repo owner/repo --full --tmpdir "$state_nested_root/prN/state" \
+    > /dev/null 2>"$state_nested_err" || state_nested_rc=$?
+umask "$old_umask"
+assert_eq 0 "$state_nested_rc" 'gh-pr-state creates missing nested artifact directories'
+assert_eq 700 "$(stat -c %a -- "$state_nested_root/prN")" \
+    'gh-pr-state secures the first missing artifact directory despite umask'
+assert_eq 700 "$(stat -c %a -- "$state_nested_root/prN/state")" \
+    'gh-pr-state secures the nested artifact directory despite umask'
 
 owned_dir_run="$tmp/owned-dir.run"
 mkdir -- "$owned_dir_run"
@@ -417,50 +502,52 @@ assert_eq no "$( [[ ! -e "$failed_verdict" ]] && printf no || printf yes )" \
 assert_eq no "$( [[ ! -e "$failed_verdict.tmp" ]] && printf no || printf yes )" \
     'a non-blocked review failure removes its temporary artifact'
 
-assert_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
-    'the skill creates a random per-run artifact directory'
-assert_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
-    'the skill explicitly secures the run directory'
+assert_contains "$skill_text" 'scripts/run-dir.sh" --pr "$PR"' \
+    'the skill derives RUN_DIR from the durable run-dir.sh helper'
+assert_not_contains "$skill_text" "mktemp -d \"\${TMPDIR:-/tmp}/review-remote-pr." \
+    'the skill no longer hand-rolls a random per-run /tmp directory'
+assert_not_contains "$skill_text" "chmod 700 -- \"\$RUN_DIR\"" \
+    'the skill leaves descendant directory security to the helpers'
 assert_not_contains "$skill_union_text" "claude_pr_\${PR}" \
     'the skill no longer uses PR-number-only Claude artifact paths'
 assert_not_contains "$skill_union_text" "/tmp/pr_\${PR}_" \
     'the skill no longer uses shared PR-number-only state paths'
 assert_contains "$skill_text" 're-set RUN_DIR to the Step 0c output; shell state does not persist' \
     'the skill guards per-shell review-artifact directory reuse'
-# The diff/verdict recipe itself now lives in references/adversarial-review.md
-# (SKILL.md only names when to read it); the Step 0c artifact-directory pins
-# checked above stay targeted at SKILL.md, since that's where they still live.
-assert_contains "$adversarial_text" "diff_path=\"\$RUN_DIR/adversarial.diff\"" \
-    'the skill names one shared adversarial diff artifact'
-assert_contains "$adversarial_text" "verdict_path=\"\$RUN_DIR/adversarial.result.json\"" \
-    'the skill names one neutral adversarial verdict artifact'
-# Verdict staging/atomic publication is delegated to each wrapper's --output
-# flag (see the helper loop above, which checks OUTPUT_TMP staging and the
-# rc=3 publish-before-exit ordering in both scripts directly), not
-# reimplemented in the reference doc; it only documents that delegation at
-# each call site.
-assert_eq 2 "$(grep -Fc -- '--output atomically publishes' "$adversarial_ref" || true)" \
-    'the skill documents atomic verdict staging at both call sites'
-assert_eq 2 "$(grep -Fc 'rc 0 (completed) and rc 3 (blocked), never created or left behind on rc 1.' "$adversarial_ref" || true)" \
-    'both adversarial wrappers publish their rc=3 blocked artifacts'
-assert_contains "$adversarial_text" 'A final file' \
-    'the skill defines completion by terminal producer events'
-assert_contains "$adversarial_text" 'cross-cell heartbeat fallback' \
-    'the skill documents the cross-cell heartbeat fallback'
-assert_contains "$adversarial_text" '2 * --poll-seconds' \
-    'the skill pins the heartbeat freshness window'
-assert_contains "$adversarial_text" 'zero transcript growth across' \
-    'the skill requires two unchanged byte samples before declaring death'
-assert_contains "$adversarial_text" 'relaunch exactly once' \
-    'the skill bounds relaunches to one after the death predicate'
-assert_contains "$adversarial_text" 'launcher reports a terminal child' \
-    'the skill prefers native launcher terminal state'
-assert_contains "$adversarial_text" 'Without native launcher state, a validated canonical verdict is Completed' \
-    'the skill permits detached canonical-verdict completion'
+assert_contains "$skill_text" '.agent/evidence/pr-<N>' \
+    'the skill documents the durable per-PR evidence path'
+assert_contains "$skill_text" 'falls back to `${TMPDIR:-/tmp}` only when' \
+    'the skill states the /tmp fallback is conditional, not a silent default'
+
+run_dir_script="$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh"
+assert_eq yes "$( [[ -x $run_dir_script ]] && printf yes || printf no )" \
+    'run-dir.sh ships executable'
+run_dir_first=$(mktemp -d)
+first_out=$(/bin/bash "$run_dir_script" --pr 405 --repo-root "$run_dir_first")
+assert_eq "$run_dir_first/.agent/evidence/pr-405" "$first_out" \
+    'run-dir.sh resolves the documented .agent/evidence/pr-<N> path'
+assert_eq 700 "$(stat -c %a -- "$first_out")" 'run-dir.sh creates the run directory at mode 0700'
+second_out=$(/bin/bash "$run_dir_script" --pr 405 --repo-root "$run_dir_first")
+assert_eq "$first_out" "$second_out" 'run-dir.sh returns the same RUN_DIR across separate invocations'
+rm -rf -- "$run_dir_first"
+assert_contains "$adversarial_text" 'Materiality — run vs. document a skip' 'the reference retains the materiality gate'
+assert_contains "$adversarial_text" 'External-service authorization' 'the reference retains the external-service boundary'
+assert_contains "$adversarial_text" 'Cross-provider consent' 'the reference retains the consent gate'
+assert_contains "$adversarial_text" 'consent-record.sh' 'the reference points at the consent authority'
+assert_contains "$adversarial_text" 'adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR' 'the reference points at the one-shot runner'
+assert_contains "$adversarial_text" 'review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript"' 'the reference points at detached liveness'
+assert_contains "$adversarial_text" 'exits 0, 1, or 2 for those states' \
+    'the reference pins detached liveness exit statuses'
+assert_contains "$adversarial_text" 'Evaluate — then route into Step 5' 'the reference retains human finding judgment'
+assert_contains "$adversarial_text" 'post-receipt.sh publish' 'the reference retains receipt publication'
+assert_not_contains "$adversarial_text" 'git --no-pager diff' 'the reference removes hand-built diff orchestration'
+assert_not_contains "$adversarial_text" 'probe_rc=' 'the reference removes hand-executed probe branching'
+assert_not_contains "$adversarial_text" 'review_rc=' 'the reference removes hand-executed launch branching'
+assert_not_contains "$adversarial_text" 'relaunch exactly once' 'the reference removes hand-executed relaunch policy'
+assert_not_contains "$adversarial_text" 'cross-cell heartbeat fallback' 'the reference removes obsolete liveness mechanics'
+assert_not_contains "$adversarial_text" 'kill -0' 'the reference contains no producer-PID recipe'
 assert_not_contains "$skill_union_text" 'kill -0' \
     'the skill never recommends cross-cell PID probes'
-assert_contains "$adversarial_text" 'bounded in both directions' \
-    'the skill bounds the wait against both stalls and premature verdicts'
 assert_not_contains "$skill_union_text" '>"$verdict_path"' \
     'the skill never streams directly into the final verdict path'
 assert_not_contains "$skill_union_text" 'claude.result.json' \
@@ -469,14 +556,33 @@ assert_not_contains "$skill_union_text" 'codex.result.json' \
     'the skill has no Codex-specific verdict path'
 
 
-diff_pattern="git --no-pager diff.*\"\\\$diff_path\""
-diff_line=$(grep -n "$diff_pattern" "$adversarial_ref" | head -1 | cut -d: -f1 || true)
-probe_line=$(grep -n '^probe_rc=0$' "$adversarial_ref" | head -1 | cut -d: -f1 || true)
-if ((diff_line < probe_line)); then
-    _pass 'the shared diff is created before probe branching'
-else
-    _fail 'the shared diff is created before probe branching' \
-        "diff line: $diff_line" "probe line: $probe_line"
-fi
+
+# These clauses are hand-reflowed prose, so match against a whitespace-collapsed
+# copy: a phrase split across two lines is still the phrase, and an assertion
+# that breaks on rewrapping silently stops protecting anything.
+adversarial_flat=$(printf '%s' "$adversarial_text" | tr '\n' ' ' | tr -s ' ')
+
+# The section headings alone proved only that the contract's shape survived the
+# consolidation, not its meaning. A sentence can invert and keep every heading --
+# "No parseable verdict is blocked" read as the reverse of the fail-closed rule
+# and passed every check above. Pin the clauses that carry the contract.
+assert_contains "$adversarial_flat" 'A missing or unparseable verdict is blocked, never clean' \
+    'the reference states the fail-closed verdict rule unambiguously'
+assert_not_contains "$adversarial_flat" 'No parseable verdict is blocked' \
+    'the reference never states the fail-closed rule in its reversible form'
+assert_contains "$adversarial_flat" 'A provider failure, missing provider, or unparseable verdict is blocked' \
+    'the reference pins the blocked-not-clean rule for provider failures'
+assert_contains "$adversarial_flat" '.verdict.verdict` is the verdict string and `.verdict.findings` is the findings array' \
+    'the reference pins the nested verdict contract'
+assert_contains "$adversarial_flat" 'The maintainer must verify each finding against the current tree' \
+    'the reference pins the maintainer verification gate'
+assert_contains "$adversarial_text" 'does not authorize an edit' \
+    'the reference denies a model finding standing authority to edit'
+assert_contains "$adversarial_flat" 'It owns consent enforcement, diff capture, provider selection, schema validation' \
+    'the reference pins what the one-shot entry point owns, including consent'
+assert_contains "$adversarial_text" 'scripts/review-liveness.sh --run-dir "$RUN_DIR" --transcript "$transcript" --verdict "$verdict_path"' \
+    'the reference pins the complete liveness command'
+assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, or Blocked' \
+    'the reference pins the three liveness states'
 
 finish

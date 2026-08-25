@@ -148,6 +148,19 @@ step 'skill helper invocations'
 step 'skill size'
 "$here/lint-skill-size.sh" "$skills" || rc=1
 
+step 'helper/reference paths'
+"$here/lint-helper-refs.sh" "$skills" || rc=1
+
+step 'reference manifest'
+"$here/lint-reference-manifest.sh" "$skills" || rc=1
+
+step 'versioned plugin paths'
+# Scans the whole plugin root, not just $skills: the hooks tree ships the
+# detector this lint must not flag (agentkit/hooks/post-tool-use.sh's own
+# regex literal) alongside the skills it protects.
+"$here/lint-versioned-plugin-paths.sh" --selftest || rc=1
+"$here/lint-versioned-plugin-paths.sh" "$plugin" || rc=1
+
 step 'no vendored system skills'
 # .system/ is Codex's OWN bundled skill set (imagegen, skill-creator,
 # plugin-creator, review-agent, skill-installer, openai-docs), each under its own

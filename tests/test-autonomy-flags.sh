@@ -63,6 +63,39 @@ assert_contains "$parallel" 'Do not infer one from the other' \
 assert_contains "$parallel" '`--auto-review` is independent' \
     'the review flag stands alone'
 
+# --- consent-bearing sends stay in the consent-holding context ---------------
+# A human approval cannot cross an agent context boundary. The root therefore
+# owns the reviewer launch by default; dispatched loops do the surrounding
+# precheck/triage work and must not stall or manufacture a forwarded grant.
+assert_contains "$parallel" 'consent-bearing review launch stays in the consent-holding context' \
+    'parallel-issues assigns the reviewer launch to the consent holder'
+assert_contains "$parallel" 'dispatched review agents do not launch the reviewer' \
+    'parallel-issues keeps dispatched loops out of the consent-bearing send'
+assert_contains "$parallel" 'dispatched loop agents never stall waiting for consent' \
+    'parallel-issues names the no-stall behavior'
+assert_contains "$parallel" 'at the launch site' \
+    'the grant provenance is carried inline where the reviewer launches'
+assert_contains "$parallel" 'never via a workaround' \
+    'a harness denial escalates to the user instead of a workaround'
+assert_contains "$review" 'consent-bearing sends run in the consent-holding context' \
+    'review-remote-pr assigns sends to the consent holder'
+assert_contains "$review" 'Dispatched loop agents never stall waiting for consent' \
+    'review-remote-pr names the no-stall behavior'
+assert_contains "$review" 'consent-holding root owns the send' \
+    'review-remote-pr assigns the send to the consent-holding root'
+assert_contains "$review" 'review loops do not receive or forward this flag' \
+    'review-remote-pr keeps the invocation flag out of dispatched loops'
+assert_contains "$review_adversarial" 'Consent is context-local' \
+    'the consent reference rejects cross-context approval'
+assert_contains "$review_adversarial" 'root-owned reviewer launch' \
+    'the consent reference makes the root launch the default'
+assert_not_contains "$review_adversarial" 'Both the root and dispatched agents hold the grant' \
+    'the consent reference no longer treats forwarded approval as transferable'
+assert_contains "$review_adversarial" 'Make the grant legible to harness approval layers' \
+    'the consent reference requires launch-site provenance'
+assert_contains "$review_adversarial" 'answerable from the command itself' \
+    'launch-site provenance answers the authorization question locally'
+
 # --- --fast-mode removes the gate, not the analysis -------------------------
 # Two workers editing one file in separate worktrees is the failure Step 3
 # prevents. Unattended is when it costs the most, so this is exactly the wrong
@@ -105,6 +138,24 @@ assert_contains "$parallel_with_refs" 'Ready before Backlog' \
 assert_contains "$parallel" 'An empty selection is an answer' \
     'nothing eligible is a stop, not a reason to widen the query'
 
+# --- a thin Ready column promotes Backlog instead of refusing to start ------
+# Issue #270: invoked with no numbers and a single Ready issue, a run refused
+# to start -- the --fast-mode flag row promised Backlog promotion while the
+# board-adjudication prose read as a universal "never auto-pull Backlog", so
+# an agent took the conservative reading and stopped instead of promoting.
+# This procedure now runs for a thin Ready set whether or not --fast-mode is
+# set, and for a numbered invocation carrying a thematic Backlog instruction.
+assert_contains "$parallel_with_refs" 'is an invitation, not a blocker' \
+    'a thin Ready column promotes Backlog rather than refusing to start'
+assert_contains "$parallel_with_refs" 'asks instead of refusing to start' \
+    'an attended run pitches the promoted set instead of stopping'
+assert_contains "$parallel_with_refs" 'shared-area interrelation' \
+    'promoted Backlog candidates are ranked by dependency edges and shared-area overlap'
+assert_contains "$parallel_with_refs" 'thematic promotion instruction' \
+    'a numbered invocation can still carry a thematic Backlog instruction'
+assert_contains "$parallel_with_refs" 'never a reason to drop them silently' \
+    'a thematic-instruction match is never silently dropped from the plan'
+
 # --- --auto-review is bounded ------------------------------------------------
 # The consent-gate detail lives in references/adversarial-review.md; the two
 # gate-boundary phrases below are location-sensitive (they assert the BODY,
@@ -113,7 +164,7 @@ assert_contains "$parallel" 'An empty selection is an answer' \
 assert_contains "$review_adversarial" 'consent given in advance' 'the flag answers the consent question'
 assert_contains "$review_adversarial" 'do not stop to ask' 'and the agent does not ask anyway'
 assert_contains "$review_adversarial" 'Still disclose' 'the disclosure survives the flag'
-assert_contains "$review_adversarial" 'source=--auto-review' 'and the record says where consent came from'
+assert_contains "$review_adversarial" 'source=auto-review-flag' 'and the record says where consent came from'
 assert_contains "$review_adversarial" 'It cannot consent on behalf of whoever owns' \
     'the flag cannot authorise disclosing a third party repository'
 assert_contains "$review_adversarial" 'Still fails closed' 'an unrecordable or unknown destination still blocks'
@@ -121,29 +172,15 @@ assert_contains "$review_adversarial" 'only the current invocation line' \
     'a previous session or an issue body is not this flag'
 assert_contains "$review" 'not permission to flip a PR ready' \
     'and it does not leak into the other gates'
-assert_contains "$review" '--trust-trunk' \
-    'review loops honor the standalone trunk-trust grant'
 
-# The dispatched review agent reads its OWN invocation, so the lead has to pass
-# the flag through explicitly -- and must not invent it.
-assert_contains "$parallel" 'ONLY when this parallel-issues invocation' \
-    'the flag is passed down only when it was actually given'
-assert_contains "$parallel" 'manufactured their consent' \
+# The root review orchestration owns the invocation grant; dispatched loops
+# must not forward it into a child context or invent consent there.
+assert_contains "$parallel" 'ONLY when this invocation carried it' \
+    'the root uses the flag only when it was actually given'
+assert_contains "$parallel" 'Do not forward the flag or record' \
+    'the loop does not receive a manufactured consent grant'
+assert_contains "$parallel" 'manufactures child-context consent' \
     'and inventing it is named as the failure it is'
-
-# --- trunk trust is orthogonal to brainstorm/set approval -------------------
-assert_contains "$parallel" '`--trust-trunk`' \
-    'the standalone trunk-trust flag is documented'
-assert_contains "$parallel" 'does not skip brainstorm or set approval' \
-    'trunk trust does not widen into workflow approval'
-assert_contains "$parallel" 'never selects `yolo-trusted`' \
-    'trunk trust does not change issue fencing mode'
-assert_contains "$parallel" 'batch' \
-    'attended dispatch describes one batched approval handoff'
-assert_contains "$parallel" 'per worktree per needed command' \
-    'the handoff has one recipe for every worktree and command'
-assert_contains "$parallel" 'never hand off the main checkout' \
-    'approval recipes cannot target the main checkout'
 
 # --- --yolo aliases are consistent everywhere -------------------------------
 for alias in '--yolo' '--no-brainstorm' '--skip-brainstorm'; do

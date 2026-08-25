@@ -64,7 +64,11 @@ Options:
   --body TEXT         Commit body, added as its own paragraph. At most once.
   --trailer LINE      Trailer line, e.g. "Co-Authored-By: Name <a@example.com>".
                       Repeatable; all trailers share the final paragraph so git
-                      parses them as one trailer block.
+                      parses them as one trailer block. Every LINE must be a
+                      non-empty "Key: value" -- a value-less key, a key-less
+                      value, or an empty value is refused rather than committed.
+                      Omitted entirely, a "Co-Authored-By:" trailer is derived
+                      from this repository's environment contract instead.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
   --allow-base-inherited BASE
                       Name the exact merge base whose protected paths may be
@@ -81,9 +85,11 @@ Behaviour:
   * Refuses to commit while HEAD is on main, master or trunk.
   * Runs 'git diff --cached --check' after staging and aborts on its findings.
   * Anything already staged in the index is included in the commit.
+  * Every trailer -- supplied or derived -- is validated before staging and
+    verified against the commit's own parsed trailers after committing.
 
 Output (stdout, on success -- one line):
-  committed abc1234 feat(example): add widget (3 files)
+  committed 0123456789abcdef0123456789abcdef01234567 feat(example): add widget (3 files)
 
 Examples:
   $PROGNAME --message 'feat(example): add widget' src/example.ts docs/example.md
@@ -204,6 +210,13 @@ base_merge_contains() {
     return 1
 }
 
+# base_merge_contains requires BASE_INHERITED_REF to equal an entry in the
+# worktree's own MERGE_HEAD -- so the caller never has to be TOLD that value
+# in advance (e.g. threaded into a dispatch prompt). Whoever is about to
+# commit can always read it straight back with `git rev-parse MERGE_HEAD` at
+# commit time, since it names the exact merge the caller is mid-way through.
+# See parallel-issues/references/chains.md#merge-down-after-a-predecessor-advances
+# for the chained-worker walkthrough this backs (issue #289).
 verify_base_inherited() {
     local paths=$1 base_commit path
     base_commit=$(git rev-parse --verify "$BASE_INHERITED_REF^{commit}" 2>/dev/null) ||
@@ -237,6 +250,69 @@ validate_args() {
     if (( ${#FILES[@]} == 0 && ALLOW_EMPTY == 0 )); then
         die 1 "no FILE operands given; pass at least one file or --allow-empty"
     fi
+}
+
+# Leading/trailing whitespace trim -- the standard parameter-expansion idiom,
+# safe under `set -u` for empty and all-whitespace input alike.
+trim_ws() {
+    local var="$1"
+    var="${var#"${var%%[![:space:]]*}"}"
+    var="${var%"${var##*[![:space:]]}"}"
+    printf '%s' "$var"
+}
+
+trailer_key() { printf '%s' "${1%%:*}"; }
+trailer_value() { trim_ws "${1#*:}"; }
+
+# A trailer must be a non-empty "Key: value" line. This is the sole guard
+# against the three ways attribution has actually been lost in the field
+# (issue #305): no ':' at all (a bare identity string with no key), a key
+# with nothing after the ':' once trimmed, and -- across two separate tool
+# calls -- an empty string that reaches here as an entirely empty LINE.
+validate_trailer_line() {
+    local line="$1" key value
+    case "$line" in
+        *:*) ;;
+        *) die 1 "--trailer must be a 'Key: value' line (no ':' found): $line" ;;
+    esac
+    key="$(trailer_key "$line")"
+    value="$(trailer_value "$line")"
+    [[ "$key" =~ ^[A-Za-z0-9-]+$ ]] || die 1 \
+        "--trailer key must be a git-trailer token (letters, digits, hyphens only -- git rejects '_'): $line"
+    [[ -n "$value" ]] || die 1 "--trailer has an empty value after '$key:': $line"
+}
+
+# contract-read.sh's harness.trailer key composes a complete, git-parseable
+# "Co-Authored-By: <identity>" line -- it is the one key that never returns a
+# bare identity (see issue #345: a field literally named "trailer" that held
+# a keyless identity was the trap that let a caller pass it straight to
+# --trailer and silently drop attribution). This helper still validates and
+# post-commit-verifies whatever it gets back, rather than trusting the name.
+contract_trailer_value() {
+    local repo_root value rc=0
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die 1 \
+        "no --trailer given and no default can be derived: not inside a git repository"
+    [[ -x "$SCRIPT_DIR/contract-read.sh" ]] || die 1 \
+        "no --trailer given and no default can be derived: missing $SCRIPT_DIR/contract-read.sh"
+    value="$("$SCRIPT_DIR/contract-read.sh" --repo-root "$repo_root" --get harness.trailer 2>&1)" || rc=$?
+    (( rc == 0 )) || die 1 \
+        "no --trailer given and no default can be derived (pass --trailer explicitly): $value"
+    [[ -n "$value" ]] || die 1 \
+        "no --trailer given and no default can be derived: contract harness.trailer resolved empty -- pass --trailer explicitly"
+    printf '%s' "$value"
+}
+
+resolve_trailers() {
+    local line
+    if (( ${#TRAILERS[@]} == 0 )); then
+        # contract_trailer_value already returns a complete "Co-Authored-By: ..."
+        # line (contract-read.sh's harness.trailer composes it) -- do not
+        # prefix it again here.
+        TRAILERS+=("$(contract_trailer_value)")
+    fi
+    for line in "${TRAILERS[@]}"; do
+        validate_trailer_line "$line"
+    done
 }
 
 # --git-dir is the per-worktree metadata dir (where index.lock is created);
@@ -406,15 +482,48 @@ do_commit() {
 
 report_commit() {
     local sha count
-    sha="$(git rev-parse --short HEAD)"
+    sha="$(git rev-parse HEAD)"
     count="$(git show --pretty=format: --name-only --no-renames HEAD |
         awk 'NF { n++ } END { print n + 0 }')"
     printf 'committed %s %s (%s files)\n' "$sha" "$SUBJECT" "$count"
 }
 
+# Validation catches a malformed --trailer before it is ever staged, but it
+# cannot catch git's own trailer parser disagreeing with ours. Read the
+# trailers back off the commit we just made -- the way the receipt publisher
+# byte-verifies its own output -- and fail loudly, before the one-line success
+# record prints, if an intended trailer did not survive into the real commit.
+verify_trailers() {
+    local actual line key value aline akey avalue found
+    # Pin the separator this read is parsed with: a repository-local
+    # trailer.separators config that drops ':' (e.g. "=") would otherwise
+    # change how git's own pretty-format parses trailers, misreporting a real
+    # commit with a well-formed "Key: value" trailer as a verification
+    # failure purely because of repo config, not the commit itself. This
+    # helper's documented, validated syntax is always "Key: value".
+    actual="$(git -c trailer.separators=: log -1 --format='%(trailers:only=true,unfold=true)' HEAD)"
+    for line in "${TRAILERS[@]}"; do
+        key="$(trailer_key "$line")"
+        value="$(trailer_value "$line")"
+        found=0
+        while IFS= read -r aline; do
+            [[ -n "$aline" ]] || continue
+            akey="$(trailer_key "$aline")"
+            avalue="$(trailer_value "$aline")"
+            if [[ "$akey" == "$key" && "$avalue" == "$value" ]]; then
+                found=1
+                break
+            fi
+        done <<< "$actual"
+        (( found == 1 )) || die 1 \
+            "post-commit verification failed: expected trailer not found on $(git rev-parse HEAD): $line"
+    done
+}
+
 main() {
     parse_args "$@"
     validate_args
+    resolve_trailers
     resolve_git_dirs
     require_writable_git_dirs
     refuse_trunk
@@ -424,6 +533,7 @@ main() {
     check_staged
     build_message_args
     do_commit
+    verify_trailers
     report_commit
 }
 

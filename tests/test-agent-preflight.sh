@@ -19,8 +19,16 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
+harness_id_script="$root/agentkit/skills/.shared/scripts/harness-id.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# The current CLI's harness= line, exactly as agent-preflight.sh's own
+# probe_harness would emit it. --inherit-session fixtures below must carry
+# this (issue #332 F3: inheritance is only trusted from a same-harness,
+# recent source), computed live rather than hardcoded so the suite passes
+# under whichever CLI actually runs it.
+current_harness_line="harness= $("$harness_id_script" 2> /dev/null)"
 
 new_repo() {
     local d
@@ -42,32 +50,166 @@ else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
 
+# --ensure must not silently discard operands whose documented semantics belong
+# to a full probe. Fail closed before checking the fast-path contract instead.
+assert_rc 2 '--ensure rejects an explicit --write target' -- \
+    "$script" --ensure --worktree "$repo" --write "$tmp/other-contract"
+assert_rc 2 '--ensure rejects an explicit repository override' -- \
+    "$script" --ensure --worktree "$repo" --repo owner/repo
+assert_rc 2 '--ensure rejects an explicit measured-from override' -- \
+    "$script" --ensure --worktree "$repo" --measured-from hook
+
+# The contract can disappear or become unreadable after contract-read validates
+# it. A failed fast-path read must fall back to the normal probe and preserve
+# the documented success status rather than returning cat's status 1.
+mkdir -p "$tmp/cat-race-bin"
+cat > "$tmp/cat-race-bin/cat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == '--' && "${2:-}" == "${PRETEND_CONTRACT:-}" ]]; then
+    exit 1
+fi
+exec /usr/bin/cat "$@"
+EOF
+chmod +x "$tmp/cat-race-bin/cat"
+assert_rc 0 'an unreadable trusted contract falls back to a fresh preflight' -- \
+    env PATH="$tmp/cat-race-bin:$PATH" PRETEND_CONTRACT="$repo/.agent/env-contract.txt" \
+    "$script" --ensure --worktree "$repo"
+race_out=$(PATH="$tmp/cat-race-bin:$PATH" PRETEND_CONTRACT="$repo/.agent/env-contract.txt" \
+    "$script" --ensure --worktree "$repo" 2> /dev/null)
+assert_contains "$race_out" 'harness=' \
+    'the fallback still emits a complete preflight contract'
+
 # The contract is not secret, but it is not public either: local paths, a CA
 # bundle location, an account name. A lax umask should not decide that.
 mode=$(stat -c '%a' "$repo/.agent/env-contract.txt" 2> /dev/null || printf '?')
 assert_eq '600' "$mode" 'the contract is written private to the user'
 
-# --- bounded root instruction report ---------------------------------------
+# --- bounded root instruction report (issue #338: a resolved set, not a pointer) ---
 repo=$(new_repo)
-mkdir -p "$repo/nested"
-printf 'nested guidance\n' > "$repo/nested/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_contains "$out" 'instructions= root=none' \
-    'a bare fixture reports no root instruction files'
-assert_not_contains "$out" 'nested/AGENTS.md' \
-    'nested instruction files are not enumerated by preflight'
+assert_eq 'instructions= root=none files=none unresolved=none' "$(grep '^instructions=' <<< "$out")" \
+    'a bare fixture reports no root instruction files, root-only case'
 
 printf 'root guidance\n' > "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=AGENTS.md' "$(grep '^instructions=' <<< "$out")" \
-    'preflight reports exactly the root AGENTS.md'
+assert_eq 'instructions= root=AGENTS.md files=AGENTS.md unresolved=none' "$(grep '^instructions=' <<< "$out")" \
+    'preflight reports exactly the root AGENTS.md, resolved into files='
 assert_not_contains "$(grep '^instructions=' <<< "$out")" 'CLAUDE.md' \
     'the root report omits an absent CLAUDE.md'
 
 printf 'root guidance\n' > "$repo/CLAUDE.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=AGENTS.md,CLAUDE.md' "$(grep '^instructions=' <<< "$out")" \
+assert_eq 'instructions= root=AGENTS.md,CLAUDE.md files=AGENTS.md,CLAUDE.md unresolved=none' \
+    "$(grep '^instructions=' <<< "$out")" \
     'preflight reports exactly both root instruction files in stable order'
+
+# --- router-with-resolving-targets ------------------------------------------
+# A root file that names on-demand docs by path is a router, not the guidance
+# itself; a reference that DOES exist in the checkout resolves into files=.
+repo=$(new_repo)
+mkdir -p "$repo/instructions"
+printf 'See instructions/workflow.md for process rules.\n' > "$repo/AGENTS.md"
+printf 'workflow guidance\n' > "$repo/instructions/workflow.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=AGENTS.md files=AGENTS.md,instructions/workflow.md unresolved=none' \
+    "$(grep '^instructions=' <<< "$out")" \
+    'a router reference that resolves is named under files='
+
+# Router paths occur in several ordinary prose forms. Each candidate must be
+# classified as resolved or unresolved, never silently absent from both sets.
+repo=$(new_repo)
+mkdir -p "$repo/instructions"
+cat > "$repo/AGENTS.md" <<'EOF'
+[Markdown](instructions/markdown.md)
+instructions/bare.md
+`instructions/backticked.md`
+@instructions/at-path.md
+EOF
+printf 'resolved markdown target\n' > "$repo/instructions/markdown.md"
+printf 'resolved bare target\n' > "$repo/instructions/bare.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+for classified in instructions/bare.md instructions/markdown.md \
+    instructions/at-path.md instructions/backticked.md; do
+    assert_contains "$instructions_line" "$classified" \
+        "router spelling is classified under files= or unresolved=: $classified"
+done
+
+# Extraction must not silently stop before join_capped can disclose overflow.
+repo=$(new_repo)
+for n in $(seq -w 1 26); do
+    printf 'instructions/topic-%s.md\n' "$n" >> "$repo/AGENTS.md"
+done
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$(grep '^instructions=' <<< "$out")" '+2-more' \
+    'router-reference truncation is visible in the contract'
+
+# Resolution work has its own fixed reference budget. When that budget is
+# exhausted the contract must disclose the partial scan instead of implying
+# that later references were classified.
+repo=$(new_repo)
+for n in $(seq -w 1 70); do
+    printf 'instructions/bounded-%s.md\n' "$n" >> "$repo/AGENTS.md"
+done
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+assert_contains "$instructions_line" 'router-truncated=yes' \
+    'exceeding the router reference budget is explicit in the contract'
+assert_contains "$instructions_line" 'router-truncated=yes unresolved=' \
+    'truncation disclosure preserves unresolved= as the final parseable field'
+
+# Input bytes are bounded too: otherwise one enormous root router can still
+# make extraction itself unbounded even when reference resolution is capped.
+repo=$(new_repo)
+printf '%270000s\n' '' > "$repo/AGENTS.md"
+printf 'instructions/after-byte-budget.md\n' >> "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+instructions_line=$(grep '^instructions=' <<< "$out")
+assert_contains "$instructions_line" 'router-truncated=yes' \
+    'exceeding the router byte budget is explicit in the contract'
+assert_not_contains "$instructions_line" 'after-byte-budget.md' \
+    'references beyond the disclosed byte budget are not resolved'
+
+# --- router-with-absent-targets ---------------------------------------------
+# The exact failure mode issue #338 reports: a router names paths that do not
+# exist in this checkout. Those must be named explicitly under unresolved=,
+# never silently dropped and never probed for by the agent turn over turn.
+repo=$(new_repo)
+printf 'See instructions/workflow.md and instructions/github.md.\n' > "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=AGENTS.md files=AGENTS.md unresolved=instructions/github.md,instructions/workflow.md' \
+    "$(grep '^instructions=' <<< "$out")" \
+    'router references that do not resolve are named under unresolved=, sorted'
+
+# A router reference that escapes the worktree (../) must never resolve --
+# that would turn a router into a path traversal into the wider filesystem.
+repo=$(new_repo)
+printf 'unrelated guidance\n' > "$tmp/escape.md"
+printf 'See ../%s/escape.md for context.\n' "$(basename -- "$tmp")" > "$repo/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_not_contains "$(grep '^instructions=' <<< "$out")" "$tmp/escape.md" \
+    'a router reference that escapes the worktree never resolves into files='
+
+# --- per-directory instruction files ----------------------------------------
+# A real per-directory AGENTS.md (a component's own guidance, not referenced
+# by any router) is now discovered too -- bounded and capped like
+# node-roots/py-roots, never an unbounded worktree sweep.
+repo=$(new_repo)
+mkdir -p "$repo/nested"
+printf 'nested guidance\n' > "$repo/nested/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'instructions= root=none files=nested/AGENTS.md unresolved=none' \
+    "$(grep '^instructions=' <<< "$out")" \
+    'a per-directory instruction file is discovered even with no root instruction file'
+
+mkdir -p "$repo/node_modules/dep" "$repo/vendor/lib"
+printf 'vendored, untrusted\n' > "$repo/node_modules/dep/AGENTS.md"
+printf 'vendored, untrusted\n' > "$repo/vendor/lib/AGENTS.md"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_not_contains "$(grep '^instructions=' <<< "$out")" 'node_modules' \
+    'vendored instruction files under node_modules are never enumerated'
+assert_not_contains "$(grep '^instructions=' <<< "$out")" 'vendor/lib' \
+    'vendored instruction files under vendor are never enumerated'
 
 # Root instruction files are a trust boundary. Reject both external and in-tree
 # symlinks rather than importing text through a path whose canonical target was
@@ -76,14 +218,14 @@ repo=$(new_repo)
 printf 'external guidance\n' > "$tmp/external-AGENTS.md"
 ln -s "$tmp/external-AGENTS.md" "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=none' "$(grep '^instructions=' <<< "$out")" \
+assert_eq 'instructions= root=none files=none unresolved=none' "$(grep '^instructions=' <<< "$out")" \
     'preflight rejects a symlinked root AGENTS.md'
 
 repo=$(new_repo)
 printf 'in-tree guidance\n' > "$repo/in-tree-AGENTS.md"
 ln -s in-tree-AGENTS.md "$repo/AGENTS.md"
 out=$("$script" --worktree "$repo" 2> /dev/null)
-assert_eq 'instructions= root=none' "$(grep '^instructions=' <<< "$out")" \
+assert_eq 'instructions= root=none files=none unresolved=none' "$(grep '^instructions=' <<< "$out")" \
     'preflight rejects an in-tree root AGENTS.md symlink'
 
 # --- the symlink ------------------------------------------------------------
@@ -172,6 +314,112 @@ fi
 assert_rc 2 'an unknown provenance is a usage error, not a silent default' -- \
     "$script" --worktree "$repo" --measured-from somewhere
 
+# --- branch= on a repository with no commits yet ----------------------------
+# `git rev-parse --abbrev-ref HEAD` fails (exit 128) on an unborn repository
+# but still echoes "HEAD" to stdout as part of its diagnostic; a naive
+# `2>/dev/null || printf 'unknown'` inline fallback captured that stray text
+# too, corrupting the one-line-per-key contract with an extra "unknown" line
+# (test-session-contract-freshness.sh's unborn-checkout case relies on the
+# clean single-line "branch=HEAD" this now produces).
+repo=$(new_repo)
+out=$("$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'branch=HEAD' "$(grep '^branch=' <<< "$out")" \
+    'an unborn repository reports a single-line branch=HEAD'
+assert_not_contains "$out" $'\nunknown\n' \
+    'no stray "unknown" fragment line leaks into the block'
+
+# --- protected= (issue #296) -------------------------------------------------
+# The effective protected-path set is computable before any work starts --
+# lib/protected-paths.sh's shared defaults plus a repository's additive
+# AGENT_PROTECTED_PATHS declaration -- so a colliding write set is knowable at
+# planning time instead of rediscovered at commit time by worktree-commit.sh's
+# guard_staged_protected_paths.
+repo=$(new_repo)
+out=$("$script" --worktree "$repo" 2> /dev/null)
+protected_line=$(grep '^protected=' <<< "$out")
+assert_contains "$out" 'protected=' 'the block reports the effective protected-path set'
+assert_contains "$protected_line" '.github/workflows/' \
+    'protected= carries the shared built-in defaults'
+assert_contains "$protected_line" 'repo-declared="none"' \
+    'a repository with no declaration reports repo-declared=none'
+
+repo=$(new_repo)
+printf 'AGENT_PROTECTED_PATHS=docs/adrs/,infra/terraform.tf\n' > "$repo/.agent/config.env"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+protected_line=$(grep '^protected=' <<< "$out")
+assert_contains "$protected_line" 'docs/adrs/' \
+    'a repository-declared protected path extension is included'
+assert_contains "$protected_line" 'infra/terraform.tf' \
+    'and every declared entry is included, not just the first'
+assert_contains "$protected_line" '.github/workflows/' \
+    'the declared extension is additive to the shared defaults, not a replacement'
+assert_contains "$protected_line" 'repo-declared="docs/adrs/,infra/terraform.tf"' \
+    'repo-declared= names exactly the repository extension'
+
+# --- documented OUTPUT key order matches what the script emits --------------
+# The header's OUTPUT comment is the contract every consumer parses exact
+# prefixes against. Adding protected= without updating both the header and the
+# emission order would silently desynchronize documentation from behaviour.
+header_line=$(grep -m1 '^#   skills= path= repo=' "$script")
+assert_contains "$header_line" ' protected= instructions=' \
+    'the header documents protected= immediately after config= and before instructions='
+mapfile -t expected_tokens < <(tr -s ' ' '\n' <<< "${header_line#\#}")
+declare -a expected_line_keys=()
+skip_next=0
+for tok in "${expected_tokens[@]}"; do
+    [[ -n $tok ]] || continue
+    if (( skip_next )); then skip_next=0; continue; fi
+    if [[ $tok == 'skills=' ]]; then skip_next=1; fi
+    expected_line_keys+=("$tok")
+done
+
+repo=$(new_repo)
+out=$("$script" --worktree "$repo" 2> /dev/null)
+declare -a actual_line_keys=()
+while IFS= read -r line; do
+    key=$(grep -oE '^[a-zA-Z0-9_-]+=' <<< "$line")
+    # runtime-pin= and gh-auth= are conditional lines the header does not name.
+    case "$key" in
+        runtime-pin=|gh-auth=) continue ;;
+    esac
+    actual_line_keys+=("$key")
+done <<< "$out"
+assert_eq "${expected_line_keys[*]}" "${actual_line_keys[*]}" \
+    'the documented OUTPUT key order matches every line the script actually emits'
+
+# --- --ensure must not serve a contract that predates protected= (issue #296) -
+# --check only validates ownership/tracked-state provenance, not which keys the
+# cached file happens to carry. A contract written before protected= existed is
+# still provenance-trusted, so without this check --ensure would keep serving
+# it forever on an otherwise-untouched worktree -- exactly the checkouts most
+# likely to have one already.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+grep -v '^protected=' "$repo/.agent/env-contract.txt" > "$tmp/stale-contract"
+mv "$tmp/stale-contract" "$repo/.agent/env-contract.txt"
+chmod 600 "$repo/.agent/env-contract.txt"
+assert_eq '0' "$(grep -c '^protected=' "$repo/.agent/env-contract.txt")" \
+    'fixture setup: the stale contract really has no protected= line'
+out=$("$script" --ensure --worktree "$repo" 2> "$tmp/ensure-stderr")
+assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
+    '--ensure regenerates a contract that predates protected= rather than serving it'
+assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected=' \
+    'and says why it fell through to a fresh preflight'
+assert_eq '1' "$(grep -c '^protected=' "$repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries protected= too'
+
+# The caching behaviour --ensure exists for must not regress: a contract that
+# already carries protected= is served as-is, not silently rewritten.
+"$script" --worktree "$repo" > /dev/null 2>&1
+before_mtime=$(stat -c %Y "$repo/.agent/env-contract.txt")
+sleep 1
+out=$("$script" --ensure --worktree "$repo" 2> /dev/null)
+after_mtime=$(stat -c %Y "$repo/.agent/env-contract.txt")
+assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
+    '--ensure still reports protected= for an up-to-date contract'
+assert_eq "$before_mtime" "$after_mtime" \
+    '--ensure reuses an up-to-date contract instead of rewriting it'
+
 # Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
 # with a named requirement before doing any work instead of exposing a cryptic
 # `declare: -A: invalid option` error. Running the file through zsh reproduces
@@ -189,5 +437,638 @@ if command -v zsh > /dev/null 2>&1; then
 else
     printf '  skip zsh interpreter-boundary checks: zsh not installed\n'
 fi
+
+# --- harness= opencode + peer-cli= multi-candidate search (issue #318) ------
+# OpenCode has no fixed 1:1 peer CLI the way Claude/Codex do, so harness-id.sh
+# hands agent-preflight.sh's probe_peer_cli an ordered "codex,claude"
+# candidate list instead of a single name. Exactly one winning name must
+# still be emitted, so every existing single-name peer-cli= consumer keeps
+# working unmodified.
+#
+# The candidate list is NOT hardcoded here -- it is read straight from
+# harness-id.sh's own OpenCode `other=` output, the single source of truth
+# probe_peer_cli is actually handed. Hardcoding "codex claude" would silently
+# rot the moment a third candidate is added there: this fixture would keep
+# stripping only the two it knows about, a leftover real binary for the new
+# candidate would still be on PATH, and the "absent" case below would no
+# longer be testing what its name claims.
+#
+# On THIS machine, codex/claude happen to live in the same directory
+# (/home/adam/.local/bin, also probe_peer_cli's own $HOME/.local/bin
+# fallback), but a fixture that assumed that would break on any machine
+# where the peer CLIs are installed separately (e.g. one via npm global in
+# /usr/local/bin, the other in ~/.local/bin) -- so every PATH directory that
+# resolves ANY candidate name is stripped, not just one. HOME still points
+# somewhere with no .local/bin, and PATH is filtered rather than cleared,
+# since agent-preflight.sh itself needs git/jq/stat/date.
+opencode_other=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 "$root/agentkit/skills/.shared/scripts/harness-id.sh" --other)
+declare -a candidate_names=()
+IFS=',' read -ra candidate_names <<< "$opencode_other"
+assert_eq 'codex,claude' "$opencode_other" \
+    'harness-id.sh OpenCode candidate list is codex,claude -- if this fails, a new candidate was added and this fixture (and the assertions below) must account for it'
+declare -a path_dirs=() kept_path_dirs=()
+IFS=: read -ra path_dirs <<< "$PATH"
+for path_dir in "${path_dirs[@]}"; do
+    exposes_candidate=0
+    for candidate_name in "${candidate_names[@]}"; do
+        if [[ -x "$path_dir/$candidate_name" ]]; then
+            exposes_candidate=1
+            break
+        fi
+    done
+    (( exposes_candidate )) || kept_path_dirs+=("$path_dir")
+done
+filtered_path=$(IFS=:; printf '%s' "${kept_path_dirs[*]}")
+fake_home="$tmp/fake-home-no-local-bin"
+mkdir -p "$fake_home"
+
+repo=$(new_repo)
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'harness= name=opencode trailer="OpenCode <noreply@opencode.ai>" other=codex,claude' \
+    "$(grep '^harness=' <<< "$out")" \
+    'a preflight run under OPENCODE=1 reports harness= name=opencode'
+assert_contains "$(grep '^peer-cli=' <<< "$out")" 'peer-cli= codex absent' \
+    'with neither peer CLI on PATH, peer-cli= names the FIRST candidate (codex) as absent'
+assert_contains "$(grep '^peer-cli=' <<< "$out")" 'codex,claude' \
+    'the absent note lists every candidate that was actually checked'
+
+# Only "claude" present, ahead of the filtered PATH: probe_peer_cli must fall
+# through past the absent first candidate (codex) to find it.
+claude_only_dir="$tmp/claude-only-path"
+mkdir -p "$claude_only_dir"
+printf '#!/bin/sh\n' > "$claude_only_dir/claude"
+chmod +x "$claude_only_dir/claude"
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$claude_only_dir:$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= claude present path='"$claude_only_dir"'/claude probe=not-run' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'with only claude on PATH, peer-cli= falls through codex to report claude present'
+
+# Both present: codex, the first-listed candidate, wins.
+both_dir="$tmp/both-path"
+mkdir -p "$both_dir"
+printf '#!/bin/sh\n' > "$both_dir/codex"
+printf '#!/bin/sh\n' > "$both_dir/claude"
+chmod +x "$both_dir/codex" "$both_dir/claude"
+out=$(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    OPENCODE=1 HOME="$fake_home" PATH="$both_dir:$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= codex present path='"$both_dir"'/codex probe=not-run' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'with both peers on PATH, codex (the first candidate) wins'
+
+# Claude and Codex are unaffected: still a single-candidate search.
+out=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    -u OPENCODE -u OPENCODE_PID \
+    CLAUDECODE=1 HOME="$fake_home" PATH="$filtered_path" \
+    "$script" --worktree "$repo" 2> /dev/null)
+assert_eq 'peer-cli= codex absent note="no cross-harness reviewer among: codex; use the same-harness blind fallback"' \
+    "$(grep '^peer-cli=' <<< "$out")" \
+    'claude sessions still search only codex, unchanged by the multi-candidate support'
+
+# --- sandbox provenance tri-state (issue #332) -------------------------------
+# Three process classes can run this probe -- a hook, the agent's own shell,
+# and a harness-escalated/approval-granted shell -- and only the hook class
+# used to carry a marker. All three must now be provenance-tagged, and the
+# "escalated" class must be an explicit assertion, never something this probe
+# guesses at (there is no verified in-tree signal for it).
+repo=$(new_repo)
+default_view=$("$script" --worktree "$repo" 2> /dev/null)
+assert_contains "$(grep '^sandbox=' <<< "$default_view")" 'measured-by=agent-shell' \
+    'the default (agent-shell) run is now provenance-tagged too'
+
+hook_view=$("$script" --worktree "$repo" --measured-from hook 2> /dev/null)
+assert_contains "$(grep '^sandbox=' <<< "$hook_view")" 'measured-by=hook' \
+    'a hook-measured run is tagged measured-by=hook'
+
+escalated_repo=$(new_repo)
+escalated_view=$("$script" --worktree "$escalated_repo" --measured-from escalated 2> /dev/null)
+escalated_sandbox=$(grep '^sandbox=' <<< "$escalated_view")
+assert_contains "$escalated_sandbox" 'measured-by=escalated' \
+    'an explicitly-asserted escalated run is tagged measured-by=escalated'
+assert_contains "$escalated_sandbox" 'this probe does not detect that state itself' \
+    'the escalated tag discloses it was asserted, not detected'
+
+# An escalated run inside a sandboxed workspace must keep BOTH sentences
+# (issue #332 F1): the escalated branch used to replace note= wholesale,
+# silently dropping the actionable "escalate git writes and forge calls"
+# guidance a worker needs before it hits a refusal. CODEX_PERMISSION_PROFILE
+# forces sandboxed=yes deterministically, independent of this machine's real
+# sandbox state.
+escalated_sandboxed_repo=$(new_repo)
+escalated_sandboxed_view=$(CODEX_PERMISSION_PROFILE=test-profile \
+    "$script" --worktree "$escalated_sandboxed_repo" --measured-from escalated 2> /dev/null)
+escalated_sandboxed_sandbox=$(grep '^sandbox=' <<< "$escalated_sandboxed_view")
+assert_contains "$escalated_sandboxed_sandbox" 'escalate git writes and forge calls' \
+    'an escalated run inside a sandbox keeps the sandboxed-workspace guidance'
+assert_contains "$escalated_sandboxed_sandbox" 'this probe does not detect that state itself' \
+    'an escalated run inside a sandbox also keeps the escalated-disclosure sentence'
+
+assert_rc 2 '--measured-from still rejects an unrecognised class' -- \
+    "$script" --worktree "$repo" --measured-from somewhere-else
+
+# "agent" was the pre-#332 public value on main (--measured-from agent|hook,
+# documented as the default). A caller outside this tree may still pass it;
+# it must be accepted as an alias for agent-shell, not a hard failure that
+# leaves a contract-producing script with no contract to produce.
+alias_repo=$(new_repo)
+alias_view=$("$script" --worktree "$alias_repo" --measured-from agent 2> /dev/null)
+assert_contains "$(grep '^sandbox=' <<< "$alias_view")" 'measured-by=agent-shell' \
+    '--measured-from agent is accepted as a backward-compatible alias for agent-shell'
+
+# --- never-widen: a more restrictive recorded sandbox=/caches= survives ------
+# a less-restrictive re-measurement (issue #332). The scenario reproduces the
+# reported bug directly: a prior run recorded a sandboxed, cache-isolated
+# contract; a second, unsandboxed-looking run must not silently overwrite it.
+repo=$(new_repo)
+restrictive_contract="$repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    'tls= bundle=none source=none corporate-ca=unknown preset=none uv-system-certs=unknown' \
+    'caches= root=/tmp/agent-cache-9999 reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-9999/uv NPM_CONFIG_CACHE=/tmp/agent-cache-9999/npm PIP_CACHE_DIR=/tmp/agent-cache-9999/pip XDG_CACHE_HOME=/tmp/agent-cache-9999' \
+    > "$restrictive_contract"
+chmod 600 "$restrictive_contract"
+widen_err=$("$script" --worktree "$repo" 2>&1 > /dev/null)
+assert_contains "$widen_err" 'keeping the more-restrictive recorded sandbox=' \
+    'a less-restrictive re-measurement of sandbox= reports the disagreement on stderr'
+assert_contains "$widen_err" 'keeping the more-restrictive recorded caches=' \
+    'a less-restrictive re-measurement of caches= reports the disagreement on stderr'
+assert_rc 0 'the never-widen guard still exits 0' -- "$script" --worktree "$repo"
+after_widen=$(cat -- "$restrictive_contract")
+assert_eq 'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' <<< "$after_widen")" \
+    'the more-restrictive recorded sandbox= line is kept byte-for-byte'
+assert_contains "$(grep '^caches=' <<< "$after_widen")" 'reason=home-cache-unwritable' \
+    'the more-restrictive recorded caches= line is kept'
+
+# --- a spoofed reason= sequence embedded in home-cache= must not out-match --
+# the real, earlier reason= (issue #332 F2, round 2). home-cache= is fed by
+# XDG_CACHE_HOME/HOME and sits AFTER the genuine reason= in the fixed field
+# order; a value containing a complete "reason=... home-cache=..." sequence
+# of its own defeats a trailing-context anchor just as easily as the naive
+# greedy regex it replaced, since the fake occurrence is ALSO followed by a
+# home-cache= token. Only anchoring at the record's start -- past exactly one
+# whitespace-free root= token -- closes this: nothing attacker-controlled can
+# precede the genuine reason= at that fixed position.
+caches_repo=$(new_repo)
+caches_contract="$caches_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'caches= root=/tmp/agent-cache-restrictive reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-restrictive/uv NPM_CONFIG_CACHE=/tmp/agent-cache-restrictive/npm PIP_CACHE_DIR=/tmp/agent-cache-restrictive/pip XDG_CACHE_HOME=/tmp/agent-cache-restrictive' \
+    > "$caches_contract"
+chmod 600 "$caches_contract"
+caches_session="$tmp/caches-spoof-session-contract.txt"
+printf '%s\ncaches= root=/tmp/agent-cache-7 reason=home-cache-writable home-cache=/home/u/.cache reason=home-cache-unwritable home-cache=/tmp/spoof UV_CACHE_DIR=/tmp/agent-cache-7/uv NPM_CONFIG_CACHE=/tmp/agent-cache-7/npm PIP_CACHE_DIR=/tmp/agent-cache-7/pip XDG_CACHE_HOME=/tmp/agent-cache-7\n' \
+    "$current_harness_line" > "$caches_session"
+caches_spoof_err=$("$script" --worktree "$caches_repo" --inherit-session "$caches_session" 2>&1 > /dev/null)
+assert_contains "$caches_spoof_err" 'keeping the more-restrictive recorded caches=' \
+    'an embedded reason=...home-cache=... sequence inside home-cache= does not mask a real caches= widening'
+assert_contains "$(grep '^caches=' "$caches_contract")" 'reason=home-cache-unwritable' \
+    'the spoofed caches= scenario keeps the recorded (restrictive) caches= line, not the fresh one'
+
+# --- a whitespace-bearing TMPDIR must not make the RESTRICTIVE record itself
+# unparseable (issue #332 F2, round 3). Round 2's whitespace refusal covered
+# only AGENT_CACHE_ROOT; TMPDIR feeds root= too, in exactly the branch that
+# produces the restrictive home-cache-unwritable record. An unwritable
+# $HOME/.cache plus a space-bearing TMPDIR used to emit a caches= line whose
+# root= swallowed a literal space, so caches_restriction_score() could not
+# find " reason=" at the expected position and scored it as unparseable
+# (0, before this fix) -- indistinguishable from a genuinely widened
+# home-cache-writable record (also 0), so the guard missed the widening.
+tmpdir_repo=$(new_repo)
+tmpdir_home="$tmp/tmpdir-unwritable-home"
+mkdir -p "$tmpdir_home"
+chmod 000 "$tmpdir_home"
+weird_tmpdir="$tmp/weird tmpdir"
+mkdir -p "$weird_tmpdir"
+env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME HOME="$tmpdir_home" TMPDIR="$weird_tmpdir" \
+    "$script" --worktree "$tmpdir_repo" > /dev/null 2>&1
+chmod 700 "$tmpdir_home"
+tmpdir_recorded=$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")
+assert_contains "$tmpdir_recorded" 'reason=home-cache-unwritable' \
+    'a whitespace-bearing TMPDIR still records a well-formed, restrictive caches= line'
+assert_not_contains "$tmpdir_recorded" 'weird tmpdir' \
+    'the whitespace-bearing TMPDIR value itself is not used as root='
+tmpdir_widen_home="$tmp/tmpdir-writable-home"
+mkdir -p "$tmpdir_widen_home"
+tmpdir_widen_err=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME HOME="$tmpdir_widen_home" \
+    "$script" --worktree "$tmpdir_repo" 2>&1 > /dev/null)
+assert_contains "$tmpdir_widen_err" 'keeping the more-restrictive recorded caches=' \
+    'a later home-cache-writable measurement is still caught as a widening after a whitespace-bearing TMPDIR run'
+assert_contains "$(grep '^caches=' "$tmpdir_repo/.agent/env-contract.txt")" 'reason=home-cache-unwritable' \
+    'the whitespace-bearing-TMPDIR scenario keeps the recorded restrictive caches= line, not the fresh one'
+
+# --- a whitespace-bearing $HOME (issue #354's reported scenario -- an
+# ordinary macOS home like "/Users/First Last") must not make the derived
+# XDG_CACHE_HOME/$HOME/.cache root= unparseable either. This is the OTHER
+# source of root= the TMPDIR fixture above doesn't exercise: probe_caches()
+# derives home_cache from $HOME/.cache BEFORE ever reaching the TMPDIR
+# fallback, and round 3's whitespace guard covers that branch too (the
+# home_cache-has-whitespace check right before dir_writable), but until now
+# nothing exercised it directly with a space-bearing $HOME rather than a
+# space-bearing TMPDIR.
+home_space_repo=$(new_repo)
+home_space_home="$tmp/weird home"
+mkdir -p "$home_space_home"
+env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME HOME="$home_space_home" TMPDIR="$tmp" \
+    "$script" --worktree "$home_space_repo" > /dev/null 2>&1
+home_space_recorded=$(grep '^caches=' "$home_space_repo/.agent/env-contract.txt")
+assert_contains "$home_space_recorded" 'reason=home-cache-unwritable' \
+    'a whitespace-bearing HOME still records a well-formed, restrictive caches= line'
+home_space_root=$(sed -n 's/^caches= root=\([^[:space:]]*\).*/\1/p' <<< "$home_space_recorded")
+assert_not_contains "$home_space_root" 'weird' \
+    'the whitespace-bearing HOME value itself is not used as root= (it may still be disclosed in home-cache=)'
+home_space_widen_home="$tmp/home-space-widen-writable"
+mkdir -p "$home_space_widen_home"
+home_space_widen_err=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME \
+    HOME="$home_space_widen_home" TMPDIR="$tmp" \
+    "$script" --worktree "$home_space_repo" 2>&1 > /dev/null)
+assert_contains "$home_space_widen_err" 'keeping the more-restrictive recorded caches=' \
+    'a later home-cache-writable measurement is still caught as a widening after a whitespace-bearing HOME run'
+assert_contains "$(grep '^caches=' "$home_space_repo/.agent/env-contract.txt")" 'reason=home-cache-unwritable' \
+    'the whitespace-bearing-HOME scenario keeps the recorded restrictive caches= line, not the fresh one'
+
+# --- an unparseable/unrecognised reason= must rank in the MIDDLE, never as --
+# the known least-restrictive value (issue #332 F2 round 3). Independent of
+# the TMPDIR whitespace source above: ANY future cause of an unparseable
+# caches= record (a malformed line, a reason= token this script doesn't know
+# about yet) must fail closed rather than silently comparing equal to a
+# genuinely widened home-cache-writable record. This fixture builds the
+# malformed "recorded" line directly (missing root=) so it exercises the
+# scoring rule itself, not the whitespace guard.
+unknown_repo=$(new_repo)
+unknown_contract="$unknown_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    'caches= reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/x/uv NPM_CONFIG_CACHE=/tmp/x/npm PIP_CACHE_DIR=/tmp/x/pip XDG_CACHE_HOME=/tmp/x' \
+    > "$unknown_contract"
+chmod 600 "$unknown_contract"
+unknown_session="$tmp/unknown-session-contract.txt"
+printf '%s\ncaches= root=/tmp/agent-cache-8 reason=home-cache-writable home-cache=/home/u/.cache UV_CACHE_DIR=/tmp/agent-cache-8/uv NPM_CONFIG_CACHE=/tmp/agent-cache-8/npm PIP_CACHE_DIR=/tmp/agent-cache-8/pip XDG_CACHE_HOME=/tmp/agent-cache-8\n' \
+    "$current_harness_line" > "$unknown_session"
+unknown_err=$("$script" --worktree "$unknown_repo" --inherit-session "$unknown_session" 2>&1 > /dev/null)
+assert_contains "$unknown_err" 'keeping the more-restrictive recorded caches=' \
+    'an unparseable recorded caches= line ranks as uncertain, not as freely widenable'
+assert_contains "$(grep '^caches=' "$unknown_contract")" 'reason=home-cache-unwritable' \
+    'the unparseable-record scenario keeps the recorded line, not a widened fresh one'
+
+# --- field-by-field widen detection: no single axis may mask another --------
+# (issue #332 F2). A scalar SUM lets one axis's tightening cancel out
+# another axis's widening: active tightening no->yes (+2 under the old
+# scorer) while network widens disabled->ok (-2) nets to "no change" in a
+# sum, even though the worker just silently lost its network restriction.
+# --inherit-session gives full, deterministic control over the "fresh" line.
+masking_repo=$(new_repo)
+masking_contract="$masking_repo/.agent/env-contract.txt"
+printf 'sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell\n' \
+    > "$masking_contract"
+chmod 600 "$masking_contract"
+masking_session="$tmp/masking-session-contract.txt"
+printf '%s\nsandbox= active=yes profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    "$current_harness_line" > "$masking_session"
+masking_err=$("$script" --worktree "$masking_repo" --inherit-session "$masking_session" 2>&1 > /dev/null)
+assert_contains "$masking_err" "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field 'network')" \
+    "a network widening masked by an active tightening is still caught, and names the regressed field"
+assert_eq 'sandbox= active=no profile=none network=disabled home-writable=yes measured-by=agent-shell' \
+    "$(grep '^sandbox=' "$masking_contract")" \
+    'the masked-widening scenario keeps the recorded sandbox= line, not the fresh one'
+
+# --- a spoofed field= token inside note= must not out-match the real field --
+# (issue #332 F2). note= is free-form and sits at the end of the line; a
+# naive greedy `.*field=` search prefers the RIGHTMOST match, so an embedded
+# "active=yes" inside note= would previously have been read as the real
+# active= value instead of the genuine, earlier one -- letting a fresh
+# measurement that actually widened (active regressed yes->no) compare as
+# unchanged and slip past the guard.
+spoof_repo=$(new_repo)
+spoof_contract="$spoof_repo/.agent/env-contract.txt"
+printf 'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    > "$spoof_contract"
+chmod 600 "$spoof_contract"
+spoof_session="$tmp/spoof-session-contract.txt"
+printf '%s\nsandbox= active=no profile=none network=disabled home-writable=no measured-by=agent-shell note="spoofed trailing text containing active=yes to mislead a naive parser"\n' \
+    "$current_harness_line" > "$spoof_session"
+spoof_err=$("$script" --worktree "$spoof_repo" --inherit-session "$spoof_session" 2>&1 > /dev/null)
+assert_contains "$spoof_err" "keeping the more-restrictive recorded sandbox= (a fresh measurement would widen field 'active')" \
+    "an embedded active= token inside note= does not mask a real active= widening"
+assert_eq 'sandbox= active=yes profile=none network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' "$spoof_contract")" \
+    'the spoofed-note scenario keeps the recorded sandbox= line, not the fresh one'
+
+# A worktree with no prior contract records its first measurement normally --
+# there is nothing recorded yet for the guard to protect.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+first_sandbox=$(grep '^sandbox=' "$repo/.agent/env-contract.txt")
+assert_contains "$first_sandbox" 'measured-by=agent-shell' \
+    'a worktree with no prior contract records its first measurement normally'
+
+# A fresh measurement that TIGHTENS the recorded restriction must still win --
+# the guard only refuses to widen. --inherit-session gives full control over
+# the "fresh" line without depending on this machine's real sandbox state.
+repo=$(new_repo)
+loose_contract="$repo/.agent/env-contract.txt"
+printf 'sandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    > "$loose_contract"
+chmod 600 "$loose_contract"
+tighter_session="$tmp/tighter-session-contract.txt"
+printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    "$current_harness_line" > "$tighter_session"
+tighten_err=$("$script" --worktree "$repo" --inherit-session "$tighter_session" 2>&1 > /dev/null)
+assert_not_contains "$tighten_err" 'keeping the more-restrictive recorded sandbox=' \
+    'a tightening re-measurement is not treated as a widening'
+assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' "$loose_contract")" \
+    'a tightening re-measurement replaces the previously recorded looser line'
+
+# --- --inherit-session carries session-scoped lines forward verbatim --------
+# sandbox=, tls=, and caches= describe the session, not any one worktree
+# (issue #332); create-issue-worktree.sh relies on this to avoid re-measuring
+# them in a differently-privileged process.
+session_repo=$(new_repo)
+session_contract="$session_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    "$current_harness_line" \
+    'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    'tls= bundle=/etc/ssl/certs/ca-certificates.crt source=system corporate-ca=no preset=none uv-system-certs=not-needed' \
+    'caches= root=/tmp/agent-cache-inherit reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-inherit/uv NPM_CONFIG_CACHE=/tmp/agent-cache-inherit/npm PIP_CACHE_DIR=/tmp/agent-cache-inherit/pip XDG_CACHE_HOME=/tmp/agent-cache-inherit' \
+    > "$session_contract"
+chmod 600 "$session_contract"
+
+target_repo=$(new_repo)
+inherit_out=$("$script" --worktree "$target_repo" --inherit-session "$session_contract" 2> "$tmp/inherit-stderr")
+assert_eq "$(grep '^sandbox=' <<< "$inherit_out")" "$(grep '^sandbox=' "$session_contract")" \
+    'the worktree contract carries the session sandbox= line verbatim (byte equality)'
+assert_eq "$(grep '^tls=' <<< "$inherit_out")" "$(grep '^tls=' "$session_contract")" \
+    'the worktree contract carries the session tls= line verbatim (byte equality)'
+assert_eq "$(grep '^caches=' <<< "$inherit_out")" "$(grep '^caches=' "$session_contract")" \
+    'the worktree contract carries the session caches= line verbatim (byte equality)'
+assert_contains "$(cat "$tmp/inherit-stderr")" 'inherited sandbox=' \
+    '--inherit-session discloses on stderr that it copied rather than measured'
+assert_contains "$(grep '^sandbox=' <<< "$inherit_out")" 'note="escalate git writes' \
+    'a note= present on the authoritative sandbox= line survives inheritance'
+
+# --- a stale --inherit-session source is revalidated, not discarded --------
+# (issue #372): a long --auto-serialize chain creates each link's worktree
+# minutes apart, so the root's own contract (written once, at session start)
+# is reliably past INHERIT_SESSION_MAX_AGE_MINUTES by the third-or-later
+# link even though nothing about the session changed. The old behaviour --
+# discard the recorded source wholesale past the window and trust a fresh,
+# differently-privileged-blind probe instead -- is exactly how a stale-but-
+# MORE-restrictive root (e.g. measured-by=hook, active=unknown) lost to a
+# fresh, confidently-unsandboxed worktree measurement and tripped
+# compose-worker-prompt.sh's worktree-contract-less-restrictive-than-root
+# refusal, with no documented recovery. Same-harness identity is still
+# required (there is no cryptographic session identity available, so this
+# remains the same recency+same-harness heuristic session-start.sh uses) --
+# but past the window a same-harness source is revalidated against a fresh
+# probe rather than trusted wholesale or discarded wholesale: whichever
+# reading is more restrictive wins, so the result can never be less
+# restrictive than the recorded root line.
+# The fixture's recorded harness= must match whatever harness-id.sh resolves
+# to UNDER THE SAME ENVIRONMENT the test invocation below actually runs in --
+# not the ambient one $current_harness_line was captured under at file load
+# (issue #372 CI follow-up). CODEX_HOME/CODEX_SANDBOX_NETWORK_DISABLED/
+# CODEX_PERMISSION_PROFILE are harness-identity signals to harness-id.sh
+# (a Codex-only session sets one of them), and even a bare $HOME override
+# can flip its last-resort "does ~/.codex exist" fallback. Any case below
+# that changes the environment for its own determinism must derive its
+# harness= line under that identical environment, or the fixture and the
+# run silently disagree on which CLI is "this session" depending on what
+# happens to be ambiently set on the machine running the suite.
+stale_repo=$(new_repo)
+stale_session="$tmp/stale-session-contract.txt"
+stale_harness_line="harness= $(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$harness_id_script" 2> /dev/null)"
+printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    "$stale_harness_line" > "$stale_session"
+# Backdate well past INHERIT_SESSION_MAX_AGE_MINUTES (30m).
+touch -d '2 hours ago' "$stale_session" 2> /dev/null || touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$stale_session"
+# The recorded line is already maximally restrictive on every comparator
+# field; forcing a genuinely unsandboxed fresh probe (never more restrictive)
+# makes "the recorded line survives" the only possible deterministic outcome
+# -- proving the revalidation, not just an accidental agreement.
+stale_err=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2>&1 > /dev/null)
+assert_contains "$stale_err" 'older than 30m' \
+    'a stale --inherit-session source is disclosed with its age named'
+assert_contains "$stale_err" 'revalidated sandbox=' \
+    'and the run discloses that sandbox= was revalidated, not blindly trusted or blindly discarded'
+assert_contains "$stale_err" "kept the recorded line" \
+    'a fresh probe that would widen the recorded line loses to it'
+stale_out=$(env -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE \
+    "$script" --worktree "$stale_repo" --inherit-session "$stale_session" 2> /dev/null)
+assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' <<< "$stale_out")" \
+    'the stale contract'"'"'s more-restrictive sandbox= bytes ARE the ones that get served -- never less restrictive than the recorded root'
+
+# The opposite direction: a stale recorded line that is NOT more restrictive
+# than the current, real state must not pin the worktree to out-of-date,
+# falsely-loose bytes forever -- the fresh (now more restrictive) probe wins
+# and the copy is refreshed. CODEX_SANDBOX_NETWORK_DISABLED plus an
+# unwritable HOME force a fresh probe that is deterministically MORE
+# restrictive than the recorded (least-restrictive-possible) line.
+loose_stale_repo=$(new_repo)
+loose_stale_session="$tmp/loose-stale-session-contract.txt"
+unwritable_home="$tmp/revalidate-unwritable-home"
+mkdir -p "$unwritable_home"
+chmod 000 "$unwritable_home"
+# Derived under the exact HOME + CODEX_SANDBOX_NETWORK_DISABLED this case
+# invokes the script with below (see the comment on the harness= derivation
+# above) -- CODEX_SANDBOX_NETWORK_DISABLED alone is what can flip the
+# resolved harness on a machine with no CLAUDECODE set (e.g. a plain CI
+# runner), independent of HOME.
+loose_stale_harness_line="harness= $(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
+    "$harness_id_script" 2> /dev/null)"
+printf '%s\nsandbox= active=no profile=none network=ok home-writable=yes measured-by=agent-shell\n' \
+    "$loose_stale_harness_line" > "$loose_stale_session"
+touch -d '2 hours ago' "$loose_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$loose_stale_session"
+loose_stale_err=$(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
+    "$script" --worktree "$loose_stale_repo" --inherit-session "$loose_stale_session" 2>&1 > /dev/null)
+assert_contains "$loose_stale_err" 'revalidated sandbox=' \
+    'a stale recorded line that is not more restrictive than reality is still revalidated'
+assert_contains "$loose_stale_err" 'the fresh probe is at least as restrictive, so it replaces' \
+    'and the note discloses that the fresher, more-restrictive measurement replaced it'
+loose_stale_out=$(HOME="$unwritable_home" CODEX_SANDBOX_NETWORK_DISABLED=1 \
+    "$script" --worktree "$loose_stale_repo" --inherit-session "$loose_stale_session" 2> /dev/null)
+chmod 700 "$unwritable_home"
+assert_not_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=no profile=none network=ok home-writable=yes' \
+    'the stale, now-inaccurate-and-looser recorded bytes are not the ones that get served'
+assert_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=yes' \
+    'the fresher, more-restrictive probe (forced sandboxed+network-disabled) is served instead'
+
+# --- an unavailable comparator fails CLOSED, not open (issue #372 review ---
+# finding): sandbox_widened comes from the OPTIONAL sibling library
+# lib/sandbox-comparator.sh, sourced only `if [[ -r "$SANDBOX_COMPARATOR_LIB" ]]`
+# -- exactly like PROTECTED_PATHS_LIB just above it. An unguarded
+# `if regressed_field=$("$comparator" ...); then` would see a command-not-
+# found (rc=127, non-zero) when that library is missing and take the FALSE
+# branch -- "not widened" -- silently letting a less-restrictive fresh probe
+# replace the recorded line on the exact invariant this fix exists to
+# preserve. Prove the `declare -F` guard in inherit_or_probe() instead
+# discloses the gap and keeps the recorded (safe, more-restrictive) line,
+# mirroring the guard apply_never_widen already uses for the identical
+# missing-library case a few hundred lines above it.
+noguard_root="$tmp/no-comparator-lib"
+mkdir -p "$noguard_root"
+cp -r "$root/agentkit/skills/.shared" "$noguard_root/.shared"
+rm -f "$noguard_root/.shared/scripts/lib/sandbox-comparator.sh"
+chmod +x "$noguard_root/.shared/scripts/agent-preflight.sh" "$noguard_root/.shared/scripts/harness-id.sh"
+noguard_script="$noguard_root/.shared/scripts/agent-preflight.sh"
+noguard_repo=$(new_repo)
+noguard_session="$tmp/no-comparator-lib-session.txt"
+printf '%s\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    "$current_harness_line" > "$noguard_session"
+touch -d '2 hours ago' "$noguard_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$noguard_session"
+noguard_err=$("$noguard_script" --worktree "$noguard_repo" --inherit-session "$noguard_session" 2>&1 > /dev/null)
+assert_contains "$noguard_err" 'cannot verify the sandbox= revalidation guard' \
+    'a missing comparator library is disclosed on stderr, not silently ignored'
+assert_contains "$noguard_err" 'sandbox_widened is not defined' \
+    'the disclosure names the missing comparator'
+noguard_out=$("$noguard_script" --worktree "$noguard_repo" --inherit-session "$noguard_session" 2> /dev/null)
+assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    "$(grep '^sandbox=' <<< "$noguard_out")" \
+    'an unavailable comparator fails CLOSED -- the recorded line is kept, never silently treated as "not widened"'
+
+# The same revalidate-not-discard behaviour for caches= (issue #372), using
+# caches_widened -- HOME writability is directly controllable, which gives a
+# fully deterministic "kept recorded" case without depending on this
+# machine's ambient sandbox state.
+caches_stale_repo=$(new_repo)
+caches_stale_session="$tmp/caches-stale-session-contract.txt"
+caches_writable_home="$tmp/caches-revalidate-writable-home"
+mkdir -p "$caches_writable_home"
+# Derived under this case's own HOME override: harness-id.sh's last-resort
+# fallback checks "does ~/.codex exist", so overriding HOME alone (with no
+# CODEX_* var touched) can still flip the resolved harness depending on
+# whether the machine running the suite happens to have a real ~/.codex --
+# reusing the ambient $current_harness_line here was passing only by
+# coincidence on machines where that fallback agreed either way.
+caches_stale_harness_line="harness= $(HOME="$caches_writable_home" "$harness_id_script" 2> /dev/null)"
+printf '%s\ncaches= root=/tmp/agent-cache-stale reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-stale/uv NPM_CONFIG_CACHE=/tmp/agent-cache-stale/npm PIP_CACHE_DIR=/tmp/agent-cache-stale/pip XDG_CACHE_HOME=/tmp/agent-cache-stale\n' \
+    "$caches_stale_harness_line" > "$caches_stale_session"
+touch -d '2 hours ago' "$caches_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_stale_session"
+caches_stale_err=$(HOME="$caches_writable_home" \
+    "$script" --worktree "$caches_stale_repo" --inherit-session "$caches_stale_session" 2>&1 > /dev/null)
+assert_contains "$caches_stale_err" 'revalidated caches=' \
+    'a stale recorded caches= is revalidated against a fresh probe'
+assert_contains "$caches_stale_err" 'kept the recorded line' \
+    'a fresh home-cache-writable probe loses to the recorded home-cache-unwritable line'
+caches_stale_out=$(HOME="$caches_writable_home" \
+    "$script" --worktree "$caches_stale_repo" --inherit-session "$caches_stale_session" 2> /dev/null)
+assert_contains "$(grep '^caches=' <<< "$caches_stale_out")" 'reason=home-cache-unwritable' \
+    'the stale, more-restrictive recorded caches= bytes ARE the ones that get served'
+
+# Opposite direction: a stale recorded caches= that is already the least-
+# restrictive reading must not pin the worktree to it forever once reality
+# has become more restrictive -- the fresh probe wins and the copy refreshes.
+# AGENT_CACHE_ROOT forces a deterministic, UID-INDEPENDENT fresh reading
+# (issue #372 review finding): a chmod-000-HOME technique here relies on the
+# OS enforcing the permission bits, which a root UID (routine in CI
+# containers) does not observe -- root can still write into a mode-000
+# directory, so dir_writable() would report home-cache-writable exactly like
+# an unprivileged run would find home-cache-unwritable, and the "fresh wins"
+# assertions below would silently flip meaning depending on who runs the
+# suite. AGENT_CACHE_ROOT-set (rank 1) is still strictly more restrictive
+# than the recorded home-cache-writable (rank 0) -- see
+# caches_restriction_score() -- and needs no filesystem probe at all, so it
+# is identical across every UID. No CODEX_*/HOME override remains in this
+# case's invocation, so it is safe to reuse the ambient $current_harness_line
+# here (unlike the writable-HOME case above, nothing left in this
+# environment can change which harness harness-id.sh resolves).
+caches_loose_stale_repo=$(new_repo)
+caches_loose_stale_session="$tmp/caches-loose-stale-session-contract.txt"
+printf '%s\ncaches= root=/home/example/.cache reason=home-cache-writable home-cache=/home/example/.cache UV_CACHE_DIR=/home/example/.cache/uv NPM_CONFIG_CACHE=/home/example/.cache/npm PIP_CACHE_DIR=/home/example/.cache/pip XDG_CACHE_HOME=/home/example/.cache\n' \
+    "$current_harness_line" > "$caches_loose_stale_session"
+touch -d '2 hours ago' "$caches_loose_stale_session" 2> /dev/null ||
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M 2> /dev/null || date -v-2H +%Y%m%d%H%M)" "$caches_loose_stale_session"
+caches_override_root="$tmp/caches-revalidate-override-root"
+caches_loose_err=$(AGENT_CACHE_ROOT="$caches_override_root" \
+    "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2>&1 > /dev/null)
+assert_contains "$caches_loose_err" 'revalidated caches=' \
+    'a stale, already-loosest recorded caches= is still revalidated'
+assert_contains "$caches_loose_err" 'the fresh probe is at least as restrictive, so it replaces' \
+    'and the fresher, now more-restrictive probe replaces it'
+caches_loose_out=$(AGENT_CACHE_ROOT="$caches_override_root" \
+    "$script" --worktree "$caches_loose_stale_repo" --inherit-session "$caches_loose_stale_session" 2> /dev/null)
+assert_contains "$(grep '^caches=' <<< "$caches_loose_out")" 'reason=AGENT_CACHE_ROOT-set' \
+    'the fresher, more-restrictive probe (AGENT_CACHE_ROOT override, UID-independent) is served instead of the stale looser bytes'
+
+mismatch_repo=$(new_repo)
+mismatch_session="$tmp/mismatch-session-contract.txt"
+printf 'harness= name=some-other-cli trailer="Other <noreply@example.invalid>" other=none\nsandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"\n' \
+    > "$mismatch_session"
+mismatch_err=$("$script" --worktree "$mismatch_repo" --inherit-session "$mismatch_session" 2>&1 > /dev/null)
+assert_contains "$mismatch_err" 'does not match this session' \
+    'a source contract from a different harness is refused, naming the mismatch'
+mismatch_out=$("$script" --worktree "$mismatch_repo" --inherit-session "$mismatch_session" 2> /dev/null)
+assert_not_contains "$(grep '^sandbox=' <<< "$mismatch_out")" 'active=yes profile=strict network=disabled' \
+    'the cross-harness contract'"'"'s sandbox= bytes are not the ones that get served'
+
+# A missing or unreadable --inherit-session file falls back to a fresh probe
+# for every line, rather than failing the run: reporting, never blocking.
+fallback_out=$("$script" --worktree "$(new_repo)" --inherit-session "$tmp/does-not-exist.txt" 2> /dev/null)
+assert_contains "$fallback_out" 'sandbox=' \
+    'a missing --inherit-session file still produces a full sandbox= line'
+assert_contains "$(grep '^sandbox=' <<< "$fallback_out")" 'measured-by=agent-shell' \
+    'the fallback measurement is freshly probed, not fabricated'
+
+assert_rc 2 '--ensure rejects an explicit --inherit-session override' -- \
+    "$script" --ensure --worktree "$repo" --inherit-session "$session_contract"
+
+# --- integration: a Node root with a recognizable lockfile resolves node-pm -
+# issue #338: node_roots() checked the WORKTREE ROOT for a lockfile, so a
+# monorepo package whose lockfile lives beside its own package.json (not at
+# the top) reported node-pm=none even though its package manager was fully
+# knowable from disk.
+repo=$(new_repo)
+mkdir -p "$repo/opencode"
+printf '{}' > "$repo/opencode/package.json"
+printf '' > "$repo/opencode/pnpm-lock.yaml"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-roots=opencode' \
+    'the detected node root is reported'
+assert_contains "$runners_line" 'node-pm=pnpm' \
+    'its own lockfile resolves node-pm, not the worktree root'
+
+# A Node root with NO lockfile anywhere in its ancestry is a real gap, and is
+# reported as such -- never silently defaulted to npm.
+repo=$(new_repo)
+mkdir -p "$repo/opencode"
+printf '{}' > "$repo/opencode/package.json"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-pm=unresolved' \
+    'an unresolvable package manager is named unresolved, not defaulted to npm'
+
+# A monorepo whose roots resolve to DIFFERENT managers must never report the
+# first root's manager for the rest (adversarial review of this same change:
+# a bare `break 3` on the first lockfile found silently let root "a"'s pnpm
+# decide root "b"'s npm too, and Step 5 now dispatches bootstrap commands off
+# this field). Divergence collapses to unresolved -- a single field cannot
+# honestly represent two different managers, and dispatch must not act on
+# a value that could be wrong for either root.
+repo=$(new_repo)
+mkdir -p "$repo/a" "$repo/b"
+printf '{}' > "$repo/a/package.json"
+printf '' > "$repo/a/pnpm-lock.yaml"
+printf '{}' > "$repo/b/package.json"
+printf '' > "$repo/b/package-lock.json"
+out=$("$script" --worktree "$repo" 2> /dev/null)
+runners_line=$(grep '^runners=' <<< "$out")
+assert_contains "$runners_line" 'node-roots=a,b' \
+    'both node roots are reported'
+assert_contains "$runners_line" 'node-pm=unresolved' \
+    'roots resolving to different managers collapse to unresolved, never the first root'"'"'s manager'
 
 finish

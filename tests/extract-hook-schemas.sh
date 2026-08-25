@@ -11,7 +11,7 @@ python3 - "$bin" "$here/fixtures" <<'PY'
 import sys, json, os
 binary, outdir = sys.argv[1], sys.argv[2]
 data = open(binary, 'rb').read().decode('utf-8', 'replace')
-events = ['session-start', 'subagent-start', 'pre-tool-use', 'post-tool-use', 'stop']
+events = ['session-start', 'subagent-start', 'pre-tool-use', 'post-tool-use']
 for ev in events:
     title = '%s.command.output' % ev
     i = data.find('"title": "%s"' % title)

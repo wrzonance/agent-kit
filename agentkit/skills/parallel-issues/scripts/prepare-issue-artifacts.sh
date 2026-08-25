@@ -10,11 +10,13 @@
 # SELECTION (public-fenced vs private-trusted vs yolo-trusted) happens
 # upstream of this script -- it only consumes the mode it is given.
 set -euo pipefail
-# fetched-issue.json is explicitly chmod'd 0600, but fenced-spec.txt and
-# fenced-prior-art.txt are created by plain redirection (fence-untrusted-data.sh
-# output, or a straight cp) and then mv'd into place -- without this, they land
-# world-readable under the default umask while the byte-equivalent raw payload
-# next to them does not. All three carry the same issue text.
+# fetched-issue.json is explicitly chmod'd 0600, but the spec/prior-art pair
+# (fenced-spec.txt + fenced-prior-art.txt in public-fenced mode, or the
+# mode-neutral spec.txt + prior-art.txt otherwise) are created by plain
+# redirection (fence-untrusted-data.sh output, or a straight cp) and then
+# mv'd into place -- without this, they land world-readable under the default
+# umask while the byte-equivalent raw payload next to them does not. All
+# three carry the same issue text.
 umask 077
 
 usage() {
@@ -27,17 +29,28 @@ Options:
   --issue N         Issue number to fetch (positive integer).
   --boundary MODE   One of:
                       public-fenced    - wrap both artifacts in nonce-bound
-                                          untrusted-data markers.
-                      private-trusted  - copy bytes verbatim (no fencing).
-                      yolo-trusted     - copy bytes verbatim (no fencing).
+                                          untrusted-data markers; published as
+                                          fenced-spec.txt / fenced-prior-art.txt.
+                      private-trusted  - copy bytes verbatim (no fencing);
+                                          published as mode-neutral
+                                          spec.txt / prior-art.txt so the
+                                          filename never asserts a fence that
+                                          does not exist.
+                      yolo-trusted     - copy bytes verbatim (no fencing);
+                                          published as mode-neutral
+                                          spec.txt / prior-art.txt, same as
+                                          private-trusted.
   --prior-art FILE  File holding prior-art digest text. Defaults to the
                     literal "(no prior art selected by triage digest)".
   -h, --help        Print this help and exit 0.
 
-Published on success (stdout, one line per artifact):
+Published on success (stdout, one line per artifact). The spec/prior-art
+filenames depend on --boundary:
   published: <worktree>/.agent/fetched-issue.json
-  published: <worktree>/.agent/fenced-spec.txt
-  published: <worktree>/.agent/fenced-prior-art.txt
+  published: <worktree>/.agent/fenced-spec.txt        (public-fenced only)
+  published: <worktree>/.agent/fenced-prior-art.txt    (public-fenced only)
+  published: <worktree>/.agent/spec.txt                (private-trusted, yolo-trusted)
+  published: <worktree>/.agent/prior-art.txt           (private-trusted, yolo-trusted)
   published: <worktree>/.agent/fenced-ready
 
 Exit status:
@@ -128,8 +141,21 @@ fi
 mkdir -p -- "$agent_dir" || die "Could not create $agent_dir"
 
 issue_payload_file="$agent_dir/fetched-issue.json"
-target="$agent_dir/fenced-spec.txt"
-prior_target="$agent_dir/fenced-prior-art.txt"
+# The published filename itself must never assert a fence that does not
+# exist (issue #334): only public-fenced actually wraps the bytes in
+# nonce-bound markers, so only public-fenced keeps the fenced-* name.
+# private-trusted and yolo-trusted copy bytes verbatim and publish under the
+# mode-neutral spec.txt / prior-art.txt names instead.
+case $boundary_mode in
+    public-fenced)
+        target="$agent_dir/fenced-spec.txt"
+        prior_target="$agent_dir/fenced-prior-art.txt"
+        ;;
+    private-trusted | yolo-trusted)
+        target="$agent_dir/spec.txt"
+        prior_target="$agent_dir/prior-art.txt"
+        ;;
+esac
 ready_marker="$agent_dir/fenced-ready"
 tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"

@@ -49,6 +49,11 @@ expected_spec_text() {
 }
 
 # ---------------------------------------------------------------- happy path
+# The published filename itself must never assert a fence that does not exist
+# (issue #334): only public-fenced actually wraps the bytes, so only
+# public-fenced keeps the fenced-spec.txt / fenced-prior-art.txt names;
+# private-trusted and yolo-trusted publish under the mode-neutral
+# spec.txt / prior-art.txt names instead.
 for boundary in public-fenced private-trusted yolo-trusted; do
     worktree=$(new_worktree)
     out="$tmp_dir/out.$boundary"
@@ -63,15 +68,27 @@ for boundary in public-fenced private-trusted yolo-trusted; do
         "$boundary: publishes the readiness marker as a directory"
     assert_contains "$(<"$out")" "published: $worktree/.agent/fetched-issue.json" \
         "$boundary: reports the raw payload as published"
-    assert_contains "$(<"$out")" "published: $worktree/.agent/fenced-spec.txt" \
-        "$boundary: reports the spec artifact as published"
-    assert_contains "$(<"$out")" "published: $worktree/.agent/fenced-prior-art.txt" \
-        "$boundary: reports the prior-art artifact as published"
     assert_contains "$(<"$out")" "published: $worktree/.agent/fenced-ready" \
         "$boundary: reports the readiness marker as published"
 
-    spec=$(<"$worktree/.agent/fenced-spec.txt")
-    prior=$(<"$worktree/.agent/fenced-prior-art.txt")
+    if [[ $boundary == public-fenced ]]; then
+        spec_file="$worktree/.agent/fenced-spec.txt"
+        prior_file="$worktree/.agent/fenced-prior-art.txt"
+    else
+        spec_file="$worktree/.agent/spec.txt"
+        prior_file="$worktree/.agent/prior-art.txt"
+        assert_eq no "$([[ -e "$worktree/.agent/fenced-spec.txt" ]] && printf yes || printf no)" \
+            "$boundary: publishes no artifact whose name asserts fencing (spec)"
+        assert_eq no "$([[ -e "$worktree/.agent/fenced-prior-art.txt" ]] && printf yes || printf no)" \
+            "$boundary: publishes no artifact whose name asserts fencing (prior art)"
+    fi
+    assert_contains "$(<"$out")" "published: $spec_file" \
+        "$boundary: reports the spec artifact as published"
+    assert_contains "$(<"$out")" "published: $prior_file" \
+        "$boundary: reports the prior-art artifact as published"
+
+    spec=$(<"$spec_file")
+    prior=$(<"$prior_file")
     if [[ $boundary == public-fenced ]]; then
         assert_contains "$spec" '<BEGIN UNTRUSTED ISSUE DATA: BND_' \
             "$boundary: spec carries the opening fence marker"
@@ -112,7 +129,7 @@ worktree=$(new_worktree)
 prior_file="$tmp_dir/prior-art.txt"
 printf 'triage found related PR #9\n\n' >"$prior_file"
 GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 yolo-trusted "$prior_file" >/dev/null 2>&1
-published_prior="$worktree/.agent/fenced-prior-art.txt"
+published_prior="$worktree/.agent/prior-art.txt"
 if cmp -s "$prior_file" "$published_prior"; then
     _pass 'a supplied prior-art file publishes byte-identical content in yolo-trusted mode'
 else
@@ -135,8 +152,9 @@ assert_contains "$(<"$err")" 'evidence unavailable' \
     'the empty-issue rejection names the evidence-unavailable reason'
 assert_eq yes "$([[ -f "$worktree/.agent/fetched-issue.json" ]] && printf yes || printf no)" \
     'an empty issue payload still persists the raw fetch for audit'
-assert_eq no "$([[ -e "$worktree/.agent/fenced-spec.txt" ]] && printf yes || printf no)" \
-    'an empty issue payload leaves no fenced spec'
+# private-trusted publishes the mode-neutral spec.txt name (issue #334).
+assert_eq no "$([[ -e "$worktree/.agent/spec.txt" ]] && printf yes || printf no)" \
+    'an empty issue payload leaves no spec artifact'
 assert_eq no "$([[ -e "$worktree/.agent/fenced-ready" ]] && printf yes || printf no)" \
     'an empty issue payload leaves no readiness marker'
 
@@ -161,8 +179,8 @@ assert_contains "$(<"$err")" 'jq is not installed; evidence unavailable' \
 # ------------------------------------------------------------ complete set
 worktree=$(new_worktree)
 GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted >/dev/null 2>&1
-spec_before=$(<"$worktree/.agent/fenced-spec.txt")
-prior_before=$(<"$worktree/.agent/fenced-prior-art.txt")
+spec_before=$(<"$worktree/.agent/spec.txt")
+prior_before=$(<"$worktree/.agent/prior-art.txt")
 fetched_before="$tmp_dir/fetched-before.json"
 cp -- "$worktree/.agent/fetched-issue.json" "$fetched_before"
 # The refused run is fed a DIFFERENT payload on purpose. With the same fixture
@@ -178,9 +196,9 @@ GH_STUB_RESPONSE="$refuse_fixture" run_prepare "$worktree" 42 private-trusted \
 assert_eq 12 "$rc" 'a complete fenced artifact set refuses re-fencing with exit 12'
 assert_contains "$(<"$err")" 'delete the affected file deliberately before re-fencing' \
     'the refusal names the deliberate-delete remedy'
-assert_eq "$spec_before" "$(<"$worktree/.agent/fenced-spec.txt")" \
+assert_eq "$spec_before" "$(<"$worktree/.agent/spec.txt")" \
     'the refusal leaves the existing spec artifact untouched'
-assert_eq "$prior_before" "$(<"$worktree/.agent/fenced-prior-art.txt")" \
+assert_eq "$prior_before" "$(<"$worktree/.agent/prior-art.txt")" \
     'the refusal leaves the existing prior-art artifact untouched'
 # fetched-issue.json is part of the same deliberate set. The refusal used to run
 # after the fetch had already replaced it, so this compares bytes (cmp, not a
@@ -197,7 +215,9 @@ fi
 # The trio is published one member at a time and is not atomic, so a failure
 # must name WHICH member did not land -- "mv/mkdir failed" leaves the caller to
 # work out whether the spec, the prior-art pair, or the readiness marker is
-# missing. Injected with a mv stub that fails only for the prior-art move.
+# missing. Injected with a mv stub that fails only for the prior-art move
+# (private-trusted publishes the mode-neutral prior-art.txt name, not
+# fenced-prior-art.txt -- issue #334).
 fail_mv_dir="$tmp_dir/fail-mv-bin"
 mkdir -p "$fail_mv_dir"
 real_mv=$(command -v mv)
@@ -205,7 +225,7 @@ cat >"$fail_mv_dir/mv" <<EOF
 #!/usr/bin/env bash
 for arg in "\$@"; do
     case \$arg in
-        *fenced-prior-art.txt) printf 'mv: injected failure\\n' >&2; exit 1 ;;
+        *prior-art.txt) printf 'mv: injected failure\\n' >&2; exit 1 ;;
     esac
 done
 exec "$real_mv" "\$@"
@@ -219,7 +239,7 @@ GH_STUB_RESPONSE="$fixture" PATH="$fail_mv_dir:$stub_path:$PATH" "$bash_bin" "$s
     --worktree "$worktree" --issue 42 --boundary private-trusted \
     >/dev/null 2>"$err" || rc=$?
 assert_eq 1 "$rc" 'a failed publication step exits with that step'"'"'s status'
-assert_contains "$(<"$err")" 'fenced-prior-art.txt' \
+assert_contains "$(<"$err")" 'prior-art.txt' \
     'the publication failure names the member that did not land'
 assert_contains "$(<"$err")" 'the fenced artifact set is incomplete' \
     'the publication failure says the set is incomplete'
@@ -229,11 +249,12 @@ assert_eq no "$([[ -d "$worktree/.agent/fenced-ready" ]] && printf yes || printf
 # --------------------------------------------------------------- incomplete
 worktree=$(new_worktree)
 mkdir -p "$worktree/.agent"
-printf 'stale spec\n' >"$worktree/.agent/fenced-spec.txt"
+# private-trusted publishes the mode-neutral spec.txt name (issue #334).
+printf 'stale spec\n' >"$worktree/.agent/spec.txt"
 rc=0
 GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" 'an incomplete stale artifact set is cleaned up and republished'
-assert_not_contains "$(<"$worktree/.agent/fenced-spec.txt")" 'stale spec' \
+assert_not_contains "$(<"$worktree/.agent/spec.txt")" 'stale spec' \
     'the stale spec content does not survive cleanup'
 assert_eq yes "$([[ -d "$worktree/.agent/fenced-ready" ]] && printf yes || printf no)" \
     'the retried run publishes the readiness marker'

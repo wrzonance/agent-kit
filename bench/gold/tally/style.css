@@ -1,0 +1,10 @@
+/* tally-06: dark mode toggle themes. */
+.theme-light {
+  background: #ffffff;
+  color: #111111;
+}
+
+.theme-dark {
+  background: #111111;
+  color: #ffffff;
+}

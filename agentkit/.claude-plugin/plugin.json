@@ -1,7 +1,11 @@
 {
   "name": "agentkit",
-  "version": "0.1.0",
+  "version": "0.6.7",
   "description": "Board-aware parallel issue and PR review skills, with lifecycle hooks and a per-repository contract.",
+  "author": {
+    "name": "wrzonance",
+    "url": "https://github.com/wrzonance"
+  },
   "license": "MIT",
   "keywords": [
     "skills",

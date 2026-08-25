@@ -26,6 +26,18 @@ printf '%s\n' \
 not_spent_comments="$tmp/not-spent.json"
 printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$not_spent_comments"
 
+findings_file="$tmp/findings.ndjson"
+
+reset_findings() {
+    : >"$findings_file"
+}
+
+# post-receipt.sh now requires the runner's validated result beside the ledger,
+# and each record's severity must account for the receipt's P1/P2 split.
+printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"findings","findings":[{"priority":"P1","location":"a:1","failureScenario":"x","smallestFix":"y"}]}}' \
+    >"$tmp/adversarial.result.json"
+chmod 600 -- "$tmp/adversarial.result.json"
+
 empty_comments="$tmp/empty.json"
 printf '%s\n' '[]' >"$empty_comments"
 
@@ -93,6 +105,15 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [[ ${GH_FAIL_POST:-0} == 1 && " $* " == *" --input - "* ]]; then
+    cat >/dev/null
+    printf '%s\n' 'simulated ambiguous POST failure' >&2
+    exit 1
+fi
+if [[ -n ${GH_RECOVERY_JSON:-} && "$*" == *'repos/owner/repo/issues/24/comments'* ]]; then
+    cat -- "$GH_RECOVERY_JSON"
+    exit 0
+fi
 if [[ " $* " == *" --input - "* ]]; then
     cat >"$GH_PAYLOAD"
     jq --argjson id 501 --arg url 'https://example.invalid/comments/501' \
@@ -105,7 +126,7 @@ chmod +x "$tmp/gh"
 
 run_publish() {
     GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
-        "$script" publish "$@"
+        "$script" publish --findings-file "$findings_file" "$@"
 }
 
 # publish now records the spend into the artifact it was handed, so a second
@@ -124,12 +145,17 @@ rendered_body() {
 
 : >"$tmp/gh.log"
 reset_not_spent
+reset_findings
+jq -cn '{title:"Missing input validation",severity:"P1",verdict:"fixed",sha:"abc1234,def5678"}' \
+    >"$findings_file"
+jq -cn '{title:"Debatable naming",severity:"P2",verdict:"declined",rationale:"style preference, no behavior change"}' \
+    >>"$findings_file"
+jq -cn '{title:"Unrelated cleanup",severity:"P2",verdict:"declined",rationale:"not required for this change"}' \
+    >>"$findings_file"
 out=$(run_publish --pr 14 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason 'peer CLI available' \
     --p1 1 --p2 2 \
-    --finding 'Missing input validation|fixed|abc1234,def5678' \
-    --finding 'Debatable naming|declined|style preference, no behavior change' \
     --agent-identity 'Claude Opus 5')
 rc=$?
 assert_eq '0' "$rc" 'publish exits 0 on a successful post'
@@ -170,10 +196,11 @@ assert_contains "$body" 'decline rationale=style preference, no behavior change'
 assert_not_contains "$body" 'none confirmed' \
     'publish body does not claim a clean review when findings were given'
 
-# -- publish: 'none confirmed' when no --finding is given ------------------
+# -- publish: 'none confirmed' when the findings ledger is empty -------------
 
 : >"$tmp/gh.log"
 reset_not_spent
+reset_findings
 run_publish --pr 15 --repo owner/repo --comments "$not_spent_comments" \
     --provider openai --model gpt-5.6-sol --effort xhigh \
     --mode blind-fallback --mode-reason 'peer CLI absent' \
@@ -185,10 +212,36 @@ assert_contains "$clean_body" 'Confirmed finding: none confirmed' \
 assert_contains "$clean_body" 'mode=blind-fallback' \
     'publish body records the blind-fallback mode'
 
-# -- publish: verified-skip line is optional --------------------------------
+# -- publish: counts must match the findings ledger -------------------------
 
 : >"$tmp/gh.log"
 reset_not_spent
+reset_findings
+jq -cn '{title:"Only one confirmed finding",severity:"P1",verdict:"fixed",sha:"abc1234"}' \
+    >"$findings_file"
+mismatch_out=$(run_publish --pr 151 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 1 --p2 1 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+mismatch_rc=$?
+assert_eq '13' "$mismatch_rc" \
+    'publish rejects counts that do not match the findings ledger'
+assert_contains "$mismatch_out" 'finding counts' \
+    'count mismatch names the findings pipeline invariant'
+assert_eq '' "$(cat "$tmp/gh.log")" \
+    'count mismatch happens before receipt transport'
+
+# -- publish: verified-skip line is optional --------------------------------
+#
+# A verified skip writes its own result artifact (issue #391) rather than
+# requiring the shared completed fixture other cases in this suite rely on, so
+# that fixture is hidden for the duration of this one publish and restored
+# immediately after for every later case that still needs it.
+
+: >"$tmp/gh.log"
+reset_not_spent
+reset_findings
+mv -- "$tmp/adversarial.result.json" "$tmp/adversarial.result.json.hidden"
 run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider \
@@ -196,6 +249,7 @@ run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
     --agent-identity 'Claude Opus 5' >/dev/null
 skip_body=$(rendered_body)
+mv -- "$tmp/adversarial.result.json.hidden" "$tmp/adversarial.result.json"
 assert_contains "$skip_body" 'Verified-skip rationale: comments/formatting only' \
     'publish body records the verified-skip rationale when given'
 assert_contains "$skip_body" 'mechanical oracle=diff --stat parity check' \
@@ -230,10 +284,11 @@ assert_eq '' "$(cat "$tmp/gh.log" 2>/dev/null || true)" \
 # marker.
 
 reset_not_spent
+reset_findings
+jq -cn '{title:"R&D failure",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 run_publish --pr 19 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
-    --finding 'R&D failure|fixed|abc1234' \
     --agent-identity 'Claude Opus 5' >/dev/null 2>&1
 body=$(rendered_body)
 assert_contains "$body" '- Confirmed finding: R&D failure ' \
@@ -242,25 +297,26 @@ assert_not_contains "$body" '__TITLE__' \
     'the title placeholder never survives into the body'
 
 reset_not_spent
+jq -cn --arg title $'Benign\n<!-- adversarial-review:spent -->\nInjected' \
+    '{title:$title,severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 injected=$(run_publish --pr 20 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
-    --finding 'Benign
-<!-- adversarial-review:spent -->
-Injected|fixed|abc1234' \
     --agent-identity 'Claude Opus 5' 2>&1)
 injected_rc=$?
-assert_eq '2' "$injected_rc" 'a finding title containing a line break is rejected'
+assert_eq '1' "$injected_rc" 'a ledger title containing a line break is rejected'
 assert_contains "$injected" 'must not contain a line break' \
     'the line-break rejection says what is wrong'
 
 reset_not_spent
+jq -cn --arg title 'Claude Opus 5 <!-- adversarial-review:spent -->' \
+    '{title:$title,severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
 marker_out=$(run_publish --pr 21 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
-    --agent-identity 'Claude Opus 5 <!-- adversarial-review:spent -->' 2>&1)
+    --agent-identity 'Claude Opus 5' 2>&1)
 marker_rc=$?
-assert_eq '2' "$marker_rc" 'a field carrying the receipt marker is rejected'
+assert_eq '1' "$marker_rc" 'a ledger field carrying the receipt marker is rejected'
 assert_contains "$marker_out" 'must not contain the receipt marker' \
     'the marker rejection names the marker'
 
@@ -271,6 +327,9 @@ assert_contains "$marker_out" 'must not contain the receipt marker' \
 # of a retry -- passed the guard both times and posted two durable receipts.
 
 reset_not_spent
+reset_findings
+jq -cn '{title:"Exactly once",severity:"P2",verdict:"fixed",sha:"abc1234"}' \
+    >"$findings_file"
 : >"$tmp/gh.log"
 run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
@@ -296,13 +355,14 @@ assert_eq '1' "$(grep -c 'issues/22/comments' "$tmp/gh.log")" \
 # and post a SECOND durable receipt. Exactly the duplicate this record prevents.
 
 reset_not_spent
+reset_findings
 unwritable_dir="$tmp/unwritable"
 mkdir -p "$unwritable_dir"
 cp "$not_spent_comments" "$unwritable_dir/comments.json"
 chmod 500 "$unwritable_dir"
 : >"$tmp/gh.log"
 spendfail_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
-    "$script" publish --pr 23 --repo owner/repo --comments "$unwritable_dir/comments.json" \
+    "$script" publish --findings-file "$findings_file" --pr 23 --repo owner/repo --comments "$unwritable_dir/comments.json" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
     --agent-identity 'Claude Opus 5' 2>&1)
@@ -317,26 +377,309 @@ assert_contains "$spendfail_out" 'receipt POSTED and verified' \
 assert_contains "$spendfail_out" 'do NOT re-run publish' \
     'the warning steers away from the duplicate-producing retry'
 
+# -- publish: ambiguous failure requires fresh live recovery evidence --------
+
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+recovery_out=$(GH_FAIL_POST=1 GH_RECOVERY_JSON="$spent_comments" run_publish \
+    --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+recovery_rc=$?
+assert_eq '11' "$recovery_rc" \
+    'an ambiguous failed post returns spent when fresh live comments contain the marker'
+assert_contains "$recovery_out" 'fresh live comments contain the receipt marker' \
+    'ambiguous recovery reports the fresh marker evidence'
+assert_eq '2' "$(grep -c 'repos/owner/repo/issues/24/comments' "$tmp/gh.log")" \
+    'ambiguous recovery fetches live comments after the failed POST'
+
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+recovery_out=$(GH_FAIL_POST=1 GH_RECOVERY_JSON="$not_spent_comments" run_publish \
+    --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+recovery_rc=$?
+assert_eq '1' "$recovery_rc" \
+    'an ambiguous failed post remains blocked when fresh live comments lack the marker'
+assert_contains "$recovery_out" 'fresh live comments contain no receipt marker' \
+    'ambiguous recovery does not treat a cached not-spent artifact as proof'
+
+# -- publish: --require-pushed enforces clean and origin-reachable state ------
+
+push_repo="$tmp/push-repo"
+push_origin="$tmp/push-origin.git"
+git init -q --bare "$push_origin"
+git init -q "$push_repo"
+git -C "$push_repo" config user.email test@example.invalid
+git -C "$push_repo" config user.name test
+git -C "$push_repo" switch -q -c main
+printf '%s\n' base >"$push_repo/file.txt"
+git -C "$push_repo" add file.txt
+git -C "$push_repo" commit -qm base
+git -C "$push_repo" remote add origin "$push_origin"
+git -C "$push_repo" push -q -u origin main
+git -C "$push_repo" fetch -q origin main
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+push_out=$(cd -- "$push_repo" && run_publish --pr 25 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5')
+push_rc=$?
+assert_eq '0' "$push_rc" '--require-pushed permits a clean pushed HEAD'
+assert_contains "$push_out" 'posted id=501' '--require-pushed still uses the verified transport'
+
+printf '%s\n' dirty >"$push_repo/dirty.txt"
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+dirty_out=$(cd -- "$push_repo" && run_publish --pr 26 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+dirty_rc=$?
+assert_eq '12' "$dirty_rc" '--require-pushed refuses a dirty tree'
+assert_contains "$dirty_out" 'worktree is dirty' '--require-pushed names the dirty-tree refusal'
+assert_eq '' "$(cat "$tmp/gh.log")" 'dirty-tree refusal happens before transport'
+rm -f -- "$push_repo/dirty.txt"
+
+git -C "$push_repo" commit --allow-empty -qm unpushed
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+unpushed_out=$(cd -- "$push_repo" && run_publish --pr 27 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+unpushed_rc=$?
+assert_eq '12' "$unpushed_rc" '--require-pushed refuses an unpushed HEAD'
+assert_contains "$unpushed_out" 'not reachable from an origin' \
+    '--require-pushed names the missing origin reachability'
+assert_eq '' "$(cat "$tmp/gh.log")" 'unpushed refusal happens before transport'
+
 # -- publish: usage errors --------------------------------------------------
 
 reset_not_spent
+reset_findings
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode not-a-real-mode --p1 0 --p2 0 --agent-identity x >/dev/null 2>&1
 assert_eq '2' "$?" 'publish rejects an unrecognized --mode value'
 
 reset_not_spent
+printf '%s\n' 'not a JSON record' >"$findings_file"
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
-    --mode cross-provider --p1 0 --p2 0 \
-    --finding 'no pipes here' --agent-identity x >/dev/null 2>&1
-assert_eq '2' "$?" 'publish rejects a malformed --finding value'
+    --mode cross-provider --p1 0 --p2 0 --agent-identity x >/dev/null 2>&1
+assert_eq '1' "$?" 'publish rejects a malformed findings file'
 
 reset_not_spent
+reset_findings
 run_publish --pr 18 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --p1 0 --p2 0 \
     --skip-rationale 'only a rationale, no oracle' --agent-identity x >/dev/null 2>&1
 assert_eq '2' "$?" 'publish rejects --skip-rationale without --oracle'
+
+
+
+# --- the receipt must be bound to a real review ----------------------------
+# An owned, schema-valid ledger proved nothing about whether adversarial-run.sh
+# ever ran, and the P1/P2 split was taken on the caller's word. Either gap lets a
+# receipt attest to a review that did not happen, or misreport what it found.
+
+reset_not_spent
+reset_findings
+jq -cn '{title:"No runner ever ran",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+mv -- "$tmp/adversarial.result.json" "$tmp/adversarial.result.json.hidden"
+missing_result=$(run_publish --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+missing_result_rc=$?
+mv -- "$tmp/adversarial.result.json.hidden" "$tmp/adversarial.result.json"
+assert_eq '1' "$missing_result_rc" 'publish refuses without the runner result beside the ledger'
+assert_contains "$missing_result" 'validated adversarial review result is required' \
+    'the refusal names the missing runner provenance'
+
+reset_not_spent
+reset_findings
+jq -cn '{title:"One P2 finding",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+swapped=$(run_publish --pr 25 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 1 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+swapped_rc=$?
+assert_eq '13' "$swapped_rc" 'publish refuses a severity split the ledger does not support'
+assert_contains "$swapped" 'ledger severities are P1=0 P2=1' \
+    'the refusal names the split the ledger actually holds'
+
+# --- verified skip publishes without a prior adversarial-run.sh call --------
+# (issue #391) A documented skip never runs adversarial-run.sh, so no
+# adversarial.result.json exists yet. publish must write that result artifact
+# itself instead of refusing the whole skip path for a file only the runner it
+# was told it could skip would produce.
+
+skip_dir="$tmp/skip-run"
+mkdir -p "$skip_dir"
+chmod 700 "$skip_dir"
+skip_findings="$skip_dir/findings.ndjson"
+: >"$skip_findings"
+
+fresh_comments() {
+    local path=$1
+    printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$path"
+}
+
+skip_comments="$tmp/skip-not-spent.json"
+fresh_comments "$skip_comments"
+
+: >"$tmp/gh.log"
+skip_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$skip_findings" --pr 401 --repo owner/repo \
+    --comments "$skip_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5')
+skip_rc=$?
+assert_eq '0' "$skip_rc" \
+    'publish succeeds for a verified skip with no prior adversarial-run.sh call'
+assert_contains "$skip_out" 'posted id=501' \
+    'the verified-skip publish surfaces gh-comment.sh'"'"' confirmation'
+assert_eq 'yes' "$([[ -f $skip_dir/adversarial.result.json ]] && printf yes || printf no)" \
+    'publish writes its own result artifact for a verified skip'
+
+skip_result_status=$(jq -r '.status' "$skip_dir/adversarial.result.json")
+assert_eq 'skipped' "$skip_result_status" \
+    'the skip result artifact records status=skipped'
+skip_result_rationale=$(jq -r '.skipRationale' "$skip_dir/adversarial.result.json")
+assert_eq 'comments/formatting only' "$skip_result_rationale" \
+    'the skip result artifact records the skip rationale'
+skip_result_oracle=$(jq -r '.oracle' "$skip_dir/adversarial.result.json")
+assert_eq 'diff --stat parity check' "$skip_result_oracle" \
+    'the skip result artifact records the mechanical oracle'
+
+skip_publish_body=$(jq -r '.body' "$tmp/payload.json")
+assert_contains "$skip_publish_body" "$marker" \
+    'the verified-skip publish body carries the spent marker'
+assert_contains "$skip_publish_body" 'Verified-skip rationale: comments/formatting only' \
+    'the verified-skip publish body records the rationale'
+
+# precheck now reports spent, using the comments artifact record_spend rewrote
+skip_precheck_out=$("$script" precheck --comments "$skip_comments")
+skip_precheck_rc=$?
+assert_eq '0' "$skip_precheck_rc" 'precheck reports spent after a verified-skip publish'
+assert_eq 'spent' "$skip_precheck_out" 'precheck prints spent after a verified-skip publish'
+
+# -- verified skip: an existing matching skip result is accepted idempotently -
+
+skip_comments2="$tmp/skip-not-spent-2.json"
+fresh_comments "$skip_comments2"
+: >"$tmp/gh.log"
+skip_out2=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$skip_findings" --pr 402 --repo owner/repo \
+    --comments "$skip_comments2" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5')
+skip_rc2=$?
+assert_eq '0' "$skip_rc2" \
+    'publish accepts an already-matching verified-skip result idempotently'
+assert_contains "$skip_out2" 'posted id=501' \
+    'the idempotent verified-skip publish reaches the transport'
+
+# -- verified skip: a mismatched existing skip result is refused ------------
+
+skip_comments3="$tmp/skip-not-spent-3.json"
+fresh_comments "$skip_comments3"
+mismatch_skip_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$skip_findings" --pr 403 --repo owner/repo \
+    --comments "$skip_comments3" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'a different rationale' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+mismatch_skip_rc=$?
+assert_eq '1' "$mismatch_skip_rc" \
+    'publish refuses a verified skip whose rationale/oracle does not match the existing result'
+assert_contains "$mismatch_skip_out" 'does not match this verified skip' \
+    'the mismatch refusal names the reason'
+
+# -- verified skip: a real completed result is never overwritten ------------
+
+completed_dir="$tmp/skip-vs-completed"
+mkdir -p "$completed_dir"
+chmod 700 "$completed_dir"
+completed_findings="$completed_dir/findings.ndjson"
+: >"$completed_findings"
+printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}' \
+    >"$completed_dir/adversarial.result.json"
+chmod 600 -- "$completed_dir/adversarial.result.json"
+
+skip_comments4="$tmp/skip-not-spent-4.json"
+fresh_comments "$skip_comments4"
+completed_vs_skip_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$completed_findings" --pr 404 --repo owner/repo \
+    --comments "$skip_comments4" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+completed_vs_skip_rc=$?
+assert_eq '1' "$completed_vs_skip_rc" \
+    'publish refuses to overwrite a real completed result with a verified-skip result'
+assert_contains "$completed_vs_skip_out" 'does not match this verified skip' \
+    'the overwrite refusal names the reason'
+completed_result_status=$(jq -r '.status' "$completed_dir/adversarial.result.json")
+assert_eq 'completed' "$completed_result_status" \
+    'the real completed result is left untouched by the refused skip'
+
+# -- verified skip: a multi-document artifact is never treated as a match ---
+# A bare `jq -e` (no -s) tests every top-level JSON value in the input and
+# bases its exit status on only the LAST one. A file holding a completed
+# runner result as its first document and a matching skipped document second
+# therefore passed the old check even though the artifact also recorded a
+# completed review -- the no-silent-overwrite contract requires exactly one
+# document, matching validate_runner_provenance's own `jq -s -e` shape.
+
+multidoc_dir="$tmp/skip-vs-multidoc"
+mkdir -p "$multidoc_dir"
+chmod 700 "$multidoc_dir"
+multidoc_findings="$multidoc_dir/findings.ndjson"
+: >"$multidoc_findings"
+{
+    printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}'
+    printf '%s\n' '{"status":"skipped","skipRationale":"comments/formatting only","oracle":"diff --stat parity check"}'
+} >"$multidoc_dir/adversarial.result.json"
+chmod 600 -- "$multidoc_dir/adversarial.result.json"
+
+skip_comments5="$tmp/skip-not-spent-5.json"
+fresh_comments "$skip_comments5"
+multidoc_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$multidoc_findings" --pr 405 --repo owner/repo \
+    --comments "$skip_comments5" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
+    --agent-identity 'Claude Opus 5' 2>&1)
+multidoc_rc=$?
+assert_eq '1' "$multidoc_rc" \
+    'publish refuses a verified skip against a multi-document result artifact'
+assert_contains "$multidoc_out" 'does not match this verified skip' \
+    'the multi-document refusal names the reason'
+multidoc_doc_count=$(jq -s 'length' "$multidoc_dir/adversarial.result.json")
+assert_eq '2' "$multidoc_doc_count" \
+    'the multi-document result artifact is left untouched by the refused skip'
 
 finish

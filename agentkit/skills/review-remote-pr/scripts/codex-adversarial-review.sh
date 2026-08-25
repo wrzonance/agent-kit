@@ -58,11 +58,17 @@ readonly REQUIRED_FLAGS=(
 )
 
 MODE=""
+NO_PAYLOAD=0
 CODEX_BIN=${CODEX_EXECUTABLE:-codex}
 CODEX_RESOLVED=""
 MODEL=""
 EFFORT="xhigh"
 DIFF_PATH=""
+BASE_REF=""
+CONSENT_STATE_PATH=""
+CONSENT_PAYLOAD=""
+PR_NUMBER=""
+REPO_SLUG=""
 TRANSCRIPT_PATH=""
 OUTPUT_PATH=""
 # shellcheck disable=SC2034
@@ -91,15 +97,23 @@ Required:
                              review: review the diff at --diff.
   --model <model>            Model for the review (e.g. gpt-5.6-terra).
   --transcript <path>        Where to write the raw JSONL event stream.
-                             Must be a fresh path in an existing 0700 directory;
+                             Must be a fresh path in a private directory;
+                             missing parent directories are created as 0700;
                              created exclusively with mode 0600.
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
+  --repo <owner/name>        Repository the PR belongs to. Bound into the consent
+                             payload so a PR number cannot collide across repos.
+  --pr <number>              PR number used to bind consent to the exact diff.
+  --consent-state <path>     Private consent record. Required in review mode.
 
 Options:
   --codex <path>             codex executable (default: \$CODEX_EXECUTABLE, else
                              the first "codex" on PATH).
+  --no-payload               Required in probe mode. The probe sends only a
+                             synthetic snippet, no PR diff, and never counts
+                             against the one-review-per-PR budget.
   --effort <level>           Reasoning effort, passed as model_reasoning_effort
                              (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval on stderr (default: $POLL_SECONDS).
@@ -115,9 +129,9 @@ Options:
                              directory, chmod 600, then rename). Written on exit 0
                              (the completed verdict) and exit 3 (the blocked
                              object); never created or left behind on exit 1. The
-                             path's directory must already exist, be owned by this
-                             user, non-symlink, and mode 0700 -- the same bar as
-                             the transcript directory above.
+                             path's directory must be owned by this
+                             user, non-symlink, and mode 0700; missing parent
+                             directories are created as 0700.
   -h, --help                 Show this help.
 
 Exit: 0 verdict obtained, 1 usage/invariant failure, 3 environment-blocked.
@@ -173,6 +187,7 @@ parse_args() {
         case $1 in
         --mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
         --mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
+        --no-payload) NO_PAYLOAD=1 && shift ;;
         --codex) require_value "$1" "${2:-}" && CODEX_BIN=$2 && shift 2 ;;
         --codex=*) CODEX_BIN=${1#*=} && shift ;;
         --model) require_value "$1" "${2:-}" && MODEL=$2 && shift 2 ;;
@@ -181,6 +196,16 @@ parse_args() {
         --effort=*) EFFORT=${1#*=} && EFFORT=${EFFORT,,} && shift ;;
         --diff) require_value "$1" "${2:-}" && DIFF_PATH=$2 && shift 2 ;;
         --diff=*) DIFF_PATH=${1#*=} && shift ;;
+        --base-ref) require_value "$1" "${2:-}" && BASE_REF=$2 && shift 2 ;;
+        --base-ref=*) BASE_REF=${1#*=} && shift ;;
+        --repo) require_value "$1" "${2:-}" && REPO_SLUG=$2 && shift 2 ;;
+        --repo=*) REPO_SLUG=${1#*=} && shift ;;
+        --pr) require_value "$1" "${2:-}" && PR_NUMBER=$2 && shift 2 ;;
+        --pr=*) PR_NUMBER=${1#*=} && shift ;;
+        --consent-state|--state) require_value "$1" "${2:-}" && CONSENT_STATE_PATH=$2 && shift 2 ;;
+        --consent-state=*|--state=*) CONSENT_STATE_PATH=${1#*=} && shift ;;
+        --consent-payload) require_value "$1" "${2:-}" && CONSENT_PAYLOAD=$2 && shift 2 ;;
+        --consent-payload=*) CONSENT_PAYLOAD=${1#*=} && shift ;;
         --transcript) require_value "$1" "${2:-}" && TRANSCRIPT_PATH=$2 && shift 2 ;;
         --transcript=*) TRANSCRIPT_PATH=${1#*=} && shift ;;
         --poll-seconds) require_value "$1" "${2:-}" && POLL_SECONDS=$2 && shift 2 ;;
@@ -217,8 +242,45 @@ validate_args() {
     [[ $MAX_TOKENS =~ ^[0-9]+$ ]] || die "--max-tokens must be an integer"
     ((MAX_TOKENS >= 1024 && MAX_TOKENS <= 1000000)) ||
         die "--max-tokens must be 1024-1000000"
-    [[ $MODE == review && -z $DIFF_PATH ]] && die "--diff is required in review mode"
+    if [[ $MODE == probe ]]; then
+        ((NO_PAYLOAD == 1)) ||
+            die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
+        [[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
+            -z $BASE_REF && -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+            die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
+    else
+        ((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
+    fi
+    if [[ $MODE == review ]]; then
+        [[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
+        if [[ -n $BASE_REF ]]; then
+            git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+                die "--base-ref must be a valid branch name"
+        fi
+        [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
+        [[ $REPO_SLUG =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+            die "--repo OWNER/NAME is required in review mode"
+        [[ -n $CONSENT_STATE_PATH ]] || die "--consent-state is required in review mode"
+    fi
     return 0
+}
+
+verify_consent() {
+    local consent_script payload
+    consent_script="$SCRIPT_DIR/consent-record.sh"
+    [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+    local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
+    if [[ -n $BASE_REF ]]; then
+        payload_args+=(--base-ref "$BASE_REF")
+    fi
+    payload=$("$consent_script" "${payload_args[@]}") ||
+        die 'cannot derive consent payload; refusing to launch review'
+    if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
+        die 'supplied consent payload does not match the exact review diff'
+    fi
+    "$consent_script" check --state "$CONSENT_STATE_PATH" --provider openai \
+        --payload "$payload" >/dev/null 2>&1 ||
+        die 'valid cross-provider consent check is required; refusing to launch review'
 }
 
 # Resolve the CLI and prove the isolation flags this harness depends on still
@@ -282,6 +344,9 @@ structured verdict.
 EOF
     if [[ $MODE == probe ]]; then
         cat >>"$target" <<'EOF'
+
+This is a capability probe with no payload. Review only this synthetic snippet;
+there is no PR diff and this probe never counts against the one-review-per-PR budget.
 
 Adversarially review this minimal code and return the required structured verdict:
 
@@ -388,8 +453,10 @@ run_codex() {
     timeout --signal=KILL "$seconds" "$CODEX_RESOLVED" "${args[@]}" \
         <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
+    review_register_pid "$CODEX_PID"
     monitor_token_limit &
     LIMIT_PID=$!
+    review_register_pid "$LIMIT_PID"
     local heartbeat_failed=0
     while kill -0 "$CODEX_PID" 2>/dev/null; do
         if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
@@ -404,9 +471,11 @@ run_codex() {
     if ((heartbeat_failed == 0)); then
         wait "$CODEX_PID" || status=$?
     fi
+    review_forget_pid "$CODEX_PID"
     CODEX_PID=""
     kill "$LIMIT_PID" 2>/dev/null || true
     wait "$LIMIT_PID" 2>/dev/null || true
+    review_forget_pid "$LIMIT_PID"
     LIMIT_PID=""
     [[ $(<"$LIMIT_REASON_FILE") == token-budget ]] && return 125
     ((heartbeat_failed == 1)) && return 125
@@ -476,6 +545,7 @@ token_usage() {
 main() {
     parse_args "$@"
     validate_args
+    [[ $MODE == review ]] && verify_consent
     local started exit_code=0
     started=$(date +%s)
     DEADLINE_EPOCH=$((started + MAX_DURATION_SECONDS))
@@ -504,12 +574,14 @@ main() {
 
     review_poll_progress "$started" &
     POLLER_PID=$!
+    review_register_pid "$POLLER_PID"
 
     run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
         exit_code=$?
 
     kill "$POLLER_PID" 2>/dev/null || true
     wait "$POLLER_PID" 2>/dev/null || true
+    review_forget_pid "$POLLER_PID"
     POLLER_PID=""
 
     if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then

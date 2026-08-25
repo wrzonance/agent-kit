@@ -41,6 +41,15 @@ out=$("$state_sh" --repo-root "$repo" --report)
 assert_contains "$out" 'stage=verified' 'a command plus verify evidence reaches verified'
 assert_contains "$out" 'next=commit' 'verified reports commit as next'
 
+# The blessed local model arms after verification once both declarations are
+# ignored by the repository-local exclude; no tracked onboarding PR is needed.
+local_exclude=$(git -C "$repo" rev-parse --git-path info/exclude)
+[[ $local_exclude == /* ]] || local_exclude=$repo/$local_exclude
+printf '.agent/*\n' >> "$local_exclude"
+out=$($state_sh --repo-root "$repo" --report)
+assert_contains "$out" 'stage=armed' 'ignored local declarations arm after verification'
+assert_contains "$out" 'next=none' 'the local model has no commit step'
+
 printf '.agent/*\n!.agent/config.env\n!.agent/board.json\n' > "$repo/.gitignore"
 git -C "$repo" add -- .agent/config.env .agent/board.json .gitignore
 out=$("$state_sh" --repo-root "$repo" --report)
@@ -124,5 +133,17 @@ assert_contains "$out" 'CI verifier: verify.sh --full' \
     'preflight includes the CI verifier before command proposals'
 assert_contains "$out" 'CI entry point/defaults: inspect verify.sh --help' \
     'preflight requires entry-point defaults to be confirmed'
+
+# The report carries the one-line drift summary so a caller does not need a
+# second probe to discover that onboarding facts are stale.
+drift_repo="$tmp/drift"
+mkdir -p "$drift_repo/.agent" "$drift_repo/new"
+git -C "$drift_repo" init -q
+printf '%s\n' '{"scripts":{"test":"jest"}}' > "$drift_repo/new/package.json"
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ONBOARDED_BY=agentkit/0.0.0\n# proposal-component|old|node|package.json\n' > "$drift_repo/.agent/config.env"
+printf '{}\n' > "$drift_repo/.agent/board.json"
+out=$($state_sh --repo-root "$drift_repo" --report)
+assert_contains "$out" 'drift= components=+1/-1 generator=stale' \
+    'report includes the aggregated drift summary'
 
 finish

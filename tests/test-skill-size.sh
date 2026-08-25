@@ -182,7 +182,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows in tokens alone fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 7799 tokens' 'the token ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 8337 tokens' 'the token ratchet names its ceiling'
 
 root=$tmp/ratchet-lines
 mkdir -p "$root/review-remote-pr"
@@ -192,7 +192,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows past its line ceiling fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 518 lines' 'the line ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 513 lines' 'the line ratchet names its ceiling'
 
 root=$tmp/stale
 make_skill "$root" review-remote-pr <<'EOF'
@@ -205,6 +205,26 @@ EOF
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill back under budget fails as a stale entry'
 assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale entry is named'
+
+# The stacked parallel-issues skill is intentionally over the standard budget;
+# keep its measured ratchet explicit so the lint ceiling cannot drift back to
+# the predecessor's 1003-line / 16735-token values.
+root=$tmp/parallel-ratchet
+mkdir -p "$root/parallel-issues"
+{
+    printf -- '---\nname: parallel-issues\ndescription: Use when an allowlisted skill grows past its stacked ceiling.\n---\n'
+    for ((i = 0; i < 1134; i++)); do
+        printf 'body line %04d ' "$i"
+        head -c 80 /dev/zero | tr '\0' x
+        printf '\n'
+    done
+} > "$root/parallel-issues/SKILL.md"
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1133 lines' \
+    'the parallel-issues line ratchet pins the stacked ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 19554 tokens' \
+    'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these
 # do not degrade to a loud zero: a non-numeric field aborts the whole lint with
@@ -219,8 +239,16 @@ with_entry() { # prints the path to a lint copy whose review-remote-pr entry is 
     # fails loudly if the entry is renamed or its shape changes.
     escaped=${replacement//\\/\\\\}
     escaped=${escaped//&/\\&}
-    sed -E "s|\[review-remote-pr\]=\"[^\"]*\"|[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
+    sed -E "s|KNOWN_OVERSIZE\[review-remote-pr\]=\"[^\"]*\"|KNOWN_OVERSIZE[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
     chmod +x "$copy"
+    # The copy sources the shared token estimator relative to its own
+    # directory (lib/token-estimate.sh), matching how a real invocation of
+    # tests/lint-skill-size.sh resolves it -- so a standalone copy needs that
+    # sibling present too, once per $tmp.
+    if [[ ! -e $tmp/lib/token-estimate.sh ]]; then
+        mkdir -p "$tmp/lib"
+        cp "$here/lib/token-estimate.sh" "$tmp/lib/token-estimate.sh"
+    fi
     if cmp -s "$lint" "$copy"; then
         _fail "the '$replacement' fixture actually edits the allowlist" \
             'the KNOWN_OVERSIZE entry format changed; update this substitution'

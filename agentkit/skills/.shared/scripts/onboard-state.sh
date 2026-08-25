@@ -2,7 +2,7 @@
 # Report the next resumable onboarding stage and environment setup facts.
 set -uo pipefail
 PROGRAM=${0##*/}
-usage() { printf 'usage: %s --repo-root DIR (--report | --next | --preflight)\n' "$PROGRAM" >&2; exit 2; }
+usage() { printf 'usage: %s --repo-root DIR (--report | --next | --preflight | --next-steps)\n' "$PROGRAM" >&2; exit 2; }
 die() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; exit 1; }
 repo_root=''; mode=''
 while (($#)); do
@@ -11,6 +11,7 @@ while (($#)); do
         --report) mode=report; shift ;;
         --next) mode=next; shift ;;
         --preflight) mode=preflight; shift ;;
+        --next-steps) mode='next-steps'; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
@@ -35,7 +36,16 @@ else
     else
         tracked=no
         git -C "$repo_root" ls-files --error-unmatch -- .agent/config.env .agent/board.json .gitignore > /dev/null 2>&1 && tracked=yes
-        if [[ $tracked == yes ]]; then
+        locally_ignored=yes
+        for declaration in .agent/config.env .agent/board.json; do
+            git -C "$repo_root" check-ignore --no-index -- "$declaration" > /dev/null 2>&1 || locally_ignored=no
+        done
+        if [[ $tracked == no && $locally_ignored == yes ]]; then
+            # The blessed model keeps declarations per-machine. Once verified,
+            # a local exclude is the completion boundary; no onboarding PR or
+            # tracked artifact is required before the guards can arm.
+            state=armed; next=none
+        elif [[ $tracked == yes ]]; then
             # A feature branch can carry the artifacts before its onboarding
             # PR merges. Arm only when the declared base branch itself carries
             # all three files; missing/ambiguous refs stay conservatively
@@ -65,13 +75,29 @@ else
     fi
 fi
 
+self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+if [[ $mode == next-steps ]]; then
+    agent_run=$self_dir/agent-run.sh
+    preflight=$self_dir/agent-preflight.sh
+    commit_helper=$self_dir/worktree-commit.sh
+    printf 'go-live checklist (repo-root=%s):\n' "$repo_root"
+    printf '1. Open a PR that commits .agent/config.env, .agent/board.json, and .gitignore.\n'
+    printf '   Commit helper: %s\n' "$commit_helper"
+    printf '2. Whether or not that PR has merged, a declared command just runs: %s --cmd <declared name>\n' "$agent_run"
+    printf '3. The environment contract (trusted skills path) is still verified; declared commands run directly, with no input-trust step.\n'
+    printf '   If the contract is missing or untrusted, refresh it with: %s --ensure --worktree %s\n' \
+        "$preflight" "$repo_root"
+    exit 0
+fi
 if [[ $mode == report || $mode == next ]]; then
     printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
+    if [[ $mode == report && -r $config && -x $self_dir/onboard-refresh.sh ]]; then
+        "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --summary 2> /dev/null || true
+    fi
     [[ $mode == next ]] && exit 0
 fi
 [[ $mode == preflight ]] || exit 0
 
-self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 detector=$self_dir/detect-toolchains.sh
 printf 'environment-preflight repo-root=%s\n' "$repo_root"
 ci_gap=$self_dir/ci-gap.sh

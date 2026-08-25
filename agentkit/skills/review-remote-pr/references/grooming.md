@@ -2,9 +2,9 @@
 
 Finishing this PR drains the Ready / In-progress queue. Before handing back, fan out across the Project **Backlog** and propose which issues are vetted enough to promote to **Ready**, so the next pickup (`parallel-issues`, autonomous pull) has a clean queue. This is the *producer* side of the queue those *consume*.
 
-**Propose, never auto-promote.** Backlog → Ready is a vetting decision (`github-projects.md`: Backlog = captured but *not vetted*; Ready = *cleared* for pickup). Surface candidates with rationale; only run the board helper with `--status 'Ready'` after the user confirms.
+**Propose, never auto-promote.** Backlog → Ready is a vetting decision (`github-projects.md`: Backlog = captured but *not vetted*; Ready = *cleared* for pickup). Surface candidates with rationale; only run the board helper with `--status 'Ready'` after the user confirms. The candidate-vetting decision has no helper script — this step is judgment; the retrieval helper only lists candidates and never decides which issue is ready.
 
-**No-op silently** (never fail the PR work over a board move) when there is no GitHub remote, the repo is on no Project board, the board has no Backlog/Ready column, or `gh` lacks `project` scope (`gh auth refresh -s project`).
+**No-op silently** (never fail the PR work over a board move) when there is no GitHub remote, the repo is on no Project board, the board has no Backlog/Ready column, or `gh` lacks Project access. A human OAuth session can refresh `project` with `gh auth refresh -s project`; an unattended fleet session must repair the GitHub App installation's `Projects: write` permission instead of using a human token.
 
 ## Pull the Backlog
 
@@ -13,23 +13,22 @@ List the Backlog column of the board this repo's issues live on:
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-# board-list.sh deliberately reports every item type (draft items, PRs, issues
-# alike) rather than filtering -- see its own comment. A PR/draft row renders
-# indistinguishably from an issue ("#N  title"), so the vetting worklist comes
-# from --json, not the table.
-#
-# Queried ONCE and captured, for two reasons: the previous shape called the same
-# column twice for nothing, and piping straight into jq replaces board-list.sh's
-# exit status with jq's -- so a failed query produced an empty list that read as
-# "no Issue-typed rows" and silently skipped grooming instead of reporting it.
-# Exit 3 is the documented "environment cannot support the query": no-op.
-backlog_rc=0
-backlog_json=$("$agentkit/.shared/scripts/board-list.sh" --status Backlog --json) || backlog_rc=$?
-case "$backlog_rc" in
-    0) printf '%s\n' "$backlog_json" | jq -r '.[] | select(.type == "Issue") | .number' ;;
-    3) printf 'board query unsupported here (no gh, or no board declared); skipping Backlog grooming\n' >&2 ;;
-    *) printf 'board-list.sh failed (exit %s); Backlog grooming not attempted\n' "$backlog_rc" >&2; exit 1 ;;
-esac
+if [[ -z ${REPO_ROOT:-} ]]; then
+    REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+fi
+[[ -n $REPO_ROOT && -d $REPO_ROOT ]] || {
+    printf '%s\n' 'repository root unavailable; skipping Backlog grooming' >&2
+    exit 1
+}
+REPO_ROOT=$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null) || {
+    printf '%s\n' 'repository root is not a Git checkout; skipping Backlog grooming' >&2
+    exit 1
+}
+REPO_ROOT=$(cd -- "$REPO_ROOT" && pwd -P) || exit 1
+# The helper queries Backlog exactly once, filters to Issue-typed rows, and
+# exits cleanly when this environment cannot query a Project. It never calls
+# the board mover: promotion remains an explicit, human-approved action.
+"$agentkit/review-remote-pr/scripts/groom-backlog.sh" --repo-root "$REPO_ROOT"
 ```
 
 It reads the project number and owner from `.agent/board.json`, so there is no separate
@@ -88,7 +87,8 @@ done
 
 A line whose first word is `moved` is the evidence the promotion happened; an already-target line such as
 `no-op: issue #123 already "Ready"` is the terminal redundant no-op evidence. Both exit
-`0`, so never treat the exit status alone as proof.
+`0`, so never treat the exit status alone as proof. The already-target line appears only on
+the slower discovery paths -- the warm path skips the status read, so `moved` covers both cases.
 
 ## Pitfalls
 

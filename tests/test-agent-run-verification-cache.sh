@@ -9,7 +9,6 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 real_run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
-tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -22,7 +21,7 @@ make_repo() {
     git -C "$dir" config user.email test@example.invalid
     mkdir -p "$dir/.agent" "$dir/tools"
     # The command payload stays unchanged while unrelated tree edits exercise
-    # cache invalidation without tripping the command trust gate.
+    # cache invalidation in isolation.
     # shellcheck disable=SC2016  # fixture lines must retain child-shell expansion.
     printf '%s\n' \
         '#!/bin/sh' \
@@ -47,12 +46,9 @@ count() { cat -- "$1" 2>/dev/null || printf '0'; }
 
 repo=$(make_repo)
 counter="$tmp/count"
-trust_root="$tmp/trust"
-(cd "$repo" && AGENT_TRUST_ROOT="$trust_root" \
-    "$tty_approve" y -- "$real_run_sh" --approve --cmd test) > /dev/null 2>&1
 
 run_test() {
-    (cd "$repo" && COUNT_FILE="$counter" AGENT_TRUST_ROOT="$trust_root" \
+    (cd "$repo" && COUNT_FILE="$counter" \
         "$real_run_sh" --cmd test 2>&1)
 }
 
@@ -91,7 +87,7 @@ assert_eq '5' "$(count "$counter")" 'the changed untracked file executes the com
 # evidence, so a cache hit cannot hide the failure.
 touch "$repo/failure-state.txt"
 rc=0
-out=$(cd "$repo" && COUNT_FILE="$counter" RESULT=1 AGENT_TRUST_ROOT="$trust_root" \
+out=$(cd "$repo" && COUNT_FILE="$counter" RESULT=1 \
     "$real_run_sh" --cmd test 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a failing command returns its failure status'
 assert_contains "$out" 'FAIL(rc=1)' 'a failing command reports failure'
@@ -101,32 +97,11 @@ out=$(run_test)
 assert_contains "$out" 'PASS: tools/run' 'a run after failure is not served by a stale cache entry'
 assert_eq '7' "$(count "$counter")" 'a failing run is never cached'
 
-out=$(cd "$repo" && COUNT_FILE="$counter" AGENT_TRUST_ROOT="$trust_root" \
+out=$(cd "$repo" && COUNT_FILE="$counter" \
     "$real_run_sh" --force --cmd test 2>&1)
 assert_contains "$out" 'PASS: tools/run' '--force executes instead of short-circuiting'
 assert_not_contains "$out" 'verification current:' '--force does not report a cache hit'
 assert_eq '8' "$(count "$counter")" '--force executes the command'
-
-# Seed a would-be hit for the changed declaration, then prove the command trust
-# gate still refuses before it can inspect or use that cache entry.
-printf 'AGENT_CMD_TEST=sh -c true\n' > "$repo/.agent/config.env"
-tree_hash=$(
-    {
-        git -C "$repo" rev-parse HEAD
-        git -C "$repo" diff HEAD
-        git -C "$repo" status --porcelain=v2
-    } | sha256sum | awk '{print $1}'
-)
-log=$(find "$repo/.agent/logs" -name '*-test.log' -type f | sort | tail -1)
-printf '%s cmd=test log=%s at=2026-01-01T00:00:00Z\n' "$tree_hash" "$log" \
-    > "$repo/.agent/verification-cache"
-rc=0
-out=$(cd "$repo" && COUNT_FILE="$counter" AGENT_TRUST_ROOT="$trust_root" \
-    "$real_run_sh" --cmd test 2>&1) || rc=$?
-assert_eq '1' "$rc" 'the trust gate still refuses a changed declaration'
-assert_contains "$out" 'refusing unapproved repository command' 'trust refusal is reported before cache lookup'
-assert_not_contains "$out" 'verification current:' 'a would-be hit cannot bypass the trust gate'
-assert_eq '8' "$(count "$counter")" 'trust refusal never executes the command'
 
 # --- execution directory scopes cache evidence -----------------------------
 scope_repo=$(make_repo)
@@ -139,18 +114,10 @@ mv -- "$scope_repo/two/tools-run" "$scope_repo/two/tools/run"
 git -C "$scope_repo" add -- one two
 git -C "$scope_repo" commit -qm 'add scoped command payloads'
 scope_counter="$tmp/scope-count"
-scope_trust_one="$tmp/scope-trust-one"
-scope_trust_two="$tmp/scope-trust-two"
-(cd "$scope_repo" && AGENT_TRUST_ROOT="$scope_trust_one" \
-    "$tty_approve" y -- "$real_run_sh" --dir "$scope_repo/one" --approve --cmd test) > /dev/null 2>&1
-(cd "$scope_repo" && AGENT_TRUST_ROOT="$scope_trust_two" \
-    "$tty_approve" y -- "$real_run_sh" --dir "$scope_repo/two" --approve --cmd test) > /dev/null 2>&1
 
 run_scoped_test() {
     local run_dir=$1
-    local trust_root="$scope_trust_one"
-    [[ $run_dir == "$scope_repo/two" ]] && trust_root="$scope_trust_two"
-    (cd "$scope_repo" && COUNT_FILE="$scope_counter" AGENT_TRUST_ROOT="$trust_root" \
+    (cd "$scope_repo" && COUNT_FILE="$scope_counter" \
         "$real_run_sh" --dir "$run_dir" --cmd test 2>&1)
 }
 
@@ -170,12 +137,9 @@ printf 'AGENT_CMD_BUILD=tools/run\n' > "$build_repo/.agent/config.env"
 git -C "$build_repo" add -- .agent/config.env
 git -C "$build_repo" commit -qm 'declare build command'
 build_counter="$tmp/build-count"
-build_trust="$tmp/build-trust"
-(cd "$build_repo" && AGENT_TRUST_ROOT="$build_trust" \
-    "$tty_approve" y -- "$real_run_sh" --approve --cmd build) > /dev/null 2>&1
 
 run_build() {
-    (cd "$build_repo" && COUNT_FILE="$build_counter" AGENT_TRUST_ROOT="$build_trust" \
+    (cd "$build_repo" && COUNT_FILE="$build_counter" \
         "$real_run_sh" --cmd build 2>&1)
 }
 
@@ -200,40 +164,61 @@ printf 'AGENT_CMD_TEST=tools/run\nAGENT_CMD_TEST_FOCUS=tools/run %%s\n' \
 git -C "$focus_repo" add -- .agent/config.env
 git -C "$focus_repo" commit -qm 'declare focused test command'
 focus_counter="$tmp/focus-count"
-focus_trust="$tmp/focus-trust"
-approve_focus() { # $1 = --only value, or empty for the unfocused command
-    if [[ -n $1 ]]; then
-        (cd "$focus_repo" && AGENT_TRUST_ROOT="$focus_trust" \
-            "$tty_approve" y -- "$real_run_sh" --approve --cmd test --only "$1") > /dev/null 2>&1
-    else
-        (cd "$focus_repo" && AGENT_TRUST_ROOT="$focus_trust" \
-            "$tty_approve" y -- "$real_run_sh" --approve --cmd test) > /dev/null 2>&1
-    fi
-}
 run_focus() { # $1 = --only value, or empty
     if [[ -n $1 ]]; then
-        (cd "$focus_repo" && COUNT_FILE="$focus_counter" AGENT_TRUST_ROOT="$focus_trust" \
+        (cd "$focus_repo" && COUNT_FILE="$focus_counter" \
             "$real_run_sh" --cmd test --only "$1" 2>&1)
     else
-        (cd "$focus_repo" && COUNT_FILE="$focus_counter" AGENT_TRUST_ROOT="$focus_trust" \
+        (cd "$focus_repo" && COUNT_FILE="$focus_counter" \
             "$real_run_sh" --cmd test 2>&1)
     fi
 }
 
-approve_focus ALPHA
 out=$(run_focus ALPHA)
 assert_not_contains "$out" 'verification current:' 'the first focused run executes'
 out=$(run_focus ALPHA)
 assert_contains "$out" 'verification current:' 'the same selector on unchanged bytes hits the cache'
 
-approve_focus BETA
 out=$(run_focus BETA)
 assert_not_contains "$out" 'verification current:' \
     'a different selector does not reuse the first selector evidence'
 
-approve_focus ''
 out=$(run_focus '')
 assert_not_contains "$out" 'verification current:' \
     'the unfocused full run does not reuse focused evidence'
+
+# --- a gitignored declaration change invalidates cached evidence -----------
+# .agent/config.env is conventionally gitignored, so editing the value of a
+# declared command changes NOTHING that compute_tree_hash currently observes
+# (HEAD, tracked diff, and non-ignored untracked files): the resolved command
+# itself was never part of the cache key. That let a prior green entry for
+# "AGENT_CMD_TEST=true" be served back after the declaration changed to
+# "AGENT_CMD_TEST=false" -- a false green. Regression for issue #287.
+ignored_repo=$(mktemp -d "$tmp/repo-ignored.XXXXXX")
+git -C "$ignored_repo" init -q -b main
+git -C "$ignored_repo" config user.name test
+git -C "$ignored_repo" config user.email test@example.invalid
+mkdir -p "$ignored_repo/.agent"
+printf '.agent/\n' > "$ignored_repo/.gitignore"
+printf 'base\n' > "$ignored_repo/tracked.txt"
+git -C "$ignored_repo" add -- .gitignore tracked.txt
+git -C "$ignored_repo" commit -qm base
+printf 'AGENT_CMD_TEST=true\n' > "$ignored_repo/.agent/config.env"
+ignore_rc=0
+git -C "$ignored_repo" check-ignore -q -- .agent/config.env || ignore_rc=$?
+assert_eq '0' "$ignore_rc" 'fixture sanity: .agent/config.env is actually gitignored here'
+
+out=$(cd "$ignored_repo" && "$real_run_sh" --cmd test 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'the first run with AGENT_CMD_TEST=true passes'
+assert_contains "$out" 'PASS: true' 'the first run executed the declared true command'
+
+printf 'AGENT_CMD_TEST=false\n' > "$ignored_repo/.agent/config.env"
+out=$(cd "$ignored_repo" && "$real_run_sh" --cmd test 2>&1)
+rc=$?
+assert_not_contains "$out" 'verification current:' \
+    'changing a gitignored declared command value is not served from stale cache'
+assert_eq '1' "$rc" 'the changed declaration actually re-runs and reports the new failure'
+assert_contains "$out" 'FAIL(rc=1)' 'the re-run reports the false command failing'
 
 finish

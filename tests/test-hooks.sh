@@ -11,13 +11,8 @@ source "$here/lib/assert.sh"
 
 hooks="$root/agentkit/hooks"
 skills_root="$root/agentkit/skills"
-# Approval reads a confirmation from the controlling terminal (defense-in-depth,
-# not a human-only gate); the helper supplies that terminal so the end-to-end
-# stamp cases can approve their commands.
-tty_approve="$here/lib/tty-approve"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
-export AGENT_TRUST_ROOT="$tmp/trust"
 
 # The hooks resolve their helpers as <plugin-root>/skills/.shared/scripts/, the
 # layout build-plugin.sh produces. plugin-src/skills is a symlink onto the skill
@@ -73,12 +68,26 @@ assert_hook_output "$out" session-start 'the onboarding notice is schema-valid'
 ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
 assert_contains "$ctx" 'not onboarded' 'an un-onboarded repo is told so'
 assert_contains "$ctx" 'bootstrap-repo.sh' 'and which script to run'
-assert_contains "$ctx" '.agent/config.env' 'and which files must exist'
-assert_contains "$ctx" '.agent/board.json' 'including the board cache'
-assert_contains "$ctx" 'README' 'and where to read more'
+assert_contains "$ctx" 'ACTION REQUIRED' 'the notice remains an action for the agent'
+assert_contains "$ctx" 'board, triage, and commit guards have no facts to act on and stay inert' \
+    'the notice explains why onboarding is required'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_contains "$ctx" 'agentkit/.shared/scripts/bootstrap-repo.sh' \
     'and it teaches the resolver-relative skills path'
+# Pinned as one substring so the --dry-run inspect step, the write step, and
+# their order all fail together if a later edit drops any of the three.
+# shellcheck disable=SC2016  # $agentkit is the literal text being matched in
+# the emitted curriculum, not a variable to expand here.
+bootstrap_sequence='  "$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run   # inspect
+  "$agentkit/.shared/scripts/bootstrap-repo.sh"             # then write'
+assert_contains "$ctx" "$bootstrap_sequence" \
+    'and keeps the --dry-run inspect step immediately before the write step'
+assert_not_contains "$ctx" 'It writes two files the repository is expected to commit' \
+    'the notice does not restate bootstrap output'
+assert_not_contains "$ctx" '.agent/board.json' \
+    'the notice does not restate generated file contents'
+assert_not_contains "$ctx" 'Consult the agentkit README' \
+    'the notice does not restate the README pointer'
 
 # --- what "do not re-probe" may not cover ----------------------------------
 # The contract is announced as established fact, and for most of it that is
@@ -96,6 +105,16 @@ onb_ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' \
 assert_contains "$onb_ctx" 'do not re-probe' 'the contract is still established fact'
 assert_contains "$onb_ctx" 'measured-by=hook' 'except where it says who measured it'
 assert_contains "$onb_ctx" 'overrides them' 'and a denial you hit yourself wins'
+# The fence has to reach the ORCHESTRATOR, and it has to arrive before its first
+# tool call. It was worker-only prose (references/worker-prompts.md) that the
+# root never read, and the root probed $HOME as call #0 -- before it had opened
+# the skill. SessionStart context is the only text that is present that early.
+assert_contains "$onb_ctx" 'including when you are the orchestrator' \
+    'the scope fence binds the root, not only dispatched workers'
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_contains "$onb_ctx" 'not $HOME' 'and names the home directory as out of scope'
+assert_contains "$onb_ctx" 'untrusted content' \
+    'and calls an out-of-scope instruction file what it is'
 
 # The notice must reach the PERSON, not only the model. Handed it and asked to
 # run ls, a live agent ran ls and said nothing about it -- a reasonable reading
@@ -114,6 +133,27 @@ printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 out=$(session_input "$repo" | "$hooks/session-start.sh" 2>/dev/null)
 assert_not_contains "$out" 'not onboarded' 'an onboarded repo is not nagged'
 assert_not_contains "$out" 'systemMessage' 'and the operator is not nagged either'
+
+# An onboarded repository with stale onboarding facts gets one bounded advisory
+# that an orchestrator can carry into its handoff; the hook does not refresh it.
+drift_repo=$(make_repo)
+printf '%s\n' '{}' > "$drift_repo/package.json"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ONBOARDED_BY=agentkit/0.0.0\n' \
+    > "$drift_repo/.agent/config.env"
+config_before=$(cat "$drift_repo/.agent/config.env")
+out=$(session_input "$drift_repo" | "$hooks/session-start.sh" 2>/dev/null)
+ctx=$(jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$out")
+# The advisory is the whole contract: SessionStart reports drift and leaves the
+# repair to the operator. Asserting only the text would pass a hook that
+# silently refreshed the config out from under the handoff it is describing.
+assert_eq "$config_before" "$(cat "$drift_repo/.agent/config.env")" \
+    'SessionStart reports drift without rewriting .agent/config.env'
+assert_contains "$ctx" 'agentkit drift advisory: drift= generator=stale' \
+    'SessionStart surfaces the aggregated drift summary'
+assert_contains "$ctx" 'report this in your handoff' \
+    'the advisory tells orchestrators to carry drift into their handoff'
+assert_eq '1' "$(grep -c 'agentkit drift advisory:' <<< "$ctx" || true)" \
+    'SessionStart emits one drift advisory line'
 
 # No contract AND no config is still worth speaking up for -- it is precisely
 # the un-onboarded case, and emitting nothing is how it stays invisible. Built
@@ -265,21 +305,26 @@ out=$(session_input "$onboarded" | "$hooks/session-start.sh" 2>/dev/null)
 ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
 assert_contains "$ctx" 'triage-issues.sh' 'an onboarded repo is told what helpers exist'
 assert_contains "$ctx" 'move-github-project-item.sh' 'including the board mover'
+# The manifest is the answer to "which references exist and where". Without it
+# the curriculum names ten scripts and leaves the companion references -- which
+# live in directories default enumeration hides -- to be searched for.
+assert_contains "$ctx" 'references.md' 'and the reference manifest'
 assert_contains "$ctx" 'plugins/cache' 'and how to resolve them'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_not_contains "$ctx" 'not onboarded' 'and is not also told to bootstrap'
 
-# Every helper named must EXIST. A curriculum naming a missing script teaches a
-# broken path -- the same failure the deny messages had after packaging moved
-# the tree. Extracted from the emitted text, not restated here, so this cannot
-# drift from what agents are actually told.
+# Every path named must EXIST -- scripts and the reference manifest alike. A
+# curriculum naming a missing file teaches a broken path -- the same failure
+# the deny messages had after packaging moved the tree. Extracted from the
+# emitted text, not restated here, so this cannot drift from what agents are
+# actually told.
 # shellcheck disable=SC2016  # $agentkit is the literal text being matched in the
 # emitted curriculum, not a variable to expand here.
 while read -r rel; do
     [[ -n $rel ]] || continue
     assert_eq 'yes' "$([[ -e $skills_root/$rel ]] && echo yes || echo no)" \
-        "the curriculum names a helper that exists: $rel"
-done < <(grep -oE '\$agentkit/[^[:space:]]+\.sh' <<< "$ctx" | sed 's|^\$agentkit/||' | sort -u)
+        "the curriculum names a path that exists: $rel"
+done < <(grep -oE '\$agentkit/[^[:space:]]+\.(sh|md)' <<< "$ctx" | sed 's|^\$agentkit/||' | sort -u)
 
 # A worker gets the curriculum too, and the prompt is the separate contract
 # channel that carries the worker's worktree-specific facts.
@@ -396,6 +441,20 @@ pre_input() {
 decision() { jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<< "$1"; }
 pre_context() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
 
+content_input() {
+    jq -nc --arg cwd "$1" --arg content "$2" --arg tool "$3" --arg sid "${4:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:$tool,tool_use_id:"t",transcript_path:null,
+          tool_input:{file_path:"notes.md",command:$content}}'
+}
+
+read_input() {
+    jq -nc --arg cwd "$1" --arg path "$2" --arg sid "${3:-$(fresh_sid)}" \
+        '{cwd:$cwd,hook_event_name:"PreToolUse",model:"m",permission_mode:"default",
+          session_id:$sid,tool_name:"Read",tool_use_id:"t",transcript_path:null,
+          tool_input:{file_path:$path}}'
+}
+
 repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
 printf '{"schemaVersion":1,"project":{"id":"PVT_x","number":7}}\n' > "$repo/.agent/board.json"
@@ -413,21 +472,133 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
 
-# --- PreToolUse: out-of-tree walkers advise, never deny -------------------
+# --- PreToolUse: unresolved instruction reads are answered by the contract --
+unresolved_repo=$(make_repo)
+unresolved_line='instructions= root=AGENTS.md files=AGENTS.md unresolved=instructions/missing.md,instructions/other.md'
+printf '%s\n' "$unresolved_line" > "$unresolved_repo/.agent/env-contract.txt"
+unresolved_sid=$(fresh_sid)
+out=$(pre_input "$unresolved_repo" "sed -n '1,80p' instructions/missing.md" "$unresolved_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a contract-listed unresolved read remains allowed'
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'the unresolved-read advisory names the authoritative contract line'
+out=$(pre_input "$unresolved_repo" 'cat instructions/other.md' "$unresolved_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'the unresolved-read advisory fires once per session'
+
+out=$(read_input "$unresolved_repo" "$unresolved_repo/instructions/missing.md" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a file-path read tool receives the same unresolved-read advisory'
+
+quiet_repo=$(make_repo)
+printf 'instructions= root=none files=none unresolved=none\n' > "$quiet_repo/.agent/env-contract.txt"
+out=$(pre_input "$quiet_repo" 'cat instructions/missing.md' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'unresolved=none adds no advisory output'
+out=$(pre_input "$unresolved_repo" 'cat README.md' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" 'an unrelated read adds no unresolved-path advisory'
+out=$(pre_input "$unresolved_repo" 'grep instructions/missing.md README.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an unresolved path used only as a search pattern is not treated as a read target'
+
+# The library contract itself excludes mutating content tools. PreToolUse
+# currently clears their command channel before calling it, but keeping the
+# exclusion only in the caller lets another caller consume the session claim
+# with patch/body text that merely looks like a read command.
+mutating_input=$(content_input "$unresolved_repo" 'cat instructions/missing.md' Edit)
+mutating_match=$(bash -c '
+    source "$1"
+    guard_unresolved_instruction_read "$2" "$3" "$2" \
+        "cat instructions/missing.md" Edit
+' _ "$hooks/lib/guard-lib.sh" "$unresolved_repo" "$mutating_input" 2>/dev/null)
+assert_eq '' "$mutating_match" \
+    'mutating content tools return before command-shaped body content is inspected'
+
+# Relative read operands resolve from the effective directory of their shell
+# segment, not always from the hook cwd.
+mkdir -p "$unresolved_repo/instructions"
+out=$(pre_input "$unresolved_repo" 'cd instructions && cat missing.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a read after cd matches the root-relative unresolved contract path'
+out=$(pre_input "$unresolved_repo" "cat $unresolved_repo/instructions/missing.md" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'an absolute unresolved read remains matched independently of effective cwd'
+
+# Output redirection destinations are writes, never read operands. A false
+# match must not spend the session claim before the later genuine read.
+redirect_sid=$(fresh_sid)
+out=$(pre_input "$unresolved_repo" 'cat README.md > instructions/missing.md' "$redirect_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an unresolved path used only as a redirection destination stays quiet'
+out=$(pre_input "$unresolved_repo" 'cat instructions/missing.md' "$redirect_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'a redirection false match does not consume the later real-read advisory'
+
+# rg normally consumes a search pattern first, but --files switches every
+# positional operand into a filesystem path.
+out=$(pre_input "$unresolved_repo" 'rg instructions/missing.md README.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'ordinary rg still skips its first positional search pattern'
+out=$(pre_input "$unresolved_repo" 'rg --files instructions/missing.md' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" "$unresolved_line" \
+    'rg --files treats its first positional as a read path'
+
+# --- PreToolUse: out-of-tree walkers advise; a $HOME sweep denies once -----
 scope_repo=$(make_repo)
 mkdir -p "$tmp/contract-cache"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$scope_repo/.agent/config.env"
 printf 'skills= path=%s\ncaches= root=%s\n' "$skills_root" "$tmp/contract-cache" \
     > "$scope_repo/.agent/env-contract.txt"
 scope_sid=$(fresh_sid)
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$scope_sid" |
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md' "$scope_sid" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'an out-of-tree find remains allowed'
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
-    "find \$HOME receives a scope advisory"
+    'a foreign-sibling find receives a scope advisory'
 assert_not_contains "$out" 'permissionDecision":"deny' \
     'the scope advisory never denies'
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" "$(fresh_sid)" |
+
+# A walk rooted at $HOME is the one exception, because the advisory arrives too
+# late to matter: an orchestrator probes its environment before it has read
+# anything, so the lesson lands after the sweep it was meant to prevent. Seen
+# live -- a root agent's FIRST tool call was `rg --files -g AGENTS.md
+# /home/adam`, surfacing ~/Downloads/files/AGENTS.md as a candidate instruction
+# source while the advisory fired and the sweep completed anyway.
+home_sweep_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$home_sweep_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a home-rooted sweep is denied, not merely advised'
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_contains "$out" 'walks $HOME' 'and the denial names what it objects to'
+assert_contains "$out" 'untrusted content' \
+    'and why an AGENTS.md found out there is not instructions'
+# Denied ONCE. A genuine need re-runs the command, exactly like helper-path.
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$home_sweep_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a repeated home-rooted sweep is allowed once the lesson is spent'
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'and falls back to the ordinary scope advisory'
+
+# Reading ONE file under $HOME is a mis-scoped read, not an environment probe,
+# and the distinction is the whole point: denying every path under $HOME would
+# block the plugin cache and harness config the agent legitimately reads. Only
+# non-denial is asserted here -- whether a single sub-$HOME read earns the
+# scope advisory at all is decided by guard_scope_path_allowed and is unchanged
+# by this commit, so pinning it here would pin someone else's behavior.
+for under_home in "sed -n '1,240p' ~/Downloads/files/AGENTS.md" \
+    'cat ~/.codex/config.toml' "rg -n secret \$HOME/notes"; do
+    out=$(pre_input "$scope_repo" "$under_home" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a single file under \$HOME is not a sweep: $under_home"
+done
+out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git reset --hard HEAD~1" "$(fresh_sid)" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a scope advisory never bypasses a hard denial in a compound command'
@@ -435,13 +606,13 @@ assert_eq 'deny' "$(decision "$out")" \
 # A hard denial must not consume an advisory that it prevents from being
 # emitted. The next pure walker in the same session still gets the lesson.
 deferred_scope_sid=$(fresh_sid)
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md && git push --force" \
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md && git reset --hard HEAD~1' \
     "$deferred_scope_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a hard-denied compound still takes denial precedence'
 assert_eq '' "$(pre_context "$out")" \
     'a hard denial emits no advisory context'
-out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$deferred_scope_sid" |
+out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md' "$deferred_scope_sid" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'the deferred scope lesson is emitted by the later pure walker'
@@ -478,21 +649,251 @@ assert_eq '' "$(pre_context "$out")" \
     'portable canonicalization keeps an in-scope nonexistent path quiet'
 
 # Command-derived cd/-C targets must never expand the filesystem allowlist.
+#
+# The derived ancestor is wherever the checkout happens to sit, and on a GitHub
+# runner that is $HOME/work/<repo>/<repo> -- so this target IS $HOME there and
+# the home-sweep denial above pre-empts the advisory. The same pre-emption
+# also fires when the derived ancestor is merely an ANCESTOR of $HOME (e.g. a
+# checkout three directory levels under /home/<user> derives /home itself) --
+# guard_home_sweep_target treats ancestors of $HOME as home sweeps too (see
+# its docstring), on purpose: sweeping /home reaches $HOME on the way past.
+# So mirror that same ancestor-inclusive check here rather than pinning the
+# runner's directory layout with plain equality.
 scope_target_repo=$(cd "$root/../../.." && pwd)
+scope_target_is_home=0
+scope_target_canon=$(cd "$scope_target_repo" && pwd -P)
+scope_home_canon=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P) || scope_home_canon=''
+# Root (/) is an ancestor of every absolute path, $HOME included -- mirror
+# guard_home_sweep_target's own root disjunct here too, or this comparison
+# inherits the same blind spot the guard had (root: cannot self-authorize
+# below pins the guard side; this pins the test oracle side).
+if [[ -n $scope_home_canon ]] &&
+    { [[ $scope_target_canon == "$scope_home_canon" ]] ||
+        [[ $scope_target_canon == / ]] ||
+        [[ $scope_home_canon == "$scope_target_canon"/* ]]; }; then
+    scope_target_is_home=1
+fi
 for bypass in "cd $scope_target_repo && find $scope_target_repo -name AGENTS.md" \
     "git -C $scope_target_repo status && find $scope_target_repo -name AGENTS.md"; do
     out=$(pre_input "$scope_repo" "$bypass" "$(fresh_sid)" |
         "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
-        "command-derived target cannot self-authorize: $bypass"
+    if (( scope_target_is_home )); then
+        # shellcheck disable=SC2016  # $HOME is the literal text being matched
+        assert_contains "$out" 'walks $HOME' \
+            "command-derived target cannot self-authorize (denied as a home sweep): $bypass"
+    else
+        assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+            "command-derived target cannot self-authorize: $bypass"
+    fi
 done
+
+# Root (/) is an ancestor of every absolute path, $HOME included --
+# guard_home_sweep_target's own docstring says "Ancestors of $HOME (/home, /)
+# count too". But its ancestor check was a component-boundary match against
+# "$target"/*, and for target=/ that literally becomes //* -- a doubled
+# leading slash that $HOME (e.g. /home/adam) never matches. So a bare `find /`
+# fell through to the soft "reads outside the workspace" advisory instead of
+# the hard home-sweep denial, silently contradicting the guard's own
+# documented policy. Pin the root case directly, independent of wherever this
+# checkout happens to sit.
+for root_sweep in 'find / -name AGENTS.md' 'cd / && find / -name AGENTS.md'; do
+    out=$(pre_input "$scope_repo" "$root_sweep" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    # shellcheck disable=SC2016  # $HOME is the literal text being matched
+    assert_contains "$out" 'walks $HOME' \
+        "a root sweep is denied as a home sweep, not merely advised: $root_sweep"
+    assert_eq '' "$(pre_context "$out")" \
+        "a root sweep's denial pre-empts the softer advisory: $root_sweep"
+    assert_eq 'deny' "$(decision "$out")" \
+        "a root sweep returns a deny permission decision: $root_sweep"
+done
+
+# --- harness-injected plugin-cache trees are not foreign (issue #335 Case 2) -
+# A SKILL.md the running harness itself loaded into the session at
+# SessionStart (e.g. a companion plugin's skill tree) lives under the
+# harness's own plugins/cache -- reading it is expected, ordinary traffic, not
+# an environment probe of foreign content. Observed live: a read of the
+# harness's OWN injected using-superpowers/SKILL.md was advised as "foreign".
+harness_home=$(mktemp -d "$tmp/harness-home.XXXXXX")
+harness_cache="$harness_home/.claude/plugins/cache/claude-plugins-official/superpowers/1.0.0/skills/using-superpowers"
+mkdir -p "$harness_cache"
+printf 'skill content\n' > "$harness_cache/SKILL.md"
+harness_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cat $harness_cache/SKILL.md" "$harness_sid" |
+    CLAUDE_CONFIG_DIR="$harness_home/.claude" HOME="$harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a read under the harness own plugin-cache skills tree classifies as harness, not foreign'
+assert_eq 'allow' "$(decision "$out")" 'and stays allowed'
+
+# The same claim, but for Codex's harness variable -- guard_harness_plugin_cache_roots
+# resolves CLAUDE_CONFIG_DIR and CODEX_HOME independently since either may be
+# unset while the other harness is the one actually running. Only the Claude
+# path had a fixture; a Codex-only regression here would still pass the suite.
+# RUNNER_TEMP/dev/shm rather than $tmp itself: everything under $tmp is a
+# configured AGENT_FIXTURE_ROOTS fixture, which would classify as `fixture`
+# and mask the harness-classification distinction under test here (same
+# reasoning as the Claude harness-vs-foreign comparison above).
+codex_harness_home=$(mktemp -d "${RUNNER_TEMP:-/dev/shm}/codex-harness-home.XXXXXX")
+codex_harness_cache="$codex_harness_home/.codex/plugins/cache/agentkit-official/agentkit/1.0.0/skills/onboard-repo"
+mkdir -p "$codex_harness_cache"
+printf 'skill content\n' > "$codex_harness_cache/SKILL.md"
+codex_harness_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cat $codex_harness_cache/SKILL.md" "$codex_harness_sid" |
+    env -u CLAUDE_CONFIG_DIR CODEX_HOME="$codex_harness_home/.codex" HOME="$codex_harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a read under the CODEX_HOME plugin-cache skills tree classifies as harness, not foreign'
+assert_eq 'allow' "$(decision "$out")" 'and stays allowed, with no CLAUDE_CONFIG_DIR set'
+rm -rf -- "$codex_harness_home"
+
+# `foreign` is unchanged for genuinely out-of-tree content -- a sibling
+# checkout outside every plugins/cache root is still foreign, not harness.
+# RUNNER_TEMP/dev/shm rather than $tmp itself: everything under $tmp is a
+# configured AGENT_FIXTURE_ROOTS fixture (see the /tmp fixture test above),
+# which would classify as `fixture` and mask the distinction under test here.
+harness_foreign_parent=${RUNNER_TEMP:-/dev/shm}
+harness_sibling=$(mktemp -d "$harness_foreign_parent/hooks-harness-foreign.XXXXXX")
+out=$(pre_input "$scope_repo" "cat $harness_sibling/AGENTS.md" "$(fresh_sid)" |
+    CLAUDE_CONFIG_DIR="$harness_home/.claude" HOME="$harness_home" \
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'classification: foreign' \
+    'a sibling path outside every plugins/cache root still classifies as foreign'
+rm -rf -- "$harness_sibling"
+
+# --- heredoc-body payloads never leak into scope classification (issue #335
+# Case 3) -- guard_out_of_scope_target must classify from the command as the
+# shell would actually PARSE it (segments and quoted-word boundaries), never
+# from raw command TEXT. A heredoc BODY is data destined for a file, never
+# executed; splitting the raw text on `;&|` also broke inside a quoted
+# argument, so a `|` or `;` used as ordinary regex/prose punctuation was
+# mistaken for shell structure.
+heredoc_scope_sid=$(fresh_sid)
+heredoc_scope_cmd="cat <<'EOF' > /tmp/notes.md
+rg --files /some/tree | rg '/(\\.shared|shared)/|spawn|wait|six-step'
+EOF"
+out=$(pre_input "$scope_repo" "$heredoc_scope_cmd" "$heredoc_scope_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a regex fragment with a leading / inside a quoted heredoc body produces no scope advisory'
+
+quoted_string_sid=$(fresh_sid)
+quoted_string_cmd="cat <<'EOF' > /tmp/notes2.md
+See /home/user-sibling/notes for the path-shaped text under discussion.
+EOF"
+out=$(pre_input "$scope_repo" "$quoted_string_cmd" "$quoted_string_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'path-shaped prose inside a quoted heredoc body produces no scope advisory'
+
+inline_script_sid=$(fresh_sid)
+inline_script_cmd="python3 - <<'EOF'
+print(\"/home/user-sibling/data\")
+EOF"
+out=$(pre_input "$scope_repo" "$inline_script_cmd" "$inline_script_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'an absolute path in a python string literal inside a quoted heredoc produces no scope advisory'
+
+# The command TEXT and its parsed argv disagree here: naive text-splitting on
+# `;&|` breaks mid-regex (the second rg's single-quoted `|` looks like a pipe)
+# and produces a fragment ("/(\.shared") that starts with `/`; the shell's
+# actual argv never has that fragment as a standalone word. This is a LIVE
+# command (no heredoc at all), so it demonstrates the argv-vs-text fix
+# directly, not merely heredoc-body stripping.
+argv_disagree_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" \
+    "rg -n 'a;b|c' $scope_repo" "$argv_disagree_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted ; or | inside a live argument is never mistaken for shell structure'
+
+# Confirmation evidence from the dispatching run: a sed address regex, quoted,
+# with embedded whitespace -- `read -r -a` used to split it into several
+# words, one of which ("/^Return) looked like a rooted path fragment.
+sed_address_sid=$(fresh_sid)
+# shellcheck disable=SC2016  # the unexpanded $d is the fixture: a literal sed
+# address suffix, never meant to expand as this test shell's own variable.
+out=$(pre_input "$scope_repo" \
+    'sed -i -e "/^Return the six-step/,$d" README.md' "$sed_address_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted sed address argument with internal whitespace produces no scope advisory'
+
+# grep's -e/--regexp operand is excluded the same way sed's -e is -- a
+# pattern, never a path, regardless of what it looks like.
+grep_e_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "grep -e 'foo bar /baz' README.md" "$grep_e_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(pre_context "$out")" \
+    'a quoted grep -e pattern with internal whitespace produces no scope advisory'
+
+# The whitespace-in-token skip this replaced was itself a real bypass: it is
+# not the presence of whitespace that makes a token safe to skip, it is being
+# the OPERAND of a known expression flag. A quoted path with a space in it is
+# exactly how a real foreign path gets passed on a command line, and it must
+# still be flagged (adversarial review on issue #335, finding F1).
+spacey_path_sid=$(fresh_sid)
+spacey_foreign=${RUNNER_TEMP:-/dev/shm}
+spacey_foreign_dir=$(mktemp -d "$spacey_foreign/hooks-spacey-foreign.XXXXXX")
+spacey_target="$spacey_foreign_dir/foreign repo"
+mkdir -p "$spacey_target"
+out=$(pre_input "$scope_repo" "find \"$spacey_target\" -name AGENTS.md" "$spacey_path_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a quoted foreign path containing a space still receives the scope advisory'
+rm -rf -- "$spacey_foreign_dir"
+
+# guard_command_target_dir is the sibling of guard_out_of_scope_target's own
+# segmenting/tokenizing above, and it used to parse raw command TEXT the same
+# broken way: splitting on `[;&|]` and reading words with `read -r -a`. A
+# quoted `; cd ...` inside data (a printf/echo argument, never executed) was
+# mistaken for a real segment, which moved the directory guard_out_of_scope_target
+# resolves the LATER, genuinely in-workspace target against -- turning an
+# in-tree read into a false foreign-scope advisory (issue #335 review, F1).
+# A REAL, existing foreign directory is used for the quoted fake cd target
+# (rather than a plain path that may not exist on the test host): a
+# nonexistent candidate short-circuits guard_resolve_roots's own directory
+# check before the classification under test ever runs, which would make this
+# assertion pass whether or not the fix is present.
+fake_cd_foreign=${RUNNER_TEMP:-/dev/shm}
+fake_cd_foreign_dir=$(mktemp -d "$fake_cd_foreign/hooks-fake-cd-foreign.XXXXXX")
+for fake_cd_verb in printf echo; do
+    fake_cd_sid=$(fresh_sid)
+    out=$(pre_input "$scope_repo" \
+        "$fake_cd_verb 'x; cd $fake_cd_foreign_dir'; find . -name AGENTS.md" "$fake_cd_sid" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(pre_context "$out")" \
+        "a quoted fake cd inside $fake_cd_verb data does not misdirect a later in-workspace find"
+done
+rm -rf -- "$fake_cd_foreign_dir"
+
+# --- heredoc lexer: both standard terminator/delimiter forms close the
+# heredoc (issue #335 review, F2) ------------------------------------------
+# `guard_gh_command_segments`'s terminator test used to be an exact-match
+# comparison, which two standard heredoc forms defeated -- and in both cases
+# the heredoc never closed, so EVERY later segment (including a genuinely
+# foreign read) was silently dropped instead of classified. That is worse
+# than a false positive: the guard failed open, not merely noisy.
+tabstrip_heredoc_sid=$(fresh_sid)
+tabstrip_heredoc_cmd=$(printf 'cat <<-EOF > /tmp/notes3.md\nbody line\n\tEOF\nfind /home/user-sibling -name AGENTS.md')
+out=$(pre_input "$scope_repo" "$tabstrip_heredoc_cmd" "$tabstrip_heredoc_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a command segment after a tab-indented <<- heredoc terminator is still classified'
+
+quoted_delim_heredoc_sid=$(fresh_sid)
+quoted_delim_heredoc_cmd=$(printf 'cat <<\\EOF > /tmp/notes4.md\nbody line\nEOF\nfind /home/user-sibling -name AGENTS.md')
+out=$(pre_input "$scope_repo" "$quoted_delim_heredoc_cmd" "$quoted_delim_heredoc_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'a command segment after a backslash-quoted <<\EOF heredoc terminator is still classified'
 
 # --- work-destroying commands are refused, every time ---------------------
 # The one place a hard, repeatable denial is right. Every other rule here lets
 # the command run because a cheaper alternative can be taught afterwards; there
-# is no teach-after-the-fact for a force-push that already landed.
-for danger in 'git push --force origin main' 'git push -f' \
-    'git push --force-with-lease origin feat/x' \
+# is no teach-after-the-fact for uncommitted work discarded by reset --hard.
+for danger in \
     'git reset --hard HEAD~3' 'git clean -fdx' \
     'git branch -D main' 'gh pr merge 42 --squash' \
     'git commit --no-verify -m x' 'rm -rf ~'; do
@@ -508,7 +909,7 @@ done
 # "every time, with no override".
 # shellcheck disable=SC2016  # the UNEXPANDED $HOME is the fixture: the guard
 # matches command text, so expanding it here would test a different string.
-for danger in 'git push origin +main' 'git push origin +refs/heads/main' \
+for danger in \
     'git clean --force -d' 'git branch --delete --force main' \
     'git branch -d -f master' 'rm --recursive --force /' \
     'rm -r -f ~' 'rm -R --force $HOME'; do
@@ -526,17 +927,53 @@ for ok_cmd in 'git push origin main' 'git clean --dry-run' 'git clean -n' \
     assert_eq 'allow' "$(decision "$out")" "still allows: $ok_cmd"
 done
 
+# Force-push is no longer the destructive work this guard blocks: git keeps the
+# prior tip reachable, so it is recoverable the same way an ordinary push is.
+# Confirm every previously-denied spelling is now allowed.
+for allowed in 'git push --force origin main' 'git push -f' \
+    'git push --force-with-lease origin feat/x' \
+    'git push origin +main' 'git push origin +refs/heads/main'; do
+    out=$(pre_input "$repo" "$allowed" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "force-push is no longer refused: $allowed"
+done
+
 # A flag hidden inside a substitution read as ordinary text to every pattern:
-# `git push $(echo --force)` matched nothing. The model refused it on its own
-# judgement, which is not a guard.
-# shellcheck disable=SC2016  # the UNEXPANDED substitution is the fixture: these
+# `git reset $(printf -- --hard) HEAD~1` matched nothing literally. The model
+# refused it on its own judgement, which is not a guard.
+# shellcheck disable=SC2016,SC2041  # the UNEXPANDED substitution is the fixture: these
 # assert what the guard sees, so expanding them would test nothing.
-for hidden in 'git push $(echo --force)' 'git push `echo --force`' \
-    'git reset $(printf -- --hard) HEAD~1'; do
+for hidden in 'git reset $(printf -- --hard) HEAD~1'; do
     out=$(pre_input "$repo" "$hidden" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "sees through the substitution: $hidden"
     assert_contains "$out" 'inside a substitution' 'and says why it could not be read as written'
 done
+
+# Content-bearing tools carry prose, not shell commands. Substitution flattening
+# must not turn a code span mentioning the no-verify flag into a command.
+content='Markdown mentions `--no-ver'
+# shellcheck disable=SC2016 # backticks are literal fixture content.
+content+='ify` and `--for'
+content+='ce` as ordinary prose.'
+for content_tool in Edit Write MultiEdit NotebookEdit apply_patch; do
+    out=$(content_input "$repo" "$content" "$content_tool" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "does not inspect content as a command: $content_tool"
+done
+
+# Shell-looking prose must not become a protected-path write target either.
+protected_content='printf x > .github/workflows/ci'
+protected_content+='.yml'
+out=$(content_input "$repo" "$protected_content" Edit protected-content |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'does not inspect content as a protected shell write'
+
+# The same payload shape remains a real shell command for Bash, including a
+# substitution-hidden destructive flag.
+shell_command='git reset `echo --har'
+shell_command+='d` HEAD~1'
+out=$(content_input "$repo" "$shell_command" Bash | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'still catches substitution-hidden destructive commands'
+assert_contains "$out" 'inside a substitution' 'and preserves the shell-command explanation'
 
 # Substitution is NOT itself suspicious. Flattening leaves a legitimate dynamic
 # value as harmless words, so the ordinary uses survive -- banning them outright
@@ -564,9 +1001,13 @@ for plumbing in 'git update-ref refs/heads/main abc123' \
     assert_eq 'deny' "$(decision "$out")" "refuses plumbing: $plumbing"
 done
 
-# The read-only and no-op forms of the same verbs stay usable.
+# The read-only and no-op forms of the same verbs stay usable. `--get` is a
+# READ of core.hooksPath specifically -- issue #397's false positive #3, where
+# `git config --get core.hooksPath` was refused as if it were setting the
+# hook path that "outlives the session".
 for readonly_form in 'git gc' 'git reflog' 'git symbolic-ref --short HEAD' \
-    'git config user.name' 'git config --get remote.origin.url'; do
+    'git config user.name' 'git config --get remote.origin.url' \
+    'git config --get core.hooksPath'; do
     out=$(pre_input "$repo" "$readonly_form" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "leaves the harmless form: $readonly_form"
 done
@@ -580,11 +1021,507 @@ for safe in 'git push' 'git push origin main' 'git reset HEAD~1' \
     assert_eq 'allow' "$(decision "$out")" "allows the ordinary form: $safe"
 done
 
+# --- issue #397: guards parse argv, not raw command TEXT --------------------
+# Five reported false positives, each costing a root turn because the
+# documented remedy ("make the same call again") only teaches vaguer prose:
+# a heredoc data body that happened to mention a protected path, `gh pr merge`
+# spelled out inside a sed DATA argument, the same phrase inside a printf DATA
+# argument (SpecR's independent report), `git config --get` misread as setting
+# the key it was reading, and a leading `NAME=value` shell-variable assignment
+# misread as a write target (that fifth case is exercised separately below,
+# alongside the contracted-worktree boundary fixtures it needs).
+
+# 1. A heredoc BODY is data. Text inside it that spells a protected path is
+# not editing that path -- only the segment BEFORE the heredoc opens names a
+# real write target (.agent/dispatch-plan.json here, which is not protected).
+issue397_heredoc_cmd=$(printf 'cat > .agent/dispatch-plan.json <<EOF\n{"note": "avoid touching .github/workflows/ files"}\nEOF\n')
+out=$(pre_input "$repo" "$issue397_heredoc_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a protected-path mention inside a heredoc JSON body is not an edit of it (issue #397)'
+
+# 2 & 5. `gh pr merge` spelled out inside a quoted sed/printf DATA argument is
+# one word here (guard_tokenize_words honors the quoting), not three separate
+# command tokens, so the merge guard never matches it.
+for data_string_cmd in \
+    "sed -i 's/foo/note: gh pr merge later/' MEMORY.md" \
+    "printf 'gate-override: ask before gh pr merge --merge\n' >> gate.txt"; do
+    out=$(pre_input "$repo" "$data_string_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a 'gh pr merge' phrase inside quoted data is not the command (issue #397): $data_string_cmd"
+done
+
+# The real verb, unquoted and in command position, remains denied every time.
+out=$(pre_input "$repo" 'gh pr merge 42 --squash' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'gh pr merge as the actual verb remains denied (issue #397)'
+
+# 3. `--get` is a read, never a write, of the exact same key; setting it
+# remains denied.
+out=$(pre_input "$repo" 'git config --get core.hooksPath' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'git config --get core.hooksPath is a read, not a set (issue #397)'
+out=$(pre_input "$repo" 'git config core.hooksPath /tmp/evil' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'setting core.hooksPath remains denied (issue #397)'
+
+# A redirection into a genuinely protected path remains denied too.
+out=$(pre_input "$repo" 'printf x > .github/workflows/x.yml' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a real redirect into .github/workflows/ remains denied (issue #397)'
+
+# --- issue #397 follow-up: a `$(...)`/`...` substitution INSIDE an outer
+# double-quoted argument still executes, and must not hide behind the
+# data-string exemption above. guard_tokenize_words correctly reads the
+# outer double-quoted argument as one WORD (it is one argument to printf/
+# echo), but the shell evaluates the substitution inside it before that
+# outer command ever runs -- so it is not inert data the way a single-quoted
+# argument's contents are, and adversarial review confirmed this was still
+# an allow on this branch.
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) is the fixture: the
+# guard matches command text, so expanding it here would test a different
+# string.
+for hidden_in_dquotes in \
+    'printf "%s\n" "$(git config --local core.hooksPath /tmp/evil)"' \
+    'echo "$(gh pr merge 42 --squash)"'; do
+    out=$(pre_input "$repo" "$hidden_in_dquotes" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a live substitution inside an outer double-quoted argument is not exempt data (issue #397 follow-up): $hidden_in_dquotes"
+    assert_contains "$out" 'substitution' \
+        "and explains the hidden substitution: $hidden_in_dquotes"
+done
+
+# The backtick form was already caught by the existing hidden-flag flattening
+# (it never sits inside an outer double-quoted argument), so it must keep
+# denying unchanged.
+# shellcheck disable=SC2016,SC2006  # the UNEXPANDED backtick substitution is
+# the fixture; the deprecated backtick form is exactly what is under test.
+out=$(pre_input "$repo" 'x=`gh pr merge 42 --squash`' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick-hidden gh pr merge remains denied (issue #397 follow-up)'
+
+# Two more controls, so the new substitution-extraction pass is proven
+# single-quote aware rather than newly over-blocking every `$(` byte in
+# sight. First, a plain DOUBLE-quoted literal with no substitution at all --
+# still exactly the data-string case already proven above.
+# shellcheck disable=SC2016  # same: the literal, unexpanded text is the point.
+out=$(pre_input "$repo" 'printf %s "gh pr merge 42"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted data argument with no substitution is still allowed (issue #397 follow-up)'
+# Second, a genuine `$(...)` spelled inside SINGLE quotes: the shell never
+# expands anything inside single quotes, so this substitution never executes
+# and stays inert data.
+out=$(pre_input "$repo" "sed -i 's/x/\$(gh pr merge 42)/' notes.md" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) in the message is the point.
+assert_eq 'allow' "$(decision "$out")" \
+    'a $(...) spelled inside SINGLE quotes never executes, and stays allowed (issue #397 follow-up)'
+
+# A read-only substitution payload is still just a read once unwrapped.
+# shellcheck disable=SC2016  # the UNEXPANDED $(...) is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+out=$(pre_input "$repo" 'echo "$(git config --get core.hooksPath)"' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a --get read inside a substitution payload is still a read (issue #397 follow-up)'
+
+# --- issue #397 follow-up (adversarial review, PR #414): two more argv-vs-
+# raw-text gaps. F1: guard_strip_git_globals removes every `-c KEY=VALUE`
+# pair before the git-config execution-key check ever saw it, so a SCOPED
+# assignment via `-c` executed the same hook without ever persisting it.
+out=$(pre_input "$repo" 'git -c core.hooksPath=/tmp/evil commit -m x' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'git -c core.hooksPath=... still executes the hook for this one command (issue #397 follow-up F1)'
+out=$(pre_input "$repo" 'git -c user.name=x commit' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'git -c with a harmless key is untouched (issue #397 follow-up F1)'
+# shellcheck disable=SC2016  # the UNEXPANDED text is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+out=$(pre_input "$repo" 'printf '"'"'%s'"'"' "git -c core.hooksPath=/x"' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted data string mentioning -c core.hooksPath= is not the command (issue #397 follow-up F1)'
+
+# F2: the leading-assignment skip in guard_shell_write_targets applied to
+# EVERY token, not just the leading prefix, so `dd`'s `of=` operand vanished
+# along with it and the real write target went unchecked.
+out=$(pre_input "$repo" 'dd if=/dev/zero of=.github/workflows/ci.yml' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    "dd's of= operand is still a write target after the command word (issue #397 follow-up F2)"
+
+# --- issue #404: one merge rule, and the guard names its own exception -----
+# The porcelain refusal used to say only "report the PR is ready instead",
+# leaving no way to tell from the message alone whether an authorized
+# --auto-merge run was expected to hit the same wall. It must now name the
+# sanctioned alternative explicitly, so the guard doc and auto-merge.md state
+# the identical rule: an agent merge goes through merge-pr.sh, bound to a
+# confirmed authorization record and a gate=PASS result, and nowhere else.
+out=$(pre_input "$repo" 'gh pr merge 42 --squash' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'gh pr merge remains denied (issue #404)'
+assert_contains "$out" 'merge-pr.sh' \
+    'the refusal names the sanctioned alternative script (issue #404)'
+assert_contains "$out" 'gate=PASS' \
+    'and the review-completion result that path requires (issue #404)'
+
+# The exact reported evidence: an operator authorization comment that merely
+# mentions the porcelain phrase as prose/data must never trip the guard --
+# same fixture shape as the #397 data-string cases above, specific to this
+# issue's reported false positive (SpecR #667).
+out=$(pre_input "$repo" \
+    'printf "gate-override: operator authorized -- do not run gh pr merge\n" >> gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an authorization comment mentioning the phrase as data is not the command (issue #404)'
+
+# --- issue #404 adversarial follow-up: the porcelain check alone is a P1 ---
+# bypass -- the identical forge action is reachable, unrefused, by typing the
+# REST or GraphQL mutation `gh pr merge` itself sends. None of these three
+# spellings share a `gh pr merge` token sequence, so guard_words_contain_
+# sequence alone let every one of them through.
+for direct_merge in \
+    'gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    'gh api --method PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    'gh api -XPUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json'; do
+    out=$(pre_input "$repo" "$direct_merge" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "the direct REST merge mutation is refused the same as the porcelain verb: $direct_merge"
+    assert_contains "$out" 'merge-pr.sh' \
+        "and names the same sanctioned alternative: $direct_merge"
+done
+
+out=$(pre_input "$repo" \
+    "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the equivalent GraphQL mergePullRequest mutation is refused too (issue #404)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and names the sanctioned alternative for the GraphQL form (issue #404)'
+
+# The neighbours that must still run: a read of the same endpoint, a PUT to a
+# different endpoint, and merge-pr.sh's own subprocess call are none of them
+# the refused shape.
+for still_allowed in \
+    'gh api -X GET repos/owner/repo/pulls/9/merge' \
+    'gh api repos/owner/repo/pulls/9/merge' \
+    'gh api -X PUT repos/owner/repo/pulls/9/requested_reviewers'; do
+    out=$(pre_input "$repo" "$still_allowed" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a non-merge or read-only gh api call is unaffected: $still_allowed"
+done
+
+# A data string mentioning the REST route as prose is not the command,
+# same argument as the porcelain case above.
+out=$(pre_input "$repo" \
+    'printf "note: do not call gh api -X PUT repos/o/r/pulls/9/merge directly\n" >> gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a data string mentioning the REST route as prose is not the command (issue #404)'
+
+# Invoking merge-pr.sh itself -- the sanctioned entry point -- is unaffected
+# by either rule: this command line names a script, not a `gh api`/`gh pr`
+# invocation, regardless of the flags it is given. The hook never sees
+# merge-pr.sh's OWN internal `gh api -X PUT` call at all -- that call runs
+# inside the script's own subprocess, on a command line this hook never
+# inspects -- which is why refusing the agent typing it directly (above) does
+# not also refuse the sanctioned path.
+out=$(pre_input "$repo" \
+    'agentkit/skills/pr-to-green/scripts/merge-pr.sh --repo owner/repo --pr 9 --head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --base main --merge-method squash --authorization-file /tmp/auth.json --gate-result /tmp/gate.txt' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'invoking merge-pr.sh as the sanctioned entry point is never denied (issue #404)'
+
+# --- issue #404 CodeRabbit follow-up (PR #415): the merge-mutation check ---
+# located "gh"/"api" at word[0]/word[1] directly, so a leading NAME=value
+# assignment or execution wrapper before them, or a value-taking flag missing
+# from the skip list, silently carried the bypass past the check with no
+# refusal at all -- a real regression, not a data-string false positive.
+
+# 1. A leading `NAME=value` assignment before `gh` used to slip past the
+# word[0]/word[1] anchor entirely.
+out=$(pre_input "$repo" \
+    'GH_TOKEN=x gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a leading NAME=value assignment before gh api does not bypass the merge check (issue #404 CodeRabbit)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and still names the sanctioned alternative (issue #404 CodeRabbit)'
+
+# 2. Execution wrappers standing between the shell and `gh` -- the same
+# prefix guard_skip_command_prefix already resolves for a heredoc consumer.
+for wrapper_prefix in 'env' 'command' 'exec' 'sudo' 'nice' 'timeout 30' \
+    'time' 'nohup' 'xargs'; do
+    out=$(pre_input "$repo" \
+        "$wrapper_prefix gh api -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json" \
+        | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "an execution wrapper before gh api does not bypass the merge check: $wrapper_prefix (issue #404 CodeRabbit)"
+done
+
+# 3. --cache takes a value; without it in the value-flag set, "1h" was
+# misread as the endpoint positional and the real .../merge endpoint two
+# tokens later was never seen.
+out=$(pre_input "$repo" \
+    'gh api --cache 1h -X PUT repos/owner/repo/pulls/9/merge --input /tmp/merge-body.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    '--cache is skipped as a value-taking flag so the real endpoint is still found (issue #404 CodeRabbit)'
+
+# 4. A GraphQL mutation body supplied via --input (a FILE, not a -f/-F token)
+# is invisible to the token-value scan above; the guard fails closed and
+# inspects the file when it can safely resolve one inside this repository.
+graphql_merge_body="$repo/graphql-body-merge.json"
+printf '{"query": "mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"}' \
+    > "$graphql_merge_body"
+out=$(pre_input "$repo" 'gh api graphql --input graphql-body-merge.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a GraphQL mergePullRequest mutation supplied via --input is read and refused (issue #404 CodeRabbit)'
+assert_contains "$out" 'merge-pr.sh' \
+    'and names the sanctioned alternative for the --input form (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api graphql --input=graphql-body-merge.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the attached --input=PATH form is read the same way (issue #404 CodeRabbit)'
+
+# 5. Fail closed: stdin, a path outside the repository, and a missing file
+# are all refused WITHOUT being able to read their content -- refusing what
+# cannot be verified safe, never assuming it is.
+out=$(pre_input "$repo" 'gh api graphql --input -' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a GraphQL mutation body on stdin cannot be inspected, so it is refused (issue #404 CodeRabbit)'
+
+outside_body="$tmp/graphql-body-outside.json"
+printf '{"query": "query { viewer { login } }"}' > "$outside_body"
+out=$(pre_input "$repo" "gh api graphql --input $outside_body" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a --input path outside the repository is refused even though its content is harmless (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api graphql --input does-not-exist.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a --input path that does not resolve to a real file is refused (issue #404 CodeRabbit)'
+
+# 6. The neighbours that must still run: a clean --input file inside the
+# repository, a plain -f query with no mutation, a leading assignment ahead
+# of an ordinary read, and --cache in front of a read all stay allowed.
+graphql_safe_body="$repo/graphql-body-safe.json"
+printf '{"query": "query { viewer { login } }"}' > "$graphql_safe_body"
+out=$(pre_input "$repo" 'gh api graphql --input graphql-body-safe.json' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a --input file that reads cleanly and does not mention mergePullRequest is allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" \
+    "gh api graphql -f query='query { viewer { login } }'" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a GraphQL query with no mergePullRequest mutation is still allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'GH_REPO=owner/repo gh api -X GET repos/owner/repo/pulls/9' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a leading assignment ahead of an ordinary read is still allowed (issue #404 CodeRabbit)'
+
+out=$(pre_input "$repo" 'gh api --cache 1h -X GET repos/owner/repo/pulls/9' \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    '--cache in front of a read is still allowed (issue #404 CodeRabbit)'
+
+# --- issue #351: a single-file `rm` is not a recursive root delete ---------
+# `rm -f -- "$f"` on a `mktemp` path is one of the most common cleanup idioms
+# there is. No `-r`/`-R` appears anywhere, so it must never be read as one.
+# shellcheck disable=SC2016  # the UNEXPANDED $f is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+for single_file in 'rm -f -- "$f"' 'rm -f /some/single/file' \
+    'rm -f -- /some/single/file'; do
+    out=$(pre_input "$repo" "$single_file" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a single-file rm is not recursive: $single_file"
+done
+
+# The genuinely destructive spellings must still be refused, in every flag
+# arrangement, so the fix above cannot be a blanket loosening of the guard.
+# shellcheck disable=SC2016  # the UNEXPANDED $HOME is the fixture: the guard
+# matches command text, so expanding it here would test a different string.
+for still_dangerous in 'rm -rf ~' 'rm -rf /' 'rm -R --force $HOME' \
+    'rm -r -f ~' 'rm --recursive --force /'; do
+    out=$(pre_input "$repo" "$still_dangerous" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "still refuses the genuinely destructive form: $still_dangerous"
+    assert_contains "$out" 'recursive force-remove' "and names it recursive: $still_dangerous"
+done
+
+# The exact observed regression shape: a multi-line `bash -c` payload whose
+# LAST line is an ordinary temp-file cleanup, with an unrelated `-f` short
+# flag earlier (gh api's own `-f`/`-F` field flags) and a `$(mktemp ...)`
+# substitution feeding the path. None of that may contaminate the verdict on
+# the final `rm` line -- the payload's real side effect (filing the issue)
+# must not be silently dropped because of a line that never ran destructively.
+regression_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md"); chmod 600 "$f"\ngh api repos/OWNER/REPO/issues -f title="x" -F body=@"$f" --jq ".number, .html_url"\nrm -f -- "$f"'
+out=$(pre_input "$repo" "$regression_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'the exact observed payload shape is permitted end to end'
+
+# A heredoc BODY with a QUOTED delimiter, handed to an inert consumer (cat,
+# here, writing to a file), is genuinely data -- it is never expanded and
+# never executed. Documentation prose quoting a destructive example (exactly
+# what this repository's own skill docs and issue bodies do) must not be
+# read as a command to refuse -- and must not drag down an unrelated,
+# harmless `rm` elsewhere in the same payload. This is narrower than "no
+# heredoc BODY is ever a command" -- see the issue #364 fixtures below for
+# the two BODY shapes that DO execute and must still be refused.
+heredoc_payload=$'f=$(mktemp "${TMPDIR:-/tmp}/issue-trailer.XXXXXX.md")\ncat > "$f" <<"BODY"\nNever run `rm -rf ~` or `rm --recursive --force /` on this box.\nBODY\nrm -f -- "$f"'
+out=$(pre_input "$repo" "$heredoc_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a destructive example quoted inside a heredoc BODY is data, not a command'
+
+# A refusal on a multi-line payload must name the offending line, not refuse
+# the payload wholesale -- so the agent can re-issue the rest deliberately.
+named_line_payload=$'echo starting cleanup\nrm -rf ~\necho done'
+out=$(pre_input "$repo" "$named_line_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a genuinely destructive line in a multi-line payload is still refused'
+assert_contains "$out" 'rm -rf ~' 'and the refusal names the offending line'
+
+# A substitution in an unrelated part of the payload must not, by itself,
+# trigger the guard -- flattening is for finding a HIDDEN flag on the SAME
+# command, not for treating every substitution anywhere as suspicious.
+unrelated_sub_payload=$'branch=$(git branch --show-current)\nrm -f -- "$branch.log"'
+out=$(pre_input "$repo" "$unrelated_sub_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a substitution elsewhere in the payload does not by itself trigger the guard'
+
+# --- issue #364: not every heredoc BODY is inert -- two classes still execute
+# An UNQUOTED delimiter means the shell expands `$(...)`/`` ` `` inside the
+# BODY while it builds the heredoc, before `cat` (or anything else) ever
+# reads it. The consumer being inert does not matter; the expansion already
+# ran.
+unquoted_sub_heredoc=$'cat <<EOF\nbefore\n$(rm -rf ~)\nafter\nEOF'
+out=$(pre_input "$repo" "$unquoted_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
+
+# Backticks are the older substitution syntax and expand in an UNQUOTED
+# heredoc exactly like $(...) -- a guard that only extracted the $(...) form
+# would be bypassed by anyone who typed the other one. \140 is the backtick's
+# octal escape, so the fixture never types a literal backtick next to a
+# destructive command in this file.
+backtick_sub_heredoc=$'cat <<EOF\nbefore\n\140rm -rf ~\140\nafter\nEOF'
+out=$(pre_input "$repo" "$backtick_sub_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick command substitution inside an UNQUOTED heredoc BODY still executes and is refused'
+
+# A heredoc handed to a shell interpreter is executed as a script, regardless
+# of delimiter quoting -- quoting only controls expansion inside the body,
+# never whether the interpreter runs what it reads.
+shell_interpreter_heredoc=$'bash <<\047EOF\047\necho hi\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$shell_interpreter_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive line in a heredoc BODY handed to bash is refused even when quoted'
+
+unquoted_shell_heredoc=$'bash <<EOF\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$unquoted_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive line in an unquoted heredoc BODY handed to bash is refused'
+
+# `env FOO=bar bash <<EOF` -- the interpreter is still reached through env's
+# own flags and NAME=value pairs.
+env_shell_heredoc=$'env FOO=bar bash <<EOF\nrm -rf ~\nEOF'
+out=$(pre_input "$repo" "$env_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive body handed to bash via env is still refused'
+
+# A backtick-wrapped destructive command as its own line inside a shell-
+# interpreter heredoc BODY -- verified rather than assumed, because the
+# unquoted-heredoc extraction and the shell-interpreter path are different
+# code paths and one covering backticks does not imply the other does.
+backtick_shell_heredoc=$'bash <<EOF\n\140rm -rf ~\140\nEOF'
+out=$(pre_input "$repo" "$backtick_shell_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a backtick-wrapped destructive line handed to bash is refused'
+
+# A benign substitution inside an unquoted heredoc must still be allowed --
+# this class is about a substitution actually executing something dangerous,
+# not about banning substitution inside heredocs outright.
+unquoted_benign_heredoc=$'cat <<EOF\ncurrent branch: $(git branch --show-current)\nEOF'
+out=$(pre_input "$repo" "$unquoted_benign_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a benign substitution inside an unquoted heredoc BODY is still allowed'
+
+# --- issue #364 review round 2: execution wrappers must not hide the
+# interpreter from guard_heredoc_consumer_is_shell -----------------------
+# The consumer-resolution walk skipped `env`'s own flags/NAME=value pairs to
+# reach the interpreter it execs, but stopped there -- any OTHER wrapper
+# standing in front of the interpreter (sudo, command, nohup, timeout, nice,
+# ionice, stdbuf, doas, setsid, xargs, and -- added for issue #404's
+# CodeRabbit follow-up, once the walk moved into the shared guard_skip_
+# command_prefix helper -- exec, time) made the function report "not a
+# shell", so a QUOTED heredoc body handed to `sudo bash` or `timeout 5 bash`
+# was dropped as inert data and never inspected. Assembled with string
+# concatenation, not typed literally, so this file's own text is never a
+# destructive payload (see the harness note at the top of this suite's PR).
+destructive_body='rm -r''f ~'
+for wrapper in 'sudo bash' 'command bash' 'nohup sh' 'timeout 5 bash' \
+    'sudo -u root bash' 'timeout -s KILL 5 bash' 'nice -n 5 bash' \
+    'ionice -c2 bash' 'stdbuf -oL bash' 'doas bash' 'setsid bash' 'xargs bash' \
+    'exec bash' 'time bash'; do
+    wrapped_heredoc=$(printf "%s <<'EOF'\n%s\nEOF" "$wrapper" "$destructive_body")
+    out=$(pre_input "$repo" "$wrapped_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a destructive body in a quoted heredoc handed to '$wrapper' is refused"
+done
+
+# The fix must not turn every wrapper into a shell by default -- a quoted
+# heredoc to a genuinely inert consumer reached through a wrapper (here,
+# `sudo cat`, merely quoting a destructive example as prose) stays data.
+inert_wrapper_note="Never run ${destructive_body} on this box."
+inert_wrapper_heredoc=$(printf "sudo cat > /tmp/out.txt <<'EOF'\n%s\nEOF" "$inert_wrapper_note")
+out=$(pre_input "$repo" "$inert_wrapper_heredoc" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted heredoc to an inert consumer reached through a wrapper (sudo cat) stays allowed'
+
+# --- issue #364 review round 2: the heredoc-owner segment must be flushed
+# when the heredoc closes, not left to merge with whatever text follows ----
+# guard_destructive_command_segments captures the owner line into $segment at
+# the `<<` opener, but the end-of-line flush is skipped while `heredoc` is
+# set, and the terminator-line branch closes the heredoc without ever
+# flushing that pending segment. The function's CONTRACT is one segment per
+# command; nothing here re-splits on newlines except by accident.
+#
+# A `while read -r` loop over the segmenter's OWN OUTPUT cannot detect this:
+# newline-delimited text is indistinguishable whether it came from one
+# printf call with an embedded newline or two separate calls, so the merge
+# with a FOLLOWING command produces byte-identical stdout either way (proven
+# by direct comparison against the pre-fix code before this test was
+# written). What genuinely differs is when the heredoc is the LAST construct
+# in the payload, with no following command to accidentally carry the
+# pending segment out via its own flush -- there, the unflushed segment is
+# not merged, it is silently DROPPED. Calling the segmenter directly (not
+# through any newline-based re-split) and counting its emitted array is what
+# actually observes the flush.
+segment_flush_owner="rm -r""f ~ <<'EOF'"
+segment_flush_payload=$'rm -rf ~ <<\'EOF\'\nnotes\nEOF'
+mapfile -t segment_flush_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$segment_flush_payload"
+)
+assert_eq '1' "${#segment_flush_segs[@]}" \
+    'the heredoc-owner segment is emitted even when the heredoc is the last construct in the payload'
+assert_eq "$segment_flush_owner" "${segment_flush_segs[0]-}" \
+    'and the emitted segment is exactly the owner line, not merged with or missing the heredoc opener'
+
+# Same shape at the hook level: an owner line that is itself destructive,
+# with nothing after the heredoc closes, must still be refused -- before this
+# fix the unflushed segment was dropped entirely, so guard_destructive_reason
+# saw zero segments and allowed it.
+segment_flush_hook_payload=$(printf "%s <<'EOF'\nnotes\nEOF" "rm -r""f ~")
+out=$(pre_input "$repo" "$segment_flush_hook_payload" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive heredoc-owner line with nothing following the heredoc close is still refused'
+
 # A destructive command is refused on the SECOND attempt too -- the opposite of
 # the once-per-session rule that governs every other denial here.
 same_sid=$(fresh_sid)
 for attempt in 1 2 3; do
-    out=$(pre_input "$repo" 'git push --force' "$same_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    out=$(pre_input "$repo" 'git reset --hard HEAD~1' "$same_sid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "still refused on attempt $attempt"
 done
 
@@ -704,15 +1641,10 @@ for guarded in '.github/workflows/ci.yml' '.githooks/pre-commit' \
 done
 assert_contains "$out" 'fix the check' 'and names the failure mode it exists for'
 
-# --- a commit landing on trunk ---------------------------------------------
-# Found by a virgin-repo onboarding run: the skill said "git add" then "commit",
-# the agent did exactly that, and the onboarding commit landed on main of a
-# repository where everything else arrives by pull request. Nothing objected --
-# the trunk refusal lived in worktree-commit.sh, and the skill had told the
-# agent to use plain git.
-#
-# Deny-once, not always: committing to main is right in plenty of repositories,
-# and a hard refusal would be wrong in all of them.
+# --- a commit landing on trunk is allowed -----------------------------------
+# git is recoverable, so committing straight onto the declared trunk branch is
+# not the destructive work this guard set exists to block. The trunk-commit
+# guard is removed entirely; confirm the ordinary path stays clear.
 trunk_repo=$(make_repo)
 printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_BASE_BRANCH=main\n' \
     > "$trunk_repo/.agent/config.env"
@@ -723,86 +1655,16 @@ git -C "$trunk_repo" checkout -q -b main 2> /dev/null
 git -C "$trunk_repo" -c user.email=t@example.invalid -c user.name=t \
     commit -q --allow-empty -m base 2> /dev/null
 
-tsid=$(fresh_sid)
-out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" 'a commit on the declared trunk is refused'
-assert_contains "$out" 'would land on main' 'and names the branch it would land on'
-assert_contains "$out" 'observed repository root:' 'and labels the observed repository root'
-assert_contains "$out" 'observed HEAD branch: main' 'and labels the observed HEAD'
-assert_contains "$out" 'inferred landing' 'and labels the inferred landing branch'
-assert_contains "$out" 'checkout -b' 'and says what to do instead'
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a commit on the declared trunk branch is allowed'
 
-# A hook receives the session cwd, which can be the main worktree even when the
-# command is executing in a linked feature worktree. With multiple worktrees,
-# the root/HEAD observed from that cwd is not enough evidence to infer where
-# this commit will land, so the guard must stay silent rather than spend its
-# deny-once refusal on the wrong branch. The subshell's real cwd is the linked
-# worktree; only the hook input deliberately carries the stale session cwd.
-linked_main=$(mktemp -d "$tmp/linked-main.XXXXXX")
-linked_feature=$(mktemp -d "$tmp/linked-feature.XXXXXX")
-git -C "$linked_main" init -q -b main
-mkdir -p "$linked_main/.agent/cache"
-printf 'AGENT_BASE_BRANCH=main\n' > "$linked_main/.agent/config.env"
-git -C "$linked_main" -c user.email=t@example.invalid -c user.name=t \
-    commit -q --allow-empty -m base
-git -C "$linked_main" worktree add -q -b feat/linked "$linked_feature"
-out=$(cd "$linked_feature" &&
-    pre_input "$linked_main" 'git commit -m "linked feature"' "linked-worktree" |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
+out=$(pre_input "$trunk_repo" 'git commit -m "onboard again"' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" \
-    'an ambiguous linked-worktree commit is not refused as trunk work'
+    'a second trunk commit is allowed too, since the guard is gone'
 
-# An explicit git -C pins the command to the inspected main worktree, so the
-# same stale session cwd must still receive the true-positive trunk refusal.
-out=$(cd "$linked_feature" &&
-    pre_input "$linked_main" "git -C $linked_main commit -m \"pinned trunk\"" \
-        "linked-worktree-explicit" |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'deny' "$(decision "$out")" \
-    'an explicit git -C trunk commit is refused despite stale cwd ambiguity'
-assert_contains "$out" "$linked_main" \
-    'the explicit git -C refusal names the inspected root'
-assert_contains "$out" 'explicit git -C worktree pin' \
-    'the explicit refusal explains why the landing inference is reliable'
-
-out=$(cd "$linked_feature" &&
-    pre_input "$linked_main" 'git commit -C message-file' \
-        "linked-worktree-message-file" |
-    "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" \
-    'a post-subcommand git -C message-file is not mistaken for a worktree pin'
-
-out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' "$tsid" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'and the retry is allowed -- this is deny-once'
-
-# Off trunk, it has nothing to say.
-git -C "$trunk_repo" checkout -q -b chore/onboard 2> /dev/null
-out=$(pre_input "$trunk_repo" 'git commit -m "onboard"' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'a commit on a feature branch is not refused'
-
-git -C "$trunk_repo" checkout -q main 2> /dev/null
-for benign in 'git commit --dry-run' 'grep -rn "git commit" docs/' \
-    'echo "run git commit next"' 'git log --format=%s'; do
-    out=$(pre_input "$trunk_repo" "$benign" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-    assert_eq 'allow' "$(decision "$out")" "not a commit: $benign"
-done
-
-# `git -C dir commit` is the same commit with the repository named up front --
-# and the branch that matters is the one in DIR, not the one where the agent
-# happens to be standing.
+# `git -C dir commit` is the same commit with the repository named up front.
 out=$(pre_input "$tmp" "git -C $trunk_repo commit -m x" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" \
-    'git -C a temporary fixture does not inherit workspace trunk policy'
-
-# Evidence rule: a repository that never declared a trunk gets no opinion. With
-# no AGENT_BASE_BRANCH and no origin/HEAD there is nothing to compare against,
-# and guessing at "main" would refuse work in every repo that calls it anything
-# else.
-undeclared=$(make_repo)
-printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$undeclared/.agent/config.env"
-git -C "$undeclared" checkout -q -b main 2> /dev/null
-out=$(pre_input "$undeclared" 'git commit -m x' | "$hooks/pre-tool-use.sh" 2>/dev/null)
-assert_eq 'allow' "$(decision "$out")" 'an undeclared trunk is not guessed at'
+assert_eq 'allow' "$(decision "$out")" 'git -C a repository still allows an ordinary commit'
 
 # A shell write reaches the same files the edit-tool guard protects, and it
 # arrives as a Bash call the edit guard cannot see. This was a documented hole:
@@ -941,6 +1803,29 @@ assert_eq 'deny' "$(decision "$out")" 'a repository-declared path is protected t
 out=$(edit_input "$ext" '.github/workflows/ci.yml' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'and declaring paths does not replace the defaults'
 
+# --- absence of .agent/config.env must not fail the guard open (issue #368) --
+# guard_protected_match() used to declare `declared` INSIDE the
+# `-r $root/.agent/config.env` branch but read it after the branch closed.
+# Under `set -uo pipefail` an un-onboarded repository -- one with no
+# .agent/config.env at all -- tripped "unbound variable", the hook's ERR trap
+# fired, and the whole guard silently allowed. Absence of .agent/config.env is
+# the default case, not an error, and must apply the same built-in protected
+# list as an onboarded repository, with the same denial.
+noconf=$(make_repo)
+out_absent=$(edit_input "$noconf" '.github/workflows/ci.yml' "$(fresh_sid)" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out_absent")" \
+    'a protected edit is denied with no .agent/config.env present'
+
+printf 'AGENT_REPO_SLUG=e/e\n' > "$noconf/.agent/config.env"
+out_present=$(edit_input "$noconf" '.github/workflows/ci.yml' "$(fresh_sid)" \
+    | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out_present")" \
+    'the same edit is denied once .agent/config.env exists but declares nothing extra'
+
+assert_eq "$out_absent" "$out_present" \
+    'the denial carries the same reason whether or not .agent/config.env exists'
+
 # The patch format carries its paths inside the payload text, not in a field.
 patch=$(jq -nc --arg cwd "$repo" --arg sid "$(fresh_sid)" \
     '{cwd:$cwd,hook_event_name:"PreToolUse",session_id:$sid,tool_name:"apply_patch",
@@ -980,7 +1865,7 @@ chmod +w "$locked/.agent/cache" 2>/dev/null || true
 # fresh session, since the rule now opens after one denial.
 for bad in 'agent-run.sh --cmd test' '  agent-run.sh' 'cd /tmp; agent-run.sh' \
     'git status && agent-run.sh --cmd verify' 'bash agent-run.sh' \
-    'triage-issues.sh --state open'; do
+    'triage-issues.sh --state open' 'gh-body.sh pr create'; do
     out=$(pre_input "$repo" "$bad" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'deny' "$(decision "$out")" "denies in command position: $bad"
 done
@@ -1121,15 +2006,130 @@ assert_contains "$(ctx_of "$out")" 'body read in a session stays quiet' \
 # --- a hardcoded plugin path ------------------------------------------------
 # Observed live: the resolver came back empty, the call produced no output at
 # all, and the session recovered by pasting the absolute path it had seen --
-# version directory included -- then used it for every later call. It worked,
-# and it keeps working until the version bumps.
+# then used it for every later call. That correction went wrong in its own
+# right: it fired even on a path that was already the contract-resolved tree,
+# and the one observed improvisation swapped the marketplace directory name
+# (agent-kit) for the plugin directory name (agentkit) -- not a version bump
+# (issue #335 Case 1).
 pinned='/home/x/.codex/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh'
 psid2=$(fresh_sid)
 out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
-assert_contains "$(ctx_of "$out")" 'version directory' 'a version-pinned plugin path is corrected'
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' 'a version-pinned plugin path is corrected'
+assert_contains "$(ctx_of "$out")" 'agent-kit' 'and names the marketplace dir'
+assert_contains "$(ctx_of "$out")" 'agentkit' 'and the plugin dir, so the two are not conflated'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 out=$(post_input "$repo" "$pinned" "$psid2" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'and only once per session'
+
+# A path that IS the contract-resolved tree is correct by definition and must
+# never be flagged -- the exact bug this rule exists to prevent: telling a
+# correct agent its correct path is wrong (issue #335 Case 1, acceptance
+# criterion 1). Reading a file one level deeper than the resolved skills=
+# path still matches the same tree, not a different one.
+correct_repo=$(make_repo)
+correct_skills=$(mktemp -d "$tmp/plugins.XXXXXX")
+correct_skills_dir="$correct_skills/plugins/cache/agent-kit/agentkit/0.6.0/skills"
+mkdir -p "$correct_skills_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$correct_skills_dir" "$HARNESS_LINE" \
+    > "$correct_repo/.agent/env-contract.txt"
+correct_sid=$(fresh_sid)
+out=$(post_input "$correct_repo" "$correct_skills_dir/.shared/scripts/board-list.sh" "$correct_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'reading under the contract-resolved skills tree emits no version advisory'
+
+# The session budget above must stay UNSPENT: a genuinely stale version path
+# (a different version segment than the contract resolves) read afterward, in
+# the SAME session, still earns its own lesson (acceptance criterion 2).
+stale_version_path="$correct_skills/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "$stale_version_path" "$correct_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_contains "$ctx" 'Wrong plugin path' \
+    'a genuinely stale version path still emits the advisory after a correct read'
+# The prescribed remedy is never byte-equal to the flagged path (acceptance
+# criterion 3) -- asserted programmatically here, not only by review.
+remedy_line=$(grep -m1 '^  agentkit=' <<< "$ctx" | sed 's/^  agentkit=//')
+assert_eq no "$([[ $remedy_line == "$stale_version_path" ]] && printf yes || printf no)" \
+    'the prescribed remedy is never byte-equal to the flagged path'
+assert_eq "$correct_skills_dir" "$remedy_line" \
+    'the remedy is the contract-resolved tree, not the stale one'
+
+# The correctness check above must be LEXICAL, not a plain string-prefix
+# compare -- a `..` traversal that starts with the resolved tree AS TEXT and
+# then walks back out of it to a genuinely different, stale version segment
+# must still be caught (adversarial review on issue #335, finding F2).
+traversal_sid=$(fresh_sid)
+traversal_path="$correct_skills_dir/../../0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "$traversal_path" "$traversal_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a .. traversal that textually starts with the resolved tree but reaches a stale one still fires'
+
+# $command_line is the WHOLE command, so a raw pattern match cannot tell a path
+# being EXECUTED (above) from one merely QUOTED as data -- a heredoc body
+# writing an issue description, or the value of a gh body flag. Both were
+# observed live tripping the lesson on prose that documented the hazard
+# instead of committing it (issue #299).
+heredoc_sid=$(fresh_sid)
+heredoc_cmd="cat <<'EOF' > /tmp/issue-body.txt
+Evidence: $pinned
+EOF
+gh issue create --body-file /tmp/issue-body.txt"
+out=$(post_input "$repo" "$heredoc_cmd" "$heredoc_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path quoted inside a heredoc body does not trigger the lesson'
+
+bodyflag_sid=$(fresh_sid)
+bodyflag_cmd="gh issue create --title 'Fix hazard' --body \"Evidence: $pinned\""
+out=$(post_input "$repo" "$bodyflag_cmd" "$bodyflag_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path quoted in a --body flag value does not trigger the lesson'
+
+rawfield_sid=$(fresh_sid)
+rawfield_cmd="gh api repos/o/r/issues -f title=x -f body='Evidence: $pinned'"
+out=$(post_input "$repo" "$rawfield_cmd" "$rawfield_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path quoted in an -f body= value does not trigger the lesson'
+
+# The same path quoted as data AND then genuinely executed in one command must
+# still fire the lesson -- guard_strip_heredoc_bodies only drops heredoc BODY
+# lines, never text outside them, so a state-machine bug that swallowed too
+# much here would silently stop the lesson firing while every negative test
+# above stayed green.
+mixed_sid=$(fresh_sid)
+mixed_cmd="cat <<'EOF' > /tmp/b.txt
+Evidence: $pinned
+EOF
+$pinned"
+out=$(post_input "$repo" "$mixed_cmd" "$mixed_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'an executed path still corrects even after the same path was quoted in a heredoc body'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+
+# A double-quoted --body value, or the body of an EXPANDABLE heredoc (<<EOF,
+# unquoted delimiter), is not provably inert: bash executes a $(...) command
+# substitution inside either, so redacting it wholesale would hide a path the
+# shell genuinely resolves (adversarial review, issue #299). Both must still
+# trigger.
+expand_body_sid=$(fresh_sid)
+expand_body_cmd="gh issue create --title x --body \"\$($pinned)\""
+out=$(post_input "$repo" "$expand_body_cmd" "$expand_body_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the assert message below is literal text, not expansion
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a pinned path inside a $(...) substitution in --body still triggers the lesson'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+
+expand_heredoc_sid=$(fresh_sid)
+expand_heredoc_cmd="cat <<EOF
+\$($pinned)
+EOF
+gh issue create --body-file /tmp/x.txt"
+out=$(post_input "$repo" "$expand_heredoc_cmd" "$expand_heredoc_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the assert message below is literal text, not expansion
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a pinned path inside a $(...) substitution in an expandable heredoc still triggers the lesson'
+assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
 
 # The resolver itself contains plugins/cache and must not trip its own rule --
 # an advisory that fires on the correct form teaches that the advice is noise.
@@ -1143,6 +2143,77 @@ assert_eq '' "$(ctx_of "$out")" 'the resolver form is not corrected'
 out=$(post_input "$repo" 'sed -n "s/^skills= path=//p" .agent/env-contract.txt' |
     "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'reading env-contract.txt does not trigger an advisory'
+
+# When the repository's own contract already resolves the skills tree, the
+# lesson hands back the RESOLVED VALUE itself -- an executable remedy, not just
+# a named hazard (issue #224 WS2e). Observed live: a hazard-only lesson made
+# the model hand-delete path segments into a path that did not exist. Following
+# the emitted line verbatim must land on a directory that exists right now.
+resolved_repo=$(make_repo)
+resolved_skills_dir=$(mktemp -d "$tmp/skills.XXXXXX")
+mkdir -p "$resolved_skills_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$resolved_skills_dir" "$HARNESS_LINE" \
+    > "$resolved_repo/.agent/env-contract.txt"
+out=$(post_input "$resolved_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_contains "$ctx" "agentkit=$resolved_skills_dir" \
+    'the version-path lesson carries the contract-resolved skills path'
+assert_contains "$ctx" 'Wrong plugin path' 'the resolved lesson still names the hazard'
+assert_contains "$ctx" 'agent-kit' 'and names the marketplace dir'
+assert_contains "$ctx" 'agentkit' 'and the plugin dir'
+resolved_line=$(grep -m1 '^  agentkit=' <<<"$ctx" | sed 's/^  agentkit=//')
+assert_eq yes "$([[ -d $resolved_line ]] && printf yes || printf no)" \
+    'following the lesson verbatim lands on an existing directory'
+assert_eq no "$([[ $resolved_line == "$pinned" ]] && printf yes || printf no)" \
+    'the prescribed remedy is never byte-equal to the flagged path'
+# The re-derivation snippet is a fallback for when resolution FAILS -- when it
+# already succeeded, inlining it is pure noise. Measured cut: this branch used
+# to be 7 lines including the whole RESOLVE_HINT block; it is now 3.
+assert_not_contains "$ctx" 'contract_root=' \
+    'the full re-derivation snippet is omitted once resolution has already succeeded'
+ctx_line_count=$(printf '%s' "$ctx" | grep -c '^' || true)
+assert_eq yes "$([[ $ctx_line_count -le 4 ]] && printf yes || printf no)" \
+    'the successful-resolution advisory is cut to the resolved-tree line plus a pointer'
+
+# A path that cannot be rendered as a plain shell assignment is not a remedy
+# either -- a space breaks the assignment and metacharacters would inject text
+# into the correction itself (adversarial-review finding, PR #226).
+spacey_repo=$(make_repo)
+spacey_dir="$tmp/spacey skills"
+mkdir -p "$spacey_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$spacey_dir" "$HARNESS_LINE" \
+    > "$spacey_repo/.agent/env-contract.txt"
+out=$(post_input "$spacey_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_not_contains "$ctx" "agentkit=$spacey_dir" \
+    'a path that breaks a shell assignment is never emitted as the remedy'
+assert_contains "$ctx" 'plugins/cache' 'the unquotable case falls back to the resolver'
+
+# A stale contract naming a directory that no longer exists is NOT a remedy;
+# the generic resolver is the fallback.
+stale_repo=$(make_repo)
+printf 'skills= path=%s\n%s\n' "$tmp/gone-after-update" "$HARNESS_LINE" \
+    > "$stale_repo/.agent/env-contract.txt"
+out=$(post_input "$stale_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_not_contains "$ctx" 'gone-after-update' \
+    'a stale contract path is never presented as the remedy'
+assert_contains "$ctx" 'plugins/cache' 'the stale case falls back to the resolver'
+
+# A TRACKED contract arrived with the checkout -- repository-supplied text must
+# not steer what this hook puts in an agent's head.
+tracked_repo=$(make_repo)
+tracked_dir=$(mktemp -d "$tmp/tracked-skills.XXXXXX")
+mkdir -p "$tracked_dir/.shared/scripts"
+printf 'skills= path=%s\n%s\n' "$tracked_dir" "$HARNESS_LINE" \
+    > "$tracked_repo/.agent/env-contract.txt"
+git -C "$tracked_repo" add -f .agent/env-contract.txt
+git -C "$tracked_repo" -c user.name=t -c user.email=t@example.invalid commit -qm 'track contract'
+out=$(post_input "$tracked_repo" "$pinned" | "$hooks/post-tool-use.sh" 2>/dev/null)
+ctx=$(ctx_of "$out")
+assert_not_contains "$ctx" "agentkit=$tracked_dir" \
+    'a tracked contract never supplies the resolved path'
+assert_contains "$ctx" 'plugins/cache' 'the tracked case still teaches the resolver'
 
 # Unrecordable state SPEAKS -- the inverse of the denial rule. A repeated
 # sentence is noise; silence would lose the lesson, and nothing here can block.
@@ -1190,112 +2261,6 @@ printf 'not json' | "$hooks/pre-tool-use.sh" > /dev/null 2>&1 || rc=$?
 assert_eq '0' "$rc" 'PreToolUse survives malformed input'
 out=$(printf 'not json' | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'and allows when it cannot parse'
-
-# --- Stop: declaring a verify command is the opt-in -----------------------
-stop_input() {
-    jq -nc --arg cwd "$1" \
-        '{cwd:$cwd,hook_event_name:"Stop",model:"m",session_id:"s",transcript_path:null}'
-}
-verdict() { jq -r '.decision // "allow"' <<< "$1"; }
-
-# No verify command declared -> never blocks.
-repo=$(make_repo)
-printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
-printf 'dirty\n' > "$repo/untracked.txt"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_hook_output "$out" stop 'Stop emits schema-valid JSON'
-assert_eq 'allow' "$(verdict "$out")" 'no declared verify command means never blocking'
-
-# Declared, changes present, no stamp -> block.
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
-printf 'x\n' > "$repo/changed.txt"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'block' "$(verdict "$out")" 'declared command plus changes plus no stamp blocks'
-assert_contains "$out" '--cmd verify' 'and the reason names the command to run'
-
-# A stamp for a DIFFERENT command does not clear this one: the check asks for
-# verify, so only verify's own stamp answers it. Otherwise a repository could
-# disarm the gate with one line declaring a trivial command under another name.
-touch "$repo/.agent/cache/stamp-lint"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'block' "$(verdict "$out")" "another command's stamp does not clear the verify gate"
-
-# Stamp newer than the change -> allow.
-touch "$repo/.agent/cache/stamp-verify"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'allow' "$(verdict "$out")" 'a stamp newer than every change allows'
-
-# Change newer than the stamp -> block.
-touch -d '1 minute' "$repo/changed.txt" 2>/dev/null || touch "$repo/changed.txt"
-sleep 1; touch "$repo/changed.txt"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'block' "$(verdict "$out")" 'an edit after the stamp blocks again'
-
-# The agent's own working state is not a change. agent-preflight.sh rewrites
-# .agent/env-contract.txt on every session start, so counting .agent/ would
-# invalidate a stamp that had just covered the whole tree.
-#
-# The three mtimes are set explicitly rather than by write order: this
-# filesystem's clock ticks about once a millisecond, so consecutive writes land
-# on the same tick and `-nt` -- which is strictly greater -- would not fire.
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
-printf 'x\n' > "$repo/changed.txt"
-touch -d '20 seconds ago' "$repo/changed.txt"
-touch -d '10 seconds ago' "$repo/.agent/cache/stamp-verify"
-printf 'repo=example-org/example-repo\n%s\n' "$HARNESS_LINE" > "$repo/.agent/env-contract.txt"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'allow' "$(verdict "$out")" '.agent/ churn after the stamp is not a change'
-
-# No changes at all -> allow.
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'allow' "$(verdict "$out")" 'a clean tree allows'
-
-# --- the block terminates ---------------------------------------------------
-# stop_hook_active marks the Stop that follows a block. Only a PASSING run clears
-# the block, so a repository whose declared command genuinely fails could never
-# produce one: without this guard the agent can never end its turn -- the same
-# harm as exiting 2, reached through decision:block.
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=false\n' > "$repo/.agent/config.env"
-printf 'x\n' > "$repo/changed.txt"
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'block' "$(verdict "$out")" 'the first Stop still blocks'
-
-active=$(jq -nc --arg cwd "$repo" \
-    '{cwd:$cwd,hook_event_name:"Stop",model:"m",session_id:"s",transcript_path:null,
-      stop_hook_active:true}')
-out=$(printf '%s' "$active" | "$hooks/stop.sh" 2>/dev/null)
-assert_hook_output "$out" stop 'the re-entered Stop emits schema-valid JSON'
-assert_eq 'allow' "$(verdict "$out")" 'and never blocks twice, so the turn can end'
-
-# --- the stamp attests to the command that was actually run ----------------
-# End to end through the real writer: a declared verify that fails leaves no
-# stamp, and a passing command under another name must not stand in for it.
-run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=false\nAGENT_CMD_LINT=true\n' > "$repo/.agent/config.env"
-printf 'x\n' > "$repo/changed.txt"
-(cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1 || true
-(cd "$repo" && "$tty_approve" y -- "$run_sh" --approve --cmd verify) > /dev/null 2>&1
-(cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1 || true
-(cd "$repo" && "$tty_approve" y -- "$run_sh" --approve --cmd lint) > /dev/null 2>&1
-(cd "$repo" && "$run_sh" --cmd lint) > /dev/null 2>&1
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'block' "$(verdict "$out")" 'a passing lint does not satisfy a failing verify'
-
-printf 'AGENT_CMD_VERIFY=true\nAGENT_CMD_LINT=true\n' > "$repo/.agent/config.env"
-(cd "$repo" && "$tty_approve" y -- "$run_sh" --approve --cmd verify) > /dev/null 2>&1
-(cd "$repo" && "$run_sh" --cmd verify) > /dev/null 2>&1
-out=$(stop_input "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'allow' "$(verdict "$out")" 'and the verify that passes does'
-
-rc=0
-printf 'not json' | "$hooks/stop.sh" > /dev/null 2>&1 || rc=$?
-assert_eq '0' "$rc" 'Stop survives malformed input'
 
 # --- the property that matters most ---------------------------------------
 # A hook that exits non-zero halts the agent instead of informing it, so every
@@ -1372,54 +2337,7 @@ done < <(jq -r '.hooks | to_entries[] | .key as $e | .value[].hooks[] | [$e, .co
 
 # --- regressions from the first full interactive run -----------------------
 # Each of these cost a real agent real turns. None were catchable by a unit test
-# written from the design; all three came from watching one session work.
-
-# Stop's reason must be COPY-PASTEABLE. Saying "resolve $agentkit first" without
-# showing how made the agent guess the plugin root, miss the /skills segment,
-# and burn three commands finding its way.
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
-printf 'x\n' > "$repo/real.txt"
-git -C "$repo" add real.txt
-out=$(printf '{"cwd":"%s","hook_event_name":"Stop","model":"m","session_id":"s","transcript_path":null}' \
-    "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'block' "$(jq -r '.decision // "allow"' <<< "$out")" 'Stop blocks unverified work'
-reason=$(jq -r '.reason' <<< "$out")
-assert_contains "$reason" 'plugins/cache' 'the Stop reason spells the resolver out'
-# shellcheck disable=SC2016  # the needle is the literal text of the resolver the
-# hook must print; expanding it would search for this shell's output instead.
-assert_contains "$reason" 'agentkit=$(find' 'and gives a runnable command, not an allusion'
-assert_contains "$reason" '/skills' 'including the /skills segment the agent guessed wrong'
-
-# A contract may point at a versioned cache, but emitted Stop text must resolve
-# through the contract rather than copying that volatile version directory.
-printf 'skills= path=/tmp/plugins/cache/agentkit/0.1.0/skills\n%s\n' \
-    "$HARNESS_LINE" > "$repo/.agent/env-contract.txt"
-out=$(printf '{"cwd":"%s","hook_event_name":"Stop","model":"m","session_id":"s","transcript_path":null}' \
-    "$repo" | "$hooks/stop.sh" 2>/dev/null)
-reason=$(jq -r '.reason' <<< "$out")
-assert_contains "$reason" 'Exact resolved command:' \
-    'Stop emits a direct contract-resolved remediation'
-assert_not_contains "$reason" 'plugins/cache/agentkit/0.1.0' \
-    'Stop never emits a versioned plugin-cache path'
-assert_contains "$reason" 'agentkit=' \
-    'the remediation resolves the stable entry point'
-assert_contains "$reason" 'sed -n' \
-    'the remediation is a copy-pasteable contract command'
-
-# .agent/ is the agent's own working state. agent-preflight.sh writes
-# env-contract.txt there, so counting it as unverified work made Stop block on
-# every single turn for the whole session.
-repo=$(make_repo)
-printf 'AGENT_CMD_VERIFY=echo ok\n' > "$repo/.agent/config.env"
-printf 'y\n' > "$repo/tracked.txt"
-git -C "$repo" add tracked.txt
-git -C "$repo" -c user.name=t -c user.email=t@t commit -qm base
-printf 'contract\n' > "$repo/.agent/env-contract.txt"
-out=$(printf '{"cwd":"%s","hook_event_name":"Stop","model":"m","session_id":"s","transcript_path":null}' \
-    "$repo" | "$hooks/stop.sh" 2>/dev/null)
-assert_eq 'allow' "$(jq -r '.decision // "allow"' <<< "$out")" \
-    'a change confined to .agent/ never blocks'
+# written from the design; each came from watching one session work.
 
 # A guard library invoked by basename must resolve its sibling library from
 # the current directory and fail loudly if that relative installation is absent.
@@ -1446,5 +2364,283 @@ assert_eq 'deny' "$(decision "$broken_out")" \
     'PreToolUse denies when its shared guard library cannot load'
 assert_contains "$broken_out" 'load status 2' \
     'the missing guard-library denial preserves the failure status'
+
+# --- contracted worktree boundary and write-target evidence -----------------
+boundary_repo="$tmp/boundary-repo"
+boundary_feature="$boundary_repo/.worktrees/feat/worker"
+mkdir -p "$boundary_repo/.agent" "$boundary_repo/src"
+git -C "$boundary_repo" init -q -b main
+printf 'base\n' > "$boundary_repo/src/file.txt"
+git -C "$boundary_repo" add src/file.txt
+git -C "$boundary_repo" -c user.name=t -c user.email=t@example.invalid \
+    commit -qm base
+mkdir -p "$boundary_repo/.worktrees/feat"
+git -C "$boundary_repo" worktree add -q -b feat/worker "$boundary_feature"
+mkdir -p "$boundary_feature/.agent/cache"
+printf 'worktree=%s\n' "$boundary_feature" > "$boundary_feature/.agent/env-contract.txt"
+
+boundary_sid='worktree-boundary-once'
+boundary_out=$(edit_input "$boundary_feature" "$boundary_repo/src/file.txt" "$boundary_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_out")" \
+    'a contracted worker denies a root-checkout edit target'
+assert_contains "$boundary_out" 'outside the contracted worktree' \
+    'the boundary denial explains the escape'
+assert_contains "$boundary_out" "$boundary_feature/src/file.txt" \
+    'the boundary denial supplies the corrected worktree path'
+
+boundary_evidence="$boundary_feature/.agent/evidence/paths-touched.ndjson"
+assert_eq yes "$( [[ -f $boundary_evidence ]] && printf yes || printf no )" \
+    'the hook persists per-tool-call write-target evidence'
+assert_contains "$(<"$boundary_evidence")" "$boundary_repo/src/file.txt" \
+    'evidence retains the attempted root target'
+assert_contains "$(<"$boundary_evidence")" 'Edit' \
+    'evidence identifies the content-bearing tool'
+
+# Deny-once remains recoverable, while a target inside the contracted worktree
+# is ordinary work and does not consume a second boundary refusal.
+boundary_retry=$(edit_input "$boundary_feature" "$boundary_repo/src/file.txt" "$boundary_sid" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_retry")" \
+    'the contracted boundary denial is deny-once'
+boundary_inside=$(edit_input "$boundary_feature" "$boundary_feature/src/file.txt" \
+    'worktree-boundary-inside' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_inside")" \
+    'an edit inside the contracted worktree is allowed'
+
+boundary_shell=$(pre_input "$boundary_feature" \
+    "printf x > $boundary_repo/src/shell-file.txt" 'worktree-boundary-shell' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_shell")" \
+    'the contracted boundary also denies a shell redirect into the root checkout'
+assert_contains "$boundary_shell" "$boundary_feature/src/shell-file.txt" \
+    'shell redirect denial supplies the corrected worktree path'
+
+# A lexical path inside the worker is not safe when a symlink component lands
+# outside it. The boundary resolves the actual target before allowing the edit.
+boundary_outside="$tmp/boundary-outside"
+mkdir -p "$boundary_outside"
+ln -s "$boundary_outside" "$boundary_feature/link"
+boundary_link_out=$(edit_input "$boundary_feature" \
+    "$boundary_feature/link/escape.txt" 'worktree-boundary-symlink' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_link_out")" \
+    'a worker symlink whose target escapes the worktree is denied'
+assert_contains "$boundary_link_out" 'resolves outside the contracted worktree' \
+    'symlink boundary denial explains the resolved escape'
+
+# The alias itself is outside both lexical checkout prefixes, but its resolved
+# target is the main checkout and must receive the same boundary denial.
+boundary_alias="$tmp/boundary-alias"
+ln -s "$boundary_repo" "$boundary_alias"
+boundary_alias_out=$(edit_input "$boundary_feature" \
+    "$boundary_alias/src/file.txt" 'worktree-boundary-external-alias' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_alias_out")" \
+    'an external alias resolving into the root checkout is denied'
+assert_contains "$boundary_alias_out" "$boundary_feature/src/file.txt" \
+    'external-alias denial supplies the contracted worktree correction'
+
+# Git object names are read operands, not paths the command writes. A redirect
+# makes the segment write-shaped, but must not turn a <rev>:<path> or peeled
+# <rev>^{tree} operand into a candidate write target (issue #423).
+revspec_id=0
+for revspec_read in \
+    'git show HEAD:src/file.txt' \
+    'git cat-file blob HEAD:src/file.txt' \
+    'git diff HEAD:.github/workflows/ci.yml' \
+    'git show HEAD^{tree}'; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a Git revspec read is not mistaken for a write target (issue #423): $revspec_read"
+done
+
+# Quoted Git object names may contain spaces in their path component. They are
+# still one read operand, including when a fragment looks like a path whose
+# parent cannot be resolved at the contracted-worktree boundary.
+for quoted_revspec_read in \
+    "git show 'HEAD:src/file with missing-parent/child.txt'" \
+    "git cat-file blob 'HEAD:src/file with missing-parent/child.txt'"; do
+    revspec_id=$((revspec_id + 1))
+    revspec_out=$(pre_input "$boundary_feature" \
+        "$quoted_revspec_read > $boundary_feature/src/revspec-$revspec_id.txt" \
+        "worktree-boundary-quoted-revspec-$revspec_id" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$revspec_out")" \
+        "a quoted-space Git revspec remains one read operand (issue #423 review): $quoted_revspec_read"
+done
+
+# Filtering read operands must not weaken either real write-target check. A
+# protected redirect still refuses, as does an output whose parent cannot be
+# securely resolved inside the contracted worktree.
+mkdir -p "$boundary_feature/.github/workflows"
+revspec_protected_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > .github/workflows/ci.yml' \
+    'worktree-boundary-revspec-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_protected_out")" \
+    'a Git revspec read cannot hide a protected redirect target (issue #423)'
+
+quoted_redirect_out=$(pre_input "$boundary_feature" \
+    'printf x >".github/workflows/ci.yml"' \
+    'worktree-boundary-quoted-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$quoted_redirect_out")" \
+    'a no-space quoted redirect still exposes its protected target (issue #423 review F1)'
+assert_contains "$quoted_redirect_out" 'is under .github/workflows/' \
+    'the quoted redirect is classified as protected instead of merely unresolvable (issue #423 review F1)'
+
+attached_revspec_redirect_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt>.github/workflows/ci.yml' \
+    'worktree-boundary-attached-revspec-redirect' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$attached_revspec_redirect_out")" \
+    'an attached redirect is not discarded with its Git revspec operand (issue #423 review F2)'
+assert_contains "$attached_revspec_redirect_out" 'is under .github/workflows/' \
+    'the attached Git redirect yields its protected destination (issue #423 review F2)'
+
+revspec_unresolved_out=$(pre_input "$boundary_feature" \
+    'git show HEAD:src/file.txt > missing:parent/out.txt' \
+    'worktree-boundary-revspec-unresolved' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$revspec_unresolved_out")" \
+    'a Git revspec read cannot hide an unresolvable redirect target (issue #423)'
+assert_contains "$revspec_unresolved_out" 'could not securely resolve write target' \
+    'the unresolvable redirect still fails closed at the contracted boundary (issue #423)'
+
+# 4. A leading `NAME=value` shell-variable assignment is never a write target.
+# `agentkit=/home/.../skills` tokenized out of the whole command line used to
+# be handed to the worktree-boundary guard as if it were a path, which then
+# failed to resolve the bogus concatenated candidate and denied the call --
+# even though the command's real, unrelated write target sits inside the
+# contracted worktree (issue #397).
+boundary_assignment_out=$(pre_input "$boundary_feature" \
+    "agentkit=/home/user/.claude/plugins/cache/agentkit/skills printf x > $boundary_feature/src/out.txt" \
+    'worktree-boundary-assignment' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$boundary_assignment_out")" \
+    'a leading NAME=value shell assignment is never mistaken for a write target (issue #397)'
+
+# The prefix filter must never drop a REAL target: the same leading
+# assignment in front of a genuinely protected redirect still denies.
+boundary_assignment_protected_out=$(pre_input "$boundary_feature" \
+    'agentkit=/home/user/.claude/plugins/cache/agentkit/skills printf x > .github/workflows/ci.yml' \
+    'worktree-boundary-assignment-protected' | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$boundary_assignment_protected_out")" \
+    'a leading NAME=value assignment never hides a real protected-path write target (issue #397 follow-up)'
+
+# Evidence is security-sensitive state: a symlinked evidence parent is refused
+# before mkdir/chmod/append, so a tool call cannot redirect the ledger outside
+# the worktree.
+evidence_dir="$boundary_feature/.agent/evidence"
+evidence_outside="$tmp/evidence-outside"
+mkdir -p "$evidence_outside"
+rm -f -- "$boundary_evidence"
+rmdir -- "$evidence_dir"
+ln -s "$evidence_outside" "$evidence_dir"
+evidence_symlink_out=$(edit_input "$boundary_feature" \
+    "$boundary_feature/src/evidence.txt" 'worktree-evidence-symlink' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$evidence_symlink_out")" \
+    'an evidence-parent symlink does not change the tool decision'
+assert_eq yes "$( [[ ! -e $evidence_outside/paths-touched.ndjson ]] && printf yes || printf no )" \
+    'a symlinked evidence parent receives no paths-touched record'
+
+# --- regression: guard_resolve_roots must not fail the hook open when a
+# parsed cd/-C candidate directory does not exist (issue #369). Its last
+# statement used to be a bare `[[ -d $candidate ]] && guard_add_root
+# "$candidate"` -- an ordinary "this optional extra root does not exist" is
+# expected, not an error, but that shape made the FUNCTION's own return status
+# track the test's falseness. Both hooks call it as a bare simple command
+# under `trap ... ERR`, so a missing candidate directory tripped the trap and
+# fell straight into allow/emit_empty before any guard had run, silently
+# skipping every downstream check for that command.
+nonexistent_dir_369="$tmp/nonexistent-dir-issue-369"
+
+# Unit-level: the function itself must always return 0, regardless of whether
+# the parsed candidate directory exists.
+guard_rc_369=1
+(
+    source "$hooks/lib/guard-lib.sh"
+    guard_resolve_roots "$repo" "cd $nonexistent_dir_369 && ls"
+) > /dev/null 2>&1
+guard_rc_369=$?
+assert_eq '0' "$guard_rc_369" \
+    'guard_resolve_roots returns 0 when the parsed candidate directory does not exist'
+
+# End-to-end: PreToolUse must still classify and advise on the scope
+# violation instead of failing the hook open. cd into a directory that does
+# not exist, then read a file outside the workspace -- the ERR trap used to
+# fire on the guard_resolve_roots call before this classification ever ran,
+# so the hook emitted a bare {} with no advisory at all.
+guard_log_369="$tmp/guard-log-369"
+mkdir -p "$guard_log_369"
+cd369_sid=$(fresh_sid)
+out=$(pre_input "$scope_repo" "cd $nonexistent_dir_369 && cat /home/user-sibling/notes" \
+    "$cd369_sid" | GUARD_LOG_ROOT="$guard_log_369" "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a cd into a nonexistent directory does not deny the out-of-scope read that follows'
+assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
+    'PreToolUse emits the scope advisory instead of a bare {} for a nonexistent cd target'
+assert_eq yes "$( [[ ! -e $guard_log_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'PreToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
+
+# PostToolUse calls guard_resolve_roots on the same command shape and must
+# stay equally silent about it.
+guard_log_post_369="$tmp/guard-log-post-369"
+mkdir -p "$guard_log_post_369"
+post_out_369=$(post_input "$repo" "cd $nonexistent_dir_369 && ls" "$(fresh_sid)" |
+    GUARD_LOG_ROOT="$guard_log_post_369" "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_hook_output "$post_out_369" post-tool-use \
+    'PostToolUse still emits schema-valid JSON for a nonexistent cd target'
+assert_eq yes "$( [[ ! -e $guard_log_post_369/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'PostToolUse writes no hook-errors.jsonl entry for a nonexistent cd target'
+
+# --- regression: guard_log_error must resolve the repository state root,
+# never $PWD or an otherwise-inherited cwd, and must never leave a stray log
+# nested under a skills tree (issue #370). guard_log_error used to resolve
+# ${GUARD_LOG_ROOT:-$PWD}, and GUARD_LOG_ROOT is assigned nowhere in the
+# repository -- so $PWD, the hook PROCESS's inherited working directory, was
+# the only behaviour. An agent that had cd'd into agentkit/skills/ left a hook
+# process inheriting that directory, and the stray log it wrote there was
+# neither gitignored (root .gitignore's `.agent/*` is anchored to the
+# repository root) nor excluded from the plugin build, which copies the
+# skills tree wholesale.
+repo_370=$(make_repo)
+skills_like_370="$repo_370/agentkit/skills/example-skill"
+mkdir -p "$skills_like_370"
+
+# Unit-level: with roots resolved from a cwd inside a skills-tree-shaped
+# directory -- exactly what guard_resolve_roots does early in each hook --
+# guard_log_error must write to the resolved repository state root, never
+# nested under the skills-tree cwd itself.
+(
+    source "$hooks/lib/guard-lib.sh"
+    # shellcheck disable=SC2034  # read by guard_log_error, sourced from a
+    # dynamic path shellcheck cannot follow
+    GUARD_HOOK_NAME=test-370
+    guard_resolve_roots "$skills_like_370" ''
+    guard_log_error 'unit-370'
+) > /dev/null 2>&1
+
+assert_eq yes "$( [[ ! -e $skills_like_370/.agent ]] && printf yes || printf no )" \
+    'guard_log_error with a cwd inside the skills tree writes no .agent/ there'
+assert_eq yes "$( [[ ! -e $repo_370/agentkit/skills/.agent ]] && printf yes || printf no )" \
+    'nor at the skills tree root'
+assert_eq yes "$( [[ -f $repo_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'the log instead lands at the resolved repository state root'
+assert_contains "$(cat "$repo_370/.agent/logs/hook-errors.jsonl" 2> /dev/null)" 'unit-370' \
+    'and carries the reported status'
+
+# When roots were never resolved at all -- the ERR trap firing before
+# guard_resolve_roots has run -- there is no known location to write to.
+# guard_log_error must write nothing rather than fall back to $PWD, even when
+# $PWD happens to already contain a real .agent/ directory of its own.
+unresolved_370=$(make_repo)
+(
+    cd "$unresolved_370" || exit 1
+    source "$hooks/lib/guard-lib.sh"
+    guard_log_error 'unresolved-370'
+) > /dev/null 2>&1
+# shellcheck disable=SC2016  # $PWD is the literal text being matched, not expanded
+assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
+    'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
 
 finish

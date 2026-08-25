@@ -10,9 +10,25 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 skills="$root/agentkit/skills"
+security_posture="$root/docs/security-posture.md"
 preflight="$skills/.shared/scripts/agent-preflight.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# --- standing security posture contract ------------------------------------
+# This is intentionally structural: the document's prose and evidence links
+# remain reviewable, while deletion or removal of a rationale class fails the
+# repository contract immediately.
+assert_eq 'yes' "$([[ -f $security_posture && ! -L $security_posture ]] && printf yes || printf no)" \
+    'the standing security-posture document exists as a regular file'
+for heading in \
+    '## Autonomy flags are per-invocation operator grants' \
+    '## .agent/config.env is a secrets-free facts file' \
+    '## The command trust gate is defense-in-depth, not a human-only guarantee' \
+    '## Untrusted content is fenced and never shell-expanded'; do
+    heading_count=$(grep -Fxc -- "$heading" "$security_posture" 2>/dev/null || printf '0')
+    assert_eq '1' "$heading_count" "security-posture keeps heading: $heading"
+done
 
 repo="$tmp/repo"
 mkdir -p "$repo"
@@ -47,6 +63,15 @@ for skill in "$skills"/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
     assert_contains "$(<"$skill")" 'skills= path=' \
         "$name documents the contract field"
+    # $agentkit IS the skills tree root -- agent-preflight.sh publishes it as
+    # `skills= path=/abs/skills-tree`. So `$agentkit/skills/...` re-appends the
+    # directory and resolves to .../skills/skills/..., which never exists. The
+    # helpers themselves are covered by their own suites, but those invoke them
+    # by repository path; nothing else exercises the `$agentkit` form the skill
+    # bodies actually instruct agents to use, so a broken snippet reaches the
+    # field instead of the suite. Any occurrence is a defect by definition.
+    assert_not_contains "$(<"$skill")" '$agentkit/skills/' \
+        "$name does not re-append skills/ to the skills tree root"
     if [[ $name == onboard-repo ]]; then
         resolver_count=$(grep -c 'agentkit=\$(find ' "$skill" || true)
         assert_eq '1' "$resolver_count" \
@@ -63,6 +88,27 @@ onboard_text=$(<"$onboard")
 worker_tier_text=$(<"$skills/.shared/schema/config.env.example")
 spawn_contract="$skills/.shared/spawn-contract.md"
 spawn_contract_text=$(<"$spawn_contract")
+worker_gate="$skills/review-remote-pr/references/worker-gate.md"
+worker_gate_text=$(<"$worker_gate")
+parallel_dispatch="$skills/parallel-issues/SKILL.md"
+parallel_dispatch_text=$(<"$parallel_dispatch")
+for dispatch_text_name in spawn_contract parallel_dispatch; do
+    if [[ $dispatch_text_name == spawn_contract ]]; then
+        dispatch_text=$spawn_contract_text
+    else
+        dispatch_text=$parallel_dispatch_text
+    fi
+    assert_contains "$dispatch_text" 'must not implement when a real worker can be dispatched' \
+        "$dispatch_text_name forbids orchestrator-side implementation when spawning is available"
+    assert_contains "$dispatch_text" 'two allowed implementation exceptions' \
+        "$dispatch_text_name names both implementation exceptions"
+    assert_contains "$dispatch_text" 'AGENT_WORKER_MODEL' \
+        "$dispatch_text_name names the resolved worker model declaration"
+    assert_contains "$dispatch_text" 'AGENT_WORKER_EFFORT' \
+        "$dispatch_text_name names the resolved worker effort declaration"
+    assert_contains "$dispatch_text" 'AGENT_WORKER_MODEL_FALLBACK' \
+        "$dispatch_text_name names the resolved worker model fallback declaration"
+done
 assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL' \
     'spawn contract reads the configured worker model key'
 assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL_FALLBACK' \
@@ -106,12 +152,46 @@ assert_contains "$spawn_contract_text" 'Validate both resolved `worker_model` an
     'spawn contract validates preferred and fallback models'
 assert_contains "$spawn_contract_text" 'Any other syntactically safe configured preferred or fallback model' \
     'spawn contract gates every unsupported configured model'
+assert_contains "$spawn_contract_text" '## Bounded inline corrections' \
+    'spawn contract names the bounded inline-correction exception'
+assert_contains "$spawn_contract_text" 'purely mechanical' \
+    'spawn contract limits inline corrections to mechanical changes'
+assert_contains "$spawn_contract_text" 'no new behavior, data shape, or control flow' \
+    'spawn contract excludes behavioral inline corrections'
+assert_contains "$spawn_contract_text" 'at most five changed lines' \
+    'spawn contract bounds inline corrections to five lines'
+assert_contains "$spawn_contract_text" 'root authored the exact diff' \
+    'spawn contract requires root-authored inline diffs'
+assert_contains "$spawn_contract_text" 'full declared verification' \
+    'spawn contract requires verification after inline corrections'
+assert_contains "$spawn_contract_text" 'root harness attribution' \
+    'spawn contract requires root attribution for inline corrections'
+assert_contains "$spawn_contract_text" 'recorded reason' \
+    'spawn contract requires recording why the worker gate was skipped'
+assert_contains "$spawn_contract_text" 'two allowed implementation exceptions' \
+    'spawn contract names the complete implementation exception set'
+assert_contains "$spawn_contract_text" 'spawn unavailable' \
+    'spawn contract names spawn unavailability as an implementation exception'
+assert_contains "$spawn_contract_text" 'qualifying bounded inline correction' \
+    'spawn contract names bounded inline correction as an implementation exception'
+assert_contains "$worker_gate_text" '## Bounded inline corrections' \
+    'worker gate documents the bounded inline-correction exception'
+assert_contains "$worker_gate_text" 'two allowed implementation exceptions' \
+    'worker gate names the complete implementation exception set'
+assert_contains "$worker_gate_text" 'resume the same worker with `collaboration.followup_task` first' \
+    'worker gate prefers resuming the same worker for non-inline corrections'
 assert_contains "$onboard_text" 'AGENTS.md' \
     'onboarding reviews the repository instruction files'
 assert_contains "$onboard_text" 'CLAUDE.md' \
     'onboarding includes the other common instruction file'
 assert_contains "$onboard_text" 'untrusted data' \
     'instruction-file content is treated as repository data'
+assert_contains "$onboard_text" 'AGENT_REVIEW_PROVIDERS' \
+    'onboarding asks the operator to choose review providers'
+assert_contains "$onboard_text" 'observe-only' \
+    'onboarding explains observe-only provider behavior'
+assert_contains "$onboard_text" 'none' \
+    'onboarding documents the explicit no-provider choice'
 assert_contains "$onboard_text" 'Conflicting' \
     'onboarding classifies conflicting guidance'
 assert_contains "$onboard_text" 'Duplicated' \
@@ -173,11 +253,43 @@ assert_line_order 'Duplicated is classified before Repo-specific' \
 
 review_skill="$skills/review-remote-pr/SKILL.md"
 parallel_skill="$skills/parallel-issues/SKILL.md"
+review_skill_text=$(<"$review_skill")
+review_skill_normalized=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
+review_reference_contract=$(sed -n '/^\*\*References are read once, batched, and never sized first\.\*\*/,/^$/p' "$review_skill")
+review_reference_contract_normalized=$(tr '\n' ' ' <<<"$review_reference_contract" | tr -s '[:space:]' ' ')
 review_refs=("$skills"/review-remote-pr/references/*.md)
 parallel_refs=("$skills"/parallel-issues/references/*.md)
 shared_refs=("$skills"/.shared/*.md)
 gh_pr_state_script="$skills/review-remote-pr/scripts/gh-pr-state.sh"
 prepare_issue_script="$skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
+review_setup_status_line=$(grep -m1 -n '^if ! setup_output=' "$review_skill" | cut -d: -f1)
+review_setup_parse_line=$(grep -m1 -n '^PR_WORKTREE=' "$review_skill" | cut -d: -f1)
+assert_line_order 'review helper status is checked before parsing its worktree output' \
+    "$review_setup_status_line" "$review_setup_parse_line"
+assert_contains "$(<"$review_skill")" 'if ! setup_output=' \
+    'review helper setup captures failure before output parsing'
+assert_contains "$review_reference_contract_normalized" 'References are read once, batched, and never sized first' \
+    'review skill forbids per-file reference sizing'
+assert_contains "$review_reference_contract" 'wc -l' \
+    'review skill no-sizing rule names the observed probe explicitly'
+assert_contains "$review_reference_contract" 'stat' \
+    'review skill no-sizing rule names stat explicitly'
+assert_contains "$review_reference_contract" 'head' \
+    'review skill no-sizing rule names head explicitly'
+assert_contains "$review_reference_contract_normalized" 'do not re-read it later in the same uninterrupted context' \
+    'review skill forbids duplicate reference reads'
+assert_contains "$review_reference_contract_normalized" 'Read each reference once per uninterrupted context' \
+    'review skill scopes read-once behavior to an uninterrupted context'
+assert_contains "$review_reference_contract_normalized" 'If compaction/resume occurs since Step 1a and the loaded provider-rules content is not preserved in the resumable artifact/context' \
+    'review skill names the missing resumable-content condition'
+assert_contains "$review_reference_contract_normalized" 're-read provider-rules.md exactly once before Phase C' \
+    'review skill permits one bounded post-compaction reread before Phase C'
+assert_contains "$review_reference_contract_normalized" 'sole exception to the ordinary no-re-read rule' \
+    'review skill keeps the post-compaction reread as the sole exception'
+assert_contains "$review_skill_normalized" 'Reuse that loaded content in Step 5; do not re-read it' \
+    'review skill reuses provider rules instead of reading them again'
+assert_not_contains "$review_skill_text" 'in full before Step 1a and' \
+    'review skill does not schedule a second full provider-rules read'
 assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable' \
     'review recipes name jq parser failures as unavailable evidence'
 # The former inline python3 thread-classification recipe was absorbed into
@@ -212,6 +324,24 @@ assert_contains "$review_wait_contract" 'runner completion marker' \
     'review wait rule names the runner completion bound'
 assert_contains "$review_wait_contract" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'review wait rule rejects sleep and re-check tool churn'
+assert_contains "$review_wait_contract" 'A bounded wait must be silent until its terminal condition.' \
+    'review wait rule is silent until terminal'
+assert_contains "$review_wait_contract" 'every line of background output wakes the orchestrator for a turn' \
+    'review wait rule explains why background output is forbidden'
+assert_contains "$review_wait_contract" 'target_epoch - $(date +%s)' \
+    'review wait rule provides a known-epoch sleep recipe'
+assert_contains "$review_wait_contract" 'remaining=$(( target_epoch - $(date +%s) ))' \
+    'review wait recipe calculates remaining time safely'
+assert_contains "$review_wait_contract" 'if (( remaining > 0 )); then' \
+    'review wait recipe guards an expired target epoch'
+assert_contains "$review_wait_contract" 'sleep "$remaining"' \
+    'review wait recipe sleeps only for a nonnegative duration'
+assert_contains "$review_wait_contract" 'progress heartbeat' \
+    'review wait rule names progress heartbeats'
+assert_contains "$review_wait_contract" 'log file, not stdout' \
+    'review wait rule redirects heartbeats away from stdout'
+assert_contains "$(<"$review_skill")" 'silent until terminal' \
+    'review polling section points at silent-until-terminal guidance'
 assert_eq '' "$(scan_skill_recipes "$review_skill" "${review_refs[@]}" "${parallel_refs[@]}" "${shared_refs[@]}" | grep 'sleep command' || true)" \
     'review skill has no sleep polling recipe'
 

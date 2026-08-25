@@ -15,6 +15,12 @@ die() {
     exit 1
 }
 
+die_usage() {
+    printf '%s: %s\n' "$PROGRAM" "$1" >&2
+    usage >&2
+    exit 2
+}
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -89,7 +95,7 @@ while (($#)); do
     esac
 done
 
-[[ -n $ledger ]] || die '--ledger is required'
+[[ -n $ledger ]] || die_usage '--ledger is required'
 [[ ! -L $ledger ]] || die "refusing a ledger symlink: $ledger"
 
 ledger_dir=${ledger%/*}
@@ -149,7 +155,7 @@ atomic_write() {
 }
 
 init_ledger() {
-    [[ -n $plan ]] || die '--plan is required for init'
+    [[ -n $plan ]] || die_usage '--plan is required for init'
     [[ -f $plan && ! -L $plan ]] || die "plan is not a regular file: $plan"
     jq -e '
       ((.planId // "") | type) == "string" and ((.planId // "") | length) > 0
@@ -157,7 +163,7 @@ init_ledger() {
       and all(.entries[]; (.id | type) == "string" and (.id | length) > 0)
       and ([.entries[].id] | length == (unique | length))
       and all(.entries[]; .id | test("^[A-Za-z0-9._:-]+$"))
-    ' "$plan" >/dev/null 2>&1 || die 'plan must have a non-empty unique planId and entries[].id values'
+    ' "$plan" >/dev/null 2>&1 || die 'plan must have a non-empty unique planId and entries[].id values; valid example: {"planId":"batch-v1","entries":[{"id":"entry-1"}]}'
     acquire_ledger_lock
     if [[ -e $ledger ]]; then
         validate_ledger
@@ -211,9 +217,9 @@ record_entry() {
 case $subcommand in
     init) init_ledger ;;
     record)
-        [[ -n $entry_id ]] || die '--id is required for record'
-        [[ -n $number ]] || die '--number is required for record'
-        [[ -n $url ]] || die '--url is required for record'
+        [[ -n $entry_id ]] || die_usage '--id is required for record'
+        [[ -n $number ]] || die_usage '--number is required for record'
+        [[ -n $url ]] || die_usage '--url is required for record'
         record_entry
         ;;
     pending)

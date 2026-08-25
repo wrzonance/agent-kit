@@ -7,6 +7,10 @@
 # below never reaches it.
 set -euo pipefail
 
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/token-estimate.sh
+source "$here/lib/token-estimate.sh"
+
 skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 
 # A skill already over budget stays green here only by an explicit, named
@@ -22,8 +26,8 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # rubber stamp.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [review-remote-pr]="518:7799:450"    # target <=450 lines; issue #107 phase 2 (WS5b) moved the Runtime-neutrality/environment-contract prose (references/environment-contract.md), the Implementation-worker-gate/publication-handback prose (references/worker-gate.md), and the Step 1b materiality criteria (references/adversarial-review.md) out of the body, ratcheting this from the last-committed 603:9180 (origin/feat/issue-106) down; merging that parent branch in added 19 net lines of inherited correctness (PR #116's worktree-root ordering fix and RUN_DIR/REPO re-set guards, plus PR #118's hoisted Step 0a provenance guard and &&-chained commit/verify/push), which is why this entry reads 518:7799 rather than the 497:7503 measured before the merge; the WS5b fix pass (adversarial finding: the paste-scope sentence wrongly told dispatchers to paste the whole dispatcher-side spawn-contract.md into a worker prompt) and a wave-3 accepted-review fix pass (corrected the worker-gate.md pointer's overclaim about what it carries) each nudged this back up to the ceiling above; issue #122 deliberately adds the stale-base/approval-residue handoff rule here and in references/provider-rules.md; it closes with this PR without hitting the target -- a successor issue is needed to track the remaining shrink work (see PR deviations), since most of what remains is executable recipe bytes pinned verbatim by test-review-artifacts.sh/test-parallel-dispatch-contract.sh/test-skills-contract.sh; test-skill-size.sh pins these exact ceiling numbers in its ratchet-message assertions, so a further ratchet needs a companion update to that test in the same PR
-    [parallel-issues]="936:15182:900"    # target <=900 lines; issue #107 phase 3 (WS5c) moved the triage/prior-art/board adjudication detail and the --fast-mode Step 2b set-selection procedure to NEW references/triage-and-selection.md (folding the bulk-mutation ledger recipe into the same file), compacted the Adversarial-review receipt section to point at review-remote-pr's references/adversarial-review.md contract instead of restating its mechanics, moved the draft-PR body template heredoc to references/worker-prompts.md (dispatch-output content read at publication time), and trimmed Step 3d's provider-detection duplicate of review-remote-pr's Step 5/6 plus a retired Common-Mistakes note -- with test-parallel-dispatch-contract.sh's publication_section/bulk_section extractions and test-autonomy-flags.sh's fast-mode-board/Step-2b assertions repointed at the reference files -- ratcheting this from the last-committed 1629:27651 (origin/feat/issue-106) down; a wave-3 accepted-review fix pass (corrected the dangling no-brainstorm-template pointer and the Step 3d review-detection misattribution) nudged this back up to the ceiling above. TARGET was re-baselined from the originally-stated 450 lines to 900: this is a design floor, not an interrupted ratchet -- the linear-execution spine (Step 0 preflight, Step 1 facts, the mandatory triage call, worktree creation, the dispatch/collect loop, board moves) stays in the body by design because the skill executes it sequentially every run, while everything moved out was either conditional (--fast-mode-only, per-issue opt-in) or content read once at a specific later moment (a template, a delegated contract). Shrinking further would mean cutting into the spine itself, which is out of scope for a moves-only pass.
+    [review-remote-pr]="527:8084:450"    # target <=450 lines; issue #107 phase 2 (WS5b) moved the Runtime-neutrality/environment-contract prose (references/environment-contract.md), the Implementation-worker-gate/publication-handback prose (references/worker-gate.md), and the Step 1b materiality criteria (references/adversarial-review.md) out of the body, ratcheting this from the last-committed 603:9180 (origin/feat/issue-106) down; merging that parent branch in added 19 net lines of inherited correctness (PR #116's worktree-root ordering fix and RUN_DIR/REPO re-set guards, plus PR #118's hoisted Step 0a provenance guard and &&-chained commit/verify/push), which is why this entry reads 519:7823 rather than the 497:7503 measured before the merge; the WS5b fix pass (adversarial finding: the paste-scope sentence wrongly told dispatchers to paste the whole dispatcher-side spawn-contract.md into a worker prompt) and a wave-3 accepted-review fix pass (corrected the worker-gate.md pointer's overclaim about what it carries) each nudged this back up to the ceiling above; issue #122 deliberately adds the stale-base/approval-residue handoff rule here and in references/provider-rules.md; it closes with this PR without hitting the target -- a successor issue is needed to track the remaining shrink work (see PR deviations), since most of what remains is executable recipe bytes pinned verbatim by test-review-artifacts.sh/test-parallel-dispatch-contract.sh/test-skills-contract.sh; test-skill-size.sh pins these exact ceiling numbers in its ratchet-message assertions, so a further ratchet needs a companion update to that test in the same PR
+    [parallel-issues]="980:16011:900"    # target <=900 lines; issue #107 phase 3 (WS5c) moved the triage/prior-art/board adjudication detail and the --fast-mode Step 2b set-selection procedure to NEW references/triage-and-selection.md (folding the bulk-mutation ledger recipe into the same file), compacted the Adversarial-review receipt section to point at review-remote-pr's references/adversarial-review.md contract instead of restating its mechanics, moved the draft-PR body template heredoc to references/worker-prompts.md (dispatch-output content read at publication time), and trimmed Step 3d's provider-detection duplicate of review-remote-pr's Step 5/6 plus a retired Common-Mistakes note -- with test-parallel-dispatch-contract.sh's publication_section/bulk_section extractions and test-autonomy-flags.sh's fast-mode-board/Step-2b assertions repointed at the reference files -- ratcheting this from the last-committed 1629:27651 (origin/feat/issue-106) down; a wave-3 accepted-review fix pass (corrected the dangling no-brainstorm-template pointer and the Step 3d review-detection misattribution) nudged this back up to the ceiling above. Issue #163 adds the compact changed-input refusal handoff pointer while keeping the detailed digest procedure in references/trust-and-fencing.md; issue #164 adds the dispatch-time PR-loop cap and isolation fallback contract, with the target remaining 900 lines. TARGET was re-baselined from the originally-stated 450 lines to 900: this is a design floor, not an interrupted ratchet -- the linear-execution spine (Step 0 preflight, Step 1 facts, the mandatory triage call, worktree creation, the dispatch/collect loop, board moves) stays in the body by design because the skill executes it sequentially every run, while everything moved out was either conditional (--fast-mode-only, per-issue opt-in) or content read once at a specific later moment (a template, a delegated contract). Shrinking further would mean cutting into the spine itself, which is out of scope for a moves-only pass. Merging the issue-142 receipt chain into this branch brings review-remote-pr to 527:8077 (its --severity operand and the receipt contract text); parallel-issues keeps the 980:15807 measured on the issue-167 chain. Both were then re-measured against the merged body and raised again -- parallel-issues 15807 -> 16011 and review-remote-pr 8077 -> 8084 -- because the merged tree carries BOTH chains' content while each chain's ceiling was measured against its own; no single PR's CI could observe the combined total. test-skill-size.sh's pinned ratchet message moves with it. An accepted-review fix in the same issue raised TOKENS 15330 -> 15339: the Collect heading stated the parking rule unconditionally, so it read as applying to a workstream that had returned a PR URL. Scoping it to a --yolo changed-input refusal costs those 9 tokens; the pinned clauses test-parallel-dispatch-contract.sh asserts ('parks that workstream only', 'continues every other workstream') are kept verbatim, so only the leading condition is new. Line count is unchanged at 940. Issue #167 then raised TOKENS 15800 -> 15807 for its own dispatch write-set content after merging the #164 chain; measured against the merged body and set to the minimum that passes rather than padded. TARGET was re-baselined from the originally-stated 450 lines to 900: this is a design floor, not an interrupted ratchet -- the linear-execution spine (Step 0 preflight, Step 1 facts, the mandatory triage call, worktree creation, the dispatch/collect loop, board moves) stays in the body by design because the skill executes it sequentially every run, while everything moved out was either conditional (--fast-mode-only, per-issue opt-in) or content read once at a specific later moment (a template, a delegated contract). Shrinking further would mean cutting into the spine itself, which is out of scope for a moves-only pass.
     # onboard-repo removed (issue #108, WS6): the judgment-heavy, ATTENDED, linear
     # onboarding skill was trimmed by deleting/relocating war stories (docs/onboarding-lessons.md)
     # and script-printed-output paraphrase, keeping the resumable-stage contract, approval-as-a-
@@ -32,6 +36,151 @@ declare -A KNOWN_OVERSIZE=(
     # ratcheted ceiling and the standard budget. No references/ split: onboarding is attended and
     # linear, not something a later pass reaches into by name.
 )
+
+# Issue #151 adds the session-ledger instructions to both orchestrator bodies.
+# Issue #148 (already merged) added the root handback Stage 4 validation contract
+# to parallel-issues, ratcheting it to 990:16193 measured against a tree without
+# the ledger content. Neither chain's CI could observe the combined total, so both
+# ceilings below are re-measured against the merged body and set to the minimum
+# that passes -- the planned shrink targets are unchanged. Issue #147 then moves
+# the role-separation rationale into references/, trimming both bodies: lines
+# ratchet down (1020->1015, 550->547) while review-remote-pr's tokens rise 9
+# (8413->8422), because the pointer it leaves behind is denser than the prose it
+# replaced. Both dimensions are ratcheted independently, so both are re-set.
+# Issue #145 extracts the deterministic S-risk helpers, repeating that shape for
+# parallel-issues: 1015->1003 lines but 16724->16735 tokens, since the helper
+# invocations that replace the inline procedure are denser per line.
+# Issue #144 centralizes worktree setup into a shared library, and unlike the
+# entries above this one moves BOTH dimensions down together: parallel-issues
+# 1003->966 lines / 16735->16394 tokens, review-remote-pr 547->511 / 8422->7959.
+# Ratcheted down rather than left slack -- a ceiling well above the measured
+# body silently re-permits the growth this gate exists to catch.
+# Issue #224 ("gotta go fast") adds spine content deliberately: named numeric
+# wait bounds, the worker commit+push publication flow with its
+# environment-refusal fallback, mtime-based stall detection, the pre-review
+# materiality gate, once-per-run ledger authorization, per-issue effort, and
+# chain-on-commit scheduling. Each buys a measured cost back (2h of timed-out
+# waits, 9-10 root<->worker round trips per issue); ceilings re-measured
+# against the merged body, minimum that passes. Target unchanged.
+# Issue #238 ports the references-read-once/no-sizing rule and removes the
+# provider-rules Step 5 re-read; issue #239 moves review-remote-pr fix-batch
+# publication to the worker-owned commit+push model and adds the explicit
+# no-test-seam red waiver; issue #240 adds the bounded inline-correction
+# exception and same-worker-first correction call-site rule to the root review
+# spine; issue #254 adds the cross-write fence contract (worker write-set
+# boundary, disposal containment, fail-closed collection) to the dispatch
+# spine. The merged tree carries ALL chains' content while each ceiling was
+# measured against its own, so both are re-measured against the merged body
+# and set to the minimum that passes. Line targets unchanged.
+KNOWN_OVERSIZE[review-remote-pr]="513:8144:450"
+# Issue #268 threads --yolo onto the Step 5 create-issue-worktree.sh call (the
+# same condition the compose-args line already uses), so the first declared
+# setup in an unattended run no longer burns a guaranteed approval refusal.
+# One spine line, minimum that passes. Line target unchanged.
+# Issue #270 resolves the thin-Ready-column contradiction (the --fast-mode row
+# promised Backlog promotion while the board-adjudication prose read as a
+# universal "never auto-pull Backlog"): Step 2b's intro paragraph in the body
+# now states the promotion/pitch fork in one place, with the ranking and
+# numbered+thematic detail moved into references/triage-and-selection.md. A
+# follow-up fix retitled both Step 2b headings (the heading had contradicted
+# its own broadened body, reading "--fast-mode only") and repointed all three
+# anchor references, trimming TOKENS. Minimum that passes. Line target
+# unchanged.
+# Issue #273 states the unattended default for an over-guideline packet: the
+# Diff-size facts section now says a run never parks on size ("Size facts
+# never park an unattended run"), and the Collect completion-report bullet
+# carries the same one-line reminder at the exact spine point the incident
+# happened (a finished worker, before the draft PR opens). The disclosure
+# recipe itself (running diff-facts.sh into the PR's Decisions section) is
+# kept out of the body, in references/worker-prompts.md's new Diff-size
+# disclosure subsection, per the strong preference to land detail in
+# references rather than ratchet the body again. Minimum that passes. Line
+# target unchanged.
+# Issue #274 fixes the join dispatch gate: a locally-built join integration
+# commit (or an ordinary linear merge-down) is invisible to origin until
+# pushed, and an unpushed commit lives only in this session's local git
+# objects -- a torn-down session or pruned worktree can lose it before a
+# successor or reviewer ever reads it (see chains.md's "Publishing a
+# locally-built chain base"; agent-run.sh itself has no base-pin check to
+# fail -- that gate was part of the command-approval fence removed
+# 2026-08-19). The body's two touch points (the Step 3 join sentence and the
+# deferred-dispatch gate description) each gain one clause naming the push
+# requirement; the substantive recipe -- including the linear-merge-down
+# generalization and the predecessor-SHA pinning alternative for interim
+# worker verification -- lands in references/chains.md's new "Publishing a
+# locally-built chain base" subsection instead, per the standing preference
+# to keep body growth to a pointer. Minimum that passes. Line target
+# unchanged.
+# Issue #352 raises TOKENS 19312 -> 19357 for the combined body of three
+# concurrent SKILL.md PRs in this wave (#334, #338, #352): each passes this
+# gate on its own branch, but no single PR's CI can observe the merged
+# total, so the ceiling is re-measured against the merged tree and set to
+# the minimum that passes. Line target unchanged.
+# Issue #336 stops the dispatcher from echoing each composed worker prompt into
+# root context: the compose block now writes a persistent per-issue prompt file
+# and prints only `prompt=<path> bytes=<n> issue=<n> write-set=<globs>`. That
+# trades ~18KB of echoed prompt per dispatched issue (paid twice under an
+# approval layer that re-executes an approved command) for a one-line digest.
+# The same issue reconciles the blanket no-size-probe rule with this file's own
+# size, since a 1100+ line mandatory read is exactly the case where a bounded
+# probe is worth one turn. LINES is unchanged at 1132; TOKENS rises 19357 ->
+# 19394 for the persistent-path recipe, the digest printf, the bounded-probe
+# exception, and the inline-bytes spawn note -- measured against this body and
+# set to the minimum that passes, never padded. A deliberate, conscious raise,
+# per this file's own ratchet rule; the shrink this issue buys lands in the
+# COMPOSED prompt (a per-dispatch surface this gate does not measure), not in
+# the body. test-skill-size.sh's pinned ratchet message moves with it.
+# Issue #337 restates command precedence at the point of conflict: the composed
+# worker prompt now carries a binding line immediately above its `## Spec` block
+# (a composer-owned token, so none of that prose lands in this body), and the
+# composer reports the spec verification steps no declared command covers. The
+# body's only change is one appended sentence on the existing compose-block
+# prose line, telling the root to record a non-zero `uncovered` on the
+# dispatch-plan entry before spawning -- the dispatch-time disclosure the issue
+# asks for, at the one spine point where the root has the report in hand. LINES
+# is unchanged at 1132; TOKENS rises 19394 -> 19468 for that sentence, measured
+# against this body and set to the minimum that passes, never padded. A
+# deliberate, conscious raise per this file's own ratchet rule; the schema and
+# rationale live in references/triage-and-selection.md rather than here.
+# test-skill-size.sh's pinned ratchet message moves with it.
+KNOWN_OVERSIZE[parallel-issues]="1132:19468:900"
+# Issue #340 makes the companion references resolvable without a search. The
+# body change is confined to two shapes: one sentence on each skill's existing
+# references-are-read-once rule, giving the resolvable form
+# (`"$agentkit/<path>"`) and naming the new manifest
+# (`agentkit/skills/references.md`, which indexes every reference file and its
+# purpose); and, at each instruction to READ a reference, the markdown link's
+# TEXT becomes that same rooted path while its destination is left untouched,
+# so forge navigation and every verbatim-pinned relative path survive. The
+# observed failure this buys back: an agent spent ~8 exploratory searches
+# locating files SKILL.md had already named, because `rg --files` skips
+# `.shared/` without `--hidden` and a bare relative link is not an openable
+# path. parallel-issues LINES 1132 -> 1133 and TOKENS 19468 -> 19533;
+# review-remote-pr TOKENS 8144 -> 8234 (its LINES ceiling of 513 is untouched
+# -- the body sits at 507). pr-to-green takes the same two shapes and stays
+# inside the standard budget, so it gains no entry. Each ceiling is measured
+# against this body and set to the minimum that passes, never padded; the
+# rooted paths are longer than the relative ones by construction, which is the
+# whole point of the change. The same pass also repairs three cross-skill links
+# in parallel-issues whose TEXT read `references/provider-rules.md` /
+# `references/adversarial-review.md` while their destination pointed into
+# review-remote-pr -- an agent that typed what it read got a path that does not
+# exist under parallel-issues, which is the exact failure this issue is about;
+# that repair is the 19533 -> 19554 difference. test-skill-size.sh's pinned
+# ratchet messages move with these numbers.
+# Issue #405 replaces Step 0c's inline `mktemp -d "${TMPDIR:-/tmp}/..."` recipe
+# with a call to the new run-dir.sh helper (a durable per-PR RUN_DIR under
+# .agent/evidence/, so a resumed session finds its prior evidence instead of
+# orphaning it), plus the resolver guard that call needs since it now touches
+# `$agentkit`. LINES is unchanged at 511 (well under the 513 ceiling -- the
+# helper-call block is one line longer than the mktemp block it replaces, and
+# the accompanying prose is a few lines longer too, but both dimensions
+# together still land inside 513). TOKENS rises 8234 -> 8337 for the guard and
+# the expanded fallback-behavior explanation, measured against this body and
+# set to the minimum that passes, never padded. Target unchanged.
+# test-skill-size.sh's pinned ratchet-message assertion moves with it.
+KNOWN_OVERSIZE[review-remote-pr]="513:8337:450"
+KNOWN_OVERSIZE[parallel-issues]="1133:19554:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
@@ -83,7 +232,8 @@ body_stats() {
 
 check_size() {
     local file=$1 name=$2 body_lines=$3 body_bytes=$4
-    local est_tokens=$((body_bytes / 4))
+    local est_tokens
+    est_tokens=$(estimate_tokens "$body_bytes")
     local over=0
     if ((body_lines > MAX_BODY_LINES || est_tokens > MAX_BODY_TOKENS)); then
         over=1
