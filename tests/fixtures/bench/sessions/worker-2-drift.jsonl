@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"trial-fixture-0001-w2","timestamp":"2026-08-20T10:00:07.000Z","cwd":"/repo/.worktrees/feat/tally-06","originator":"worker:2","cli_version":"0.148.0","model":"gpt-5.6-luna"}}
+{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"high","cwd":"/repo/.worktrees/feat/tally-06"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"w2c1","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/parallel-issues/references/worker-prompts.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"w2c1","output":"ok"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":3600,"cached_input_tokens":800,"output_tokens":1100}}}
+{"type":"event_msg","payload":{"type":"task_complete","payload":{}}}

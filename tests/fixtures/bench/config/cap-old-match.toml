@@ -1,0 +1,3 @@
+# Fixture: shaped like an arm's ~/.codex/config.toml, cap present.
+[features.multi_agent_v2]
+max_concurrent_threads_per_session = 4

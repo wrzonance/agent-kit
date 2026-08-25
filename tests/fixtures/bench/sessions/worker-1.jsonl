@@ -1,0 +1,12 @@
+{"type":"session_meta","payload":{"id":"trial-fixture-0001-w1","timestamp":"2026-08-20T10:00:05.000Z","cwd":"/repo/.worktrees/feat/tally-02","originator":"worker:1","cli_version":"0.148.0","model":"gpt-5.6-luna"}}
+{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low","cwd":"/repo/.worktrees/feat/tally-02"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"w1c1","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/.shared/spawn-contract.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"w1c1","output":"ok"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"w1c2","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/parallel-issues/references/worker-prompts.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"w1c2","output":"ok"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"w1c3","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"sed -n '1,20p' agentkit/skills/parallel-issues/references/worker-prompts.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"w1c3","output":"ok"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"w1c4","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"grep -n commit agentkit/skills/parallel-issues/references/worker-prompts.md\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"w1c4","output":"ok"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":2000,"cached_input_tokens":500,"output_tokens":600}}}
+{"type":"event_msg","payload":{"type":"task_complete","payload":{}}}
