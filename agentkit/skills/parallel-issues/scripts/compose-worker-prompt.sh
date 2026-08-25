@@ -94,10 +94,28 @@ template_file=$script_dir/../references/worker-prompts.md
 repo_config=$script_dir/../../.shared/scripts/repo-config.sh
 contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
 sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.sh
+wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
+[[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
+
+# The dispatch-time wait bound is READ from wait-discipline.md's own
+# "Default numeric bounds per wait class" table, never duplicated as a
+# literal here (issue #449): a hardcoded second copy of the number is exactly
+# the drift hazard that table exists to prevent. Every worker prompt this
+# script composes -- issue-lead and fix-batch alike -- is dispatched under
+# the same "Worker implementation wait" row.
+worker_wait_bound_row=$(grep -m1 'Worker implementation wait' -- "$wait_discipline_file") ||
+    die "wait-discipline.md has no 'Worker implementation wait' row to source the dispatch wait bound from"
+# Anchored to the table's own **NNN s** bold-bound convention (the same
+# pattern test-parallel-dispatch-contract.sh already extracts against), not a
+# bare digit scan: a bare scan would silently pick up an unrelated number
+# (an issue reference, a footnote) added to this row's prose later.
+worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_row" | grep -oE '[0-9]+' | head -n1)
+[[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] ||
+    die "could not parse a numeric wait bound from wait-discipline.md's Worker implementation wait row: $worker_wait_bound_row"
 
 contract=$worktree/.agent/env-contract.txt
 spec=
@@ -1034,4 +1052,10 @@ else
             "$issue" "$spec_plan_record_status" "$spec_expected_uncovered" "$spec_plan_update_status" "$spec_plan_sha"
         ((spec_step_render_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_RENDER_LIMIT"
     fi
+    # A per-worker wait bound the dispatching orchestrator reads back at the
+    # call site, beside this same worker's identifier, instead of recalling
+    # wait-discipline.md's rule from prose (issue #449). Applies to both
+    # templates: an issue-lead and a fix-batch worker share the same
+    # "Worker implementation wait" row.
+    printf 'wait-bound= issue=%s seconds=%s class=worker\n' "$issue" "$worker_wait_bound_seconds"
 fi

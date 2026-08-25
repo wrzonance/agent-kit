@@ -33,6 +33,14 @@ case "\$*" in
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":"not-an-object"}}}}'
       elif [[ -n \${MISSING_NODES:-} ]]; then
           printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{}}}}}'
+      elif [[ -n \${AUTH_SCOPE_MEMBERSHIP:-} ]]; then
+          printf 'gh: Resource not accessible by integration (HTTP 403)\n' >&2
+          exit 1
+      elif [[ -n \${RATE_LIMITED_MEMBERSHIP:-} ]]; then
+          printf '%s\n' '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation ID 123456."}]}'
+      elif [[ -n \${API_ERROR_MEMBERSHIP:-} ]]; then
+          printf 'gh: unexpected EOF\n' >&2
+          exit 1
       elif [[ -n \${TRANSIENT_THEN_OK:-} ]]; then
           attempts=0
           [[ ! -f \${GH_MEMBERSHIP_ATTEMPTS_FILE:?} ]] || attempts=\$(<"\$GH_MEMBERSHIP_ATTEMPTS_FILE")
@@ -675,6 +683,65 @@ assert_not_contains "$out" 'is not on any project board' \
     'a projectItems response missing nodes is never conflated with a genuine board absence'
 assert_eq '1' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
     'a projectItems response missing nodes is not retried like the transient null-issue case'
+
+# A gh CLI-level failure (transport, or an HTTP-level auth/scope rejection)
+# now propagates its cause instead of being discarded: `2>/dev/null` used to
+# throw away exactly the diagnostic text this classification depends on (#448).
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(AUTH_SCOPE_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'an auth/scope-denied membership read still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved (auth/scope)' \
+    'an auth/scope-denied membership read names its cause class'
+assert_not_contains "$out" 'is not on any project board' \
+    'an auth/scope-denied read is never conflated with a genuine board absence'
+
+# A GraphQL-level error (HTTP 200, an `errors` array, and a null `data`) is a
+# real API failure -- not the replication-lag "issue resolved null" case it
+# would otherwise be misread as, since both shapes leave
+# `.data.repository.issue` null. The two must not share a cause (#448): a
+# membership read that fails for a knowable reason must report that reason,
+# distinctly from every other knowable reason.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(RATE_LIMITED_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+rc=$?
+assert_eq '0' "$rc" 'a rate-limited membership read still exits 0'
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved (rate limit)' \
+    'a rate-limited membership read names its cause class distinctly from auth/scope'
+assert_not_contains "$out" 'is not on any project board' \
+    'a rate-limited read is never conflated with a genuine board absence'
+
+# A cause that cannot be pattern-matched to a known class still gets a safe,
+# fixed label -- never raw stderr or response text (a leak risk), and never
+# silently empty (the pre-#448 behavior this replaces).
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(API_ERROR_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved (api error)' \
+    'an unclassified gh failure still reports a bounded cause label'
+
+# The existing null-issue and malformed-shape no-ops (#385) still resolve to
+# the same generic "other" cause -- this issue only fixes propagation for
+# causes that ARE distinguishable, per its explicit scope (never making the
+# unreadable/not-on-any-board distinction itself, never adding retry logic).
+repo=$(seed_repo)
+out=$(NULL_ISSUE=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved (other)' \
+    'a persistently null-issue membership read keeps the generic "other" cause'
+
+repo=$(seed_repo)
+out=$(MALFORMED_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready 2>&1)
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved (other)' \
+    'a malformed membership response keeps the generic "other" cause'
+
+# all-boards (process_project_memberships) shares issue_project_items and must
+# carry the same cause labeling.
+repo=$(bare_repo)
+out=$(AUTH_SCOPE_MEMBERSHIP=1 run_mv "$repo" --issue-number 58 --status Ready --all-boards 2>&1)
+assert_contains "$out" 'no-op: issue #58 project board membership could not be read; not moved (auth/scope)' \
+    'all-boards: an auth/scope-denied membership read names its cause class'
 
 # A membership read that fails on its first attempts but succeeds within the
 # retry budget recovers cleanly and reports the real outcome, not a failure.
