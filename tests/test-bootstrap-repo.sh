@@ -155,6 +155,62 @@ assert_eq '1' "$(run_worker_model_declared 'AGENT_WORKER_MODEL_FALLBACK=gpt-5.6-
 warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
 assert_eq '' "$warnings" 'the worker model proposal produces no resolver warnings'
 
+# --- adversarial reviewer declaration is proposed the same way (issue #452) -
+assert_contains "$fresh_config" '# AGENT_ADVERSARIAL_REVIEWER=' \
+    'generated config proposes an adversarial reviewer declaration'
+assert_contains "$fresh_config" '# AGENT_ADVERSARIAL_REVIEW_MODEL=' \
+    'generated config proposes an adversarial reviewer model declaration'
+assert_contains "$fresh_config" '# AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=' \
+    'generated config proposes an adversarial reviewer fallback model declaration'
+assert_contains "$fresh_config" '# AGENT_ADVERSARIAL_REVIEW_EFFORT=' \
+    'generated config proposes an adversarial reviewer effort declaration'
+assert_contains "$fresh_config" 'peer-cli=' \
+    'the reviewer proposal explains the peer-CLI default it overrides'
+
+adversarial_reviewer_declared_snippet="$tmp/adversarial-reviewer-declared-snippet.sh"
+awk '
+    /^adversarial_reviewer_declared=0$/ { capture=1 }
+    capture { print }
+    capture && /^fi$/ { exit }
+' "$bs_sh" > "$adversarial_reviewer_declared_snippet"
+assert_contains "$(cat "$adversarial_reviewer_declared_snippet")" 'resolver' \
+    'the extracted adversarial-reviewer snippet actually goes through the resolver'
+
+run_adversarial_reviewer_declared() {
+    # $1=repo_root config.env contents (or empty for "no file")
+    local config=$1 fixture
+    fixture=$(mktemp -d "$tmp/ard-fixture.XXXXXX")
+    mkdir -p "$fixture/.agent"
+    [[ -n $config ]] && printf '%s' "$config" > "$fixture/.agent/config.env"
+    (
+        # shellcheck disable=SC2034
+        resolver=$rc_sh
+        # shellcheck disable=SC2034
+        repo_root=$fixture
+        # shellcheck disable=SC2034
+        reset=0
+        # shellcheck source=/dev/null
+        source "$adversarial_reviewer_declared_snippet"
+        # shellcheck disable=SC2154  # assigned by the sourced snippet above
+        printf '%s' "$adversarial_reviewer_declared"
+    )
+}
+
+assert_eq '0' "$(run_adversarial_reviewer_declared '')" \
+    'no config.env at all is not an adversarial-reviewer declaration'
+assert_eq '1' "$(run_adversarial_reviewer_declared 'AGENT_ADVERSARIAL_REVIEWER=codex')" \
+    'a valid declared reviewer CLI counts as declared'
+assert_eq '1' "$(run_adversarial_reviewer_declared 'AGENT_ADVERSARIAL_REVIEW_MODEL=gpt-5.6-sol')" \
+    'a declared reviewer model alone also counts as declared'
+assert_eq '1' "$(run_adversarial_reviewer_declared 'AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=claude-opus-5')" \
+    'a declared fallback model alone also counts as declared'
+assert_eq '1' "$(run_adversarial_reviewer_declared 'AGENT_ADVERSARIAL_REVIEW_EFFORT=xhigh')" \
+    'a declared effort alone also counts as declared'
+assert_eq '0' "$(run_adversarial_reviewer_declared 'AGENT_ADVERSARIAL_REVIEWER=gemini')" \
+    'a reviewer CLI the resolver rejects does NOT count as declared'
+warnings=$("$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '' "$warnings" 'the adversarial reviewer proposal produces no resolver warnings'
+
 # --- a repo linked to exactly one board needs no --project -----------------
 # An org can own dozens of boards while a repo is linked to one. Asking the
 # repository, not the owner, is what keeps bootstrap zero-prompt on most repos.

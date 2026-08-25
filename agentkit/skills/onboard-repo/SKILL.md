@@ -22,7 +22,7 @@ Before `verified`, preflight and report its exact runtime/setup/toolchain findin
 
 Operator-facing recipes and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
 
-Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides whether unattended runs work, since a per-machine `.agent/config.env` simply is not present in a fresh clone or CI checkout), then run the resolved `agent-run.sh --cmd <declared name>`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
+Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides), then run the resolved `agent-run.sh --cmd <declared name>`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
 
 Before running Step 0, execute its fenced recipe through an explicit `bash -c` boundary; that bootstrap is what discovers the shared reference path. After Step 0 resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full before any later multi-line recipe and use its documented boundary.
 
@@ -311,8 +311,12 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_CMD_SETUP` | install before verify |
 | `AGENT_REPO_RUNNER` | command dispatcher |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
-| `AGENT_GENERATED_PATHS` | generated path prefixes; also exempts a base advance confined to them from `gh-pr-state.sh`'s staleness check, so `merge-gate.sh` doesn't block on it (e.g. `bench/results/`, for a post-merge results workflow) |
+| `AGENT_GENERATED_PATHS` | generated path prefixes; exempts a confined base advance from `gh-pr-state.sh`'s staleness check (e.g. `bench/results/`) |
 | `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
+| `AGENT_ADVERSARIAL_REVIEWER` | reviewer CLI override for `peer-cli=` (`codex`/`claude`) |
+| `AGENT_ADVERSARIAL_REVIEW_MODEL` | model for the declared reviewer |
+| `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` | model if the declared reviewer is absent |
+| `AGENT_ADVERSARIAL_REVIEW_EFFORT` | reviewer reasoning effort, harness-neutral |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
 | `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |
 | `AGENT_PROTECTED_PATHS` | extra gating paths; edits refused once |
@@ -323,12 +327,10 @@ the exact declared value every time it is invoked.
 
 Shared helpers require Bash 4+ for associative arrays. Invoke them with Bash; zsh calls fail fast.
 
-**`VERIFY` and `TEST` are the only names anything relies on** — others (`lint`, `build`, `coverage`) are reached
-with `--if-declared`, so declaring none of them isn't broken, it just skips those steps. Declaring
-`AGENT_CMD_VERIFY` and/or `AGENT_CMD_TEST` only makes the command runnable by name
-(`agent-run.sh --cmd verify` / `--cmd test`); nothing gates a turn on either, and declaring neither is
-legitimate, but make it a stated choice. `agent-run.sh --cmd verify`
-resolves nothing in a TEST-only repo, so substitute the name you declared in every `--cmd` example here.
+**`VERIFY` and `TEST` are the only names anything relies on** — `lint`/`build`/`coverage` are reached with
+`--if-declared`, so skipping them is fine. Declaring `AGENT_CMD_VERIFY`/`AGENT_CMD_TEST` only makes each
+runnable by name (`--cmd verify`/`--cmd test`); nothing gates a turn on either, and declaring neither is a
+legitimate, stated choice. In a TEST-only repo, substitute the name you declared in every `--cmd` example here.
 
 **Nothing secret belongs in `config.env`.** Tokens, proxies, and CA paths are refused by the resolver: the
 file is readable local state and may still be copied into logs or shared accidentally.
