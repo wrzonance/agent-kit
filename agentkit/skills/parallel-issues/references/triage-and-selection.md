@@ -17,13 +17,21 @@ that flag is in play. A `clean` verdict needs none of this file.
 Any batch that creates or edits more than one forge object carries a resumable
 apply ledger. The planning ID is the stable key; a successful mutation is
 followed immediately by one `record` call containing the returned number and
-URL. The shared helper is deliberately a ledger, not an orchestrator:
+URL. This batch has no PR yet, so its ledger and plan are transient bulk
+artifacts: they belong in the private, mode-0700 run directory addressed by
+the invocation-level `RUN_ID` SKILL.md's Session decision ledger section
+establishes — never at a bare repository-relative path, which lands as an
+untracked addition mixed into the operator's own working tree. `run-dir.sh`
+is the same helper Step 3b's `RUN_DIR` uses for PR-keyed evidence;
+`--run-id` is its addressing mode for a run that has no PR to key on. The
+shared ledger helper itself is deliberately a ledger, not an orchestrator:
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-ledger=.agent/apply-ledger.json
-plan=.agent/apply-plan.json
+bulk_dir=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --run-id "$RUN_ID" --repo-root "$repository_root") || exit 1
+ledger="$bulk_dir/apply-ledger.json"
+plan="$bulk_dir/apply-plan.json"
 apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
 "$apply_ledger" init --ledger "$ledger" --plan "$plan"
 ```
