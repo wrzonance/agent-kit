@@ -244,7 +244,13 @@ no `holdReason`) or `no-code` (with a non-empty `holdReason`) -- see
 [Work-shape verdict](#work-shape-verdict). The write-time gate rejects a `no-code` entry
 with no reason and a stray reason on an `implementation` entry, so a misclassification
 is a validation failure, never a silent pass-through. A `no-code` entry never reaches
-Step 5; it is dropped from the dispatch set before any worktree is created.
+Step 5; it is dropped from the dispatch set before any worktree is created. Because a
+HOLD never gets a worktree, branch, PR, or head, the ready-flip upgrade to schema 2
+(below) requires the merge plan to cover only the **implementation-shaped** entries --
+those with `workShape` absent or `implementation` -- and rejects a merge plan that
+includes a `no-code` issue's number or omits any implementation issue. A `no-code`
+entry stays in `entries` at schema 2 for audit and Selection-funnel accounting; it is
+simply never expected in `independent`/`chains`.
 
 `dispatch-plan` and `merge-plan` name the same owner-only file at its two
 lifecycle stages: schema 1 before the ready flip and schema 2 afterward. The
