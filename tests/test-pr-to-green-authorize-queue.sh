@@ -362,6 +362,69 @@ assert_eq 'main:dddddddddddddddddddddddddddddddddddddddd' \
     "$(jq -r '.queue[] | select(.pr==15) | [.base,.headSha] | join(":")' "$auth")" \
     'the refreshed base and head come from the live re-derivation'
 
+# --- Stacked successor retarget: approval is provider policy, never a
+# mechanical gate (issue #455) -- a proof carrying any well-formed
+# `approval=` token authorizes identically across every provider plan:
+# trigger, observe, disabled, and effective-none (--no-providers). ---
+
+retarget_proof_none="$tmp/retarget-proof-none.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=none ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_none"
+retarget_proof_residue="$tmp/retarget-proof-residue.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=residue:stale ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_residue"
+retarget_proof_unknown="$tmp/retarget-proof-unknown.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=unknown ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_unknown"
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:trigger:capability-default
+trigger_retarget_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_none")
+assert_eq "authorization=$auth queue=2" "$trigger_retarget_out" \
+    'a trigger provider authorizes a stacked retarget with no approval yet (approval=none)'
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:observe:operator-instruction
+observe_retarget_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:observe:operator-instruction \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_residue")
+assert_eq "authorization=$auth queue=2" "$observe_retarget_out" \
+    'an observe provider authorizes a stacked retarget over stale approval residue'
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:disabled:operator-instruction
+disabled_retarget_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:disabled:operator-instruction \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_unknown")
+assert_eq "authorization=$auth queue=2" "$disabled_retarget_out" \
+    'a disabled provider authorizes a stacked retarget without a synthetic approval requirement'
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes __NONE__
+none_retarget_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
+    --confirmed-queue-file "$confirmed" --no-providers \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_none")
+assert_eq "authorization=$auth queue=2" "$none_retarget_out" \
+    'an effective-none provider plan (--no-providers) authorizes a stacked retarget with no approval'
+
+# --- A garbled approval token still fails closed: dropping the requirement that
+# it equal `current:post-retarget` is not the same as accepting anything. ---
+
+retarget_proof_garbled="$tmp/retarget-proof-garbled.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=yes ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_garbled"
+write_confirmed
+garbled_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_garbled" \
+    >"$tmp/garbled.out" 2>"$tmp/garbled.err" || garbled_rc=$?
+assert_eq '1' "$garbled_rc" 'a garbled approval= token fails closed rather than being accepted as any value'
+assert_contains "$(cat "$tmp/garbled.err")" 'retarget' \
+    'the garbled-token refusal is reported as a retarget-proof failure'
+
 # --- Stacked successor retarget (F3, issue #450 review): a proof file that
 # textually matches the live base and head is not enough on its own -- the
 # live head must also be independently proven a descendant of the previously

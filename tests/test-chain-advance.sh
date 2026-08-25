@@ -226,6 +226,9 @@ set -e
 assert_eq '2' "$pending_rc" 'retarget reports mutation when CI is stale or pending'
 assert_contains "$pending_output" 'CI' 'pending CI failure is explicit'
 
+# Approval is provider policy, not mechanical base safety (issue #455): an
+# approval attached to a different head is residue, reported but never a
+# block, since ancestry/CI/closing-linkage are otherwise all satisfied.
 cat >"$tmp/gh-old-approval" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -245,8 +248,9 @@ approval_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-approval" bash
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 approval_rc=$?
 set -e
-assert_eq '2' "$approval_rc" 'retarget reports mutation when approval is attached to an old head'
-assert_contains "$approval_output" 'approval' 'stale approval remains a visible human judgment'
+assert_eq '0' "$approval_rc" 'an approval attached to an old head never blocks the retarget'
+assert_contains "$approval_output" 'approval=residue:stale' \
+    'an approval on a different head is reported as residue, not counted current'
 
 cat >"$tmp/gh-no-link" <<'EOF'
 #!/usr/bin/env bash
@@ -355,11 +359,11 @@ boundary_output=$(EDIT_STATE="$tmp/boundary-after-edit.state" PATH="$tmp:$PATH" 
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 boundary_rc=$?
 set -e
-assert_eq '2' "$boundary_rc" 'approval before edit completion is stale'
-assert_contains "$boundary_output" 'current-head and post-retarget' \
-    'freshness boundary is captured only after the edit succeeds'
+assert_eq '0' "$boundary_rc" 'an approval submitted before edit completion never blocks the retarget'
+assert_contains "$boundary_output" 'approval=residue:stale' \
+    'freshness boundary is captured only after the edit succeeds, so pre-edit approval is residue'
 
-# The same residue on the approval alone is a human judgment, not an auto-pass.
+# The same residue on the approval alone is reported, never inherited as current.
 cat >"$tmp/gh-preapproval" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -379,16 +383,15 @@ preapproval_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-preapproval" ba
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 preapproval_rc=$?
 set -e
-assert_eq '2' "$preapproval_rc" 'retarget reports mutation for an approval that predates the retarget'
-assert_contains "$preapproval_output" 'human judgment' \
-    'the approval residue is reported as a human judgment, not inherited'
-
-
+assert_eq '0' "$preapproval_rc" 'an approval that predates the retarget never blocks the retarget'
+assert_contains "$preapproval_output" 'approval=residue:stale' \
+    'the approval residue is reported explicitly, never silently inherited as current'
 
 # --- a split approval never adds up to a current one -----------------------
 # Two separate reviews must not satisfy the two halves between them: a stale
 # approval OF the current head, plus a fresh approval of some OLDER commit,
-# leaves no single review that is both current-head and post-retarget.
+# leaves no single review that is both current-head and post-retarget. Since
+# an APPROVED review exists, the token is still residue -- not none.
 cat >"$tmp/gh-splitapproval" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -408,10 +411,67 @@ split_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-splitapproval" bash "
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 split_rc=$?
 set -e
-assert_eq '2' "$split_rc" 'a post-edit split approval failure reports mutation'
-assert_contains "$split_output" 'current-head and post-retarget' \
-    'the refusal names the conjunction that failed'
-assert_not_contains "$split_output" 'retargeted pr #7' \
-    'no success line is printed on a split approval'
+assert_eq '0' "$split_rc" 'a post-edit split approval never blocks the retarget'
+assert_contains "$split_output" 'retargeted pr #7' 'the split-approval retarget still succeeds'
+assert_contains "$split_output" 'approval=residue:stale' \
+    'a split approval (no single review both current-head and post-retarget) reports residue'
+
+# --- PR #440 ordering regression: merge-down, retarget, fresh CI, no approval yet ---
+# This is the exact live failure from issue #455: the successor merged the new
+# default branch, retargeted, and proved fresh CI, but no provider review can
+# exist yet because the ready/provider transition that could produce one only
+# runs after this proof. The retarget must complete with `approval=none`, not
+# block waiting for a review the procedure itself has not yet allowed.
+cat >"$tmp/gh-pr440" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) exit 0 ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":440,"baseRefName":"main","headRefName":"feat/child","headRefOid":"fd1400424e6617826deb7974dddcda3cb521a051","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":427}]}'
+        ;;
+    *"compare/main...fd1400424e6617826deb7974dddcda3cb521a051"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-pr440"
+set +e
+pr440_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pr440" bash "$advance" \
+    --retarget --repo owner/repo --pr 440 --base main 2>&1)
+pr440_rc=$?
+set -e
+assert_eq '0' "$pr440_rc" \
+    'the PR #440 ordering (merge-down, retarget, fresh CI, no review yet) completes the retarget'
+assert_contains "$pr440_output" 'approval=none' \
+    'no review evidence at all is reported as none, never treated as a block'
+assert_contains "$pr440_output" 'closing-issues=1' \
+    'the PR #440 fixture still proves closing linkage'
+
+# --- unreadable review evidence reports unknown, never blocks -------------
+cat >"$tmp/gh-unreadable-reviews" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) exit 0 ;;
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":"not-an-array","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *) exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-unreadable-reviews"
+set +e
+unreadable_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-unreadable-reviews" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+unreadable_rc=$?
+set -e
+assert_eq '0' "$unreadable_rc" 'unreadable review evidence never blocks the retarget'
+assert_contains "$unreadable_output" 'approval=unknown' \
+    'malformed review evidence is reported as unknown, not silently treated as none or current'
 
 finish

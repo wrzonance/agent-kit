@@ -384,12 +384,20 @@ if ((full_match_ok == 0)); then
                 # approval/closing-issues tokens for another PR's base/head
                 # match. Select only lines carrying this exact PR-and-base
                 # prefix, then require the remaining tokens on that one line.
+                # Approval is provider policy, not mechanical base safety
+                # (issue #455): a trigger/observe provider settles on the
+                # current head only after the ready/provider transition that
+                # follows this proof, and a disabled/none provider may never
+                # produce one at all. The proof's `approval=` token is
+                # therefore checked for a well-formed value, never required
+                # to be `current:post-retarget` -- ancestry, post-retarget
+                # CI, and closing linkage stay the mandatory mechanical proof.
                 proof_ok=0
                 while IFS= read -r proof_line; do
                     if [[ $proof_line == *" sha=$recon_live_sha "* &&
                           $proof_line == *'ancestry=verified'* &&
                           $proof_line == *'green:post-retarget'* &&
-                          $proof_line == *'approval=current:post-retarget'* &&
+                          $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
                           $proof_line =~ closing-issues=[1-9][0-9]*$ ]]; then
                         proof_ok=1
                         break

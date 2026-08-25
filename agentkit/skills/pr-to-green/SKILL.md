@@ -290,11 +290,15 @@ predecessor's post-merge revalidation is outstanding.
 Only after the predecessor is merged — by the human, or by `merge-pr.sh` under
 `--auto-merge` — may the direct successor become `RETARGET_REQUIRED`. Invoke
 `chain-advance.sh` to retarget it to the default branch and verify the live
-base. Refresh its diff, ancestry, conflicts, checks, head/base evidence,
-provider state, and closing linkage. Unexpected expansion, conflict, stale
-evidence, failed retarget, or required history rewrite blocks that successor
-instead of selecting a repair — this applies identically whether merging is
-human or automated.
+base. Refresh its diff, ancestry, conflicts, checks, head/base evidence, and
+closing linkage — those stay mandatory. Formal approval is reported as
+residue (`approval=current:post-retarget|residue:stale|none|unknown`), never
+required at this step: a trigger/observe provider settles on the current
+head only after the ready/provider transition below, and a disabled/
+effective-none provider may never produce one at all (issue #455).
+Unexpected expansion, conflict, stale mechanical evidence, failed retarget,
+or required history rewrite blocks that successor instead of selecting a
+repair — this applies identically whether merging is human or automated.
 
 Regenerate the queue before the successor becomes `RUNNABLE` or spends any
 provider authority. A merge-down or this retarget is deterministic queue
