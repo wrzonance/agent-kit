@@ -32,10 +32,35 @@ Usage:
 The plan is JSON: {"planId":"...","entries":[{"id":"...", ...}]}.
 `record` is the post-mutation write: it is safe to repeat, but conflicting
 number/URL results for an already-applied ID are rejected.
+
+--number is always the issue or PR number that is the mutation's subject:
+the newly created number for a created issue/PR, or the existing issue/PR
+number a comment or state-change mutation acted on. --url must embed that
+same number and match one of:
+  created issue:  https://github.com/OWNER/REPO/issues/N
+  created PR:     https://github.com/OWNER/REPO/pull/N
+  issue comment:  https://github.com/OWNER/REPO/issues/N#issuecomment-C
+  PR comment:     https://github.com/OWNER/REPO/pull/N#issuecomment-C
+A close, reopen, or board-move mutation on an existing issue/PR reuses the
+plain issues/N or pull/N form with that issue's own number.
 EOF
 }
 
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+
+# A leading -h/--help must answer the help request before it is treated as a
+# subcommand name -- otherwise it is consumed by `subcommand=$1; shift` below
+# and the option loop's own -h|--help case never runs. This also runs ahead
+# of the dependency checks below: a host missing jq/mktemp/flock must still
+# be able to print usage and exit 0 for --help, not fail with a dependency
+# error the contract this case exists for never promised to require.
+case $1 in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+esac
+
 command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
 command -v mktemp >/dev/null 2>&1 || die 'mktemp is not installed'
 command -v flock >/dev/null 2>&1 || die 'flock is not installed; ledger mutations cannot be serialized'
@@ -126,15 +151,23 @@ release_ledger_lock() {
 
 validate_ledger() {
     [[ -f $ledger && ! -L $ledger ]] || die "ledger is not a regular file: $ledger"
-    jq -e --argjson version "$SCHEMA_VERSION" '
-      .schemaVersion == $version
-      and (.planId | type) == "string" and (.planId | length) > 0
-      and (.plan | type) == "array"
-      and (.applied | type) == "array"
-      and (.remaining | type) == "array"
-      and (.idMap | type) == "object"
-      and ([.plan[]?.id] | length == (unique | length))
-    ' "$ledger" >/dev/null 2>&1 || die "invalid apply ledger: $ledger"
+    jq -e --argjson version "$SCHEMA_VERSION" '.schemaVersion == $version' \
+        "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: schemaVersion must be $SCHEMA_VERSION: $ledger"
+    jq -e '(.planId | type) == "string" and (.planId | length) > 0' \
+        "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: planId must be a non-empty string: $ledger"
+    jq -e '(.plan | type) == "array"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: plan must be an array: $ledger"
+    jq -e '(.applied | type) == "array"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: applied must be an array: $ledger"
+    jq -e '(.remaining | type) == "array"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: remaining must be an array: $ledger"
+    jq -e '(.idMap | type) == "object"' "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: idMap must be an object: $ledger"
+    jq -e '([.plan[]?.id] | length == (unique | length))' \
+        "$ledger" >/dev/null 2>&1 ||
+        die "invalid apply ledger: plan contains duplicate ids: $ledger"
 }
 
 atomic_write() {
@@ -184,13 +217,38 @@ init_ledger() {
     release_ledger_lock
 }
 
+# Accepts a created issue/PR URL, or a created issue/PR comment URL carrying
+# GitHub's own `#issuecomment-<id>` fragment; a close/reopen/board-move
+# mutation on an existing issue/PR reuses the plain (fragment-less) form. On
+# rejection, names the specific path segment that failed to parse rather than
+# one generic "not canonical" message.
+readonly RECORD_URL_RE='^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(issues|pull)/([1-9][0-9]*)(#issuecomment-[1-9][0-9]*)?$'
+
+validate_record_url() {
+    local url_number
+    if [[ $url =~ $RECORD_URL_RE ]]; then
+        url_number=${BASH_REMATCH[4]}
+    elif [[ $url != https://github.com/* ]]; then
+        die "--url must start with https://github.com/: $url"
+    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/ ]]; then
+        die "--url has a malformed issue/PR number or comment fragment after /issues/ or /pull/: $url"
+    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(/|$) ]]; then
+        die "--url must reference /issues/N or /pull/N after the repository: $url"
+    elif [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+(/|$) ]]; then
+        die "--url is missing the repository segment after the owner: $url"
+    else
+        die "--url is missing the owner segment after https://github.com/: $url"
+    fi
+    [[ $number == "$url_number" ]] ||
+        die "--number ($number) must match the issue/PR number embedded in --url ($url_number): $url"
+}
+
 record_entry() {
     acquire_ledger_lock
     validate_ledger
     [[ $entry_id =~ ^[A-Za-z0-9._:-]+$ ]] || die '--id must contain only letters, numbers, ., _, :, or -'
     [[ $number =~ ^[1-9][0-9]*$ ]] || die '--number must be a positive integer'
-    [[ $url =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[1-9][0-9]*$ ]] ||
-        die '--url must be a canonical GitHub issue or pull URL'
+    validate_record_url
     jq -e --arg id "$entry_id" 'any(.plan[]; .id == $id)' "$ledger" >/dev/null 2>&1 ||
         die "planning id is not in the ledger: $entry_id"
 
