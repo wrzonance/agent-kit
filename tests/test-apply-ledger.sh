@@ -150,6 +150,8 @@ cat >"$grammar_plan" <<'EOF'
     {"id": "pull-comment"},
     {"id": "bad-owner"},
     {"id": "bad-repo"},
+    {"id": "bad-repo-no-slash"},
+    {"id": "bad-kind-no-slash"},
     {"id": "bad-kind"},
     {"id": "bad-number"},
     {"id": "bad-fragment"},
@@ -187,6 +189,20 @@ bad_repo_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-repo --nu
 assert_rc 1 'a URL missing the repository segment is rejected' -- \
     run_ledger record --ledger "$grammar_ledger" --id bad-repo --number 1 --url 'https://github.com/example/'
 assert_contains "$bad_repo_error" 'repository segment' 'malformed-repo refusal names the repository segment'
+
+bad_repo_no_slash_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-repo-no-slash --number 1 \
+    --url 'https://github.com/example' 2>&1)
+assert_rc 1 'a URL with only an owner segment (no trailing slash) is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-repo-no-slash --number 1 --url 'https://github.com/example'
+assert_contains "$bad_repo_no_slash_error" 'repository segment' \
+    'owner-only refusal without a trailing slash still names the repository segment'
+
+bad_kind_no_slash_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-kind-no-slash --number 1 \
+    --url 'https://github.com/example/repo' 2>&1)
+assert_rc 1 'a URL with only owner/repo (no trailing slash) is rejected' -- \
+    run_ledger record --ledger "$grammar_ledger" --id bad-kind-no-slash --number 1 --url 'https://github.com/example/repo'
+assert_contains "$bad_kind_no_slash_error" '/issues/N or /pull/N' \
+    'owner/repo-only refusal without a trailing slash still names the expected path form'
 
 bad_kind_error=$(run_ledger record --ledger "$grammar_ledger" --id bad-kind --number 1 \
     --url 'https://github.com/example/repo/commits/1' 2>&1)
