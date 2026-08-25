@@ -17,6 +17,7 @@ parallel_refs=("$root/agentkit/skills/parallel-issues/references"/*.md)
 shared_refs=("$root/agentkit/skills/.shared"/*.md)
 github_body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
+shared_six_step_loop="$root/agentkit/skills/.shared/six-step-loop.md"
 verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
 reference_manifest="$root/agentkit/skills/references.md"
 ci_workflow="$root/.github/workflows/ci.yml"
@@ -49,6 +50,7 @@ triage_and_selection="$root/agentkit/skills/parallel-issues/references/triage-an
 triage_and_selection_text=$(<"$triage_and_selection")
 normalized_triage_and_selection_text=$(tr '\n' ' ' <<<"$triage_and_selection_text" | tr -s '[:space:]' ' ')
 wait_discipline_text=$(<"$shared_wait_discipline")
+six_step_loop_text=$(<"$shared_six_step_loop")
 verification_isolation_text=$(<"$verification_isolation")
 reference_manifest_text=$(<"$reference_manifest")
 worker_gate_text=$(<"$worker_gate")
@@ -219,6 +221,23 @@ assert_contains "$wait_discipline_text" 'runner completion marker' \
     'parallel wait rule names the runner completion bound'
 assert_contains "$wait_discipline_text" 'test-runner logs' \
     'parallel wait rule covers test-runner logs'
+six_step_loop_flat=$(tr '\n' ' ' <<<"$six_step_loop_text" | tr -s '[:space:]' ' ')
+assert_contains "$six_step_loop_flat" '## How to write a file' \
+    'the shared loop names the write-mechanism section'
+assert_contains "$six_step_loop_flat" 'edit/patch tool; a whole-file shell write' \
+    'the shared loop states the write-mechanism preference order'
+assert_contains "$six_step_loop_flat" 'Never hand-author a unified diff and feed it to `git apply`' \
+    'the shared loop prohibits hand-authored unified diffs'
+assert_contains "$six_step_loop_flat" 'byte-exact context lines, which a model reconstructing' \
+    'the shared loop states the reason a hand-authored diff fails'
+assert_contains "$six_step_loop_flat" 'A refused harness patch *tool* is not a refused *shell*' \
+    'the shared loop distinguishes a refused patch tool from a refused shell'
+assert_contains "$six_step_loop_flat" 'probe the shell with a trivial write' \
+    'the shared loop requires a shell probe before an environment refusal'
+assert_contains "$six_step_loop_flat" 'report the refusal only once that probe fails too' \
+    'the shared loop reports the refusal only after the probe'
+assert_contains "$six_step_loop_flat" 'fully applied or fully reverted' \
+    'the shared loop requires a coherent tree on an interrupted change'
 # The triage/prior-art/board adjudication detail and the fast-mode Step 2b
 # procedure moved to references/triage-and-selection.md, and both dispatch
 # prompt templates moved to references/worker-prompts.md (issue #107 phase
@@ -586,6 +605,23 @@ assert_contains "$issue_lead_flat" 'routine self-correction' \
     'issue lead distinguishes routine self-correction from blockers'
 assert_contains "$issue_lead_flat" 'Never ask permission to do work this dispatch already assigned you' \
     'issue lead never asks permission for assigned work'
+for prompt_flat_label in 'issue-lead prompt' 'draft-loop prompt'; do
+    prompt_flat=$([[ $prompt_flat_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_flat" || printf '%s' "$draft_loop_flat")
+    assert_contains "$prompt_flat" 'How to write a file' \
+        "$prompt_flat_label names the write-mechanism section"
+    assert_contains "$prompt_flat" 'in preference order: your own edit/patch tool' \
+        "$prompt_flat_label states the write-mechanism preference order"
+    assert_contains "$prompt_flat" 'Never hand-author a unified diff for `git apply`' \
+        "$prompt_flat_label prohibits hand-authored unified diffs"
+    assert_contains "$prompt_flat" 'byte-exact context lines you cannot reconstruct from memory' \
+        "$prompt_flat_label states the reason a hand-authored diff fails"
+    assert_contains "$prompt_flat" 'A refused patch tool is not a refused shell' \
+        "$prompt_flat_label distinguishes a refused patch tool from a refused shell"
+    assert_contains "$prompt_flat" 'probe the shell with a trivial write before reporting an environment refusal' \
+        "$prompt_flat_label requires a shell probe before an environment refusal"
+    assert_contains "$prompt_flat" 'Leave an interrupted change fully applied or fully reverted' \
+        "$prompt_flat_label requires a coherent tree on an interrupted change"
+done
 assert_contains "$issue_lead_prompt" '__DECLARED_WRITE_SET__' \
     'issue lead template carries the declared write-set token'
 assert_not_contains "$issue_lead_flat" 'Leave progress unstaged' \
@@ -824,6 +860,14 @@ assert_contains "$worker_gate_flat" 'completion report' \
     'worker-gate.md pins the worker completion report'
 assert_contains "$worker_gate_flat" 'Environment-refusal fallback' \
     'worker-gate.md keeps handback only for environment refusal'
+assert_contains "$worker_gate_flat" 'refused harness patch *tool* is not a refused *shell*' \
+    'worker-gate.md distinguishes a refused patch tool from a refused shell'
+assert_contains "$worker_gate_flat" 'probes the shell with a trivial write' \
+    'worker-gate.md requires a shell probe before an environment refusal'
+assert_contains "$worker_gate_flat" 'How to write a file' \
+    'worker-gate.md points to the shared write-mechanism guidance'
+assert_contains "$worker_gate_flat" 'fully applied or fully reverted' \
+    'worker-gate.md requires a coherent tree on an interrupted change'
 assert_contains "$worker_gate_flat" 'worktree-commit.sh` exits 2' \
     'worker-gate.md distinguishes commit refusal'
 assert_contains "$worker_gate_flat" 'push was refused after the commit succeeded' \
