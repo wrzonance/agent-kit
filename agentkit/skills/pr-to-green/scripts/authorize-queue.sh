@@ -35,8 +35,8 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
 
 Derives .agent/pr-to-green-auth.json from fresh pr-queue.sh JSON. ACTION is
 trigger, observe, or disabled. FILE is the owner-only snapshot written by the
-displayed pr-queue.sh --write-confirmed-queue run. No head SHA or base ref is
-accepted as input.
+displayed pr-queue.sh --write-confirmed-queue run, including its provider
+decisions. No head SHA or base ref is accepted as input.
 EOF
     exit "${1:-2}"
 }
@@ -180,9 +180,19 @@ jq -e '
   ((map(.pr) | unique | length) == length)
 ' "$work_dir/queue.json" >/dev/null 2>&1 || die 'queue helper returned malformed JSON'
 
-jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" '
-  type == "object" and (keys | sort) == ["queue","repository"] and
+jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
+  --slurpfile requested "$work_dir/providers.json" '
+  def provider:
+    type == "object" and (keys | sort) == ["action","name","source"] and
+    (.name | type) == "string" and (.name | test("^[a-z0-9][a-z0-9-]*$")) and
+    (.action == "trigger" or .action == "observe" or .action == "disabled") and
+    (.source | type) == "string" and (.source | length) > 0;
+  def canonical: sort_by([.name,.action,.source]);
+  type == "object" and (keys | sort) == ["providers","queue","repository"] and
   .repository == $repo and
+  (.providers | type) == "array" and all(.providers[]; provider) and
+  ((.providers | map(.name) | unique | length) == (.providers | length)) and
+  ((.providers | canonical) == ($requested[0] | canonical)) and
   (.queue | type) == "array" and (.queue | length) > 0 and
   all(.queue[];
     (keys | sort) == ["base","headSha","pr","state"] and
@@ -195,7 +205,7 @@ jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" '
   ((.queue | map(.pr) | unique | length) == (.queue | length)) and
   .queue == ($live[0] | map({pr,state,headSha:.sha,base}))
 ' "$confirmed_queue_file" >/dev/null 2>&1 ||
-    die 'live queue differs from the displayed confirmation; redisplay and reconfirm before authorization'
+    die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
 
 delete_branch=false
 [[ $branch_choice != delete ]] || delete_branch=true

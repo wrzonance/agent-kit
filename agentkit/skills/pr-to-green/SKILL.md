@@ -124,8 +124,13 @@ Establish the environment through review-remote-pr Step 0, then run
 records; do not infer installed bots from checks or issue prose.
 
 Run `pr-queue.sh --write-confirmed-queue --format table` with the persisted
-schema-v2 dispatch/merge plan when one was handed off by `parallel-issues`.
-The displayed rows and the owner-only
+schema-v2 dispatch/merge plan when one was handed off by `parallel-issues`, and
+pass every displayed provider decision in that invocation as
+`--provider NAME:ACTION:SOURCE` (or pass `--no-providers` explicitly when the
+displayed plan has none). The queue writer persists those decisions in the
+owner-only snapshot; a snapshot without `providers` is stale and cannot be
+authorized.
+The displayed rows, provider decisions, and the owner-only
 `.agent/pr-to-green-confirmed-queue.json` snapshot come from that one queue
 derivation. Its `--dispatch-plan` and `--merge-plan`
 options are aliases for that same owner-only file before and after the
@@ -147,11 +152,13 @@ serial queue.
 
 After confirmation, derive the owner-only authorization JSON with
 `scripts/authorize-queue.sh`. Pass the same repository, merge plan or explicit
-PR selectors used for the displayed queue and the machine-written confirmed
-queue snapshot. The helper re-runs `pr-queue.sh` with JSON output, requires
-the live PR order/set, states, head SHAs, and bases to equal the displayed
-snapshot, then copies those fields from the fresh live result. It has no SHA
-or base arguments. Drift fails closed and requires redisplay/reconfirmation.
+PR selectors and provider decisions used for the displayed queue and the
+machine-written confirmed queue snapshot. The helper re-runs `pr-queue.sh`
+with JSON output, requires the live PR order/set, states, head SHAs, bases, and
+provider name/action/source records to equal the displayed snapshot, then
+copies the queue fields from the fresh live result. It has no SHA or base
+arguments. Any queue or provider drift fails closed and requires
+redisplay/reconfirmation.
 For example, a confirmed non-merging queue with the default CodeRabbit action
 is recorded in one command:
 
@@ -165,12 +172,15 @@ is recorded in one command:
 
 Pass every displayed trigger-capable provider as
 `--provider NAME:ACTION:SOURCE`; when the capability plan has none, pass
-`--no-providers`. The ready-transition and auto-merge choices are mandatory
+`--no-providers`. These arguments must exactly match the provider records
+already persisted by the queue writer; changing an action, source, or provider
+set after confirmation is rejected. The ready-transition and auto-merge choices are mandatory
 arguments, so the helper never infers consent. For a confirmed merging queue,
 replace `--no-auto-merge` with `--auto-merge --merge-method METHOD` and one
 explicit `--delete-branch` or `--keep-branch` choice.
 
-The derived file contains:
+The displayed snapshot contains `repository`, `providers`, and `queue`; the
+derived authorization file contains:
 
 - `repository` and `readyTransition: true`;
 - `providers`, one record per displayed trigger-capable provider:

@@ -32,18 +32,26 @@ EOF
 chmod +x "$tmp/pr-queue"
 
 run_authorize() {
+    run_authorize_provider coderabbit:trigger:capability-default
+}
+
+run_authorize_provider() {
+    local provider=$1
     AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
         bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
         --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
         --confirmed-queue-file "$confirmed" \
-        --provider coderabbit:trigger:capability-default
+        --provider "$provider"
 }
 
 write_confirmed() {
     local sha=${1:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
     local include_second=${2:-yes}
-    jq -cn --arg sha "$sha" --arg includeSecond "$include_second" '{
+    local provider=${3:-coderabbit:trigger:capability-default}
+    jq -cn --arg sha "$sha" --arg includeSecond "$include_second" --arg provider "$provider" '{
       repository:"owner/repo",
+      providers:(if $provider == "__NONE__" then [] else ($provider | split(":")) as $parts |
+        [{name:$parts[0],action:$parts[1],source:$parts[2]}] end),
       queue:([{
         pr:14,state:"RUNNABLE",headSha:$sha,base:"main"
       }] + (if $includeSecond == "yes" then [{
@@ -72,6 +80,56 @@ assert_eq '14:RUNNABLE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:main' \
     'queue entries use the consumer schema with live head and base fields'
 assert_eq '["providers","queue","readyTransition","repository"]' \
     "$(jq -c 'keys | sort' "$auth")" 'non-auto-merge authorization has the exact schema'
+
+before_provider_failure=$(sha256sum "$auth")
+provider_action_rc=0
+run_authorize_provider coderabbit:observe:operator-instruction \
+    >"$tmp/provider-action.out" 2>"$tmp/provider-action.err" || provider_action_rc=$?
+assert_eq '1' "$provider_action_rc" 'trigger versus observe cannot change after confirmation'
+assert_contains "$(cat "$tmp/provider-action.err")" 'provider decisions differ' \
+    'provider action drift names the required consent refresh'
+assert_eq "$before_provider_failure" "$(sha256sum "$auth")" \
+    'provider action drift preserves the prior authorization byte-for-byte'
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes __NONE__
+before_provider_set_failure=$(sha256sum "$auth")
+provider_set_rc=0
+run_authorize >"$tmp/provider-set.out" 2>"$tmp/provider-set.err" || provider_set_rc=$?
+assert_eq '1' "$provider_set_rc" 'provider versus no-provider cannot change after confirmation'
+assert_contains "$(cat "$tmp/provider-set.err")" 'provider decisions differ' \
+    'provider set drift names the required consent refresh'
+assert_eq "$before_provider_set_failure" "$(sha256sum "$auth")" \
+    'provider set drift preserves the prior authorization byte-for-byte'
+
+write_confirmed
+jq '.providers += [{name:"other",action:"trigger",source:"capability-default"}]' \
+    "$confirmed" >"$tmp/extra-provider.json"
+cp "$tmp/extra-provider.json" "$confirmed"
+extra_provider_rc=0
+run_authorize >"$tmp/extra-provider.out" 2>"$tmp/extra-provider.err" || extra_provider_rc=$?
+assert_eq '1' "$extra_provider_rc" 'an extra displayed provider decision cannot be omitted'
+assert_contains "$(cat "$tmp/extra-provider.err")" 'provider decisions differ' \
+    'an extra provider decision names the required consent refresh'
+
+write_confirmed
+jq 'del(.providers)' "$confirmed" >"$tmp/missing-providers.json"
+cp "$tmp/missing-providers.json" "$confirmed"
+missing_provider_record_rc=0
+run_authorize >"$tmp/missing-provider-record.out" 2>"$tmp/missing-provider-record.err" || missing_provider_record_rc=$?
+assert_eq '1' "$missing_provider_record_rc" 'a snapshot missing provider decisions fails closed'
+assert_contains "$(cat "$tmp/missing-provider-record.err")" 'provider decisions differ' \
+    'a missing provider record names the required consent refresh'
+
+write_confirmed
+jq '.providers += [.providers[0]]' "$confirmed" >"$tmp/duplicate-provider.json"
+cp "$tmp/duplicate-provider.json" "$confirmed"
+duplicate_provider_rc=0
+run_authorize >"$tmp/duplicate-provider.out" 2>"$tmp/duplicate-provider.err" || duplicate_provider_rc=$?
+assert_eq '1' "$duplicate_provider_rc" 'duplicate displayed provider decisions fail closed'
+assert_contains "$(cat "$tmp/duplicate-provider.err")" 'provider decisions differ' \
+    'a duplicate provider decision names the required consent refresh'
+
+write_confirmed
 assert_contains "$(cat "$tmp/queue.log")" \
     '--repo owner/repo --repo-root' 'authorization delegates forge reads to pr-queue'
 assert_contains "$(cat "$tmp/queue.log")" \
@@ -120,7 +178,7 @@ auto_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --ready-transition --auto-merge --merge-method squash --delete-branch \
     --confirmed-queue-file "$confirmed" \
-    --provider coderabbit:observe:operator-instruction)
+    --provider coderabbit:trigger:capability-default)
 assert_eq "authorization=$auth queue=2" "$auto_out" 'auto-merge record is written'
 assert_eq '["autoMerge","deleteBranch","mergeMethod","providers","queue","readyTransition","repository"]' \
     "$(jq -c 'keys | sort' "$auth")" 'auto-merge authorization has the exact schema'

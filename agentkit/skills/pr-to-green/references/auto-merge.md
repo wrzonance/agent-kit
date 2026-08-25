@@ -24,7 +24,11 @@ say plainly that confirmed merges are included before that confirmation is
 asked for. Record the grant in the session ledger exactly like the ready-
 transition grant, on receipt, before it is exercised.
 
-Step 1 passes `--auto-merge`, the confirmed `--merge-method`, and exactly one
+Step 1 first persists the displayed provider decisions in the owner-only
+confirmed-queue snapshot. Its authorization call must pass the exact same
+provider name/action/source records; a provider mismatch cannot upgrade,
+downgrade, add, or remove review authority. Step 1 then passes `--auto-merge`,
+the confirmed `--merge-method`, and exactly one
 of `--delete-branch` or `--keep-branch` to `scripts/authorize-queue.sh`. The
 helper first matches the freshly derived queue against Step 1's owner-only
 displayed-queue snapshot, then derives the authorization queue fields live and
