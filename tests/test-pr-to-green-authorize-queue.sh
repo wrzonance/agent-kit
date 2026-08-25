@@ -468,6 +468,54 @@ assert_eq '1' "$wrong_proof_rc" 'a retarget proof for a different head never aut
 assert_contains "$(cat "$tmp/wrong-proof.err")" 'retarget' \
     'the mismatch is reported as a retarget-proof failure'
 
+# --- N1 (CodeRabbit review, PR #468): a group- or world-writable proof file
+# is refused, matching merge-pr.sh's authorization/gate-result file policy. ---
+
+retarget_proof_writable="$tmp/retarget-proof-writable.txt"
+cp -- "$retarget_proof_ok" "$retarget_proof_writable"
+chmod 664 "$retarget_proof_writable"
+write_confirmed
+writable_proof_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_writable" \
+    >"$tmp/writable-proof.out" 2>"$tmp/writable-proof.err" || writable_proof_rc=$?
+assert_eq '1' "$writable_proof_rc" \
+    'a group- or world-writable retarget-proof file is refused'
+assert_contains "$(cat "$tmp/writable-proof.err")" 'must not be group- or world-writable' \
+    'the refusal names the writable-by-others policy'
+chmod 600 "$retarget_proof_writable"
+
+# --- F1 (CodeRabbit review, PR #468): required tokens must all appear on the
+# SAME proof line -- a file accumulating several PRs' chain-advance.sh lines
+# must never let one PR's line satisfy the base/head match while a different
+# PR's line supplies ancestry/green/approval/closing-issues. ---
+
+retarget_proof_split="$tmp/retarget-proof-split.txt"
+{
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget closing-issues=1\n'
+    printf 'retargeted pr #99 base=other head=feat/other sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee ci=1/1 ancestry=verified closing-issues=2\n'
+} >"$retarget_proof_split"
+write_confirmed
+split_proof_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_split" \
+    >"$tmp/split-proof.out" 2>"$tmp/split-proof.err" || split_proof_rc=$?
+assert_eq '1' "$split_proof_rc" \
+    'a proof whose required tokens are split across two lines is refused even though every token appears somewhere in the file'
+assert_contains "$(cat "$tmp/split-proof.err")" 'retarget' \
+    'the split-token refusal is reported as a retarget-proof failure'
+
+# The paired positive: the same PR/base/head, but every token on one line
+# (the existing retarget_proof_ok fixture), still authorizes.
+write_confirmed
+one_line_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_ok")
+assert_eq "authorization=$auth queue=2" "$one_line_out" \
+    'a one-line proof carrying every required token still authorizes'
+
 # --- A predecessor that merged and vanished from the live queue is allowed to drop out ---
 
 write_confirmed

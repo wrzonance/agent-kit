@@ -19,10 +19,15 @@
 #   the origin URL, and the only writes are under <worktree>/.agent/.
 #
 # OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
-#   skills= path= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 #   The first record is `skills= path=/abs/skills-tree` -- the literal "skills=" key
 #   followed by a separate "path=" field; consumers parse the exact "skills= path="
 #   prefix, so the run-together form "skills=/abs/path" is incompatible.
+#   The next record, `skills-content= sha256=<hex>`, is a content stamp over the
+#   shipped skill/script tree (issue #453): a hash of what is actually on disk,
+#   independent of the `skills=` record above and never appended to it, so no
+#   consumer that greedily captures the rest of the "skills= path=" line is
+#   affected by this record's addition.
 #   The same block is written to <worktree>/.agent/env-contract.txt unless suppressed.
 #
 set -euo pipefail
@@ -91,6 +96,15 @@ if [[ -r "$SANDBOX_COMPARATOR_LIB" ]]; then
     source "$SANDBOX_COMPARATOR_LIB"
 fi
 
+# skills_content_hash (issue #453): the content stamp for probe_skills_content
+# below. Guarded like the two libraries above -- reports 'unavailable' rather
+# than crashing the whole probe when a caller's copy is missing this sibling.
+SKILLS_CONTENT_HASH_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/skills-content-hash.sh"
+if [[ -r "$SKILLS_CONTENT_HASH_LIB" ]]; then
+    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+    source "$SKILLS_CONTENT_HASH_LIB"
+fi
+
 usage() {
     cat <<'EOF'
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
@@ -131,7 +145,7 @@ Options:
                      This script never infers "escalated" itself.
   -h, --help         Print this help and exit 0.
 
-Prints `skills= path=ABSOLUTE_PATH`, then one key per line: repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
 Exit: 0 always, including when tools or facts are missing (they are reported as missing);
       2 only for invalid usage.
@@ -141,13 +155,38 @@ EOF
 note() { printf 'agent-preflight: %s\n' "$*" >&2; }
 emit() { OUT_LINES+=("$1"); }
 
+# Shared by probe_skills_path and probe_skills_content: this file's
+# grandparent directory IS the running skills tree, whether that is the
+# repository's own agentkit/skills checkout or an installed plugin copy.
+skills_tree_root() {
+    local self_dir
+    self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    (cd -- "$self_dir/../.." && pwd -P)
+}
+
 # Emits the record `skills= path=/abs/skills-tree`: "skills=" and "path=" are two
 # space-separated fields, never the run-together "skills=/abs/path" form.
 probe_skills_path() {
-    local self_dir skills
-    self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-    skills="$(cd -- "$self_dir/../.." && pwd -P)"
-    emit "skills= path=$skills"
+    emit "skills= path=$(skills_tree_root)"
+}
+
+# Emits `skills-content= sha256=HASH`: a content stamp over the shipped
+# skill/script tree, independent of the skills= path= record above and never
+# appended to it -- see the OUTPUT comment. Two trees answering to the same
+# published version string hash differently the instant their shipped
+# content differs, so a session can tell which build it is actually running
+# instead of trusting a version string that can name two different trees
+# (issue #453). Reports 'unavailable' rather than failing preflight when no
+# sha256 tool is present or the tree cannot be read -- see BEHAVIOUR above.
+probe_skills_content() {
+    local skills hash
+    skills="$(skills_tree_root)"
+    if command -v skills_content_hash > /dev/null 2>&1 &&
+        hash=$(skills_content_hash "$skills" 2> /dev/null) && [[ -n $hash ]]; then
+        emit "skills-content= sha256=$hash"
+    else
+        emit "skills-content= sha256=unavailable"
+    fi
 }
 
 die() {
@@ -1344,17 +1383,45 @@ main() {
             # the same fresh-preflight path a failed provenance re-read already uses,
             # rather than adding a second return path.
             if existing="$(cat -- "$WORKTREE/.agent/env-contract.txt")"; then
-                if grep -q '^protected=' <<< "$existing"; then
-                    printf '%s\n' "$existing"
-                    return 0
+                if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
+                    # Presence alone proves the KEYS exist, not that their VALUES
+                    # still describe the tree this script instance is actually
+                    # running from (issue #453 review follow-up): a contract
+                    # written by an earlier run of a DIFFERENT plugin build (or
+                    # one whose tree changed content underfoot since) would
+                    # otherwise be served forever with a stamp that no longer
+                    # matches reality -- defeating the stamp's entire purpose.
+                    # Recompute both live values -- the same cost a fresh
+                    # preflight already pays -- and only take the fast path when
+                    # BOTH match exactly.
+                    recorded_skills_path=$(sed -n 's/^skills= path=//p' <<< "$existing" | sed -n '1p')
+                    recorded_skills_content=$(sed -n 's/^skills-content= sha256=//p' <<< "$existing" | sed -n '1p')
+                    live_skills_path="$(skills_tree_root)"
+                    live_skills_content=''
+                    if command -v skills_content_hash > /dev/null 2>&1; then
+                        live_skills_content=$(skills_content_hash "$live_skills_path" 2> /dev/null || true)
+                    fi
+                    [[ -n $live_skills_content ]] || live_skills_content=unavailable
+                    if [[ $recorded_skills_path == "$live_skills_path" &&
+                        $recorded_skills_content == "$live_skills_content" ]]; then
+                        printf '%s\n' "$existing"
+                        return 0
+                    fi
+                    if [[ $recorded_skills_path != "$live_skills_path" ]]; then
+                        note "trusted contract's skills= path= no longer matches the running tree ($recorded_skills_path != $live_skills_path) -- continuing with a fresh preflight"
+                    else
+                        note "trusted contract's skills-content= no longer matches the running tree's content -- continuing with a fresh preflight"
+                    fi
+                else
+                    note 'trusted contract predates protected= or skills-content= -- continuing with a fresh preflight'
                 fi
-                note 'trusted contract predates protected= -- continuing with a fresh preflight'
             else
                 note 'trusted contract changed while it was being read -- continuing with a fresh preflight'
             fi
         fi
     fi
     probe_skills_path
+    probe_skills_content
     resolve_worktree
     probe_identity
     probe_config

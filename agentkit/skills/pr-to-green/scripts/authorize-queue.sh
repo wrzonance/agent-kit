@@ -28,6 +28,28 @@ die() {
     exit 1
 }
 
+# Ownership alone does not protect proof evidence from another user in the
+# same group -- reject a file group- or world-writable, matching merge-pr.sh's
+# authorization/gate-result file policy.
+file_mode() {
+    local path=$1 mode
+    if mode=$(stat -c %a -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    if mode=$(stat -f %Lp -- "$path" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    return 1
+}
+
+reject_writable_by_others() {
+    local path=$1 label=$2 mode
+    mode=$(file_mode "$path") || die "could not inspect $label permissions: $path"
+    (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
@@ -166,6 +188,7 @@ if ((${#retarget_proof_file[@]})); then
         file=${retarget_proof_file[$pr]}
         [[ -f $file && ! -L $file && -O $file ]] ||
             die "--retarget-proof file must be an owned regular file, not a symlink: $file"
+        reject_writable_by_others "$file" '--retarget-proof file'
     done
 fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; authorization evidence unavailable'
@@ -354,21 +377,34 @@ if ((full_match_ok == 0)); then
                 proof_file=${retarget_proof_file[$recon_pr]-}
                 [[ -n $proof_file ]] ||
                     die "pr $recon_pr changed base with no --retarget-proof supplied; redisplay and reconfirm before authorization"
-                # Approval is provider policy, not mechanical base safety (issue #455):
-                # a trigger/observe provider settles on the current head only after the
-                # ready/provider transition that follows this proof, and a disabled/none
-                # provider may never produce one at all. The proof's `approval=` token is
-                # therefore checked for a well-formed value, never required to be
-                # `current:post-retarget` -- ancestry, post-retarget CI, and closing
-                # linkage stay the mandatory mechanical proof.
-                if ! { grep -Fq "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null &&
-                    grep -Fq " sha=$recon_live_sha " "$proof_file" 2>/dev/null &&
-                    grep -Fq 'ancestry=verified' "$proof_file" 2>/dev/null &&
-                    grep -Fq 'green:post-retarget' "$proof_file" 2>/dev/null &&
-                    grep -Eq 'approval=(current:post-retarget|residue:stale|none|unknown)( |$)' "$proof_file" 2>/dev/null &&
-                    grep -Eq 'closing-issues=[1-9][0-9]*$' "$proof_file" 2>/dev/null; }; then
+                # Every required token must be present on the SAME candidate
+                # line, never satisfied piecemeal across different lines --
+                # a proof file that accumulated several PRs' chain-advance.sh
+                # lines must not let one PR's line supply the ancestry/green/
+                # approval/closing-issues tokens for another PR's base/head
+                # match. Select only lines carrying this exact PR-and-base
+                # prefix, then require the remaining tokens on that one line.
+                # Approval is provider policy, not mechanical base safety
+                # (issue #455): a trigger/observe provider settles on the
+                # current head only after the ready/provider transition that
+                # follows this proof, and a disabled/none provider may never
+                # produce one at all. The proof's `approval=` token is
+                # therefore checked for a well-formed value, never required
+                # to be `current:post-retarget` -- ancestry, post-retarget
+                # CI, and closing linkage stay the mandatory mechanical proof.
+                proof_ok=0
+                while IFS= read -r proof_line; do
+                    if [[ $proof_line == *" sha=$recon_live_sha "* &&
+                          $proof_line == *'ancestry=verified'* &&
+                          $proof_line == *'green:post-retarget'* &&
+                          $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
+                          $proof_line =~ closing-issues=[1-9][0-9]*$ ]]; then
+                        proof_ok=1
+                        break
+                    fi
+                done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
+                ((proof_ok)) ||
                     die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
-                fi
                 ;;
             *)
                 die "pr $recon_pr changed in a way that is not a verified mechanical advance (diff expanded, not runnable, or evidence unavailable); redisplay and reconfirm before authorization"

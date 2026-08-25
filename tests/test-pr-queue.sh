@@ -198,6 +198,19 @@ fp_a_ne_b=true
 assert_eq true "$fp_a_ne_b" \
     'one changed file (same single-file shape, different blob sha and patch) changes the fingerprint'
 
+# N2 (CodeRabbit review, PR #468): a unified-diff hunk header's line-number
+# range (@@ -a,b +c,d @@) is position, not content -- a base-only shift with
+# no real edit changes those numbers while every line the hunk carries, the
+# filename, and the blob sha all stay identical. The fingerprint must not
+# flip on that shift alone.
+fp11_range1=$(QUEUE_FILES_11='[{"filename":"a.txt","sha":"blobA","patch":"@@ -1,5 +1,5 @@ function foo() {\n-old line\n+new line\n context\n"}]' \
+    run_queue --pr 11 --format json | jq -r '.[0].diffFingerprint')
+fp11_range2=$(QUEUE_FILES_11='[{"filename":"a.txt","sha":"blobA","patch":"@@ -10,5 +12,5 @@ function foo() {\n-old line\n+new line\n context\n"}]' \
+    run_queue --pr 11 --format json | jq -r '.[0].diffFingerprint')
+assert_matches "$fp11_range1" '^[0-9a-f]{64}$' 'shifted-range fileset yields a well-formed fingerprint'
+assert_eq "$fp11_range1" "$fp11_range2" \
+    'two patches differing only in hunk-header line-number ranges hash identically'
+
 json15_fail=$(QUEUE_FILES_15_FAIL=1 run_queue --pr 15 --format json)
 assert_eq 'null' "$(jq -r '.[0].diffFingerprint' <<<"$json15_fail")" \
     'an unreadable per-file evidence read yields a null fingerprint rather than a fabricated one'

@@ -14,6 +14,8 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 
+readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
+
 PR=''
 REPO=''
 RUN_DIR=''
@@ -21,6 +23,8 @@ PEER_CLI_ABSENT=0
 HARNESS_NAME=''
 RUNNING_PROVIDER=''
 PEER_CLI_NAME=''
+CONTRACT_ROOT=''
+BASE_CONFIG_FILE=''
 BASE_REF=''
 PROVIDER=''
 MODEL=''
@@ -53,6 +57,10 @@ EOF
 die() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
     exit 1
+}
+
+warn() {
+    printf '%s: %s\n' "$PROGNAME" "$1" >&2
 }
 
 die_usage() {
@@ -94,6 +102,7 @@ load_environment_contract() {
     if ! contract_root=$(git rev-parse --show-toplevel 2>/dev/null); then
         die 'could not resolve the repository root for the environment contract'
     fi
+    CONTRACT_ROOT=$contract_root
     contract="$contract_root/.agent/env-contract.txt"
     [[ ! -L $contract_root/.agent ]] ||
         die "environment contract directory is a symlink: $contract_root/.agent"
@@ -139,12 +148,63 @@ load_environment_contract() {
     esac
 }
 
+# Best-effort read of one declared config key from CONFIG_FILE (empty means
+# "no trusted source available for this call" -- always resolves to "not
+# declared", never the working tree). Absent, unreadable, or resolver-rejected
+# values fall through silently -- the caller decides what "not declared"
+# means, matching every other repo-config.sh consumer in this codebase (e.g.
+# spawn-contract.md's worker_config_value).
+#
+# repo-config.sh exits 0 with empty output for --get on ANY key when its
+# config file does not exist at all (it only exits 1 for a key that is
+# genuinely absent from an existing file) -- so success alone does not mean
+# "declared". None of these keys validate to an empty string, so requiring
+# non-empty output here is exact, not a heuristic.
+resolve_config_value() {
+    local key=$1 config_file=$2 value
+    [[ -n $config_file && -x $REPO_CONFIG_SH ]] || return 1
+    value=$("$REPO_CONFIG_SH" --repo-root "$CONTRACT_ROOT" --config-file "$config_file" \
+        --get "$key" 2>/dev/null) || return 1
+    [[ -n $value ]] || return 1
+    printf '%s' "$value"
+}
+
+# select_reviewer CONFIG_FILE -- CONFIG_FILE is the ONLY source ever consulted
+# for AGENT_ADVERSARIAL_* declarations; pass '' for the pinned-defaults-only
+# selection. The candidate PR's own working-tree checkout must never be that
+# source: a PR under review can edit .agent/config.env in its own diff, and a
+# reviewer that reads its declarations from the tree being reviewed lets the
+# candidate steer the very review meant to scrutinize it (the PR's effort=low
+# or a same-harness reviewer declaration would go unnoticed). The one caller
+# that may pass a real path (main, below) resolves it from the PR's BASE
+# revision instead, and only when the reviewed diff itself does not touch
+# that file.
 select_reviewer() {
-    local reviewer_cli=$PEER_CLI_NAME
-    # With no peer there is no cross-harness reviewer to select. Keep the
-    # blind fallback on the running harness so its provider cannot be
-    # mislabeled as cross-provider merely because the peer is unavailable.
-    ((PEER_CLI_ABSENT)) && reviewer_cli=$HARNESS_NAME
+    local config_file=$1 reviewer_cli=$PEER_CLI_NAME declared_reviewer='' declared_value='' fell_back=0
+
+    if declared_reviewer=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER "$config_file"); then
+        reviewer_cli=$declared_reviewer
+        # AGENT_ADVERSARIAL_REVIEWER only ever names codex or claude (the
+        # resolver refuses anything else), and HARNESS_NAME/PEER_CLI_NAME are
+        # always that same two-item set with HARNESS_NAME guaranteed present
+        # (it is literally running this script). So a declared reviewer is
+        # either the running harness -- always available, no check needed --
+        # or the peer, whose availability the contract already probed once
+        # and encoded as PEER_CLI_ABSENT; re-probing here would both duplicate
+        # that work and make this depend on whatever happens to be on PATH
+        # instead of the one already-established environment fact.
+        if [[ $reviewer_cli == "$PEER_CLI_NAME" ]] && ((PEER_CLI_ABSENT)); then
+            warn "declared adversarial reviewer '$declared_reviewer' (AGENT_ADVERSARIAL_REVIEWER) is not available on this machine; falling back to the running harness '$HARNESS_NAME'"
+            reviewer_cli=$HARNESS_NAME
+            fell_back=1
+        fi
+    else
+        # With no peer there is no cross-harness reviewer to select. Keep the
+        # blind fallback on the running harness so its provider cannot be
+        # mislabeled as cross-provider merely because the peer is unavailable.
+        ((PEER_CLI_ABSENT)) && reviewer_cli=$HARNESS_NAME
+    fi
+
     case $reviewer_cli in
         codex)
             PROVIDER=openai
@@ -164,11 +224,31 @@ select_reviewer() {
             die "unsupported reviewer CLI: $reviewer_cli"
             ;;
     esac
+
+    # AGENT_ADVERSARIAL_REVIEW_MODEL names a model for the declared primary
+    # reviewer; AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK names one for the
+    # running-harness fallback slot above. Neither is meaningful without
+    # AGENT_ADVERSARIAL_REVIEWER declared -- a bare model id has no CLI to be
+    # interpreted against. AGENT_ADVERSARIAL_REVIEW_EFFORT is harness-neutral
+    # (same convention as AGENT_WORKER_EFFORT) and always applies.
+    if ((fell_back)); then
+        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK "$config_file") &&
+            MODEL=$declared_value
+    elif [[ -n $declared_reviewer ]]; then
+        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_MODEL "$config_file") &&
+            MODEL=$declared_value
+    fi
+    declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_EFFORT "$config_file") && EFFORT=$declared_value
+
     if [[ $PROVIDER == "$RUNNING_PROVIDER" ]]; then
         MODE=blind-fallback
     else
         MODE=cross-provider
     fi
+}
+
+require_helper_executable() {
+    [[ -x $HELPER ]] || die "review helper is missing or not executable: $HELPER"
 }
 
 validate_args() {
@@ -179,8 +259,12 @@ validate_args() {
     command -v gh >/dev/null 2>&1 || die 'gh is required to resolve the pull request base'
     command -v jq >/dev/null 2>&1 || die 'jq is required to validate the review result'
     load_environment_contract
-    select_reviewer
-    [[ -x $HELPER ]] || die "review helper is missing or not executable: $HELPER"
+    # Pinned-defaults-only pass: no trusted config source is available yet
+    # (BASE_REF is not resolved until later), so this never reads
+    # AGENT_ADVERSARIAL_* declarations from anywhere. It exists only to fail
+    # fast on a missing helper before spending a gh api round trip.
+    select_reviewer ''
+    require_helper_executable
 }
 
 prepare_owned_artifact() {
@@ -227,6 +311,41 @@ build_diff() {
     mv -f -- "$tmp" "$diff_path" || die "could not publish the adversarial diff: $diff_path"
     [[ -s $diff_path ]] || die 'the adversarial diff is empty; review is blocked'
     grep -q '[^[:space:]]' -- "$diff_path" || die 'the adversarial diff is empty; review is blocked'
+}
+
+# Populates BASE_CONFIG_FILE with a private snapshot of the PR's BASE-revision
+# .agent/config.env and returns 0 when select_reviewer should be re-run
+# against it; returns 1 (BASE_CONFIG_FILE left empty) when there is nothing
+# trustworthy to re-run against, which is also correct: the pinned-defaults
+# selection from validate_args already stands unchanged in that case.
+#
+# Two distinct reasons never apply a declaration, refused rather than merely
+# skipped when it is the reviewed diff itself doing the tampering:
+#   - the reviewed diff (origin/BASE_REF...HEAD, the exact range sent for
+#     review) touches .agent/config.env at all -- the PR under review must
+#     never be able to steer the review meant to scrutinize it, so this is
+#     announced on stderr and the declarations are ignored outright, not
+#     merely read from a stale copy;
+#   - the base revision has no .agent/config.env -- nothing was ever
+#     declared, so there is nothing to apply; silent, not a tampering signal.
+resolve_base_declared_config() {
+    local touched base_config="$RUN_DIR/state/adversarial-review-base-config.env" tmp
+    touched=$(git diff --name-only "origin/$BASE_REF...HEAD" -- .agent/config.env 2>/dev/null) ||
+        die 'could not determine whether the reviewed diff touches .agent/config.env'
+    if [[ -n $touched ]]; then
+        warn 'the reviewed diff changes .agent/config.env; ignoring any declared adversarial-reviewer settings for this review and using the pinned defaults'
+        return 1
+    fi
+    prepare_owned_artifact "$base_config"
+    tmp="$base_config.tmp"
+    if ! git show "origin/$BASE_REF:.agent/config.env" >"$tmp" 2>/dev/null; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    chmod 600 -- "$tmp" || die "could not secure the base-revision config snapshot: $tmp"
+    mv -f -- "$tmp" "$base_config" || die "could not publish the base-revision config snapshot: $base_config"
+    BASE_CONFIG_FILE=$base_config
+    return 0
 }
 
 verify_consent() {
@@ -388,6 +507,10 @@ main() {
     check_finding_ledger
     resolve_base
     build_diff
+    if resolve_base_declared_config; then
+        select_reviewer "$BASE_CONFIG_FILE"
+        require_helper_executable
+    fi
     verify_consent
     run_provider
     initialize_finding_ledger
