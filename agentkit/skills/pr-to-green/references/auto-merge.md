@@ -24,8 +24,15 @@ say plainly that confirmed merges are included before that confirmation is
 asked for. Record the grant in the session ledger exactly like the ready-
 transition grant, on receipt, before it is exercised.
 
-The authorization JSON file Step 1 already writes gains one field when
-`--auto-merge` is present:
+Step 1 first persists the displayed provider decisions in the owner-only
+confirmed-queue snapshot. Its authorization call must pass the exact same
+provider name/action/source records; a provider mismatch cannot upgrade,
+downgrade, add, or remove review authority. Step 1 then passes `--auto-merge`,
+the confirmed `--merge-method`, and exactly one
+of `--delete-branch` or `--keep-branch` to `scripts/authorize-queue.sh`. The
+helper first matches the freshly derived queue against Step 1's owner-only
+displayed-queue snapshot, then derives the authorization queue fields live and
+adds the merge fields to the same owner-only record:
 
 ```json
 {"repository":"...", "readyTransition":true, "autoMerge":true,
@@ -34,9 +41,11 @@ The authorization JSON file Step 1 already writes gains one field when
 ```
 
 `mergeMethod` is one repository-allowed method (`squash`, `merge`, or
-`rebase`) confirmed in the displayed plan; `deleteBranch` defaults to `false`
-(worktrees stay preserved either way — deletion only ever touches the remote
-branch ref).
+`rebase`) confirmed in the displayed plan. Although branch deletion defaults
+to false at the skill invocation boundary, authorization derivation requires
+the confirmed choice to be restated explicitly as `--keep-branch` or
+`--delete-branch`; it never infers the flag. Worktrees stay preserved either
+way — deletion only ever touches the remote branch ref.
 
 ## The pre-merge review-completion gate
 

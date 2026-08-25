@@ -103,6 +103,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | Environment, isolated worktree, Phase A/C review loop, adversarial receipt, human gate | `../review-remote-pr/SKILL.md` and its lazy references |
 | Provider plan before mutation | `../.shared/scripts/review-provider-config.sh` |
 | Draft discovery, explicit resumption, stack graph, stable queue | `scripts/pr-queue.sh` |
+| Owner-only authorization derived from the confirmed live queue | `scripts/authorize-queue.sh` |
 | Confirmed ready transition and provider capability action, and its `--observe` landed-review check | `scripts/review-transition.sh` |
 | CI/provider/finding evidence | `../review-remote-pr/scripts/gh-pr-state.sh` |
 | Canonical replies and bot-response settlement | `../review-remote-pr/scripts/thread-action.sh` |
@@ -122,8 +123,16 @@ Establish the environment through review-remote-pr Step 0, then run
 `review-provider-config.sh` before any mutation. Retain its exact capability
 records; do not infer installed bots from checks or issue prose.
 
-Run `pr-queue.sh` with the persisted schema-v2 dispatch/merge plan when one was
-handed off by `parallel-issues`. Its `--dispatch-plan` and `--merge-plan`
+Run `pr-queue.sh --write-confirmed-queue --format table` with the persisted
+schema-v2 dispatch/merge plan when one was handed off by `parallel-issues`, and
+pass every displayed provider decision in that invocation as
+`--provider NAME:ACTION:SOURCE` (or pass `--no-providers` explicitly when the
+displayed plan has none). The queue writer persists those decisions in the
+owner-only snapshot; a snapshot without `providers` is stale and cannot be
+authorized.
+The displayed rows, provider decisions, and the owner-only
+`.agent/pr-to-green-confirmed-queue.json` snapshot come from that one queue
+derivation. Its `--dispatch-plan` and `--merge-plan`
 options are aliases for that same owner-only file before and after the
 ready-flip upgrade; this consumer requires the schema-2 stage. Without one, use forge derivation. Automatic
 discovery selects drafts. An explicitly named ready PR may resume an interrupted
@@ -141,7 +150,37 @@ user confirms the displayed provider plan (including any per-provider
 trigger/observe/disabled decision), verified dependency graph, and exact
 serial queue.
 
-After confirmation, write an owner-only authorization JSON file containing:
+After confirmation, derive the owner-only authorization JSON with
+`scripts/authorize-queue.sh`. Pass the same repository, merge plan or explicit
+PR selectors and provider decisions used for the displayed queue and the
+machine-written confirmed queue snapshot. The helper re-runs `pr-queue.sh`
+with JSON output, requires the live PR order/set, states, head SHAs, bases, and
+provider name/action/source records to equal the displayed snapshot, then
+copies the queue fields from the fresh live result. It has no SHA or base
+arguments. Any queue or provider drift fails closed and requires
+redisplay/reconfirmation.
+For example, a confirmed non-merging queue with the default CodeRabbit action
+is recorded in one command:
+
+```bash
+"$agentkit/pr-to-green/scripts/authorize-queue.sh" \
+  --repo "$repo" --repo-root "$repo_root" --merge-plan "$merge_plan" \
+  --confirmed-queue-file "$repo_root/.agent/pr-to-green-confirmed-queue.json" \
+  --ready-transition --no-auto-merge \
+  --provider coderabbit:trigger:capability-default
+```
+
+Pass every displayed trigger-capable provider as
+`--provider NAME:ACTION:SOURCE`; when the capability plan has none, pass
+`--no-providers`. These arguments must exactly match the provider records
+already persisted by the queue writer; changing an action, source, or provider
+set after confirmation is rejected. The ready-transition and auto-merge choices are mandatory
+arguments, so the helper never infers consent. For a confirmed merging queue,
+replace `--no-auto-merge` with `--auto-merge --merge-method METHOD` and one
+explicit `--delete-branch` or `--keep-branch` choice.
+
+The displayed snapshot contains `repository`, `providers`, and `queue`; the
+derived authorization file contains:
 
 - `repository` and `readyTransition: true`;
 - `providers`, one record per displayed trigger-capable provider:
@@ -176,8 +215,11 @@ adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
-If Phase A changes the head, regenerate the queue and authorization evidence.
-Do not let earlier confirmation authorize a new SHA.
+If Phase A changes the head, re-run the same displayed queue command with
+`pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
+re-run `authorize-queue.sh`. It atomically replaces stale head/base records
+only after the fresh queue exactly matches that newly confirmed snapshot. Do
+not let earlier confirmation authorize a new SHA.
 
 ### 3. Transition and consume provider state
 

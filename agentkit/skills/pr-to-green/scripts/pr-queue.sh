@@ -9,8 +9,12 @@ repo=''
 repo_root=''
 merge_plan=''
 format=table
+write_confirmed_queue=0
+no_providers=0
+declare -a providers=()
 declare -a explicit_prs=()
 work_dir=''
+output_tmp=''
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -24,6 +28,8 @@ usage() {
 usage: $PROGRAM --repo OWNER/REPO [--repo-root DIR]
                 [--merge-plan FILE, --dispatch-plan FILE]
                 [--pr N ...] [--format records|table|json]
+                [--write-confirmed-queue
+                   (--provider NAME:ACTION:SOURCE ... | --no-providers)]
 
   --merge-plan FILE, --dispatch-plan FILE
       aliases for the same file after the ready-flip upgrade; dispatch-plan
@@ -59,6 +65,20 @@ while (($#)); do
             format=$2
             shift 2
             ;;
+        --write-confirmed-queue)
+            write_confirmed_queue=1
+            shift
+            ;;
+        --provider)
+            (($# >= 2)) || usage
+            providers+=("$2")
+            shift 2
+            ;;
+        --no-providers)
+            ((no_providers == 0)) || die '--no-providers may be passed only once'
+            no_providers=1
+            shift
+            ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -78,11 +98,49 @@ if [[ -n $repo_root ]]; then
     [[ -d $repo_root ]] || die "--repo-root is not a directory: $repo_root"
     repo_root=$(cd -- "$repo_root" && pwd -P) || die 'could not resolve --repo-root'
 fi
+if ((write_confirmed_queue)); then
+    [[ -n $repo_root ]] || die '--write-confirmed-queue requires --repo-root'
+    [[ ! -L $repo_root && -O $repo_root ]] ||
+        die '--repo-root must be an owned directory, not a symlink'
+    [[ -d $repo_root/.agent && ! -L $repo_root/.agent && -O $repo_root/.agent ]] ||
+        die '.agent must be an owned directory, not a symlink'
+    if ((no_providers)); then
+        ((${#providers[@]} == 0)) || die '--no-providers cannot be combined with --provider'
+    else
+        ((${#providers[@]} > 0)) ||
+            die 'pass each --provider NAME:ACTION:SOURCE or pass --no-providers explicitly'
+    fi
+else
+    ((no_providers == 0 && ${#providers[@]} == 0)) ||
+        die 'provider decisions require --write-confirmed-queue'
+fi
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/pr-queue.XXXXXX") || die 'could not create work directory'
 chmod 700 "$work_dir"
-cleanup() { rm -rf -- "$work_dir"; }
+cleanup() {
+    rm -rf -- "$work_dir"
+    [[ -z $output_tmp || ! -e $output_tmp ]] || rm -f -- "$output_tmp"
+}
 trap cleanup EXIT HUP INT TERM
+
+if ((write_confirmed_queue)); then
+    : >"$work_dir/providers.jsonl"
+    declare -A seen_providers=()
+    for provider in "${providers[@]}"; do
+        IFS=: read -r name action source extra <<<"$provider"
+        [[ -n $name && -n $action && -n $source && -z ${extra:-} ]] ||
+            die '--provider must have the form NAME:ACTION:SOURCE'
+        [[ $name =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid provider name: $name"
+        case $action in trigger|observe|disabled) ;;
+            *) die "invalid provider action for $name: $action" ;;
+        esac
+        [[ -z ${seen_providers[$name]+set} ]] || die "duplicate provider: $name"
+        seen_providers[$name]=1
+        jq -cn --arg name "$name" --arg action "$action" --arg source "$source" \
+            '{name:$name,action:$action,source:$source}' >>"$work_dir/providers.jsonl"
+    done
+    jq -s '.' "$work_dir/providers.jsonl" >"$work_dir/providers.json"
+fi
 
 api() {
     "$GH_BIN" api "$@"
@@ -313,6 +371,26 @@ else
           source:"plan", base:.live.base.ref, head:.live.head.ref, sha:.live.head.sha
         })
     ' "$work_dir/planned-live.json" >"$work_dir/queue.json"
+fi
+
+if ((write_confirmed_queue)); then
+    confirmed_output=$repo_root/.agent/pr-to-green-confirmed-queue.json
+    if [[ -e $confirmed_output &&
+          ( ! -f $confirmed_output || -L $confirmed_output || ! -O $confirmed_output ) ]]; then
+        die 'confirmed queue output must be an owned regular file, not a symlink'
+    fi
+    jq --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" '{
+      repository:$repo,
+      providers:$providers[0],
+      queue:map({pr,state,headSha:.sha,base})
+    }' "$work_dir/queue.json" >"$work_dir/confirmed-queue.json" ||
+        die 'could not compose confirmed queue evidence'
+    output_tmp=$(mktemp "$repo_root/.agent/.pr-to-green-confirmed-queue.XXXXXX") ||
+        die 'could not create confirmed queue output'
+    chmod 600 "$output_tmp"
+    cp -- "$work_dir/confirmed-queue.json" "$output_tmp"
+    mv -f -- "$output_tmp" "$confirmed_output"
+    output_tmp=''
 fi
 
 if [[ $format == json ]]; then

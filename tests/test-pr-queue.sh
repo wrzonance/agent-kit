@@ -11,6 +11,8 @@ TEST_NAME='pr queue'
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
+repo_root="$tmp/repo"
+mkdir -p "$repo_root/.agent"
 
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -150,7 +152,32 @@ json=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format json)
 assert_eq 'RUNNABLE' "$(jq -r '.[0].state' <<<"$json")" \
     'JSON output preserves the confirmed queue for authorization evidence'
 
+confirmed="$repo_root/.agent/pr-to-green-confirmed-queue.json"
+display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --no-providers --format table)
+assert_contains "$display" '#11' 'the confirmation writer preserves the displayed queue'
+assert_eq '600' "$(stat -c '%a' "$confirmed")" \
+    'the displayed queue snapshot is owner-only'
+assert_eq '["providers","queue","repository"]' "$(jq -c 'keys | sort' "$confirmed")" \
+    'the displayed queue snapshot records provider decisions'
+assert_eq '[]' "$(jq -c '.providers' "$confirmed")" \
+    'an explicit no-provider decision is durably recorded'
+assert_eq 'owner/repo' "$(jq -r '.repository' "$confirmed")" \
+    'the displayed queue snapshot is repository-bound'
+assert_eq '11:RUNNABLE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:main' \
+    "$(jq -r '.queue[0] | [.pr,.state,.headSha,.base] | join(":")' "$confirmed")" \
+    'the snapshot head and base come from the exact displayed queue derivation'
+
 : >"$tmp/gh.log"
+display_provider=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --provider coderabbit:observe:operator-instruction --format table)
+assert_contains "$display_provider" '#11' 'provider confirmation still preserves the displayed queue'
+assert_eq 'coderabbit:observe:operator-instruction' \
+    "$(jq -r '.providers[0] | [.name,.action,.source] | join(":")' "$confirmed")" \
+    'the displayed provider action and source are durably recorded'
+
 out=$(QUEUE_DRIFT=1 run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/drift.err")
 assert_contains "$(cat "$tmp/drift.err")" 'recorded head drift' \
     'head drift is reported before forge-graph fallback'
