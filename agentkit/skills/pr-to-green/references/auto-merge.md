@@ -70,33 +70,50 @@ snapshot exactly, reconciles each confirmed PR against fresh `pr-queue.sh`
 evidence into exactly one of:
 
 - **unchanged** — no drift for this PR.
-- **a root merge-down** — same base, a new head SHA, an unchanged diff-shape
-  fingerprint (`additions`/`deletions`/`changedFiles`, sourced from the live
-  PR read, proving no unexpected diff expansion), `state:RUNNABLE`, and the
-  previously authorized head proven an ancestor of the new head via a live
-  `compare` read (`behind_by:0`, `status` `ahead`/`identical` — never a history
-  rewrite).
-- **a stacked retarget** — a new base, the same diff-shape and ancestry proof
-  above, plus a `--retarget-proof PR:FILE` naming the exact stdout line
-  `../parallel-issues/scripts/chain-advance.sh --retarget` printed for this PR
-  (matching base and head, and carrying `ancestry=verified`,
+- **a root merge-down** — the confirmed prior state was `RUNNABLE`, the base is
+  unchanged, the head SHA actually changed, the diff fingerprint (below) is
+  unchanged, and the previously authorized head is proven an ancestor of the
+  new head via a live `compare` read (`behind_by:0`, `status`
+  `ahead`/`identical` — never a history rewrite). A bare state change with an
+  identical head and base — e.g. the forge recomputing `BLOCKED`/
+  `MERGEABLE_UNKNOWN` to `RUNNABLE` with nothing else different — is never
+  itself a merge-down and fits no bucket here.
+- **a stacked retarget** — the confirmed prior state was `WAITING_FOR_MERGE` or
+  `RETARGET_REQUIRED`, the base actually changed (the head may or may not),
+  the same diff-fingerprint and live ancestry proof above (both required, not
+  only the proof file), plus a `--retarget-proof PR:FILE` naming the exact
+  stdout line `../parallel-issues/scripts/chain-advance.sh --retarget` printed
+  for this PR (matching base and head, and carrying `ancestry=verified`,
   `green:post-retarget`, `approval=current:post-retarget`, and a positive
-  `closing-issues=`). Perform the merge-down and `chain-advance.sh --retarget`
-  call itself exactly as Step 5 and `chains.md` already describe; this flag
-  only lets the resulting refresh skip redisplay.
+  `closing-issues=`). The proof file's own claim is never trusted in place of
+  the live ancestry read — both must independently agree. Perform the
+  merge-down and `chain-advance.sh --retarget` call itself exactly as Step 5
+  and `chains.md` already describe; this flag only lets the resulting refresh
+  skip redisplay.
 - **a verified merge** — a confirmed PR absent from the live queue, independently
   confirmed `merged:true` from a fresh read of that PR (a PR that vanished for
   any other reason — closed unmerged, deleted, access lost — is never assumed
   merged).
 
+The diff fingerprint is a sha256 over the sorted per-file `{filename, blob
+sha, patch}` list from a live `pulls/N/files` read, computed once by
+`pr-queue.sh` and carried in its confirmed/live queue evidence (never in the
+derived authorization record). An aggregate line-count summary is not a
+content identity — a descendant commit can swap reviewed content while
+preserving the same add/delete/file-count shape — so equality is checked on
+this fingerprint, never on counts alone; a read that fails, returns malformed
+data, or covers more files than this is willing to hash yields a null
+fingerprint, which can never satisfy a merge-down or retarget bucket.
+
 Every one of those still derives the refreshed head/base live from
 `pr-queue.sh`, exactly like the exact-match path — the model never supplies a
-replacement SHA by hand. A confirmed PR that fits none of the four buckets
-(diff expanded, not `RUNNABLE`, broken ancestry, a missing/mismatched retarget
-proof, or a genuinely new PR the live queue adds) fails closed with the same
-redisplay-and-reconfirm refusal as without the flag — conflicts, unexpected
-diff expansion, ambiguous ancestry, topology/provider/merge-policy changes, and
-human-feedback dispositions are always material judgment, never mechanical.
+replacement SHA by hand. A confirmed PR that fits none of the buckets above
+(a state-only change, diff content that changed, a null fingerprint, broken
+ancestry, a missing/mismatched retarget proof, or a genuinely new PR the live
+queue adds) fails closed with the same redisplay-and-reconfirm refusal as
+without the flag — conflicts, unexpected diff expansion, ambiguous ancestry,
+topology/provider/merge-policy changes, and human-feedback dispositions are
+always material judgment, never mechanical.
 The Step 3 transition step and `merge-pr.sh` are unchanged by any of this: both
 still re-read the live PR and refuse unless its head and base match the
 authorization file's queue record at the exact moment of mutation, so a

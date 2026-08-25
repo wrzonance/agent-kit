@@ -25,32 +25,31 @@ if [[ ${QUEUE_FAIL:-0} == 1 ]]; then
 fi
 sha=${QUEUE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
 base14=${QUEUE_BASE_14:-main}
-shape14=${QUEUE_SHAPE_14:-1:1:1}
+state14=${QUEUE_STATE_14:-RUNNABLE}
+fp14=${QUEUE_FP_14:-10633847aa4a03af3ace3e56e24dfff1db569b771793fe2152ef9ceb34f17eee}
 omit14=${QUEUE_OMIT_14:-0}
 base15=${QUEUE_BASE_15:-feat/demo}
 sha15=${QUEUE_SHA_15:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}
 state15=${QUEUE_STATE_15:-WAITING_FOR_MERGE}
-shape15=${QUEUE_SHAPE_15:-2:2:2}
+fp15=${QUEUE_FP_15:-14293f2536894b3ed4b275126b42dd9c85cb5dbf323df8ce7bf94b9e66563f31}
 include16=${QUEUE_INCLUDE_16:-0}
 sha16=${QUEUE_SHA_16:-6666666666666666666666666666666666666666}
-shape16=${QUEUE_SHAPE_16:-3:3:3}
+fp16=${QUEUE_FP_16:-7a926b1b60d7bec13dd83edefa996ebb00047a95fa5f59bdfc52edc7fa057504}
 entries='[]'
 if [[ $omit14 == 0 ]]; then
-    entries=$(jq -cn --argjson e "$entries" --arg sha "$sha" --arg base14 "$base14" --arg shape14 "$shape14" '
-      ($shape14 | split(":") | map(tonumber)) as $s14 | $e + [
-      {pr:14,issue:14,state:"RUNNABLE",source:"plan",base:$base14,head:"feat/demo",sha:$sha,
-       diffShape:{additions:$s14[0],deletions:$s14[1],changedFiles:$s14[2]}}]')
+    entries=$(jq -cn --argjson e "$entries" --arg sha "$sha" --arg base14 "$base14" \
+        --arg state14 "$state14" --arg fp14 "$fp14" '
+      $e + [{pr:14,issue:14,state:$state14,source:"plan",base:$base14,head:"feat/demo",sha:$sha,
+       diffFingerprint:$fp14}]')
 fi
 entries=$(jq -cn --argjson e "$entries" --arg sha15 "$sha15" --arg base15 "$base15" \
-    --arg state15 "$state15" --arg shape15 "$shape15" '
-  ($shape15 | split(":") | map(tonumber)) as $s15 | $e + [
-  {pr:15,issue:15,state:$state15,source:"plan",base:$base15,head:"feat/next",sha:$sha15,
-   diffShape:{additions:$s15[0],deletions:$s15[1],changedFiles:$s15[2]}}]')
+    --arg state15 "$state15" --arg fp15 "$fp15" '
+  $e + [{pr:15,issue:15,state:$state15,source:"plan",base:$base15,head:"feat/next",sha:$sha15,
+   diffFingerprint:$fp15}]')
 if [[ $include16 == 1 ]]; then
-    entries=$(jq -cn --argjson e "$entries" --arg sha16 "$sha16" --arg shape16 "$shape16" '
-      ($shape16 | split(":") | map(tonumber)) as $s16 | $e + [
-      {pr:16,issue:16,state:"RUNNABLE",source:"plan",base:"main",head:"feat/root2",sha:$sha16,
-       diffShape:{additions:$s16[0],deletions:$s16[1],changedFiles:$s16[2]}}]')
+    entries=$(jq -cn --argjson e "$entries" --arg sha16 "$sha16" --arg fp16 "$fp16" '
+      $e + [{pr:16,issue:16,state:"RUNNABLE",source:"plan",base:"main",head:"feat/root2",sha:$sha16,
+       diffFingerprint:$fp16}]')
 fi
 printf '%s\n' "$entries"
 EOF
@@ -101,18 +100,21 @@ write_confirmed() {
     local include_second=${2:-yes}
     local provider=${3:-coderabbit:trigger:capability-default}
     local base14=${4:-main}
+    local state14=${5:-RUNNABLE}
     jq -cn --arg sha "$sha" --arg includeSecond "$include_second" --arg provider "$provider" \
-        --arg base14 "$base14" '{
+        --arg base14 "$base14" --arg state14 "$state14" \
+        --arg fp14 10633847aa4a03af3ace3e56e24dfff1db569b771793fe2152ef9ceb34f17eee \
+        --arg fp15 14293f2536894b3ed4b275126b42dd9c85cb5dbf323df8ce7bf94b9e66563f31 '{
       repository:"owner/repo",
       providers:(if $provider == "__NONE__" then [] else ($provider | split(":")) as $parts |
         [{name:$parts[0],action:$parts[1],source:$parts[2]}] end),
       queue:([{
-        pr:14,state:"RUNNABLE",headSha:$sha,base:$base14,
-        diffShape:{additions:1,deletions:1,changedFiles:1}
+        pr:14,state:$state14,headSha:$sha,base:$base14,
+        diffFingerprint:$fp14
       }] + (if $includeSecond == "yes" then [{
         pr:15,state:"WAITING_FOR_MERGE",
         headSha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",base:"feat/demo",
-        diffShape:{additions:2,deletions:2,changedFiles:2}
+        diffFingerprint:$fp15
       }] else [] end))
     }' >"$confirmed"
     chmod 600 "$confirmed"
@@ -307,7 +309,8 @@ assert_contains "$(cat "$tmp/gh.log")" 'compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 write_confirmed
 before_expand=$(sha256sum "$auth")
 expand_rc=0
-QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc QUEUE_SHAPE_14=9:9:9 \
+QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc \
+    QUEUE_FP_14=7465d0e652e2a8f22cad98c4f90daf8ab57398b6b554a1c49bda2b75c5b36df6 \
     run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
     >"$tmp/expand.out" 2>"$tmp/expand.err" || expand_rc=$?
 assert_eq '1' "$expand_rc" 'an expanded diff is never treated as mechanical'
@@ -327,6 +330,23 @@ assert_eq '1' "$ancestry_rc" 'a head that is not a live descendant of the author
 assert_contains "$(cat "$tmp/ancestry.err")" 'ancestry' \
     'the refusal names the broken ancestry'
 
+# --- Root merge-down (F1, issue #450 review): a state-only flip with the
+# same head and base is never mechanical, even if it advances toward
+# RUNNABLE -- GitHub recomputing BLOCKED/MERGEABLE_UNKNOWN to RUNNABLE with
+# nothing else changed must not be mistaken for a merge-down. ---
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:trigger:capability-default main BLOCKED
+before_state_only=$(sha256sum "$auth")
+state_only_rc=0
+run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/state-only.out" 2>"$tmp/state-only.err" || state_only_rc=$?
+assert_eq '1' "$state_only_rc" \
+    'a state-only change with an identical head and base is never treated as a mechanical advance'
+assert_contains "$(cat "$tmp/state-only.err")" 'not a verified mechanical advance' \
+    'the refusal treats a bare state flip as unproven drift, not a merge-down'
+assert_eq "$before_state_only" "$(sha256sum "$auth")" \
+    'a state-only refusal preserves the prior authorization byte-for-byte'
+
 # --- Stacked successor retarget: valid chain-advance.sh proof authorizes the new base/head ---
 
 retarget_proof_ok="$tmp/retarget-proof-ok.txt"
@@ -341,6 +361,23 @@ assert_eq "authorization=$auth queue=2" "$retarget_out" \
 assert_eq 'main:dddddddddddddddddddddddddddddddddddddddd' \
     "$(jq -r '.queue[] | select(.pr==15) | [.base,.headSha] | join(":")' "$auth")" \
     'the refreshed base and head come from the live re-derivation'
+
+# --- Stacked successor retarget (F3, issue #450 review): a proof file that
+# textually matches the live base and head is not enough on its own -- the
+# live head must also be independently proven a descendant of the previously
+# authorized head, exactly like the merge-down path already requires. ---
+
+write_confirmed
+non_descendant_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE QUEUE_COMPARE_BEHIND=1 \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_ok" \
+    >"$tmp/non-descendant.out" 2>"$tmp/non-descendant.err" || non_descendant_rc=$?
+assert_eq '1' "$non_descendant_rc" \
+    'a textually matching retarget proof is refused when live ancestry cannot be verified'
+assert_contains "$(cat "$tmp/non-descendant.err")" 'ancestry' \
+    'the refusal names the missing ancestry proof even though the retarget proof file matched'
 
 # --- Stacked successor retarget: missing proof blocks it ---
 
@@ -409,11 +446,11 @@ jq -cn '{
   providers:[{name:"coderabbit",action:"trigger",source:"capability-default"}],
   queue:[
     {pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base:"main",
-     diffShape:{additions:1,deletions:1,changedFiles:1}},
+     diffFingerprint:"10633847aa4a03af3ace3e56e24dfff1db569b771793fe2152ef9ceb34f17eee"},
     {pr:15,state:"WAITING_FOR_MERGE",headSha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",base:"feat/demo",
-     diffShape:{additions:2,deletions:2,changedFiles:2}},
+     diffFingerprint:"14293f2536894b3ed4b275126b42dd9c85cb5dbf323df8ce7bf94b9e66563f31"},
     {pr:16,state:"RUNNABLE",headSha:"6666666666666666666666666666666666666666",base:"main",
-     diffShape:{additions:3,deletions:3,changedFiles:3}}
+     diffFingerprint:"7a926b1b60d7bec13dd83edefa996ebb00047a95fa5f59bdfc52edc7fa057504"}
   ]
 }' >"$confirmed"
 chmod 600 "$confirmed"

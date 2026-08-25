@@ -8,6 +8,15 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 TEST_NAME='pr queue'
 
+assert_matches() {
+    local value=$1 pattern=$2 desc=$3
+    if [[ $value =~ $pattern ]]; then
+        assert_eq true true "$desc"
+    else
+        assert_eq "matches $pattern" "$value" "$desc"
+    fi
+}
+
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
@@ -66,6 +75,22 @@ repos/owner/repo/pulls/33)
     ;;
 repos/owner/repo/pulls/41)
     printf '%s\n' '{"number":41,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"release"}}'
+    ;;
+repos/owner/repo/pulls/*/files*)
+    files_pr=$(sed -E 's#.*/pulls/([0-9]+)/files.*#\1#' <<<"$endpoint")
+    fail_var="QUEUE_FILES_${files_pr}_FAIL"
+    if [[ ${!fail_var:-0} == 1 ]]; then
+        printf 'injected files failure\n' >&2
+        exit 1
+    fi
+    content_var="QUEUE_FILES_${files_pr}"
+    if [[ ${!content_var:-default} == toomany ]]; then
+        jq -cn '[range(301) | {filename:("f" + (.|tostring) + ".txt"),sha:"blob",patch:"@@"}]'
+    elif [[ -n ${!content_var:-} ]]; then
+        printf '%s\n' "${!content_var}"
+    else
+        printf '%s\n' '[{"filename":"default.txt","sha":"blobdefault","patch":"@@ +1 -0@@"}]'
+    fi
     ;;
 repos/owner/repo/pulls\?state=open*)
     case ${QUEUE_MODE:-normal} in
@@ -151,12 +176,35 @@ assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
 json=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format json)
 assert_eq 'RUNNABLE' "$(jq -r '.[0].state' <<<"$json")" \
     'JSON output preserves the confirmed queue for authorization evidence'
-assert_eq '5:2:3' "$(jq -r '.[0].diffShape | [.additions,.deletions,.changedFiles] | join(":")' <<<"$json")" \
-    'JSON output carries a diff-shape fingerprint sourced from the live PR read'
+fp11_default=$(jq -r '.[0].diffFingerprint' <<<"$json")
+assert_matches "$fp11_default" '^[0-9a-f]{64}$' \
+    'JSON output carries a content-sensitive diff fingerprint sourced from the live per-file read'
 
-json15=$(run_queue --pr 15 --format json)
-assert_eq 'null' "$(jq -r '.[0].diffShape' <<<"$json15")" \
-    'a live read carrying no diff-size fields yields a null diff-shape rather than a fabricated one'
+# issue #450 review finding F2: an aggregate additions/deletions/changed-files
+# count is not a content identity -- a descendant commit can swap reviewed
+# content while preserving those counts. The fingerprint must be sensitive to
+# actual file content (blob sha + patch text), not just file-count shape.
+fp11_rerun=$(jq -r '.[0].diffFingerprint' <<<"$(run_queue --pr 11 --format json)")
+assert_eq "$fp11_default" "$fp11_rerun" \
+    'the same file content yields the same diff fingerprint (deterministic)'
+fp11_a=$(QUEUE_FILES_11='[{"filename":"a.txt","sha":"blobA","patch":"@@ +1 -0@@ hello"}]' \
+    run_queue --pr 11 --format json | jq -r '.[0].diffFingerprint')
+fp11_b=$(QUEUE_FILES_11='[{"filename":"a.txt","sha":"blobB","patch":"@@ +1 -0@@ world"}]' \
+    run_queue --pr 11 --format json | jq -r '.[0].diffFingerprint')
+assert_matches "$fp11_a" '^[0-9a-f]{64}$' 'fileset A yields a well-formed fingerprint'
+assert_matches "$fp11_b" '^[0-9a-f]{64}$' 'fileset B yields a well-formed fingerprint'
+fp_a_ne_b=true
+[[ $fp11_a != "$fp11_b" ]] || fp_a_ne_b=false
+assert_eq true "$fp_a_ne_b" \
+    'one changed file (same single-file shape, different blob sha and patch) changes the fingerprint'
+
+json15_fail=$(QUEUE_FILES_15_FAIL=1 run_queue --pr 15 --format json)
+assert_eq 'null' "$(jq -r '.[0].diffFingerprint' <<<"$json15_fail")" \
+    'an unreadable per-file evidence read yields a null fingerprint rather than a fabricated one'
+
+json_toomany=$(QUEUE_FILES_15=toomany run_queue --pr 15 --format json)
+assert_eq 'null' "$(jq -r '.[0].diffFingerprint' <<<"$json_toomany")" \
+    'more files than this will fetch and hash yields a null fingerprint, never a partial one'
 
 confirmed="$repo_root/.agent/pr-to-green-confirmed-queue.json"
 display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \

@@ -209,12 +209,8 @@ for pr in "${prs[@]}"; do queue_args+=(--pr "$pr"); done
 "$QUEUE_HELPER" "${queue_args[@]}" >"$work_dir/queue.json" ||
     die 'live queue derivation failed'
 jq -e '
-  def diff_shape_ok:
-    . == null or
-    (type == "object" and (keys | sort) == ["additions","changedFiles","deletions"] and
-     (.additions | type) == "number" and .additions >= 0 and
-     (.deletions | type) == "number" and .deletions >= 0 and
-     (.changedFiles | type) == "number" and .changedFiles >= 0);
+  def diff_fingerprint_ok:
+    . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   type == "array" and length > 0 and
   all(.[];
     (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
@@ -223,7 +219,7 @@ jq -e '
       .state == "MERGEABLE_UNKNOWN") and
     (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$")) and
     (.base | type) == "string" and (.base | length) > 0 and
-    (.diffShape | diff_shape_ok)) and
+    (.diffFingerprint | diff_fingerprint_ok)) and
   ((map(.pr) | unique | length) == length)
 ' "$work_dir/queue.json" >/dev/null 2>&1 || die 'queue helper returned malformed JSON'
 
@@ -239,12 +235,8 @@ base_ok_jq='
     (.name | type) == "string" and (.name | test("^[a-z0-9][a-z0-9-]*$")) and
     (.action == "trigger" or .action == "observe" or .action == "disabled") and
     (.source | type) == "string" and (.source | length) > 0;
-  def diff_shape_ok:
-    . == null or
-    (type == "object" and (keys | sort) == ["additions","changedFiles","deletions"] and
-     (.additions | type) == "number" and .additions >= 0 and
-     (.deletions | type) == "number" and .deletions >= 0 and
-     (.changedFiles | type) == "number" and .changedFiles >= 0);
+  def diff_fingerprint_ok:
+    . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   def canonical: sort_by([.name,.action,.source]);
   type == "object" and (keys | sort) == ["providers","queue","repository"] and
   .repository == $repo and
@@ -253,20 +245,20 @@ base_ok_jq='
   ((.providers | canonical) == ($requested[0] | canonical)) and
   (.queue | type) == "array" and (.queue | length) > 0 and
   all(.queue[];
-    (keys | sort) == ["base","diffShape","headSha","pr","state"] and
+    (keys | sort) == ["base","diffFingerprint","headSha","pr","state"] and
     (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
     (.state == "RUNNABLE" or .state == "WAITING_FOR_MERGE" or
       .state == "RETARGET_REQUIRED" or .state == "BLOCKED" or
       .state == "MERGEABLE_UNKNOWN") and
     (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")) and
     (.base | type) == "string" and (.base | length) > 0 and
-    (.diffShape | diff_shape_ok)) and
+    (.diffFingerprint | diff_fingerprint_ok)) and
   ((.queue | map(.pr) | unique | length) == (.queue | length))
 '
 full_match_ok=1
 jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
   --slurpfile requested "$work_dir/providers.json" \
-  "$base_ok_jq"' and .queue == ($live[0] | map({pr,state,headSha:.sha,base,diffShape}))' \
+  "$base_ok_jq"' and .queue == ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint}))' \
   "$confirmed_queue_file" >/dev/null 2>&1 || full_match_ok=0
 
 if ((full_match_ok == 0)); then
@@ -283,9 +275,16 @@ if ((full_match_ok == 0)); then
     # absent from this classification (e.g. a bare `select()` match on zero
     # live rows) would fail open, so the live-side lookup is wrapped in
     # first(...) // null to force an explicit "vanished" verdict instead.
+    # F1 (issue #450 review finding): a mechanical verdict requires BOTH the
+    # confirmed PR's own prior state (never inferred from the live state
+    # alone) and an actual corresponding mutation. A state-only flip with an
+    # identical head and base -- e.g. GitHub recomputing BLOCKED/
+    # MERGEABLE_UNKNOWN to RUNNABLE with nothing else changed -- matches
+    # neither bucket below and falls through to "fail", exactly like any
+    # other unproven drift.
     jq -n --slurpfile confirmed "$confirmed_queue_file" --slurpfile live "$work_dir/queue.json" '
       ($confirmed[0].queue) as $confirmed |
-      ($live[0] | map({pr,state,headSha:.sha,base,diffShape})) as $live |
+      ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $live |
       {
         added: (($live | map(.pr)) - ($confirmed | map(.pr))),
         perPr: [ $confirmed[] | . as $c |
@@ -300,15 +299,17 @@ if ((full_match_ok == 0)); then
           if $l == null then {pr:$c.pr, verdict:"vanished",
             confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
           elif ($l.state == $c.state and $l.headSha == $c.headSha and
-                $l.base == $c.base and $l.diffShape == $c.diffShape) then
+                $l.base == $c.base and $l.diffFingerprint == $c.diffFingerprint) then
             {pr:$c.pr, verdict:"unchanged",
              confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
-          elif ($l.state == "RUNNABLE" and $c.diffShape != null and
-                $l.diffShape == $c.diffShape and $l.base == $c.base) then
+          elif ($c.state == "RUNNABLE" and $l.state == "RUNNABLE" and
+                $l.base == $c.base and $l.headSha != $c.headSha and
+                $c.diffFingerprint != null and $l.diffFingerprint == $c.diffFingerprint) then
             {pr:$c.pr, verdict:"merge-down",
              confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
-          elif ($l.state == "RUNNABLE" and $c.diffShape != null and
-                $l.diffShape == $c.diffShape and $l.base != $c.base) then
+          elif (($c.state == "WAITING_FOR_MERGE" or $c.state == "RETARGET_REQUIRED") and
+                $l.state == "RUNNABLE" and $l.base != $c.base and
+                $c.diffFingerprint != null and $l.diffFingerprint == $c.diffFingerprint) then
             {pr:$c.pr, verdict:"retarget",
              confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
           else {pr:$c.pr, verdict:"fail",
@@ -321,6 +322,21 @@ if ((full_match_ok == 0)); then
     [[ -z $added_list ]] ||
         die "live queue includes pr(s) $added_list that were never in the displayed confirmation; redisplay and reconfirm before authorization"
 
+    # F3 (issue #450 review finding): the retarget path previously trusted the
+    # proof file's own text without independently verifying that the live
+    # head actually descends from the previously authorized head. The same
+    # live ancestry compare merge-down already requires is run here too,
+    # before the proof is even inspected.
+    verify_ancestry() {
+        local pr=$1 confirmed_sha=$2 live_sha=$3 compare_json behind cmp_status
+        compare_json=$("$GH_BIN" api "repos/$repo/compare/$confirmed_sha...$live_sha" 2>/dev/null) ||
+            die "pr $pr: ancestry could not be read for its mechanical advance; redisplay and reconfirm before authorization"
+        behind=$(jq -r '.behind_by // empty' <<<"$compare_json" 2>/dev/null)
+        cmp_status=$(jq -r '.status // empty' <<<"$compare_json" 2>/dev/null)
+        [[ $behind == 0 && ( $cmp_status == ahead || $cmp_status == identical ) ]] ||
+            die "pr $pr: the live head fails the ancestry check against the previously authorized head; redisplay and reconfirm before authorization"
+    }
+
     while IFS=$'\t' read -r recon_pr recon_verdict recon_confirmed_sha recon_live_sha recon_live_base; do
         case $recon_verdict in
             unchanged) : ;;
@@ -331,14 +347,10 @@ if ((full_match_ok == 0)); then
                 fi
                 ;;
             merge-down)
-                compare_json=$("$GH_BIN" api "repos/$repo/compare/$recon_confirmed_sha...$recon_live_sha" 2>/dev/null) ||
-                    die "pr $recon_pr: ancestry could not be read for its mechanical advance; redisplay and reconfirm before authorization"
-                behind=$(jq -r '.behind_by // empty' <<<"$compare_json" 2>/dev/null)
-                cmp_status=$(jq -r '.status // empty' <<<"$compare_json" 2>/dev/null)
-                [[ $behind == 0 && ( $cmp_status == ahead || $cmp_status == identical ) ]] ||
-                    die "pr $recon_pr: the live head fails the ancestry check against the previously authorized head; redisplay and reconfirm before authorization"
+                verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
                 ;;
             retarget)
+                verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
                 proof_file=${retarget_proof_file[$recon_pr]-}
                 [[ -n $proof_file ]] ||
                     die "pr $recon_pr changed base with no --retarget-proof supplied; redisplay and reconfirm before authorization"
