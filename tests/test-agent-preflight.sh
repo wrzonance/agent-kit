@@ -50,6 +50,18 @@ else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
 
+# --- skills-content= is a content stamp, independent of skills= path= (#453) -
+skills_content_line=$(grep '^skills-content=' <<< "$out")
+skills_path_line=$(grep -m1 '^skills=' <<< "$out")
+assert_not_contains "$skills_path_line" 'content=' \
+    'skills= path= carries no stamp of its own -- the record is unaffected by skills-content='
+if [[ $skills_content_line =~ ^skills-content=\ sha256=([[:xdigit:]]{64}|unavailable)$ ]]; then
+    _pass 'skills-content= carries a 64-hex sha256 stamp or an explicit unavailable'
+else
+    _fail 'skills-content= carries a 64-hex sha256 stamp or an explicit unavailable' \
+        "got: $skills_content_line"
+fi
+
 # --ensure must not silently discard operands whose documented semantics belong
 # to a full probe. Fail closed before checking the fast-path contract instead.
 assert_rc 2 '--ensure rejects an explicit --write target' -- \
@@ -360,7 +372,7 @@ assert_contains "$protected_line" 'repo-declared="docs/adrs/,infra/terraform.tf"
 # The header's OUTPUT comment is the contract every consumer parses exact
 # prefixes against. Adding protected= without updating both the header and the
 # emission order would silently desynchronize documentation from behaviour.
-header_line=$(grep -m1 '^#   skills= path= repo=' "$script")
+header_line=$(grep -m1 '^#   skills= path= skills-content= repo=' "$script")
 assert_contains "$header_line" ' protected= instructions=' \
     'the header documents protected= immediately after config= and before instructions='
 mapfile -t expected_tokens < <(tr -s ' ' '\n' <<< "${header_line#\#}")
@@ -419,6 +431,82 @@ assert_eq '1' "$(grep -c '^protected=' <<< "$out")" \
     '--ensure still reports protected= for an up-to-date contract'
 assert_eq "$before_mtime" "$after_mtime" \
     '--ensure reuses an up-to-date contract instead of rewriting it'
+
+# --- --ensure must not serve a contract that predates skills-content= (#453) -
+# Same migration hazard as protected= above, for the newer key: a contract
+# written before this change is still provenance-trusted, so without this
+# check --ensure would keep serving one with no content stamp forever.
+repo=$(new_repo)
+"$script" --worktree "$repo" > /dev/null 2>&1
+grep -v '^skills-content=' "$repo/.agent/env-contract.txt" > "$tmp/stale-contract"
+mv "$tmp/stale-contract" "$repo/.agent/env-contract.txt"
+chmod 600 "$repo/.agent/env-contract.txt"
+assert_eq '0' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
+    'fixture setup: the stale contract really has no skills-content= line'
+out=$("$script" --ensure --worktree "$repo" 2> "$tmp/ensure-stderr")
+assert_eq '1' "$(grep -c '^skills-content=' <<< "$out")" \
+    '--ensure regenerates a contract that predates skills-content= rather than serving it'
+assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected= or skills-content=' \
+    'and says why it fell through to a fresh preflight'
+assert_eq '1' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries skills-content= too'
+
+# --- --ensure must not serve a stamp that no longer matches the running tree
+# (P2 review follow-up on #453): presence-only checks above are not enough --
+# a contract can carry a well-formed skills-content= line whose VALUE is
+# stale if the tree this script instance actually runs from changed after the
+# contract was written. Run from a real, separate copy of the scripts tree so
+# mutating a shipped file there is indistinguishable from a plugin tree
+# actually changing content underfoot.
+ensure_build=$(mktemp -d "$tmp/ensure-build.XXXXXX")
+mkdir -p "$ensure_build/.shared/scripts"
+cp -a "$root/agentkit/skills/.shared/scripts/." "$ensure_build/.shared/scripts/"
+ensure_build_script="$ensure_build/.shared/scripts/agent-preflight.sh"
+
+ensure_repo=$(new_repo)
+"$ensure_build_script" --worktree "$ensure_repo" > /dev/null 2>&1
+first_stamp=$(sed -n 's/^skills-content= sha256=//p' "$ensure_repo/.agent/env-contract.txt")
+assert_eq '64' "${#first_stamp}" 'fixture setup: the first probe recorded a real sha256 stamp'
+
+# Unchanged tree: --ensure still takes the fast path (mtime untouched),
+# reporting the same stamp it already recorded.
+before_mtime=$(stat -c %Y "$ensure_repo/.agent/env-contract.txt")
+sleep 1
+out=$("$ensure_build_script" --ensure --worktree "$ensure_repo" 2> /dev/null)
+after_mtime=$(stat -c %Y "$ensure_repo/.agent/env-contract.txt")
+assert_eq "$before_mtime" "$after_mtime" \
+    '--ensure reuses the cached contract when the running tree is genuinely unchanged'
+assert_contains "$out" "skills-content= sha256=$first_stamp" \
+    'and the unchanged case still reports the original stamp'
+
+# Mutate one shipped file in the tree the script is actually running from.
+printf '\n# mutated for the --ensure staleness test\n' >> "$ensure_build/.shared/scripts/agent-run.sh"
+out=$("$ensure_build_script" --ensure --worktree "$ensure_repo" 2> "$tmp/ensure-content-mismatch-stderr")
+second_stamp=$(grep -m1 '^skills-content=' <<< "$out" | sed -n 's/^skills-content= sha256=//p')
+assert_eq '64' "${#second_stamp}" '--ensure recomputes a real stamp after the running tree changed'
+if [[ $second_stamp != "$first_stamp" ]]; then
+    _pass '--ensure reports a different stamp once the running tree content changed'
+else
+    _fail '--ensure reports a different stamp once the running tree content changed' \
+        "both hashed to: $first_stamp"
+fi
+assert_contains "$(cat "$tmp/ensure-content-mismatch-stderr")" 'no longer matches' \
+    '--ensure explains why it fell through to a fresh preflight'
+assert_eq "$second_stamp" \
+    "$(sed -n 's/^skills-content= sha256=//p' "$ensure_repo/.agent/env-contract.txt")" \
+    'the regenerated contract on disk carries the new stamp too'
+
+# A recorded skills= path= that no longer matches the running tree (a
+# contract carried into a worktree whose plugin install moved) is caught the
+# same way, and named specifically rather than folded into the content note.
+stale_path_repo=$(new_repo)
+"$ensure_build_script" --worktree "$stale_path_repo" > /dev/null 2>&1
+sed -i 's|^skills= path=.*|skills= path=/nonexistent/stale/tree|' \
+    "$stale_path_repo/.agent/env-contract.txt"
+chmod 600 "$stale_path_repo/.agent/env-contract.txt"
+path_mismatch_err=$("$ensure_build_script" --ensure --worktree "$stale_path_repo" 2>&1 > /dev/null)
+assert_contains "$path_mismatch_err" 'skills= path=' \
+    '--ensure names the skills= path= mismatch specifically when that is what changed'
 
 # Shared scripts use associative arrays, so a pre-Bash-4 interpreter must fail
 # with a named requirement before doing any work instead of exposing a cryptic
