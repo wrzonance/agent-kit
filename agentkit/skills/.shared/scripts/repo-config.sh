@@ -13,7 +13,8 @@
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
 #   repo-config.sh --get KEY         # one value; exit 1 if absent
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
-#   repo-config.sh --list            # K=V lines for accepted keys
+#   repo-config.sh --list            # K=V lines for accepted keys actually declared
+#   repo-config.sh --list-keys       # the accepted key set itself, one per line
 #   repo-config.sh --canonical-keys K1,K2
 #                                    # strict, sorted canonical K=V lines
 #   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
@@ -36,7 +37,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -87,6 +88,7 @@ while (($#)); do
     case $1 in
         --export) mode='export' ;;
         --list) mode='list' ;;
+        --list-keys) mode='keys' ;;
         --diagnose) mode='diagnose' ;;
         --get)
             mode='get'
@@ -128,7 +130,17 @@ while (($#)); do
     shift
 done
 
-[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --diagnose, --canonical-keys, or --resolve is required'
+[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --list-keys, --diagnose, --canonical-keys, or --resolve is required'
+
+# The accepted key set is schema, not a fact about any one repository -- print
+# it and exit before any repo-root/config-file resolution, so it works the
+# same with no arguments as it does pointed at a repo with no config yet.
+if [[ $mode == keys ]]; then
+    printf '%s\n' "${ACCEPTED_KEYS[@]}"
+    printf 'AGENT_CMD_<NAME>\n'
+    printf 'AGENT_RUNDIR_<NAME>\n'
+    exit 0
+fi
 
 if [[ $mode == resolve ]]; then
     for key in "${resolve_keys[@]}"; do
@@ -202,6 +214,21 @@ generated_paths_valid() {
     for item in "${items[@]}"; do
         safe_relpath "$item" || return 1
     done
+}
+
+# Mirrors lib/review-provider-catalog.sh's REVIEW_PROVIDER_NAMES, for warning
+# text only. Kept as a local literal rather than sourcing that file: this
+# parser is deliberately self-contained (see the file header) so a missing or
+# broken lib file can never turn one bad declaration into a hard failure for
+# every accepted key. test-repo-config.sh pins this against the catalog.
+readonly REVIEW_PROVIDER_ACCEPTED_NAMES=(coderabbit github-code-quality none)
+
+providers_display() {
+    local out='' name
+    for name in "${REVIEW_PROVIDER_ACCEPTED_NAMES[@]}"; do
+        out+="${out:+, }$name"
+    done
+    printf '%s' "$out"
 }
 
 providers_valid() {
@@ -598,7 +625,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         if [[ $key =~ $SECRET_PATTERN ]]; then
             warn "refusing credential-shaped key on line $lineno: $key"
         else
-            warn "unknown key on line $lineno, ignoring: $key"
+            warn "unknown key on line $lineno, ignoring: $key (run '$PROGRAM --list-keys' to see the accepted keys)"
         fi
         # Unknown keys are deliberately dropped. In resolve mode they are not
         # relevant to the requested declaration set.
@@ -615,6 +642,8 @@ while IFS= read -r line || [[ -n $line ]]; do
         # there isn't one, and a comment is how you say it.
         if [[ -z $value ]]; then
             warn "empty value for $key on line $lineno, ignoring -- to record that this repository has none, comment the line out instead"
+        elif [[ $key == AGENT_REVIEW_PROVIDERS ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(providers_display)"
         else
             warn "invalid value for $key on line $lineno, ignoring"
         fi
