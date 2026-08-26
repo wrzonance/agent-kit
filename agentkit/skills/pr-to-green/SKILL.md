@@ -250,8 +250,7 @@ only after the fresh queue exactly matches that newly confirmed snapshot. Do
 not let earlier confirmation authorize a new SHA.
 
 This sequence is a **critical section** (one fixed-path snapshot): only one
-root inside it at a time, others wait; it re-derives its own authorization on
-entry (see above).
+root inside it at a time; each re-derives its own authorization on entry.
 
 ### 3. Transition and consume provider state
 
