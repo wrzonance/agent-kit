@@ -182,7 +182,7 @@ if [[ $head_sha != '' ]]; then
     # unreadable is unknown, never complete.
     findings_response=''
     if ! findings_response=$(gh api -X GET \
-        "repos/$repository/code-quality/findings?state=open&per_page=100" \
+        "repos/$repository/code-quality/findings?state=open&per_page=100" --paginate \
         -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
         if [[ $findings_response == *'HTTP 403'* ]] && grep -qi 'not enabled' <<<"$findings_response"; then
             printf 'scan-state=not-enabled\n'
@@ -191,16 +191,26 @@ if [[ $head_sha != '' ]]; then
         printf 'scan-state=unknown reason=%s\n' "$(first_error_line "$findings_response")"
         exit 1
     fi
-    if ! jq -e '(type == "array") or ((.findings? | type) == "array")' \
-        <<<"$findings_response" >/dev/null 2>&1; then
+    # --paginate concatenates one JSON value per page; slurp them, same as
+    # the check-runs/comments reads above, so repoWideOpen counts every page
+    # instead of the first 100 findings (issue #486 item 1). `all` over an
+    # EMPTY array is vacuously true, so an empty/blank response would
+    # otherwise validate as readable and silently print repoWideOpen=0 --
+    # require at least one page before trusting the shape check (root review
+    # finding on this PR).
+    if ! jq -se '
+        (length >= 1) and
+        all(.[]; (type == "array") or ((.findings? | type) == "array"))
+    ' <<<"$findings_response" >/dev/null 2>&1; then
         printf 'scan-state=unknown reason=%s\n' \
             'Code Quality findings response was not readable JSON'
         exit 1
     fi
-    repo_wide_open=$(jq '
-        if type == "array" then length
-        elif (.findings? | type) == "array" then (.findings | length)
-        else 0 end
+    repo_wide_open=$(jq -s '
+        [.[]? | if type == "array" then .[]
+                 elif (.findings? | type) == "array" then .findings[]
+                 else empty end]
+        | length
     ' <<<"$findings_response" 2>/dev/null) || repo_wide_open=''
     [[ $repo_wide_open =~ ^[0-9]+$ ]] || repo_wide_open=0
 

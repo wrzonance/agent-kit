@@ -84,7 +84,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   Step 5's
   merges are serial.
 - Resolve provider configuration before any PR mutation. Missing or invalid
-  configuration is effective `none`: warn and continue through CI, mandatory
+  config is effective `none`: warn and continue through CI, mandatory
   adversarial review, and human-feedback gates without a provider wait.
 - Present the provider plan, verified dependency graph, and exact serial queue
   before mutation. One explicit confirmation covers remediation pushes, ready
@@ -94,7 +94,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   silently.
 - Provider rules, author classification, fix batches, reply settlement,
   bounded waits, exact readback, worktree mechanics, and the six-step worker
-  gate remain in their existing authoritative files.
+  gate stay in their existing authoritative files.
 - `--auto-merge` authorizes this skill to perform the confirmed queue's
   merges itself; without it every PR still stops at evidence-green and the
   merge stays a human action. It implies strict serial merge ordering — see
@@ -250,8 +250,7 @@ only after the fresh queue exactly matches that newly confirmed snapshot. Do
 not let earlier confirmation authorize a new SHA.
 
 This sequence is a **critical section** (one fixed-path snapshot): only one
-root inside it at a time, others wait; it re-derives its own authorization on
-entry (see above).
+root inside it at a time; each re-derives its own authorization on entry.
 
 ### 3. Transition and consume provider state
 
@@ -309,9 +308,10 @@ dependency.
 
 With `--auto-merge`, an evidence-green item merges only after
 `scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head
-(see ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) — a formal provider
-approval requirement stays repository policy: a branch-protection refusal is
-a named stop, never a bypass). On `gate=PASS`, invoke `scripts/merge-pr.sh`
+(["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) has the recipe —
+a formal provider approval requirement stays repository policy: a
+branch-protection refusal is a named stop, never a bypass). On `gate=PASS`,
+invoke `scripts/merge-pr.sh`
 with the Step 1 authorization file and the saved `gate=PASS` output — it
 refuses, sending no merge request, unless both bind to this exact repository/
 PR/head/base/method/delete-branch as a confirmed `RUNNABLE` queue member; the

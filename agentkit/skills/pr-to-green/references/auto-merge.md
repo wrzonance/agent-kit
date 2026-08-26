@@ -243,6 +243,30 @@ and additionally consumes:
   blocked instead — surfaced as the failing response's own `.message`, never
   a truncated `{` from a pretty-printed JSON error body.
 
+### Canonical call sites for the two newest gate inputs
+
+```bash
+"$agentkit/review-remote-pr/scripts/code-quality-state.sh" \
+  --repo "$repo" --head "$head_sha" --pr "$pr" \
+  --baseline-file "$work_dir/code-quality-state.json"
+# scan-state=... is read live from the file above; do not re-derive it by hand.
+
+adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" status \
+  --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
+  --kind adversarial --repo-root "$repo_root") || true
+
+"$agentkit/pr-to-green/scripts/merge-gate.sh" \
+  --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" \
+  --pr-state-digest "$digest_file" --provider-result "$provider_result" \
+  --human-items-decided yes \
+  --adversarial-review-status "$adversarial_status" \
+  --code-quality-state-file "$work_dir/code-quality-state.json"
+```
+
+`review-ledger.sh status` exits non-zero for `stale`/`absent`/blocked outcomes
+while still printing the verdict word on stdout — capture it with `|| true`
+rather than treating a non-zero exit as evidence-unavailable.
+
 Code-scanning completion is proven from `GET code-scanning/analyses` — the
 surface that actually records a completed analysis — not from a check-run's
 `app.slug`. GitHub records workflow-uploaded SARIF (a CodeQL workflow,
