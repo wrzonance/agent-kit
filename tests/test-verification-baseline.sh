@@ -223,15 +223,79 @@ body_text=$(<"$pr_body")
 assert_contains "$body_text" '## Baseline verification evidence — demo-compose' \
     'the composed PR body carries the baseline evidence block'
 
-# --- draft-phase recipe prose: evidence-file lifecycle + publication wiring ---
-review_skill_text=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
+# --- draft-phase recipe: execute review-remote-pr Step 2's fenced block as written ---
+# Extracted, never hand-copied, so a future edit to the recipe is exercised here
+# unchanged -- a stale hand-copy would silently stop testing what actually ships.
+review_skill_path="$root/agentkit/skills/review-remote-pr/SKILL.md"
 worker_prompts_text=$(<"$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
-assert_contains "$review_skill_text" 'mktemp' \
-    'review-remote-pr Step 2 writes the baseline-red evidence to a temp file, not straight to baseline-evidence.md'
-assert_contains "$review_skill_text" 'moves it to `$RUN_DIR/baseline-evidence.md`' \
-    'review-remote-pr Step 2 only keeps the evidence file on exit 0'
-assert_contains "$review_skill_text" 'removes it and fixes the failure as today' \
-    'review-remote-pr Step 2 discards the evidence file on exit 1/error'
+recipe_block=$(awk '
+    /having set `check`, `log`, and `failing_paths` from its output:/ { found = 1; next }
+    found && /^```bash$/ { infence = 1; next }
+    found && infence && /^```$/ { exit }
+    found && infence { print }
+' "$review_skill_path")
+assert_contains "$recipe_block" 'tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX")' \
+    'the extracted recipe writes into a private mktemp under RUN_DIR'
+assert_not_contains "$recipe_block" '>"$RUN_DIR/baseline-evidence.md"' \
+    'the extracted recipe never redirects the helper straight into baseline-evidence.md'
+
+recipe_repo="$tmp/recipe-repo"
+recipe_origin="$tmp/recipe-origin.git"
+mkdir -p -- "$recipe_repo"
+git init --bare --quiet "$recipe_origin"
+git -C "$recipe_repo" init -q -b main
+git -C "$recipe_repo" config user.email test@example.com
+git -C "$recipe_repo" config user.name 'Test'
+printf 'clean content\n' >"$recipe_repo/clean.txt"
+printf 'touched content\n' >"$recipe_repo/touched.txt"
+git -C "$recipe_repo" add -A
+git -C "$recipe_repo" commit -qm base
+git -C "$recipe_repo" remote add origin "$recipe_origin"
+git -C "$recipe_repo" push -q origin main
+git -C "$recipe_repo" fetch -q origin
+git -C "$recipe_repo" checkout -qb feature
+printf 'touched content, rewritten by this PR\n' >"$recipe_repo/touched.txt"
+git -C "$recipe_repo" add -A
+git -C "$recipe_repo" commit -qm 'feature: rewrite touched.txt'
+
+# shellcheck disable=SC2034  # agentkit/agentkit_provenance/BASE_BRANCH/check/failing_paths
+# are consumed by the eval'd recipe_block, invisible to shellcheck's static analysis.
+run_recipe() {
+    local check_name=$1; shift
+    (
+        cd -- "$recipe_repo" || exit 1
+        agentkit="$root/agentkit/skills"
+        agentkit_provenance=ok
+        RUN_DIR=$(mktemp -d "$tmp/recipe-run.XXXXXX") && chmod 700 -- "$RUN_DIR"
+        BASE_BRANCH=main
+        check=$check_name
+        failing_paths=("$@")
+        eval "$recipe_block"
+        printf 'RUN_DIR=%s\n' "$RUN_DIR"
+    )
+}
+
+# --- exit 1 (change-caused-red): no baseline-evidence.md, no stray temp file ---
+recipe_out=$(run_recipe demo-recipe-red touched.txt)
+recipe_run_dir=$(sed -n 's/^RUN_DIR=//p' <<<"$recipe_out")
+assert_rc 0 'a stray .baseline.* temp file does not survive change-caused-red' -- \
+    bash -c 'shopt -s nullglob dotglob; files=("$1"/.baseline.*); [[ ${#files[@]} -eq 0 ]]' _ "$recipe_run_dir"
+assert_rc 1 'baseline-evidence.md is never created for change-caused-red' -- \
+    test -e "$recipe_run_dir/baseline-evidence.md"
+
+# --- exit 0 (baseline-red): baseline-evidence.md exists with the evidence block ---
+recipe_out=$(run_recipe demo-recipe-green clean.txt)
+recipe_run_dir=$(sed -n 's/^RUN_DIR=//p' <<<"$recipe_out")
+assert_rc 0 'baseline-evidence.md is created for baseline-red' -- \
+    test -f "$recipe_run_dir/baseline-evidence.md"
+assert_rc 0 'no stray .baseline.* temp file survives baseline-red either (moved, not copied)' -- \
+    bash -c 'shopt -s nullglob dotglob; files=("$1"/.baseline.*); [[ ${#files[@]} -eq 0 ]]' _ "$recipe_run_dir"
+evidence_text=$(<"$recipe_run_dir/baseline-evidence.md")
+assert_contains "$evidence_text" '## Baseline verification evidence — demo-recipe-green' \
+    'the produced baseline-evidence.md carries the evidence block heading'
+assert_contains "$evidence_text" 'git diff --exit-code HEAD -- clean.txt' \
+    'the produced baseline-evidence.md carries the unchanged-in-worktree proof'
+
 assert_contains "$worker_prompts_text" '[[ -f "${RUN_DIR:-}/baseline-evidence.md" ]]' \
     'the draft-PR composition recipe checks for a produced baseline-evidence.md, guarded against an unset RUN_DIR'
 assert_contains "$worker_prompts_text" 'baseline_args+=(--baseline-file "$RUN_DIR/baseline-evidence.md")' \

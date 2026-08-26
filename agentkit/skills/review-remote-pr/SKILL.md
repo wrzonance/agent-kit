@@ -23,9 +23,9 @@ Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](..
 
 ## Non-negotiables
 
-- Never run `gh pr ready` — the draft-to-ready flip is always the user's call.
-- Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command) — ever, in any phase.
-- Never resolve a human-touched thread, including content from the account `gh api user` returns.
+- Never run `gh pr ready` — draft-to-ready is the user's call.
+- Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command), ever.
+- Never resolve a human-touched thread, including the account `gh api user` returns.
 - Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push, before handoff — incomplete without one.
 - Never bypass a repository hook (no `--no-verify`, `core.hooksPath`, piped `y`).
 - Batch each cycle's fixes into ONE push; cap 3 cycles, then escalate.
@@ -44,8 +44,7 @@ trigger a review bot, resolve a human's thread, or act without per-item confirma
 
 ## Session decision ledger
 
-After setup establishes a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the
-ledger identity to this invocation's authorization input before recording any decision:
+After setup establishes a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the ledger identity to this invocation's authorization input before recording any decision:
 
 ```bash
 review_invocation_flags="auto-review=${auto_review:-false}"
@@ -65,12 +64,11 @@ After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read
 
 ## Runtime and provider neutrality
 
-A missing `jq`/`python3` is a blocking check, never a silent "no findings":
+A missing `jq`/`python3` is blocking, never a silent "no findings":
 `command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }`
-Before any GitHub body mutation, follow the shared GitHub body transport policy
-["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md).
-Read ["$agentkit/review-remote-pr/references/environment-contract.md"](references/environment-contract.md) in full before Step 0a — it carries the runtime-neutrality contract and
-environment-contract mechanics (preflight block, decision lines, repo-runner opt-in).
+Before any GitHub body mutation, follow ["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md).
+Read ["$agentkit/review-remote-pr/references/environment-contract.md"](references/environment-contract.md) in full before Step 0a: the runtime-neutrality and
+environment-contract mechanics (preflight, decision lines, repo-runner opt-in).
 
 ## Automated review provider rules
 
@@ -90,11 +88,11 @@ there. Reuse that loaded content in Step 5; do not re-read it.
 
 - **PR number** (required) — passed as arg or ask once if missing
 - **Repo** — infer from `git remote get-url origin`; override with `owner/repo` arg
-- **Worktree** — reuse the PR branch worktree when present; otherwise the helper derives and prints `<worktree-root>/pr-<PR>`; `$PR_WORKTREE` is that output, not an input
+- **Worktree** — reuse the PR branch worktree if present, else the helper derives/prints `<worktree-root>/pr-<PR>` as `$PR_WORKTREE` (an output, not an input)
 
 ## Resolver (run once per session)
 
-The warm-up writes data-only `.agent/cache/contract-session.env`; it is never sourced. A changed input makes it stale until refreshed.
+The warm-up writes data-only `.agent/cache/contract-session.env` (never sourced); a changed input makes it stale until refreshed.
 
 ```bash
 # Resolve the skill tree from the environment contract at the repository
@@ -258,13 +256,12 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-Run only declared `agent-run.sh --cmd` commands — they run directly, with no approval step. Use a focused suite during red/green and the full suite before commit; never push without local verification. Commit-helper exit 2 requires the exact elevated retry. 2a/3a reuse this recipe whenever `base:` reads `stale=yes`, conflicting or not; a clean merge auto-commits — skip straight to `agent-run.sh --cmd test` then `git push`.
+Run only declared `agent-run.sh --cmd` commands, directly, with no approval step: a focused suite during red/green, full suite before commit, never push without local verification. Commit-helper exit 2 needs the exact elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip straight to `agent-run.sh --cmd test` then `git push`.
 
 ### 0c — Resolve the durable per-PR review-artifact directory
 
-Review payloads carry private source and review text. Resolve one `0700` run directory keyed to
-this PR, carrying its path forward as `RUN_DIR` in every later block; never hand-roll a `mktemp`
-path yourself:
+Review payloads carry private source and review text. Resolve one `0700` run directory for this
+PR, carried forward as `RUN_DIR` in every later block — never hand-roll a `mktemp` path:
 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
@@ -296,11 +293,9 @@ fi
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
-Pass `--repo` explicitly. CI state is data, not an error: unlike `gh pr checks` (exit `8` on
-pending/failing), this stays at exit `0`; exit `1` = usage/API failure. `--full` writes five
+Pass `--repo` explicitly. CI state is data, not an error: unlike `gh pr checks` (exit `8` on pending/failing), this stays exit `0`; exit `1` = usage/API failure. `--full` writes five
 PR-namespaced files under `$RUN_DIR/state` that Step 1a/5/6 re-read — **read full bodies before
-triaging**, thread-less actionable content exists. `threads: truncated=yes` means paginate with an
-`after:` cursor before trusting any count, never a clean zero.
+triaging**. `threads: truncated=yes` means paginate with `after:` before trusting any count.
 
 **Step 1a — surface human review content:** route every item through the classifier; exclude
 recognized providers, authoritative Bot/`[bot]` authors, and exact
@@ -361,15 +356,23 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
 repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
 before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
-context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, run `verification-baseline.sh --paths P... --check NAME --base origin/$BASE_BRANCH --log LOG` into a private `mktemp` under `$RUN_DIR` (mode 600); exit `0` moves it to `$RUN_DIR/baseline-evidence.md` and passes that as `--baseline-file` to `compose-pr-body.sh`, exit `1` (or any error) removes it and fixes the failure as today.
+context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
+
+```bash
+# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX") && chmod 600 -- "$tmp"
+rc=0
+"$agentkit/review-remote-pr/scripts/verification-baseline.sh" --base "origin/$BASE_BRANCH" \
+    --log "$log" --check "$check" --paths "${failing_paths[@]}" >"$tmp" || rc=$?
+# exit 0: mv to baseline-evidence.md, publish --baseline-file; exit 1: rm tmp, fix as change-caused today.
+if ((rc == 0)); then mv -f -- "$tmp" "$RUN_DIR/baseline-evidence.md"; else rm -f -- "$tmp"; fi
+```
 
 ### Wait contract: one turn-free wait
 
-Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) in full before waits: it owns the
-no-model-turn, bounds, and durable-state rules; Step 4 adds CI settlement specifics.
-
-This loop keeps waits silent until terminal: background output wakes the orchestrator for a turn; log
-heartbeats and emit one completion/expiry line.
+Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) before waits (no-model-turn, bounds, durable-state; Step 4 adds CI settlement). This loop keeps waits silent until terminal: log heartbeats, emit one completion/expiry line.
 
 ### Adversarial-review receipt:
 
@@ -439,9 +442,9 @@ Wait in **bounded rounds** — never one unbounded wait:
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
 ```
 
-Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, the Step 1 digest on stdout. Do NOT grep
+Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, Step 1's digest on stdout. Never grep
 repo-specific check names; `SKIPPED`/`NEUTRAL` count as passing; `/coderabbit/i` checks are ignored
-when deciding settlement but still counted in `pending=`. Still pending after the bounded rounds →
+for settlement but still counted in `pending=`. Still pending after the bounded rounds →
 **stop and escalate**; do not keep raising `--rounds`. Never infer review behavior from a push.
 
 ---
@@ -476,12 +479,11 @@ hand-rolled GraphQL re-query:
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
-The digest's `agent-docs: N eligible` line reports which unresolved threads are this workflow's
-own marked agent-doc threads (see the provider-rules.md content loaded in Step 1a for the exact
-resolution rule). If any CI failed, any automated-review thread/finding remains
-unhandled, or any body nitpick or confirmed adversarial finding is unaddressed → back to Step 1
-(max 3 full cycles — see The Loop's cap). If human-authored content lacks an explicit user
-decision, surface the gate and wait; do not post, resolve, or claim readiness.
+The digest's `agent-docs: N eligible` line reports this workflow's own marked agent-doc threads
+(resolution rule: provider-rules.md, loaded in Step 1a). Any CI failure, unhandled automated-review
+thread/finding, or unaddressed body nitpick/adversarial finding → back to Step 1 (max 3 cycles —
+The Loop's cap). Human-authored content lacking an explicit user decision surfaces the gate and
+waits; never post, resolve, or claim readiness.
 
 ---
 
