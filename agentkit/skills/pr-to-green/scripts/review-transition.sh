@@ -85,7 +85,11 @@ moved past, or "provider=coderabbit result=PENDING" otherwise. Always exits
 head yet". A LANDED result additionally appends kind=bot evidence
 (review_id/state/submitted_at) back to the review ledger through
 --ledger-comments (also required with --repo-root for this write-back) --
-best-effort, never blocking the printed result.
+best-effort, never blocking the printed result. When --ledger-comments/
+--repo-root were given, LANDED's line carries a trailing " ledger=recorded"
+or " ledger=unrecorded" so a caller (or a resumed run) can tell a lost
+write-back from a recorded one instead of only seeing it on stderr; the
+field is omitted entirely when no write-back was attempted.
 EOF
     exit "${1:-2}"
 }
@@ -96,12 +100,24 @@ EOF
 # non-fatal, matching post-receipt.sh's ledger write-back: a missing
 # --ledger-comments/--repo-root, or an append failure, is reported but never
 # blocks the LANDED result this call already earned.
+#
+# Root-review finding on issue #486 item 3: a failed append used to be
+# stderr-only, so a caller parsing the stdout result line -- and a resumed
+# run relying on the ledger -- had no way to tell a lost write-back from a
+# recorded one, risking a second spend against the one-ping-per-PR budget.
+# ledger_write_back_status now carries that outcome back to the caller as a
+# global: "recorded", "unrecorded", or "" (no ledger args -- the caller must
+# never append a ledger= field for that case, keeping it exactly as optional
+# as before).
+ledger_write_back_status=''
 write_back_bot_ledger_entry() {
     local head=$1 state=$2 review_id=$3 submitted_at=$4
+    ledger_write_back_status=''
     [[ -n $ledger_comments && -n $repo_root && -x $REVIEW_LEDGER_SCRIPT ]] || return 0
     local entry_file=''
     entry_file=$(mktemp "${TMPDIR:-/tmp}/review-transition-ledger-entry.XXXXXX") || {
         printf '%s: could not stage a ledger entry temp file; ledger entry not recorded\n' "$PROGRAM" >&2
+        ledger_write_back_status=unrecorded
         return 0
     }
     chmod 600 -- "$entry_file" 2>/dev/null || true
@@ -114,11 +130,15 @@ write_back_bot_ledger_entry() {
         >"$entry_file" 2>/dev/null; then
         printf '%s: could not encode a ledger entry; ledger entry not recorded\n' "$PROGRAM" >&2
         rm -f -- "$entry_file"
+        ledger_write_back_status=unrecorded
         return 0
     fi
-    if ! "$REVIEW_LEDGER_SCRIPT" append --repo "$repo" --pr "$pr" --comments "$ledger_comments" \
+    if "$REVIEW_LEDGER_SCRIPT" append --repo "$repo" --pr "$pr" --comments "$ledger_comments" \
         --entry-file "$entry_file" --agent-identity "$REVIEW_TRANSITION_LEDGER_IDENTITY" \
         --repo-root "$repo_root" >&2; then
+        ledger_write_back_status=recorded
+    else
+        ledger_write_back_status=unrecorded
         printf '%s: LANDED result confirmed, but the review-ledger entry was not recorded; a later run may not see this bot review\n' \
             "$PROGRAM" >&2
     fi
@@ -202,8 +222,10 @@ if ((observe)); then
                 '[.[] | select((.pull_request_review_id // -1) == $rid)] | length' \
                 <"$work_dir/comments.json")
             write_back_bot_ledger_entry "$head_sha" "$state_or_commit" "$review_id" "${info_b:-}"
-            printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s\n' \
-                "$state_or_commit" "$threads" "${info_b:-unknown}"
+            ledger_suffix=''
+            [[ -z $ledger_write_back_status ]] || ledger_suffix=" ledger=$ledger_write_back_status"
+            printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s%s\n' \
+                "$state_or_commit" "$threads" "${info_b:-unknown}" "$ledger_suffix"
             exit 0
         fi
         printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s\n' \

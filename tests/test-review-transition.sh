@@ -494,6 +494,8 @@ out=$(REVIEW_ACTIVITY=landed \
     run_observe_with_ledger '2026-08-22T06:30:00Z')
 assert_contains "$out" 'provider=coderabbit result=LANDED' \
     'a LANDED write-back call still prints the LANDED result'
+assert_contains "$out" 'ledger=recorded' \
+    'a successful write-back reports ledger=recorded on stdout (issue #486 root review)'
 ledger_append_log=$(cat "$tmp/ledger-append.log" 2>/dev/null || true)
 assert_contains "$ledger_append_log" 'ledger append' \
     'a LANDED result appends a ledger entry through review-ledger.sh'
@@ -519,6 +521,8 @@ assert_contains "$out" 'provider=coderabbit result=LANDED' \
     'LANDED is still reported without --ledger-comments/--repo-root'
 assert_eq '' "$(cat "$tmp/ledger-append.log" 2>/dev/null || true)" \
     'no write-back is attempted without --ledger-comments and --repo-root'
+assert_not_contains "$out" 'ledger=' \
+    'no ledger= field is printed when no write-back was attempted (stays optional)'
 
 # A failed append is best-effort: it never turns a LANDED result into a
 # blocked/non-zero exit, matching post-receipt.sh's write-back house style.
@@ -530,5 +534,7 @@ rc=$?
 assert_contains "$out" 'provider=coderabbit result=LANDED' \
     'a failed ledger append never withholds the already-earned LANDED result'
 assert_eq '0' "$rc" 'a failed ledger append never turns LANDED into a non-zero exit'
+assert_contains "$out" 'ledger=unrecorded' \
+    'a failed write-back reports ledger=unrecorded on stdout, not just on stderr (root review finding)'
 
 finish
