@@ -119,6 +119,10 @@ assert_eq no "$( [[ -e $missing/adversarial.result.json ]] && printf yes || prin
     'missing consent does not publish a verdict'
 assert_eq no "$( [[ -e $tmp/missing.called ]] && printf yes || printf no )" \
     'missing consent never launches the provider CLI at all'
+# #473: nothing was sent, so no pre-send marker exists either -- this is the
+# state that makes an automatic retry safe with no operator authorization.
+assert_eq no "$( [[ -e $missing/state/launch-attempted ]] && printf yes || printf no )" \
+    'missing consent never writes the launch-attempted marker; retry is provably safe'
 
 mismatch_run="$tmp/mismatch-run"
 mkdir -- "$mismatch_run" "$mismatch_run/state"
@@ -155,6 +159,20 @@ assert_contains "$(cat -- "$tmp/claude.out")" 'model=claude-opus-5' 'receipt lin
 assert_contains "$(cat -- "$tmp/claude.out")" 'mode=cross-provider' 'receipt line names mode'
 assert_contains "$(cat -- "$tmp/claude.out")" 'P1=1' 'receipt line counts P1 findings'
 assert_contains "$(cat -- "$tmp/claude.out")" 'P2=1' 'receipt line counts P2 findings'
+# #473: the pre-send marker is written for a completed review too -- its
+# purpose is proving an attempt was made, not flagging failure.
+assert_eq yes "$( [[ -s $claude_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'a completed review leaves the launch-attempted marker behind'
+assert_eq 600 "$(stat -c %a "$claude_run/state/launch-attempted")" \
+    'the launch-attempted marker is owner-private'
+assert_eq 42 "$(jq -r '.pr' <"$claude_run/state/launch-attempted")" \
+    'the launch-attempted marker records the PR number'
+assert_eq "$head_oid" "$(jq -r '.head' <"$claude_run/state/launch-attempted")" \
+    'the launch-attempted marker records the reviewed head SHA'
+assert_eq true "$(jq -r '(.payload | type == "string" and length > 0)' <"$claude_run/state/launch-attempted")" \
+    'the launch-attempted marker records a non-empty payload id'
+assert_eq true "$(jq -r '(.timestamp | type == "string" and length > 0)' <"$claude_run/state/launch-attempted")" \
+    'the launch-attempted marker records a timestamp'
 
 # A leftover findings ledger from a prior attempt in a reused RUN_DIR must be
 # rejected before the provider is ever launched -- not after paying for the
@@ -598,6 +616,208 @@ assert_contains "$(cat -- "$tmp/bare-model.out")" 'mode=cross-provider' \
 
 # Restore the shared fixture's env, which the scenarios above overrode.
 export FAKE_HEAD_OID=$head_oid
+
+# --- #473: the documented `: '…'; launcher` idiom cannot be suppressed by a
+# provenance value that itself contains '#' (e.g. a PR-number reference like
+# "#283"), unlike the banned "leading comment" form where everything after an
+# unquoted '#' -- including the launcher -- is dropped by the shell before it
+# ever runs. This is the exact regression from the issue: the launcher must
+# actually execute end to end.
+provenance_run="$tmp/provenance-run"
+grant "$provenance_run" anthropic
+provenance_cell=": 'provenance: RUN_ID=r1; consent=granted; invocation=\"review PR #283 with --auto-review\"'; \"$script\" --pr 42 --repo acme/widget --run-dir \"$provenance_run\""
+provenance_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/provenance.called" \
+    bash -c "$provenance_cell") \
+    >"$tmp/provenance.out" 2>"$tmp/provenance.err" || provenance_rc=$?
+assert_eq 0 "$provenance_rc" \
+    'the documented provenance idiom with a #-bearing value still launches the reviewer'
+assert_eq yes "$( [[ -e $tmp/provenance.called ]] && printf yes || printf no )" \
+    'a "#283"-bearing provenance argument cannot comment out the launcher'
+assert_eq yes "$( [[ -s $provenance_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'the provenance-idiom launch produces a real result artifact, proving it actually ran'
+assert_contains "$(cat -- "$tmp/provenance.out")" 'verdict=findings' \
+    'the provenance-idiom launch completes a genuine review, not a silent no-op'
+
+# --- #473: a launch that sent nothing (crashed before ever calling the
+# provider helper) leaves no launch-attempted marker at all -- already
+# covered by the missing-consent case above, since consent is checked before
+# run_provider is ever entered. This scenario covers the complementary,
+# genuinely ambiguous state: the marker WAS written (the send was attempted)
+# but the provider crashed hard enough to leave no completed or blocked
+# receipt behind it -- exactly the "possible send" state that must still
+# require operator authorization rather than an automatic retry.
+noreceipt_root="$tmp/noreceipt-plugin"
+noreceipt_script_dir="$noreceipt_root/skills/review-remote-pr/scripts"
+mkdir -p -- "$noreceipt_script_dir" "$noreceipt_root/skills/.shared/scripts/lib"
+cp -- "$script" "$noreceipt_script_dir/adversarial-run.sh"
+cp -- "$consent" "$noreceipt_script_dir/consent-record.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
+    "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
+    "$noreceipt_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cat >"$noreceipt_script_dir/claude-adversarial-review.sh" <<'EOF'
+#!/usr/bin/env bash
+# Simulates a hard mid-send crash: exits nonzero without writing --output at
+# all, so the caller has no result artifact of any status to read.
+exit 1
+EOF
+chmod +x "$noreceipt_script_dir/adversarial-run.sh" "$noreceipt_script_dir/consent-record.sh" \
+    "$noreceipt_script_dir/claude-adversarial-review.sh"
+
+noreceipt_run="$tmp/noreceipt-run"
+grant "$noreceipt_run" anthropic
+noreceipt_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" \
+    bash "$noreceipt_script_dir/adversarial-run.sh" --pr 42 --repo acme/widget \
+        --run-dir "$noreceipt_run") \
+    >"$tmp/noreceipt.out" 2>"$tmp/noreceipt.err" || noreceipt_rc=$?
+assert_eq 1 "$noreceipt_rc" 'a provider crash with no output artifact fails closed'
+assert_eq yes "$( [[ -s $noreceipt_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'the launch-attempted marker survives a mid-send crash, proving a send was attempted'
+assert_eq blocked "$(jq -r '.status' <"$noreceipt_run/adversarial.result.json")" \
+    'a crash with no output never fabricates a completed result'
+assert_not_contains "$(cat -- "$tmp/noreceipt.out")" 'verdict=findings' \
+    'marker-present-no-receipt is never reported as a genuine completed review'
+
+# --- #473 follow-up (F1, PR #479 adversarial review): a RUN_DIR whose
+# launch-attempted marker is already present with no terminal (completed or
+# blocked) result must refuse to relaunch, even with fully valid consent --
+# that combination means a prior attempt may have already sent the diff and
+# lost its receipt, so relaunching would risk a second, silent disclosure.
+# The guard must fire before the provider helper is ever invoked and must
+# never touch the pre-existing marker bytes.
+prior_launch_run="$tmp/prior-launch-run"
+grant "$prior_launch_run" anthropic
+printf '%s' '{"timestamp":"2020-01-01T00:00:00Z","pr":42,"head":"deadbeef","payload":"stale"}' \
+    >"$prior_launch_run/state/launch-attempted"
+chmod 600 -- "$prior_launch_run/state/launch-attempted"
+prior_launch_marker_before=$(sha256sum -- "$prior_launch_run/state/launch-attempted" | awk '{print $1}')
+prior_launch_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/prior-launch.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$prior_launch_run") \
+    >"$tmp/prior-launch.out" 2>"$tmp/prior-launch.err" || prior_launch_rc=$?
+assert_eq 1 "$prior_launch_rc" \
+    'a marker with no terminal result refuses a second launch even with valid consent'
+assert_eq no "$( [[ -e $tmp/prior-launch.called ]] && printf yes || printf no )" \
+    'the guard fires before the provider helper is ever invoked'
+prior_launch_marker_after=$(sha256sum -- "$prior_launch_run/state/launch-attempted" | awk '{print $1}')
+assert_eq "$prior_launch_marker_before" "$prior_launch_marker_after" \
+    'the guard never overwrites the pre-existing launch-attempted marker'
+assert_eq blocked "$(jq -r '.status' <"$prior_launch_run/adversarial.result.json")" \
+    'the guard publishes a blocked result rather than relaunching'
+assert_contains "$(jq -r '.blockedReason' <"$prior_launch_run/adversarial.result.json")" \
+    'prior-launch' \
+    'the blocked reason names the ambiguous prior-launch state'
+assert_contains "$(cat -- "$tmp/prior-launch.out")" 'verdict=blocked' \
+    'a marker with no terminal result is never reported as a completed review'
+
+# The complementary case: a marker alongside an already-VALID completed
+# result is left to the existing (unchanged) findings-ledger/result-clearing
+# flow -- the new guard must not add a fresh refusal there. Reuses the
+# already-completed claude_run RUN_DIR from earlier in this suite, which has
+# both launch-attempted and a valid completed result on disk.
+assert_eq yes "$( [[ -s $claude_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'sanity: the completed claude_run fixture still carries its marker'
+terminal_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/terminal-reuse.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_run") \
+    >"$tmp/terminal-reuse.out" 2>"$tmp/terminal-reuse.err" || terminal_rc=$?
+assert_eq 0 "$terminal_rc" \
+    'a marker alongside an already-valid completed result is not blocked by the new guard'
+assert_eq yes "$( [[ -e $tmp/terminal-reuse.called ]] && printf yes || printf no )" \
+    "the guard defers to today's unchanged existing-run-dir behaviour for a terminal result"
+
+# --- #473 follow-up (F2, PR #479 adversarial review): the launch-attempted
+# marker must only be written after every local output-path preparation
+# succeeds, so a purely local abort (e.g. a hostile pre-existing artifact
+# target) never leaves behind a marker that falsely claims a possible send.
+# anthropic.stdout is prepared inside run_provider itself (unlike
+# adversarial.result.json, which main() already validates earlier), so a
+# symlink planted there is only ever caught at that later, run_provider-local
+# preparation step -- exactly the ordering this fix pins down.
+local_abort_run="$tmp/local-abort-run"
+grant "$local_abort_run" anthropic
+ln -s /etc/passwd "$local_abort_run/anthropic.stdout"
+local_abort_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/local-abort.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$local_abort_run") \
+    >"$tmp/local-abort.out" 2>"$tmp/local-abort.err" || local_abort_rc=$?
+assert_eq 1 "$local_abort_rc" 'a hostile local output target aborts before any send'
+assert_contains "$(cat -- "$tmp/local-abort.err")" 'refusing to use an artifact symlink' \
+    'the local abort names the unsafe artifact'
+assert_eq no "$( [[ -e $tmp/local-abort.called ]] && printf yes || printf no )" \
+    'a purely local abort never reaches the provider helper'
+assert_eq no "$( [[ -e $local_abort_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'a purely local abort never writes the launch-attempted marker'
+
+# --- #473 follow-up (T1, PR #479 CodeRabbit): --provenance carries the
+# launch-authorization text as one argv element -- never eval'd, never
+# re-parsed -- so a value containing a single quote, a $(...) or `...`
+# command substitution, and a ';' statement separator must all land as inert
+# bytes, never execute, and never suppress the launcher.
+provenance_hazard_run="$tmp/provenance-hazard-run"
+grant "$provenance_hazard_run" anthropic
+hazard_marker_dollar="$tmp/should-not-exist-dollar"
+hazard_marker_backtick="$tmp/should-not-exist-backtick"
+hazard_marker_semi="$tmp/should-not-exist-semi"
+provenance_hazard="RUN_ID=r1; consent=granted; invocation='review PR #283' \$(touch $hazard_marker_dollar) \`touch $hazard_marker_backtick\` ; touch $hazard_marker_semi"
+provenance_hazard_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$provenance_hazard_run" \
+        --provenance "$provenance_hazard") \
+    >"$tmp/provenance-hazard.out" 2>"$tmp/provenance-hazard.err" || provenance_hazard_rc=$?
+assert_eq 0 "$provenance_hazard_rc" \
+    'a provenance value with shell metacharacters still completes a normal review'
+assert_contains "$(cat -- "$tmp/provenance-hazard.out")" 'verdict=findings' \
+    'the hazardous-provenance launch completes a genuine review, not a silent no-op'
+assert_eq "$provenance_hazard" "$(cat -- "$provenance_hazard_run/state/provenance")" \
+    'the provenance record holds the value byte-for-byte, unmodified'
+assert_eq 600 "$(stat -c %a "$provenance_hazard_run/state/provenance")" \
+    'the provenance record is owner-private'
+assert_contains "$(cat -- "$tmp/provenance-hazard.err")" "provenance: $provenance_hazard" \
+    'the provenance value is echoed to stderr with its prefix'
+assert_eq no "$( [[ -e $hazard_marker_dollar ]] && printf yes || printf no )" \
+    'a dollar-paren command substitution inside the provenance value is never executed'
+assert_eq no "$( [[ -e $hazard_marker_backtick ]] && printf yes || printf no )" \
+    'a backtick command substitution inside the provenance value is never executed'
+assert_eq no "$( [[ -e $hazard_marker_semi ]] && printf yes || printf no )" \
+    'a statement after a semicolon inside the provenance value is never executed'
+
+# --- #473 follow-up (T2, PR #479 CodeRabbit): two concurrent invocations
+# sharing a RUN_DIR must not both proceed -- the second must refuse outright
+# rather than race the first to a possible double send. Simulated here by
+# holding the same exclusive flock the script itself takes, from this test
+# process, before invoking the script.
+lock_run="$tmp/lock-run"
+grant "$lock_run" anthropic
+lock_file="$lock_run/state/.launch.lock"
+: >"$lock_file"
+chmod 600 -- "$lock_file"
+exec {TEST_LOCK_FD}>"$lock_file"
+flock -n "$TEST_LOCK_FD" || {
+    printf 'test setup failed to take the run lock\n' >&2
+    exit 1
+}
+lock_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/lock.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$lock_run") \
+    >"$tmp/lock.out" 2>"$tmp/lock.err" || lock_rc=$?
+exec {TEST_LOCK_FD}>&-
+assert_eq 1 "$lock_rc" 'a concurrently held run lock refuses this invocation'
+assert_contains "$(cat -- "$tmp/lock.err")" 'holds the launch lock' \
+    'the lock refusal names the concurrency conflict'
+assert_eq no "$( [[ -e $tmp/lock.called ]] && printf yes || printf no )" \
+    'the lock refusal never invokes the provider helper'
+assert_eq no "$( [[ -e $lock_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'the lock refusal never writes the launch-attempted marker'
+assert_eq no "$( [[ -e $lock_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'the lock refusal never writes a result; the lock holder owns that file'
 
 # A tracked `.agent` symlink bypasses leaf-only provenance checks: Git tracks
 # the link itself, not the resolved `.agent/env-contract.txt` path. The runner
