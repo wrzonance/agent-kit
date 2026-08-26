@@ -45,6 +45,9 @@ assert_contains "$out" 'verdict=skip-eligible' 'a test-only diff is skip-eligibl
 assert_contains "$out" 'oracle=' 'a skip-eligible verdict prints its oracle'
 assert_contains "$out" 'files=2' 'the verdict counts the changed files'
 
+repo_root_alias=$($helper --repo-root "$repo" --base main)
+assert_contains "$repo_root_alias" 'verdict=skip-eligible' '--repo-root remains an alias for --worktree'
+
 # A docs-only diff is skip-eligible too.
 start_branch
 printf 'notes\n' > "$repo/docs/notes.md"

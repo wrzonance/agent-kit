@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compose a worker prompt from repository-controlled facts and persisted issue artifacts.
 set -euo pipefail
+umask 077
 
 program=${0##*/}
 usage() {
@@ -991,7 +992,9 @@ if [[ -z $output || $output == - ]]; then
 else
     [[ ! -L $output ]] || die "refusing symlink output: $output"
     output_dir=$(dirname -- "$output")
-    [[ -d $output_dir ]] || die "output directory does not exist: $output_dir"
+    # umask 077 above makes every newly-created component mode 0700. Keep the
+    # parent creation idempotent without changing permissions on existing dirs.
+    mkdir -p -- "$output_dir" || die "could not create output directory: $output_dir"
     output_tmp=$(mktemp "$output_dir/.compose-worker-prompt.XXXXXXXXXX") || die "could not allocate output buffer in $output_dir"
     trap 'rm -f -- "$temporary" "$output_tmp" "${plan_update_tmp:-}"' EXIT HUP INT TERM
     cat -- "$temporary" > "$output_tmp"

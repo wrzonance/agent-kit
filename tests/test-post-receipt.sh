@@ -436,6 +436,19 @@ push_rc=$?
 assert_eq '0' "$push_rc" '--require-pushed permits a clean pushed HEAD'
 assert_contains "$push_out" 'posted id=501' '--require-pushed still uses the verified transport'
 
+mkdir -p "$push_repo/.agent"
+printf '%s\n' board >"$push_repo/.agent/board.json"
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+agent_state_rc=0
+(cd -- "$push_repo" && run_publish --pr 251 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5') >/dev/null || agent_state_rc=$?
+assert_eq '0' "$agent_state_rc" '--require-pushed ignores excluded .agent state dirt'
+
 printf '%s\n' dirty >"$push_repo/dirty.txt"
 reset_not_spent
 reset_findings

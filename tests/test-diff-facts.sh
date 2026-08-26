@@ -60,6 +60,9 @@ assert_not_contains "$out" 'trivial' 'does not emit a triviality judgment'
 explicit=$(bash "$script" --repo-root "$repo" --base base)
 assert_eq "$out" "$explicit" 'explicit base produces the same facts'
 
+worktree_alias=$(bash "$script" --worktree "$repo" --base base)
+assert_eq "$out" "$worktree_alias" '--worktree is an alias for --repo-root'
+
 spaced_helpers="$tmp/helper scripts with spaces"
 mkdir -p "$spaced_helpers"
 cp "$script" "$spaced_helpers/diff-facts.sh"

@@ -81,6 +81,11 @@ worktree_contract="$worktree/.agent/env-contract.txt"
 assert_eq 'yes' "$([[ -f $worktree_contract ]] && printf yes || printf no)" \
     'issue setup leaves a preflight contract in the new worktree'
 
+for private_dir in prompts evidence logs pr-body; do
+    assert_eq 700 "$(stat -c %a -- "$worktree/.agent/$private_dir")" \
+        "issue setup creates .agent/$private_dir at mode 0700"
+done
+
 for key in sandbox= tls= caches=; do
     root_line=$(grep -m1 "^$key" "$root_contract")
     worktree_line=$(grep -m1 "^$key" "$worktree_contract")

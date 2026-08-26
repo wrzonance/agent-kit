@@ -427,6 +427,14 @@ run_dir_mode() {
 }
 
 validate_run_dir() {
+    # A receipt may be resumed with a freshly addressed RUN_DIR. Establish the
+    # private state boundary here as well as in run-dir.sh, so a missing
+    # directory never turns into a mode-inherited or world-readable artifact.
+    if [[ ! -e $RUN_DIR && ! -L $RUN_DIR ]]; then
+        # umask 077 above makes the newly-created state directory mode 0700.
+        mkdir -p -- "$RUN_DIR" 2>/dev/null ||
+            evidence_unavailable "could not create RUN_DIR: $RUN_DIR"
+    fi
     [[ -d $RUN_DIR && ! -L $RUN_DIR && -O $RUN_DIR ]] ||
         evidence_unavailable "RUN_DIR is not an owned directory: $RUN_DIR"
     local mode
@@ -507,7 +515,7 @@ require_pushed_state() {
     command -v git >/dev/null 2>&1 || refuse_push 'git is not available'
     local root status head refs ref
     root=$(git rev-parse --show-toplevel 2>/dev/null) || refuse_push 'not inside a git worktree'
-    status=$(git -C "$root" status --porcelain --untracked-files=all 2>/dev/null) ||
+    status=$(git -C "$root" status --porcelain --untracked-files=all -- . ':(exclude).agent/**' 2>/dev/null) ||
         refuse_push 'could not inspect worktree status'
     [[ -z $status ]] || refuse_push 'the worktree is dirty'
     head=$(git -C "$root" rev-parse HEAD 2>/dev/null) || refuse_push 'could not resolve HEAD'
