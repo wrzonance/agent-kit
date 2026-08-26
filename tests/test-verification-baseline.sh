@@ -18,11 +18,15 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 repo="$tmp/repo"
 mkdir -p -- "$repo"
-git -C "$repo" init -q
+# -b main: the fixture pins --base main throughout, regardless of this host's
+# git init.defaultBranch (a `master`-default git otherwise dies resolving
+# --base main as an unresolvable commit).
+git -C "$repo" init -q -b main
 git -C "$repo" config user.email test@example.com
 git -C "$repo" config user.name 'Test'
 
 printf 'unrelated content\n' >"$repo/unrelated.txt"
+printf 'stable content\n' >"$repo/stable.txt"
 printf 'pinned content\n' >"$repo/pinned.txt"
 printf 'removed content\n' >"$repo/removed.txt"
 git -C "$repo" add -A
@@ -117,7 +121,7 @@ assert_eq '1' "$rc" 'a path deleted by this branch exits 1 (change-caused-red)'
 assert_contains "$out" 'path=removed.txt tracked=no' \
     'per-path detail reports the branch-deleted path as tracked=no'
 
-# --- persisted decision is written and reused (short-circuit) --------------
+# --- persisted decision: provenance carries forward; the verdict never does ---
 decision_file="$repo/.agent/evidence/baseline/demo-persist.json"
 run_helper --base main --log "$log" --paths unrelated.txt --check demo-persist --issue 7 >/dev/null
 assert_rc 0 'first run for demo-persist creates a persisted decision' -- \
@@ -126,23 +130,44 @@ assert_rc 0 'first run for demo-persist creates a persisted decision' -- \
 assert_rc 0 'persisted decision file is mode-owned and non-symlink' -- \
     bash -c '[[ -f "$1" && ! -L "$1" ]]' _ "$decision_file"
 
-# Dirty unrelated.txt on disk WITHOUT recommitting -- a fresh classification
-# would now report change-caused-red (unchanged=no). If the persisted
-# decision is reused instead of recomputed, the helper still reports
-# baseline-red: this proves the short-circuit skips re-running the diffs
-# rather than merely agreeing with them by coincidence.
-printf 'unrelated content, now dirtied after the decision was persisted\n' >"$repo/unrelated.txt"
+# Re-running with the same clean path/base and no --issue adopts the
+# persisted issue (provenance), but rc=0 here is EARNED by fresh
+# re-verification -- unrelated.txt is genuinely still clean, not because the
+# stored verdict was trusted.
+out=$(run_helper --base main --log "$log" --paths unrelated.txt --check demo-persist)
+rc=$?
+assert_eq '0' "$rc" 'a persisted decision is confirmed by fresh re-verification (still baseline-red)'
+assert_contains "$out" 'issue=7' \
+    'the persisted issue is adopted when --issue is omitted'
+assert_contains "$out" 'reused=' \
+    'output names the matched persisted decision file'
+
+# Root review regression: a persisted decision must never mask a later,
+# genuine change to one of its paths -- every path is re-verified on every
+# invocation; the stored verdict is evidence of provenance, never proof of a
+# fresh tree's state.
+printf 'unrelated content, now genuinely changed by a real commit\n' >"$repo/unrelated.txt"
+git -C "$repo" add unrelated.txt
+git -C "$repo" commit -qm 'feature: accidentally touch unrelated.txt'
 out=$(run_helper --base main --log "$log" --paths unrelated.txt --check demo-persist --issue 7)
 rc=$?
-assert_eq '0' "$rc" 'a persisted decision for matching paths/base short-circuits to baseline-red'
-assert_contains "$out" 'reused=' \
-    'reused-decision output names the persisted decision file'
+assert_eq '1' "$rc" 'a committed change to a previously-clean path is change-caused-red, not a stale baseline-red'
+assert_contains "$out" 'change-caused-red check=demo-persist paths=1' \
+    'change-caused-red marker line names the check after the path was touched'
+assert_contains "$out" 'not honored' \
+    'output flags the stale persisted decision as not honored'
 
-# --force bypasses the persisted decision and recomputes fresh.
-out=$(run_helper --base main --log "$log" --paths unrelated.txt --check demo-persist --issue 7 --force)
+# --force ignores even the provenance carry-forward (issue defaults to none,
+# not the persisted 55) -- on a genuinely clean, unrelated path this still
+# freshly verifies to baseline-red.
+run_helper --base main --log "$log" --paths stable.txt --check demo-force --issue 55 >/dev/null
+out=$(run_helper --base main --log "$log" --paths stable.txt --check demo-force --force)
 rc=$?
-assert_eq '1' "$rc" '--force ignores the persisted decision and recomputes (now change-caused-red)'
-git -C "$repo" checkout -q -- unrelated.txt
+assert_eq '0' "$rc" '--force still verifies a genuinely clean path as baseline-red'
+assert_contains "$out" 'issue=none' \
+    '--force does not adopt the persisted issue'
+assert_not_contains "$out" 'reused=' \
+    '--force does not report a matched persisted decision'
 
 # --- usage errors ------------------------------------------------------------
 assert_rc 2 'missing --base is a usage error' -- \

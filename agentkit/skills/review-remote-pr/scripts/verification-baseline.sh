@@ -24,9 +24,12 @@
 # Exit 2 is a usage error.
 #
 # With --check NAME, a baseline-red decision is persisted to
-# <evidence-dir>/NAME.json (default <repo-root>/.agent/evidence/baseline/) so
-# the next session for the same paths and base reuses it without re-running
-# the diffs -- pass --force to recompute anyway.
+# <evidence-dir>/NAME.json (default <repo-root>/.agent/evidence/baseline/).
+# The next session for the same paths and base SHA reuses only its tracked
+# PROVENANCE (--issue, when this invocation did not pass its own) -- never
+# its verdict: every path is re-verified (tracked-at-HEAD + both diff checks)
+# on every run, so a commit that touches a previously-clean path is still
+# caught. Pass --force to ignore the persisted provenance too.
 set -euo pipefail
 
 readonly PROGNAME=${0##*/}
@@ -39,6 +42,7 @@ BASE=''
 LOG=''
 CHECK=''
 ISSUE='none'
+ISSUE_SET=0
 REPO_ROOT=''
 EVIDENCE_DIR=''
 FORCE=0
@@ -64,7 +68,8 @@ Usage: $PROGNAME --base REF --log FILE --paths P [P...] [--check NAME]
                      none.
 --repo-root DIR     Default: \`git rev-parse --show-toplevel\`.
 --evidence-dir DIR  Default: <repo-root>/.agent/evidence/baseline.
---force             Ignore any persisted decision and recompute.
+--force             Ignore any persisted provenance (--issue is never
+                     inherited); every path is re-verified regardless.
 EOF
 }
 
@@ -92,8 +97,8 @@ parse_args() {
             --log=*) LOG=${1#*=}; shift ;;
             --check) require_value "$1" "${2:-}"; CHECK=$2; shift 2 ;;
             --check=*) CHECK=${1#*=}; shift ;;
-            --issue) require_value "$1" "${2:-}"; ISSUE=$2; shift 2 ;;
-            --issue=*) ISSUE=${1#*=}; shift ;;
+            --issue) require_value "$1" "${2:-}"; ISSUE=$2; ISSUE_SET=1; shift 2 ;;
+            --issue=*) ISSUE=${1#*=}; ISSUE_SET=1; shift ;;
             --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
             --repo-root=*) REPO_ROOT=${1#*=}; shift ;;
             --evidence-dir) require_value "$1" "${2:-}"; EVIDENCE_DIR=$2; shift 2 ;;
@@ -226,12 +231,17 @@ decision_path() {
     printf '%s/%s.json\n' "$EVIDENCE_DIR" "$CHECK"
 }
 
-# try_reuse_decision -- exits 0 (printing the reconstructed marker + evidence
-# block) when a persisted decision exists for --check and its stored paths
-# and base SHA exactly match this invocation; otherwise returns without
-# exiting so the caller falls through to a fresh classification.
-try_reuse_decision() {
-    local file stored_paths_json stored_base stored_issue stored_log current_paths_json
+# load_persisted_metadata -- when a persisted decision exists for --check and
+# its stored paths and base SHA exactly match this invocation, adopts its
+# --issue (only when this invocation did not pass its own) and records
+# DECISION_FILE_MATCHED for the caller to report. NEVER exits and NEVER
+# substitutes for verification: a stored verdict is not proof of a fresh
+# tree's state (root review finding on a prior version of this file -- a
+# later commit touching one of the paths must still be caught), so every
+# path is re-verified regardless of what this finds.
+DECISION_FILE_MATCHED=''
+load_persisted_metadata() {
+    local file stored_paths_json stored_base stored_issue current_paths_json
     ((FORCE == 0)) || return 0
     file=$(decision_path) || return 0
     [[ -f $file && ! -L $file && -r $file ]] || return 0
@@ -240,14 +250,10 @@ try_reuse_decision() {
     current_paths_json=$(printf '%s\n' "${SORTED_PATHS[@]}" | jq -R . | jq -s -c 'sort')
     stored_paths_json=$(jq -c '(.paths // []) | sort' -- "$file" 2>/dev/null) || return 0
     [[ -n $stored_paths_json && $stored_paths_json == "$current_paths_json" ]] || return 0
-    stored_issue=$(jq -r '.issue // "none"' -- "$file" 2>/dev/null) || stored_issue=$ISSUE
-    stored_log=$(jq -r '.log // empty' -- "$file" 2>/dev/null) || stored_log=$LOG
+    DECISION_FILE_MATCHED=$file
+    ((ISSUE_SET == 0)) || return 0
+    stored_issue=$(jq -r '.issue // "none"' -- "$file" 2>/dev/null) || return 0
     ISSUE=$stored_issue
-    printf 'baseline-red check=%s paths=%s unchanged=yes outside-diff=yes issue=%s base=%s log=%s reused=%s\n' \
-        "$CHECK" "${#SORTED_PATHS[@]}" "$ISSUE" "$BASE" "$stored_log" "$file"
-    printf '\n'
-    evidence_block
-    exit 0
 }
 
 persist_decision() {
@@ -298,7 +304,7 @@ main() {
     resolve_repo_root
     normalize_paths
     resolve_base_sha
-    try_reuse_decision
+    load_persisted_metadata
 
     local any_changed=0 p tracked unchanged outside
     declare -a report_lines=()
@@ -320,8 +326,13 @@ main() {
 
     if ((any_changed == 0)); then
         persist_decision
-        printf 'baseline-red check=%s paths=%s unchanged=yes outside-diff=yes issue=%s base=%s log=%s\n' \
-            "${CHECK:-unset}" "${#NORM_PATHS[@]}" "$ISSUE" "$BASE" "$LOG"
+        if [[ -n $DECISION_FILE_MATCHED ]]; then
+            printf 'baseline-red check=%s paths=%s unchanged=yes outside-diff=yes issue=%s base=%s log=%s reused=%s\n' \
+                "${CHECK:-unset}" "${#NORM_PATHS[@]}" "$ISSUE" "$BASE" "$LOG" "$DECISION_FILE_MATCHED"
+        else
+            printf 'baseline-red check=%s paths=%s unchanged=yes outside-diff=yes issue=%s base=%s log=%s\n' \
+                "${CHECK:-unset}" "${#NORM_PATHS[@]}" "$ISSUE" "$BASE" "$LOG"
+        fi
         printf '\n'
         evidence_block
         exit 0
@@ -329,6 +340,10 @@ main() {
 
     printf 'change-caused-red check=%s paths=%s\n' "${CHECK:-unset}" "${#NORM_PATHS[@]}"
     printf '%s\n' "${report_lines[@]}"
+    if [[ -n $DECISION_FILE_MATCHED ]]; then
+        printf 'note: a persisted baseline decision at %s no longer matches this tree; not honored\n' \
+            "$DECISION_FILE_MATCHED"
+    fi
     exit 1
 }
 
