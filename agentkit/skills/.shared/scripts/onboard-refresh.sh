@@ -289,6 +289,39 @@ if [[ -x $detector ]]; then
     path_drift=$("$detector" --repo-root "$repo_root" --format drift 2> /dev/null || true)
 fi
 
+# Model-roster migration hint (issue #487). AGENT_WORKER_MODELS/_FALLBACK and
+# the AGENT_ADVERSARIAL_REVIEWER(_FALLBACK) roster compound take precedence
+# over their singular/bare-CLI counterparts once declared, so a repository
+# carrying both is not broken -- the singular declaration is simply now dead
+# weight nobody notices without this nudge.
+resolver=$self_dir/repo-config.sh
+roster_hint_lines=''
+if [[ -x $resolver && -r $config ]]; then
+    worker_roster_declared=0
+    for roster_key in AGENT_WORKER_MODELS AGENT_WORKER_MODELS_FALLBACK; do
+        "$resolver" --repo-root "$repo_root" --get "$roster_key" > /dev/null 2>&1 &&
+            worker_roster_declared=1
+    done
+    worker_singular_declared=0
+    for singular_key in AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK; do
+        "$resolver" --repo-root "$repo_root" --get "$singular_key" > /dev/null 2>&1 &&
+            worker_singular_declared=1
+    done
+    if ((worker_roster_declared && worker_singular_declared)); then
+        roster_hint_lines+='roster-hint= AGENT_WORKER_MODELS* and AGENT_WORKER_MODEL* are both declared; the roster wins and the singular keys are now redundant'$'\n'
+    fi
+
+    reviewer_declared=''
+    reviewer_declared=$("$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEWER 2> /dev/null || true)
+    reviewer_fallback_declared=0
+    "$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEWER_FALLBACK > /dev/null 2>&1 &&
+        reviewer_fallback_declared=1
+    if [[ -n $reviewer_declared && $reviewer_declared != codex && $reviewer_declared != claude ]] &&
+        ((reviewer_fallback_declared == 0)); then
+        roster_hint_lines+='roster-hint= AGENT_ADVERSARIAL_REVIEWER is a roster compound with no AGENT_ADVERSARIAL_REVIEWER_FALLBACK declared; cross-harness preference has only one candidate'$'\n'
+    fi
+fi
+
 review_provider_status=unavailable
 review_provider_config=$self_dir/review-provider-config.sh
 if [[ -f $review_provider_config ]]; then
@@ -319,6 +352,7 @@ if [[ ${ci_uncovered:-0} =~ ^[1-9][0-9]*$ ]]; then
     parts+=("ci-gaps=$ci_uncovered")
 fi
 [[ -n $path_drift ]] && parts+=("paths=drift")
+[[ -n $roster_hint_lines ]] && parts+=("model-roster=hint")
 
 if ((${#parts[@]} == 0)) && [[ -z $path_drift ]]; then
     summary='drift= none'
@@ -339,6 +373,9 @@ if ((generator_stale)); then
 fi
 if [[ -n $path_drift ]]; then
     printf '%s\n' "$path_drift"
+fi
+if [[ -n $roster_hint_lines ]]; then
+    printf '%s' "$roster_hint_lines"
 fi
 if [[ -n $ci_gates ]]; then
     printf '%s\n' "$ci_gates"
