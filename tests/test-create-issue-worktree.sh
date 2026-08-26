@@ -17,6 +17,10 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
+stat_mode() {
+    stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1"
+}
+
 create_sh="$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh"
 preflight_sh="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
 harness_id_script="$root/agentkit/skills/.shared/scripts/harness-id.sh"
@@ -70,7 +74,7 @@ root_contract="$repo/.agent/env-contract.txt"
 assert_eq 'yes' "$([[ -f $root_contract ]] && printf yes || printf no)" \
     'fixture setup: the root has a real preflight contract to inherit from'
 
-out=$("$create_sh" --repo-root "$repo" --issue 41 --base main 2>&1)
+out=$(umask 022; "$create_sh" --repo-root "$repo" --issue 41 --base main 2>&1)
 rc=$?
 assert_eq '0' "$rc" 'issue setup completes'
 assert_not_contains "$out" 'setup failed' 'issue setup does not report a setup failure'
@@ -80,9 +84,11 @@ assert_eq 'yes' "$([[ -d $worktree ]] && printf yes || printf no)" \
 worktree_contract="$worktree/.agent/env-contract.txt"
 assert_eq 'yes' "$([[ -f $worktree_contract ]] && printf yes || printf no)" \
     'issue setup leaves a preflight contract in the new worktree'
+assert_eq 644 "$(stat_mode "$worktree/seed.txt")" \
+    'issue setup preserves ambient checkout permissions'
 
 for private_dir in prompts evidence logs pr-body; do
-    assert_eq 700 "$(stat -c %a -- "$worktree/.agent/$private_dir")" \
+    assert_eq 700 "$(stat_mode "$worktree/.agent/$private_dir")" \
         "issue setup creates .agent/$private_dir at mode 0700"
 done
 

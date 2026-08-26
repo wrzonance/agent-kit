@@ -8,6 +8,10 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
+stat_mode() {
+    stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1"
+}
+
 compose="$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -78,7 +82,7 @@ bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/
     --worktree "$repo" --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high --output "$fresh_prompt" >/dev/null || fresh_rc=$?
 assert_eq 0 "$fresh_rc" 'composer creates a missing output directory'
-assert_eq 700 "$(stat -c %a -- "$fresh_prompt_dir")" \
+assert_eq 700 "$(stat_mode "$fresh_prompt_dir")" \
     'composer creates the output directory privately'
 
 assert_rendered_guard_passes() {

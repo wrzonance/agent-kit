@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Create and bootstrap one issue worktree from the repository's declared base.
 set -euo pipefail
-umask 077
 
 readonly PROGNAME=${0##*/}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -131,9 +130,9 @@ main() {
         exit 1
     }
     for private_dir in prompts evidence logs pr-body; do
-        # The process-wide umask 077 makes every newly-created component mode
-        # 0700, including the intermediate .agent directory.
-        mkdir -p -- "$worktree/.agent/$private_dir" || {
+        # Scope the restrictive umask to private state creation; checkout and
+        # setup commands must retain the caller's ambient permissions.
+        (umask 077; mkdir -p -- "$worktree/.agent/$private_dir") || {
             worktree_setup_fail "could not create private worktree state directory: $worktree/.agent/$private_dir"
             exit 1
         }
