@@ -422,6 +422,26 @@ assert_contains "$pr_fix_prompt" 'Use bounded wait' \
     'pr-fix-batch renders the accepted findings ledger'
 assert_contains "$pr_fix_prompt" 'accepted findings' \
     'pr-fix-batch keeps the accepted-findings contract visible'
+assert_contains "$pr_fix_prompt" 'untrusted data' \
+    'pr-fix-batch labels finding text as untrusted data'
+assert_not_contains "$fix_prompt" '## Accepted findings' \
+    'legacy fix-batch omits the accepted-findings section'
+
+unsafe_findings="$tmp/unsafe-findings.ndjson"
+printf '%s\n' '{"title":"bad\u0001title","severity":"P2","verdict":"fixed","sha":"abcdef1"}' > "$unsafe_findings"
+unsafe_findings_rc=0
+bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high --findings-file "$unsafe_findings" \
+    >/dev/null 2>&1 || unsafe_findings_rc=$?
+assert_eq nonzero "$([[ $unsafe_findings_rc != 0 ]] && printf nonzero || printf zero)" \
+    'pr-fix-batch refuses control characters in finding text'
+
+stacked_setup=$(bash "$compose" --template pr-loop-setup --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --materiality-base 0123456789abcdef0123456789abcdef01234567)
+assert_contains "$stacked_setup" \
+    '--base "0123456789abcdef0123456789abcdef01234567"' \
+    'pr-loop-setup renders the caller-supplied stacked materiality base'
 
 assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$compose" \
     --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \

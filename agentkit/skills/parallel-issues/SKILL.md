@@ -952,14 +952,17 @@ loop: a relayed grant manufactures child-context consent. The loop prechecks, ha
 state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
+
 The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
 cap includes the root and active issue leads; reserve those before deriving child capacity. The
 effective cap is the smaller of the number of open PRs and the remaining runtime slots:
+
 ```bash
 open_pr_count=${open_pr_count:?count of open PRs in this draft phase}
 active_leads=${active_leads:?number of active issue leads}
 runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))
-((runtime_loop_budget > 0 && open_pr_count > 0)) || {
+if ((open_pr_count == 0)); then printf '%s\n' 'No open PRs; nothing to dispatch.'; exit 0; fi
+((runtime_loop_budget > 0)) || {
     printf '%s\n' 'No child capacity remains for PR loops; do not dispatch.' >&2
     exit 1
 }
@@ -967,10 +970,11 @@ pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : ru
 printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
     "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
-Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and
-refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker
-slot: the loop agent uses the documented spawn-unavailable path for root-approved fix batches.
-This dispatch-time counter is the enforcement point, not a post-hoc report.
+
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill after
+prior loop reaches completion marker. Do not reserve nested-worker slots; the loop uses
+the documented spawn-unavailable path for root-approved fix batches. This dispatch-time counter
+enforces the cap.
 
 ### Adversarial-review receipt:
 
@@ -1056,7 +1060,8 @@ findings exist. Keep the same no-ready/no-bot/no-human-resolution rules and labe
 
 Use the same helper with `--template pr-loop-setup` and the PR number as `--issue`; pass its
 composed prompt verbatim. Setup returns `launch-ready`, `ci-red: <check>`, or `cq-open: N`.
-Compose `--template pr-fix-batch` with `--findings-file` only when accepted findings exist.
+Compose `--template pr-fix-batch` with `--findings-file` only when accepted findings exist. Setup
+Materiality: `origin/${base_branch}`; chains pass `--materiality-base`.
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
@@ -1097,8 +1102,8 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, sweep `opened_prs` before any `Worked for` handoff: every PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}, proven by `post-receipt.sh status --comments <artifact>`. Count both receipt kinds; verified skips also count in `skipped`.
-Missing/duplicate/invalid evidence prints `final-sweep=miss`, re-enters the draft loop, and means handoff cannot print. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`; one automatic re-drive precedes parking a recoverable blocker.
+With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}; prove it with `post-receipt.sh status --comments <artifact>`. Skips count.
+Missing/duplicate/invalid evidence prints `final-sweep=miss`, re-enters the draft loop, and handoff cannot print. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`; re-drive recoverable blockers once before parking.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.

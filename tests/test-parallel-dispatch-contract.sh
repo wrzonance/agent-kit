@@ -342,6 +342,14 @@ assert_contains "$text" 'pr-loop-setup' \
     'dispatch uses the read-only PR-loop setup template'
 assert_contains "$text" 'pr-fix-batch' \
     'dispatch gates the fix-batch template on accepted findings'
+assert_contains "$text" 'open_pr_count == 0' \
+    'dispatch treats zero open PRs as an explicit no-op case'
+assert_contains "$text" 'exit 0' \
+    'dispatch exits successfully when there are no open PRs'
+assert_eq yes "$([[ $(sed -n '/^### Step 3b: Dispatch review-remote-pr agents (parallel)$/,/^### Adversarial-review receipt:/p' "$skill" | sed -n '2p') == '' ]] && printf yes || printf no)" \
+    'Step 3b heading keeps its required Markdown blank line'
+assert_contains "$normalized_text" 'origin/${base_branch}' \
+    'setup materiality base has an origin-base default'
 assert_contains "$text" 'queue overflow PR loops' \
     'dispatch queues PR loops beyond the effective cap'
 assert_contains "$verification_isolation_text" 'serialize full-suite verification' \
