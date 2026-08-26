@@ -559,8 +559,8 @@ For compatibility with pre-queue attended logs, these legacy examples remain rec
 and `Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]`.
 
 The first line says the full requested count was dispatched. The second makes a thin dispatch
-legible without widening it. The remaining lines cover depth queueing, empty selection, and
-eligible overflow.
+legible without widening it. The fourth line records the fast-mode queue; the remaining lines
+cover depth queueing, empty selection, and eligible overflow.
 
 Announce the chosen set, every promoted-from-Backlog issue with its ranking reason, the
 dropped-for-conflict set, and the skipped-as-blocked set before dispatching. `--fast-mode`
