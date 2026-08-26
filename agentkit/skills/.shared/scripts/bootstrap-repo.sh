@@ -169,6 +169,16 @@ fi
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 resolver="$self_dir/repo-config.sh"
 
+# secure_mkdir_p (issue #474): guarded like the plugin-manifest lookup below --
+# a copy of this script run without its lib/ sibling (an install layout that
+# resolves nothing outside the single file) still runs, falling back to a
+# plain `mkdir -p` at the call site instead of dying on a missing source.
+SECURE_MKDIR_LIB="$self_dir/lib/secure-mkdir.sh"
+if [[ -r $SECURE_MKDIR_LIB ]]; then
+    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+    source "$SECURE_MKDIR_LIB"
+fi
+
 generator_version=$(jq -r '.version // empty' "$self_dir/../../..//.codex-plugin/plugin.json" 2> /dev/null || true)
 generator_stamp=''
 [[ -n $generator_version ]] && generator_stamp="agentkit/$generator_version"
@@ -740,7 +750,11 @@ ignore_check_paths=()
 ((config_tracked)) || ignore_check_paths+=(.agent/config.env)
 ((board_tracked)) || ignore_check_paths+=(.agent/board.json)
 ((${#ignore_check_paths[@]} == 0)) || assert_effective_ignore "${ignore_check_paths[@]}"
-mkdir -p -- "$repo_root/.agent"
+if command -v secure_mkdir_p > /dev/null 2>&1; then
+    secure_mkdir_p "$repo_root/.agent" || die "could not create $repo_root/.agent"
+else
+    mkdir -p -- "$repo_root/.agent" || die "could not create $repo_root/.agent"
+fi
 
 if ((config_tracked)); then
     patch_tracked_config "$repo_root/.agent/config.env" "$staging/.agent/config.env"
