@@ -10,12 +10,14 @@ WHY_FILE=''
 WHAT_FILE=''
 DECISIONS_FILE=''
 TESTING_FILE=''
+BASELINE_FILE=''
 AGENT=''
 OUTPUT=''
 OUTPUT_TMP=''
 
 usage() {
-    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE --agent ID [--output FILE]\n' "$PROGNAME" >&2
+    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
+    printf '  --baseline-file FILE   optional verification-baseline.sh evidence block, appended as a "## Verification" section\n' >&2
 }
 
 die() {
@@ -30,7 +32,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
-            --issue|--why-file|--what-file|--decisions-file|--testing-file|--agent|--output)
+            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--agent|--output)
                 require_value "$1" "${2-}"
                 case $1 in
                     --issue) ISSUE=$2 ;;
@@ -38,6 +40,7 @@ parse_args() {
                     --what-file) WHAT_FILE=$2 ;;
                     --decisions-file) DECISIONS_FILE=$2 ;;
                     --testing-file) TESTING_FILE=$2 ;;
+                    --baseline-file) BASELINE_FILE=$2 ;;
                     --agent) AGENT=$2 ;;
                     --output) OUTPUT=$2 ;;
                 esac
@@ -48,6 +51,7 @@ parse_args() {
             --what-file=* ) WHAT_FILE=${1#*=}; shift ;;
             --decisions-file=* ) DECISIONS_FILE=${1#*=}; shift ;;
             --testing-file=* ) TESTING_FILE=${1#*=}; shift ;;
+            --baseline-file=* ) BASELINE_FILE=${1#*=}; shift ;;
             --agent=* ) AGENT=${1#*=}; shift ;;
             --output=* ) OUTPUT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -83,6 +87,7 @@ validate_args() {
     validate_section '--decisions-file' "$DECISIONS_FILE"
     validate_section '--testing-file' "$TESTING_FILE"
     validate_testing
+    [[ -z $BASELINE_FILE ]] || validate_section '--baseline-file' "$BASELINE_FILE"
     [[ $OUTPUT != *$'\n'* && $OUTPUT != *$'\r'* ]] || die '--output must be a single-line path'
     if [[ -n $OUTPUT && $OUTPUT != - ]]; then
         [[ ! -L $OUTPUT ]] || die "refusing symlink output: $OUTPUT"
@@ -108,6 +113,10 @@ emit_body() {
     emit_section '## What' "$WHAT_FILE"
     emit_section '## Decisions' "$DECISIONS_FILE"
     emit_section '## Testing' "$TESTING_FILE"
+    # verification-baseline.sh's evidence block already opens with its own
+    # "## Baseline verification evidence" heading, so it is appended as-is
+    # rather than wrapped in a second heading here.
+    [[ -z $BASELINE_FILE ]] || printf '%s\n\n' "$(<"$BASELINE_FILE")"
     printf '🤖 Co-authored by %s.\n\nCloses #%s\n' "$AGENT" "$ISSUE"
 }
 

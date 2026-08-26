@@ -363,7 +363,7 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
 repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
 before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
-context, `note:` lines, matched errors, and the log path. **Never push without local verification passing.**
+context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — a proven baseline-red (`verification-baseline.sh`; pr-to-green §2) may still proceed.
 
 ### Wait contract: one turn-free wait
 

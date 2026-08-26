@@ -217,6 +217,20 @@ adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
+A declared-verification failure whose failing paths are all provably unchanged
+from base and outside this PR's diff is `baseline-red` — classified by
+review-remote-pr Step 2's `verification-baseline.sh`, never re-derived here.
+Record it as evidence and proceed through commit, push, adversarial review,
+and receipt; it is never grounds to park, and reformatting the unrelated
+paths to force a clean run is the violation, not the fix. Any other declared-
+verification failure is `change-caused-red`: fix it as today. Ready-flip and
+merge stay blocked on it exactly as on any other red — see Step 4; this
+changes only what unblocks Phase A publication. `compose-pr-body.sh`'s
+optional `--baseline-file` appends the generated evidence block to the PR
+body, which must list every gate that passed by name, mark every skipped or
+conditional check SKIPPED (never passed), and never claim the PR is fully
+green.
+
 If Phase A changes the head, re-run the same displayed queue command with
 `pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
 re-run `authorize-queue.sh`. It atomically replaces stale head/base records
@@ -256,7 +270,9 @@ per-item confirmation and human threads remain unresolved.
 
 A PR is evidence-green only when all of these are current for its head and base:
 
-- CI and every declared repository check pass with no stale-base residue;
+- CI and every declared repository check pass with no stale-base residue — a
+  `baseline-red` declared-verification outcome (Step 2) is published evidence,
+  not a passing check, and never satisfies this bullet;
 - mandatory adversarial review is satisfied;
 - declared or observed automated findings are fixed, reasoned-dismissed,
   deferred by an explicit decision, or settled after provider response;
