@@ -101,11 +101,11 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
   (never blocks) when the queue's estimated REST cost exceeds the remaining
   budget — read it before confirming a large queue; another session may run
-  concurrently on the same account. A `gh-pr-state.sh` or `pr-queue.sh` call
-  exiting `3` hit rate-limit exhaustion: stop mutating, record what completed
-  vs. outstanding from durable evidence, and report the reset time verbatim
-  — never retry into an empty pool. See ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry)
-  for the full discipline and the practical per-account concurrency ceiling.
+  concurrently. A `gh-pr-state.sh`/`pr-queue.sh` call exiting `3` hit
+  rate-limit exhaustion: stop mutating, record completed vs. outstanding,
+  report the reset time verbatim — never retry into an empty pool. See
+  ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry)
+  for full discipline and concurrency ceiling.
 
 ## Resident call-site map
 
@@ -221,10 +221,9 @@ which this same confirmation durably covers.
 
 ### 2. Normalize runnable PRs
 
-Drive Steps 2–4 concurrently per independent root; a `WAITING_FOR_MERGE`/
-`RETARGET_REQUIRED` descendant is never eligible. For each: establish/reuse
-its isolated worktree through review-remote-pr. Complete Phase A against the
-current base: no
+Drive Steps 2–4 concurrently per independent root (never a waiting or
+retargeting descendant). For each: establish/reuse its isolated worktree
+through review-remote-pr. Complete Phase A against the current base: no
 conflicts, declared verification passing, CI settled green, mandatory
 adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
@@ -249,6 +248,9 @@ If Phase A changes the head, re-run the same displayed queue command with
 re-run `authorize-queue.sh`. It atomically replaces stale head/base records
 only after the fresh queue exactly matches that newly confirmed snapshot. Do
 not let earlier confirmation authorize a new SHA.
+
+This sequence is a **critical section** (one fixed-path snapshot): only one
+root inside it at a time, others wait.
 
 ### 3. Transition and consume provider state
 

@@ -38,6 +38,10 @@ assert_contains "$flat" 'remediation pushes, ready transitions, and trigger-capa
 assert_contains "$flat" 'Steps 2–4) may run in parallel across independent' \
     'ready-transition, provider trigger, and finding settlement run in parallel across independent roots'
 assert_contains "$flat" "Step 5's" 'merge/retarget sequence stays strictly serial in queue order'
+assert_contains "$flat" 'critical section' \
+    'the shared confirmed-queue snapshot rewrite is a serialized critical section'
+assert_contains "$flat" 'only one root inside it at a time' \
+    'concurrent roots never interleave the pr-queue.sh/authorize-queue.sh re-run sequence'
 assert_contains "$flat" 'Automatic discovery selects drafts' \
     'automatic queue discovery is draft-only'
 assert_contains "$text" 'explicitly named ready PR' \
