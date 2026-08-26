@@ -954,14 +954,17 @@ loop: a relayed grant manufactures child-context consent. The loop prechecks, ha
 state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
+
 The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
 cap includes the root and active issue leads; reserve those before deriving child capacity. The
 effective cap is the smaller of the number of open PRs and the remaining runtime slots:
+
 ```bash
 open_pr_count=${open_pr_count:?count of open PRs in this draft phase}
 active_leads=${active_leads:?number of active issue leads}
 runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))
-((runtime_loop_budget > 0 && open_pr_count > 0)) || {
+if ((open_pr_count == 0)); then printf '%s\n' 'No open PRs; nothing to dispatch.'; exit 0; fi
+((runtime_loop_budget > 0)) || {
     printf '%s\n' 'No child capacity remains for PR loops; do not dispatch.' >&2
     exit 1
 }
@@ -969,10 +972,11 @@ pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : ru
 printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
     "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
+
 Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and
-refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker
-slot: the loop agent uses the documented spawn-unavailable path for root-approved fix batches.
-This dispatch-time counter is the enforcement point, not a post-hoc report.
+refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker slot;
+the loop agent uses the documented spawn-unavailable path for root-approved fix batches. This
+dispatch-time counter is the enforcement point, not a post-hoc report.
 
 ### Adversarial-review receipt:
 
@@ -1046,23 +1050,17 @@ Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The recei
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
 
-Dispatch no more than the `pr_loop_dispatch_cap` computed above.
-**Do not reserve a slot for a nested worker: a spawned PR-loop agent cannot spawn one.** It runs
-`review-remote-pr`'s documented spawn-unavailable path and
-does the implementation itself under the same six-step gate, labelling its report
-`worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
-The root owns peer-provider selection and the single blind fallback when `peer-cli=` is absent.
+Dispatch no more than `pr_loop_dispatch_cap`; do not reserve nested-worker slots. The loop uses
+the documented spawn-unavailable path and labels its report `worker=self (spawn unavailable)`.
 
-**Degraded path — `spawn_agent` unavailable (`multi_agent = false`):** run the draft-phase loop
-yourself, one PR at a time, using `pr-loop-setup` first and `pr-fix-batch` only after accepted
-findings exist. Keep the same no-ready/no-bot/no-human-resolution rules and label each exit
-`worker=self (spawn unavailable)`; serial execution is a valid degradation, not a block.
+**Degraded path — `spawn_agent` unavailable:** run the draft loop serially, using `pr-loop-setup`
+first and `pr-fix-batch` only after accepted findings exist; keep no-ready/no-bot/no-human rules.
 
 **Per-agent prompt template:**
 
-Use the same helper with `--template pr-loop-setup` and the PR number as `--issue`; pass its
-composed prompt verbatim. Setup returns `launch-ready`, `ci-red: <check>`, or `cq-open: N`.
-Compose `--template pr-fix-batch` with `--findings-file` only when accepted findings exist.
+Use the helper with `--template pr-loop-setup`; setup returns `launch-ready`, `ci-red: <check>`,
+or `cq-open: N`. Compose `--template pr-fix-batch` only after accepted findings exist. Setup
+defaults materiality to `origin/${base_branch}`; chained callers pass `--materiality-base`.
 
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 

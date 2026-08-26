@@ -321,7 +321,7 @@ reported, never silently treated as zero:
 
 Run the materiality precheck against the PR's current head before any review spend:
 
-"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "origin/__BASE_BRANCH__"
+"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "__MATERIALITY_BASE__"
 
 If CI is red, return exactly `ci-red: <check>` naming the failing check. If Code Quality has open
 findings, return exactly `cq-open: N` with the count. Otherwise return exactly `launch-ready`.
@@ -510,12 +510,7 @@ __DECLARED_COMMANDS__
 
 __COMPOSE_ISOLATION__
 
-## Accepted findings (root-owned ledger)
-
-The following records are the complete accepted fix batch. Address only these findings; do not
-invent additional work or treat an empty ledger as a valid dispatch:
-
-__ACCEPTED_FINDINGS__
+__ACCEPTED_FINDINGS_SECTION__
 
 ## How to write a file
 
