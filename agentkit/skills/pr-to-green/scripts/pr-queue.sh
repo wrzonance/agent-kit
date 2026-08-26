@@ -483,12 +483,21 @@ if ((write_confirmed_queue)); then
               graphqlReset: ($raw.resources.graphql.reset | todate),
               prCount: $prCount, estimatedRestCost: $estimated, warning: $over
             }') || budget_json=null
-        [[ $budget_json == null ]] ||
-            printf 'budget: rest=%s/%s reset=%s graphql=%s/%s reset=%s estimated-rest-cost=%s\n' \
+        if [[ $budget_json != null ]]; then
+            budget_line=$(printf 'budget: rest=%s/%s reset=%s graphql=%s/%s reset=%s estimated-rest-cost=%s' \
                 "$(jq -r .restRemaining <<<"$budget_json")" "$(jq -r .restLimit <<<"$budget_json")" \
                 "$(jq -r .restReset <<<"$budget_json")" \
                 "$(jq -r .graphqlRemaining <<<"$budget_json")" "$(jq -r .graphqlLimit <<<"$budget_json")" \
-                "$(jq -r .graphqlReset <<<"$budget_json")" "$estimated_cost"
+                "$(jq -r .graphqlReset <<<"$budget_json")" "$estimated_cost")
+            # --format json must stay pure JSON on stdout (the budget snapshot
+            # already lives in the confirmed-queue JSON itself); every other
+            # format keeps the human-readable line on stdout as before.
+            if [[ $format == json ]]; then
+                printf '%s\n' "$budget_line" >&2
+            else
+                printf '%s\n' "$budget_line"
+            fi
+        fi
     else
         warn "GitHub API budget unavailable: $(head -n 1 "$work_dir/budget.err")"
     fi

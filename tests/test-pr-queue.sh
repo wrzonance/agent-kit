@@ -259,6 +259,19 @@ assert_contains "$budget_field" '"restRemaining":4900' \
 assert_contains "$budget_field" '"warning":false' \
     'a budget well above the estimated cost carries no warning'
 
+# --format json must stay pure, parseable JSON on stdout even with
+# --write-confirmed-queue: the budget preflight line belongs on stderr there,
+# never mixed into the array (CodeRabbit finding T1 on agent-kit#475).
+json_budget_stdout=$(GH_LOG="$tmp/gh-budget-json.log" PR_QUEUE_GH="$tmp/gh" QUEUE_RATE_LIMIT=plenty bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --no-providers --format json 2>"$tmp/gh-budget-json.stderr")
+assert_matches "$(jq -e 'type' <<<"$json_budget_stdout" 2>&1)" '^"array"$' \
+    '--write-confirmed-queue --format json still emits a bare parseable JSON array on stdout'
+assert_not_contains "$json_budget_stdout" 'budget:' \
+    'the budget preflight line never leaks into --format json stdout'
+assert_contains "$(cat "$tmp/gh-budget-json.stderr")" 'budget: rest=4900/5000' \
+    'the budget preflight line is still printed, on stderr, for --format json'
+
 scarce_stderr=$(GH_LOG="$tmp/gh-scarce.log" PR_QUEUE_GH="$tmp/gh" QUEUE_RATE_LIMIT=scarce bash "$queue" \
     --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
     --write-confirmed-queue --no-providers --format table 2>&1 >/dev/null)
