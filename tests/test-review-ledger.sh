@@ -89,13 +89,23 @@ rc=$?
 assert_eq '0' "$rc" 'status exits 0 for a matching head_sha'
 assert_eq 'covered-head' "$out" 'status reports covered-head for a matching head_sha'
 
-# -- status: covered-diff (base-merge-only advance preserves diff_payload) --
+# -- status: covered-diff requires PROVEN reachability, not merely
+#    "not disproven" (root review finding F1 / fail-closed rule 5) --------
+# A matching diff_payload with no --repo-root can never prove the old head is
+# actually an ancestor of the new one, so it must report stale, not
+# covered-diff -- accepting "unknown" reachability as good enough would
+# silently pass exactly the force-push case rule 5 exists to catch, just
+# with the ancestry check never actually run. The positive covered-diff path
+# (a real git repo, proven ancestry) is exercised further below alongside
+# the force-push demotion, where a repo-root fixture already exists.
 
 out=$("$script" status --repo owner/repo --pr 1 --comments "$valid_comments" \
-    --head "$head2" --diff-payload "$payload")
+    --head "$head2" --diff-payload "$payload" 2>"$tmp/no-repo-root.err")
 rc=$?
-assert_eq '0' "$rc" 'status exits 0 when the diff payload matches a different head'
-assert_eq 'covered-diff' "$out" 'status reports covered-diff when only the diff payload matches'
+assert_eq '10' "$rc" 'status exits 10 (stale) for a matching diff payload with no --repo-root to prove ancestry'
+assert_eq 'stale' "$out" 'status never reports covered-diff when reachability is merely unknown'
+assert_contains "$(cat "$tmp/no-repo-root.err")" 'could not be proven' \
+    'status names why reachability could not be proven when demoting to stale'
 
 # -- status: stale (source-changing commit changes the diff payload) --------
 

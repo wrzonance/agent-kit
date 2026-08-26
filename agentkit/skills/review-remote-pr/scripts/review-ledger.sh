@@ -352,9 +352,23 @@ cmd_status() {
             local entry_head reach
             entry_head=$(jq -r '.head_sha' <<<"$match_entry")
             reach=$(git_ancestor "$entry_head" "$head" "$repo_root")
-            if [[ $reach != no ]]; then
+            # Root review finding F1 (fail-closed rule 5): reachability must
+            # be POSITIVELY PROVEN, not merely "not disproven". Treating
+            # "unknown" (no --repo-root, git absent, or an object simply not
+            # present locally) as good enough silently accepted a covered-
+            # diff verdict with NO ancestry evidence at all -- exactly the
+            # force-push case rule 5 exists to catch, just with the check
+            # never actually run. Only reach=yes may pass; reach=unknown
+            # falls through to stale below, same as reach=no, with a named
+            # reason on stderr so a caller can tell "proven stale" apart
+            # from "reachability could not be proven".
+            if [[ $reach == yes ]]; then
                 printf 'covered-diff\n'
                 exit 0
+            fi
+            if [[ $reach == unknown ]]; then
+                printf '%s: reachability of %s from %s could not be proven (pass --repo-root to prove ancestry); reporting stale rather than covered-diff\n' \
+                    "$PROGNAME" "$entry_head" "$head" >&2
             fi
         fi
     fi
