@@ -317,6 +317,7 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_ADVERSARIAL_REVIEW_MODEL` | model for the declared reviewer |
 | `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` | model if the declared reviewer is absent |
 | `AGENT_ADVERSARIAL_REVIEW_EFFORT` | reviewer reasoning effort, harness-neutral |
+| `AGENT_LEDGER_AUTHOR` | trusted ledger comment author |
 | `AGENT_COMPOSE_SERIALIZED` | runtime-only assertion; not config declaration |
 | `AGENT_CACHE_ROOT` | runtime-only; forces cache dirs under this root |
 | `AGENT_PROTECTED_PATHS` | extra gating paths; edits refused once |

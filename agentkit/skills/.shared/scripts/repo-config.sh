@@ -50,6 +50,7 @@ readonly ACCEPTED_KEYS=(
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
     AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL
     AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT
+    AGENT_LEDGER_AUTHOR
 )
 
 # AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
@@ -589,6 +590,14 @@ validate() {
             worker_model_valid "$value"
             ;;
         AGENT_ADVERSARIAL_REVIEW_EFFORT) adversarial_review_effort_valid "$value" ;;
+        # The trusted identity review-ledger.sh (issue #477) treats as THE
+        # per-PR review ledger comment -- any other commenter's fence is
+        # ignored. Shaped like a GitHub login: alphanumeric/hyphen, 1-39
+        # chars, no leading/trailing hyphen, with an optional trailing
+        # `[bot]` marker for bot accounts (e.g. `github-actions[bot]`).
+        AGENT_LEDGER_AUTHOR)
+            [[ $value =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?(\[bot\])?$ ]]
+            ;;
         AGENT_REPO_RUNNER) runner_contained "$value" ;;
         AGENT_CMD_TEST_FOCUS)
             command_value_valid "$value" "$key" || return 1

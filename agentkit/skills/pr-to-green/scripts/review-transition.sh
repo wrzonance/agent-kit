@@ -35,6 +35,8 @@ work_dir=''
 plan_resolved=0
 observe=0
 since=''
+ledger_comments=''
+REVIEW_LEDGER_SCRIPT=${REVIEW_TRANSITION_REVIEW_LEDGER:-$SCRIPT_DIR/../../review-remote-pr/scripts/review-ledger.sh}
 declare -a providers=()
 declare -A modes=()
 declare -A emitted=()
@@ -58,7 +60,15 @@ usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --pr N
        --authorization-file FILE [--rounds 1-60] [--interval 1-3600]
+       [--ledger-comments FILE]
        $PROGRAM --observe --repo OWNER/REPO --pr N --since TIMESTAMP
+
+--ledger-comments FILE (issue #477): before polling a triggerable provider,
+consults the sibling review-ledger.sh's status for this PR's already-fetched
+comments artifact. A covered-head bot entry for that provider short-circuits
+straight to "provider=NAME result=ALREADY_SPENT source=ledger" without
+burning any polling rounds or REST budget. Any other verdict (stale, absent,
+or a blocked/malformed ledger) polls exactly as it does without this flag.
 
 --observe is a lightweight, read-only companion query: after a --trigger run
 prints TRIGGERED/ALREADY_SPENT with a since=TIMESTAMP, poll with --observe
@@ -86,6 +96,7 @@ while (($#)); do
         --interval) (($# >= 2)) || usage; interval=$2; shift 2 ;;
         --observe) observe=1; shift ;;
         --since) (($# >= 2)) || usage; since=$2; shift 2 ;;
+        --ledger-comments) (($# >= 2)) || usage; ledger_comments=$2; shift 2 ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -370,6 +381,27 @@ for provider in "${providers[@]}"; do
                         "$provider" "${provider_source[$provider]}"
                     ;;
                 trigger)
+                    # issue #477: consult the durable review ledger, from the
+                    # already-fetched --ledger-comments artifact (zero network
+                    # calls), BEFORE the first live fetch below. A covered-head
+                    # ledger entry for this provider at the current head means
+                    # this exact tree was already reviewed -- short-circuit
+                    # straight to ALREADY_SPENT and skip fetch_provider_evidence,
+                    # provider_spent, and every polling round entirely.
+                    if [[ -n $ledger_comments && -x $REVIEW_LEDGER_SCRIPT ]]; then
+                        ledger_verdict=''
+                        ledger_rc=0
+                        ledger_verdict=$("$REVIEW_LEDGER_SCRIPT" status --repo "$repo" --pr "$pr" \
+                            --comments "$ledger_comments" --head "$head_sha" \
+                            --kind bot --provider "$provider" \
+                            --repo-root "$repo_root" 2>/dev/null) || ledger_rc=$?
+                        if ((ledger_rc == 0)) &&
+                            [[ $ledger_verdict == covered-head || $ledger_verdict == covered-diff ]]; then
+                            emitted[$provider]=1
+                            printf 'provider=%s result=ALREADY_SPENT source=ledger\n' "$provider"
+                            continue
+                        fi
+                    fi
                     request_marker=$(review_provider_request_marker "$provider") ||
                         die "triggerable provider has no request marker: $provider"
                     request_body=$(review_provider_request "$provider") ||

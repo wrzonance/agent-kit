@@ -177,6 +177,7 @@ run_gate() {
         --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
+        --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
         --code-quality-scan-state "${GATE_CQ_STATE:-complete}"
 }
 
@@ -187,6 +188,7 @@ run_gate_raw() {
         --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
+        --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
         "$@"
 }
 
@@ -781,5 +783,66 @@ good_digest
 out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
     'a configured repository with zero open alerts keeps passing, unaffected by the corroboration'
+
+# -- issue #477: --adversarial-review-status takes review-ledger.sh's own
+#    verdict word as the adversarial-review completion signal ---------------
+
+good_digest
+set +e
+out=$(GATE_ADVERSARIAL_STATUS=stale run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a stale adversarial-review ledger blocks the merge'
+assert_contains "$out" 'blocked reason=adversarial review ledger is stale for the current head' \
+    'the stale-ledger block names itself distinctly'
+
+good_digest
+set +e
+out=$(GATE_ADVERSARIAL_STATUS=absent run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an absent adversarial-review ledger blocks the merge'
+assert_contains "$out" 'blocked reason=no adversarial review is recorded in the ledger' \
+    'the absent-ledger block names itself distinctly'
+
+good_digest
+set +e
+out=$(GATE_ADVERSARIAL_STATUS=blocked run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a blocked (unparseable) adversarial-review ledger blocks the merge'
+assert_contains "$out" 'blocked reason=adversarial review ledger is present but unparseable' \
+    'the blocked-ledger reason distinguishes corrupt evidence from missing evidence'
+
+good_digest
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a covered-diff adversarial-review ledger verdict passes the gate exactly like covered-head'
+
+good_digest
+out=$(GATE_ADVERSARIAL_STATUS=not-required run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'not-required opts a repository out of the adversarial-review gate entirely'
+
+good_digest
+set +e
+out=$(GATE_ADVERSARIAL_STATUS=bogus run_gate 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an unrecognized --adversarial-review-status value is a usage error'
+assert_contains "$out" 'not a recognized review-ledger.sh verdict' \
+    'the usage error names the unrecognized verdict'
+
+good_digest
+set +e
+out=$(MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
+    --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
+    --provider-result AUTO_REVIEW --human-items-decided yes \
+    --code-quality-scan-state complete 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" '--adversarial-review-status is required'
+assert_contains "$out" '--adversarial-review-status is required' \
+    'the missing-flag usage error names the required flag'
 
 finish
