@@ -13,36 +13,63 @@
 # append-only -- a later review adds a record, nothing already recorded is
 # ever rewritten or removed.
 #
+# Trust boundary: any PR commenter can post a well-formed fenced comment. A
+# comment counts as THE ledger only when its author matches the trusted
+# ledger identity, resolved once per invocation, in order:
+#   1. --trusted-author LOGIN, when given.
+#   2. the AGENT_LEDGER_AUTHOR key from .agent/config.env (via repo-config.sh,
+#      --repo-root DIR required for this source to be consulted).
+#   3. the REVIEW_LEDGER_VIEWER environment variable if set (a cache/override
+#      for the next source, so tests and repeat callers need not hit the API);
+#      otherwise the authenticated `gh api user --jq .login` identity.
+# A comment from any other author that carries the fence is never treated as
+# the ledger -- it is silently excluded from every count/read/verdict, and
+# its presence is reported as a warning on stderr (never fatal, never a
+# reason to block) so an operator can see a forgery was ignored. If no
+# trusted identity resolves at all (no flag, no config, gh absent or
+# unauthenticated), the call fails closed with evidence-unavailable: without
+# a trust boundary there is no safe way to say what the ledger even is.
+#
 # Subcommands:
 #   read   --repo OWNER/REPO --pr N --comments FILE
+#          [--trusted-author LOGIN] [--repo-root DIR]
 #       Extracts and validates the ledger from an already-fetched
 #       pr_N_issue_comments.json-shaped artifact. On success prints
 #       "comment_id=ID" then the ledger's canonical compact JSON, and exits 0.
 #
 #   status --repo OWNER/REPO --pr N --comments FILE --head SHA
 #          [--diff-payload ID] [--kind adversarial|bot] [--provider NAME]
+#          [--trusted-author LOGIN] [--repo-root DIR]
 #       Prints exactly one verdict word. Zero network calls: it only reads
-#       --comments. See the exit-status table below.
+#       --comments (--repo-root is a local git check, not a network call).
+#       See the exit-status table below.
 #
 #   append --repo OWNER/REPO --pr N --comments FILE --entry-file FILE
-#          --agent-identity NAME [--repo-root DIR] [--gh-comment-script PATH]
+#          --agent-identity NAME [--trusted-author LOGIN] [--repo-root DIR]
+#          [--gh-comment-script PATH]
 #       Validates the one new entry in --entry-file, appends it to the
-#       ledger found via read (or starts a fresh one when absent), renders
-#       the one-comment body, and posts/updates it through the sibling
-#       gh-comment.sh, which byte-verifies the stored body. --entry-file
-#       carries a single JSON object shaped like one element of "reviews" in
-#       the schema below (kind, head_sha, provider are always required; the
-#       remaining fields are carried through verbatim).
+#       TRUSTED author's ledger found via read (or starts a fresh comment
+#       when the trusted author has none yet -- a forged comment from
+#       another author is never updated), renders the one-comment body, and
+#       posts/updates it through the sibling gh-comment.sh, which byte-
+#       verifies the stored body. --entry-file carries a single JSON object
+#       shaped like one element of "reviews" in the schema below (kind,
+#       head_sha, provider are always required; the remaining fields are
+#       carried through verbatim).
 #
 # status verdicts:
 #   covered-head   an entry's head_sha equals --head                    exit 0
 #   covered-diff   head_sha differs but diff_payload matches (the tree
-#                  under review is byte-identical); requires --diff-payload
-#                  on the call AND a non-empty diff_payload on the entry     exit 0
+#                  under review is byte-identical) on AT LEAST ONE matching
+#                  entry whose head_sha is PROVEN (via --repo-root; "unknown"
+#                  reachability never counts) an ancestor of --head --
+#                  requires --diff-payload on the call AND a non-empty
+#                  diff_payload on that entry                               exit 0
 #   stale          entries exist for the --kind/--provider filter, but
-#                  neither head nor diff matches -- or the matching entry's
-#                  head_sha is proven (via --repo-root) unreachable from
-#                  --head, e.g. a force-push rewrote history               exit 10
+#                  neither head nor a proven-ancestor diff match -- e.g. no
+#                  matching diff_payload entry, every matching entry's
+#                  head_sha is proven unreachable (a force-push rewrote
+#                  history), or reachability could not be proven at all      exit 10
 #   absent         no ledger, or no entry for this kind/provider           exit 11
 #   (nothing)      ledger present but unparseable/fence malformed -- BLOCKS,
 #                  never read as absent                                    exit 1
@@ -71,17 +98,22 @@ readonly ROBOT
 
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
+GH_BIN=${REVIEW_LEDGER_GH:-gh}
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
+                 [--trusted-author LOGIN] [--repo-root DIR]
        $PROGNAME status --repo OWNER/REPO --pr N --comments FILE --head SHA
                  [--diff-payload ID] [--kind adversarial|bot] [--provider NAME]
+                 [--trusted-author LOGIN] [--repo-root DIR]
        $PROGNAME append --repo OWNER/REPO --pr N --comments FILE \\
                  --entry-file FILE --agent-identity NAME \\
-                 [--repo-root DIR] [--gh-comment-script PATH]
+                 [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
 
-See the script header comment for the full contract and exit-status table.
+See the script header comment for the full contract, trust-boundary
+resolution order, and exit-status table.
 EOF
 }
 
@@ -103,6 +135,45 @@ require_uint() {
 
 require_tools() {
     command -v jq >/dev/null 2>&1 || evidence_unavailable 'jq not found on PATH'
+}
+
+# resolve_trusted_author FLAG_VALUE REPO_ROOT -- the ledger's trust boundary
+# (root review finding F1). Prints the trusted login and returns 0, or
+# returns 1 with nothing printed when no source resolves. Order:
+#   1. FLAG_VALUE (--trusted-author), when non-empty.
+#   2. AGENT_LEDGER_AUTHOR from .agent/config.env, via repo-config.sh, only
+#      when REPO_ROOT is non-empty and the resolver is executable. A key
+#      repo-config.sh does not (yet) recognize as accepted degrades to
+#      "not declared" here exactly like every other undeclared value in this
+#      codebase -- never a hard failure on its own, since sources 3/4 still
+#      apply.
+#   3. REVIEW_LEDGER_VIEWER, if set -- a cache/override for source 4, so a
+#      test or a repeat caller in one process need not re-hit the API.
+#   4. `gh api user --jq .login`, one call, the authenticated identity.
+resolve_trusted_author() {
+    local flag_value=$1 repo_root=$2
+    [[ -z $flag_value ]] || {
+        printf '%s\n' "$flag_value"
+        return 0
+    }
+    if [[ -n $repo_root && -x $REPO_CONFIG_SH ]]; then
+        local declared
+        if declared=$("$REPO_CONFIG_SH" --repo-root "$repo_root" --get AGENT_LEDGER_AUTHOR 2>/dev/null) &&
+            [[ -n $declared ]]; then
+            printf '%s\n' "$declared"
+            return 0
+        fi
+    fi
+    [[ -z ${REVIEW_LEDGER_VIEWER:-} ]] || {
+        printf '%s\n' "$REVIEW_LEDGER_VIEWER"
+        return 0
+    }
+    command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+    local login
+    login=$("$GH_BIN" api user --jq .login 2>/dev/null) || return 1
+    [[ -n $login ]] || return 1
+    printf '%s\n' "$login"
+    return 0
 }
 
 # jq filter validating one complete ledger document. kind/head_sha/provider
@@ -145,12 +216,15 @@ ledger_fence_regex() {
         "$(printf '%s' "$CLOSE_MARKER" | sed -e 's/[.[\*^$()+?{|\\]/\\&/g')"
 }
 
-# find_ledger_comments FILE -- prints "ID\tJSON_TEXT" for every comment body
-# whose fence parses (json text possibly still schema-invalid; that is
-# checked by the caller). A body carrying the markers but no parseable
-# fenced json is silently skipped here -- the caller's zero-vs-one-vs-many
-# accounting over ALL marker-carrying bodies (find_marker_comment_count)
-# is what actually distinguishes "absent" from "malformed".
+# find_ledger_comments FILE AUTHOR -- prints "ID\tJSON_TEXT" for every
+# TRUSTED-AUTHOR comment body whose fence parses (json text possibly still
+# schema-invalid; that is checked by the caller). A body carrying the
+# markers but no parseable fenced json, or authored by anyone other than
+# AUTHOR, is silently skipped here -- the caller's zero-vs-one-vs-many
+# accounting over ALL trusted-author marker-carrying bodies
+# (count_marker_comments) is what actually distinguishes "absent" from
+# "malformed"; untrusted-author bodies are reported separately, as a
+# warning, by untrusted_marker_authors.
 # The captured json field is base64-encoded before joining into the @tsv row:
 # @tsv escapes embedded newlines/tabs as literal backslash-n/backslash-t
 # sequences rather than real control characters, and a pretty-printed JSON
@@ -160,46 +234,73 @@ ledger_fence_regex() {
 # jq then refuses to parse it. Base64 has no embedded tabs/newlines at all,
 # so it round-trips through @tsv and `read` unchanged.
 find_ledger_comments() {
-    local file=$1 regex
+    local file=$1 author=$2 regex
     regex=$(ledger_fence_regex)
-    jq -r --arg re "$regex" '
+    jq -r --arg re "$regex" --arg author "$author" '
       .[]? |
-      select(((.body // "") | test($re)) ) |
+      select(((.body // "") | test($re))) |
+      select((((.user.login // "") | ascii_downcase)) == ($author | ascii_downcase)) |
       [(.id // "" | tostring), ((.body // "") | capture($re).json | @base64)] | @tsv
     ' "$file" 2>/dev/null
 }
 
-# Count of comments carrying BOTH markers, regardless of whether the fenced
-# content between them parses. Used only to tell "no ledger comment at all"
-# (0) apart from "a ledger comment exists but its fence/JSON is broken" (>=1
-# marker-carrying comments but find_ledger_comments returned fewer rows).
+# Count of TRUSTED-AUTHOR comments carrying BOTH markers, regardless of
+# whether the fenced content between them parses. Used only to tell "no
+# trusted ledger comment at all" (0) apart from "a trusted ledger comment
+# exists but its fence/JSON is broken" (>=1 trusted marker-carrying comments
+# but find_ledger_comments returned fewer rows).
 count_marker_comments() {
-    local file=$1
-    jq -r --arg open "$OPEN_MARKER" --arg close "$CLOSE_MARKER" '
-      [.[]? | select(((.body // "") | contains($open)) and ((.body // "") | contains($close)))] | length
+    local file=$1 author=$2
+    jq -r --arg open "$OPEN_MARKER" --arg close "$CLOSE_MARKER" --arg author "$author" '
+      [.[]? | select(((.body // "") | contains($open)) and ((.body // "") | contains($close))) |
+        select((((.user.login // "") | ascii_downcase)) == ($author | ascii_downcase))] | length
     ' "$file" 2>/dev/null
 }
 
-# read_ledger FILE -- on success prints "ID\t<compact JSON>" to stdout and
-# returns 0. Returns 11 with nothing printed when there is no ledger comment
-# at all. Returns 1 with nothing printed (message on stderr) when a ledger
-# comment exists but is unparseable/schema-invalid, or when more than one
-# comment carries the fence (the "exactly one ledger comment" invariant
-# broken) -- fail-closed per spec rule 1: never read a broken ledger as
-# absent.
+# untrusted_marker_authors FILE AUTHOR -- prints a comma-joined, deduplicated
+# list of the (as-recorded) logins of every OTHER commenter who posted a
+# fence-carrying comment, or an empty string when there are none. Purely for
+# the stderr warning read_ledger prints -- it never affects any verdict.
+untrusted_marker_authors() {
+    local file=$1 author=$2
+    jq -r --arg open "$OPEN_MARKER" --arg close "$CLOSE_MARKER" --arg author "$author" '
+      [.[]? | select(((.body // "") | contains($open)) and ((.body // "") | contains($close))) |
+        select((((.user.login // "") | ascii_downcase)) != ($author | ascii_downcase)) |
+        (.user.login // "unknown")] | unique | join(",")
+    ' "$file" 2>/dev/null
+}
+
+# read_ledger FILE AUTHOR -- on success prints "ID\t<compact JSON>" to
+# stdout and returns 0, considering only comments whose author is AUTHOR (the
+# resolved trusted ledger identity; see resolve_trusted_author). Returns 11
+# with nothing printed when there is no TRUSTED ledger comment at all (a
+# forged comment from another author does not count, and is reported as a
+# warning on stderr instead). Returns 1 with nothing printed on stdout
+# (message on stderr) when a trusted ledger comment exists but is
+# unparseable/schema-invalid, or when more than one TRUSTED comment carries
+# the fence (the "exactly one ledger comment" invariant broken) -- fail-
+# closed per spec rule 1: never read a broken ledger as absent.
 read_ledger() {
-    local file=$1 marker_count rows row_count id json
+    local file=$1 author=$2 marker_count rows row_count id json
     [[ -f $file && -r $file ]] || evidence_unavailable "comments artifact is not a readable file: $file"
     jq -e 'type == "array"' "$file" >/dev/null 2>&1 ||
         evidence_unavailable "comments artifact is not valid JSON: $file"
 
-    marker_count=$(count_marker_comments "$file") || marker_count=0
+    local ignored ignored_count
+    ignored=$(untrusted_marker_authors "$file" "$author") || ignored=''
+    if [[ -n $ignored ]]; then
+        ignored_count=$(($(tr -cd ',' <<<"$ignored" | wc -c) + 1))
+        printf '%s: ignored %s review-ledger fence(s) from untrusted author(s): %s\n' \
+            "$PROGNAME" "$ignored_count" "$ignored" >&2
+    fi
+
+    marker_count=$(count_marker_comments "$file" "$author") || marker_count=0
     [[ $marker_count =~ ^[0-9]+$ ]] || marker_count=0
     if ((marker_count == 0)); then
         return 11
     fi
 
-    rows=$(find_ledger_comments "$file") || rows=''
+    rows=$(find_ledger_comments "$file" "$author") || rows=''
     row_count=0
     [[ -z $rows ]] || row_count=$(wc -l <<<"$rows")
     if ((row_count != marker_count)); then
@@ -232,12 +333,14 @@ read_ledger() {
 }
 
 cmd_read() {
-    local repo='' pr='' comments=''
+    local repo='' pr='' comments='' trusted_author_flag='' repo_root=''
     while (($#)); do
         case $1 in
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; repo=$2; shift 2 ;;
             --pr) [[ ${2-} ]] || die_usage '--pr requires a value'; pr=$2; shift 2 ;;
             --comments) [[ ${2-} ]] || die_usage '--comments requires a path'; comments=$2; shift 2 ;;
+            --trusted-author) [[ ${2-} ]] || die_usage '--trusted-author requires a value'; trusted_author_flag=$2; shift 2 ;;
+            --repo-root) [[ ${2-} ]] || die_usage '--repo-root requires a path'; repo_root=$2; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown argument: $1" ;;
         esac
@@ -249,10 +352,15 @@ cmd_read() {
     [[ -n $comments ]] || die_usage '--comments is required'
     require_tools
 
+    local author
+    author=$(resolve_trusted_author "$trusted_author_flag" "$repo_root") ||
+        evidence_unavailable 'no trusted ledger author identity could be resolved (--trusted-author, AGENT_LEDGER_AUTHOR, or an authenticated gh login)'
+
     local rc=0 out
-    out=$(read_ledger "$comments") || rc=$?
+    out=$(read_ledger "$comments" "$author") || rc=$?
     if ((rc == 11)); then
-        printf '%s: no review-ledger comment found for PR #%s\n' "$PROGNAME" "$pr" >&2
+        printf '%s: no review-ledger comment found for PR #%s from trusted author %s\n' \
+            "$PROGNAME" "$pr" "$author" >&2
         exit 11
     elif ((rc != 0)); then
         exit 1
@@ -289,7 +397,7 @@ git_ancestor() {
 }
 
 cmd_status() {
-    local repo='' pr='' comments='' head='' diff_payload='' kind='' provider='' repo_root=''
+    local repo='' pr='' comments='' head='' diff_payload='' kind='' provider='' repo_root='' trusted_author_flag=''
     while (($#)); do
         case $1 in
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; repo=$2; shift 2 ;;
@@ -300,6 +408,7 @@ cmd_status() {
             --kind) [[ ${2-} ]] || die_usage '--kind requires a value'; kind=$2; shift 2 ;;
             --provider) [[ ${2-} ]] || die_usage '--provider requires a value'; provider=$2; shift 2 ;;
             --repo-root) [[ ${2-} ]] || die_usage '--repo-root requires a path'; repo_root=$2; shift 2 ;;
+            --trusted-author) [[ ${2-} ]] || die_usage '--trusted-author requires a value'; trusted_author_flag=$2; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown argument: $1" ;;
         esac
@@ -315,8 +424,12 @@ cmd_status() {
         die_usage "--kind must be adversarial or bot, got: $kind"
     require_tools
 
+    local author
+    author=$(resolve_trusted_author "$trusted_author_flag" "$repo_root") ||
+        evidence_unavailable 'no trusted ledger author identity could be resolved (--trusted-author, AGENT_LEDGER_AUTHOR, or an authenticated gh login)'
+
     local rc=0 out
-    out=$(read_ledger "$comments") || rc=$?
+    out=$(read_ledger "$comments" "$author") || rc=$?
     if ((rc == 11)); then
         printf 'absent\n'
         exit 11
@@ -344,13 +457,22 @@ cmd_status() {
     fi
 
     if [[ -n $diff_payload ]]; then
-        local match_entry
-        match_entry=$(jq -c --arg dp "$diff_payload" \
-            '[.[] | select((.diff_payload // "") == $dp and (.diff_payload // "") != "")] | first // empty' \
-            <<<"$candidates") || match_entry=''
-        if [[ -n $match_entry && $match_entry != null ]]; then
-            local entry_head reach
-            entry_head=$(jq -r '.head_sha' <<<"$match_entry")
+        local matches match_count
+        matches=$(jq -c --arg dp "$diff_payload" \
+            '[.[] | select((.diff_payload // "") == $dp and (.diff_payload // "") != "")]' \
+            <<<"$candidates") || matches='[]'
+        match_count=$(jq 'length' <<<"$matches" 2>/dev/null) || match_count=0
+        [[ $match_count =~ ^[0-9]+$ ]] || match_count=0
+
+        # Root review finding F2: `first` on the diff_payload matches let an
+        # OLDER, force-pushed (non-ancestor) entry shadow a LATER entry with
+        # the same payload that IS a proven ancestor, reporting stale for a
+        # tree that genuinely is covered. Every matching entry is checked in
+        # turn now; any single proven ancestor is sufficient to pass.
+        local any_unknown=0 i entry entry_head reach
+        for ((i = 0; i < match_count; i++)); do
+            entry=$(jq -c ".[$i]" <<<"$matches")
+            entry_head=$(jq -r '.head_sha' <<<"$entry")
             reach=$(git_ancestor "$entry_head" "$head" "$repo_root")
             # Root review finding F1 (fail-closed rule 5): reachability must
             # be POSITIVELY PROVEN, not merely "not disproven". Treating
@@ -358,18 +480,16 @@ cmd_status() {
             # present locally) as good enough silently accepted a covered-
             # diff verdict with NO ancestry evidence at all -- exactly the
             # force-push case rule 5 exists to catch, just with the check
-            # never actually run. Only reach=yes may pass; reach=unknown
-            # falls through to stale below, same as reach=no, with a named
-            # reason on stderr so a caller can tell "proven stale" apart
-            # from "reachability could not be proven".
+            # never actually run. Only reach=yes may pass.
             if [[ $reach == yes ]]; then
                 printf 'covered-diff\n'
                 exit 0
             fi
-            if [[ $reach == unknown ]]; then
-                printf '%s: reachability of %s from %s could not be proven (pass --repo-root to prove ancestry); reporting stale rather than covered-diff\n' \
-                    "$PROGNAME" "$entry_head" "$head" >&2
-            fi
+            [[ $reach != unknown ]] || any_unknown=1
+        done
+        if ((any_unknown)); then
+            printf '%s: reachability of one or more diff-payload-matching entries could not be proven (pass --repo-root to prove ancestry); reporting stale rather than covered-diff\n' \
+                "$PROGNAME" >&2
         fi
     fi
 
@@ -409,7 +529,7 @@ cmd_append() {
     # trap needs the variable to still be in scope at that point (the same
     # reason post-receipt.sh's RECEIPT_BODY_FILE is global).
     body_file=''
-    local repo='' pr='' comments='' entry_file='' agent_identity='' repo_root='' gh_comment_override=''
+    local repo='' pr='' comments='' entry_file='' agent_identity='' repo_root='' gh_comment_override='' trusted_author_flag=''
     while (($#)); do
         case $1 in
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; repo=$2; shift 2 ;;
@@ -419,6 +539,7 @@ cmd_append() {
             --agent-identity) [[ ${2-} ]] || die_usage '--agent-identity requires a value'; agent_identity=$2; shift 2 ;;
             --repo-root) [[ ${2-} ]] || die_usage '--repo-root requires a path'; repo_root=$2; shift 2 ;;
             --gh-comment-script) [[ ${2-} ]] || die_usage '--gh-comment-script requires a path'; gh_comment_override=$2; shift 2 ;;
+            --trusted-author) [[ ${2-} ]] || die_usage '--trusted-author requires a value'; trusted_author_flag=$2; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown argument: $1" ;;
         esac
@@ -431,6 +552,10 @@ cmd_append() {
     [[ -n $entry_file ]] || die_usage '--entry-file is required'
     [[ -n $agent_identity ]] || die_usage '--agent-identity is required'
     require_tools
+
+    local author
+    author=$(resolve_trusted_author "$trusted_author_flag" "$repo_root") ||
+        evidence_unavailable 'no trusted ledger author identity could be resolved (--trusted-author, AGENT_LEDGER_AUTHOR, or an authenticated gh login)'
 
     [[ -f $entry_file && ! -L $entry_file && -r $entry_file ]] ||
         evidence_unavailable "entry file is not a readable regular file: $entry_file"
@@ -454,7 +579,7 @@ cmd_append() {
     gh_comment_script=$(resolve_gh_comment_script "$gh_comment_override")
 
     local rc=0 out
-    out=$(read_ledger "$comments") || rc=$?
+    out=$(read_ledger "$comments" "$author") || rc=$?
     local comment_id='' ledger_json=''
     if ((rc == 11)); then
         ledger_json=$(jq -cn --argjson pr "$pr" --arg repo "$repo" --argjson entry "$entry" \

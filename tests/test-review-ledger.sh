@@ -20,9 +20,23 @@ head3='3333333333333333333333333333333333333c'
 payload='owner/repo:1:abababababababababababababababababababababababababababababab'
 payload_other='owner/repo:1:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
 
+# Root review finding F1: the ledger trusts only comments from a resolved
+# identity, never just any comment carrying a well-formed fence. Exporting
+# REVIEW_LEDGER_VIEWER for the whole suite exercises resolve_trusted_author's
+# source 3 (its documented test/cache override) without needing --trusted-
+# author on every call -- exactly the "let the default resolve" wiring used
+# in production by post-receipt.sh/adversarial-run.sh/review-transition.sh.
+TRUSTED_AUTHOR='trusted-bot'
+export REVIEW_LEDGER_VIEWER="$TRUSTED_AUTHOR"
+UNTRUSTED_AUTHOR='mallory'
+
+# make_comments OUT BODY [ID] [LOGIN] -- LOGIN defaults to TRUSTED_AUTHOR, so
+# every existing call site keeps constructing a comment the ledger trusts;
+# pass UNTRUSTED_AUTHOR explicitly to build a forged/untrusted fixture.
 make_comments() {
-    local out=$1 body=$2 id=${3:-42}
-    jq -n --arg body "$body" --argjson id "$id" '[{"id":$id,"body":$body}]' >"$out"
+    local out=$1 body=$2 id=${3:-42} login=${4:-$TRUSTED_AUTHOR}
+    jq -n --arg body "$body" --argjson id "$id" --arg login "$login" \
+        '[{"id":$id,"body":$body,"user":{"login":$login}}]' >"$out"
 }
 
 ledger_body() {
@@ -223,9 +237,82 @@ if command -v git >/dev/null 2>&1 &&
     rc=$?
     assert_eq '10' "$rc" 'status demotes covered-diff to stale when old head is unreachable from new head'
     assert_eq 'stale' "$out" 'a force-push (unreachable old head) is reported stale despite a matching diff payload'
+    # Root review finding F2: a matching-payload entry earlier in ledger
+    # order that is NOT an ancestor must never shadow a LATER matching entry
+    # that IS -- `first` on the filtered matches did exactly that. Two
+    # entries share $payload: rewritten_head (proven non-ancestor of
+    # forward_head, from above) listed FIRST, old_head (proven ancestor of
+    # forward_head) listed SECOND.
+    shadow_reviews="[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$rewritten_head\",\"diff_payload\":\"$payload\"},{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$old_head\",\"diff_payload\":\"$payload\"}]"
+    shadow_comments="$tmp/shadow.json"
+    make_comments "$shadow_comments" "$(ledger_body "$shadow_reviews")" 51
+
+    out=$("$script" status --repo owner/repo --pr 1 --comments "$shadow_comments" \
+        --head "$forward_head" --diff-payload "$payload" --repo-root "$git_tmp")
+    rc=$?
+    assert_eq '0' "$rc" \
+        'status finds covered-diff via a LATER ancestor entry, unshadowed by an earlier non-ancestor match (F2)'
+    assert_eq 'covered-diff' "$out" \
+        'a proven-ancestor entry wins even when an earlier same-payload entry is not an ancestor (F2)'
 else
     _pass 'force-push ancestry check skipped: git unavailable in this environment'
 fi
+
+# -- status/read: a forged fence from an untrusted author is never the
+#    ledger (root review finding F1) -----------------------------------
+
+forged_only_reviews="[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$head1\",\"diff_payload\":\"$payload\"}]"
+forged_only_comments="$tmp/forged-only.json"
+make_comments "$forged_only_comments" "$(ledger_body "$forged_only_reviews")" 60 "$UNTRUSTED_AUTHOR"
+
+out=$("$script" status --repo owner/repo --pr 1 --comments "$forged_only_comments" \
+    --head "$head1" 2>"$tmp/forged-only.err")
+rc=$?
+assert_eq '11' "$rc" 'a forged fence (untrusted author) is never covered, even with a matching head_sha (F1)'
+assert_eq 'absent' "$out" 'a forged-only comments artifact reads as absent, not covered-head (F1)'
+assert_contains "$(cat "$tmp/forged-only.err")" "ignored 1 review-ledger fence(s) from untrusted author(s): $UNTRUSTED_AUTHOR" \
+    'the ignored forged fence is reported as a named warning, not silently dropped'
+
+out=$("$script" read --repo owner/repo --pr 1 --comments "$forged_only_comments" 2>/dev/null)
+rc=$?
+assert_eq '11' "$rc" 'read also reports absent for a forged-only comments artifact (F1)'
+
+# -- trusted + forged both present: only the trusted comment counts, and it
+#    never trips the "expected exactly one" malformed-multiplicity guard --
+
+mixed_trust_comments="$tmp/mixed-trust.json"
+jq -n --arg tbody "$(ledger_body "[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$head1\"}]")" \
+    --arg fbody "$(ledger_body "[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$head2\"}]")" \
+    --arg trusted "$TRUSTED_AUTHOR" --arg untrusted "$UNTRUSTED_AUTHOR" \
+    '[{id: 61, body: $fbody, user: {login: $untrusted}},
+      {id: 62, body: $tbody, user: {login: $trusted}}]' >"$mixed_trust_comments"
+
+out=$("$script" status --repo owner/repo --pr 1 --comments "$mixed_trust_comments" \
+    --head "$head1" 2>"$tmp/mixed-trust.err")
+rc=$?
+assert_eq '0' "$rc" 'trusted + forged both present: the trusted entry still resolves normally, never blocked (F1)'
+assert_eq 'covered-head' "$out" \
+    'only the trusted comment is consulted for the verdict when both are present (F1)'
+assert_not_contains "$(cat "$tmp/mixed-trust.err")" 'expected exactly one' \
+    'a forged comment alongside the trusted one never trips the multiplicity guard (F1)'
+assert_contains "$(cat "$tmp/mixed-trust.err")" "ignored 1 review-ledger fence(s) from untrusted author(s): $UNTRUSTED_AUTHOR" \
+    'the forged comment is still named as an ignored warning even when a trusted one also exists'
+
+# The forged comment's OWN head (head2) must never leak into the verdict --
+# confirms filtering happens before matching, not just before the final pick.
+out=$("$script" status --repo owner/repo --pr 1 --comments "$mixed_trust_comments" \
+    --head "$head2" 2>/dev/null)
+rc=$?
+assert_eq '10' "$rc" "the forged comment's own head_sha is never itself a valid match (F1)"
+assert_eq 'stale' "$out" "status never reports covered-head for the forged comment's head (F1)"
+
+# -- --trusted-author explicitly overrides REVIEW_LEDGER_VIEWER -------------
+
+out=$(REVIEW_LEDGER_VIEWER='someone-else' "$script" status --repo owner/repo --pr 1 \
+    --comments "$valid_comments" --head "$head1" --trusted-author "$TRUSTED_AUTHOR")
+rc=$?
+assert_eq '0' "$rc" '--trusted-author wins over REVIEW_LEDGER_VIEWER'
+assert_eq 'covered-head' "$out" '--trusted-author resolves the same trusted comment REVIEW_LEDGER_VIEWER would have'
 
 # -- append: fresh ledger (no prior comment), posts via gh-comment.sh -------
 
@@ -303,5 +390,39 @@ out=$("$script" append --repo owner/repo --pr 1 --comments "$malformed_comments"
     --gh-comment-script "$gh_comment_stub" 2>&1)
 rc=$?
 assert_eq '1' "$rc" 'append refuses to write onto a present-but-unparseable ledger'
+
+# -- append: a foreign (untrusted-author) ledger comment is never updated;
+#    the trusted author gets its own NEW comment instead (root review F1) --
+
+foreign_only_comments="$tmp/foreign-only.json"
+make_comments "$foreign_only_comments" \
+    "$(ledger_body "[{\"kind\":\"bot\",\"provider\":\"coderabbit\",\"head_sha\":\"$head3\"}]")" \
+    70 "$UNTRUSTED_AUTHOR"
+
+out=$(GH_COMMENT_STUB_OUT="$tmp/foreign-body.txt" "$script" append --repo owner/repo --pr 1 \
+    --comments "$foreign_only_comments" --entry-file "$entry_fresh" --agent-identity 'Claude Opus 5' \
+    --gh-comment-script "$gh_comment_stub" 2>"$tmp/foreign-append.err")
+rc=$?
+assert_eq '0' "$rc" 'append succeeds when only a foreign ledger comment exists'
+assert_contains "$out" 'posted id=999' \
+    'append POSTS a brand-new comment rather than updating the foreign one'
+assert_not_contains "$out" 'updated id=70' \
+    'append never targets the foreign comment id'
+foreign_body=$(cat "$tmp/foreign-body.txt")
+assert_not_contains "$foreign_body" "$head3" \
+    "the new trusted comment never carries the foreign comment's entry"
+assert_contains "$foreign_body" "$head1" \
+    'the new trusted comment carries only this call'"'"'s own entry'
+
+# -- no trusted author resolvable at all fails closed ------------------------
+
+unset_rc=0
+out=$(env -u REVIEW_LEDGER_VIEWER REVIEW_LEDGER_GH="$tmp/does-not-exist/gh" \
+    "$script" status --repo owner/repo --pr 1 \
+    --comments "$valid_comments" --head "$head1" 2>"$tmp/no-author.err") || unset_rc=$?
+assert_eq '1' "$unset_rc" \
+    'status fails closed (exit 1) when no trusted author can be resolved at all'
+assert_contains "$(cat "$tmp/no-author.err")" 'no trusted ledger author identity could be resolved' \
+    'the fail-closed error names the missing trust boundary'
 
 finish

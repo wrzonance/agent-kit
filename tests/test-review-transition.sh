@@ -169,18 +169,24 @@ assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT since=2026-08-2
 # -- issue #477: --ledger-comments short-circuits a triggerable provider to
 #    ALREADY_SPENT from the durable ledger, before any live fetch or polling.
 
+# review-ledger.sh only trusts a comment from a resolved author (root review
+# finding F1); pin it deterministically via REVIEW_LEDGER_VIEWER instead of
+# falling through to a live `gh api user` call.
+LEDGER_TEST_AUTHOR='ledger-test-author'
+
 run_transition_with_ledger() {
     TRANSITION_LOG="$tmp/transition.log" TRIGGER_BODY="$tmp/trigger.md" \
         REVIEW_TRANSITION_GH="$tmp/gh" \
         REVIEW_TRANSITION_PROVIDER_CONFIG="$tmp/provider-config" \
         REVIEW_TRANSITION_COMMENT="$tmp/comment" \
+        REVIEW_LEDGER_VIEWER="$LEDGER_TEST_AUTHOR" \
         bash "$transition" --repo owner/repo --repo-root "$repo_root" --pr 14 \
         --authorization-file "$tmp/auth.json" --rounds 1 --interval 1 \
         --ledger-comments "$1"
 }
 
 covered_ledger_comments="$tmp/ledger-covered.json"
-jq -n '[{id: 55, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+jq -n --arg login "$LEDGER_TEST_AUTHOR" '[{id: 55, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
     ({version:1, pr:14, repo:"owner/repo",
       reviews:[{kind:"bot", provider:"coderabbit",
                 head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state:"APPROVED"}]}
@@ -196,7 +202,7 @@ assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
     'the ledger short-circuit never posts a trigger request'
 
 stale_ledger_comments="$tmp/ledger-stale.json"
-jq -n '[{id: 56, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+jq -n --arg login "$LEDGER_TEST_AUTHOR" '[{id: 56, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
     ({version:1, pr:14, repo:"owner/repo",
       reviews:[{kind:"bot", provider:"coderabbit",
                 head_sha:"cccccccccccccccccccccccccccccccccccccccc", state:"APPROVED"}]}

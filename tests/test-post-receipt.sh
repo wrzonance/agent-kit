@@ -717,7 +717,12 @@ diff_payload='owner/repo:900:abababababababababababababababababababababababababa
 head_comments="$tmp/head-not-spent.json"
 printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$head_comments"
 reset_findings
+# review-ledger.sh append (invoked internally by append_ledger_entry) needs
+# a trusted-author identity to resolve; REVIEW_LEDGER_VIEWER pins it to a
+# deterministic test value instead of falling through to a live `gh api
+# user` call (issue #477 root review finding F1).
 head_out=$(GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" \
+    REVIEW_LEDGER_VIEWER='ledger-test-author' \
     "$script" publish --findings-file "$findings_file" \
     --pr 900 --repo owner/repo --comments "$head_comments" \
     --provider anthropic --model claude-opus-5 --effort high \

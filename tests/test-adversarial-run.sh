@@ -686,10 +686,16 @@ assert_not_contains "$(cat -- "$tmp/noreceipt.out")" 'verdict=findings' \
 
 reaffirm_payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$expected")
 
+# review-ledger.sh only trusts a comment from a resolved author (root review
+# finding F1); pin it deterministically instead of falling through to a live
+# `gh api user` call (the fake_bin/gh stub below only understands the PR-
+# metadata endpoint and would fail that call anyway).
+export REVIEW_LEDGER_VIEWER='ledger-test-author'
+
 make_ledger_comments() {
     # $1 = output path, $2 = reviews JSON array (compact)
-    jq -n --argjson reviews "$2" \
-        '[{id: 77, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+    jq -n --argjson reviews "$2" --arg login "$REVIEW_LEDGER_VIEWER" \
+        '[{id: 77, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
             ({version:1, pr:42, repo:"acme/widget", reviews:$reviews} | tojson) +
             "\n```\n<!-- /review-ledger:v1 -->")}]' >"$1"
 }
@@ -733,7 +739,8 @@ assert_contains "$(cat -- "$tmp/reaffirm-covered.err")" 'could not append a reaf
 #    covered: the review always runs -------------------------------------
 
 malformed_comments="$tmp/reaffirm-malformed-comments.json"
-jq -n '[{id: 78, body: "<!-- review-ledger:v1 -->\n```json\n{not valid json\n```\n<!-- /review-ledger:v1 -->"}]' \
+jq -n --arg login "$REVIEW_LEDGER_VIEWER" \
+    '[{id: 78, user: {login: $login}, body: "<!-- review-ledger:v1 -->\n```json\n{not valid json\n```\n<!-- /review-ledger:v1 -->"}]' \
     >"$malformed_comments"
 
 malformed_run="$tmp/reaffirm-malformed-run"
