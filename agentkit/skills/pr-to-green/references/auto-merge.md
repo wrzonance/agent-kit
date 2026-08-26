@@ -65,12 +65,13 @@ defeating a confirmed unattended `--auto-merge` sprint (issue #450).
 `scripts/authorize-queue.sh --allow-mechanical-advance` closes that gap without
 widening consent. Driving several independent roots concurrently (SKILL.md
 Steps 2–4) is a distinct case from the buckets below: a fix-batch push on PR B
-changes its own diff fingerprint and is SKILL.md Step 2's ordinary
-re-run-and-reconfirm-that-PR flow, scoped to PR B alone — it is never blocked
-on, and never blocks, whatever reconciliation PR A is independently going
-through at the same moment. Each `authorize-queue.sh` invocation reconciles
-one confirmed queue snapshot as a whole, so concurrent roots each get their
-own invocation against their own advancing evidence.
+is SKILL.md Step 2's ordinary re-run-and-reconfirm-that-PR flow. Both
+`pr-queue.sh --write-confirmed-queue` and `authorize-queue.sh` read and write
+the one fixed-path `.agent/pr-to-green-confirmed-queue.json`, so that flow is
+a critical section: PR B's re-run must not interleave with PR A's — each
+root takes its turn through the sequence, one at a time, before the next
+root's own head change enters it. Reviews and transitions themselves stay
+concurrent; only this shared-file rewrite is serialized.
 
 Passed alongside the normal Step 1/Step 2 invocation, it still requires an
 exact match on repository and provider decisions (never relaxed) and, only
