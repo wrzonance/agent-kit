@@ -184,7 +184,7 @@ digraph process {
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `agent-preflight.sh` once, in the repository you are about to work in, before any other command in this skill. Its stdout block is **the environment contract for the whole run**: resolved skills path, repo slug, branch, base, whether the repository declared its own facts in `.agent/config.env`, git writability, `gh` auth + scopes, sandbox state, CA bundle, cache directories, repo command runner, and adversarial-reviewer availability. Establish these facts once, here — never re-probe them later, and never let a dispatched agent discover them by failing.
+Run `agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing.
 
 #### The resolver (run once per session)
 
@@ -522,7 +522,7 @@ No design docs created. Step 5 proceeds directly. See [references/worker-prompts
 
 ### Step 5: Create worktrees
 
-Before running this block, determine the repository's documented locked bootstrap command from its applicable instructions -- the `files=` set the environment contract's `instructions=` line resolved, never a path the contract's `unresolved=` names as referenced-but-absent. Store it as an argument array in `dependency_bootstrap`; use an empty array when no bootstrap command is documented. Do not infer a package manager or substitute an unlocked install command. When `unresolved=` names a router reference and no other resolved instruction file documents a bootstrap for a detected component (a `runners= … node-roots=` entry whose `node-pm=unresolved`, for example), that is a real gap, not a silent no-op: record it on the dispatch plan entry for the affected issue so a worker is never dispatched unbootstrapped without the root having said so.
+Before this block, resolve the documented locked bootstrap command from the contract's resolved `instructions=` files (never `unresolved=`) into `dependency_bootstrap`; use an empty array when absent. Never infer a package manager or install command. An unresolved router with no bootstrap for a detected component is a real gap: record it on that issue's dispatch entry before dispatch.
 
 ```bash
 set -euo pipefail
@@ -808,7 +808,7 @@ Act on each lead result as soon as it arrives:
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
   the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → report the reason and preserved worktree; do not blindly restart. When the blocker clears, use `collaboration.followup_task` on the same lead if it remains available, otherwise spawn a fresh lead with the completed state and exact remaining step.
+- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. For `write-set`/`baseline-red`, do one automatic re-drive via `collaboration.followup_task` and record `auto_redrive_attempted[issue]`; otherwise park and print the exact resume command `followup_task(<same lead>, "Resume issue #<N> at: <remaining-step>")`.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
@@ -917,7 +917,6 @@ pushed. Review
 automation and ready/push behavior are repository and organization configuration; observe the
 state and never initiate a provider review: **never post `@coderabbitai review` or `full review`
 on any PR**.
-
 **As each PR opens, move its issue to `In review`** (see `github-projects.md`):
 ```bash
 set -euo pipefail
@@ -935,7 +934,6 @@ fi
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately
-
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
 **The materiality gate runs before the review spend.** Before launching any reviewer, the
@@ -1001,7 +999,6 @@ case "$precheck_rc" in
     *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
 esac
 ```
-
 After all confirmed findings are fixed or explicitly declined, push those fixes; the receipt is
 published **after fixes are pushed** and **before draft-phase-complete handoff**, as exactly one
 durable top-level PR comment — a review or skip without it is never complete. It records provider,
@@ -1039,13 +1036,11 @@ esac
 # A different nonzero already caused post-receipt.sh to fetch live comments.
 # Never retry against receipt_comments until the fresh live comments are reviewed.
 ```
-
 The ledger owns titles, dispositions, SHAs, and rationales; the script owns every receipt byte,
 deriving `findings.ndjson` from `RUN_DIR` (`--findings-file PATH` overrides it).
 Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
-
 Dispatch no more than the `pr_loop_dispatch_cap` computed above.
 **Do not reserve a slot for a nested worker: a spawned PR-loop agent cannot spawn one.** It runs
 `review-remote-pr`'s documented spawn-unavailable path and
@@ -1057,13 +1052,11 @@ The root owns peer-provider selection and the single blind fallback when `peer-c
 yourself, one PR at a time, using `pr-loop-setup` first and `pr-fix-batch` only after accepted
 findings exist. Keep the same no-ready/no-bot/no-human-resolution rules and label each exit
 `worker=self (spawn unavailable)`; serial execution is a valid degradation, not a block.
-
 **Per-agent prompt template:**
 
 Use the same helper with `--template pr-loop-setup` and the PR number as `--issue`; pass its
 composed prompt verbatim. Setup returns `launch-ready`, `ci-red: <check>`, or `cq-open: N`.
 Compose `--template pr-fix-batch` with `--findings-file` only when accepted findings exist.
-
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
@@ -1094,9 +1087,7 @@ labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 
 ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order:
 approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit
 threads — one push per cycle, no bot commands.
-
 When human content lands, surface it with per-item labels, exact feedback, assessment, proposed action, and exact attributed draft reply; wait for explicit per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and cannot be called ready to merge.
-
 Per-PR follow-up exit line:
 ```
 "PR #NNN: all CI green, X/X automated threads resolved, Y/Y body nitpicks handled.
@@ -1104,16 +1095,18 @@ Per-PR follow-up exit line:
  Human review: [none | approved replies posted, threads left open | awaiting H1 confirmation].
  [Ready to merge | Awaiting user confirmation]."
 ```
+### Final draft sweep (mandatory before handoff)
+
+With `--auto-review`, sweep `opened_prs` before any `Worked for` handoff: every PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}, proven by `post-receipt.sh status --comments <artifact>`. Count both receipt kinds; verified skips also count in `skipped`.
+Missing/duplicate/invalid evidence prints `final-sweep=miss`, re-enters the draft loop, and means handoff cannot print. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`; one automatic re-drive precedes parking a recoverable blocker.
 
 ### Opt-out
-
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
 
 ## Do NOT Delete Worktrees
-
 **Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff** with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
+**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
 ```bash
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
 [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob
@@ -1126,9 +1119,7 @@ done
 shopt -u nullglob
 ```
 Cleanup requires user request after merge.
-
 ## Common Mistakes
-
 Gate-local failures are documented where they bind. Cross-cutting rules live in
 [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md),
 [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md),
