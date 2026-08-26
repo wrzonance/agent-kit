@@ -3,6 +3,7 @@
 # as baseline-red (evidence-backed, publication may proceed) or
 # change-caused-red (fix as today), and persists/reuses baseline-red
 # decisions per --check.
+# shellcheck disable=SC2016  # literal single-quoted recipe/prose fixtures must stay unexpanded
 set -uo pipefail
 
 TEST_NAME='verification-baseline'
@@ -221,6 +222,22 @@ assert_rc 0 'compose-pr-body.sh accepts --baseline-file' -- \
 body_text=$(<"$pr_body")
 assert_contains "$body_text" '## Baseline verification evidence — demo-compose' \
     'the composed PR body carries the baseline evidence block'
+
+# --- draft-phase recipe prose: evidence-file lifecycle + publication wiring ---
+review_skill_text=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
+worker_prompts_text=$(<"$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
+assert_contains "$review_skill_text" 'mktemp' \
+    'review-remote-pr Step 2 writes the baseline-red evidence to a temp file, not straight to baseline-evidence.md'
+assert_contains "$review_skill_text" 'moves it to `$RUN_DIR/baseline-evidence.md`' \
+    'review-remote-pr Step 2 only keeps the evidence file on exit 0'
+assert_contains "$review_skill_text" 'removes it and fixes the failure as today' \
+    'review-remote-pr Step 2 discards the evidence file on exit 1/error'
+assert_contains "$worker_prompts_text" '[[ -f "${RUN_DIR:-}/baseline-evidence.md" ]]' \
+    'the draft-PR composition recipe checks for a produced baseline-evidence.md, guarded against an unset RUN_DIR'
+assert_contains "$worker_prompts_text" 'baseline_args+=(--baseline-file "$RUN_DIR/baseline-evidence.md")' \
+    'the draft-PR composition recipe folds a present baseline-evidence.md into --baseline-file'
+assert_contains "$worker_prompts_text" '"${baseline_args[@]}" --agent "$agent_identity"' \
+    'the compose-pr-body.sh call actually forwards baseline_args'
 
 testing_idx=$(grep -n '^## Testing$' "$pr_body" | head -n1 | cut -d: -f1)
 baseline_idx=$(grep -n '^## Baseline verification evidence' "$pr_body" | head -n1 | cut -d: -f1)

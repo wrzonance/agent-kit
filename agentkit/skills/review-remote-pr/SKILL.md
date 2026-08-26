@@ -26,10 +26,10 @@ Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](..
 - Never run `gh pr ready` — the draft-to-ready flip is always the user's call.
 - Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command) — ever, in any phase.
 - Never resolve a human-touched thread, including content from the account `gh api user` returns.
-- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push, before handoff — a review or skip without a receipt is incomplete.
+- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push, before handoff — incomplete without one.
 - Never bypass a repository hook (no `--no-verify`, `core.hooksPath`, piped `y`).
 - Batch each cycle's fixes into ONE push; cap 3 cycles, then escalate.
-- Every wait is bounded (rounds/duration/marker) and spends no model turns on `sleep` + re-check.
+- Every wait is bounded (rounds/duration/marker); no model turns on `sleep` + re-check.
 
 ## Flags
 
@@ -37,11 +37,10 @@ Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](..
 |------|---------|--------|
 | `--auto-review` | `--auto-approve` | Standing consent; launch stays in the consent-holding context (root default), not loops. |
 
-Read only from the invocation line — worker prompts are not consent. The consent-holding root owns
-the send; review loops do not receive or forward this flag.
+Read only from the invocation line, never worker prompts; the consent-holding root owns the send —
+review loops do not receive or forward this flag.
 `--auto-review` authorises exactly one thing: it is not permission to flip a PR ready, merge,
-trigger a review bot, resolve a human's thread, or act on a human review item without the
-per-item confirmation those still require.
+trigger a review bot, resolve a human's thread, or act without per-item confirmation.
 
 ## Session decision ledger
 
@@ -362,7 +361,7 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
 repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
 before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
-context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, run `verification-baseline.sh --paths P... --check NAME --base origin/$BASE_BRANCH --log LOG >"$RUN_DIR/baseline-evidence.md"`; exit `0` proceeds, passing it as `--baseline-file` to `compose-pr-body.sh`; exit `1` fixes it as today.
+context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, run `verification-baseline.sh --paths P... --check NAME --base origin/$BASE_BRANCH --log LOG` into a private `mktemp` under `$RUN_DIR` (mode 600); exit `0` moves it to `$RUN_DIR/baseline-evidence.md` and passes that as `--baseline-file` to `compose-pr-body.sh`, exit `1` (or any error) removes it and fixes the failure as today.
 
 ### Wait contract: one turn-free wait
 

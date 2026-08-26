@@ -324,10 +324,15 @@ default_branch=${default_branch:?set the repository default branch}
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
     --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
+# A baseline-red declared-verification outcome (review-remote-pr Step 2) writes
+# $RUN_DIR/baseline-evidence.md; when present, fold it in as --baseline-file.
+baseline_args=()
+[[ -f "${RUN_DIR:-}/baseline-evidence.md" ]] &&
+    baseline_args+=(--baseline-file "$RUN_DIR/baseline-evidence.md")
 "$agentkit/parallel-issues/scripts/compose-pr-body.sh" \
   --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
   --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
-  --agent "$agent_identity" --output "$pr_body_file"
+  "${baseline_args[@]}" --agent "$agent_identity" --output "$pr_body_file"
 linkage_args=()
 [[ $base == "$default_branch" ]] && linkage_args+=(--expect-closing-issue "$issue_number")
 "$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
