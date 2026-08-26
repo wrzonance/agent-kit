@@ -53,6 +53,15 @@ roster_entry_for_family() {
             claude:claude-*) printf '%s\n' "$item"; return 0 ;;
             codex:gpt-5.6-*) printf '%s\n' "$item"; return 0 ;;
         esac
+        # OpenCode has no fixed model-id prefix to `case`-match, the same
+        # reason model_in_sanctioned_set's opencode:* branch below uses `=~`
+        # instead of a glob: `[^/]*` still matches a second '/', so only a
+        # real regex quantifier expresses "exactly one slash". Mirror that
+        # check here rather than reintroducing the bug it exists to avoid.
+        if [ "$family" = opencode ] && [[ $item =~ ^[^/]+/[^/]+$ ]]; then
+            printf '%s\n' "$item"
+            return 0
+        fi
     done
     return 1
 }

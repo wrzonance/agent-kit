@@ -120,6 +120,37 @@ assert_contains "$err" "running harness 'codex'" \
 assert_contains "$err" 'never falls back to AGENT_WORKER_MODEL' \
     'the configuration error explains the roster is authoritative once declared'
 
+# --- OpenCode roster coverage: provider/model-id form, exactly one slash ---
+# (CodeRabbit finding on PR #489: the resolver supports OpenCode in four
+# other places -- native-default, model_in_sanctioned_set, model_family, and
+# the pivot target -- so the roster path must too, using the same `=~`
+# exactly-one-slash check rather than a `case` glob, which cannot express it.
+printf 'AGENT_WORKER_MODELS=claude-sonnet-5,wrzcluster/qwen3-coder\nAGENT_WORKER_MODELS_FALLBACK=claude-opus-5,wrzcluster/qwen3-coder-fallback\n' \
+    > "$tmp/opencode-roster.env"
+out=$(run_resolver "$tmp/opencode-roster.env" opencode 2>/dev/null)
+rc=$?
+assert_eq 0 "$rc" 'an OpenCode session with a valid provider/model-id roster entry resolves'
+assert_contains "$out" 'worker_model=wrzcluster/qwen3-coder' \
+    'the OpenCode roster entry is selected verbatim'
+
+# The interaction with the f19dbb0 hard-stop: a valid OpenCode roster entry
+# must resolve, never raise the incomplete-roster configuration error.
+assert_not_contains "$(run_resolver "$tmp/opencode-roster.env" opencode 2>&1 1>/dev/null)" \
+    'has no entry for the running harness' \
+    'a valid OpenCode roster entry never raises the incomplete-roster error'
+
+# A malformed OpenCode entry (no slash, or more than one) still has no valid
+# entry for the family and still raises the hard configuration error.
+printf 'AGENT_WORKER_MODELS=claude-sonnet-5,no-slash-here\n' > "$tmp/opencode-no-slash.env"
+out=$(run_resolver "$tmp/opencode-no-slash.env" opencode 2>/dev/null)
+rc=$?
+assert_eq 1 "$rc" 'a roster entry with no slash is not a valid OpenCode candidate and still fails'
+
+printf 'AGENT_WORKER_MODELS=claude-sonnet-5,provider/model/extra\n' > "$tmp/opencode-two-slash.env"
+out=$(run_resolver "$tmp/opencode-two-slash.env" opencode 2>/dev/null)
+rc=$?
+assert_eq 1 "$rc" 'a roster entry with more than one slash is not a valid OpenCode candidate and still fails'
+
 # --- additive: singular-only declaration still parses and pivots exactly as
 # before (no roster keys declared at all) ------------------------------------
 printf 'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra\n' > "$tmp/legacy.env"
