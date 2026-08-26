@@ -173,6 +173,23 @@ resolve_base_sha() {
 }
 
 # path_diff_check RANGE PATH -- runs `git diff --exit-code RANGE -- PATH`,
+# path_tracked_at_head PATH -- "yes" when PATH exists in the HEAD tree, else
+# "no". `git diff --exit-code` silently reports zero differences for a path
+# that is not part of the tree/index pathspec set at all -- an untracked new
+# file (never `git add`ed) or one HEAD never had is invisible to it, not
+# merely unchanged. Without this gate, a failing path this very change
+# introduced (untracked, so neither `git diff HEAD` nor `git diff BASE...HEAD`
+# says anything about it) reads as unchanged=yes outside-diff=yes: exactly the
+# false baseline-red this helper exists to prevent.
+path_tracked_at_head() {
+    local path=$1
+    if git -C "$REPO_ROOT" cat-file -e "HEAD:$path" 2>/dev/null; then
+        printf 'yes\n'
+    else
+        printf 'no\n'
+    fi
+}
+
 # prints "yes" (no differences) or "no" (differences), and dies loudly on any
 # other exit status (a bad range/path is evidence-unavailable, never a quiet
 # "no").
@@ -283,13 +300,22 @@ main() {
     resolve_base_sha
     try_reuse_decision
 
-    local any_changed=0 p unchanged outside
+    local any_changed=0 p tracked unchanged outside
     declare -a report_lines=()
     for p in "${NORM_PATHS[@]}"; do
-        unchanged=$(path_diff_check "HEAD" "$p")
-        outside=$(path_diff_check "${BASE}...HEAD" "$p")
-        [[ $unchanged == yes && $outside == yes ]] || any_changed=1
-        report_lines+=("path=$p unchanged=$unchanged outside-diff=$outside")
+        tracked=$(path_tracked_at_head "$p")
+        if [[ $tracked == yes ]]; then
+            unchanged=$(path_diff_check "HEAD" "$p")
+            outside=$(path_diff_check "${BASE}...HEAD" "$p")
+        else
+            # Not part of the HEAD tree: untracked (never `git add`ed) or
+            # absent from HEAD entirely. Neither diff check can see it, so
+            # never ask them -- this path is change-caused by definition.
+            unchanged=no
+            outside=no
+        fi
+        [[ $tracked == yes && $unchanged == yes && $outside == yes ]] || any_changed=1
+        report_lines+=("path=$p tracked=$tracked unchanged=$unchanged outside-diff=$outside")
     done
 
     if ((any_changed == 0)); then

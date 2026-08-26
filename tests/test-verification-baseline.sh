@@ -24,6 +24,7 @@ git -C "$repo" config user.name 'Test'
 
 printf 'unrelated content\n' >"$repo/unrelated.txt"
 printf 'pinned content\n' >"$repo/pinned.txt"
+printf 'removed content\n' >"$repo/removed.txt"
 git -C "$repo" add -A
 git -C "$repo" commit -qm base
 
@@ -36,6 +37,13 @@ printf 'pinned content, rewritten by this PR\n' >"$repo/pinned.txt"
 git -C "$repo" add -A
 git -C "$repo" commit -qm 'feature: rewrite pinned.txt'
 
+# `removed.txt` is deleted (and the deletion committed) by the feature
+# branch -- absent from HEAD entirely, so it can never be "unchanged from
+# HEAD"; it must classify change-caused via the tracked-at-HEAD gate, the
+# same gate that catches an untracked new file below.
+git -C "$repo" rm -q removed.txt
+git -C "$repo" commit -qm 'feature: remove removed.txt'
+
 # `unrelated.txt` is never touched by the feature branch at all.
 # `original-dirty.txt` exists at HEAD but is edited in the worktree without
 # being committed (the "modified" failing path).
@@ -43,6 +51,14 @@ printf 'dirty content\n' >"$repo/original-dirty.txt"
 git -C "$repo" add original-dirty.txt
 git -C "$repo" commit -qm 'feature: add original-dirty.txt'
 printf 'dirty content, uncommitted\n' >"$repo/original-dirty.txt"
+
+# `untracked-new.txt` is a brand-new file this change introduces, never
+# `git add`ed -- git diff (with no --no-index) has no representation for it
+# at all against either range, so both diff checks alone would read it as
+# vacuously unchanged/outside-diff. This is the regression case: without the
+# tracked-at-HEAD gate, a failing path the change itself created reads as
+# baseline-red.
+printf 'brand new untracked content\n' >"$repo/untracked-new.txt"
 
 log="$tmp/verify.log"
 printf 'declared verification failed\n' >"$log"
@@ -72,15 +88,34 @@ rc=$?
 assert_eq '1' "$rc" 'a path with uncommitted worktree changes exits 1 (change-caused-red)'
 assert_contains "$out" 'change-caused-red check=demo-modified paths=1' \
     'change-caused-red marker line names the check'
-assert_contains "$out" 'path=original-dirty.txt unchanged=no' \
+assert_contains "$out" 'path=original-dirty.txt tracked=yes unchanged=no' \
     'per-path detail reports the modified path as unchanged=no'
 
 # --- change-caused-red: in-diff (committed by this PR) path ----------------
 out=$(run_helper --base main --log "$log" --paths pinned.txt --check demo-indiff)
 rc=$?
 assert_eq '1' "$rc" 'a path committed by this PR exits 1 (change-caused-red)'
-assert_contains "$out" 'path=pinned.txt unchanged=yes outside-diff=no' \
+assert_contains "$out" 'path=pinned.txt tracked=yes unchanged=yes outside-diff=no' \
     'per-path detail reports the in-diff path as outside-diff=no'
+
+# --- change-caused-red: untracked path introduced by this change (regression) ---
+# Without the tracked-at-HEAD gate, `git diff --exit-code HEAD -- P` and
+# `git diff --exit-code main...HEAD -- P` both exit 0 for a path git diff has
+# no representation for at all -- misclassifying it baseline-red.
+out=$(run_helper --base main --log "$log" --paths untracked-new.txt --check demo-untracked)
+rc=$?
+assert_eq '1' "$rc" 'an untracked new path exits 1 (change-caused-red), not baseline-red'
+assert_contains "$out" 'change-caused-red check=demo-untracked paths=1' \
+    'change-caused-red marker line names the untracked-path check'
+assert_contains "$out" 'path=untracked-new.txt tracked=no unchanged=no outside-diff=no' \
+    'per-path detail reports the untracked path as tracked=no'
+
+# --- change-caused-red: path deleted by this branch (regression) -----------
+out=$(run_helper --base main --log "$log" --paths removed.txt --check demo-removed)
+rc=$?
+assert_eq '1' "$rc" 'a path deleted by this branch exits 1 (change-caused-red)'
+assert_contains "$out" 'path=removed.txt tracked=no' \
+    'per-path detail reports the branch-deleted path as tracked=no'
 
 # --- persisted decision is written and reused (short-circuit) --------------
 decision_file="$repo/.agent/evidence/baseline/demo-persist.json"
