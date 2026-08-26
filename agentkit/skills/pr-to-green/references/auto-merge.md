@@ -70,11 +70,13 @@ re-run-and-reconfirm-that-PR flow, scoped to PR B alone — it is never blocked
 on, and never blocks, whatever reconciliation PR A is independently going
 through at the same moment. Each `authorize-queue.sh` invocation reconciles
 one confirmed queue snapshot as a whole, so concurrent roots each get their
-own invocation against their own advancing evidence. Passed alongside the normal Step 1/Step 2 invocation, it
-still requires an exact match on repository and provider decisions (never
-relaxed) and, only when the live queue no longer matches the displayed
-snapshot exactly, reconciles each confirmed PR against fresh `pr-queue.sh`
-evidence into exactly one of:
+own invocation against their own advancing evidence.
+
+Passed alongside the normal Step 1/Step 2 invocation, it still requires an
+exact match on repository and provider decisions (never relaxed) and, only
+when the live queue no longer matches the displayed snapshot exactly,
+reconciles each confirmed PR against fresh `pr-queue.sh` evidence into
+exactly one of:
 
 - **unchanged** — no drift for this PR.
 - **a root merge-down** — the confirmed prior state was `RUNNABLE`, the base is
