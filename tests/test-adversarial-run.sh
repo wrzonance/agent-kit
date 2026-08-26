@@ -681,6 +681,106 @@ assert_eq blocked "$(jq -r '.status' <"$noreceipt_run/adversarial.result.json")"
 assert_not_contains "$(cat -- "$tmp/noreceipt.out")" 'verdict=findings' \
     'marker-present-no-receipt is never reported as a genuine completed review'
 
+# -- issue #477: --reaffirm-if-covered short-circuits when the ledger already
+#    proves this exact tree (or a base-merge-only advance of it) was reviewed
+
+reaffirm_payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$expected")
+
+make_ledger_comments() {
+    # $1 = output path, $2 = reviews JSON array (compact)
+    jq -n --argjson reviews "$2" \
+        '[{id: 77, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+            ({version:1, pr:42, repo:"acme/widget", reviews:$reviews} | tojson) +
+            "\n```\n<!-- /review-ledger:v1 -->")}]' >"$1"
+}
+
+covered_reviews="[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$head_oid\",\"diff_payload\":\"$reaffirm_payload\"}]"
+covered_comments="$tmp/reaffirm-covered-comments.json"
+make_ledger_comments "$covered_comments" "$covered_reviews"
+
+reaffirm_run="$tmp/reaffirm-covered-run"
+mkdir -- "$reaffirm_run" "$reaffirm_run/state"
+chmod 700 "$reaffirm_run" "$reaffirm_run/state"
+# Deliberately NO consent grant: a reaffirmed-from-ledger short circuit must
+# never require (or consult) the consent gate, since no reviewer is launched.
+reaffirm_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-covered.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reaffirm_run" \
+        --reaffirm-if-covered --comments "$covered_comments") \
+    >"$tmp/reaffirm-covered.out" 2>"$tmp/reaffirm-covered.err" || reaffirm_rc=$?
+assert_eq 0 "$reaffirm_rc" '--reaffirm-if-covered exits 0 for a covered-head ledger entry, with no consent grant'
+assert_contains "$(cat -- "$tmp/reaffirm-covered.out")" 'reaffirmed-from-ledger' \
+    'a reaffirmed run reports itself distinctly from a genuine completed review'
+assert_eq no "$( [[ -e $tmp/reaffirm-covered.called ]] && printf yes || printf no )" \
+    'a reaffirmed run never launches the reviewer CLI'
+assert_eq no "$( [[ -e $reaffirm_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'a reaffirmed run never writes a result artifact of its own'
+
+# The ledger comment append itself only round-trips through gh-comment.sh,
+# which this test harness does not stub for adversarial-run.sh's own
+# invocation -- review-ledger.sh append fails closed here (no gh on this PATH
+# beyond the PR-metadata stub above). That failure is deliberately
+# NON-FATAL to the reaffirm decision: the ORIGINAL ledger entry already
+# proves coverage, so the review is still skipped even though the
+# audit-trail append could not be recorded. Confirmed above by the covered
+# run's rc=0 and no-reviewer-launch assertions; here confirm the warning was
+# actually surfaced, not silently swallowed.
+assert_contains "$(cat -- "$tmp/reaffirm-covered.err")" 'could not append a reaffirmed-from ledger entry' \
+    'a failed audit-trail append is surfaced as a warning, not hidden'
+
+# -- a malformed ledger fence (blocks, per rule 1) is never treated as
+#    covered: the review always runs -------------------------------------
+
+malformed_comments="$tmp/reaffirm-malformed-comments.json"
+jq -n '[{id: 78, body: "<!-- review-ledger:v1 -->\n```json\n{not valid json\n```\n<!-- /review-ledger:v1 -->"}]' \
+    >"$malformed_comments"
+
+malformed_run="$tmp/reaffirm-malformed-run"
+grant "$malformed_run" anthropic
+malformed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-malformed.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$malformed_run" \
+        --reaffirm-if-covered --comments "$malformed_comments") \
+    >"$tmp/reaffirm-malformed.out" 2>"$tmp/reaffirm-malformed.err" || malformed_rc=$?
+assert_eq 0 "$malformed_rc" \
+    'a malformed ledger falls back to running a real review rather than failing the whole run'
+assert_eq yes "$( [[ -e $tmp/reaffirm-malformed.called ]] && printf yes || printf no )" \
+    'a malformed (blocked) ledger still launches the reviewer CLI -- it is never read as covered'
+assert_eq yes "$( [[ -s $malformed_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'the fallback review publishes a real result artifact'
+
+# -- a stale ledger (different head, no matching diff payload) never
+#    short-circuits: the review always runs -----------------------------
+
+stale_reviews='[{"kind":"adversarial","provider":"anthropic","head_sha":"0000000000000000000000000000000000000f","diff_payload":"acme/widget:42:zzzz"}]'
+stale_comments="$tmp/reaffirm-stale-comments.json"
+make_ledger_comments "$stale_comments" "$stale_reviews"
+
+stale_run="$tmp/reaffirm-stale-run"
+grant "$stale_run" anthropic
+stale_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-stale.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$stale_run" \
+        --reaffirm-if-covered --comments "$stale_comments") \
+    >"$tmp/reaffirm-stale.out" 2>"$tmp/reaffirm-stale.err" || stale_rc=$?
+assert_eq 0 "$stale_rc" 'a stale ledger entry never blocks the review from running'
+assert_eq yes "$( [[ -e $tmp/reaffirm-stale.called ]] && printf yes || printf no )" \
+    'a stale ledger entry still launches the reviewer CLI'
+assert_not_contains "$(cat -- "$tmp/reaffirm-stale.out")" 'reaffirmed-from-ledger' \
+    'a stale ledger entry is never reported as a reaffirmed run'
+
+# -- --reaffirm-if-covered requires --comments -------------------------------
+
+usage_rc=0
+bash "$script" --pr 42 --repo acme/widget --run-dir "$tmp/unused-run" \
+    --reaffirm-if-covered >"$tmp/usage.out" 2>"$tmp/usage.err" || usage_rc=$?
+assert_eq 2 "$usage_rc" '--reaffirm-if-covered without --comments is a usage error'
+assert_contains "$(cat -- "$tmp/usage.err")" '--reaffirm-if-covered requires --comments' \
+    'the usage error names the missing flag'
+
 # A tracked `.agent` symlink bypasses leaf-only provenance checks: Git tracks
 # the link itself, not the resolved `.agent/env-contract.txt` path. The runner
 # must reject it before consulting attacker-controlled reviewer facts or

@@ -21,6 +21,8 @@ REPO=''
 RUN_DIR=''
 PEER_CLI_ABSENT=0
 PAYLOAD=''
+REAFFIRM_IF_COVERED=0
+LEDGER_COMMENTS=''
 HARNESS_NAME=''
 RUNNING_PROVIDER=''
 PEER_CLI_NAME=''
@@ -37,6 +39,7 @@ TRANSCRIPT_NAME=''
 usage() {
     cat <<EOF
 Usage: $PROGNAME --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                 [--reaffirm-if-covered --comments FILE]
 
 Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
 publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
@@ -52,6 +55,15 @@ the one-review-per-PR receipt budget.
 
 The consent record is always DIR/state/cross-provider-consent. There is no
 caller-supplied consent flag.
+
+--reaffirm-if-covered --comments FILE (issue #477): before launching a
+reviewer, consults the sibling review-ledger.sh's status for this PR's
+already-fetched comments artifact. A covered-head or covered-diff verdict
+(the exact tree, or a base-merge-only advance of a tree, already reviewed)
+appends a "reaffirmed_from" ledger entry and exits 0 WITHOUT spawning a
+reviewer -- the DIR/adversarial.result.json this run would otherwise have
+produced is never written. Any other verdict (stale, absent, or a blocked/
+malformed ledger) runs the review exactly as it does without this flag.
 EOF
 }
 
@@ -84,6 +96,9 @@ parse_args() {
             --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;
             --run-dir=*) RUN_DIR=${1#*=}; shift ;;
             --peer-cli-absent) PEER_CLI_ABSENT=1; shift ;;
+            --reaffirm-if-covered) REAFFIRM_IF_COVERED=1; shift ;;
+            --comments) require_value "$1" "${2:-}"; LEDGER_COMMENTS=$2; shift 2 ;;
+            --comments=*) LEDGER_COMMENTS=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown option: $1" ;;
         esac
@@ -257,6 +272,8 @@ validate_args() {
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die_usage '--repo must look like OWNER/REPO'
     [[ -n $RUN_DIR ]] || die_usage '--run-dir is required'
+    ((REAFFIRM_IF_COVERED == 0)) || [[ -n $LEDGER_COMMENTS ]] ||
+        die_usage '--reaffirm-if-covered requires --comments'
     command -v gh >/dev/null 2>&1 || die 'gh is required to resolve the pull request base'
     command -v jq >/dev/null 2>&1 || die 'jq is required to validate the review result'
     load_environment_contract
@@ -349,17 +366,25 @@ resolve_base_declared_config() {
     return 0
 }
 
-verify_consent() {
+# Stashed in the global PAYLOAD (not a local) so write_launch_attempted,
+# verify_consent, and try_reaffirm_if_covered can all reuse the exact same
+# payload identity without repeated gh/git round trips -- the marker, the
+# consent check, and the ledger status check must all agree on what "this
+# tree" means.
+compute_payload() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
-    local state=$RUN_DIR/state/cross-provider-consent check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
-    # Stashed in the global PAYLOAD (not a local) so write_launch_attempted can
-    # reuse the exact same payload identity without a second gh/git round trip
-    # -- the marker and the consent check must agree on what "this send" means.
     PAYLOAD=$(
         "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
             --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
+}
+
+verify_consent() {
+    local consent_script=$SCRIPT_DIR/consent-record.sh
+    local state=$RUN_DIR/state/cross-provider-consent check_error
+    [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+    [[ -n $PAYLOAD ]] || compute_payload
     # Capture only stderr (order matters: dup fd2 to the substitution's pipe
     # before redirecting fd1 away) so a mismatch names the expected and
     # recorded provider tokens instead of a bare boolean refusal.
@@ -381,6 +406,76 @@ verify_consent() {
 # marker with no completed/blocked result is genuinely ambiguous (sent and
 # lost the receipt vs. crashed mid-send), so that case still requires the
 # operator prompt described in adversarial-review.md.
+# try_reaffirm_if_covered -- issue #477. Returns 0 (and has already appended
+# a "reaffirmed_from" ledger entry) when the ledger already proves this exact
+# tree, or a base-merge-only advance of it, was reviewed; the caller must
+# then skip run_provider entirely. Returns 1 for every other case (stale,
+# absent, an unparseable/blocked ledger, or any transport hiccup along the
+# way) -- always the SAFE direction to fall back to, since it just means "run
+# the review as if this flag were never given".
+try_reaffirm_if_covered() {
+    local ledger_script="$SCRIPT_DIR/review-ledger.sh"
+    [[ -x $ledger_script ]] || {
+        warn "review-ledger.sh is missing or not executable; running the review normally: $ledger_script"
+        return 1
+    }
+    local head_oid status_out status_rc=0
+    head_oid=$(git rev-parse HEAD 2>/dev/null) || return 1
+    status_out=$(
+        "$ledger_script" status --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
+            --head "$head_oid" --diff-payload "$PAYLOAD" --kind adversarial \
+            --repo-root "$CONTRACT_ROOT" 2>/dev/null
+    ) || status_rc=$?
+    case $status_rc in
+        0) : ;;
+        *) return 1 ;;
+    esac
+    [[ $status_out == covered-head || $status_out == covered-diff ]] || return 1
+
+    local read_out read_rc=0
+    read_out=$("$ledger_script" read --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" 2>/dev/null) ||
+        read_rc=$?
+    ((read_rc == 0)) || return 1
+    local ledger_json
+    ledger_json=$(tail -n +2 <<<"$read_out")
+
+    local original
+    original=$(jq -c --arg head "$head_oid" --arg dp "$PAYLOAD" '
+      .reviews | map(select(.kind == "adversarial")) |
+      (map(select(.head_sha == $head)) + map(select((.diff_payload // "") == $dp and (.diff_payload // "") != ""))) |
+      first // empty
+    ' <<<"$ledger_json" 2>/dev/null) || return 1
+    [[ -n $original && $original != null ]] || return 1
+
+    local entry_file
+    entry_file=$(mktemp "${TMPDIR:-/tmp}/adversarial-run-reaffirm.XXXXXXXXXX") || return 1
+    chmod 600 -- "$entry_file" 2>/dev/null || true
+    jq -cn --arg provider "$PROVIDER" --arg head "$head_oid" --arg dp "$PAYLOAD" \
+        --argjson original "$original" --arg verdict "$status_out" \
+        '{kind: "adversarial", provider: $provider, head_sha: $head, diff_payload: $dp,
+          reaffirmed_from: $original, reaffirmedVerdict: $verdict}' >"$entry_file" 2>/dev/null || {
+        rm -f -- "$entry_file"
+        return 1
+    }
+
+    # A failed append is deliberately non-fatal to the reaffirm decision
+    # itself: the ORIGINAL ledger entry (already read above) is what proves
+    # coverage, and that proof does not depend on this run successfully
+    # recording a second, audit-trail entry on top of it. Treating an append
+    # failure as "run the review anyway" would spend a full reviewer call to
+    # recover from what is usually a transient comment-transport hiccup, the
+    # exact over-spend this flag exists to avoid. A failed append only ever
+    # loses the audit trail, never the underlying coverage guarantee.
+    if ! "$ledger_script" append --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
+        --entry-file "$entry_file" --agent-identity "$HARNESS_NAME" >&2; then
+        warn 'could not append a reaffirmed-from ledger entry; the review is still skipped (the original ledger entry already proves coverage)'
+    fi
+    rm -f -- "$entry_file"
+    printf 'reaffirmed-from-ledger provider=%s verdict=%s head=%s\n' \
+        "$PROVIDER" "$status_out" "$head_oid"
+    return 0
+}
+
 write_launch_attempted() {
     local marker=$RUN_DIR/state/launch-attempted tmp="$RUN_DIR/state/launch-attempted.tmp"
     local head_oid
@@ -543,6 +638,10 @@ main() {
     if resolve_base_declared_config; then
         select_reviewer "$BASE_CONFIG_FILE"
         require_helper_executable
+    fi
+    compute_payload
+    if ((REAFFIRM_IF_COVERED)) && try_reaffirm_if_covered; then
+        return 0
     fi
     verify_consent
     run_provider

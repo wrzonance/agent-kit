@@ -19,6 +19,7 @@ base=''
 digest_file=''
 provider_result=''
 human_decided=''
+adversarial_status=''
 cq_scan_state=''
 cq_state_file=''
 work_dir=''
@@ -56,6 +57,7 @@ usage() {
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --pr-state-digest FILE --provider-result RESULT
        --human-items-decided yes|no
+       --adversarial-review-status STATUS
        [--code-quality-scan-state complete|pending|not-enabled]
        [--code-quality-state-file FILE]
 
@@ -65,6 +67,15 @@ output file (its scan-state=complete|pending|not-enabled|unknown token is
 read live). When both are given they must agree, byte-for-byte on the
 scan-state token, or the gate refuses outright -- never silently prefers
 one over the other.
+
+--adversarial-review-status STATUS (issue #477) takes the verdict word
+review-ledger.sh status prints for this PR's current head as the adversarial-
+review completion signal, replacing reliance on an operator's memory that a
+review happened. STATUS must be one of: covered-head, covered-diff (either
+passes, exactly like an AUTO_REVIEW/LANDED CodeRabbit result), stale, absent,
+or blocked (each of those three blocks the merge, naming the reason), or
+not-required (this repository's adversarial review requirement is disabled;
+never re-derived here -- the caller decides that upstream).
 EOF
     exit "${1:-2}"
 }
@@ -78,6 +89,7 @@ while (($#)); do
         --pr-state-digest) (($# >= 2)) || usage; digest_file=$2; shift 2 ;;
         --provider-result) (($# >= 2)) || usage; provider_result=$2; shift 2 ;;
         --human-items-decided) (($# >= 2)) || usage; human_decided=$2; shift 2 ;;
+        --adversarial-review-status) (($# >= 2)) || usage; adversarial_status=$2; shift 2 ;;
         --code-quality-scan-state) (($# >= 2)) || usage; cq_scan_state=$2; shift 2 ;;
         --code-quality-state-file) (($# >= 2)) || usage; cq_state_file=$2; shift 2 ;;
         -h|--help) usage 0 ;;
@@ -97,6 +109,11 @@ case $provider_result in
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
 esac
 case $human_decided in yes|no) ;; *) die '--human-items-decided must be yes or no' ;; esac
+[[ -n $adversarial_status ]] || die '--adversarial-review-status is required'
+case $adversarial_status in
+    covered-head|covered-diff|stale|absent|blocked|not-required) ;;
+    *) die "--adversarial-review-status is not a recognized review-ledger.sh verdict: $adversarial_status" ;;
+esac
 [[ -n $cq_scan_state || -n $cq_state_file ]] ||
     die '--code-quality-scan-state or --code-quality-state-file is required'
 if [[ -n $cq_scan_state ]]; then
@@ -496,6 +513,20 @@ case $provider_result in
     TRIGGERED) block 'CodeRabbit review is still in flight for the current head' ;;
     BLOCKED) block 'CodeRabbit provider capability plan reported BLOCKED' ;;
     STALE_HEAD) block 'CodeRabbit review is against a stale head, not evidence for the current head' ;;
+esac
+
+# --- Adversarial review completion: review-ledger.sh's own verdict word for
+# the current head, taken as-is (never re-derived here -- see auto-merge.md
+# for why this gate never re-runs evidence collection itself). covered-head
+# and covered-diff are the only passing verdicts, matching AUTO_REVIEW/LANDED
+# above; stale/absent/blocked each block and name themselves distinctly so an
+# operator can tell "never reviewed" from "reviewed, but not this tree" from
+# "the ledger itself is corrupt".
+case $adversarial_status in
+    covered-head|covered-diff|not-required) ;;
+    stale) block 'adversarial review ledger is stale for the current head (reviewed a different tree)' ;;
+    absent) block 'no adversarial review is recorded in the ledger for the current head' ;;
+    blocked) block 'adversarial review ledger is present but unparseable (fails closed, never read as absent)' ;;
 esac
 
 [[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision'

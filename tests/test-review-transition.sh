@@ -166,6 +166,47 @@ out=$(SPENT_COMMENT_JSON='[{"user":{"login":"workflow-account","type":"User"},"b
 assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT since=2026-08-21T12:00:00Z' \
     'ALREADY_SPENT carries the spent markers own created_at as its since= boundary when available'
 
+# -- issue #477: --ledger-comments short-circuits a triggerable provider to
+#    ALREADY_SPENT from the durable ledger, before any live fetch or polling.
+
+run_transition_with_ledger() {
+    TRANSITION_LOG="$tmp/transition.log" TRIGGER_BODY="$tmp/trigger.md" \
+        REVIEW_TRANSITION_GH="$tmp/gh" \
+        REVIEW_TRANSITION_PROVIDER_CONFIG="$tmp/provider-config" \
+        REVIEW_TRANSITION_COMMENT="$tmp/comment" \
+        bash "$transition" --repo owner/repo --repo-root "$repo_root" --pr 14 \
+        --authorization-file "$tmp/auth.json" --rounds 1 --interval 1 \
+        --ledger-comments "$1"
+}
+
+covered_ledger_comments="$tmp/ledger-covered.json"
+jq -n '[{id: 55, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+    ({version:1, pr:14, repo:"owner/repo",
+      reviews:[{kind:"bot", provider:"coderabbit",
+                head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state:"APPROVED"}]}
+     | tojson) + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$covered_ledger_comments"
+
+: >"$tmp/transition.log"
+out=$(run_transition_with_ledger "$covered_ledger_comments")
+assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT source=ledger' \
+    'a covered-head ledger entry short-circuits straight to ALREADY_SPENT'
+assert_eq '0' "$(grep -c '^gh repos/owner/repo/pulls/14/reviews' "$tmp/transition.log" || true)" \
+    'the ledger short-circuit never fetches live review evidence'
+assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
+    'the ledger short-circuit never posts a trigger request'
+
+stale_ledger_comments="$tmp/ledger-stale.json"
+jq -n '[{id: 56, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+    ({version:1, pr:14, repo:"owner/repo",
+      reviews:[{kind:"bot", provider:"coderabbit",
+                head_sha:"cccccccccccccccccccccccccccccccccccccccc", state:"APPROVED"}]}
+     | tojson) + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$stale_ledger_comments"
+
+: >"$tmp/transition.log"
+out=$(run_transition_with_ledger "$stale_ledger_comments")
+assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
+    'a stale (different-head) ledger entry never short-circuits; the real flow still runs'
+
 : >"$tmp/transition.log"
 out=$(REVIEW_ACTIVITY=old run_transition)
 assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \

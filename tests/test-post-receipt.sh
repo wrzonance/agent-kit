@@ -682,4 +682,91 @@ multidoc_doc_count=$(jq -s 'length' "$multidoc_dir/adversarial.result.json")
 assert_eq '2' "$multidoc_doc_count" \
     'the multi-document result artifact is left untouched by the refused skip'
 
+# -- publish: --head-sha renders head/diff-payload lines and appends a
+#    review-ledger.sh entry (issue #477) --------------------------------
+#
+# Its own stub (rather than the shared "$tmp/gh"): the ledger append issues a
+# SECOND gh-comment.sh-routed POST against the same GH_PAYLOAD-style capture,
+# which would overwrite the receipt body before this test can inspect it. This
+# stub instead dumps every posted body to its own numbered file under
+# GH_PAYLOAD_DIR, keyed by call order, so both posts stay inspectable.
+head_gh_dir="$tmp/head-gh"
+mkdir -p "$head_gh_dir"
+cat >"$head_gh_dir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_LOG"
+if [[ " $* " == *" --input - "* ]]; then
+    n=$(($(cat "$GH_PAYLOAD_DIR/count" 2>/dev/null || echo 0) + 1))
+    printf '%s' "$n" >"$GH_PAYLOAD_DIR/count"
+    cat >"$GH_PAYLOAD_DIR/payload-$n.json"
+    jq --argjson id "$((500 + n))" --arg url "https://example.invalid/comments/$((500 + n))" \
+        '. + {id: $id, html_url: $url}' "$GH_PAYLOAD_DIR/payload-$n.json"
+    exit 0
+fi
+n=$(cat "$GH_PAYLOAD_DIR/count")
+jq '. + {id: (500 + '"$n"')}' "$GH_PAYLOAD_DIR/payload-$n.json"
+EOF
+chmod +x "$head_gh_dir/gh"
+
+head_sha='1111111111111111111111111111111111111a'
+diff_payload='owner/repo:900:abababababababababababababababababababababababababababababab'
+
+: >"$tmp/gh.log"
+: >"$head_gh_dir/count"
+head_comments="$tmp/head-not-spent.json"
+printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$head_comments"
+reset_findings
+head_out=$(GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" \
+    "$script" publish --findings-file "$findings_file" \
+    --pr 900 --repo owner/repo --comments "$head_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' \
+    --head-sha "$head_sha" --diff-payload "$diff_payload" --harness claude)
+head_rc=$?
+assert_eq '0' "$head_rc" 'publish exits 0 with --head-sha given'
+assert_contains "$head_out" 'posted id=501' \
+    'publish surfaces the receipt gh-comment.sh confirmation on stdout'
+assert_eq '2' "$(cat "$head_gh_dir/count")" \
+    'publish with --head-sha makes exactly one additional POST for the ledger comment'
+
+head_body=$(jq -r '.body' "$head_gh_dir/payload-1.json")
+assert_contains "$head_body" "- Reviewed head: $head_sha" \
+    'publish body records the reviewed head SHA'
+assert_contains "$head_body" "- Diff payload: $diff_payload" \
+    'publish body records the diff payload'
+# A clean (zero-finding) review still gets a head line -- closing the
+# no-SHA-on-a-clean-review hole the issue calls out explicitly.
+assert_contains "$head_body" 'Confirmed finding: none confirmed' \
+    'a clean review still renders none confirmed'
+
+ledger_body=$(jq -r '.body' "$head_gh_dir/payload-2.json")
+assert_contains "$ledger_body" '<!-- review-ledger:v1 -->' \
+    'the second POST carries the review-ledger fence'
+assert_contains "$ledger_body" "$head_sha" \
+    'the review-ledger entry records the reviewed head SHA'
+assert_contains "$ledger_body" '"kind": "adversarial"' \
+    'the review-ledger entry records kind=adversarial'
+
+# -- publish: omitting --head-sha renders neither line, and no ledger call -
+
+: >"$tmp/gh.log"
+: >"$head_gh_dir/count"
+rm -f -- "$head_gh_dir"/payload-*.json
+no_head_comments="$tmp/no-head-not-spent.json"
+printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$no_head_comments"
+reset_findings
+GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" \
+    "$script" publish --findings-file "$findings_file" \
+    --pr 901 --repo owner/repo --comments "$no_head_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' >/dev/null
+assert_eq '1' "$(cat "$head_gh_dir/count")" \
+    'publish makes no ledger POST when --head-sha is omitted'
+no_head_body=$(jq -r '.body' "$head_gh_dir/payload-1.json")
+assert_not_contains "$no_head_body" '- Reviewed head:' \
+    'publish body carries no head line when --head-sha is omitted'
+
 finish
