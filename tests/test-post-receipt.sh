@@ -774,4 +774,87 @@ no_head_body=$(jq -r '.body' "$head_gh_dir/payload-1.json")
 assert_not_contains "$no_head_body" '- Reviewed head:' \
     'publish body carries no head line when --head-sha is omitted'
 
+# -- publish: append_ledger_entry derives --repo-root via `git rev-parse
+#    --show-toplevel` (CodeRabbit review of PR #484, issue #477 T1) --------
+# Without --repo-root, resolve_trusted_author inside review-ledger.sh's
+# append call could never see a repository-declared AGENT_LEDGER_AUTHOR and
+# silently fell back to REVIEW_LEDGER_VIEWER/gh instead. A PRE-EXISTING
+# ledger comment authored by the CONFIGURED author (not the REVIEW_LEDGER_
+# VIEWER decoy set for this call) must be UPDATED in place -- proving append
+# resolved the same configured identity, not created as a second comment
+# under the wrong (env-var) identity.
+
+git_fixture="$tmp/repo-root-fixture"
+mkdir -p "$git_fixture/.agent"
+git init -q "$git_fixture"
+git -C "$git_fixture" config user.email test@example.com
+git -C "$git_fixture" config user.name test
+configured_author='configured-ledger-author'
+printf 'AGENT_LEDGER_AUTHOR=%s\n' "$configured_author" >"$git_fixture/.agent/config.env"
+
+# A stub that resolves the target comment id from the endpoint URL for a
+# --update (PATCH) call, or assigns a fresh id for a plain create (POST) --
+# so an update-in-place and a wrongly-created second comment are
+# distinguishable after the fact by inspecting which id each call used.
+repo_root_gh_dir="$tmp/repo-root-gh"
+mkdir -p "$repo_root_gh_dir"
+cat >"$repo_root_gh_dir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_LOG"
+if [[ " $* " == *" --input - "* ]]; then
+    n=$(($(cat "$GH_PAYLOAD_DIR/count" 2>/dev/null || echo 0) + 1))
+    printf '%s' "$n" >"$GH_PAYLOAD_DIR/count"
+    cat >"$GH_PAYLOAD_DIR/payload-$n.json"
+    endpoint=''
+    for arg in "$@"; do [[ $arg == repos/* ]] && endpoint=$arg; done
+    if [[ $endpoint =~ /issues/comments/([0-9]+)$ ]]; then
+        id="${BASH_REMATCH[1]}"
+    else
+        id=$((500 + n))
+    fi
+    printf '%s' "$id" >"$GH_PAYLOAD_DIR/id-$n"
+    jq --argjson id "$id" --arg url "https://example.invalid/comments/$id" \
+        '. + {id: $id, html_url: $url}' "$GH_PAYLOAD_DIR/payload-$n.json"
+    exit 0
+fi
+n=$(cat "$GH_PAYLOAD_DIR/count")
+id=$(cat "$GH_PAYLOAD_DIR/id-$n")
+jq --argjson id "$id" '. + {id: $id}' "$GH_PAYLOAD_DIR/payload-$n.json"
+EOF
+chmod +x "$repo_root_gh_dir/gh"
+
+existing_ledger_reviews='[{"kind":"adversarial","provider":"anthropic","head_sha":"9999999999999999999999999999999999999a","diff_payload":"owner/repo:902:deadbeef"}]'
+repo_root_comments="$tmp/repo-root-comments.json"
+jq -n --argjson reviews "$existing_ledger_reviews" --arg login "$configured_author" \
+    '[{id: 70, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+        ({version:1, pr:902, repo:"owner/repo", reviews:$reviews} | tojson) +
+        "\n```\n<!-- /review-ledger:v1 -->")}]' >"$repo_root_comments"
+
+: >"$tmp/repo-root-gh.log"
+: >"$repo_root_gh_dir/count"
+reset_findings
+new_head_sha='2222222222222222222222222222222222222b'
+(cd "$git_fixture" && GH_COMMENT_GH="$repo_root_gh_dir/gh" GH_LOG="$tmp/repo-root-gh.log" \
+    GH_PAYLOAD_DIR="$repo_root_gh_dir" REVIEW_LEDGER_VIEWER='decoy-env-author' \
+    "$script" publish --findings-file "$findings_file" \
+    --pr 902 --repo owner/repo --comments "$repo_root_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' \
+    --head-sha "$new_head_sha") >/dev/null
+repo_root_rc=$?
+assert_eq '0' "$repo_root_rc" 'publish succeeds when append_ledger_entry must derive --repo-root itself'
+assert_eq '2' "$(cat "$repo_root_gh_dir/count")" \
+    'exactly two writes happen: the receipt create, and the ledger append'
+assert_eq '70' "$(cat "$repo_root_gh_dir/id-2")" \
+    'the ledger append PATCHes the existing trusted comment id (CodeRabbit #484 T1), never creating a second one'
+assert_contains "$(cat "$tmp/repo-root-gh.log")" 'issues/comments/70' \
+    'the second write targets the existing comment endpoint by id'
+repo_root_ledger_body=$(jq -r '.body' "$repo_root_gh_dir/payload-2.json")
+assert_contains "$repo_root_ledger_body" "$new_head_sha" \
+    'the updated ledger comment carries the new entry'
+assert_contains "$repo_root_ledger_body" '9999999999999999999999999999999999999a' \
+    'the updated ledger comment still preserves the pre-existing entry (append-only)'
+
 finish

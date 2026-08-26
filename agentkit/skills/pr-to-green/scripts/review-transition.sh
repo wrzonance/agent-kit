@@ -393,7 +393,8 @@ for provider in "${providers[@]}"; do
                         ledger_rc=0
                         ledger_verdict=$("$REVIEW_LEDGER_SCRIPT" status --repo "$repo" --pr "$pr" \
                             --comments "$ledger_comments" --head "$head_sha" \
-                            --kind bot --provider "$provider" 2>/dev/null) || ledger_rc=$?
+                            --kind bot --provider "$provider" \
+                            --repo-root "$repo_root" 2>/dev/null) || ledger_rc=$?
                         if ((ledger_rc == 0)) &&
                             [[ $ledger_verdict == covered-head || $ledger_verdict == covered-diff ]]; then
                             emitted[$provider]=1

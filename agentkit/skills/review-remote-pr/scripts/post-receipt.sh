@@ -575,8 +575,22 @@ append_ledger_entry() {
         rm -f -- "$entry_file"
         return 0
     fi
+    # Best-effort: CodeRabbit review of PR #484 (issue #477 T1) -- without
+    # --repo-root, resolve_trusted_author inside review-ledger.sh can never
+    # see a repository-declared AGENT_LEDGER_AUTHOR and silently falls back
+    # to the authenticated gh login instead. When that differs from the
+    # configured author, a later run reads the ledger as covered by the
+    # WRONG identity (or absent), and this call creates a second ledger
+    # comment instead of updating the configured author's own. A failed
+    # `git rev-parse` here degrades to the pre-existing (gh-login) fallback,
+    # exactly as before this fix -- never fatal to the receipt itself.
+    local ledger_repo_root=''
+    ledger_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || ledger_repo_root=''
+    local -a ledger_repo_root_args=()
+    [[ -z $ledger_repo_root ]] || ledger_repo_root_args=(--repo-root "$ledger_repo_root")
     if ! "$REVIEW_LEDGER_SCRIPT" append --repo "$REPO" --pr "$PR" --comments "$COMMENTS" \
-        --entry-file "$entry_file" --agent-identity "$AGENT_IDENTITY" >&2; then
+        --entry-file "$entry_file" --agent-identity "$AGENT_IDENTITY" \
+        "${ledger_repo_root_args[@]}" >&2; then
         printf '%s: receipt POSTED and verified, but the review-ledger entry was not recorded; a later run may not see this review\n' \
             "$PROGNAME" >&2
     fi

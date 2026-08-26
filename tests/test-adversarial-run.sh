@@ -894,6 +894,44 @@ reaffirm_over_guard_marker_after=$(sha256sum -- "$reaffirm_over_guard_run/state/
 assert_eq "$reaffirm_over_guard_marker_before" "$reaffirm_over_guard_marker_after" \
     'the reaffirm short-circuit never touches the pre-existing (ambiguous) launch-attempted marker'
 
+# --- CodeRabbit review of PR #484 (issue #477 T1): try_reaffirm_if_covered's
+# `status` call already passed --repo-root, but its `read` and `append`
+# calls did not -- so resolve_trusted_author inside THOSE calls could never
+# see a repository-declared AGENT_LEDGER_AUTHOR and silently fell back to
+# REVIEW_LEDGER_VIEWER/gh instead. A ledger comment authored by the
+# CONFIGURED author (not REVIEW_LEDGER_VIEWER, which stays exported to a
+# different value for the whole suite) proves `read` now resolves the same
+# configured identity `status` already did: pre-fix, `read` would have found
+# nothing under REVIEW_LEDGER_VIEWER's identity, `try_reaffirm_if_covered`
+# would have returned 1, and this run would have fallen back to a genuine
+# (CLI-launching) review instead of reaffirming.
+configured_author='configured-ledger-author'
+printf 'AGENT_LEDGER_AUTHOR=%s\n' "$configured_author" >"$repo/.agent/config.env"
+
+configured_author_comments="$tmp/reaffirm-configured-author-comments.json"
+jq -n --argjson reviews "$covered_reviews" --arg login "$configured_author" \
+    '[{id: 91, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+        ({version:1, pr:42, repo:"acme/widget", reviews:$reviews} | tojson) +
+        "\n```\n<!-- /review-ledger:v1 -->")}]' >"$configured_author_comments"
+
+configured_author_run="$tmp/reaffirm-configured-author-run"
+mkdir -- "$configured_author_run" "$configured_author_run/state"
+chmod 700 "$configured_author_run" "$configured_author_run/state"
+configured_author_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-configured-author.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$configured_author_run" \
+        --reaffirm-if-covered --comments "$configured_author_comments") \
+    >"$tmp/reaffirm-configured-author.out" 2>"$tmp/reaffirm-configured-author.err" || configured_author_rc=$?
+assert_eq 0 "$configured_author_rc" \
+    'a repository-declared AGENT_LEDGER_AUTHOR resolves through the read call too (CodeRabbit #484 T1), not just status'
+assert_contains "$(cat -- "$tmp/reaffirm-configured-author.out")" 'reaffirmed-from-ledger' \
+    'the reaffirm short-circuit succeeds via the config-resolved author, proving read found the trusted comment'
+assert_eq no "$( [[ -e $tmp/reaffirm-configured-author.called ]] && printf yes || printf no )" \
+    'a config-resolved reaffirm still never launches the reviewer CLI'
+
+rm -f -- "$repo/.agent/config.env"
+
 # --- #473 follow-up (T1, PR #479 CodeRabbit): --provenance carries the
 # launch-authorization text as one argv element -- never eval'd, never
 # re-parsed -- so a value containing a single quote, a $(...) or `...`

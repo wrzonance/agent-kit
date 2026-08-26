@@ -433,8 +433,10 @@ try_reaffirm_if_covered() {
     [[ $status_out == covered-head || $status_out == covered-diff ]] || return 1
 
     local read_out read_rc=0
-    read_out=$("$ledger_script" read --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" 2>/dev/null) ||
-        read_rc=$?
+    read_out=$(
+        "$ledger_script" read --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
+            --repo-root "$CONTRACT_ROOT" 2>/dev/null
+    ) || read_rc=$?
     ((read_rc == 0)) || return 1
     local ledger_json
     ledger_json=$(tail -n +2 <<<"$read_out")
@@ -467,7 +469,8 @@ try_reaffirm_if_covered() {
     # exact over-spend this flag exists to avoid. A failed append only ever
     # loses the audit trail, never the underlying coverage guarantee.
     if ! "$ledger_script" append --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
-        --entry-file "$entry_file" --agent-identity "$HARNESS_NAME" >&2; then
+        --entry-file "$entry_file" --agent-identity "$HARNESS_NAME" \
+        --repo-root "$CONTRACT_ROOT" >&2; then
         warn 'could not append a reaffirmed-from ledger entry; the review is still skipped (the original ledger entry already proves coverage)'
     fi
     rm -f -- "$entry_file"

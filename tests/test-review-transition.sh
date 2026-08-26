@@ -213,6 +213,38 @@ out=$(run_transition_with_ledger "$stale_ledger_comments")
 assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
     'a stale (different-head) ledger entry never short-circuits; the real flow still runs'
 
+# -- CodeRabbit review of PR #484 (issue #477 T1): the ledger status call
+# must pass --repo-root, or resolve_trusted_author can never see a
+# repository-declared AGENT_LEDGER_AUTHOR and silently falls back to
+# REVIEW_LEDGER_VIEWER/gh instead -- a comment authored by the CONFIGURED
+# author then reads as untrusted, and the short-circuit is missed entirely
+# (a paid, avoidable CodeRabbit re-trigger).
+configured_author='configured-ledger-author'
+printf 'AGENT_LEDGER_AUTHOR=%s\n' "$configured_author" >"$repo_root/.agent/config.env"
+
+configured_author_comments="$tmp/ledger-configured-author.json"
+jq -n --arg login "$configured_author" '[{id: 57, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+    ({version:1, pr:14, repo:"owner/repo",
+      reviews:[{kind:"bot", provider:"coderabbit",
+                head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state:"APPROVED"}]}
+     | tojson) + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$configured_author_comments"
+
+: >"$tmp/transition.log"
+out=$(TRANSITION_LOG="$tmp/transition.log" TRIGGER_BODY="$tmp/trigger.md" \
+    REVIEW_TRANSITION_GH="$tmp/gh" \
+    REVIEW_TRANSITION_PROVIDER_CONFIG="$tmp/provider-config" \
+    REVIEW_TRANSITION_COMMENT="$tmp/comment" \
+    REVIEW_LEDGER_VIEWER='decoy-env-author' \
+    bash "$transition" --repo owner/repo --repo-root "$repo_root" --pr 14 \
+    --authorization-file "$tmp/auth.json" --rounds 1 --interval 1 \
+    --ledger-comments "$configured_author_comments")
+assert_contains "$out" 'provider=coderabbit result=ALREADY_SPENT source=ledger' \
+    'a repository-declared AGENT_LEDGER_AUTHOR resolves through the ledger status call (CodeRabbit #484 T1)'
+assert_eq '0' "$(grep -c '^gh repos/owner/repo/pulls/14/reviews' "$tmp/transition.log" || true)" \
+    'the config-resolved short-circuit still never fetches live review evidence'
+
+rm -f -- "$repo_root/.agent/config.env"
+
 : >"$tmp/transition.log"
 out=$(REVIEW_ACTIVITY=old run_transition)
 assert_contains "$out" 'provider=coderabbit result=TRIGGERED' \
