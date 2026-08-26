@@ -51,12 +51,29 @@ assert_contains "$(cat "$tmp/validate.out")" 'schemaVersion=1 valid' \
 # be typed so the fast-mode funnel cannot be made to claim a queue or tracker
 # count from malformed run data.
 jq '.selection = {"requested":11,"eligible":11,"dispatched":10,
-                  "queued":[14],"tracker":[15]}' "$plan" >"$tmp/selection-valid.json"
+                  "queued":[12],"tracker":[13]}' "$plan" >"$tmp/selection-valid.json"
 assert_rc 0 'valid fast-mode selection accounting is accepted' -- \
     "$writer" --dispatch-plan "$tmp/selection-valid.json" --validate-only
-jq '.selection.queued = ["14"]' "$tmp/selection-valid.json" >"$tmp/selection-bad.json"
+jq '.selection.queued = ["12"]' "$tmp/selection-valid.json" >"$tmp/selection-bad.json"
 assert_rc 1 'selection queue issue numbers must be positive integers' -- \
     "$writer" --dispatch-plan "$tmp/selection-bad.json" --validate-only
+jq '.selection = {"requested":3,"eligible":3,"dispatched":3,
+                  "queued":0,"tracker":0}' "$plan" >"$tmp/selection-counts.json"
+assert_rc 0 'legacy scalar queue and tracker counts remain accepted' -- \
+    "$writer" --dispatch-plan "$tmp/selection-counts.json" --validate-only
+
+# Queue and tracker issue lists are candidate identities, not free-form
+# counters.  They must name entries in this dispatch plan and cannot overlap.
+jq '.selection = {"requested":3,"eligible":3,"dispatched":1,
+                  "queued":[12],"tracker":[13]}' "$plan" >"$tmp/selection-members.json"
+assert_rc 0 'selection queue and tracker members are accepted' -- \
+    "$writer" --dispatch-plan "$tmp/selection-members.json" --validate-only
+jq '.selection.queued = [99]' "$tmp/selection-members.json" >"$tmp/selection-unknown-queue.json"
+assert_rc 1 'selection queue cannot name an issue outside dispatch entries' -- \
+    "$writer" --dispatch-plan "$tmp/selection-unknown-queue.json" --validate-only
+jq '.selection.tracker = [12]' "$tmp/selection-members.json" >"$tmp/selection-overlap.json"
+assert_rc 1 'selection queue and tracker cannot name the same issue' -- \
+    "$writer" --dispatch-plan "$tmp/selection-overlap.json" --validate-only
 
 jq '.conflictMap.pairs = [{"issues":[11,12],"overlap":["src/shared/**"]}] |
     .conflictMap.revisions = [{"phase":"post-selection","reason":"retain the reviewed edge"}, {"reason":"authorize merge-down","issues":[12],"paths":["src/b"]}]' \
