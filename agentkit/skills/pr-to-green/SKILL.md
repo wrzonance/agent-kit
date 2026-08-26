@@ -10,9 +10,9 @@ description: >-
 
 # PR to green
 
-Coordinate existing Agent Kit review machinery in a strict serial queue. This
-skill owns queue authorization and the ready/provider transition boundary; it
-is not another review engine.
+Coordinate existing Agent Kit review machinery: parallel reviews, serial
+merges. This skill owns queue authorization and the ready/provider transition
+boundary — not another review engine.
 
 Reference paths resolve: open `"$agentkit/<path>"`, and read `"$agentkit/references.md"` —
 every reference and its purpose — instead of searching.
@@ -77,8 +77,9 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 
 ## Hard rules
 
-- Process strictly one PR at a time. Never run two remediation or transition
-  loops concurrently.
+- Ready-transition, provider trigger, and Phase C settlement (Steps 2–4) may
+  run in parallel across independent `RUNNABLE` roots. Step 5's merge/
+  retarget sequence stays strictly serial.
 - Resolve provider configuration before any PR mutation. Missing or invalid
   configuration is effective `none`: warn and continue through CI, mandatory
   adversarial review, and human-feedback gates without a provider wait.
@@ -126,7 +127,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 Read `../review-remote-pr/SKILL.md` once when entering Phase A. Read its provider
 rules once only if findings exist, and reuse that content through Phase C.
 
-## Serial state machine
+## State machine
 
 ### 1. Resolve and display
 
@@ -219,9 +220,9 @@ inputs — except a verified mechanical advance of an already-confirmed PR (see
 Step 5 and ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md)),
 which this same confirmation durably covers.
 
-### 2. Normalize one runnable PR
+### 2. Normalize runnable PRs
 
-Take the first `RUNNABLE` record only. Establish or reuse its isolated worktree
+Drive Steps 2–4 concurrently per root. Establish/reuse its isolated worktree
 through review-remote-pr. Complete Phase A against the current base: no
 conflicts, declared verification passing, CI settled green, mandatory
 adversarial receipt settled (including its same-harness blind fallback), and
@@ -250,8 +251,8 @@ not let earlier confirmation authorize a new SHA.
 
 ### 3. Transition and consume provider state
 
-Invoke `review-transition.sh` only for the current confirmed `RUNNABLE` record.
-It may safely resume an already-ready PR. Treat its provider result as follows:
+Invoke `review-transition.sh` per `RUNNABLE` record; it may resume a ready
+PR. Treat its provider result as follows:
 
 - `AUTO_REVIEW`, `ALREADY_SPENT`, or `LANDED`: enter Phase C and consume
   observed findings through review-remote-pr.
@@ -298,9 +299,9 @@ Report formal provider approval separately. It is not required for effective
 ### 5. Advance stacks, merging only under `--auto-merge`
 
 After a predecessor becomes evidence-green, mark its open descendants
-`WAITING_FOR_MERGE`. Without `--auto-merge`, never merge it — continue the
-oldest independent runnable root while the chain waits, and report the exact
-human merge dependency.
+`WAITING_FOR_MERGE`. Without `--auto-merge`, never merge it — continue other
+independent runnable roots while the chain waits, and report the exact human
+merge dependency.
 
 With `--auto-merge`, an evidence-green item merges only after
 `scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head

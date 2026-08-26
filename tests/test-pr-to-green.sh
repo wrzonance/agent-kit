@@ -35,7 +35,9 @@ assert_contains "$flat" 'provider plan, verified dependency graph, and exact ser
     'confirmation presents every authorization input before mutation'
 assert_contains "$flat" 'remediation pushes, ready transitions, and trigger-capable requests' \
     'one confirmation names its complete narrow mutation authority'
-assert_contains "$text" 'strictly one PR at a time' 'queue execution is strictly serial'
+assert_contains "$flat" 'Steps 2–4) may run in parallel across independent' \
+    'ready-transition, provider trigger, and finding settlement run in parallel across independent roots'
+assert_contains "$flat" "Step 5's" 'merge/retarget sequence stays strictly serial in queue order'
 assert_contains "$flat" 'Automatic discovery selects drafts' \
     'automatic queue discovery is draft-only'
 assert_contains "$text" 'explicitly named ready PR' \

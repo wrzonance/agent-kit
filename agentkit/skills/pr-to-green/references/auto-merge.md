@@ -63,7 +63,14 @@ updates would force a fresh redisplay-and-reconfirm round trip per merge,
 defeating a confirmed unattended `--auto-merge` sprint (issue #450).
 
 `scripts/authorize-queue.sh --allow-mechanical-advance` closes that gap without
-widening consent. Passed alongside the normal Step 1/Step 2 invocation, it
+widening consent. Driving several independent roots concurrently (SKILL.md
+Steps 2–4) is a distinct case from the buckets below: a fix-batch push on PR B
+changes its own diff fingerprint and is SKILL.md Step 2's ordinary
+re-run-and-reconfirm-that-PR flow, scoped to PR B alone — it is never blocked
+on, and never blocks, whatever reconciliation PR A is independently going
+through at the same moment. Each `authorize-queue.sh` invocation reconciles
+one confirmed queue snapshot as a whole, so concurrent roots each get their
+own invocation against their own advancing evidence. Passed alongside the normal Step 1/Step 2 invocation, it
 still requires an exact match on repository and provider decisions (never
 relaxed) and, only when the live queue no longer matches the displayed
 snapshot exactly, reconciles each confirmed PR against fresh `pr-queue.sh`
@@ -269,8 +276,12 @@ earlier head never carries forward.
 ## Serialization protocol
 
 `--auto-merge` implies strict serial merge ordering; there is no parallel
-variant. For the current confirmed `RUNNABLE` item, once its evidence-green
-state and the gate above both hold:
+variant. This is scoped to the merge step alone — the ready-transition,
+provider trigger, and Phase C finding settlement that get an independent root
+to evidence-green in the first place may run concurrently across roots (see
+SKILL.md Steps 2–4); only `merge-gate.sh` → `merge-pr.sh` → retarget is
+one-at-a-time. For the current confirmed `RUNNABLE` item, once its
+evidence-green state and the gate above both hold:
 
 1. Invoke `scripts/merge-pr.sh` with the same confirmed repo/pr/head/base and
    the ledger's `mergeMethod`/`deleteBranch`, plus `--authorization-file` (the
