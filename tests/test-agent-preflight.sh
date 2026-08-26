@@ -50,6 +50,48 @@ else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
 
+# --- .agent/.agent/logs are created 0700 regardless of the ambient umask ----
+# (issue #474) A plain `mkdir -p` inherits the ambient umask; on a `umask 002`
+# machine the kit's own validators (session-ledger.sh's validate_parent) then
+# refuse the directory this preflight just created. Unlike new_repo() above,
+# this fixture has no pre-created .agent so both mkdir sites actually fire.
+umask_repo=$(mktemp -d "$tmp/repo.XXXXXX")
+git -C "$umask_repo" init -q
+(umask 002 && "$script" --worktree "$umask_repo" > /dev/null 2>&1)
+assert_eq '700' "$(stat -c '%a' -- "$umask_repo/.agent" 2>/dev/null || printf '?')" \
+    'preflight creates .agent at mode 700 under umask 002'
+assert_eq '700' "$(stat -c '%a' -- "$umask_repo/.agent/logs" 2>/dev/null || printf '?')" \
+    'preflight creates .agent/logs at mode 700 under umask 002'
+
+# --- a pre-existing group-writable .agent is reported, not silently fixed --
+# (issue #474 acceptance) The directory the kit did not create this run stays
+# exactly as it was; the warning names the corrective chmod.
+warn_repo=$(mktemp -d "$tmp/repo.XXXXXX")
+git -C "$warn_repo" init -q
+mkdir -- "$warn_repo/.agent"
+chmod 775 -- "$warn_repo/.agent"
+warn_out=$("$script" --worktree "$warn_repo" 2>&1 > /dev/null)
+assert_contains "$warn_out" 'group- or world-writable' \
+    'preflight surfaces a pre-existing group-writable .agent'
+assert_contains "$warn_out" "fix: chmod 700 $warn_repo/.agent" \
+    'the warning names the corrective chmod'
+assert_eq '775' "$(stat -c '%a' -- "$warn_repo/.agent")" \
+    'the pre-existing directory mode is left untouched, not auto-fixed'
+
+# --- invoked through a PATH symlink, .agent/logs is still created 0700 -----
+# (issue #482 CodeRabbit follow-up) BASH_SOURCE[0] names the symlink, not the
+# real script; deriving SECURE_MKDIR_LIB from its unresolved directory would
+# miss the lib/ sibling and silently fall back to a plain, umask-shaped
+# `mkdir -p`.
+symlink_bin="$tmp/symlink-bin"
+mkdir -p -- "$symlink_bin"
+ln -s -- "$script" "$symlink_bin/agent-preflight.sh"
+symlink_repo=$(mktemp -d "$tmp/repo.XXXXXX")
+git -C "$symlink_repo" init -q
+(umask 002 && "$symlink_bin/agent-preflight.sh" --worktree "$symlink_repo" > /dev/null 2>&1)
+assert_eq '700' "$(stat -c '%a' -- "$symlink_repo/.agent/logs" 2>/dev/null || printf '?')" \
+    'invoked through a PATH symlink, .agent/logs is still created mode 700 under umask 002'
+
 # --- skills-content= is a content stamp, independent of skills= path= (#453) -
 skills_content_line=$(grep '^skills-content=' <<< "$out")
 skills_path_line=$(grep -m1 '^skills=' <<< "$out")
