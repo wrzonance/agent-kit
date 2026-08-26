@@ -1,6 +1,5 @@
 {
   "schemaVersion": 1,
-  "repository": "wrzonance/agent-kit",
   "owner": "wrzonance",
   "project": {
     "number": 10,
@@ -18,6 +17,6 @@
       "Done": "679ceda2"
     }
   },
-  "generatedAt": "2026-08-16T23:48:15Z",
+  "generatedAt": "2026-08-26T03:35:13Z",
   "fingerprint": "sha256:f0efa32925fe9e1f6e62ef1a63714ae9b7707ed3abfb8f643657801113d81dde"
 }
