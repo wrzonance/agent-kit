@@ -1024,4 +1024,88 @@ assert_contains "$(cat -- "$tmp/tracked-parent-symlink.err")" \
 assert_eq no "$( [[ -e $tmp/tracked-parent-symlink.called ]] && printf yes || printf no )" \
     'tracked parent symlink never launches the reviewer CLI'
 
+# --- roster form: AGENT_ADVERSARIAL_REVIEWER/_FALLBACK carry a
+# `<model-id>-<effort>` compound; the running-harness's own claude entry is
+# skipped in favor of the cross-harness codex entry -------------------------
+repo_roster=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=claude-opus-5-high
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=gpt-5.6-sol-xhigh')
+write_contract_at "$repo_roster" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_roster" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster/example.txt"
+git -C "$repo_roster" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster="$tmp/repo-roster.diff"
+git -C "$repo_roster" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster"
+roster_run="$tmp/roster-run"
+grant "$roster_run" openai "$diff_roster"
+roster_rc=0
+(cd "$repo_roster" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_run") \
+    >"$tmp/roster.out" 2>"$tmp/roster.err" || roster_rc=$?
+assert_eq 0 "$roster_rc" 'a roster-declared reviewer completes'
+assert_contains "$(cat -- "$tmp/roster.out")" 'provider=openai' \
+    'the roster picks the codex candidate, not the running-harness claude one'
+assert_contains "$(cat -- "$tmp/roster.out")" 'model=gpt-5.6-sol' \
+    'the roster carries its own model id, not a hardcoded default'
+assert_contains "$(cat -- "$tmp/roster.out")" 'effort=xhigh' \
+    'the roster carries its own effort'
+assert_contains "$(cat -- "$tmp/roster.out")" 'mode=cross-provider' \
+    'the cross-harness roster candidate is reported as cross-provider'
+
+# --- roster form, peer absent: falls back to the running-harness entry -----
+repo_roster_absent=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-medium')
+write_contract_at "$repo_roster_absent" claude codex 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
+git -C "$repo_roster_absent" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_absent/example.txt"
+git -C "$repo_roster_absent" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_absent" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_absent="$tmp/repo-roster-absent.diff"
+git -C "$repo_roster_absent" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_absent"
+roster_absent_run="$tmp/roster-absent-run"
+grant "$roster_absent_run" anthropic "$diff_roster_absent"
+roster_absent_rc=0
+(cd "$repo_roster_absent" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_absent_run") \
+    >"$tmp/roster-absent.out" 2>"$tmp/roster-absent.err" || roster_absent_rc=$?
+assert_eq 0 "$roster_absent_rc" 'a roster-declared reviewer whose peer is absent still completes via the pool fallback'
+assert_contains "$(cat -- "$tmp/roster-absent.out")" 'provider=anthropic' \
+    'the roster falls back to the running-harness candidate already in the pool'
+assert_contains "$(cat -- "$tmp/roster-absent.out")" 'model=claude-opus-5' \
+    "the running-harness candidate's own roster model is used, not the hardcoded default"
+assert_contains "$(cat -- "$tmp/roster-absent.out")" 'effort=medium' \
+    "the running-harness candidate's own roster effort is used"
+assert_contains "$(cat -- "$tmp/roster-absent.out")" 'mode=blind-fallback' \
+    'a same-harness roster fallback is reported as blind-fallback, never cross-provider'
+
+# --- roster form, unrecognized model family: refused outright, never
+# silently classified as codex (a well-formed value repo-config.sh's
+# open-ended worker-model validator still accepts, but neither claude-* nor
+# gpt-5.6-*) ------------------------------------------------------------
+repo_roster_unknown=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=some-other-provider-high')
+write_contract_at "$repo_roster_unknown" codex claude "present path=$tmp/fake-claude"
+git -C "$repo_roster_unknown" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_unknown/example.txt"
+git -C "$repo_roster_unknown" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_unknown" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_unknown="$tmp/repo-roster-unknown.diff"
+git -C "$repo_roster_unknown" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_unknown"
+roster_unknown_run="$tmp/roster-unknown-run"
+grant "$roster_unknown_run" openai "$diff_roster_unknown"
+roster_unknown_rc=0
+(cd "$repo_roster_unknown" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CODEX_CALLED="$tmp/roster-unknown-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_unknown_run") \
+    >"$tmp/roster-unknown.out" 2>"$tmp/roster-unknown.err" || roster_unknown_rc=$?
+assert_eq 1 "$roster_unknown_rc" 'a roster compound in neither known family refuses outright'
+assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'unrecognized model family' \
+    'the refusal names the unrecognized-family condition'
+assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'some-other-provider-high' \
+    'the refusal names the offending declared value'
+assert_eq no "$( [[ -e $tmp/roster-unknown-codex.called ]] && printf yes || printf no )" \
+    'an unrecognized family never silently launches codex (or any CLI)'
+
 finish

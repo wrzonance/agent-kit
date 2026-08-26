@@ -78,11 +78,20 @@ assert_contains "$flat" 'branch-protection refusal is' 'branch protection refusa
 assert_eq yes "$(test -f "$skills/pr-to-green/references/auto-merge.md" && printf yes || printf no)" \
     'auto-merge reference file exists'
 ref_text=$(cat "$skills/pr-to-green/references/auto-merge.md")
+ref_flat=$(tr '\n' ' ' <<<"$ref_text" | tr -s '[:space:]' ' ')
 assert_contains "$ref_text" '## Contents' 'auto-merge reference carries a Contents heading within the TOC scan window'
 assert_contains "$ref_text" 'code-scanning n/a' \
     'auto-merge reference states unreadable code-scanning is never treated as zero findings'
 assert_contains "$ref_text" 'never carries forward' \
     'auto-merge reference states a passed gate never carries forward to a new head'
+assert_contains "$ref_text" 'concurrency-cap.sh' \
+    'the parallel-issues concurrency-cap.sh helper is the sole cap source, never invented'
+assert_contains "$ref_flat" 'releases its slot immediately' \
+    'a failed or blocked root releases its concurrency slot rather than holding it idle'
+assert_contains "$ref_text" 're-derive the authorization for its own PR at its own current head' \
+    'a root entering the critical section re-derives its own authorization, never reuses a prior pass'
+assert_contains "$ref_flat" 'every other in-flight root revalidates its own head and base' \
+    'a Step 5 merge forces every other in-flight root to revalidate before its next mutation'
 
 assert_eq yes "$(test -x "$skills/pr-to-green/scripts/pr-queue.sh" && printf yes || printf no)" \
     'queue helper ships executable'
