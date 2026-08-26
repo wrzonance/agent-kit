@@ -27,6 +27,19 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [[ " $* " == *' api rate_limit '* || " $* " == *' rate_limit '* ]]; then
+    case ${QUEUE_RATE_LIMIT:-unavailable} in
+    unavailable) exit 1 ;;
+    plenty)
+        printf '%s\n' '{"resources":{"core":{"remaining":4900,"limit":5000,"reset":1735689600},"graphql":{"remaining":4990,"limit":5000,"reset":1735689600}}}'
+        exit 0
+        ;;
+    scarce)
+        printf '%s\n' '{"resources":{"core":{"remaining":5,"limit":5000,"reset":1735689600},"graphql":{"remaining":5000,"limit":5000,"reset":1735689600}}}'
+        exit 0
+        ;;
+    esac
+fi
 endpoint=''
 for arg in "$@"; do
     [[ $arg == repos/* ]] && endpoint=$arg
@@ -226,8 +239,33 @@ display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
 assert_contains "$display" '#11' 'the confirmation writer preserves the displayed queue'
 assert_eq '600' "$(stat -c '%a' "$confirmed")" \
     'the displayed queue snapshot is owner-only'
-assert_eq '["providers","queue","repository"]' "$(jq -c 'keys | sort' "$confirmed")" \
+assert_eq '["budget","providers","queue","repository"]' "$(jq -c 'keys | sort' "$confirmed")" \
     'the displayed queue snapshot records provider decisions'
+assert_eq 'null' "$(jq -c '.budget' "$confirmed")" \
+    'an unavailable rate_limit read leaves the budget snapshot null, never fabricated'
+
+# --- GitHub API budget preflight (agent-kit#475) -----------------------------
+
+budget_display=$(GH_LOG="$tmp/gh-budget.log" PR_QUEUE_GH="$tmp/gh" QUEUE_RATE_LIMIT=plenty bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --no-providers --format table 2>&1)
+assert_contains "$budget_display" 'budget: rest=4900/5000' \
+    'the preflight prints the remaining REST budget'
+assert_contains "$budget_display" 'graphql=4990/5000' \
+    'the preflight prints the remaining GraphQL budget'
+budget_field=$(jq -c '.budget' "$confirmed")
+assert_contains "$budget_field" '"restRemaining":4900' \
+    'the confirmed queue records the REST budget snapshot'
+assert_contains "$budget_field" '"warning":false' \
+    'a budget well above the estimated cost carries no warning'
+
+scarce_stderr=$(GH_LOG="$tmp/gh-scarce.log" PR_QUEUE_GH="$tmp/gh" QUEUE_RATE_LIMIT=scarce bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --no-providers --format table 2>&1 >/dev/null)
+assert_contains "$scarce_stderr" 'estimated REST cost' \
+    'an estimate above the remaining budget prints a visible warning'
+assert_contains "$(jq -c '.budget' "$confirmed")" '"warning":true' \
+    'the confirmed queue records the over-budget warning'
 assert_eq '[]' "$(jq -c '.providers' "$confirmed")" \
     'an explicit no-provider decision is durably recorded'
 assert_eq 'owner/repo' "$(jq -r '.repository' "$confirmed")" \

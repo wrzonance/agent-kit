@@ -871,4 +871,175 @@ legacy_status_output=$(PATH="$tmp/case-legacy-status:$PATH" bash "$root/agentkit
 assert_contains "$legacy_status_output" 'ci=0/2 failing pending=1 failing=1' \
     'failing and pending legacy commit statuses affect CI counts'
 
+# --- GitHub API budget: a rate-limit refusal names the reset time and exits
+# distinctly (agent-kit#475) ---------------------------------------------------
+
+mkdir -p "$tmp/case-rate-limited"
+cat >"$tmp/case-rate-limited/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/900 "*)
+        printf '%s\n' 'gh: API rate limit exceeded for user ID 12345. If you reach out to GitHub Support...' >&2
+        exit 1
+        ;;
+    *" api rate_limit "*)
+        printf '%s\n' '{"resources":{"core":{"remaining":0,"limit":5000,"reset":1735689600},"graphql":{"remaining":5000,"limit":5000,"reset":1735689900}}}'
+        ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-rate-limited/gh"
+expected_rest_reset=$(jq -rn '1735689600 | todate')
+rate_limited_err="$tmp/rate-limited.err"
+set +e
+PATH="$tmp/case-rate-limited:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 900 --repo owner/repo >/dev/null 2>"$rate_limited_err"
+rate_limited_rc=$?
+set -e
+assert_eq 3 "$rate_limited_rc" \
+    'a rate-limit refusal exits with the distinct rate-limited exit code'
+assert_contains "$(cat "$rate_limited_err")" 'API rate limit exceeded' \
+    'a rate-limit refusal still names the original gh error'
+assert_contains "$(cat "$rate_limited_err")" "reset=$expected_rest_reset" \
+    'a rate-limit refusal names the REST pool reset time'
+
+# A non-rate-limit API failure keeps the ordinary usage/API-failure exit and
+# never fabricates a reset time.
+mkdir -p "$tmp/case-other-failure"
+cat >"$tmp/case-other-failure/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/901 "*)
+        printf '%s\n' 'gh: pull request not found' >&2
+        exit 1
+        ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-other-failure/gh"
+other_failure_err="$tmp/other-failure.err"
+set +e
+PATH="$tmp/case-other-failure:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 901 --repo owner/repo >/dev/null 2>"$other_failure_err"
+other_failure_rc=$?
+set -e
+assert_eq 1 "$other_failure_rc" \
+    'a non-rate-limit API failure keeps the ordinary usage/API-failure exit code'
+assert_not_contains "$(cat "$other_failure_err")" 'reset=' \
+    'a non-rate-limit API failure never fabricates a reset time'
+
+# --- --full head-SHA cache: an unchanged head reuses the expensive evidence
+# cluster (reviews/comments/issue_comments/threads/code-scanning); --no-cache
+# forces a refetch (agent-kit#475) ---------------------------------------------
+
+cache_call_log="$tmp/cache-calls.log"
+: >"$cache_call_log"
+cache_tmpdir="$tmp/full-cache-dir"
+mkdir -p "$cache_tmpdir"
+chmod 700 "$cache_tmpdir"
+mkdir -p "$tmp/case-full-cache"
+cat >"$tmp/case-full-cache/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >>"$cache_call_log"
+case " \$* " in
+    *" api repos/owner/repo/pulls/900 "*)
+        printf '%s\n' '{"number":900,"draft":true,"mergeable":true,"head":{"ref":"feat/cache","sha":"cachesha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/cachesha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api repos/owner/repo/commits/cachesha1/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *"compare/main...feat/cache"*)
+        printf '%s\n' '{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0,"commits":[]}'
+        ;;
+    *" api repos/owner/repo/pulls/900/reviews "*)
+        printf '%s\n' '[{"id":1,"user":{"login":"someone"},"state":"COMMENTED","submitted_at":"2026-08-20T00:00:00Z","commit_id":"cachesha1"}]'
+        ;;
+    *" api repos/owner/repo/pulls/900/comments "*)
+        printf '%s\n' '[]'
+        ;;
+    *" api repos/owner/repo/issues/900/comments "*)
+        printf '%s\n' '[]'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-full-cache/gh"
+
+first_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir")
+assert_contains "$first_full" 'cache: full=miss' \
+    'the first --full call for a head is a cache miss'
+big_five_calls_after_first=$(grep -cE 'pulls/900/reviews|pulls/900/comments |issues/900/comments|graphql|code-scanning' "$cache_call_log")
+
+second_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir")
+assert_contains "$second_full" 'cache: full=hit' \
+    'a second --full call for the same head reuses the cached evidence'
+big_five_calls_after_second=$(grep -cE 'pulls/900/reviews|pulls/900/comments |issues/900/comments|graphql|code-scanning' "$cache_call_log")
+assert_eq "$big_five_calls_after_first" "$big_five_calls_after_second" \
+    'a same-head cache hit makes zero additional reviews/comments/threads/code-scanning calls'
+assert_contains "$second_full" 'provider: coderabbit=' \
+    'a cache-hit digest still derives provider state from the cached reviews'
+
+no_cache_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir" --no-cache)
+assert_contains "$no_cache_full" 'cache: full=miss' \
+    '--no-cache forces a refetch even though a same-head cache entry exists'
+big_five_calls_after_no_cache=$(grep -cE 'pulls/900/reviews|pulls/900/comments |issues/900/comments|graphql|code-scanning' "$cache_call_log")
+if ((big_five_calls_after_no_cache > big_five_calls_after_second)); then
+    assert_eq true true '--no-cache actually re-issued the big-five calls'
+else
+    assert_eq true false '--no-cache actually re-issued the big-five calls'
+fi
+
+# --- --wait-ci rounds after the first make at most check-runs + status
+# (agent-kit#475) ---------------------------------------------------------------
+
+wait_call_log="$tmp/wait-calls.log"
+: >"$wait_call_log"
+mkdir -p "$tmp/case-wait-cheap"
+cat >"$tmp/case-wait-cheap/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >>"$wait_call_log"
+case " \$* " in
+    *" api repos/owner/repo/pulls/902 "*)
+        printf '%s\n' '{"number":902,"draft":true,"mergeable":true,"head":{"ref":"feat/wait","sha":"waitsha1"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/waitsha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"in_progress"}]}'
+        ;;
+    *" api repos/owner/repo/commits/waitsha1/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *"compare/main...feat/wait"*)
+        printf '%s\n' '{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0,"commits":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-cheap/gh"
+PATH="$tmp/case-wait-cheap:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 902 --repo owner/repo --wait-ci --rounds 3 --interval 1 >/dev/null
+round2_and_later=$(grep -cE 'pulls/902 |compare/main' "$wait_call_log")
+assert_eq 1 "$round2_and_later" \
+    'wait_for_ci fetches pull-request metadata and base state only in round 1'
+check_run_calls=$(grep -c 'commits/waitsha1/check-runs' "$wait_call_log")
+assert_eq 3 "$check_run_calls" \
+    'wait_for_ci re-fetches check-runs every round, including after round 1'
+
 finish

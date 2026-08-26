@@ -5,6 +5,22 @@ umask 077
 
 readonly PROGRAM=${0##*/}
 GH_BIN=${PR_QUEUE_GH:-gh}
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SCRIPT_DIR/../../.shared/scripts/lib/gh-budget.sh"
+readonly EXIT_RATE_LIMITED=$GH_BUDGET_RATE_LIMIT_EXIT
+# Per-PR REST-call estimate for the --write-confirmed-queue preflight warning
+# (agent-kit#475): pr-to-green's own SKILL.md documents --full running at
+# several phases per queued PR (pre-review digest, post-push refresh,
+# pre-gate refresh) at ~8 REST calls apiece on a cache miss, plus one
+# --wait-ci cycle at its default --rounds (~5 REST calls on round 1, ~2/round
+# after -- rounded up to a flat ~5/round here since the estimate only needs
+# to be a believable order of magnitude, not exact).
+readonly FULL_READS_PER_PR=3
+readonly REST_CALLS_PER_FULL_READ=8
+readonly WAIT_ROUNDS_PER_PR=4
+readonly REST_CALLS_PER_WAIT_ROUND=5
 repo=''
 repo_root=''
 merge_plan=''
@@ -22,6 +38,20 @@ die() {
 }
 
 warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
+
+# Wraps a "gh api ... unavailable" die path: a rate-limit refusal
+# (agent-kit#475) gets the reset time appended and exits EXIT_RATE_LIMITED
+# instead of the ordinary usage/API-failure exit, so a caller can tell "stop
+# and report the reset time" apart from any other failure.
+die_on_gh_failure() {
+    local context=$1 err=$2 reset
+    if gh_budget_is_exhausted "$err"; then
+        reset=$(gh_budget_reset_for_error "$err" "$GH_BIN") || reset=unknown
+        printf '%s: %s: %s reset=%s\n' "$PROGRAM" "$context" "$err" "$reset" >&2
+        exit "$EXIT_RATE_LIMITED"
+    fi
+    die "$context: $err"
+}
 
 usage() {
     cat >&2 <<EOF
@@ -147,7 +177,7 @@ api() {
 }
 
 api "repos/$repo" >"$work_dir/repo.json" 2>"$work_dir/api.err" ||
-    die "repository metadata unavailable: $(head -n 1 "$work_dir/api.err")"
+    die_on_gh_failure 'repository metadata unavailable' "$(head -n 1 "$work_dir/api.err")"
 default_branch=$(jq -er '.default_branch | select(type == "string" and length > 0)' \
     "$work_dir/repo.json" 2>/dev/null) || die 'repository metadata omitted default_branch'
 
@@ -170,7 +200,7 @@ validate_prs() {
 fetch_one() {
     local number=$1 out=$2
     api "repos/$repo/pulls/$number" >"$out" 2>"$work_dir/api.err" ||
-        die "pull request #$number is unavailable: $(head -n 1 "$work_dir/api.err")"
+        die_on_gh_failure "pull request #$number is unavailable" "$(head -n 1 "$work_dir/api.err")"
     jq -e 'type == "object"' "$out" >/dev/null 2>&1 ||
         die "pull request #$number returned malformed JSON"
 }
@@ -264,7 +294,7 @@ if ((plan_active == 0)); then
             api "repos/$repo/pulls?state=open&per_page=100" --paginate --slurp \
                 >"$work_dir/list.json" \
                 2>"$work_dir/api.err" ||
-                die "open pull request discovery failed: $(head -n 1 "$work_dir/api.err")"
+                die_on_gh_failure 'open pull request discovery failed' "$(head -n 1 "$work_dir/api.err")"
             jq 'if type == "array" and length > 0 and all(.[]; type == "array") then add else . end |
                 map(select(.draft == true)) | map(.number)' \
                 "$work_dir/list.json" >"$work_dir/candidate-numbers.json" 2>/dev/null ||
@@ -428,15 +458,52 @@ jq --slurpfile fp "$work_dir/fingerprints.json" '
     die 'could not attach diff fingerprints to the live queue'
 mv -f -- "$work_dir/queue-with-fingerprint.json" "$work_dir/queue.json"
 
+# GitHub API budget preflight (agent-kit#475): every gh-authenticated tool on
+# this account shares the same hourly REST/GraphQL pools, and a queue this
+# large can plausibly exhaust one mid-run with no warning. Read-only,
+# best-effort -- an unavailable rate_limit endpoint degrades to no budget
+# line and no warning, never a die, since the queue itself is still valid
+# evidence without it.
+budget_json=null
+if ((write_confirmed_queue)); then
+    pr_count=$(jq 'length' "$work_dir/queue.json")
+    if budget_raw=$("$GH_BIN" api rate_limit 2>"$work_dir/budget.err"); then
+        estimated_cost=$((pr_count * (FULL_READS_PER_PR * REST_CALLS_PER_FULL_READ + WAIT_ROUNDS_PER_PR * REST_CALLS_PER_WAIT_ROUND)))
+        rest_remaining=$(jq -r '.resources.core.remaining' <<<"$budget_raw" 2>/dev/null) || rest_remaining=''
+        over_budget=false
+        if [[ $rest_remaining =~ ^[0-9]+$ ]] && ((estimated_cost > rest_remaining)); then
+            over_budget=true
+            warn "estimated REST cost ($estimated_cost) for $pr_count queued PR(s) exceeds remaining budget ($rest_remaining) -- see .shared/wait-discipline.md"
+        fi
+        budget_json=$(jq -n --argjson raw "$budget_raw" --argjson estimated "$estimated_cost" \
+            --argjson prCount "$pr_count" --argjson over "$over_budget" '{
+              restRemaining: $raw.resources.core.remaining, restLimit: $raw.resources.core.limit,
+              restReset: ($raw.resources.core.reset | todate),
+              graphqlRemaining: $raw.resources.graphql.remaining, graphqlLimit: $raw.resources.graphql.limit,
+              graphqlReset: ($raw.resources.graphql.reset | todate),
+              prCount: $prCount, estimatedRestCost: $estimated, warning: $over
+            }') || budget_json=null
+        [[ $budget_json == null ]] ||
+            printf 'budget: rest=%s/%s reset=%s graphql=%s/%s reset=%s estimated-rest-cost=%s\n' \
+                "$(jq -r .restRemaining <<<"$budget_json")" "$(jq -r .restLimit <<<"$budget_json")" \
+                "$(jq -r .restReset <<<"$budget_json")" \
+                "$(jq -r .graphqlRemaining <<<"$budget_json")" "$(jq -r .graphqlLimit <<<"$budget_json")" \
+                "$(jq -r .graphqlReset <<<"$budget_json")" "$estimated_cost"
+    else
+        warn "GitHub API budget unavailable: $(head -n 1 "$work_dir/budget.err")"
+    fi
+fi
+
 if ((write_confirmed_queue)); then
     confirmed_output=$repo_root/.agent/pr-to-green-confirmed-queue.json
     if [[ -e $confirmed_output &&
           ( ! -f $confirmed_output || -L $confirmed_output || ! -O $confirmed_output ) ]]; then
         die 'confirmed queue output must be an owned regular file, not a symlink'
     fi
-    jq --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" '{
+    jq --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" --argjson budget "$budget_json" '{
       repository:$repo,
       providers:$providers[0],
+      budget:$budget,
       queue:map({pr,state,headSha:.sha,base,diffFingerprint})
     }' "$work_dir/queue.json" >"$work_dir/confirmed-queue.json" ||
         die 'could not compose confirmed queue evidence'
