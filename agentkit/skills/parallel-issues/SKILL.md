@@ -808,7 +808,7 @@ Act on each lead result as soon as it arrives:
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
   the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. For `write-set`/`baseline-red`, do one automatic re-drive via `collaboration.followup_task` and record `auto_redrive_attempted[issue]`; otherwise park and print the exact resume command `followup_task(<same lead>, "Resume issue #<N> at: <remaining-step>")`.
+- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, clear the blocker. For `write-set`, the root must widen the fence and recheck every active worker; only after the blocker clears, do one `collaboration.followup_task` and record `auto_redrive_attempted[issue]`. If the same lead is unavailable, use a fresh lead with preserved state and the exact resume command `followup_task(<same lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
@@ -975,6 +975,8 @@ Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loo
 prior loop reaches completion marker. Do not reserve nested-worker slots; the loop uses
 the documented spawn-unavailable path for root-approved fix batches. This dispatch-time counter
 enforces the cap.
+Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults to
+`origin/${base_branch}`, and chains pass `--materiality-base`.
 
 ### Adversarial-review receipt:
 
@@ -1045,23 +1047,6 @@ deriving `findings.ndjson` from `RUN_DIR` (`--findings-file PATH` overrides it).
 Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
-Dispatch no more than the `pr_loop_dispatch_cap` computed above.
-**Do not reserve a slot for a nested worker: a spawned PR-loop agent cannot spawn one.** It runs
-`review-remote-pr`'s documented spawn-unavailable path and
-does the implementation itself under the same six-step gate, labelling its report
-`worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
-The root owns peer-provider selection and the single blind fallback when `peer-cli=` is absent.
-
-**Degraded path — `spawn_agent` unavailable (`multi_agent = false`):** run the draft-phase loop
-yourself, one PR at a time, using `pr-loop-setup` first and `pr-fix-batch` only after accepted
-findings exist. Keep the same no-ready/no-bot/no-human-resolution rules and label each exit
-`worker=self (spawn unavailable)`; serial execution is a valid degradation, not a block.
-**Per-agent prompt template:**
-
-Use the same helper with `--template pr-loop-setup` and the PR number as `--issue`; pass its
-composed prompt verbatim. Setup returns `launch-ready`, `ci-red: <check>`, or `cq-open: N`.
-Compose `--template pr-fix-batch` with `--findings-file` only when accepted findings exist. Setup
-Materiality: `origin/${base_branch}`; chains pass `--materiality-base`.
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
@@ -1081,17 +1066,7 @@ At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only fil
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
-Review behavior after a ready transition or push is repository/provider configuration; no review
-arriving is an observed state to report, not a trigger decision. Watch each PR on a long interval
-under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6
-`gh-pr-state.sh --full` refresh plus Step 3's and
-["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules
-(real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch
-a follow-up agent per PR (or run it yourself,
-labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and
-["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order:
-approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit
-threads — one push per cycle, no bot commands.
+Review behavior after a ready transition or push is repository/provider configuration; no review arriving is an observed state to report, not a trigger decision. Watch each PR on a long interval under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6 `gh-pr-state.sh --full` refresh plus Step 3's and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules (real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch a follow-up agent per PR (or run it yourself, labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order: approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit threads — one push per cycle, no bot commands.
 When human content lands, surface it with per-item labels, exact feedback, assessment, proposed action, and exact attributed draft reply; wait for explicit per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and cannot be called ready to merge.
 Per-PR follow-up exit line:
 ```
@@ -1102,8 +1077,14 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}; prove it with `post-receipt.sh status --comments <artifact>`. Skips count.
-Missing/duplicate/invalid evidence prints `final-sweep=miss`, re-enters the draft loop, and handoff cannot print. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`; re-drive recoverable blockers once before parking.
+With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. For each PR, resolve `RUN_DIR`, refresh live comments immediately with `gh-pr-state.sh --full --no-cache` into `RUN_DIR/state`, then run `post-receipt.sh" status` on that fresh artifact.
+For each PR, after the resolver guard, refresh `RUN_DIR/state` with `gh-pr-state.sh --full --no-cache`,
+then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
+successful adversarial/verified-skip result increments receipts; `10:receipt=none` may set
+`receipt_redrive_attempted[pr]` and re-enter the draft loop once. Any duplicate/invalid result parks
+the PR and increments `++parked_count`.
+
+Only `receipt=none` may re-enter the draft loop once per PR. Duplicate/invalid evidence is not recoverable: park the PR, increment `parked_count`, report it, and do not deadlock. A receipt=none miss re-enters the draft loop only once; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
