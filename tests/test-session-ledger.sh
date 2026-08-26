@@ -367,4 +367,94 @@ assert_not_contains "$ledger_section" 'branch=' \
 assert_not_contains "$ledger_section" 'worktree=' \
     'parallel ledger identity does not use per-worker worktrees'
 
+# --- ledger parent is created 0700 regardless of the ambient umask (#474) --
+# A plain `mkdir -p` inherits the ambient umask; on a `umask 002` machine the
+# directory prepare_parent just created came out group-writable, and
+# validate_parent then refused the very directory the kit created. This
+# fixture's parent does not exist yet (unlike $state above), so
+# prepare_parent's own mkdir path actually fires.
+fresh_parent="$tmp/fresh-umask/.agent"
+fresh_ledger="$fresh_parent/session-ledger.ndjson"
+(
+    umask 002
+    "$script" append --ledger "$fresh_ledger" --run-id 'issue474-fresh-parent' \
+        --skills-path "$skills_path" --procedure-set parallel-issues \
+        --decision 'umask regression' --scope 'fresh parent' --quote 'q'
+)
+assert_eq '0' "$?" 'append succeeds on a fresh, not-yet-existing parent under umask 002'
+assert_eq '700' "$(stat -c '%a' -- "$fresh_parent" 2>/dev/null || printf '?')" \
+    'the freshly created ledger parent is mode 700 under umask 002'
+
+# --- a pre-existing group-writable parent is still refused, with a fix hint -
+# (#474 acceptance) A directory the kit did not create this run must never be
+# silently chmod'd into compliance -- only refused, naming the corrective
+# chmod.
+stale_parent="$tmp/stale/.agent"
+mkdir -p -- "$stale_parent"
+chmod 775 -- "$stale_parent"
+stale_out=$("$script" append --ledger "$stale_parent/session-ledger.ndjson" \
+    --run-id 'stale-check' --skills-path "$skills_path" \
+    --procedure-set parallel-issues --decision 'stale regression' \
+    --scope 'pre-existing parent' --quote 'q' 2>&1)
+stale_rc=$?
+assert_eq '1' "$stale_rc" 'append refuses a pre-existing group-writable parent'
+assert_contains "$stale_out" "must not be group- or world-writable: $stale_parent" \
+    'the refusal names the offending parent'
+assert_contains "$stale_out" "fix: chmod 700 $stale_parent" \
+    'the refusal message names the corrective chmod'
+assert_eq '775' "$(stat -c '%a' -- "$stale_parent")" \
+    'the pre-existing parent mode is left untouched, not auto-fixed'
+
+# --- secure_mkdir_p refuses a bad-mode component it loses a race for -------
+# (issue #482 CodeRabbit follow-up) When `mkdir -m 700` fails because another
+# process won the race and created the component first, the pre-fix code
+# accepted it as long as it was A directory -- silently trusting a 775
+# component a hostile or unrelated racer left behind. A plain pre-create
+# before calling secure_mkdir_p does not reach that branch at all (the
+# top-level scan already treats an existing path as "not mine to touch" and
+# never calls mkdir for it), so the race is simulated with a routing stub on
+# PATH (same idiom as test-agent-preflight.sh's cat-race-bin): it creates the
+# racer's directory and reports failure, exactly as the real `mkdir -m 700`
+# does when it loses a race, leaving secure_mkdir_p's own post-failure branch
+# as the only code path that can still accept or refuse the result.
+# shellcheck source=agentkit/skills/.shared/scripts/lib/secure-mkdir.sh
+source "$root/agentkit/skills/.shared/scripts/lib/secure-mkdir.sh"
+
+mkdir_race_bin="$tmp/mkdir-race-bin"
+mkdir -p -- "$mkdir_race_bin"
+cat > "$mkdir_race_bin/mkdir" << 'EOF'
+#!/usr/bin/env bash
+# Routes only the exact racing target to a losing mkdir; everything else
+# (including secure_mkdir_p's other, non-raced components) uses the real
+# mkdir unchanged.
+if [[ "$*" == *"${RACE_TARGET:-\x00}"* ]]; then
+    /usr/bin/mkdir -m "${RACE_MODE:-775}" -- "$RACE_TARGET"
+    exit 1
+fi
+exec /usr/bin/mkdir "$@"
+EOF
+chmod +x -- "$mkdir_race_bin/mkdir"
+
+race_target="$tmp/race/.agent"
+mkdir -p -- "$(dirname -- "$race_target")"
+if PATH="$mkdir_race_bin:$PATH" RACE_TARGET="$race_target" RACE_MODE=775 \
+    secure_mkdir_p "$race_target" 2>/dev/null; then
+    _fail 'secure_mkdir_p refuses a raced-in group-writable component' \
+        'secure_mkdir_p returned 0 for a 775 component created mid-race'
+else
+    _pass 'secure_mkdir_p refuses a raced-in group-writable component'
+fi
+assert_eq '775' "$(stat -c '%a' -- "$race_target")" \
+    'the raced-in component mode is left untouched, not auto-fixed'
+
+race_clean_target="$tmp/race-clean/.agent"
+mkdir -p -- "$(dirname -- "$race_clean_target")"
+if PATH="$mkdir_race_bin:$PATH" RACE_TARGET="$race_clean_target" RACE_MODE=700 \
+    secure_mkdir_p "$race_clean_target" 2>/dev/null; then
+    _pass 'secure_mkdir_p accepts a raced-in component that is already private'
+else
+    _fail 'secure_mkdir_p accepts a raced-in component that is already private' \
+        'secure_mkdir_p returned non-zero for a mode-700 component created mid-race'
+fi
+
 finish
