@@ -3,10 +3,13 @@
 This is the detail behind the SKILL.md body's `--auto-merge` heading: consent
 recording, the pre-merge review-completion gate, serialization, and method
 semantics. Read it once per run when `--auto-merge` is present on the
-invocation line.
+invocation line. "Concurrency admission and revalidation" below applies to
+every run driving Steps 2–4 in parallel, `--auto-merge` or not — read it
+whenever more than one independent root is being driven at once.
 
 ## Contents
 
+- Concurrency admission and revalidation
 - Consent and the ledger record
 - Mechanical queue advance without redisplay
 - The pre-merge review-completion gate
@@ -15,6 +18,37 @@ invocation line.
 - Board move
 - PreToolUse guard alignment
 - Still forbidden
+
+## Concurrency admission and revalidation
+
+**Cap source and admission.** The runtime concurrency cap comes from
+`parallel-issues/scripts/concurrency-cap.sh` (never inferred or invented) —
+the root counts as one occupant of that cap. A root over the cap queues and
+waits; a slot frees, and the next queued root starts, the moment an occupant
+reaches evidence-green or blocks. A root that fails or blocks releases its
+slot immediately rather than holding it idle.
+
+**The confirmed-queue snapshot is single-slot, not per-root.**
+`authorize-queue.sh` enforces one fixed path for
+`.agent/pr-to-green-confirmed-queue.json` (`--confirmed-queue-file` refuses
+any other path) and `pr-queue.sh --write-confirmed-queue` writes that same
+path — so authorizing PR B overwrites whatever PR A's own authorization
+recorded, even with no concurrency at all, purely from running in sequence.
+A root entering the SKILL.md Step 2 critical section must therefore
+re-derive the authorization for its own PR at its own current head every
+time — never assume a prior pass in this run still holds, because any other
+root's own pass since then has replaced the file's contents.
+
+**Revalidate after every merge.** A Step 5 merge advances the default
+branch, staling every other in-flight root's base. After any such merge,
+every other in-flight root revalidates its own head and base — a fresh
+`pr-queue.sh`/`gh-pr-state.sh` read — before its next mutation (a provider
+request, a finding settlement, or the merge gate). Evidence captured before
+that merge (a stored `head_sha`, a prior gate result, a prior authorization)
+is stale and may not authorize a mutation; the ready/provider transition step
+and settlement do not themselves re-check the live head against a merge that
+landed after their evidence was captured, so the driving run
+must do this revalidation itself before calling them again.
 
 ## Consent and the ledger record
 

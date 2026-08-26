@@ -78,9 +78,11 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 ## Hard rules
 
 - Ready-transition, provider trigger, and Phase C settlement (Steps 2–4) may
-  run in parallel across independent `RUNNABLE` roots, bounded by the runtime
-  cap and API budget below; over-cap roots wait for a slot. Step 5's merges
-  stay serial.
+  run in parallel across independent `RUNNABLE` roots, bounded by
+  `concurrency-cap.sh`'s cap (root counted) and the API budget below —
+  admission/revalidation: ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
+  Step 5's
+  merges are serial.
 - Resolve provider configuration before any PR mutation. Missing or invalid
   configuration is effective `none`: warn and continue through CI, mandatory
   adversarial review, and human-feedback gates without a provider wait.
@@ -99,13 +101,11 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 - **GitHub API budget.** `pr-queue.sh --write-confirmed-queue` prints a
   `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
-  (never blocks) when the queue's estimated REST cost exceeds the remaining
-  budget — read it before confirming a large queue; another session may run
-  concurrently. A `gh-pr-state.sh`/`pr-queue.sh` call exiting `3` hit
-  rate-limit exhaustion: stop mutating, record completed vs. outstanding,
-  report the reset time verbatim — never retry into an empty pool. See
-  ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry)
-  for full discipline and concurrency ceiling.
+  (never blocks) when REST cost exceeds the remaining budget — read it
+  first; another session may run concurrently. A `gh-pr-state.sh`/
+  `pr-queue.sh` exit `3` hits rate-limit: stop, record completed vs.
+  outstanding, report the reset verbatim, never retry an empty pool. See
+  ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry).
 
 ## Resident call-site map
 
@@ -221,9 +221,9 @@ which this same confirmation durably covers.
 
 ### 2. Normalize runnable PRs
 
-Drive Steps 2–4 concurrently per independent root (never a waiting or
-retargeting descendant). For each: establish/reuse its isolated worktree
-through review-remote-pr. Complete Phase A against the current base: no
+Drive Steps 2–4 concurrently per root (never waiting/retargeting). For each,
+establish/reuse its isolated worktree through review-remote-pr. Complete
+Phase A against the current base: no
 conflicts, declared verification passing, CI settled green, mandatory
 adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
@@ -250,7 +250,8 @@ only after the fresh queue exactly matches that newly confirmed snapshot. Do
 not let earlier confirmation authorize a new SHA.
 
 This sequence is a **critical section** (one fixed-path snapshot): only one
-root inside it at a time, others wait.
+root inside it at a time, others wait; it re-derives its own authorization on
+entry (see above).
 
 ### 3. Transition and consume provider state
 
