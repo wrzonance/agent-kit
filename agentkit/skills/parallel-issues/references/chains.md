@@ -106,10 +106,12 @@ rather than guessing at a substitute base commit.
 
 The chain-depth queue is a ready-to-refill queue, not a second class of selection. At the
 funnel, list queued issue numbers in pickup order and count them in the same `queued=` field as
-ordinary slot-cap overflow. A depth-6 fixture with the four-link cap may start its first five
-issues (the root plus four successor links) and report `queued=1[#6]`; once issue #5 has pushed,
-dispatch #6 from #5's exact full SHA and report `queued=0` at handoff. This demonstrates that
-depth is a concurrency window while all six selected issues remain members of one chain.
+ordinary slot-cap overflow. A depth-6 fixture with the four-link cap starts issue #1. Issues
+#2--#5 make up the depth window, but become dispatchable one at a time as their immediate
+predecessors push (#2 after #1, #3 after #2, #4 after #3, and #5 after #4). Issue #6 stays
+queued as `queued=1[#6]` until #5 pushes; then dispatch #6 from #5's exact full SHA and report
+`queued=0` at handoff. This demonstrates that depth is a concurrency window while all six
+selected issues remain members of one chain.
 
 On every predecessor completion, refill only the next successor whose immediate predecessor
 has a pushed commit. Preserve the queued issue's original worktree/branch/write-set plan and

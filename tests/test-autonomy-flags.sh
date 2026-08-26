@@ -125,7 +125,7 @@ assert_contains "$parallel" 'active tracker' \
 assert_contains "$parallel_with_refs" \
     'Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]' \
     'the funnel keeps a live zero-eligible example'
-assert_contains "$parallel_with_refs" 'The fourth line records the fast-mode queue' \
+assert_contains "$parallel_with_refs" 'The fast-mode example records a queued issue identity' \
     'funnel prose points at the fast-mode example'
 
 # --- publishing is the invocation's own output -------------------------------

@@ -129,7 +129,7 @@ assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside 
     'chain ordering sources are exactly the two mechanical ones'
 assert_contains "$text" 'never an ordering input' \
     'issue-body prose is excluded from ordering'
-assert_contains "$text" 'chain depth cap: 4' 'chain depth cap is pinned'
+assert_contains "$text" '4-link depth window' 'chain depth window is pinned'
 assert_contains "$normalized_text" 'deeper tails enter the same refill queue as slot-cap overflow' \
     'chain-depth overflow shares the slot-cap refill queue'
 assert_not_contains "$normalized_text" 'deeper tails are dropped' \

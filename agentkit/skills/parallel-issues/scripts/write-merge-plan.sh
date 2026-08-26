@@ -93,11 +93,6 @@ if ((validate_only)); then
         (type == "array" and all(.[]; uint) and (map(.) | unique | length) == length);
       def issue_count:
         if type == "array" then length else . end;
-      def entry_ids:
-        [.entries[] | .issue];
-      def names_entries($ids; $entries):
-        if ($ids | type) != "array" then true
-        else all($ids[]; . as $id | ($entries | index($id)) != null) end;
       def disjoint_lists($left; $right):
         if (($left | type) != "array" or ($right | type) != "array") then true
         else all($left[]; . as $id | ($right | index($id)) == null) end;
@@ -105,13 +100,10 @@ if ((validate_only)); then
         if (has("selection") | not) then true
         elif (.selection | type) != "object" then false
         else .selection as $s |
-          (entry_ids) as $entries |
           ($s.requested | uint) and ($s.eligible | type) == "number" and ($s.eligible >= 0) and ($s.eligible | floor) == $s.eligible and
           ($s.dispatched | type) == "number" and ($s.dispatched >= 0) and ($s.dispatched | floor) == $s.dispatched and ($s.dispatched <= $s.eligible) and ($s.dispatched <= $s.requested) and
           ($s.queued | issue_set_or_count) and
           ($s.tracker | issue_set_or_count) and
-          (names_entries($s.queued; $entries)) and
-          (names_entries($s.tracker; $entries)) and
           (disjoint_lists($s.queued; $s.tracker)) and
           ($s.dispatched + ($s.queued | issue_count) <= $s.eligible)
         end;

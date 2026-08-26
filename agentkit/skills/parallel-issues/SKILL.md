@@ -1131,7 +1131,7 @@ Gate-local failures are documented where they bind. Cross-cutting rules live in
 ## Limits
 
 - Maximum 10 per wave; include root in cap; fast-mode queues overflow; attended asks.
-- Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
+- Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop; chains count toward the issue limit.
 - Invocation opts into issue leads; only root spawns.
 - Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
 - Requires local instructions and a `main` or `master` branch.
