@@ -10,9 +10,9 @@ description: >-
 
 # PR to green
 
-Coordinate existing Agent Kit review machinery in a strict serial queue. This
-skill owns queue authorization and the ready/provider transition boundary; it
-is not another review engine.
+Coordinate existing Agent Kit review machinery: parallel reviews, serial
+merges. Owns queue authorization and the ready/provider transition boundary
+— not another review engine.
 
 Reference paths resolve: open `"$agentkit/<path>"`, and read `"$agentkit/references.md"` —
 every reference and its purpose — instead of searching.
@@ -77,8 +77,12 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 
 ## Hard rules
 
-- Process strictly one PR at a time. Never run two remediation or transition
-  loops concurrently.
+- Ready-transition, provider trigger, and Phase C settlement (Steps 2–4) may
+  run in parallel across independent `RUNNABLE` roots, bounded by
+  `concurrency-cap.sh`'s cap (root counted) and the API budget below —
+  admission/revalidation: ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
+  Step 5's
+  merges are serial.
 - Resolve provider configuration before any PR mutation. Missing or invalid
   configuration is effective `none`: warn and continue through CI, mandatory
   adversarial review, and human-feedback gates without a provider wait.
@@ -97,15 +101,11 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 - **GitHub API budget.** `pr-queue.sh --write-confirmed-queue` prints a
   `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
-  (never blocks) when the queue's estimated REST cost exceeds the remaining
-  budget — read it before confirming a large queue, especially with another
-  session possibly running concurrently on the same account. A `gh-pr-state.sh`
-  or `pr-queue.sh` call that exits `3` hit rate-limit exhaustion: stop
-  mutating this run immediately, record exactly what completed versus what is
-  still outstanding from durable evidence (never from memory of intent), and
-  report the reset time the exit line names verbatim — never retry into an
-  empty pool. See ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry)
-  for the full discipline and the practical per-account concurrency ceiling.
+  (never blocks) when REST cost exceeds the remaining budget — read it
+  first; another session may run concurrently. A `gh-pr-state.sh`/
+  `pr-queue.sh` exit `3` hits rate-limit: stop, record completed vs.
+  outstanding, report the reset verbatim, never retry an empty pool. See
+  ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry).
 
 ## Resident call-site map
 
@@ -126,7 +126,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 Read `../review-remote-pr/SKILL.md` once when entering Phase A. Read its provider
 rules once only if findings exist, and reuse that content through Phase C.
 
-## Serial state machine
+## State machine
 
 ### 1. Resolve and display
 
@@ -219,10 +219,11 @@ inputs — except a verified mechanical advance of an already-confirmed PR (see
 Step 5 and ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md)),
 which this same confirmation durably covers.
 
-### 2. Normalize one runnable PR
+### 2. Normalize runnable PRs
 
-Take the first `RUNNABLE` record only. Establish or reuse its isolated worktree
-through review-remote-pr. Complete Phase A against the current base: no
+Drive Steps 2–4 concurrently per root (never waiting/retargeting). For each,
+establish/reuse its isolated worktree through review-remote-pr. Complete
+Phase A against the current base: no
 conflicts, declared verification passing, CI settled green, mandatory
 adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item explicitly decided. Consolidate accepted changes into
@@ -248,10 +249,14 @@ re-run `authorize-queue.sh`. It atomically replaces stale head/base records
 only after the fresh queue exactly matches that newly confirmed snapshot. Do
 not let earlier confirmation authorize a new SHA.
 
+This sequence is a **critical section** (one fixed-path snapshot): only one
+root inside it at a time, others wait; it re-derives its own authorization on
+entry (see above).
+
 ### 3. Transition and consume provider state
 
-Invoke `review-transition.sh` only for the current confirmed `RUNNABLE` record.
-It may safely resume an already-ready PR. Treat its provider result as follows:
+Invoke `review-transition.sh` per `RUNNABLE` record; it may resume a ready PR.
+Treat its provider result as follows:
 
 - `AUTO_REVIEW`, `ALREADY_SPENT`, or `LANDED`: enter Phase C and consume
   observed findings through review-remote-pr.
@@ -298,9 +303,9 @@ Report formal provider approval separately. It is not required for effective
 ### 5. Advance stacks, merging only under `--auto-merge`
 
 After a predecessor becomes evidence-green, mark its open descendants
-`WAITING_FOR_MERGE`. Without `--auto-merge`, never merge it — continue the
-oldest independent runnable root while the chain waits, and report the exact
-human merge dependency.
+`WAITING_FOR_MERGE`. Without `--auto-merge`, never merge it — continue other
+independent roots while the chain waits, and report the exact human merge
+dependency.
 
 With `--auto-merge`, an evidence-green item merges only after
 `scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head

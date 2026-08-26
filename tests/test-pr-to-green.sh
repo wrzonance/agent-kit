@@ -35,7 +35,13 @@ assert_contains "$flat" 'provider plan, verified dependency graph, and exact ser
     'confirmation presents every authorization input before mutation'
 assert_contains "$flat" 'remediation pushes, ready transitions, and trigger-capable requests' \
     'one confirmation names its complete narrow mutation authority'
-assert_contains "$text" 'strictly one PR at a time' 'queue execution is strictly serial'
+assert_contains "$flat" 'Steps 2–4) may run in parallel across independent' \
+    'ready-transition, provider trigger, and finding settlement run in parallel across independent roots'
+assert_contains "$flat" "Step 5's" 'merge/retarget sequence stays strictly serial in queue order'
+assert_contains "$flat" 'critical section' \
+    'the shared confirmed-queue snapshot rewrite is a serialized critical section'
+assert_contains "$flat" 'only one root inside it at a time' \
+    'concurrent roots never interleave the pr-queue.sh/authorize-queue.sh re-run sequence'
 assert_contains "$flat" 'Automatic discovery selects drafts' \
     'automatic queue discovery is draft-only'
 assert_contains "$text" 'explicitly named ready PR' \
@@ -72,11 +78,20 @@ assert_contains "$flat" 'branch-protection refusal is' 'branch protection refusa
 assert_eq yes "$(test -f "$skills/pr-to-green/references/auto-merge.md" && printf yes || printf no)" \
     'auto-merge reference file exists'
 ref_text=$(cat "$skills/pr-to-green/references/auto-merge.md")
+ref_flat=$(tr '\n' ' ' <<<"$ref_text" | tr -s '[:space:]' ' ')
 assert_contains "$ref_text" '## Contents' 'auto-merge reference carries a Contents heading within the TOC scan window'
 assert_contains "$ref_text" 'code-scanning n/a' \
     'auto-merge reference states unreadable code-scanning is never treated as zero findings'
 assert_contains "$ref_text" 'never carries forward' \
     'auto-merge reference states a passed gate never carries forward to a new head'
+assert_contains "$ref_text" 'concurrency-cap.sh' \
+    'the parallel-issues concurrency-cap.sh helper is the sole cap source, never invented'
+assert_contains "$ref_flat" 'releases its slot immediately' \
+    'a failed or blocked root releases its concurrency slot rather than holding it idle'
+assert_contains "$ref_text" 're-derive the authorization for its own PR at its own current head' \
+    'a root entering the critical section re-derives its own authorization, never reuses a prior pass'
+assert_contains "$ref_flat" 'every other in-flight root revalidates its own head and base' \
+    'a Step 5 merge forces every other in-flight root to revalidate before its next mutation'
 
 assert_eq yes "$(test -x "$skills/pr-to-green/scripts/pr-queue.sh" && printf yes || printf no)" \
     'queue helper ships executable'
