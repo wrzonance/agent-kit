@@ -105,6 +105,17 @@ if [[ -r "$SKILLS_CONTENT_HASH_LIB" ]]; then
     source "$SKILLS_CONTENT_HASH_LIB"
 fi
 
+# secure_mkdir_p (issue #474): every .agent directory this script creates
+# must satisfy the kit's own private-directory validators regardless of the
+# ambient umask. Guarded like the libraries above -- this script reports
+# rather than blocks (see BEHAVIOUR), so a missing sibling falls back to a
+# plain mkdir -p at the call site instead of crashing the whole probe.
+SECURE_MKDIR_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/secure-mkdir.sh"
+if [[ -r "$SECURE_MKDIR_LIB" ]]; then
+    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+    source "$SECURE_MKDIR_LIB"
+fi
+
 usage() {
     cat <<'EOF'
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
@@ -1366,6 +1377,21 @@ write_block() {
     note "wrote $target"
 }
 
+# check_agent_dir_mode DIR -- surface a group/world-writable .agent (or
+# .agent/logs) at session start rather than mid-review, where a downstream
+# tool such as session-ledger.sh's validate_parent would otherwise be the
+# first thing to notice and stop the run. Reports only, via note() -- it is
+# not this script's job to refuse or fix an existing directory it may not
+# have created (issue #474: a pre-existing group-writable .agent stays
+# refused by its actual validator, with the same chmod fix named there).
+check_agent_dir_mode() {
+    local dir="$1" mode
+    [[ -e $dir && ! -L $dir ]] || return 0
+    mode=$(stat -c %a -- "$dir" 2>/dev/null) || return 0
+    (( (8#$mode & 0022) == 0 )) ||
+        note "$dir is group- or world-writable (mode $mode) -- later ledger/private-dir writes under it will be refused (fix: chmod 700 $dir)"
+}
+
 main() {
     parse_args "$@"
     if (( ARG_ENSURE )); then
@@ -1443,8 +1469,15 @@ main() {
         note "--no-write: no environment block file written"
         return 0
     fi
-    mkdir -p -- "$WORKTREE/.agent/logs" 2>/dev/null ||
-        note "could not create $WORKTREE/.agent/logs -- agent-run.sh will fall back"
+    if command -v secure_mkdir_p > /dev/null 2>&1; then
+        secure_mkdir_p "$WORKTREE/.agent/logs" 2>/dev/null ||
+            note "could not create $WORKTREE/.agent/logs -- agent-run.sh will fall back"
+    else
+        mkdir -p -- "$WORKTREE/.agent/logs" 2>/dev/null ||
+            note "could not create $WORKTREE/.agent/logs -- agent-run.sh will fall back"
+    fi
+    check_agent_dir_mode "$WORKTREE/.agent"
+    check_agent_dir_mode "$WORKTREE/.agent/logs"
     write_block "$write_target"
 }
 

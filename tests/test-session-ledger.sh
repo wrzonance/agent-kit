@@ -367,4 +367,42 @@ assert_not_contains "$ledger_section" 'branch=' \
 assert_not_contains "$ledger_section" 'worktree=' \
     'parallel ledger identity does not use per-worker worktrees'
 
+# --- ledger parent is created 0700 regardless of the ambient umask (#474) --
+# A plain `mkdir -p` inherits the ambient umask; on a `umask 002` machine the
+# directory prepare_parent just created came out group-writable, and
+# validate_parent then refused the very directory the kit created. This
+# fixture's parent does not exist yet (unlike $state above), so
+# prepare_parent's own mkdir path actually fires.
+fresh_parent="$tmp/fresh-umask/.agent"
+fresh_ledger="$fresh_parent/session-ledger.ndjson"
+(
+    umask 002
+    "$script" append --ledger "$fresh_ledger" --run-id 'issue474-fresh-parent' \
+        --skills-path "$skills_path" --procedure-set parallel-issues \
+        --decision 'umask regression' --scope 'fresh parent' --quote 'q'
+)
+assert_eq '0' "$?" 'append succeeds on a fresh, not-yet-existing parent under umask 002'
+assert_eq '700' "$(stat -c '%a' -- "$fresh_parent" 2>/dev/null || printf '?')" \
+    'the freshly created ledger parent is mode 700 under umask 002'
+
+# --- a pre-existing group-writable parent is still refused, with a fix hint -
+# (#474 acceptance) A directory the kit did not create this run must never be
+# silently chmod'd into compliance -- only refused, naming the corrective
+# chmod.
+stale_parent="$tmp/stale/.agent"
+mkdir -p -- "$stale_parent"
+chmod 775 -- "$stale_parent"
+stale_out=$("$script" append --ledger "$stale_parent/session-ledger.ndjson" \
+    --run-id 'stale-check' --skills-path "$skills_path" \
+    --procedure-set parallel-issues --decision 'stale regression' \
+    --scope 'pre-existing parent' --quote 'q' 2>&1)
+stale_rc=$?
+assert_eq '1' "$stale_rc" 'append refuses a pre-existing group-writable parent'
+assert_contains "$stale_out" "must not be group- or world-writable: $stale_parent" \
+    'the refusal names the offending parent'
+assert_contains "$stale_out" "fix: chmod 700 $stale_parent" \
+    'the refusal message names the corrective chmod'
+assert_eq '775' "$(stat -c '%a' -- "$stale_parent")" \
+    'the pre-existing parent mode is left untouched, not auto-fixed'
+
 finish

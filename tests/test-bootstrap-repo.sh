@@ -60,6 +60,16 @@ assert_rc 0 'bootstrap succeeds' -- env PATH="$tmp/stub:$PATH" \
 assert_eq 'yes' "$([[ -f $repo/.agent/config.env ]] && echo yes || echo no)" 'writes config.env'
 assert_eq 'yes' "$([[ -f $repo/.agent/board.json ]] && echo yes || echo no)" 'writes board.json'
 
+# --- .agent is created 0700 regardless of the ambient umask (issue #474) ---
+# A plain `mkdir -p` inherits the ambient umask; on a `umask 002` machine the
+# kit's own validators (session-ledger.sh's validate_parent) then refuse the
+# directory the kit just created. secure_mkdir_p uses `mkdir -m 700`, which
+# sets the mode outright.
+umask_repo=$(make_repo)
+(umask 002 && run_bs --repo-root "$umask_repo" --project 7 > /dev/null)
+assert_eq '700' "$(stat -c '%a' -- "$umask_repo/.agent")" \
+    'bootstrap-repo creates .agent at mode 700 under umask 002'
+
 board=$(cat "$repo/.agent/board.json")
 assert_eq '1' "$(jq -r '.schemaVersion' <<< "$board")" 'board.json declares schemaVersion 1'
 assert_eq 'PVT_kwDOAexample1' "$(jq -r '.project.id' <<< "$board")" 'records the project node id'

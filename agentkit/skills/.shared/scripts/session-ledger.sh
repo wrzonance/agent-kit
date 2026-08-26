@@ -3,6 +3,11 @@
 set -euo pipefail
 umask 077
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+readonly SCRIPT_DIR
+# shellcheck disable=SC1091  # sibling library is resolved at runtime
+source "$SCRIPT_DIR/lib/secure-mkdir.sh"
+
 readonly PROGRAM=${0##*/}
 readonly MAX_TEXT_LENGTH=4096
 readonly SECRET_RE='(gh[pous]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]+|Bearer[[:space:]]+[A-Za-z0-9._~+/=-]+|(token|secret|password|passwd|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]+|-----BEGIN[[:space:]].*PRIVATE[[:space:]]KEY-----)'
@@ -282,7 +287,7 @@ validate_parent() {
     mode=$(stat -c %a -- "$parent" 2>/dev/null) ||
         die_evidence "could not inspect ledger parent permissions: $parent"
     (( (8#$mode & 0022) == 0 )) ||
-        die_evidence "ledger parent must not be group- or world-writable: $parent"
+        die_evidence "ledger parent must not be group- or world-writable: $parent (fix: chmod 700 $parent)"
     current=$(dirname -- "$parent")
     while [[ $current != / && $current != . ]]; do
         [[ -d $current && ! -L $current ]] ||
@@ -295,7 +300,13 @@ prepare_parent() {
     local parent
     parent=$(ledger_parent)
     if [[ ! -e $parent ]]; then
-        mkdir -p -- "$parent" || die_evidence "could not create ledger parent: $parent"
+        secure_mkdir_p "$parent" || die_evidence "could not create ledger parent: $parent"
+        # Defensive: mkdir -m already bypasses umask, but this is the kit's
+        # own metadata directory and we just created it ourselves, so
+        # confirming (rather than trusting) its mode costs nothing and
+        # catches a platform where -m does not fully apply. A directory that
+        # pre-dates this call is never touched here -- see validate_parent.
+        chmod 700 -- "$parent" || die_evidence "could not secure ledger parent: $parent"
     fi
     validate_parent "$parent"
 }
