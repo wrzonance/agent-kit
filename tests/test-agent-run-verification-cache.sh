@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Suite: agent-run.sh caches green named-command evidence by tree state.
+# shellcheck disable=SC2016  # literal fixture scripts and assertions retain shell syntax.
 set -uo pipefail
 
 TEST_NAME='agent-run-verification-cache'
@@ -230,7 +231,9 @@ mkdir -p "$baseline_repo/.agent" "$baseline_repo/tests"
 printf '%s\n' '#!/usr/bin/env bash' \
     'printf "demo-test: expected 1, got 0\\n"' \
     'exit 1' >"$baseline_repo/tests/demo-test.sh"
+cp -- "$baseline_repo/tests/demo-test.sh" "$baseline_repo/tests/second-test.sh"
 chmod +x "$baseline_repo/tests/demo-test.sh"
+chmod +x "$baseline_repo/tests/second-test.sh"
 printf 'AGENT_CMD_TEST=tests/demo-test.sh\n' >"$baseline_repo/.agent/config.env"
 printf '.agent/*\n!.agent/config.env\n' >"$baseline_repo/.gitignore"
 git -C "$baseline_repo" add -A
@@ -254,12 +257,37 @@ assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" 'tests/demo-
 assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" '.agent/logs/' \
     'the exclusion records the worker evidence log path'
 
+# A second proven baseline failure is appended and deduplicated rather than
+# overwriting the first exclusion.
+printf 'AGENT_CMD_TEST=tests/second-test.sh\n' >"$baseline_repo/.agent/config.env"
+second_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
+    --baseline-ref main --baseline-path tests/second-test.sh --baseline-id second-test 2>&1)
+second_text=$(<"$baseline_repo/.agent/baseline-exclusion.md")
+assert_contains "$second_output" 'baseline-excluded test=second-test' \
+    'a second proven baseline failure is also excluded'
+assert_contains "$second_text" '`demo-test`' \
+    'the first baseline exclusion is preserved'
+assert_contains "$second_text" '`second-test`' \
+    'the second baseline exclusion is appended'
+second_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
+    --baseline-ref main --baseline-path tests/second-test.sh --baseline-id second-test 2>&1)
+assert_eq '1' "$(grep -Fc '`second-test`' "$baseline_repo/.agent/baseline-exclusion.md")" \
+    'repeating the same baseline id and base deduplicates its exclusion'
+
+# A later ordinary green verification clears all stale exclusion evidence.
+printf 'AGENT_CMD_TEST=true\n' >"$baseline_repo/.agent/config.env"
+assert_rc 0 'an ordinary green verification succeeds after baseline exclusions' -- \
+    bash -c 'cd "$1" && bash "$2" --force --cmd test' _ "$baseline_repo" "$real_run_sh"
+assert_rc 0 'ordinary green verification clears stale baseline exclusions' -- \
+    test ! -e "$baseline_repo/.agent/baseline-exclusion.md"
+
 # A changed test blob must remain a genuine verification failure even when its
 # output happens to match the chain-base failure.
 printf '%s\n' '#!/usr/bin/env bash' \
     'printf "demo-test: expected 1, got 0\\n"' \
     'printf "changed implementation\\n"' \
     'exit 1' >"$baseline_repo/tests/demo-test.sh"
+printf 'AGENT_CMD_TEST=tests/demo-test.sh\n' >"$baseline_repo/.agent/config.env"
 git -C "$baseline_repo" add tests/demo-test.sh
 git -C "$baseline_repo" commit -qm 'feature: change failing test'
 changed_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
@@ -269,7 +297,38 @@ assert_eq '1' "$changed_rc" \
     'a changed test blob remains change-caused red and is not auto-excluded'
 assert_contains "$changed_output" 'FAIL(rc=1)' \
     'a changed test blob preserves the ordinary failure result'
-assert_eq '1' "$([[ ! -e "$baseline_repo/.agent/baseline-exclusion.md" ]] && printf 1 || printf 0)" \
-    'a stale exclusion is removed when a later verification is change-caused red'
+
+# --- baseline child sanitizes head-root runtime state -----------------------
+env_repo=$(mktemp -d "$tmp/baseline-env-repo.XXXXXX")
+git -C "$env_repo" init -q -b main
+git -C "$env_repo" config user.name test
+git -C "$env_repo" config user.email test@example.invalid
+mkdir -p "$env_repo/.agent" "$env_repo/tests" "$env_repo/head-src" "$env_repo/head-node"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'if [[ "$PWD" != *"baseline-env-repo"* ]]; then' \
+    '    [[ "${PYTHONPATH:-}" != *"head-src"* ]] || exit 2' \
+    '    [[ -z "${NODE_PATH:-}" ]] || exit 2' \
+    '    [[ "${COMPOSE_PROJECT_NAME:-}" == *-baseline ]] || exit 2' \
+    'fi' \
+    'printf "stable baseline failure\\n"' \
+    'exit 1' >"$env_repo/tests/env-test.sh"
+chmod +x "$env_repo/tests/env-test.sh"
+printf 'AGENT_CMD_TEST=tests/env-test.sh\n' >"$env_repo/.agent/config.env"
+printf '.agent/*\n!.agent/config.env\n' >"$env_repo/.gitignore"
+git -C "$env_repo" add -A
+git -C "$env_repo" commit -qm base
+git -C "$env_repo" checkout -qb feature
+printf 'unrelated feature documentation\n' >"$env_repo/feature.md"
+git -C "$env_repo" add feature.md
+git -C "$env_repo" commit -qm 'feature: unrelated documentation'
+env_output=$(cd "$env_repo" && PYTHONPATH="$env_repo/head-src" NODE_PATH="$env_repo/head-node" \
+    COMPOSE_PROJECT_NAME=head-project "$real_run_sh" --force --cmd test \
+    --baseline-ref main --baseline-path tests/env-test.sh --baseline-id env-test 2>&1)
+env_rc=$?
+assert_eq '0' "$env_rc" 'head-root runtime state cannot contaminate a baseline exclusion'
+assert_contains "$env_output" 'baseline-excluded test=env-test' \
+    'sanitized baseline state still permits an identical failure exclusion'
+assert_not_contains "$env_output" 'FAIL(rc=2)' \
+    'head-root runtime state is absent from the baseline child'
 
 finish

@@ -21,7 +21,8 @@
 # Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME]
 #          [--baseline-ref REF --baseline-path PATH --baseline-id ID]
 #          (--cmd NAME | [--] <command> ...)
-# Exit status: the wrapped command's status (this script's own usage errors exit 1).
+# Exit status: 0 when the wrapped command passes or a proven baseline exclusion is
+# recorded; otherwise the wrapped command's non-zero status (usage errors exit 1).
 
 set -euo pipefail
 
@@ -78,6 +79,7 @@ Repository declarations (<git-toplevel>/.agent/config.env):
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
+  BASELINE-EXCLUDED: <test/base/log> (exit 0, not green evidence)
   FAIL(rc=N): <cmd>  + context notes + up to 20 error lines + 'full log: LOG'
 
 Examples:
@@ -943,9 +945,45 @@ clear_baseline_exclusion() {
     [[ ! -e $exclusion_file ]] || rm -f -- "$exclusion_file"
 }
 
+remove_baseline_exclusion() {
+    local id=$1 base_sha=$2 exclusion_file=$git_top/.agent/baseline-exclusion.md
+    local prefix line exclusion_tmp
+    [[ ! -L $exclusion_file ]] || return 1
+    [[ -f $exclusion_file ]] || return 0
+    prefix="- [ ] Baseline exclusion: \`$id\` ("
+    exclusion_tmp=$(mktemp "$git_top/.agent/.baseline-exclusion.XXXXXX") || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == "$prefix"* && -n $base_sha &&
+            $line == *"chain base \`$base_sha\`"* ]]; then
+            continue
+        fi
+        printf '%s\n' "$line" >>"$exclusion_tmp" || {
+            rm -f -- "$exclusion_tmp"
+            return 1
+        }
+    done <"$exclusion_file"
+    if [[ -s $exclusion_tmp ]]; then
+        mv -f -- "$exclusion_tmp" "$exclusion_file"
+    else
+        rm -f -- "$exclusion_tmp" "$exclusion_file"
+    fi
+}
+
+sanitize_baseline_path() {
+    local value=$1 part result='' separator=''
+    local -a parts=()
+    IFS=: read -r -a parts <<<"$value"
+    for part in "${parts[@]}"; do
+        [[ -n $part && $part != "$git_top" && $part != "$git_top"/* ]] || continue
+        result+=$separator$part
+        separator=:
+    done
+    printf '%s' "${result:-/usr/bin:/bin}"
+}
+
 try_baseline_exclusion() {
     local base_sha base_blob current_blob current_file resolved_file
-    local baseline_dir baseline_output baseline_work_dir rel base_rc
+    local baseline_dir baseline_output baseline_work_dir rel base_rc baseline_path_env baseline_project
     local current_signature baseline_signature exclusion_file exclusion_tmp
     [[ -n $baseline_ref ]] || return 1
     [[ -n $git_top && -d $git_top/.agent/logs ]] || return 1
@@ -988,8 +1026,20 @@ try_baseline_exclusion() {
         rm -rf -- "$baseline_dir"
         return 1
     }
+    baseline_path_env=$(sanitize_baseline_path "${PATH:-}") || {
+        rm -f -- "$baseline_output"
+        rm -rf -- "$baseline_dir"
+        return 1
+    }
+    baseline_project=${COMPOSE_PROJECT_NAME:-agentkit}
+    baseline_project=$baseline_project-baseline
     base_rc=0
-    (cd -- "$baseline_work_dir" && exec "${cmd[@]}") >"$baseline_output" 2>&1 || base_rc=$?
+    (cd -- "$baseline_work_dir" &&
+        env -u PYTHONPATH -u NODE_PATH -u PYTHONHOME -u VIRTUAL_ENV \
+            -u NPM_CONFIG_PREFIX -u npm_config_prefix -u COMPOSE_FILE \
+            -u GIT_DIR -u GIT_WORK_TREE PATH="$baseline_path_env" \
+            COMPOSE_PROJECT_NAME="$baseline_project" "${cmd[@]}") \
+        >"$baseline_output" 2>&1 || base_rc=$?
     current_signature=$(failure_signature "$log_file") || current_signature=''
     baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
     rm -f -- "$baseline_output"
@@ -1004,9 +1054,15 @@ try_baseline_exclusion() {
         rm -f -- "$exclusion_tmp"
         return 1
     }
+    if [[ -e $exclusion_file ]]; then
+        cat -- "$exclusion_file" >"$exclusion_tmp" || {
+            rm -f -- "$exclusion_tmp"
+            return 1
+        }
+    fi
     # shellcheck disable=SC2016  # backticks are literal Markdown delimiters.
     printf -- '- [ ] Baseline exclusion: `%s` (`%s`) is unchanged and red on chain base `%s` (evidence: `%s`)\n' \
-        "$baseline_id" "$baseline_path" "$base_sha" "$log_file" >"$exclusion_tmp" || {
+        "$baseline_id" "$baseline_path" "$base_sha" "$log_file" >>"$exclusion_tmp" || {
         rm -f -- "$exclusion_tmp"
         return 1
     }
@@ -1332,7 +1388,10 @@ lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
 ((lines >= 0)) || lines=0
 baseline_excluded=no
 original_rc=$rc
-if ((rc != 0)) && [[ -n $baseline_ref ]]; then
+if [[ -n $baseline_ref ]]; then
+    baseline_key_sha=$(git -C "$git_top" rev-parse --verify "$baseline_ref^{commit}" 2>/dev/null || true)
+    remove_baseline_exclusion "$baseline_id" "$baseline_key_sha" || true
+else
     clear_baseline_exclusion || true
 fi
 if ((rc != 0)) && try_baseline_exclusion; then
