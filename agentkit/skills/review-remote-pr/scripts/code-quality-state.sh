@@ -103,7 +103,9 @@ command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
 
 if [[ $head_sha != '' ]]; then
     analyses_response=''
-    if analyses_response=$(gh api "repos/$repository/code-quality/analyses" \
+    # -X GET is required here: gh api infers POST whenever -f/-F fields are
+    # present, and this is a filtered read, never a write (issue #472 review).
+    if analyses_response=$(gh api -X GET "repos/$repository/code-quality/analyses" \
         -f "ref=$head_sha" -F per_page=100 -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
         if ! jq -e 'type == "array"' <<<"$analyses_response" >/dev/null 2>&1; then
             printf 'scan-state=unknown reason=%s\n' \

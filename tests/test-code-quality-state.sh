@@ -159,6 +159,22 @@ assert_contains "$out" 'scan-state=unknown' \
     'a non-array analyses response is reported unknown, never complete'
 assert_eq '1' "$rc" 'a malformed analyses response exits 1'
 
+# Regression (issue #472 review): `gh api` infers POST whenever -f/-F fields
+# are present -- the analyses call passes -f ref=... -F per_page=100, so
+# without an explicit -X GET this filtered read silently becomes a write
+# against the repository. Assert the exact method is forced.
+cat >"$tmp/bin/gh" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do printf 'ARG:%s\n' "\$arg"; done >> "$tmp/gh-analyses-argv.log"
+printf '[]\n'
+exit 0
+EOF
+chmod +x "$tmp/bin/gh"
+rm -f "$tmp/gh-analyses-argv.log"
+PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" >/dev/null
+assert_contains "$(cat "$tmp/gh-analyses-argv.log")" $'ARG:-X\nARG:GET' \
+    'the analyses read is forced to GET, never inferred as POST from its -f/-F fields'
+
 # --- --head usage validation -------------------------------------------------
 
 write_gh '[]' 0
