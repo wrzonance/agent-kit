@@ -193,9 +193,15 @@ if [[ $head_sha != '' ]]; then
     fi
     # --paginate concatenates one JSON value per page; slurp them, same as
     # the check-runs/comments reads above, so repoWideOpen counts every page
-    # instead of the first 100 findings (issue #486 item 1).
-    if ! jq -se '[.[]? | (type == "array") or ((.findings? | type) == "array")] | all' \
-        <<<"$findings_response" >/dev/null 2>&1; then
+    # instead of the first 100 findings (issue #486 item 1). `all` over an
+    # EMPTY array is vacuously true, so an empty/blank response would
+    # otherwise validate as readable and silently print repoWideOpen=0 --
+    # require at least one page before trusting the shape check (root review
+    # finding on this PR).
+    if ! jq -se '
+        (length >= 1) and
+        all(.[]; (type == "array") or ((.findings? | type) == "array"))
+    ' <<<"$findings_response" >/dev/null 2>&1; then
         printf 'scan-state=unknown reason=%s\n' \
             'Code Quality findings response was not readable JSON'
         exit 1

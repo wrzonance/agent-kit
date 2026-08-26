@@ -307,6 +307,36 @@ assert_contains "$out" 'scan-state=unknown' \
     'an unparseable paginated findings response is reported unknown, never a bare 0 count'
 assert_eq '1' "$rc" 'an unknown scan-state from a malformed paginated findings response exits 1'
 
+# Regression (root review finding on issue #486 item 1): `all` over an EMPTY
+# array is vacuously true, so a blank/empty --paginate response (gh printed
+# nothing at all -- distinct from a genuine single page of `[]`, zero real
+# findings) must still be refused as unreadable, never silently counted as
+# repoWideOpen=0. "The API returned nothing" and "there are zero open
+# findings" must stay distinguishable.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '' \
+    ok '[]'
+out=$(run_head)
+rc=$?
+assert_contains "$out" 'scan-state=unknown' \
+    'a blank/empty findings response is reported unknown, never repoWideOpen=0'
+assert_eq '1' "$rc" 'an unknown scan-state from a blank findings response exits 1'
+
+# A genuine single page reporting zero findings is still a valid, complete,
+# zero-finding read -- only a page-less/blank response is refused.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok '[]'
+baseline_zero="$tmp/baseline-zero.json"
+rm -f "$baseline_zero"
+out=$(run_head --baseline-file "$baseline_zero")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
+    'a real single page of zero findings still reports complete'
+assert_eq '0' "$(jq -r '.repoWideOpen' "$baseline_zero")" \
+    'a real single page of zero findings records repoWideOpen=0, distinct from an unreadable response'
+
 # Regression (issue #472 review): every filtered read (-f/-F present or not)
 # --head issues is forced to GET, never inferred as POST.
 write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'
