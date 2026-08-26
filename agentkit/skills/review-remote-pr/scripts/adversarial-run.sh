@@ -370,17 +370,22 @@ verify_consent() {
     die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
 }
 
-# write_launch_attempted -- the pre-send marker (issue #473). Written as the
-# FIRST action inside run_provider, before the external review helper is ever
-# invoked, so its presence answers "did we at least try to send this?"
-# independently of whether the send itself succeeded, crashed, or lost its
-# receipt. Absence of this marker after a launch attempt proves nothing was
-# sent -- e.g. the exact "leading comment" bug this issue fixes, where a
-# shell comment silently swallowed the launcher before it ever reached this
-# script -- so a retry needs no operator authorization. Presence of the
-# marker with no completed/blocked result is genuinely ambiguous (sent and
-# lost the receipt vs. crashed mid-send), so that case still requires the
-# operator prompt described in adversarial-review.md.
+# write_launch_attempted -- the pre-send marker (issue #473). Written inside
+# run_provider immediately before the external review helper is invoked --
+# but only after every local output-path preparation for this run has
+# already succeeded (#473 follow-up F2) -- so its presence answers "did we at
+# least try to send this?" independently of whether the send itself
+# succeeded, crashed, or lost its receipt, and a purely local abort (a
+# hostile pre-existing artifact target, a permissions failure) never leaves
+# behind a marker that falsely claims a possible send. Absence of this
+# marker after a launch attempt proves nothing was sent -- e.g. the exact
+# "leading comment" bug this issue fixes, where a shell comment silently
+# swallowed the launcher before it ever reached this script -- so a retry
+# needs no operator authorization. Presence of the marker with no
+# completed/blocked result is genuinely ambiguous (sent and lost the receipt
+# vs. crashed mid-send), so that case still requires the operator prompt
+# described in adversarial-review.md, and guard_prior_launch_attempt (below)
+# refuses to relaunch into it automatically.
 write_launch_attempted() {
     local marker=$RUN_DIR/state/launch-attempted tmp="$RUN_DIR/state/launch-attempted.tmp"
     local head_oid
@@ -489,12 +494,32 @@ initialize_finding_ledger() {
     chmod 600 -- "$ledger" || die "could not secure findings ledger: $ledger"
 }
 
+# guard_prior_launch_attempt -- #473 follow-up (F1). Refuses to relaunch into
+# a RUN_DIR whose launch-attempted marker is already present unless the
+# result it left behind is a validated terminal one (completed or blocked).
+# Marker-present-with-no-terminal-result is exactly the ambiguous "possible
+# send" state adversarial-review.md now documents: the previous attempt may
+# already have disclosed the diff and lost its receipt, so relaunching would
+# risk a second, silent disclosure with no operator authorization. This
+# check is read-only with respect to the marker -- it never rewrites or
+# removes it, so its bytes remain the forensic record of the original
+# attempt. A marker alongside an already-valid terminal result is left
+# entirely to the existing (unchanged) findings-ledger / result-clearing
+# flow that runs after this guard.
+guard_prior_launch_attempt() {
+    local marker=$RUN_DIR/state/launch-attempted result=$RUN_DIR/adversarial.result.json
+    [[ -e $marker ]] || return 0
+    valid_completed_result "$result" && return 0
+    valid_blocked_result "$result" && return 0
+    write_blocked_result prior-launch-unconfirmed \
+        "a previous launch attempt recorded at $marker has no completed or blocked result; treating this as a possible undisclosed send and refusing to relaunch automatically"
+    receipt_line
+    return 1
+}
+
 run_provider() {
     local result=$RUN_DIR/adversarial.result.json transcript=$RUN_DIR/$TRANSCRIPT_NAME
     local stdout_path=$RUN_DIR/$PROVIDER.stdout stderr_path=$RUN_DIR/$PROVIDER.stderr rc=0
-    # Written before anything else in this function, and therefore before the
-    # helper below ever runs -- this is the pre-send marker, not a post-hoc log.
-    write_launch_attempted
     local -a helper_args=(
         --mode review --model "$MODEL" --effort "$EFFORT" --pr "$PR" --repo "$REPO"
         --consent-state "$RUN_DIR/state/cross-provider-consent"
@@ -510,6 +535,11 @@ run_provider() {
     prepare_owned_artifact "$result"
     prepare_owned_artifact "$stdout_path"
     prepare_owned_artifact "$stderr_path"
+    # Written only after every local output-path preparation above has
+    # already succeeded, and always before the helper below ever runs (#473
+    # follow-up F2) -- this is the pre-send marker, not a post-hoc log, and a
+    # purely local abort must never leave one behind.
+    write_launch_attempted
     "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
     cat -- "$stderr_path" >&2 || true
 
@@ -536,6 +566,9 @@ main() {
     validate_args
     private_dir_ensure "$RUN_DIR" '--run-dir'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'
+    # Must run before the result artifact below is cleared: it needs to read
+    # whatever terminal status (if any) a prior attempt actually left behind.
+    guard_prior_launch_attempt
     prepare_owned_artifact "$RUN_DIR/adversarial.result.json"
     check_finding_ledger
     resolve_base

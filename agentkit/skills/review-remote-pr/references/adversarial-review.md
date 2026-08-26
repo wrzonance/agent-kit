@@ -122,15 +122,20 @@ The rest of the gate stands unchanged:
   The `: '…'; launcher` form cannot do that: `:` is itself an ordinary (no-op) command, so the
   `;` after its argument still separates two real statements and the launcher always runs. A
   denial that still occurs is surfaced to the user as a direct question, never routed around.
-- **A pre-send marker makes a no-op provably distinguishable from a lost receipt.**
-  `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted` (timestamp, PR, head SHA, payload
-  id) as the first action inside its provider-launch step, before the external helper is ever
-  invoked — so its presence or absence answers "did we even try to send this?" independently of
-  whether the send itself succeeded. If the marker is absent, nothing was sent and an automatic
-  retry is safe with no operator authorization (this is exactly the state a swallowed-by-`#`
-  launcher leaves behind). If the marker is present but `adversarial.result.json` never reached a
-  `completed` or `blocked` status, the send may have happened — treat that as a possible
-  disclosure and keep the operator prompt described above rather than retrying automatically.
+- **A pre-send marker makes a no-op provably distinguishable from a lost receipt, and the
+  launcher enforces it itself.** `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted`
+  (timestamp, PR, head SHA, payload id) once every local output-path preparation for the run has
+  already succeeded, immediately before the external helper is invoked — so its presence or
+  absence answers "did we even try to send this?" independently of whether the send itself
+  succeeded, and a purely local abort never leaves one behind. If the marker is absent, nothing
+  was sent and an automatic retry is safe with no operator authorization (this is exactly the
+  state a swallowed-by-`#` launcher leaves behind). If the marker is present but
+  `adversarial.result.json` never reached a `completed` or `blocked` status, the send may have
+  happened; `adversarial-run.sh` itself refuses to relaunch into that RUN_DIR — it publishes a
+  `blocked` result naming the ambiguous prior attempt and exits nonzero rather than risking a
+  second, silent disclosure — so clearing it takes a fresh `--run-dir` or explicit operator
+  review, never an automatic retry. A marker next to an already-valid completed or blocked result
+  is left to the ordinary findings-ledger / result-clearing flow, unaffected by this guard.
 - **Still disclose.** Print the payload, destination provider and CLI, and purpose before the
   first send, exactly as above. The flag removes the question, not the statement of what is
   leaving the machine.

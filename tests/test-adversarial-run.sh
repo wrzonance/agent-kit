@@ -681,6 +681,80 @@ assert_eq blocked "$(jq -r '.status' <"$noreceipt_run/adversarial.result.json")"
 assert_not_contains "$(cat -- "$tmp/noreceipt.out")" 'verdict=findings' \
     'marker-present-no-receipt is never reported as a genuine completed review'
 
+# --- #473 follow-up (F1, PR #479 adversarial review): a RUN_DIR whose
+# launch-attempted marker is already present with no terminal (completed or
+# blocked) result must refuse to relaunch, even with fully valid consent --
+# that combination means a prior attempt may have already sent the diff and
+# lost its receipt, so relaunching would risk a second, silent disclosure.
+# The guard must fire before the provider helper is ever invoked and must
+# never touch the pre-existing marker bytes.
+prior_launch_run="$tmp/prior-launch-run"
+grant "$prior_launch_run" anthropic
+printf '%s' '{"timestamp":"2020-01-01T00:00:00Z","pr":42,"head":"deadbeef","payload":"stale"}' \
+    >"$prior_launch_run/state/launch-attempted"
+chmod 600 -- "$prior_launch_run/state/launch-attempted"
+prior_launch_marker_before=$(sha256sum -- "$prior_launch_run/state/launch-attempted" | awk '{print $1}')
+prior_launch_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/prior-launch.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$prior_launch_run") \
+    >"$tmp/prior-launch.out" 2>"$tmp/prior-launch.err" || prior_launch_rc=$?
+assert_eq 1 "$prior_launch_rc" \
+    'a marker with no terminal result refuses a second launch even with valid consent'
+assert_eq no "$( [[ -e $tmp/prior-launch.called ]] && printf yes || printf no )" \
+    'the guard fires before the provider helper is ever invoked'
+prior_launch_marker_after=$(sha256sum -- "$prior_launch_run/state/launch-attempted" | awk '{print $1}')
+assert_eq "$prior_launch_marker_before" "$prior_launch_marker_after" \
+    'the guard never overwrites the pre-existing launch-attempted marker'
+assert_eq blocked "$(jq -r '.status' <"$prior_launch_run/adversarial.result.json")" \
+    'the guard publishes a blocked result rather than relaunching'
+assert_contains "$(jq -r '.blockedReason' <"$prior_launch_run/adversarial.result.json")" \
+    'prior-launch' \
+    'the blocked reason names the ambiguous prior-launch state'
+assert_contains "$(cat -- "$tmp/prior-launch.out")" 'verdict=blocked' \
+    'a marker with no terminal result is never reported as a completed review'
+
+# The complementary case: a marker alongside an already-VALID completed
+# result is left to the existing (unchanged) findings-ledger/result-clearing
+# flow -- the new guard must not add a fresh refusal there. Reuses the
+# already-completed claude_run RUN_DIR from earlier in this suite, which has
+# both launch-attempted and a valid completed result on disk.
+assert_eq yes "$( [[ -s $claude_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'sanity: the completed claude_run fixture still carries its marker'
+terminal_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/terminal-reuse.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_run") \
+    >"$tmp/terminal-reuse.out" 2>"$tmp/terminal-reuse.err" || terminal_rc=$?
+assert_eq 0 "$terminal_rc" \
+    'a marker alongside an already-valid completed result is not blocked by the new guard'
+assert_eq yes "$( [[ -e $tmp/terminal-reuse.called ]] && printf yes || printf no )" \
+    "the guard defers to today's unchanged existing-run-dir behaviour for a terminal result"
+
+# --- #473 follow-up (F2, PR #479 adversarial review): the launch-attempted
+# marker must only be written after every local output-path preparation
+# succeeds, so a purely local abort (e.g. a hostile pre-existing artifact
+# target) never leaves behind a marker that falsely claims a possible send.
+# anthropic.stdout is prepared inside run_provider itself (unlike
+# adversarial.result.json, which main() already validates earlier), so a
+# symlink planted there is only ever caught at that later, run_provider-local
+# preparation step -- exactly the ordering this fix pins down.
+local_abort_run="$tmp/local-abort-run"
+grant "$local_abort_run" anthropic
+ln -s /etc/passwd "$local_abort_run/anthropic.stdout"
+local_abort_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/local-abort.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$local_abort_run") \
+    >"$tmp/local-abort.out" 2>"$tmp/local-abort.err" || local_abort_rc=$?
+assert_eq 1 "$local_abort_rc" 'a hostile local output target aborts before any send'
+assert_contains "$(cat -- "$tmp/local-abort.err")" 'refusing to use an artifact symlink' \
+    'the local abort names the unsafe artifact'
+assert_eq no "$( [[ -e $tmp/local-abort.called ]] && printf yes || printf no )" \
+    'a purely local abort never reaches the provider helper'
+assert_eq no "$( [[ -e $local_abort_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'a purely local abort never writes the launch-attempted marker'
+
 # A tracked `.agent` symlink bypasses leaf-only provenance checks: Git tracks
 # the link itself, not the resolved `.agent/env-contract.txt` path. The runner
 # must reject it before consulting attacker-controlled reviewer facts or
