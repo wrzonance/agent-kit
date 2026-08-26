@@ -109,6 +109,17 @@ assert_eq 'true' "$(jq -r '.[] | select(.number == 48) | .tracker' <<< "$tracker
 assert_contains "$(jq -r '.[] | select(.number == 48) | .trackerReason' <<< "$tracker_json")" 'label' \
     'tracker metadata names the structural reason'
 
+# Malformed label nodes are tolerated as partial GraphQL evidence: a null or
+# non-string label must not crash the whole digest or fabricate tracker status.
+malformed_labels="$tmp/triage-malformed-labels.json"
+jq '(.data.repository.issues.nodes[] | select(.number == 57))
+    |= (.labels.nodes += [null, {"name":null}, {"name":42}])' \
+    "$here/fixtures/triage-mixed.json" > "$malformed_labels"
+malformed_out=$(GH_STUB_LOG="$tmp/gh-malformed.log" GH_STUB_RESPONSE="$malformed_labels" \
+    PATH="$tmp/stub:$PATH" "$tr_sh" --repo-root "$repo")
+assert_contains "$(printf '%s\n' "$malformed_out" | grep -E '^#57[[:space:]]')" 'clean' \
+    'malformed tracker labels degrade to the existing clean verdict'
+
 # The script must never claim an interpretation it cannot prove.
 assert_not_contains "$out" 'fully addressed' 'never claims fully addressed'
 assert_not_contains "$out" 'partially addressed' 'never claims partially addressed'

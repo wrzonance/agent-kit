@@ -543,7 +543,8 @@ Examples cover all queue shapes:
 ```text
 Selection funnel: requested=3 eligible=3 dispatched=3 queued=0 tracker=0 exclusions=none
 Selection funnel: requested=3 eligible=2 dispatched=1 queued=0 tracker=0 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
-Selection funnel: requested=11 eligible=11 dispatched=10 queued=1 tracker=1 exclusions=none
+Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]
+Selection funnel: requested=12 eligible=11 dispatched=10 queued=1 tracker=1 exclusions=none
 ```
 
 For compatibility with pre-queue attended logs, these legacy examples remain recognizable:
@@ -552,7 +553,8 @@ For compatibility with pre-queue attended logs, these legacy examples remain rec
 and `Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]`.
 
 The first line says the full requested count was dispatched. The second makes a thin dispatch
-legible without widening it. The third is still emitted before the empty-selection stop below.
+legible without widening it. The third is emitted before the empty-selection stop below. The fourth
+line records the fast-mode queue: a held tracker alongside one queued overflow candidate.
 
 Announce the chosen set, every promoted-from-Backlog issue with its ranking reason, the
 dropped-for-conflict set, and the skipped-as-blocked set before dispatching. `--fast-mode`

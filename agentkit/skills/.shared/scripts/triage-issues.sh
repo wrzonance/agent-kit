@@ -344,7 +344,7 @@ def board_status:
 def winner($c): ($c | sort_by(.updatedAt // "") | reverse | .[0]);
 def tracker_reasons($selected):
   . as $i
-  | ([ $i.labels.nodes[]?.name? | ascii_downcase
+  | ([ $i.labels.nodes[]?.name? | select(type == "string") | ascii_downcase
        | select(. == "epic" or . == "tracker")
        | "label:\(.)" ]
      + (if (($i.subIssues.totalCount // 0) > 0)
