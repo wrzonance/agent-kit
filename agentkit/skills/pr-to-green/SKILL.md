@@ -95,6 +95,17 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   merges itself; without it every PR still stops at evidence-green and the
   merge stays a human action. It implies strict serial merge ordering — see
   ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
+- **GitHub API budget.** `pr-queue.sh --write-confirmed-queue` prints a
+  `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
+  (never blocks) when the queue's estimated REST cost exceeds the remaining
+  budget — read it before confirming a large queue, especially with another
+  session possibly running concurrently on the same account. A `gh-pr-state.sh`
+  or `pr-queue.sh` call that exits `3` hit rate-limit exhaustion: stop
+  mutating this run immediately, record exactly what completed versus what is
+  still outstanding from durable evidence (never from memory of intent), and
+  report the reset time the exit line names verbatim — never retry into an
+  empty pool. See ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry)
+  for the full discipline and the practical per-account concurrency ceiling.
 
 ## Resident call-site map
 
