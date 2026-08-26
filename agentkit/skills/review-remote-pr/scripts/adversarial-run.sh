@@ -20,6 +20,8 @@ PR=''
 REPO=''
 RUN_DIR=''
 PEER_CLI_ABSENT=0
+PROVENANCE=''
+PAYLOAD=''
 HARNESS_NAME=''
 RUNNING_PROVIDER=''
 PEER_CLI_NAME=''
@@ -36,6 +38,7 @@ TRANSCRIPT_NAME=''
 usage() {
     cat <<EOF
 Usage: $PROGNAME --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                        [--provenance TEXT]
 
 Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
 publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
@@ -44,6 +47,14 @@ line containing provider, model, effort, mode, P1, and P2.
 Reviewer selection comes from the running harness and peer-cli facts in the
 untracked environment contract at the repository root. The optional
 --peer-cli-absent flag must agree with a peer-cli= ... absent contract fact.
+
+--provenance TEXT carries launch authorization (the session-ledger RUN_ID, the
+recorded cross_provider_consent record, the user's verbatim invocation quote)
+as one argv element, so a harness approval layer can see it in the launch
+command itself. It is taken verbatim -- never eval'd, never re-parsed -- echoed
+to stderr with a "provenance:" prefix, and written to DIR/state/provenance
+(mode 600) before any external call. Pass it as data from a shell variable at
+the call site; never compose it into shell source.
 
 This is the real PR-diff review path. Capability probes use the provider helper
 with --mode probe --no-payload, send only a synthetic snippet, and never spend
@@ -83,6 +94,8 @@ parse_args() {
             --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;
             --run-dir=*) RUN_DIR=${1#*=}; shift ;;
             --peer-cli-absent) PEER_CLI_ABSENT=1; shift ;;
+            --provenance) require_value "$1" "${2:-}"; PROVENANCE=$2; shift 2 ;;
+            --provenance=*) PROVENANCE=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown option: $1" ;;
         esac
@@ -350,9 +363,12 @@ resolve_base_declared_config() {
 
 verify_consent() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
-    local payload state=$RUN_DIR/state/cross-provider-consent check_error
+    local state=$RUN_DIR/state/cross-provider-consent check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
-    payload=$(
+    # Stashed in the global PAYLOAD (not a local) so write_launch_attempted can
+    # reuse the exact same payload identity without a second gh/git round trip
+    # -- the marker and the consent check must agree on what "this send" means.
+    PAYLOAD=$(
         "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
             --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
@@ -360,10 +376,41 @@ verify_consent() {
     # before redirecting fd1 away) so a mismatch names the expected and
     # recorded provider tokens instead of a bare boolean refusal.
     check_error=$(
-        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
+        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$PAYLOAD" \
             2>&1 1>/dev/null
     ) && return 0
     die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
+}
+
+# write_launch_attempted -- the pre-send marker (issue #473). Written inside
+# run_provider immediately before the external review helper is invoked --
+# but only after every local output-path preparation for this run has
+# already succeeded (#473 follow-up F2) -- so its presence answers "did we at
+# least try to send this?" independently of whether the send itself
+# succeeded, crashed, or lost its receipt, and a purely local abort (a
+# hostile pre-existing artifact target, a permissions failure) never leaves
+# behind a marker that falsely claims a possible send. Absence of this
+# marker after a launch attempt proves nothing was sent -- e.g. the exact
+# "leading comment" bug this issue fixes, where a shell comment silently
+# swallowed the launcher before it ever reached this script -- so a retry
+# needs no operator authorization. Presence of the marker with no
+# completed/blocked result is genuinely ambiguous (sent and lost the receipt
+# vs. crashed mid-send), so that case still requires the operator prompt
+# described in adversarial-review.md, and guard_prior_launch_attempt (below)
+# refuses to relaunch into it automatically.
+write_launch_attempted() {
+    local marker=$RUN_DIR/state/launch-attempted tmp="$RUN_DIR/state/launch-attempted.tmp"
+    local head_oid
+    head_oid=$(git rev-parse HEAD 2>/dev/null) ||
+        die 'could not resolve the checkout HEAD for the launch marker'
+    [[ -n $PAYLOAD ]] || die 'no payload id available for the launch marker; refusing to launch review'
+    prepare_owned_artifact "$marker"
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pr "$PR" --arg head "$head_oid" \
+        --arg payload "$PAYLOAD" \
+        '{timestamp:$ts, pr:($pr|tonumber), head:$head, payload:$payload}' >"$tmp" ||
+        die 'could not encode the launch marker'
+    chmod 600 -- "$tmp" || die "could not secure the launch marker: $tmp"
+    mv -f -- "$tmp" "$marker" || die "could not publish the launch marker: $marker"
 }
 
 write_blocked_result() {
@@ -459,6 +506,72 @@ initialize_finding_ledger() {
     chmod 600 -- "$ledger" || die "could not secure findings ledger: $ledger"
 }
 
+# acquire_run_lock -- #473 follow-up (T2, PR #479 CodeRabbit). Takes an
+# exclusive, non-blocking flock on DIR/state/.launch.lock before any of the
+# marker/result decisions below are made, and holds it (via the open file
+# descriptor) for the rest of this process's life -- through provider launch
+# and terminal-result publication -- so it releases automatically on any
+# exit path, including die(). Without this, two concurrent invocations
+# sharing a RUN_DIR could both observe "no marker yet", both pass consent,
+# and both send the diff. A refusal here touches neither the launch marker
+# nor the result file: this invocation never got far enough to own either,
+# and the concurrent holder is the one actually deciding their fate.
+acquire_run_lock() {
+    local lock=$RUN_DIR/state/.launch.lock
+    local lock_fd
+    [[ ! -L $lock ]] || die "refusing to use a run lock symlink: $lock"
+    if [[ ! -e $lock ]]; then
+        (umask 077 && : >"$lock") || die "could not create run lock: $lock"
+    fi
+    [[ -f $lock && -O $lock ]] || die "refusing to use a run lock not owned by this user: $lock"
+    chmod 600 -- "$lock" || die "could not secure run lock: $lock"
+    exec {lock_fd}>"$lock" || die "could not open run lock: $lock"
+    flock -n "$lock_fd" ||
+        die "another adversarial-run.sh invocation already holds the launch lock for this run-dir; refusing to launch concurrently: $lock"
+}
+
+# write_provenance_record -- #473 follow-up (T1, PR #479 CodeRabbit). The
+# adversarial-review.md idiom previously told callers to splice the
+# operator's verbatim invocation quote into a single-quoted shell word
+# (`: '...'; launcher`); any `'` or other shell metacharacter in that quote
+# terminates the word early and the remainder becomes executable shell --
+# exactly the class of bug this option exists to remove. --provenance TEXT
+# is one argv element: bash hands it to this function as plain data, with no
+# shell interpretation of its contents, and it is never eval'd or re-parsed
+# here either. Optional: a caller that omits --provenance gets no record.
+write_provenance_record() {
+    [[ -n $PROVENANCE ]] || return 0
+    printf 'provenance: %s\n' "$PROVENANCE" >&2
+    local path=$RUN_DIR/state/provenance tmp="$RUN_DIR/state/provenance.tmp"
+    prepare_owned_artifact "$path"
+    printf '%s' "$PROVENANCE" >"$tmp" || die 'could not write the provenance record'
+    chmod 600 -- "$tmp" || die "could not secure the provenance record: $tmp"
+    mv -f -- "$tmp" "$path" || die "could not publish the provenance record: $path"
+}
+
+# guard_prior_launch_attempt -- #473 follow-up (F1). Refuses to relaunch into
+# a RUN_DIR whose launch-attempted marker is already present unless the
+# result it left behind is a validated terminal one (completed or blocked).
+# Marker-present-with-no-terminal-result is exactly the ambiguous "possible
+# send" state adversarial-review.md now documents: the previous attempt may
+# already have disclosed the diff and lost its receipt, so relaunching would
+# risk a second, silent disclosure with no operator authorization. This
+# check is read-only with respect to the marker -- it never rewrites or
+# removes it, so its bytes remain the forensic record of the original
+# attempt. A marker alongside an already-valid terminal result is left
+# entirely to the existing (unchanged) findings-ledger / result-clearing
+# flow that runs after this guard.
+guard_prior_launch_attempt() {
+    local marker=$RUN_DIR/state/launch-attempted result=$RUN_DIR/adversarial.result.json
+    [[ -e $marker ]] || return 0
+    valid_completed_result "$result" && return 0
+    valid_blocked_result "$result" && return 0
+    write_blocked_result prior-launch-unconfirmed \
+        "a previous launch attempt recorded at $marker has no completed or blocked result; treating this as a possible undisclosed send and refusing to relaunch automatically"
+    receipt_line
+    return 1
+}
+
 run_provider() {
     local result=$RUN_DIR/adversarial.result.json transcript=$RUN_DIR/$TRANSCRIPT_NAME
     local stdout_path=$RUN_DIR/$PROVIDER.stdout stderr_path=$RUN_DIR/$PROVIDER.stderr rc=0
@@ -477,6 +590,11 @@ run_provider() {
     prepare_owned_artifact "$result"
     prepare_owned_artifact "$stdout_path"
     prepare_owned_artifact "$stderr_path"
+    # Written only after every local output-path preparation above has
+    # already succeeded, and always before the helper below ever runs (#473
+    # follow-up F2) -- this is the pre-send marker, not a post-hoc log, and a
+    # purely local abort must never leave one behind.
+    write_launch_attempted
     "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
     cat -- "$stderr_path" >&2 || true
 
@@ -503,6 +621,13 @@ main() {
     validate_args
     private_dir_ensure "$RUN_DIR" '--run-dir'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'
+    # Serializes this whole invocation against any concurrent one sharing the
+    # same RUN_DIR before either the marker or the result is ever inspected.
+    acquire_run_lock
+    write_provenance_record
+    # Must run before the result artifact below is cleared: it needs to read
+    # whatever terminal status (if any) a prior attempt actually left behind.
+    guard_prior_launch_attempt
     prepare_owned_artifact "$RUN_DIR/adversarial.result.json"
     check_finding_ledger
     resolve_base
