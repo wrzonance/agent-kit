@@ -3,7 +3,9 @@
 set -euo pipefail
 umask 077
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# Resolve a PATH symlink first (as bootstrap-repo.sh does): BASH_SOURCE[0]
+# names the symlink, whose directory has no lib/ sibling to source.
+SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)
 readonly SCRIPT_DIR
 # shellcheck disable=SC1091  # sibling library is resolved at runtime
 source "$SCRIPT_DIR/lib/secure-mkdir.sh"
