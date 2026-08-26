@@ -349,6 +349,37 @@ assert_eq '1' "$rc" 'a code-quality-state-file whose head predates the current h
 assert_contains "$out" 'blocked reason=code-quality state file predates the current head' \
     'the stale code-quality-state-file is caught as stale evidence'
 
+# Regression (issue #472 review, F2): complete/pending require exactly one
+# well-formed, full 40-character head= field -- a missing or short one must
+# die as malformed evidence, never silently skip the staleness check and be
+# accepted.
+good_digest
+write_cq_state_file 'scan-state=complete findings-on-head=0'
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt" 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a complete code-quality-state-file with no head= field dies instead of skipping the staleness check'
+assert_contains "$out" 'code-quality state file is malformed' 'the missing-head=field error is named'
+
+good_digest
+write_cq_state_file "scan-state=complete head=$HEAD_SHA7 findings-on-head=0"
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt" 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a complete code-quality-state-file with a short (7-char) head= dies instead of being silently accepted'
+assert_contains "$out" 'code-quality state file is malformed' 'the short-head=field error is named'
+
+good_digest
+write_cq_state_file "scan-state=pending head=$HEAD_SHA7"
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt" 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a pending code-quality-state-file with a short (7-char) head= dies instead of being silently accepted'
+assert_contains "$out" 'code-quality state file is malformed' 'the short-head=field error is named for pending too'
+
 # Regression: a findings-on-head value that is itself 7+ hex-valid digits
 # (e.g. a large finding count) must never be mistaken for the head= field --
 # "findings-on-head=" contains its own "head=" substring with no space

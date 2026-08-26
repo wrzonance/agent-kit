@@ -131,19 +131,33 @@ if [[ -n $cq_state_file ]]; then
         "$cq_state_file" | head -n 1) || true
     [[ -n $cq_line ]] || die 'code-quality state file is malformed (no readable scan-state= line)'
     cq_file_state=$(sed -nE 's/^scan-state=([a-z-]+).*$/\1/p' <<<"$cq_line")
-    if [[ $cq_file_state == complete || $cq_file_state == pending ]]; then
-        # Anchored on a leading space so a long numeric findings-on-head=N
-        # suffix (N all-hex-valid digits, 7+ of them) can never be
-        # mistaken for the head= field itself -- "findings-on-head=" has no
-        # space before its own "head=" substring, only a hyphen.
-        cq_file_head=$(sed -nE 's/^.* head=([0-9a-f]{7,40})( .*)?$/\1/p' <<<"$cq_line")
-        if [[ -n $cq_file_head ]]; then
-            [[ ${head_sha:0:${#cq_file_head}} == "$cq_file_head" ]] ||
+    # complete/pending each require EXACTLY one well-formed, full 40-char
+    # head= field, matched via a whole-line anchored regex rather than a
+    # loose extraction -- this is what makes it impossible for a
+    # findings-on-head=N suffix (which also contains the substring "head=")
+    # to be mistaken for the real field, and impossible for a missing,
+    # short, or otherwise malformed head= to slip through unchecked
+    # (issue #472 review, F2). A mismatch against the live --head-sha is a
+    # stale-evidence block; a field that doesn't even parse is malformed
+    # evidence and dies outright, exactly like any other unreadable input
+    # this gate refuses to guess about.
+    case $cq_file_state in
+        complete)
+            [[ $cq_line =~ ^scan-state=complete\ head=([0-9a-f]{40})\ findings-on-head=[0-9]+$ ]] ||
+                die 'code-quality state file is malformed (complete requires a full 40-character head= and findings-on-head=)'
+            [[ ${BASH_REMATCH[1]} == "$head_sha" ]] ||
                 block 'code-quality state file predates the current head (stale evidence)'
-        fi
-    elif [[ $cq_file_state == unknown ]]; then
-        cq_file_reason=$(sed -nE 's/^.*reason=(.*)$/\1/p' <<<"$cq_line")
-    fi
+            ;;
+        pending)
+            [[ $cq_line =~ ^scan-state=pending\ head=([0-9a-f]{40})$ ]] ||
+                die 'code-quality state file is malformed (pending requires a full 40-character head=)'
+            [[ ${BASH_REMATCH[1]} == "$head_sha" ]] ||
+                block 'code-quality state file predates the current head (stale evidence)'
+            ;;
+        unknown)
+            cq_file_reason=$(sed -nE 's/^.*reason=(.*)$/\1/p' <<<"$cq_line")
+            ;;
+    esac
 fi
 
 cq_effective_state=$cq_scan_state

@@ -115,6 +115,24 @@ out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
 assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
     'a zero-finding head is reported complete even alongside a repository-wide open finding elsewhere'
 
+# Regression (issue #472 review, F1): a missing or null findings_count on the
+# matched analysis must never be read as a clean zero-finding scan via a `//
+# 0` default -- it is unreadable evidence and must report unknown, never
+# complete.
+write_gh "[{\"commit_sha\":\"$HEAD_SHA\",\"findings_count\":null,\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
+out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
+rc=$?
+assert_contains "$out" 'scan-state=unknown' \
+    'a null findings_count on the matched analysis is reported unknown, never complete'
+assert_eq '1' "$rc" 'a null findings_count exits 1'
+
+write_gh "[{\"commit_sha\":\"$HEAD_SHA\",\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
+out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
+rc=$?
+assert_contains "$out" 'scan-state=unknown' \
+    'an absent findings_count key on the matched analysis is reported unknown, never complete'
+assert_eq '1' "$rc" 'an absent findings_count key exits 1'
+
 # pending: a readable but empty (no match for this commit) analyses array is
 # a normal still-outstanding scan, never an error.
 write_gh '[]' 0
