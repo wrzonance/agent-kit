@@ -20,6 +20,7 @@ PR=''
 REPO=''
 RUN_DIR=''
 PEER_CLI_ABSENT=0
+PAYLOAD=''
 HARNESS_NAME=''
 RUNNING_PROVIDER=''
 PEER_CLI_NAME=''
@@ -350,9 +351,12 @@ resolve_base_declared_config() {
 
 verify_consent() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
-    local payload state=$RUN_DIR/state/cross-provider-consent check_error
+    local state=$RUN_DIR/state/cross-provider-consent check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
-    payload=$(
+    # Stashed in the global PAYLOAD (not a local) so write_launch_attempted can
+    # reuse the exact same payload identity without a second gh/git round trip
+    # -- the marker and the consent check must agree on what "this send" means.
+    PAYLOAD=$(
         "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
             --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
@@ -360,10 +364,36 @@ verify_consent() {
     # before redirecting fd1 away) so a mismatch names the expected and
     # recorded provider tokens instead of a bare boolean refusal.
     check_error=$(
-        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$payload" \
+        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$PAYLOAD" \
             2>&1 1>/dev/null
     ) && return 0
     die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
+}
+
+# write_launch_attempted -- the pre-send marker (issue #473). Written as the
+# FIRST action inside run_provider, before the external review helper is ever
+# invoked, so its presence answers "did we at least try to send this?"
+# independently of whether the send itself succeeded, crashed, or lost its
+# receipt. Absence of this marker after a launch attempt proves nothing was
+# sent -- e.g. the exact "leading comment" bug this issue fixes, where a
+# shell comment silently swallowed the launcher before it ever reached this
+# script -- so a retry needs no operator authorization. Presence of the
+# marker with no completed/blocked result is genuinely ambiguous (sent and
+# lost the receipt vs. crashed mid-send), so that case still requires the
+# operator prompt described in adversarial-review.md.
+write_launch_attempted() {
+    local marker=$RUN_DIR/state/launch-attempted tmp="$RUN_DIR/state/launch-attempted.tmp"
+    local head_oid
+    head_oid=$(git rev-parse HEAD 2>/dev/null) ||
+        die 'could not resolve the checkout HEAD for the launch marker'
+    [[ -n $PAYLOAD ]] || die 'no payload id available for the launch marker; refusing to launch review'
+    prepare_owned_artifact "$marker"
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pr "$PR" --arg head "$head_oid" \
+        --arg payload "$PAYLOAD" \
+        '{timestamp:$ts, pr:($pr|tonumber), head:$head, payload:$payload}' >"$tmp" ||
+        die 'could not encode the launch marker'
+    chmod 600 -- "$tmp" || die "could not secure the launch marker: $tmp"
+    mv -f -- "$tmp" "$marker" || die "could not publish the launch marker: $marker"
 }
 
 write_blocked_result() {
@@ -462,6 +492,9 @@ initialize_finding_ledger() {
 run_provider() {
     local result=$RUN_DIR/adversarial.result.json transcript=$RUN_DIR/$TRANSCRIPT_NAME
     local stdout_path=$RUN_DIR/$PROVIDER.stdout stderr_path=$RUN_DIR/$PROVIDER.stderr rc=0
+    # Written before anything else in this function, and therefore before the
+    # helper below ever runs -- this is the pre-send marker, not a post-hoc log.
+    write_launch_attempted
     local -a helper_args=(
         --mode review --model "$MODEL" --effort "$EFFORT" --pr "$PR" --repo "$REPO"
         --consent-state "$RUN_DIR/state/cross-provider-consent"

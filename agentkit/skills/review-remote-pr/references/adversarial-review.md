@@ -104,10 +104,33 @@ The rest of the gate stands unchanged:
   judges the launch command in front of it and cannot see the invocation line, so an
   external send can read as unauthorized even when it is not. Carry the provenance inline
   at the launch site — the session-ledger `RUN_ID`, the recorded `cross_provider_consent`
-  record, and the user's verbatim invocation quote carrying `--auto-review` — as a leading
-  comment or argument in the block that launches the reviewer, so "is this send
-  authorized?" is answerable from the command itself. A denial that still occurs is
-  surfaced to the user as a direct question, never routed around.
+  record, and the user's verbatim invocation quote carrying `--auto-review` — **as an
+  argument, never a comment**, in the block that launches the reviewer, so "is this send
+  authorized?" is answerable from the command itself. Use the no-op-statement idiom, not a
+  `#` comment:
+
+  ```sh
+  : 'provenance: RUN_ID=<id>; consent=<cross_provider_consent record>; invocation=<verbatim quote>'; \
+      "$agentkit/review-remote-pr/scripts/adversarial-run.sh" --pr N --repo OWNER/NAME --run-dir "$RUN_DIR"
+  ```
+
+  or pass the provenance directly as data via `--provenance TEXT` on the helper itself, if one is
+  declared. Never write the provenance as a `#` comment. In a single-line shell cell, `#` starts a
+  comment that runs to end of line — including the launcher after it — so a `# provenance: …;
+  adversarial-run.sh …` line is a silent no-op: it exits 0, sends nothing, and produces no
+  artifact, while looking exactly like a normal review to a script that only checks the exit code.
+  The `: '…'; launcher` form cannot do that: `:` is itself an ordinary (no-op) command, so the
+  `;` after its argument still separates two real statements and the launcher always runs. A
+  denial that still occurs is surfaced to the user as a direct question, never routed around.
+- **A pre-send marker makes a no-op provably distinguishable from a lost receipt.**
+  `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted` (timestamp, PR, head SHA, payload
+  id) as the first action inside its provider-launch step, before the external helper is ever
+  invoked — so its presence or absence answers "did we even try to send this?" independently of
+  whether the send itself succeeded. If the marker is absent, nothing was sent and an automatic
+  retry is safe with no operator authorization (this is exactly the state a swallowed-by-`#`
+  launcher leaves behind). If the marker is present but `adversarial.result.json` never reached a
+  `completed` or `blocked` status, the send may have happened — treat that as a possible
+  disclosure and keep the operator prompt described above rather than retrying automatically.
 - **Still disclose.** Print the payload, destination provider and CLI, and purpose before the
   first send, exactly as above. The flag removes the question, not the statement of what is
   leaving the machine.
