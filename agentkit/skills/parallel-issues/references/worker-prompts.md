@@ -142,6 +142,14 @@ blocker: report the path and why before touching it, so the root can record a sa
 `chain-conversion`, `merge-down`, or `prediction-expansion` disposition. Do not silently
 widen the set.
 
+If the pinned write set cannot contain a required implementation or regression-test path,
+stop before editing it and emit exactly one machine-readable line in the completion report:
+`needs-paths: <glob>[,<glob>...]`. Use repository-relative globs only, with no spaces,
+controls, traversal, or shell syntax. Preserve the worktree and explain the missing paths
+after that line; the root will record a `prediction-expansion` revision on the existing
+dispatch-plan entry and resume this same lead with the expanded set. Do not open a fresh
+worktree or silently edit outside the pinned prediction.
+
 ## Progress, commit, and push (you publish your own branch)
 
 At each six-step transition you may save a read-only diff checkpoint under

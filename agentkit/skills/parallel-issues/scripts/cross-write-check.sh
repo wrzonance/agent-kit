@@ -19,11 +19,11 @@ die() {
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  cross-write-check.sh snapshot --root PATH --output FILE --write-set GLOB [--write-set GLOB ...]
-  cross-write-check.sh collect --root PATH --snapshot FILE --worker-worktree PATH --issue N \
+  cross-write-check.sh snapshot --worktree PATH --output FILE --write-set GLOB [--write-set GLOB ...]
+  cross-write-check.sh collect --root PATH --snapshot FILE --worktree PATH --issue N \
       --write-set GLOB [--write-set GLOB ...] [--worker-start EPOCH --worker-end EPOCH] \
       [--dispose-duplicates]
-  cross-write-check.sh dispose --root PATH --worker-worktree PATH --path RELATIVE [--expected-hash HASH]
+  cross-write-check.sh dispose --root PATH --worktree PATH --path RELATIVE [--expected-hash HASH]
 EOF
     exit 2
 }
@@ -441,7 +441,7 @@ snapshot_cmd() {
     while (($#)); do
         arg=$1
         case $arg in
-            --root) (($# >= 2)) || die '--root requires a value'; root=$2; shift 2;;
+            --root | --worktree) (($# >= 2)) || die "$arg requires a value"; root=$2; shift 2;;
             --output) (($# >= 2)) || die '--output requires a value'; output=$2; shift 2;;
             --write-set) (($# >= 2)) || die '--write-set requires a value'; write_sets+=("$2"); shift 2;;
             -h|--help) usage;;
@@ -507,7 +507,7 @@ collect_cmd() {
         case $arg in
             --root) (($# >= 2)) || die '--root requires a value'; root=$2; shift 2;;
             --snapshot) (($# >= 2)) || die '--snapshot requires a value'; snapshot=$2; shift 2;;
-            --worker-worktree) (($# >= 2)) || die '--worker-worktree requires a value'; worker=$2; shift 2;;
+            --worker-worktree | --worktree) (($# >= 2)) || die "$arg requires a value"; worker=$2; shift 2;;
             --issue|--worker-id) (($# >= 2)) || die "$arg requires a value"; issue=${2#\#}; shift 2;;
             --worker-start) (($# >= 2)) || die '--worker-start requires a value'; worker_start=$2; shift 2;;
             --worker-end) (($# >= 2)) || die '--worker-end requires a value'; worker_end=$2; shift 2;;
@@ -750,7 +750,7 @@ dispose_cmd() {
         arg=$1
         case $arg in
             --root) (($# >= 2)) || die '--root requires a value'; root=$2; shift 2;;
-            --worker-worktree) (($# >= 2)) || die '--worker-worktree requires a value'; worker=$2; shift 2;;
+            --worker-worktree | --worktree) (($# >= 2)) || die "$arg requires a value"; worker=$2; shift 2;;
             --path) (($# >= 2)) || die '--path requires a value'; path=$2; shift 2;;
             --expected-hash) (($# >= 2)) || die '--expected-hash requires a value'; expected_hash=$2; shift 2;;
             -h|--help) usage;;

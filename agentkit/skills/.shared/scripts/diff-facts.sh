@@ -13,7 +13,7 @@ fi
 readonly PROGRAM=${0##*/}
 
 usage() {
-    printf 'usage: %s [--repo-root DIR] [--base REF]\n' "$PROGRAM" >&2
+    printf 'usage: %s [--worktree DIR|--repo-root DIR] [--base REF]\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -26,7 +26,7 @@ repo_root=''
 base=''
 while (($#)); do
     case $1 in
-        --repo-root)
+        --worktree | --repo-root)
             (($# >= 2)) || usage
             repo_root=$2
             shift 2
