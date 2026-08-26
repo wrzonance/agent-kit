@@ -116,6 +116,17 @@ assert_contains "$parallel_with_refs" 'print the shared-board finding' \
     'the shared-board disclosure survives the flag'
 assert_contains "$parallel_with_refs" 'dropped with a printed reason, not asked about' \
     'a Blocked-column candidate is excluded, not a question'
+assert_contains "$parallel_with_refs" 'classified `tracker`' \
+    'fast mode classifies active epics and trackers without prompting'
+assert_contains "$parallel_with_refs" 'queued=' \
+    'fast mode discloses cap overflow as queued work'
+assert_contains "$parallel" 'active tracker' \
+    'the main triage procedure names the tracker hold path'
+assert_contains "$parallel_with_refs" \
+    'Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]' \
+    'the funnel keeps a live zero-eligible example'
+assert_contains "$parallel_with_refs" 'The fast-mode example records a queued issue identity' \
+    'funnel prose points at the fast-mode example'
 
 # --- publishing is the invocation's own output -------------------------------
 # Branch pushes and DRAFT PR opens are what the skill was invoked to produce;

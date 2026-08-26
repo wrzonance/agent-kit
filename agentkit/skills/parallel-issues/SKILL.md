@@ -37,7 +37,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | Flag | Aliases | Effect |
 |------|---------|--------|
 | `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. |
-| `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
+| `--fast-mode` | — | Select without the Step 3 approval gate; hold trackers, promote unblocked Backlog issues, queue overflow. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent for this invocation's diff review. The consent-bearing review launch stays in the consent-holding context (root by default); dispatched loops do not launch it. |
 | `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
@@ -390,7 +390,7 @@ issue needs none of it.
 | `merged-ref` | a merged PR references it | read **that PR only**, then apply the prior-art table |
 | `in-flight` | an open PR references it | flag and ask — already being worked; do not double-dispatch |
 | `attempted` | a closed-unmerged PR references it | read that PR's review threads; they usually say why it died |
-| `active` | Status is In progress or In review | flag and ask before touching |
+| `active` | Status is In progress or In review | **active tracker**: hold; fast-mode drops active; attended asks |
 | `unknown` | the query returned nothing usable | re-run; if it persists, fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` |
 
 An `adr=` path is a **candidate located by token overlap**, not a verdict. Read
@@ -484,11 +484,7 @@ those. A multi-predecessor join is **scheduled, not dropped**: defer it until ev
 predecessor's commit is pushed, then merge those commits down into its start point and push
 that merged result before dispatch (a conflict parks the join by name) — an unpushed join
 base lives only in local git objects and can be lost if the session or worktree that built
-it is torn down first. Chains respect a chain depth cap: 4; deeper tails
-are dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
-state or publication. See [references/chains.md](references/chains.md) for the walkthrough
-behind these rules — building the graph, publishing a locally-built base, deferred dispatch,
-the join merge-down, and the merge-order retarget.
+it is torn down first. Chains cap 4 successor links; deeper tails enter the same refill queue as slot-cap overflow (`queued=N[#...]`). When a predecessor publishes, refill the next queued successor from that exact pushed SHA. See [references/chains.md](references/chains.md).
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -588,7 +584,7 @@ else
 fi
 ```
 
-When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
+When runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
 
 **Chained issues defer — but only on the commit, not the publication.** A chain successor's
 worktree is created and its lead dispatched as soon as the predecessor's worker has
@@ -1091,6 +1087,9 @@ done
 shopt -u nullglob
 ```
 Cleanup requires user request after merge.
+
+At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`. A nonzero queue is incomplete.
+
 ## Common Mistakes
 Gate-local failures are documented where they bind. Cross-cutting rules live in
 [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md),
@@ -1099,8 +1098,8 @@ Gate-local failures are documented where they bind. Cross-cutting rules live in
 
 ## Limits
 
-- Max 10 issues. Include root in the runtime-advertised concurrency cap; queue/refill overflow, and do not dispatch without a cap.
-- Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
+- Maximum 10 per wave; include root in cap; fast-mode queues overflow; attended asks.
+- Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop; chains count toward the issue limit.
 - Invocation opts into issue leads; only root spawns.
 - Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
 - Requires local instructions and a `main` or `master` branch.

@@ -20,7 +20,7 @@
 #
 # Usage:
 #   pick-issues.sh [--repo-root DIR] [--limit N] [--include-backlog]
-#                  [--ready-only] [--json]
+#                  [--ready-only] [--fast-mode --slot-cap N] [--json]
 #
 # Exit: 0 success (including an empty selection), 1 a call failed or the board
 #       read was truncated (declared total exceeds what --limit fetched -- a
@@ -38,6 +38,7 @@ readonly DEFAULT_LIMIT=1000
 # Dependencies deep enough to exceed this are a planning problem, not a paging
 # problem; the count is reported so a truncated read never reads as "unblocked".
 readonly BLOCKER_PAGE=20
+readonly FAST_MODE_CAP=10
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -49,7 +50,7 @@ die_blocked() {
 }
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--limit N] [--include-backlog] [--ready-only] [--json]\n' \
+    printf 'usage: %s [--repo-root DIR] [--limit N] [--include-backlog] [--ready-only] [--fast-mode --slot-cap N] [--json]\n' \
         "$PROGRAM" >&2
     exit 2
 }
@@ -58,6 +59,9 @@ repo_root=''
 limit=$DEFAULT_LIMIT
 include_backlog=0
 as_json=0
+fast_mode=0
+slot_cap=$FAST_MODE_CAP
+slot_cap_supplied=0
 
 while (($#)); do
     case $1 in
@@ -75,6 +79,13 @@ while (($#)); do
         # The default already excludes Backlog. The flag exists so a caller can
         # say so explicitly and read back what it asked for.
         --ready-only) include_backlog=0 ;;
+        --fast-mode) fast_mode=1 ;;
+        --slot-cap)
+            shift
+            (($#)) || die_usage '--slot-cap requires a number'
+            slot_cap=$1
+            slot_cap_supplied=1
+            ;;
         --json) as_json=1 ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -83,6 +94,12 @@ while (($#)); do
 done
 
 [[ $limit =~ ^[0-9]{1,4}$ ]] || die_usage "--limit must be a number, got: $limit"
+if ((fast_mode)); then
+    [[ $slot_cap =~ ^[1-9][0-9]*$ && $slot_cap -le $FAST_MODE_CAP ]] ||
+        die_usage "--slot-cap must be between 1 and $FAST_MODE_CAP in fast mode"
+elif ((slot_cap_supplied)); then
+    die_usage '--slot-cap requires --fast-mode'
+fi
 
 for tool in gh jq; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
@@ -208,19 +225,38 @@ selection=$(jq -c --argjson deps "$(jq -c '.data.repository' <<< "$deps")" '
     | sort_by([(if (.status | ascii_downcase) == "ready" then 0 else 1 end), .number])
 ' <<< "$candidates") || die 'could not merge dependency state'
 
+# The picker owns only mechanical eligibility. In fast mode it additionally
+# marks the first N eligible issues for this wave and leaves the remainder
+# explicitly queued for refill; the caller still performs conflict analysis.
+if ((fast_mode)); then
+    selection=$(jq -c --argjson cap "$slot_cap" '
+      [ .[] | select(.eligible) ] as $eligible |
+      ($eligible[:$cap] | map(.number)) as $wave |
+      map(. as $item | . + {
+        dispatch: ($item.eligible and (($wave | index($item.number)) != null)),
+        queued: ($item.eligible and (($wave | index($item.number)) == null))
+      })
+    ' <<< "$selection") || die 'could not mark fast-mode queue'
+else
+    selection=$(jq -c 'map(. + {dispatch: .eligible, queued: false})' <<< "$selection") ||
+        die 'could not mark dispatch selection'
+fi
+
 if ((as_json)); then
     printf '%s\n' "$selection"
     exit 0
 fi
 
 eligible=$(jq -r '[.[] | select(.eligible)] | length' <<< "$selection")
-printf 'pick= project=%s owner=%s scanned=%s of=%s candidates=%s selectable=%s calls=2\n' \
-    "$project_number" "$board_owner" "$fetched" "${declared_total:-$fetched}" "$count" "$eligible"
+dispatched=$(jq -r '[.[] | select(.dispatch)] | length' <<< "$selection")
+queued=$(jq -r '[.[] | select(.queued)] | length' <<< "$selection")
+printf 'pick= project=%s owner=%s scanned=%s of=%s candidates=%s selectable=%s dispatched=%s queued=%s calls=2\n' \
+    "$project_number" "$board_owner" "$fetched" "${declared_total:-$fetched}" "$count" "$eligible" "$dispatched" "$queued"
 
 jq -r '.[]
-    | if .eligible then "  " else "  SKIP " end
+    | if .queued then "  QUEUE " elif .dispatch then "  " else "  SKIP " end
       + "#\(.number)  \(.status)  \(.title)"
-      + (if .eligible then ""
+      + (if .dispatch or .queued then ""
          elif (.blockers | length) > 0 then "  [blocked by \((.blockers | map("#" + tostring) | join(", ")))]"
          else "  [\(.blockerTotal) blockers, only \(.blockerRead) read; treat as blocked]"
          end)' <<< "$selection"
