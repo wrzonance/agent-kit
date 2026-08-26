@@ -177,22 +177,30 @@ resolve_base_sha() {
         die "--base is not a resolvable commit: $BASE"
 }
 
-# path_diff_check RANGE PATH -- runs `git diff --exit-code RANGE -- PATH`,
-# path_tracked_at_head PATH -- "yes" when PATH exists in the HEAD tree, else
-# "no". `git diff --exit-code` silently reports zero differences for a path
-# that is not part of the tree/index pathspec set at all -- an untracked new
-# file (never `git add`ed) or one HEAD never had is invisible to it, not
-# merely unchanged. Without this gate, a failing path this very change
-# introduced (untracked, so neither `git diff HEAD` nor `git diff BASE...HEAD`
-# says anything about it) reads as unchanged=yes outside-diff=yes: exactly the
+# path_tracked_at_head PATH -- "yes" when PATH is a blob (a file) in the HEAD
+# tree, "dir" when it is a tree (a directory), else "no". `git diff
+# --exit-code` silently reports zero differences for a path that is not part
+# of the tree/index pathspec set at all -- an untracked new file (never
+# `git add`ed) or one HEAD never had is invisible to it, not merely
+# unchanged. Without this gate, a failing path this very change introduced
+# (untracked, so neither `git diff HEAD` nor `git diff BASE...HEAD` says
+# anything about it) reads as unchanged=yes outside-diff=yes: exactly the
 # false baseline-red this helper exists to prevent.
+#
+# A directory is deliberately never treated as "yes": `cat-file -e` alone
+# accepts a tree as tracked, so a `--paths src` covering an untracked failing
+# file somewhere under src/ would otherwise also read baseline-red. Rather
+# than recursing to classify every leaf under a directory argument, an
+# untracked leaf makes the whole directory argument change-caused -- the
+# caller passes leaf file paths, never a directory, to get past this gate.
 path_tracked_at_head() {
-    local path=$1
-    if git -C "$REPO_ROOT" cat-file -e "HEAD:$path" 2>/dev/null; then
-        printf 'yes\n'
-    else
-        printf 'no\n'
-    fi
+    local path=$1 type
+    type=$(git -C "$REPO_ROOT" cat-file -t "HEAD:$path" 2>/dev/null) || { printf 'no\n'; return 0; }
+    case $type in
+        blob) printf 'yes\n' ;;
+        tree) printf 'dir\n' ;;
+        *) printf 'no\n' ;;
+    esac
 }
 
 # prints "yes" (no differences) or "no" (differences), and dies loudly on any
@@ -209,9 +217,16 @@ path_diff_check() {
 }
 
 evidence_block() {
-    local heading='## Baseline verification evidence' path_list issue_line
+    local heading='## Baseline verification evidence' path_list issue_line p quoted=()
     [[ -z $CHECK ]] || heading+=" — $CHECK"
-    path_list=$(printf '%s ' "${NORM_PATHS[@]}")
+    # %q: a path containing a space or shell-meaningful character must render
+    # as one Bash-safe operand in the evidence proof, never as separate
+    # words a reader (or a copy-pasted rerun of the cited command) would
+    # split apart.
+    for p in "${NORM_PATHS[@]}"; do
+        quoted+=("$(printf '%q' "$p")")
+    done
+    path_list=$(printf '%s ' "${quoted[@]}")
     path_list=${path_list% }
     if [[ $ISSUE == none ]]; then
         issue_line='The baseline is not yet tracked by an issue.'
@@ -314,9 +329,9 @@ main() {
             unchanged=$(path_diff_check "HEAD" "$p")
             outside=$(path_diff_check "${BASE}...HEAD" "$p")
         else
-            # Not part of the HEAD tree: untracked (never `git add`ed) or
-            # absent from HEAD entirely. Neither diff check can see it, so
-            # never ask them -- this path is change-caused by definition.
+            # Not a tracked blob: untracked (never `git add`ed), absent from
+            # HEAD entirely, or a directory (tracked=dir). Neither diff check
+            # can see it, so never ask them -- change-caused by definition.
             unchanged=no
             outside=no
         fi

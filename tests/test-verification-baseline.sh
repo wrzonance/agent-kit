@@ -29,6 +29,9 @@ printf 'unrelated content\n' >"$repo/unrelated.txt"
 printf 'stable content\n' >"$repo/stable.txt"
 printf 'pinned content\n' >"$repo/pinned.txt"
 printf 'removed content\n' >"$repo/removed.txt"
+printf 'space file content\n' >"$repo/failing file.txt"
+mkdir -p -- "$repo/srcdir"
+printf 'existing tracked leaf\n' >"$repo/srcdir/existing.txt"
 git -C "$repo" add -A
 git -C "$repo" commit -qm base
 
@@ -63,6 +66,14 @@ printf 'dirty content, uncommitted\n' >"$repo/original-dirty.txt"
 # tracked-at-HEAD gate, a failing path the change itself created reads as
 # baseline-red.
 printf 'brand new untracked content\n' >"$repo/untracked-new.txt"
+
+# `srcdir/new-untracked.txt` is a brand-new file under a directory HEAD
+# already tracks -- `srcdir/existing.txt` stays clean, so a naive tracked
+# check on the DIRECTORY argument alone (`cat-file -e HEAD:srcdir`, which a
+# tree satisfies) would misclassify baseline-red. Passing a directory is the
+# regression case for the blob-only tracked gate: it can never itself be
+# "yes" (a leaf file is what --paths expects).
+printf 'brand new untracked leaf\n' >"$repo/srcdir/new-untracked.txt"
 
 log="$tmp/verify.log"
 printf 'declared verification failed\n' >"$log"
@@ -121,6 +132,27 @@ assert_eq '1' "$rc" 'a path deleted by this branch exits 1 (change-caused-red)'
 assert_contains "$out" 'path=removed.txt tracked=no' \
     'per-path detail reports the branch-deleted path as tracked=no'
 
+# --- change-caused-red: an untracked file under a tracked directory argument (regression) ---
+# `git cat-file -e HEAD:srcdir` alone would accept a tree as tracked --
+# srcdir/existing.txt is genuinely clean, but srcdir/new-untracked.txt is
+# invisible to it, so passing the directory must never read baseline-red.
+out=$(run_helper --base main --log "$log" --paths srcdir --check demo-dir)
+rc=$?
+assert_eq '1' "$rc" 'a directory argument exits 1 (change-caused-red), never baseline-red'
+assert_contains "$out" 'change-caused-red check=demo-dir paths=1' \
+    'change-caused-red marker line names the directory-path check'
+assert_contains "$out" 'path=srcdir tracked=dir' \
+    'per-path detail reports the directory argument as tracked=dir, never yes'
+
+# --- baseline-red evidence: a path with a space renders Bash-safely quoted (regression) ---
+out=$(run_helper --base main --log "$log" --paths 'failing file.txt' --check demo-spaced)
+rc=$?
+assert_eq '0' "$rc" 'an unrelated unchanged path containing a space still exits 0 (baseline-red)'
+assert_contains "$out" 'git diff --exit-code HEAD -- failing\ file.txt' \
+    'evidence quotes a space-containing path in the unchanged-in-worktree proof'
+assert_contains "$out" 'git diff --exit-code main...HEAD -- failing\ file.txt' \
+    'evidence quotes a space-containing path in the outside-diff proof'
+
 # --- persisted decision: provenance carries forward; the verdict never does ---
 decision_file="$repo/.agent/evidence/baseline/demo-persist.json"
 run_helper --base main --log "$log" --paths unrelated.txt --check demo-persist --issue 7 >/dev/null
@@ -168,6 +200,38 @@ assert_contains "$out" 'issue=none' \
     '--force does not adopt the persisted issue'
 assert_not_contains "$out" 'reused=' \
     '--force does not report a matched persisted decision'
+
+# --- compose-pr-body.sh --baseline-file coverage (review-remote-pr Step 2 recipe) ---
+composer="$root/agentkit/skills/parallel-issues/scripts/compose-pr-body.sh"
+baseline_evidence="$tmp/baseline-evidence.md"
+run_helper --base main --log "$log" --paths stable.txt --check demo-compose --issue 123 \
+    >"$baseline_evidence"
+assert_rc 0 'the baseline-red recipe output is captured for composer coverage' -- \
+    test -s "$baseline_evidence"
+
+why="$tmp/why.md"; printf 'Why text.\n' >"$why"
+what="$tmp/what.md"; printf 'What text.\n' >"$what"
+decisions="$tmp/decisions.md"; printf 'Decision text.\n' >"$decisions"
+testing="$tmp/testing.md"; printf -- '- [x] full suite\n' >"$testing"
+pr_body="$tmp/pr-body.md"
+assert_rc 0 'compose-pr-body.sh accepts --baseline-file' -- \
+    bash "$composer" --issue 42 --why-file "$why" --what-file "$what" \
+        --decisions-file "$decisions" --testing-file "$testing" \
+        --baseline-file "$baseline_evidence" --agent 'Test Agent' --output "$pr_body"
+body_text=$(<"$pr_body")
+assert_contains "$body_text" '## Baseline verification evidence — demo-compose' \
+    'the composed PR body carries the baseline evidence block'
+
+testing_idx=$(grep -n '^## Testing$' "$pr_body" | head -n1 | cut -d: -f1)
+baseline_idx=$(grep -n '^## Baseline verification evidence' "$pr_body" | head -n1 | cut -d: -f1)
+coauthor_idx=$(grep -n '^🤖 Co-authored by' "$pr_body" | head -n1 | cut -d: -f1)
+order_ok=no
+if [[ -n $testing_idx && -n $baseline_idx && -n $coauthor_idx ]] &&
+    ((testing_idx < baseline_idx && baseline_idx < coauthor_idx)); then
+    order_ok=yes
+fi
+assert_eq yes "$order_ok" \
+    'the baseline evidence section lands after Testing and before the Co-authored line'
 
 # --- usage errors ------------------------------------------------------------
 assert_rc 2 'missing --base is a usage error' -- \

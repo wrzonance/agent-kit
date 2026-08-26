@@ -5,7 +5,7 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 # Review Remote PR
 
-Draft loop. **Phase A:** root owns CI/conflicts, materiality, approved fix delegation, adversarial review, and publication. **Phase B:** only the user marks ready. **Phase C:** assess provider findings in one-push cycles. Human feedback stays confirmation-gated.
+Draft loop. **Phase A:** root owns CI/conflicts, materiality, fix delegation, adversarial review, publication. **Phase B:** user marks ready. **Phase C:** assess findings in one-push cycles. Human feedback stays confirmation-gated.
 
 **Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
 
@@ -19,7 +19,7 @@ once before Phase C; this is the sole exception to the ordinary no-re-read rule.
 reference's size before reading it (`wc -l`, `stat`, `head`): nothing in this skill consumes a
 line count, and per-file sizing spends one root turn per file before any real work starts.
 
-Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) and execute each `bash` fence through its `bash -c` boundary, not the harness shell.
+Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) and execute each `bash` fence via its `bash -c` boundary.
 
 ## Non-negotiables
 
@@ -70,9 +70,8 @@ A missing `jq`/`python3` is a blocking check, never a silent "no findings":
 `command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }`
 Before any GitHub body mutation, follow the shared GitHub body transport policy
 ["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md).
-Read ["$agentkit/review-remote-pr/references/environment-contract.md"](references/environment-contract.md) in full before Step 0a — it carries the full runtime-neutrality contract (session-contract facts, no cross-session
-inference, no TLS bypass) and the environment-contract mechanics (the preflight block, its
-decision lines, and the repo-runner opt-in) behind the rules above.
+Read ["$agentkit/review-remote-pr/references/environment-contract.md"](references/environment-contract.md) in full before Step 0a — it carries the runtime-neutrality contract and
+environment-contract mechanics (preflight block, decision lines, repo-runner opt-in).
 
 ## Automated review provider rules
 
@@ -363,7 +362,7 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
 repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
 before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
-context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — a proven baseline-red (`verification-baseline.sh`; pr-to-green §2) may still proceed.
+context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, run `verification-baseline.sh --paths P... --check NAME --base origin/$BASE_BRANCH --log LOG >"$RUN_DIR/baseline-evidence.md"`; exit `0` proceeds, passing it as `--baseline-file` to `compose-pr-body.sh`; exit `1` fixes it as today.
 
 ### Wait contract: one turn-free wait
 
