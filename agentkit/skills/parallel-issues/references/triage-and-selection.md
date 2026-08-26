@@ -419,6 +419,9 @@ mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*
 IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
 for path in "${needs_paths[@]}"; do [[ -n $path && $path != /* && $path != *[[:cntrl:]]* ]] || exit 1; case "/$path/" in *'/../'*|*'//'*|*'/./'*) exit 1;; esac; done
 needs_json=$(printf '%s\n' "${needs_paths[@]}" | jq -R -s 'split("\n") | map(select(length > 0))')
+plan_dir=$(dirname -- "$dispatch_plan")
+plan_tmp=$(mktemp "$plan_dir/.dispatch-plan.XXXXXX") || exit 1
+trap 'rm -f -- "$plan_tmp"' EXIT
 jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
   '.entries |= map(if .issue == $issue then .predictedWriteSet += $paths else . end) |
    .conflictMap.revisions += [{issues: [$issue], paths: $paths,
