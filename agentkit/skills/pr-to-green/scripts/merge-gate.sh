@@ -20,6 +20,7 @@ digest_file=''
 provider_result=''
 human_decided=''
 cq_scan_state=''
+cq_state_file=''
 work_dir=''
 declare -a reasons=()
 
@@ -55,7 +56,15 @@ usage() {
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --pr-state-digest FILE --provider-result RESULT
        --human-items-decided yes|no
-       --code-quality-scan-state complete|pending|not-enabled
+       [--code-quality-scan-state complete|pending|not-enabled]
+       [--code-quality-state-file FILE]
+
+At least one of --code-quality-scan-state or --code-quality-state-file is
+required. --code-quality-state-file names a code-quality-state.sh --head
+output file (its scan-state=complete|pending|not-enabled|unknown token is
+read live). When both are given they must agree, byte-for-byte on the
+scan-state token, or the gate refuses outright -- never silently prefers
+one over the other.
 EOF
     exit "${1:-2}"
 }
@@ -70,6 +79,7 @@ while (($#)); do
         --provider-result) (($# >= 2)) || usage; provider_result=$2; shift 2 ;;
         --human-items-decided) (($# >= 2)) || usage; human_decided=$2; shift 2 ;;
         --code-quality-scan-state) (($# >= 2)) || usage; cq_scan_state=$2; shift 2 ;;
+        --code-quality-state-file) (($# >= 2)) || usage; cq_state_file=$2; shift 2 ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -87,10 +97,19 @@ case $provider_result in
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
 esac
 case $human_decided in yes|no) ;; *) die '--human-items-decided must be yes or no' ;; esac
-case $cq_scan_state in
-    complete|pending|not-enabled) ;;
-    *) die '--code-quality-scan-state must be complete, pending, or not-enabled' ;;
-esac
+[[ -n $cq_scan_state || -n $cq_state_file ]] ||
+    die '--code-quality-scan-state or --code-quality-state-file is required'
+if [[ -n $cq_scan_state ]]; then
+    case $cq_scan_state in
+        complete|pending|not-enabled) ;;
+        *) die '--code-quality-scan-state must be complete, pending, or not-enabled' ;;
+    esac
+fi
+if [[ -n $cq_state_file ]]; then
+    [[ -f $cq_state_file && ! -L $cq_state_file && -O $cq_state_file ]] ||
+        die '--code-quality-state-file must be an owned regular file, not a symlink'
+    reject_writable_by_others "$cq_state_file" '--code-quality-state-file'
+fi
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; gate evidence unavailable'
 
@@ -100,6 +119,54 @@ cleanup() { rm -rf -- "$work_dir"; }
 trap cleanup EXIT HUP INT TERM
 
 block() { reasons+=("$1"); }
+
+# --- Code Quality scan-state: an optional live helper file reconciled       -
+# against (or standing in for) the manually-supplied flag. code-quality-
+# state.sh --head SHA is the only sanctioned producer of complete/pending
+# (see auto-merge.md); this never re-derives that token itself.
+cq_file_state=''
+cq_file_reason=''
+if [[ -n $cq_state_file ]]; then
+    cq_line=$(grep -E '^scan-state=(complete|pending|not-enabled|unknown)( .*)?$' \
+        "$cq_state_file" | head -n 1) || true
+    [[ -n $cq_line ]] || die 'code-quality state file is malformed (no readable scan-state= line)'
+    cq_file_state=$(sed -nE 's/^scan-state=([a-z-]+).*$/\1/p' <<<"$cq_line")
+    # complete/pending each require EXACTLY one well-formed, full 40-char
+    # head= field, matched via a whole-line anchored regex rather than a
+    # loose extraction -- this is what makes it impossible for a
+    # findings-on-head=N suffix (which also contains the substring "head=")
+    # to be mistaken for the real field, and impossible for a missing,
+    # short, or otherwise malformed head= to slip through unchecked
+    # (issue #472 review, F2). A mismatch against the live --head-sha is a
+    # stale-evidence block; a field that doesn't even parse is malformed
+    # evidence and dies outright, exactly like any other unreadable input
+    # this gate refuses to guess about.
+    case $cq_file_state in
+        complete)
+            [[ $cq_line =~ ^scan-state=complete\ head=([0-9a-f]{40})\ findings-on-head=[0-9]+$ ]] ||
+                die 'code-quality state file is malformed (complete requires a full 40-character head= and findings-on-head=)'
+            [[ ${BASH_REMATCH[1]} == "$head_sha" ]] ||
+                block 'code-quality state file predates the current head (stale evidence)'
+            ;;
+        pending)
+            [[ $cq_line =~ ^scan-state=pending\ head=([0-9a-f]{40})$ ]] ||
+                die 'code-quality state file is malformed (pending requires a full 40-character head=)'
+            [[ ${BASH_REMATCH[1]} == "$head_sha" ]] ||
+                block 'code-quality state file predates the current head (stale evidence)'
+            ;;
+        unknown)
+            cq_file_reason=$(sed -nE 's/^.*reason=(.*)$/\1/p' <<<"$cq_line")
+            ;;
+    esac
+fi
+
+cq_effective_state=$cq_scan_state
+if [[ -n $cq_state_file ]]; then
+    if [[ -n $cq_scan_state && $cq_scan_state != "$cq_file_state" ]]; then
+        die "--code-quality-scan-state ($cq_scan_state) and --code-quality-state-file ($cq_file_state) disagree"
+    fi
+    cq_effective_state=$cq_file_state
+fi
 
 # --- Live PR state: the freshest possible read, independent of the digest ---
 "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" 2>"$work_dir/api.err" ||
@@ -448,9 +515,17 @@ esac
 [[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision'
 # not-enabled (issue #403) means Code Quality is disabled for the repository
 # -- a stable fact, not a scan in flight -- so it gates exactly like
-# complete; pending is the only value that still blocks.
-[[ $cq_scan_state == complete || $cq_scan_state == not-enabled ]] ||
-    block 'github-code-quality scan is still pending on the current head'
+# complete; pending and unknown still block ("unknown" comes only from
+# code-quality-state.sh --head reporting an unreadable analysis probe --
+# never fabricated here, and never treated as complete).
+case $cq_effective_state in
+    complete|not-enabled) ;;
+    pending) block 'github-code-quality scan is still pending on the current head' ;;
+    unknown)
+        block "github-code-quality scan state is unknown${cq_file_reason:+ ($cq_file_reason)}"
+        ;;
+    *) block "github-code-quality scan state is unrecognized: $cq_effective_state" ;;
+esac
 
 if ((${#reasons[@]} > 0)); then
     for reason in "${reasons[@]}"; do

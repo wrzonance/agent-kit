@@ -151,14 +151,38 @@ and additionally consumes:
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.
-- `--code-quality-scan-state complete|pending|not-enabled` — whether the
-  `github-code-quality` scan for the current head has finished. `pending`
-  blocks (a finding merely replied-to, with the rescan still outstanding, is
-  not finished). `not-enabled` (issue #403) means Code Quality is disabled
-  for the repository — a stable repository fact, not a scan in flight — and
-  gates exactly like `complete`; only a confirmed "not enabled" 403 from
-  `code-quality-state.sh --probe` earns this value, never an unreadable probe
-  (network failure, an auth/scope 403, a 5xx), which stays blocked instead.
+- `--code-quality-scan-state complete|pending|not-enabled` and/or
+  `--code-quality-state-file FILE` — whether the `github-code-quality` scan
+  for the current head has finished. `pending` blocks (a finding merely
+  replied-to, with the rescan still outstanding, is not finished). `complete`
+  and `pending` have exactly one sanctioned source: `code-quality-state.sh
+  --head SHA --pr N` (issue #472). GitHub's `code-quality/analyses` and
+  `pulls/N/code-quality` endpoints do not exist (both 404 in a real
+  repository, confirmed live — a check that could not be made from an
+  offline review, which is why an earlier version of this helper shipped
+  against the non-existent `analyses` endpoint and could never pass), so
+  `--head` derives the token from two surfaces that are actually live and
+  per-head: the head's own check-runs (any run whose `app.slug` is exactly
+  `github-code-quality` and whose `status` is not `completed` reports
+  `pending`, checked first and unconditionally) and, once no scan is
+  in-flight, the PR's own review comments attributed to that exact commit
+  (`commit_id` or `original_commit_id`, from `github-code-quality[bot]`) —
+  never a repository-wide finding count, and never asserted by hand. Zero
+  such comments on a head with no in-flight scan is a valid, complete,
+  zero-finding result. The repository-wide `findings?state=open` list is
+  still consulted, but only to decide reachability (`not-enabled` vs an
+  unreadable repository) and to populate `--baseline-file`'s
+  `repoWideOpen` count, never to gate completion itself.
+  `--code-quality-state-file` names that helper's output file directly; when
+  both flags are given they must agree, byte-for-byte on the `scan-state=`
+  token, or the gate refuses outright. `not-enabled` (issue #403) means Code
+  Quality is disabled for the repository — a stable repository fact, not a
+  scan in flight — and gates exactly like `complete`; only a confirmed "not
+  enabled" 403 from `code-quality-state.sh --probe` (or `--head`'s own
+  reachability read) earns this value, never an unreadable probe (network
+  failure, an auth/scope 403, a 5xx), which reports `unknown` and stays
+  blocked instead — surfaced as the failing response's own `.message`, never
+  a truncated `{` from a pretty-printed JSON error body.
 
 Code-scanning completion is proven from `GET code-scanning/analyses` — the
 surface that actually records a completed analysis — not from a check-run's
