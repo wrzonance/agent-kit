@@ -118,9 +118,14 @@ if [[ $head_sha != '' ]]; then
         match_count=$(jq --arg sha "$head_sha" '[.[] | select(.commit_sha == $sha)] | length' \
             <<<"$analyses_response" 2>/dev/null) || match_count=''
         if [[ $match_count =~ ^[0-9]+$ ]] && ((match_count > 0)); then
+            # No `// 0` fallback here: a missing or null findings_count must
+            # never be read as a clean zero-finding scan (issue #472 review,
+            # F1) -- it prints as the bare token `null`, which the readable-
+            # integer check below correctly refuses same as any other
+            # unreadable value.
             findings_on_head=$(jq --arg sha "$head_sha" '
                 [.[] | select(.commit_sha == $sha)] | sort_by(.created_at // "") | last
-                | (.findings_count // 0)
+                | .findings_count
             ' <<<"$analyses_response" 2>/dev/null) || findings_on_head=''
             if [[ $findings_on_head =~ ^[0-9]+$ ]]; then
                 printf 'scan-state=complete head=%s findings-on-head=%s\n' "$head_sha" "$findings_on_head"
