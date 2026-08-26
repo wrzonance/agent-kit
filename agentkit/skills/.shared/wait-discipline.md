@@ -36,6 +36,41 @@ stdout for the single completion or expiry line.
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
+## GitHub API budget — a rate-limit exit is not a wait to retry
+
+Every `gh`-authenticated tool run by this account shares two hourly pools (REST, GraphQL) across
+every session on every machine (`~/.claude/rules/github-api-budget.md`). Two concurrent
+`pr-to-green` runs have exhausted the REST pool in well under an hour and blocked each other, with
+the failure landing on the final evidence read before a receipt (agent-kit#475). `pr-queue.sh
+--write-confirmed-queue` prints a `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight
+line and warns (never blocks) when the queue's estimated cost exceeds the remaining REST budget —
+read it before committing to a large queue, especially when another session may be running
+concurrently.
+
+A `gh-pr-state.sh` or `pr-queue.sh` call that dies on rate-limit exhaustion exits with a distinct
+code (`3`, not the ordinary `1`) and names the reset time on the same line
+(`... reset=2026-08-25T14:00:00Z`). On that exit:
+
+- **Stop mutating immediately.** Do not retry the failed call, and do not issue any further
+  write-side `gh` call for this run.
+- **Record applied-vs-outstanding.** Note exactly what completed before the refusal and what did
+  not, from durable state (worktree, forge, already-written evidence) — never from memory of intent.
+  This is the same in-flight ledger practice `github-api-budget.md` already asks for during bulk
+  mutation runs.
+- **Report the reset time verbatim** from the exit line; do not compute or guess one.
+- **Never retry into an empty pool.** A wait bound cannot fix this — the pool refills on GitHub's
+  clock, not on a poll interval. If the reset is inside this session's remaining time, stop and wait
+  for it explicitly (a plain silent wait to the target epoch, this file's recipe above) rather than
+  re-issuing calls in a loop that will keep failing until then.
+
+**Practical concurrency ceiling.** A single GitHub account's REST pool (5,000 requests/hour) is
+shared by every concurrent agent run authenticated as that user, on every machine. A `pr-to-green`
+PR costs roughly `full_reads × 8 + wait_rounds × 5` REST calls end to end (the same estimate the
+queue preflight uses) — at the default 3 `--full` phases and one 4-round `--wait-ci` cycle, about
+44 calls/PR. Two or three fully concurrent `pr-to-green`/`parallel-issues` runs against the same
+account can exhaust the pool inside an hour; the durable fix is a separate machine identity (a
+GitHub App installation token or machine account — agent-kit#179), not spacing out polls by hand.
+
 ## Default numeric bounds per wait class
 
 "An explicit bound" is a number, not an adjective. A wait issued without one falls back to
