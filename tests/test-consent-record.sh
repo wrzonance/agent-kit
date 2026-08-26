@@ -61,6 +61,26 @@ assert_rc 0 'the runner-compatible explicit grant passes an explicit check' -- \
     /bin/bash "$script" check --worktree "$explicit_worktree" --run-dir "$explicit_grant_run" \
     --provider anthropic --payload "$payload_one"
 
+# Legacy state paths remain independent of the caller's current directory for
+# every state operation, including informational disclosure.
+legacy_state="$state_dir/legacy-record"
+legacy_grant_rc=0
+(cd -- / || exit
+    /bin/bash "$script" grant --state "$legacy_state" --provider anthropic \
+        --payload "$payload_one" --source interactive) >/dev/null || legacy_grant_rc=$?
+assert_eq 0 "$legacy_grant_rc" 'legacy grant with --state works outside the Git worktree'
+legacy_check() {
+    cd -- / || return
+    /bin/bash "$script" check --state "$legacy_state" --provider anthropic --payload "$payload_one"
+}
+assert_rc 0 'legacy check with --state works outside the Git worktree' -- \
+    legacy_check
+legacy_disclosure=$(cd -- / || exit
+    /bin/bash "$script" disclose --state "$legacy_state" --payload "$payload_one" \
+        --destination 'Anthropic via Claude' --purpose 'one adversarial review of that diff')
+assert_contains "$legacy_disclosure" "payload=$payload_one" \
+    'legacy disclose with --state works outside the Git worktree'
+
 # Payload identity is derived from the repository, PR number and exact diff bytes.
 out=$(/bin/bash "$script" payload --repo acme/widget --pr 24 --diff "$diff_one")
 assert_eq "$payload_one" "$out" 'payload derives the repo, PR and exact diff hash'
@@ -111,14 +131,14 @@ canonical_diff="$tmp/canonical.diff"
 git -C "$canonical_repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$canonical_diff"
 canonical_payload=$(
     cd -- "$canonical_repo" || exit
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main --diff "$canonical_diff"
+    /bin/bash "$script" payload --worktree "$canonical_repo" --repo acme/widget --pr 24 --base-ref main --diff "$canonical_diff"
 )
 canonical_expected="acme/widget:24:$(sha256sum -- "$canonical_diff" | awk '{print $1}')"
 assert_eq "$canonical_expected" "$canonical_payload" \
     'base-ref payload hashes the canonical adversarial renderer'
 derived_payload=$(
     cd -- "$canonical_repo" || exit
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main
+    /bin/bash "$script" payload --worktree "$canonical_repo" --repo acme/widget --pr 24 --base-ref main
 )
 assert_eq "$canonical_payload" "$derived_payload" \
     'base-ref payload derives the same identity without a caller-rendered diff'
@@ -153,12 +173,12 @@ stale_expected_payload="acme/widget:24:$(git -C "$canonical_repo" --no-pager dif
     --find-renames --unified=25 origin/main...HEAD | sha256sum | awk '{print $1}')"
 stale_direct_payload=$(
     cd -- "$canonical_repo" || exit
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main
+    /bin/bash "$script" payload --worktree "$canonical_repo" --repo acme/widget --pr 24 --base-ref main
 )
 expected_after_refresh=$(
     cd -- "$canonical_repo" || exit
     git fetch --quiet origin main
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main
+    /bin/bash "$script" payload --worktree "$canonical_repo" --repo acme/widget --pr 24 --base-ref main
 )
 assert_eq differ "$( [[ $expected_after_refresh != "$stale_expected_payload" ]] && printf differ || printf same )" \
     'stale and refreshed base refs produce different payload identities'
@@ -169,7 +189,7 @@ assert_eq "$fresh_origin_oid" "$(git -C "$canonical_repo" rev-parse origin/main)
 printf '%s\n' drifted >"$canonical_diff"
 drift_payload() {
     cd -- "$canonical_repo" || return
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main --diff "$canonical_diff"
+    /bin/bash "$script" payload --worktree "$canonical_repo" --repo acme/widget --pr 24 --base-ref main --diff "$canonical_diff"
 }
 assert_rc 1 'base-ref payload rejects rendering drift' -- \
     drift_payload
@@ -197,7 +217,7 @@ supplied_empty_with_base_error=''
 supplied_empty_with_base_rc=0
 supplied_empty_with_base_error=$(
     cd -- "$canonical_repo" || exit
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main --diff "$empty_diff" 2>&1
+    /bin/bash "$script" payload --worktree "$canonical_repo" --repo acme/widget --pr 24 --base-ref main --diff "$empty_diff" 2>&1
 ) || supplied_empty_with_base_rc=$?
 assert_eq 1 "$supplied_empty_with_base_rc" \
     'payload refuses an empty supplied diff even alongside a non-empty base-ref'
@@ -221,7 +241,7 @@ empty_base_error=''
 empty_base_rc=0
 empty_base_error=$(
     cd -- "$empty_base_repo" || exit
-    /bin/bash "$script" payload --repo acme/widget --pr 24 --base-ref main 2>&1
+    /bin/bash "$script" payload --worktree "$empty_base_repo" --repo acme/widget --pr 24 --base-ref main 2>&1
 ) || empty_base_rc=$?
 assert_eq 1 "$empty_base_rc" \
     'payload refuses an empty canonical diff when HEAD already equals origin/main'
@@ -314,6 +334,10 @@ assert_rc 2 'grant rejects a --yes shortcut' -- \
     --payload "$payload_one" --yes
 
 # State failures fail closed and never become a valid check.
+assert_rc 2 'grant requires an explicit --run-dir or --state' -- \
+    /bin/bash "$script" grant --provider anthropic --payload "$payload_one" --source interactive
+assert_rc 2 'check requires an explicit --run-dir or --state' -- \
+    /bin/bash "$script" check --provider anthropic --payload "$payload_one"
 missing_state="$state_dir/missing/prN/state/record"
 assert_rc 10 'check fails closed when state is unavailable' -- \
     /bin/bash "$script" check --state "$missing_state" --provider openai --payload "$payload_two"

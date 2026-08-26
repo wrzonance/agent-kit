@@ -104,25 +104,33 @@ parse_options() {
 validate_context() {
     [[ -z $STATE_PATH || -z $RUN_DIR ]] ||
         die_usage '--state cannot be combined with --run-dir; use the shared consent state path'
-    if [[ -z $WORKTREE ]]; then
-        # Provider helpers from older skill revisions pass an explicit diff and
-        # state path but do not yet know these two addressing options. Keep that
-        # narrow compatibility lane while every documented consent flow uses
-        # both explicit paths below.
-        WORKTREE=$(git rev-parse --show-toplevel 2>/dev/null) ||
-            die_usage '--worktree is required outside a Git worktree'
-    else
-        [[ -d $WORKTREE && ! -L $WORKTREE && -O $WORKTREE ]] ||
-            die "worktree must be an owned regular directory, not a symlink: $WORKTREE" 2
-        WORKTREE=$(cd -- "$WORKTREE" && pwd -P) ||
-            die "could not resolve worktree: $WORKTREE" 2
-    fi
+    case $COMMAND in
+    payload)
+        # Canonical rendering needs a concrete checkout. Supplied diff bytes do
+        # not, which keeps provider-helper compatibility without ever deriving
+        # a worktree from the caller's current directory for the canonical path.
+        if [[ -z $WORKTREE && -n $BASE_REF && -n ${CONSENT_WORKTREE:-} ]]; then
+            WORKTREE=$CONSENT_WORKTREE
+        fi
+        if [[ -n $WORKTREE ]]; then
+            [[ -d $WORKTREE && ! -L $WORKTREE && -O $WORKTREE ]] ||
+                die "worktree must be an owned regular directory, not a symlink: $WORKTREE" 2
+            WORKTREE=$(cd -- "$WORKTREE" && pwd -P) ||
+                die "could not resolve worktree: $WORKTREE" 2
+        elif [[ -n $BASE_REF ]]; then
+            die_usage '--worktree is required when rendering a canonical diff'
+        fi
+        ;;
+    grant|check)
+        [[ -n $STATE_PATH || -n $RUN_DIR ]] ||
+            die_usage "$COMMAND requires --run-dir or --state"
+        ;;
+    disclose)
+        :
+        ;;
+    esac
     if [[ -n $RUN_DIR ]]; then
         private_dir_ensure "$RUN_DIR" '--run-dir'
-    elif [[ -z $STATE_PATH ]]; then
-        # The compatibility lane is read-only payload derivation; no state path
-        # is synthesized and no directory is created from the current shell.
-        RUN_DIR=$WORKTREE
     fi
 }
 
@@ -206,7 +214,7 @@ payload_command() {
             die 'canonical diff renderer returned an invalid digest'
         if [[ -n $DIFF_PATH ]]; then
             diff_is_empty "$DIFF_PATH" &&
-                die "the supplied diff is empty: $DIFF_PATH (worktree: $WORKTREE); HEAD may equal the base"
+                die "the supplied diff is empty: $DIFF_PATH (worktree: ${WORKTREE:-<not resolved>}); HEAD may equal the base"
             supplied_digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
                 die "could not hash diff: $DIFF_PATH"
             [[ $supplied_digest == "$canonical_digest" ]] ||
@@ -215,7 +223,7 @@ payload_command() {
         digest=$canonical_digest
     else
         diff_is_empty "$DIFF_PATH" &&
-            die "the supplied diff is empty: $DIFF_PATH (worktree: $WORKTREE); HEAD may equal the intended base"
+            die "the supplied diff is empty: $DIFF_PATH (worktree: ${WORKTREE:-<not resolved>}); HEAD may equal the intended base"
         digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
             die "could not hash diff: $DIFF_PATH"
     fi

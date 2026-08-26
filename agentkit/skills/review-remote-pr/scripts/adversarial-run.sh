@@ -9,6 +9,10 @@ umask 077
 readonly PROGNAME=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+SCRIPT_DIR=$(cd -- "$SCRIPT_DIR" && pwd -P) || {
+    printf '%s: could not resolve helper directory: %s\n' "$PROGNAME" "$SCRIPT_DIR" >&2
+    exit 1
+}
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
@@ -818,7 +822,7 @@ run_provider() {
     # follow-up F2) -- this is the pre-send marker, not a post-hoc log, and a
     # purely local abort must never leave one behind.
     write_launch_attempted
-    "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
+    CONSENT_WORKTREE="$CONTRACT_ROOT" "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
     cat -- "$stderr_path" >&2 || true
 
     if ((rc == 0)); then

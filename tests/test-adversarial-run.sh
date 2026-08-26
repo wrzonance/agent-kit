@@ -110,9 +110,10 @@ mkdir -- "$missing"
 chmod 700 "$missing"
 printf '%s\n' 'stale result' >"$missing/adversarial.result.json"
 missing_rc=0
-(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+(cd "$root" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
     FAKE_CLAUDE_CALLED="$tmp/missing.called" \
-    bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$missing") \
+    bash agentkit/skills/review-remote-pr/scripts/adversarial-run.sh \
+        --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$missing") \
     >"$tmp/missing.out" 2>"$tmp/missing.err" || missing_rc=$?
 assert_eq 1 "$missing_rc" 'missing consent blocks before provider launch'
 assert_contains "$(cat -- "$tmp/missing.err")" 'consent' 'missing consent is named'
