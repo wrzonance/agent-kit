@@ -46,7 +46,8 @@ assert_eq "$payload_one" "$explicit_payload" \
     'payload accepts explicit worktree and run directory outside the current directory'
 assert_contains "$(cat -- "$runner")" 'CONSENT_STATE_FILENAME' \
     'adversarial runner consumes the shared consent-state filename constant'
-assert_eq 1 "$(rg -o -- 'cross-provider-consent' "$script" "$runner" | wc -l)" \
+assert_eq 1 "$(awk '{ count += gsub(/cross-provider-consent/, "") } END { print count + 0 }' \
+    "$script" "$runner")" \
     'consent-state filename has one spelling across both scripts'
 
 explicit_grant_run="$tmp/explicit-grant-run"
