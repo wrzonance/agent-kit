@@ -115,6 +115,10 @@ assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODEL_FALLBACK' \
     'spawn contract reads the configured worker fallback key'
 assert_contains "$spawn_contract_text" 'AGENT_WORKER_EFFORT' \
     'spawn contract reads the configured worker effort key'
+assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODELS' \
+    'spawn contract documents the harness-neutral worker roster key'
+assert_contains "$spawn_contract_text" 'AGENT_WORKER_MODELS_FALLBACK' \
+    'spawn contract documents the harness-neutral worker roster fallback key'
 assert_contains "$spawn_contract_text" 'gpt-5.6-luna' \
     'spawn contract documents the preserved preferred default'
 assert_contains "$spawn_contract_text" 'gpt-5.6-terra' \

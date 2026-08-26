@@ -414,7 +414,9 @@ fi
 worker_model_declared=0
 if [[ -f $repo_root/.agent/config.env && $reset -eq 0 && -x $resolver ]]; then
     if "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL > /dev/null 2>&1 ||
-        "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL_FALLBACK > /dev/null 2>&1; then
+        "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODEL_FALLBACK > /dev/null 2>&1 ||
+        "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODELS > /dev/null 2>&1 ||
+        "$resolver" --repo-root "$repo_root" --get AGENT_WORKER_MODELS_FALLBACK > /dev/null 2>&1; then
         worker_model_declared=1
     fi
 fi
@@ -425,6 +427,7 @@ fi
 adversarial_reviewer_declared=0
 if [[ -f $repo_root/.agent/config.env && $reset -eq 0 && -x $resolver ]]; then
     if "$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEWER > /dev/null 2>&1 ||
+        "$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEWER_FALLBACK > /dev/null 2>&1 ||
         "$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEW_MODEL > /dev/null 2>&1 ||
         "$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK > /dev/null 2>&1 ||
         "$resolver" --repo-root "$repo_root" --get AGENT_ADVERSARIAL_REVIEW_EFFORT > /dev/null 2>&1; then
@@ -465,6 +468,12 @@ fi
         printf '# tier, so the same declaration dispatches correctly whichever harness is\n'
         printf '# actually running (e.g. gpt-5.6-luna on Codex, claude-sonnet-5 elsewhere).\n'
         printf '# AGENT_WORKER_EFFORT (e.g. high) is harness-neutral and applies to any of them.\n'
+        printf '# Prefer the harness-neutral roster form instead: AGENT_WORKER_MODELS /\n'
+        printf '# AGENT_WORKER_MODELS_FALLBACK take a comma-separated candidate per harness\n'
+        printf '# family (e.g. claude-sonnet-5,gpt-5.6-luna); each worker self-detects the\n'
+        printf '# running harness and picks its own entry. It takes precedence over the\n'
+        printf '# singular keys below when both are declared.\n'
+        printf '# AGENT_WORKER_MODELS=\n# AGENT_WORKER_MODELS_FALLBACK=\n'
         printf '# AGENT_WORKER_MODEL=\n# AGENT_WORKER_MODEL_FALLBACK=\n# AGENT_WORKER_EFFORT=\n'
     fi
     if ((adversarial_reviewer_declared == 0)); then
@@ -475,7 +484,12 @@ fi
         printf '# names its model, AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK the model used if that\n'
         printf '# CLI is absent on the machine (falls back to the running harness, never silently).\n'
         printf '# AGENT_ADVERSARIAL_REVIEW_EFFORT (low/medium/high/xhigh/max) is harness-neutral.\n'
-        printf '# AGENT_ADVERSARIAL_REVIEWER=\n# AGENT_ADVERSARIAL_REVIEW_MODEL=\n'
+        printf '# AGENT_ADVERSARIAL_REVIEWER also accepts a roster <model-id>-<effort> compound\n'
+        printf '# (e.g. gpt-5.6-sol-xhigh); pair it with AGENT_ADVERSARIAL_REVIEWER_FALLBACK for\n'
+        printf '# the second candidate. The candidate belonging to a family other than the\n'
+        printf '# running harness is preferred, self-detected the same way as the worker roster.\n'
+        printf '# AGENT_ADVERSARIAL_REVIEWER=\n# AGENT_ADVERSARIAL_REVIEWER_FALLBACK=\n'
+        printf '# AGENT_ADVERSARIAL_REVIEW_MODEL=\n'
         printf '# AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=\n# AGENT_ADVERSARIAL_REVIEW_EFFORT=\n'
     fi
     if ((review_providers_declared == 0)); then

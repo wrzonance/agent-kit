@@ -31,6 +31,41 @@ worker_effort_default='high'
     exit 1
 }
 
+# AGENT_WORKER_MODELS / AGENT_WORKER_MODELS_FALLBACK (roster form): a
+# comma-separated, harness-neutral candidate list, one entry per harness
+# family. A worker picks the entry belonging to the CURRENTLY RUNNING
+# harness's own family, resolved by SELF-DETECTION from the environment
+# contract's `harness= name=` line -- never guessed from a value's shape.
+# Declaration is authorization: a well-formed roster entry is sanctioned by
+# having been declared, the same posture OpenCode's `provider/model-id`
+# values already have -- the per-harness sanctioned-tier allowlist and the
+# pivot heuristics below do NOT apply to a roster-declared value. Additive,
+# plural wins: the singular AGENT_WORKER_MODEL/_FALLBACK keys below keep
+# parsing exactly as before (so no already-onboarded repository breaks), and
+# when both a roster key and its singular counterpart are declared, the
+# roster key takes precedence.
+roster_entry_for_family() {
+    local csv=$1 family=$2 item
+    [ -n "$csv" ] || return 1
+    IFS=, read -ra roster_items <<< "$csv"
+    for item in "${roster_items[@]}"; do
+        case "$family:$item" in
+            claude:claude-*) printf '%s\n' "$item"; return 0 ;;
+            codex:gpt-5.6-*) printf '%s\n' "$item"; return 0 ;;
+        esac
+        # OpenCode has no fixed model-id prefix to `case`-match, the same
+        # reason model_in_sanctioned_set's opencode:* branch below uses `=~`
+        # instead of a glob: `[^/]*` still matches a second '/', so only a
+        # real regex quantifier expresses "exactly one slash". Mirror that
+        # check here rather than reintroducing the bug it exists to avoid.
+        if [ "$family" = opencode ] && [[ $item =~ ^[^/]+/[^/]+$ ]]; then
+            printf '%s\n' "$item"
+            return 0
+        fi
+    done
+    return 1
+}
+
 worker_config_value() {
     # shellcheck disable=SC2034  # values are consumed by the dispatch block below
     local key=$1 default=$2 value
@@ -142,7 +177,28 @@ model_home_provider() {
 # would only kill that subshell while the real script kept running on an
 # empty resolved value, silently defeating the authorization stop.
 resolve_worker_slot() {
-    local base=$1 native_default=$2 value family
+    local base=$1 native_default=$2 roster_key=$3 value family roster_csv roster_value
+    # Roster form takes precedence over the singular key when both are
+    # declared. Resolution is self-detected running-harness family, read from
+    # $running_harness -- never guessed from the roster value's own shape.
+    # A DECLARED roster is authoritative once valid: it never falls through
+    # to the singular key or a built-in default just because it happens to
+    # carry no entry for the harness actually running -- that is a
+    # configuration bug in the roster, not a cue to silently degrade to a
+    # legacy value the operator did not ask for. "additive, plural wins"
+    # governs a repository that declares ONLY the singular keys; it is not
+    # licence for a half-declared roster to degrade quietly.
+    if roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
+        --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) &&
+        [ -n "$roster_csv" ]; then
+        if roster_value=$(roster_entry_for_family "$roster_csv" "$running_harness"); then
+            resolved_value=$roster_value
+            pivot_note=''
+            return
+        fi
+        printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
+        exit 1
+    fi
     value=$(worker_config_value "$base" "$native_default")
     if model_in_sanctioned_set "$running_harness" "$value"; then
         resolved_value=$value
@@ -184,12 +240,12 @@ resolve_worker_slot() {
     exit 1
 }
 
-resolve_worker_slot AGENT_WORKER_MODEL "$native_model_default"
+resolve_worker_slot AGENT_WORKER_MODEL "$native_model_default" AGENT_WORKER_MODELS
 # shellcheck disable=SC2034  # consumed by the spawn shape and completion-table record below
 worker_model=$resolved_value
 # shellcheck disable=SC2034  # consumed by the completion-table record below
 model_pivot_note=$pivot_note
-resolve_worker_slot AGENT_WORKER_MODEL_FALLBACK "$native_fallback_default"
+resolve_worker_slot AGENT_WORKER_MODEL_FALLBACK "$native_fallback_default" AGENT_WORKER_MODELS_FALLBACK
 # shellcheck disable=SC2034  # consumed by the spawn shape and completion-table record below
 worker_model_fallback=$resolved_value
 # shellcheck disable=SC2034  # consumed by the completion-table record below
@@ -212,6 +268,23 @@ authorization gate. The configured effort is carried through unchanged after res
 validation — it is the per-run **default**: a dispatch-plan entry's `workerEffort` override
 (recorded with its `effortReason`; see `parallel-issues`'s triage-and-selection reference)
 replaces it for exactly that issue. Effort follows the issue, not the run.
+
+### Harness-neutral roster (`AGENT_WORKER_MODELS`/`_FALLBACK`)
+
+An operator who wants one declaration to resolve correctly on every harness declares
+`AGENT_WORKER_MODELS`/`AGENT_WORKER_MODELS_FALLBACK` instead of the singular keys: a
+comma-separated candidate list, one entry per harness family (e.g.
+`claude-sonnet-5,gpt-5.6-luna`). `resolve_worker_slot` picks the entry whose family matches
+`$running_harness`, self-detected from the contract's `harness= name=` line — never guessed
+from the declared value's own shape. A well-formed roster entry is sanctioned purely by having
+been declared; it skips the sanctioned-set gate and the pivot machinery below entirely. When a
+repository declares both a roster key and its singular counterpart, the roster key wins. A
+repository that declares only the singular keys keeps parsing and pivoting exactly as before —
+the roster is additive, not a replacement. **A declared roster is authoritative once valid: it
+never falls through to the singular key or a built-in default merely because it has no entry for
+the harness actually running** — that is a configuration bug in the roster, not a cue to degrade
+quietly, so resolution stops with a configuration error naming the roster, the running harness,
+and the families it does cover.
 
 ### Harness-aware pivot
 

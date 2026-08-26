@@ -48,7 +48,9 @@ readonly ACCEPTED_KEYS=(
     AGENT_REVIEW_PROVIDERS AGENT_REPO_RUNNER AGENT_PROTECTED_PATHS
     AGENT_GENERATED_PATHS AGENT_ONBOARDED_BY
     AGENT_WORKER_MODEL AGENT_WORKER_MODEL_FALLBACK AGENT_WORKER_EFFORT
-    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL
+    AGENT_WORKER_MODELS AGENT_WORKER_MODELS_FALLBACK
+    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEWER_FALLBACK
+    AGENT_ADVERSARIAL_REVIEW_MODEL
     AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT
     AGENT_LEDGER_AUTHOR
 )
@@ -62,6 +64,15 @@ readonly ACCEPTED_KEYS=(
 # The NAME is what `agent-run.sh --cmd <name>` takes, so it is constrained to a
 # shape that survives being lowercased into a filename and an argument.
 readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
+
+# Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
+# `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
+# the adversarial helpers reject would pass here and only fail at launch,
+# after consent and diff construction already ran. This is also the single
+# source of truth adversarial-run.sh reads via `--list-adversarial-efforts`
+# to split a roster `<model-id>-<effort>` compound -- see that mode below --
+# so the validator here and the parser there cannot silently drift apart.
+readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
 
 # The directory a named command runs in. Paths may contain spaces and are
 # quoted in generated config. Values are argv executed from the
@@ -92,6 +103,7 @@ while (($#)); do
         --export) mode='export' ;;
         --list) mode='list' ;;
         --list-keys) mode='keys' ;;
+        --list-adversarial-efforts) mode='efforts' ;;
         --diagnose) mode='diagnose' ;;
         --get)
             mode='get'
@@ -142,6 +154,16 @@ if [[ $mode == keys ]]; then
     printf '%s\n' "${ACCEPTED_KEYS[@]}"
     printf 'AGENT_CMD_<NAME>\n'
     printf 'AGENT_RUNDIR_<NAME>\n'
+    exit 0
+fi
+
+# The accepted adversarial-review effort names, one per line -- the single
+# source of truth adversarial-run.sh reads to split a roster
+# `<model-id>-<effort>` compound, so its parser and this validator can never
+# silently drift apart. Schema, not a repository fact -- same early exit as
+# --list-keys.
+if [[ $mode == efforts ]]; then
+    printf '%s\n' "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"
     exit 0
 fi
 
@@ -268,17 +290,45 @@ worker_model_valid() {
     [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
 }
 
+# AGENT_WORKER_MODELS / AGENT_WORKER_MODELS_FALLBACK declare a harness-neutral
+# roster: a comma-separated list of candidate model ids, one per harness
+# family, self-detected at resolution time by the running harness's own
+# `harness=name=` fact -- never guessed from a value's shape. Declaration is
+# authorization: well-formedness is all this validator checks (non-empty,
+# comma-separated, each entry a safe worker-model token); the per-harness
+# sanctioned-tier allowlist that guards the singular AGENT_WORKER_MODEL keys
+# does not apply to a roster-declared entry.
+worker_models_roster_valid() {
+    local item
+    [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
+    local -a items=()
+    IFS=, read -ra items <<< "$1"
+    ((${#items[@]})) || return 1
+    for item in "${items[@]}"; do
+        worker_model_valid "$item" || return 1
+    done
+    return 0
+}
+
+# AGENT_ADVERSARIAL_REVIEWER_FALLBACK (and, in its new compound form,
+# AGENT_ADVERSARIAL_REVIEWER) carry a single `<model-id>-<effort>` candidate:
+# a well-formed worker-model token followed by one of the accepted effort
+# names. Declaration is authorization here too -- only well-formedness and a
+# parseable trailing effort are checked, not per-harness sanctioning.
+reviewer_roster_entry_valid() {
+    local value=$1 effort
+    for effort in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
+        [[ $value == *-"$effort" ]] || continue
+        worker_model_valid "${value%-"$effort"}" && return 0
+    done
+    return 1
+}
+
 # The adversarial reviewer is one of exactly two CLIs adversarial-run.sh knows
 # how to launch -- unlike a worker model id, this is a closed set, not open
 # policy input, so an unsupported spelling is refused outright rather than
 # kept visible for a later authorization gate.
 readonly ADVERSARIAL_REVIEWER_ACCEPTED_NAMES=(codex claude)
-
-# Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
-# `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
-# the adversarial helpers reject would pass here and only fail at launch,
-# after consent and diff construction already ran.
-readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
 
 names_display() {
     local out='' name
@@ -581,11 +631,17 @@ validate() {
         AGENT_GENERATED_PATHS) generated_paths_valid "$value" ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
+        AGENT_WORKER_MODELS | AGENT_WORKER_MODELS_FALLBACK) worker_models_roster_valid "$value" ;;
         AGENT_WORKER_EFFORT)
             [[ $value == low || $value == medium || $value == high ||
                 $value == xhigh || $value == max || $value == ultra ]]
             ;;
-        AGENT_ADVERSARIAL_REVIEWER) adversarial_reviewer_valid "$value" ;;
+        # Both forms coexist: the historical bare CLI name (`codex`|`claude`)
+        # and the newer harness-neutral `<model-id>-<effort>` roster compound.
+        AGENT_ADVERSARIAL_REVIEWER)
+            adversarial_reviewer_valid "$value" || reviewer_roster_entry_valid "$value"
+            ;;
+        AGENT_ADVERSARIAL_REVIEWER_FALLBACK) reviewer_roster_entry_valid "$value" ;;
         AGENT_ADVERSARIAL_REVIEW_MODEL | AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK)
             worker_model_valid "$value"
             ;;

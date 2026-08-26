@@ -110,4 +110,40 @@ out=$(bash "$provider_scripts/onboard-refresh.sh" --repo-root "$repo" --summary 
 assert_contains "$out" 'review-providers=unavailable' \
     'report identifies a provider helper that fails to run'
 
+# --- model-roster migration hints (issue #487) ------------------------------
+# The roster form takes precedence over its singular counterpart once
+# declared, so a repository carrying both is not broken -- but the singular
+# declaration is now dead weight nobody notices without a nudge.
+cat > "$repo/.agent/config.env" <<EOF
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_ONBOARDED_BY=agentkit/$current
+AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
+AGENT_WORKER_MODELS=claude-sonnet-5,gpt-5.6-luna
+AGENT_WORKER_MODEL=gpt-5.6-luna
+AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh
+EOF
+out=$(bash "$refresh_sh" --repo-root "$repo" --report 2>&1)
+assert_contains "$out" 'model-roster=hint' \
+    'summary flags a roster/singular-key overlap'
+assert_contains "$out" 'roster-hint= AGENT_WORKER_MODELS* and AGENT_WORKER_MODEL* are both declared' \
+    'report names the worker roster/singular overlap'
+assert_contains "$out" 'roster-hint= AGENT_ADVERSARIAL_REVIEWER is a roster compound with no AGENT_ADVERSARIAL_REVIEWER_FALLBACK declared' \
+    'report names the reviewer roster with no fallback candidate'
+
+# Declaring only the roster form (no singular overlap, fallback present)
+# stays quiet -- the hint is for migration debt, not for using the feature.
+cat > "$repo/.agent/config.env" <<EOF
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_ONBOARDED_BY=agentkit/$current
+AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
+AGENT_WORKER_MODELS=claude-sonnet-5,gpt-5.6-luna
+AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high
+EOF
+out=$(bash "$refresh_sh" --repo-root "$repo" --summary 2>&1)
+assert_eq 'drift= none' "$out" \
+    'a roster-only declaration with a fallback candidate is quiet'
+
 finish

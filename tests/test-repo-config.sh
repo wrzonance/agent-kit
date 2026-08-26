@@ -61,7 +61,8 @@ assert_rc 0 'a fully invalid config still exits 0' -- "$rc_sh" --repo-root "$rep
 list_out=$("$rc_sh" --list-keys 2> /dev/null)
 assert_rc 0 '--list-keys succeeds with no repo context' -- "$rc_sh" --list-keys
 for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_REVIEW_PROVIDERS AGENT_WORKER_EFFORT \
-    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL \
+    AGENT_WORKER_MODELS AGENT_WORKER_MODELS_FALLBACK \
+    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEWER_FALLBACK AGENT_ADVERSARIAL_REVIEW_MODEL \
     AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT; do
     assert_contains "$list_out" "$key" "--list-keys names the accepted literal key $key"
 done
@@ -476,6 +477,48 @@ assert_not_contains "$out" 'AGENT_ADVERSARIAL_REVIEW_EFFORT=' \
 assert_contains "$out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_EFFORT on line 1, ignoring -- accepted: low, medium, high, xhigh, max' \
     'names the accepted effort set, which excludes ultra because the provider helpers reject it'
 
+# --- harness-neutral worker roster (issue #487) -----------------------------
+printf 'AGENT_WORKER_MODELS=claude-sonnet-5,gpt-5.6-luna\nAGENT_WORKER_MODELS_FALLBACK=claude-opus-5,gpt-5.6-terra\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_WORKER_MODELS=claude-sonnet-5,gpt-5.6-luna' \
+    'accepts a harness-neutral worker roster declaration'
+assert_contains "$out" 'AGENT_WORKER_MODELS_FALLBACK=claude-opus-5,gpt-5.6-terra' \
+    'accepts the fallback roster declaration'
+list_out=$("$rc_sh" --list-keys 2> /dev/null)
+assert_contains "$list_out" 'AGENT_WORKER_MODELS' '--list-keys names the roster key'
+assert_contains "$list_out" 'AGENT_WORKER_MODELS_FALLBACK' '--list-keys names the roster fallback key'
+
+bad_roster_values=(',claude-sonnet-5' 'claude-sonnet-5,' 'claude-sonnet-5,,gpt-5.6-luna' "\$(touch PWNED)" '')
+for bad_value in "${bad_roster_values[@]}"; do
+    printf 'AGENT_WORKER_MODELS=%s\n' "$bad_value" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+    assert_not_contains "$out" 'AGENT_WORKER_MODELS=' \
+        "rejects a malformed worker roster: ${bad_value:-empty}"
+done
+
+# --- harness-neutral adversarial reviewer roster compound (issue #487) -----
+# AGENT_ADVERSARIAL_REVIEWER keeps its historical bare-CLI-name form (above)
+# AND now also accepts a `<model-id>-<effort>` compound; the new
+# _FALLBACK counterpart accepts only the compound form.
+printf 'AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high\n' \
+    > "$repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh' \
+    'accepts the compound roster form for AGENT_ADVERSARIAL_REVIEWER'
+assert_contains "$out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high' \
+    'accepts the compound roster form for AGENT_ADVERSARIAL_REVIEWER_FALLBACK'
+list_out=$("$rc_sh" --list-keys 2> /dev/null)
+assert_contains "$list_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK' \
+    '--list-keys names the adversarial reviewer fallback key'
+
+bad_reviewer_roster_values=('gpt-5.6-sol' 'gpt-5.6-sol-ultra' "\$(touch PWNED)-xhigh" '')
+for bad_value in "${bad_reviewer_roster_values[@]}"; do
+    printf 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=%s\n' "$bad_value" > "$repo/.agent/config.env"
+    out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
+    assert_not_contains "$out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=' \
+        "rejects a malformed adversarial reviewer fallback compound: ${bad_value:-empty}"
+done
 
 # --- an empty value is a statement, not a typo ------------------------------
 # "This repository has no priority labels" is a real thing to want to record.

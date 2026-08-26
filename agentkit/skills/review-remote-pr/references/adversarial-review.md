@@ -224,10 +224,27 @@ repository can override it in `.agent/config.env`, named consistently with `AGEN
 
 | Key | Overrides |
 |---|---|
-| `AGENT_ADVERSARIAL_REVIEWER` | which CLI (`codex` or `claude`) is the reviewer, instead of `peer-cli=` |
-| `AGENT_ADVERSARIAL_REVIEW_MODEL` | the model for the declared reviewer |
-| `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` | the model used if the declared reviewer falls back (below) |
+| `AGENT_ADVERSARIAL_REVIEWER` | which CLI (`codex` or `claude`) is the reviewer, instead of `peer-cli=` — or a roster `<model-id>-<effort>` compound (below) |
+| `AGENT_ADVERSARIAL_REVIEWER_FALLBACK` | the second roster candidate, `<model-id>-<effort>` compound only |
+| `AGENT_ADVERSARIAL_REVIEW_MODEL` | the model for the declared bare-CLI reviewer |
+| `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` | the model used if the declared bare-CLI reviewer falls back (below) |
 | `AGENT_ADVERSARIAL_REVIEW_EFFORT` | reasoning effort, harness-neutral — applies whichever CLI is used |
+
+### Roster form — self-detected, harness-neutral
+
+`AGENT_ADVERSARIAL_REVIEWER` and `AGENT_ADVERSARIAL_REVIEWER_FALLBACK` also accept a
+`<model-id>-<effort>` compound (e.g. `gpt-5.6-sol-xhigh`); together the two keys form a candidate
+pool of at most two entries, one per harness family. Resolution self-detects the *running* harness
+from the environment contract's `harness= name=` line — never guessed from either value's shape —
+and prefers the pool candidate belonging to a family that is **not** the running harness, matching
+the cross-harness-by-default rule above. Declaration is authorization: a well-formed roster entry
+is sanctioned purely by being declared, the same posture OpenCode's `provider/model-id` values
+already have; the closed `codex`/`claude` allowlist above governs only the bare-CLI-name form. When
+both pool candidates belong to the running harness's own family, or the cross-harness candidate's
+CLI is the absent peer, resolution falls back to whichever pool candidate belongs to the running
+harness (or that CLI's built-in default model/effort if neither does) — the same documented blind
+same-harness fallback described above, unchanged. `AGENT_ADVERSARIAL_REVIEW_EFFORT`, if declared,
+still overrides the resolved effort in every case.
 
 `AGENT_ADVERSARIAL_REVIEW_MODEL` and its `_FALLBACK` counterpart are only meaningful paired with a
 declared `AGENT_ADVERSARIAL_REVIEWER`: a bare model id has no CLI to be interpreted against, so
