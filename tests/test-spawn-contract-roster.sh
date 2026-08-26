@@ -104,6 +104,22 @@ out=$(run_resolver "$tmp/precedence.env" codex 2>/dev/null)
 assert_contains "$out" 'worker_model=gpt-5.6-luna' \
     'the roster key wins over the singular key when both are declared'
 
+# --- an incomplete roster (no entry for the running harness) is a
+# configuration error, never a silent fall-through to the singular key ------
+printf 'AGENT_WORKER_MODEL=gpt-5.6-terra\nAGENT_WORKER_MODELS=claude-sonnet-5\n' > "$tmp/incomplete-roster.env"
+out=$(run_resolver "$tmp/incomplete-roster.env" codex 2>/dev/null)
+rc=$?
+err=$(run_resolver "$tmp/incomplete-roster.env" codex 2>&1 1>/dev/null)
+assert_eq 1 "$rc" 'a roster with no entry for the running harness fails, rather than resolving'
+assert_not_contains "$out" 'worker_model=gpt-5.6-terra' \
+    'the incomplete roster never silently falls back to the singular value'
+assert_contains "$err" "AGENT_WORKER_MODELS='claude-sonnet-5'" \
+    'the configuration error names the declared roster value'
+assert_contains "$err" "running harness 'codex'" \
+    'the configuration error names the running harness'
+assert_contains "$err" 'never falls back to AGENT_WORKER_MODEL' \
+    'the configuration error explains the roster is authoritative once declared'
+
 # --- additive: singular-only declaration still parses and pivots exactly as
 # before (no roster keys declared at all) ------------------------------------
 printf 'AGENT_WORKER_MODEL=gpt-5.6-luna\nAGENT_WORKER_MODEL_FALLBACK=gpt-5.6-terra\n' > "$tmp/legacy.env"

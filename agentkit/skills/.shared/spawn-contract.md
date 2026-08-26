@@ -172,13 +172,23 @@ resolve_worker_slot() {
     # Roster form takes precedence over the singular key when both are
     # declared. Resolution is self-detected running-harness family, read from
     # $running_harness -- never guessed from the roster value's own shape.
+    # A DECLARED roster is authoritative once valid: it never falls through
+    # to the singular key or a built-in default just because it happens to
+    # carry no entry for the harness actually running -- that is a
+    # configuration bug in the roster, not a cue to silently degrade to a
+    # legacy value the operator did not ask for. "additive, plural wins"
+    # governs a repository that declares ONLY the singular keys; it is not
+    # licence for a half-declared roster to degrade quietly.
     if roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
         --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) &&
-        [ -n "$roster_csv" ] &&
-        roster_value=$(roster_entry_for_family "$roster_csv" "$running_harness"); then
-        resolved_value=$roster_value
-        pivot_note=''
-        return
+        [ -n "$roster_csv" ]; then
+        if roster_value=$(roster_entry_for_family "$roster_csv" "$running_harness"); then
+            resolved_value=$roster_value
+            pivot_note=''
+            return
+        fi
+        printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
+        exit 1
     fi
     value=$(worker_config_value "$base" "$native_default")
     if model_in_sanctioned_set "$running_harness" "$value"; then
@@ -261,7 +271,11 @@ from the declared value's own shape. A well-formed roster entry is sanctioned pu
 been declared; it skips the sanctioned-set gate and the pivot machinery below entirely. When a
 repository declares both a roster key and its singular counterpart, the roster key wins. A
 repository that declares only the singular keys keeps parsing and pivoting exactly as before —
-the roster is additive, not a replacement.
+the roster is additive, not a replacement. **A declared roster is authoritative once valid: it
+never falls through to the singular key or a built-in default merely because it has no entry for
+the harness actually running** — that is a configuration bug in the roster, not a cue to degrade
+quietly, so resolution stops with a configuration error naming the roster, the running harness,
+and the families it does cover.
 
 ### Harness-aware pivot
 
