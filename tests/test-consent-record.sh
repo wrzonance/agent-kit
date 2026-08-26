@@ -9,6 +9,7 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/review-remote-pr/scripts/consent-record.sh"
+runner="$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh"
 claude="$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh"
 codex="$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh"
 tmp=$(mktemp -d)
@@ -29,6 +30,35 @@ printf '   \n\t\n  \n' >"$whitespace_diff"
 payload_one="acme/widget:24:$(sha256sum -- "$diff_one" | awk '{print $1}')"
 payload_two="acme/widget:24:$(sha256sum -- "$diff_two" | awk '{print $1}')"
 state="$state_dir/record"
+
+# Consent derivation is explicitly rooted in the PR worktree and run directory;
+# it must remain usable when the caller is sitting at the repository root (or
+# any other unrelated current directory).
+explicit_worktree="$tmp/explicit-worktree"
+explicit_run_dir="$tmp/explicit-run"
+mkdir -- "$explicit_worktree" "$explicit_run_dir"
+chmod 700 -- "$explicit_worktree" "$explicit_run_dir"
+explicit_payload=''
+explicit_payload=$(cd -- / || exit
+    /bin/bash "$script" payload --worktree "$explicit_worktree" --run-dir "$explicit_run_dir" \
+        --repo acme/widget --pr 24 --diff "$diff_one")
+assert_eq "$payload_one" "$explicit_payload" \
+    'payload accepts explicit worktree and run directory outside the current directory'
+assert_contains "$(cat -- "$runner")" 'CONSENT_STATE_FILENAME' \
+    'adversarial runner consumes the shared consent-state filename constant'
+assert_eq 1 "$(rg -o -- 'cross-provider-consent' "$script" "$runner" | wc -l)" \
+    'consent-state filename has one spelling across both scripts'
+
+explicit_grant_run="$tmp/explicit-grant-run"
+mkdir -- "$explicit_grant_run"
+chmod 700 -- "$explicit_grant_run"
+/bin/bash "$script" grant --worktree "$explicit_worktree" --run-dir "$explicit_grant_run" \
+    --provider anthropic --payload "$payload_one" --source interactive >/dev/null
+assert_eq yes "$( [[ -f $explicit_grant_run/state/cross-provider-consent ]] && printf yes || printf no )" \
+    'grant writes the filename consumed by adversarial-run check'
+assert_rc 0 'the runner-compatible explicit grant passes an explicit check' -- \
+    /bin/bash "$script" check --worktree "$explicit_worktree" --run-dir "$explicit_grant_run" \
+    --provider anthropic --payload "$payload_one"
 
 # Payload identity is derived from the repository, PR number and exact diff bytes.
 out=$(/bin/bash "$script" payload --repo acme/widget --pr 24 --diff "$diff_one")

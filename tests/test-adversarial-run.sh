@@ -99,8 +99,9 @@ grant() {
     local run_dir=$1 provider=$2 diff=${3:-$expected} payload
     mkdir -- "$run_dir" "$run_dir/state"
     chmod 700 "$run_dir" "$run_dir/state"
-    payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$diff")
-    /bin/bash "$consent" grant --state "$run_dir/state/cross-provider-consent" \
+    payload=$(/bin/bash "$consent" payload --worktree "$repo" --run-dir "$run_dir" \
+        --repo acme/widget --pr 42 --diff "$diff")
+    /bin/bash "$consent" grant --worktree "$repo" --run-dir "$run_dir" \
         --provider "$provider" --payload "$payload" --source interactive >/dev/null
 }
 
@@ -111,7 +112,7 @@ printf '%s\n' 'stale result' >"$missing/adversarial.result.json"
 missing_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
     FAKE_CLAUDE_CALLED="$tmp/missing.called" \
-    bash "$script" --pr 42 --repo acme/widget --run-dir "$missing") \
+    bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$missing") \
     >"$tmp/missing.out" 2>"$tmp/missing.err" || missing_rc=$?
 assert_eq 1 "$missing_rc" 'missing consent blocks before provider launch'
 assert_contains "$(cat -- "$tmp/missing.err")" 'consent' 'missing consent is named'
@@ -684,7 +685,8 @@ assert_not_contains "$(cat -- "$tmp/noreceipt.out")" 'verdict=findings' \
 # -- issue #477: --reaffirm-if-covered short-circuits when the ledger already
 #    proves this exact tree (or a base-merge-only advance of it) was reviewed
 
-reaffirm_payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$expected")
+reaffirm_payload=$(/bin/bash "$consent" payload --worktree "$repo" --run-dir "$tmp" \
+    --repo acme/widget --pr 42 --diff "$expected")
 
 # review-ledger.sh only trusts a comment from a resolved author (root review
 # finding F1); pin it deterministically instead of falling through to a live

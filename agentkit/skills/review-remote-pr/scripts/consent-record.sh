@@ -3,6 +3,14 @@
 set -euo pipefail
 umask 077
 
+readonly CONSENT_STATE_FILENAME='cross-provider-consent'
+# adversarial-run.sh sources this file solely for the shared state filename.
+# Keep that library surface side-effect free; the executable path below is
+# entered only when this file is the process entry point.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return 0
+fi
+
 readonly PROGNAME=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
@@ -12,6 +20,8 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 COMMAND=${1:-}
 STATE_PATH=''
+WORKTREE=''
+RUN_DIR=''
 PROVIDER=''
 PAYLOAD=''
 SOURCE=''
@@ -29,10 +39,10 @@ CANONICAL_DIFF_TMP=''
 usage() {
     cat <<EOF
 Usage:
-  $PROGNAME payload --repo OWNER/NAME --pr N [--base-ref BRANCH] [--diff PATH]
-  $PROGNAME disclose --payload ID --destination TEXT --purpose TEXT
-  $PROGNAME grant --state PATH --provider NAME --payload ID --source interactive|auto-review-flag
-  $PROGNAME check --state PATH --provider NAME --payload ID
+  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH] [--diff PATH]
+  $PROGNAME disclose --worktree DIR --run-dir DIR --payload ID --destination TEXT --purpose TEXT
+  $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag
+  $PROGNAME check --worktree DIR --run-dir DIR --provider NAME --payload ID
 
 --provider accepts either a peer CLI name (codex, claude) or its model-provider
 token (openai, anthropic); grant and check both normalize the CLI name to its
@@ -61,6 +71,10 @@ parse_options() {
     shift
     while (($#)); do
         case $1 in
+        --worktree) require_value "$1" "${2:-}"; WORKTREE=$2; shift 2 ;;
+        --worktree=*) WORKTREE=${1#*=}; shift ;;
+        --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;
+        --run-dir=*) RUN_DIR=${1#*=}; shift ;;
         --state) require_value "$1" "${2:-}"; STATE_PATH=$2; shift 2 ;;
         --state=*) STATE_PATH=${1#*=}; shift ;;
         --provider) require_value "$1" "${2:-}"; PROVIDER=$2; shift 2 ;;
@@ -85,6 +99,35 @@ parse_options() {
         *) die_usage "unknown option: $1" ;;
         esac
     done
+}
+
+validate_context() {
+    [[ -z $STATE_PATH || -z $RUN_DIR ]] ||
+        die_usage '--state cannot be combined with --run-dir; use the shared consent state path'
+    if [[ -z $WORKTREE ]]; then
+        # Provider helpers from older skill revisions pass an explicit diff and
+        # state path but do not yet know these two addressing options. Keep that
+        # narrow compatibility lane while every documented consent flow uses
+        # both explicit paths below.
+        WORKTREE=$(git rev-parse --show-toplevel 2>/dev/null) ||
+            die_usage '--worktree is required outside a Git worktree'
+    else
+        [[ -d $WORKTREE && ! -L $WORKTREE && -O $WORKTREE ]] ||
+            die "worktree must be an owned regular directory, not a symlink: $WORKTREE" 2
+        WORKTREE=$(cd -- "$WORKTREE" && pwd -P) ||
+            die "could not resolve worktree: $WORKTREE" 2
+    fi
+    if [[ -n $RUN_DIR ]]; then
+        private_dir_ensure "$RUN_DIR" '--run-dir'
+    elif [[ -z $STATE_PATH ]]; then
+        # The compatibility lane is read-only payload derivation; no state path
+        # is synthesized and no directory is created from the current shell.
+        RUN_DIR=$WORKTREE
+    fi
+}
+
+consent_state_path() {
+    printf '%s/state/%s\n' "$RUN_DIR" "$CONSENT_STATE_FILENAME"
 }
 
 
@@ -126,7 +169,7 @@ validate_payload_inputs() {
         die_usage 'payload requires --base-ref or --diff'
     fi
     if [[ -n $BASE_REF ]]; then
-        git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+        git -C "$WORKTREE" check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
             die_usage '--base-ref must be a valid branch name'
     fi
 }
@@ -148,22 +191,22 @@ payload_command() {
     validate_payload_inputs
     local digest canonical_digest supplied_digest
     if [[ -n $BASE_REF ]]; then
-        git fetch --quiet origin "$BASE_REF" ||
+        git -C "$WORKTREE" fetch --quiet origin "$BASE_REF" ||
             die "could not refresh origin/$BASE_REF before rendering canonical diff"
         CANONICAL_DIFF_TMP=$(mktemp) || die 'could not create a temporary file for the canonical diff'
         trap cleanup_canonical_diff_tmp EXIT
-        canonical_diff "$BASE_REF" >"$CANONICAL_DIFF_TMP" ||
+        (cd -- "$WORKTREE" && canonical_diff "$BASE_REF") >"$CANONICAL_DIFF_TMP" ||
             die "could not render canonical diff from origin/$BASE_REF"
         chmod 600 -- "$CANONICAL_DIFF_TMP" || die "could not secure the canonical diff temp file"
         diff_is_empty "$CANONICAL_DIFF_TMP" &&
-            die "the canonical diff from origin/$BASE_REF is empty; this usually means it ran outside the PR worktree, or HEAD already equals origin/$BASE_REF"
+            die "the canonical diff from origin/$BASE_REF for worktree $WORKTREE is empty; HEAD may already equal origin/$BASE_REF"
         canonical_digest=$(sha256sum -- "$CANONICAL_DIFF_TMP" | awk '{print $1}') ||
             die "could not hash canonical diff from origin/$BASE_REF"
         [[ $canonical_digest =~ ^[[:xdigit:]]{64}$ ]] ||
             die 'canonical diff renderer returned an invalid digest'
         if [[ -n $DIFF_PATH ]]; then
             diff_is_empty "$DIFF_PATH" &&
-                die "the supplied diff is empty: $DIFF_PATH; this usually means it was captured outside the PR worktree, or HEAD equals the base"
+                die "the supplied diff is empty: $DIFF_PATH (worktree: $WORKTREE); HEAD may equal the base"
             supplied_digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
                 die "could not hash diff: $DIFF_PATH"
             [[ $supplied_digest == "$canonical_digest" ]] ||
@@ -172,7 +215,7 @@ payload_command() {
         digest=$canonical_digest
     else
         diff_is_empty "$DIFF_PATH" &&
-            die "the supplied diff is empty: $DIFF_PATH; this usually means it was captured outside the PR worktree, or HEAD equals the intended base"
+            die "the supplied diff is empty: $DIFF_PATH (worktree: $WORKTREE); HEAD may equal the intended base"
         digest=$(sha256sum -- "$DIFF_PATH" | awk '{print $1}') ||
             die "could not hash diff: $DIFF_PATH"
     fi
@@ -238,7 +281,9 @@ grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag ]] ||
         die_usage '--source must be interactive or auto-review-flag'
     PROVIDER=$(normalize_provider "$PROVIDER")
+    [[ -z $STATE_PATH ]] && STATE_PATH=$(consent_state_path)
     validate_record_fields
+    private_dir_ensure "$(dirname -- "$STATE_PATH")" 'consent state parent'
     validate_state_for_write
     write_record || die "cannot persist consent state: $STATE_PATH"
 }
@@ -246,6 +291,7 @@ grant_command() {
 check_command() {
     local parent record expected line_count recorded_provider
     PROVIDER=$(normalize_provider "$PROVIDER")
+    [[ -z $STATE_PATH ]] && STATE_PATH=$(consent_state_path)
     if ! field_is_safe "$PROVIDER" || ! field_is_safe "$PAYLOAD"; then
         printf '%s: check failed: --provider and --payload must be non-empty and delimiter-free\n' \
             "$PROGNAME" >&2
@@ -297,6 +343,7 @@ main() {
     *) die_usage "unknown subcommand: $COMMAND" ;;
     esac
 
+    validate_context
     case $COMMAND in
     payload) payload_command ;;
     disclose) disclose_command ;;
