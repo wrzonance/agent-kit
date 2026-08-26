@@ -91,7 +91,11 @@ if ((validate_only)) && [[ -n $chain_base ]]; then
     if [[ -x $config_reader ]]; then
         while IFS='=' read -r config_key config_value; do
             if [[ $config_key == AGENT_RUNDIR_* && $config_key == *_TEST* && -n $config_value ]]; then
-                chain_test_roots+=("${config_value#./}")
+                test_root=$config_value
+                while [[ $test_root == */ ]]; do test_root=${test_root%/}; done
+                while [[ $test_root == ./* ]]; do test_root=${test_root#./}; done
+                [[ -n $test_root && $test_root != . ]] || continue
+                chain_test_roots+=("$test_root")
             fi
         done < <("$config_reader" --repo-root "$chain_root" --list 2>/dev/null || true)
     fi
@@ -139,13 +143,13 @@ glob_regex() {
                     regex+=${pattern:index:$((closing - index + 1))}
                     index=$((closing + 1))
                 else
-                    regex+='\\['
+                    regex+='\['
                     ((index++))
                 fi
                 ;;
             [.^$'+'\'|'('')'])
                     # shellcheck disable=SC1003
-                    regex+='\\'
+                    regex+='\'
                 regex+=$character
                 ((index++))
                 ;;
@@ -160,6 +164,19 @@ tree_glob_matches() {
     regex=$(glob_regex "$pattern")
     for path in "${chain_tree_paths[@]}"; do
         [[ $path =~ $regex ]] && return 0
+    done
+    return 1
+}
+
+tree_literal_parent_exists() {
+    local pattern=$1 parent
+    [[ $pattern != *[\*\?\[]* ]] || return 1
+    if [[ $pattern != */* ]]; then
+        return 0
+    fi
+    parent=${pattern%/*}
+    for path in "${chain_tree_paths[@]}"; do
+        [[ $path == "$parent"/* ]] && return 0
     done
     return 1
 }
@@ -256,7 +273,7 @@ if ((validate_only)); then
         while IFS=$'\t' read -r issue patterns exclusions; do
             IFS=',' read -ra prediction_patterns <<< "$patterns"
             for pattern in "${prediction_patterns[@]}"; do
-                tree_glob_matches "$pattern" || {
+                tree_glob_matches "$pattern" || tree_literal_parent_exists "$pattern" || {
                     sibling=$(nearest_tree_sibling "$pattern")
                     if [[ $sibling != none && $pattern == */** ]]; then sibling+="/**"; fi
                     die "issue #$issue predictedWriteSet glob matches no paths in chain-base tree: $pattern; nearest existing sibling: $sibling"
