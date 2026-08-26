@@ -753,6 +753,12 @@ assert_contains "$ledger_body" "$head_sha" \
     'the review-ledger entry records the reviewed head SHA'
 assert_contains "$ledger_body" '"kind": "adversarial"' \
     'the review-ledger entry records kind=adversarial'
+assert_contains "$ledger_body" '"reviewed_at"' \
+    'the review-ledger entry records a reviewed_at timestamp (CodeRabbit #484 nitpick)'
+# shellcheck disable=SC2016  # single-quoted on purpose: a literal sed pattern, not meant to expand.
+reviewed_at_value=$(sed -n '/```json/,/```/p' <<<"$ledger_body" | sed '1d;$d' | jq -r '.reviews[0].reviewed_at')
+assert_eq 'yes' "$([[ $reviewed_at_value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && printf yes || printf no)" \
+    'the reviewed_at timestamp is UTC ISO-8601, matching the launch-marker convention'
 
 # -- publish: omitting --head-sha renders neither line, and no ledger call -
 

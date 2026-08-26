@@ -454,8 +454,10 @@ try_reaffirm_if_covered() {
     chmod 600 -- "$entry_file" 2>/dev/null || true
     jq -cn --arg provider "$PROVIDER" --arg head "$head_oid" --arg dp "$PAYLOAD" \
         --argjson original "$original" --arg verdict "$status_out" \
+        --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{kind: "adversarial", provider: $provider, head_sha: $head, diff_payload: $dp,
-          reaffirmed_from: $original, reaffirmedVerdict: $verdict}' >"$entry_file" 2>/dev/null || {
+          reaffirmed_from: $original, reaffirmedVerdict: $verdict, reviewed_at: $reviewed_at}' \
+        >"$entry_file" 2>/dev/null || {
         rm -f -- "$entry_file"
         return 1
     }

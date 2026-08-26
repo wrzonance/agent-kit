@@ -391,6 +391,41 @@ out=$("$script" append --repo owner/repo --pr 1 --comments "$malformed_comments"
 rc=$?
 assert_eq '1' "$rc" 'append refuses to write onto a present-but-unparseable ledger'
 
+# -- append: refuses an entry whose free-text field carries the fence marker
+#    (CodeRabbit #484 nitpick regression coverage for the existing defense-
+#    in-depth check) ----------------------------------------------------
+
+marker_entry="$tmp/marker-entry.json"
+jq -n --arg marker '<!-- review-ledger:v1 -->' \
+    '{kind:"bot", provider:"coderabbit", head_sha:"1111111111111111111111111111111111111a", state:$marker}' \
+    >"$marker_entry"
+out=$("$script" append --repo owner/repo --pr 1 --comments "$empty_comments" \
+    --entry-file "$marker_entry" --agent-identity 'Claude Opus 5' \
+    --gh-comment-script "$gh_comment_stub" 2>&1)
+rc=$?
+assert_eq '1' "$rc" 'append refuses an entry whose free-text field carries the ledger fence marker'
+assert_contains "$out" 'must not contain a review-ledger fence marker' \
+    'the refusal names the fence-marker-injection defense'
+
+# -- append: refuses when the existing ledger's repo/pr does not match this
+#    call's --repo/--pr -----------------------------------------------------
+
+out=$("$script" append --repo owner/other-repo --pr 1 --comments "$valid_comments" \
+    --entry-file "$entry_fresh" --agent-identity 'Claude Opus 5' \
+    --gh-comment-script "$gh_comment_stub" 2>&1)
+rc=$?
+assert_eq '1' "$rc" 'append refuses when the existing ledger repo does not match this call'
+assert_contains "$out" 'does not match this call' \
+    'the repo-mismatch refusal names the reason'
+
+out=$("$script" append --repo owner/repo --pr 99 --comments "$valid_comments" \
+    --entry-file "$entry_fresh" --agent-identity 'Claude Opus 5' \
+    --gh-comment-script "$gh_comment_stub" 2>&1)
+rc=$?
+assert_eq '1' "$rc" 'append refuses when the existing ledger pr does not match this call'
+assert_contains "$out" 'does not match this call' \
+    'the pr-mismatch refusal names the reason'
+
 # -- append: a foreign (untrusted-author) ledger comment is never updated;
 #    the trusted author gets its own NEW comment instead (root review F1) --
 

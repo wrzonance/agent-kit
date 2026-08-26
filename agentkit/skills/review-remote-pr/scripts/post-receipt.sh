@@ -565,12 +565,13 @@ append_ledger_entry() {
         --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
         --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
         --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
+        --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
          + (if $harness == "" then {} else {harness:$harness} end)
          + {head_sha:$head}
          + (if $diff_payload == "" then {} else {diff_payload:$diff_payload} end)
-         + {counts:{p1:$p1, p2:$p2}}' >"$entry_file" 2>/dev/null; then
+         + {counts:{p1:$p1, p2:$p2}, reviewed_at:$reviewed_at}' >"$entry_file" 2>/dev/null; then
         printf '%s: could not encode a ledger entry; ledger entry not recorded\n' "$PROGNAME" >&2
         rm -f -- "$entry_file"
         return 0
