@@ -35,7 +35,7 @@ secure_mkdir_p() {
         current=$parent
     done
 
-    local i component
+    local i component mode
     for ((i = ${#missing[@]} - 1; i >= 0; i--)); do
         component=${missing[i]}
         if ! mkdir -m 700 -- "$component" 2>/dev/null; then
@@ -43,9 +43,13 @@ secure_mkdir_p() {
             # caller (e.g. two overlapping ledger appends racing to create
             # the same not-yet-existing parent) may have won the race for
             # this exact component between the scan above and this mkdir. A
-            # directory that landed there anyway is fine; anything else
-            # (a file, a symlink, or a real failure) is not.
+            # directory that landed there anyway is fine ONLY if it is
+            # actually private -- a racing creator that did not go through
+            # this same mode-0700 path (or a hostile pre-seed racing the
+            # scan) must not be silently accepted just because it exists.
             [[ -d $component && ! -L $component ]] || return 1
+            mode=$(stat -c %a -- "$component" 2>/dev/null) || return 1
+            (( (8#$mode & 0022) == 0 )) || return 1
         fi
     done
     return 0

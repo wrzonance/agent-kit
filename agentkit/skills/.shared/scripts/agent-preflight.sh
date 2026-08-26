@@ -110,7 +110,7 @@ fi
 # ambient umask. Guarded like the libraries above -- this script reports
 # rather than blocks (see BEHAVIOUR), so a missing sibling falls back to a
 # plain mkdir -p at the call site instead of crashing the whole probe.
-SECURE_MKDIR_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/secure-mkdir.sh"
+SECURE_MKDIR_LIB="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)/lib/secure-mkdir.sh"
 if [[ -r "$SECURE_MKDIR_LIB" ]]; then
     # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
     source "$SECURE_MKDIR_LIB"

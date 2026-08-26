@@ -78,6 +78,20 @@ assert_contains "$warn_out" "fix: chmod 700 $warn_repo/.agent" \
 assert_eq '775' "$(stat -c '%a' -- "$warn_repo/.agent")" \
     'the pre-existing directory mode is left untouched, not auto-fixed'
 
+# --- invoked through a PATH symlink, .agent/logs is still created 0700 -----
+# (issue #482 CodeRabbit follow-up) BASH_SOURCE[0] names the symlink, not the
+# real script; deriving SECURE_MKDIR_LIB from its unresolved directory would
+# miss the lib/ sibling and silently fall back to a plain, umask-shaped
+# `mkdir -p`.
+symlink_bin="$tmp/symlink-bin"
+mkdir -p -- "$symlink_bin"
+ln -s -- "$script" "$symlink_bin/agent-preflight.sh"
+symlink_repo=$(mktemp -d "$tmp/repo.XXXXXX")
+git -C "$symlink_repo" init -q
+(umask 002 && "$symlink_bin/agent-preflight.sh" --worktree "$symlink_repo" > /dev/null 2>&1)
+assert_eq '700' "$(stat -c '%a' -- "$symlink_repo/.agent/logs" 2>/dev/null || printf '?')" \
+    'invoked through a PATH symlink, .agent/logs is still created mode 700 under umask 002'
+
 # --- skills-content= is a content stamp, independent of skills= path= (#453) -
 skills_content_line=$(grep '^skills-content=' <<< "$out")
 skills_path_line=$(grep -m1 '^skills=' <<< "$out")
