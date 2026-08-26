@@ -208,6 +208,20 @@ a miss is silence (verdict `implementation`), never proof the issue is safe to
 implement, and a hit is a signal to read and confirm, not a final verdict on its own.
 Genuine ambiguity is a Step 3 conflict-analysis judgment call like any other.
 
+## Tracker classification
+
+An `active` candidate is classified `tracker` when triage proves that it has at least one
+sub-issue or carries an `epic` or `tracker` label, or the canonical Step 3 body read finds a
+task-list line referencing another selected issue. This is a parent record, not a workstream:
+hold it silently and allow its selected children to proceed. Record the structural reason so the
+hold is auditable.
+
+With `--fast-mode`, every other `active` candidate is dropped with a one-line `active` reason;
+there is no hold/skip question. Tracker holds are counted separately from the cap overflow queue.
+The queue contains the first-N pickup-order overflow implementation candidates and is refilled as
+slots free. A fast-mode disclosure therefore includes `queued=` and `tracker=` even when either is
+zero.
+
 ## Conflict analysis and dispatch-plan write sets
 
 Step 3 produces a root-owned `dispatch-plan` artifact before any worker is
@@ -492,8 +506,9 @@ Then apply, in order:
 2. **Run Step 3's conflict analysis over the eligible set**, and drop the later issue from
    every colliding pair. This is the part no script can do — it is a judgement about which
    files each issue will touch.
-3. **Cap the set at the Limits section's slot count.** More eligible issues than slots is
-   the normal case, not a reason to raise the cap.
+3. **Cap the current wave at the Limits section's slot count.** More eligible issues than slots is
+   the normal case. In `--fast-mode`, dispatch the first candidates by pickup order and queue the
+   remainder for refill as slots free; attended mode reports the overflow and asks before dispatch.
 4. **Move all chosen issues to `In progress` in one batch** with `move-github-project-item.sh`,
    including the Backlog ones — a promoted issue skips `Ready` because it is being started now,
    and leaving it in Backlog while a worker builds it makes the board lie. The helper accepts
@@ -506,18 +521,19 @@ After conflict analysis and the slot cap have fixed the dispatch set, print exac
 single-line reconciliation in this shape:
 
 ```text
-Selection funnel: requested=<slot-count> eligible=<eligible-count> dispatched=<dispatch-count> exclusions=<reason>:<count>[#<issue>,...]|none
+Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count> tracker=<tracker-count> exclusions=<reason>:<count>[#<issue>,...]|none
 ```
 
-`requested` is the operator's supplied slot count, bounded by the skill's maximum. For automatic
-selection with no supplied count, `requested` is the effective Limits-section slot cap. `eligible`
-is the number of candidates that survived the existing triage and mechanical eligibility rules
-before conflict/serialization and the slot cap, and `dispatched` is the number actually launched
-in this wave. Group candidates not dispatched under stable categorical reasons such as
+For automatic selection with no supplied count, `requested` is the effective Limits-section slot cap.
+For a numbered invocation, it is the number of supplied candidates. `eligible` is the number that survived existing triage and
+mechanical eligibility before conflict/serialization and the slot cap. `dispatched` is the number
+actually launched in this wave; `queued` is the number retained for fast-mode refill after the
+wave cap; `tracker` is the number of active parent/epic records held without a prompt. Group all
+other candidates not dispatched under stable categorical reasons such as
 `blocked-by`, `tier`, `already-implemented`, `conflict-serialized`, or `slot-cap`; use the
 specific existing verdict instead of a catch-all when one applies. Each considered candidate
-appears exactly once: either in the dispatched set or in exactly one exclusion group. When more
-than one exclusion could describe it, use the earliest terminal decision made by the existing
+appears exactly once: in the dispatched set, queue, tracker holds, or exactly one exclusion group.
+When more than one exclusion could describe it, use the earliest terminal decision made by the existing
 selection procedure, so the groups are mutually exclusive and their counts match their issue
 lists. This is reporting only; never change eligibility to make the arithmetic look fuller.
 A [work-shape verdict](#work-shape-verdict) of `no-code` reports under `no-code-hold`.
@@ -525,10 +541,15 @@ A [work-shape verdict](#work-shape-verdict) of `no-code` reports under `no-code-
 Examples cover all queue shapes:
 
 ```text
-Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none
-Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
-Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]
+Selection funnel: requested=3 eligible=3 dispatched=3 queued=0 tracker=0 exclusions=none
+Selection funnel: requested=3 eligible=2 dispatched=1 queued=0 tracker=0 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
+Selection funnel: requested=11 eligible=11 dispatched=10 queued=1 tracker=1 exclusions=none
 ```
+
+For compatibility with pre-queue attended logs, these legacy examples remain recognizable:
+`Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none`,
+`Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]`,
+and `Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]`.
 
 The first line says the full requested count was dispatched. The second makes a thin dispatch
 legible without widening it. The third is still emitted before the empty-selection stop below.

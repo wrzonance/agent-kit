@@ -116,6 +116,12 @@ assert_contains "$parallel_with_refs" 'print the shared-board finding' \
     'the shared-board disclosure survives the flag'
 assert_contains "$parallel_with_refs" 'dropped with a printed reason, not asked about' \
     'a Blocked-column candidate is excluded, not a question'
+assert_contains "$parallel_with_refs" 'classified `tracker`' \
+    'fast mode classifies active epics and trackers without prompting'
+assert_contains "$parallel_with_refs" 'queued=' \
+    'fast mode discloses cap overflow as queued work'
+assert_contains "$parallel" 'active tracker' \
+    'the main triage procedure names the tracker hold path'
 
 # --- publishing is the invocation's own output -------------------------------
 # Branch pushes and DRAFT PR opens are what the skill was invoked to produce;

@@ -86,6 +86,29 @@ assert_contains "$(line_for 48)" 'active' '#48 In progress is active'
 assert_contains "$(line_for 41)" 'attempted' '#41 with a closed-unmerged PR is attempted'
 assert_contains "$(line_for 39)" 'clean' '#39 on no board is clean'
 
+# An active tracker is evidence for a hold, not an attended-mode question. The
+# triage response carries the structural signals the fast-mode selector needs:
+# an epic/tracker label, sub-issues, and a task-list reference to another
+# selected issue. Keep this offline by deriving a fixture from the sanitized
+# response already used above.
+tracker_fixture="$tmp/triage-tracker.json"
+jq '(.data.repository.issues.nodes[] | select(.number == 48))
+    |= (.labels.nodes += [{"name":"Epic"}] |
+        .subIssues = {"totalCount":2,"nodes":[{"number":57},{"number":41}]} |
+        .body = "## Children\n- [ ] #57\n- [x] #41")' \
+    "$here/fixtures/triage-mixed.json" > "$tracker_fixture"
+repo=$(make_repo)
+tracker_out=$(GH_STUB_LOG="$tmp/gh-tracker.log" GH_STUB_RESPONSE="$tracker_fixture" \
+    PATH="$tmp/stub:$PATH" "$tr_sh" --repo-root "$repo")
+assert_contains "$(printf '%s\n' "$tracker_out" | grep -E '^#48[[:space:]]')" 'tracker' \
+    'an active epic is disclosed as a tracker in the digest'
+tracker_json=$(GH_STUB_LOG="$tmp/gh-tracker-json.log" GH_STUB_RESPONSE="$tracker_fixture" \
+    PATH="$tmp/stub:$PATH" "$tr_sh" --repo-root "$repo" --json)
+assert_eq 'true' "$(jq -r '.[] | select(.number == 48) | .tracker' <<< "$tracker_json")" \
+    'tracker metadata is machine-readable'
+assert_contains "$(jq -r '.[] | select(.number == 48) | .trackerReason' <<< "$tracker_json")" 'label' \
+    'tracker metadata names the structural reason'
+
 # The script must never claim an interpretation it cannot prove.
 assert_not_contains "$out" 'fully addressed' 'never claims fully addressed'
 assert_not_contains "$out" 'partially addressed' 'never claims partially addressed'
