@@ -15,7 +15,7 @@ instead of rediscovering them on every run; onboarding regenerates them after a 
 | `onboard-repo` skill | Walks a repository through setup. Runs the bootstrap script, audits existing instruction files, fills in verify commands and label meanings, and hands the first run of each command to a human |
 | `parallel-issues` skill | Triages the Projects board, picks 2-5 independent issues, runs each in an isolated git worktree with its own sub-agent, and drives each to a draft PR |
 | `review-remote-pr` skill | Takes a draft PR to green: CI, merge conflicts, one adversarial cross-review by the peer CLI, review-bot threads, and the board move |
-| `pr-to-green` skill | Serializes a confirmed draft-PR queue, performs authorized ready/provider transitions, and handles stacks without merging |
+| `pr-to-green` skill | Drives a confirmed draft-PR queue: ready/provider transitions run in parallel across independent roots, merges stay strictly serial, and stacks are handled without merging unless `--auto-merge` is given |
 | Helper scripts | Deterministic one-call operations: environment preflight, command runner, board reader and mover, one-request issue triage, worktree commits, PR state digests, verified comment posting |
 | Hooks | Inject the environment contract at session start, refuse a short list of destructive commands, and teach cheaper commands after wasteful ones |
 
@@ -255,7 +255,7 @@ agentkit/
   skills/
     onboard-repo/
     parallel-issues/                scripts/ holds the board mover and data fencing
-    pr-to-green/                    serial queue and authorized transition helpers
+    pr-to-green/                    queue, authorized transition, and serial-merge helpers
     review-remote-pr/               scripts/ holds PR digests, comment posting, reviewers
     .shared/
       schema/config.env.example     every AGENT_* key, documented
