@@ -130,7 +130,7 @@ contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$con
 
 The PR loop orchestrates; implementation workers are sole writers for fix batches. The two allowed
 exceptions are spawn unavailable and qualifying bounded inline correction. Resolve model/effort,
-then read ["$agentkit/review-remote-pr/references/worker-gate.md"](references/worker-gate.md), ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md), and ["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md) in full before dispatch; workers validate, commit, push; root owns PR metadata/posts.
+then read ["$agentkit/review-remote-pr/references/worker-gate.md"](references/worker-gate.md), ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md), and ["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md) in full first; workers validate/commit/push, root owns PR metadata/posts.
 
 ## The Loop
 
@@ -171,7 +171,7 @@ PHASE C — REVIEW (runs when relevant provider findings land)
 auto-cleared/dismissed; all body nitpicks fixed or declined+documented; every confirmed adversarial
 finding fixed or declined with a PR comment; every human-lane item has an explicit user decision
 (replies posted+verified, threads left unresolved). A deferred item blocks `Ready to merge` unless
-the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base line means checks are not green, and any pre-retarget provider approval must be surfaced as knowing acceptance, not silently inherited or re-pinged.
+the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base line means checks are not green, and any pre-retarget provider approval must surface as knowing acceptance, never silently inherited or re-pinged.
 
 CodeRabbit's auto-approve (when enabled) needs settled replies on every thread it opened and no
 failing checks — never resolve before its fresh acknowledgement. Disabled →
@@ -256,7 +256,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-Run only declared `agent-run.sh --cmd` commands, directly, with no approval step: a focused suite during red/green, full suite before commit, never push without local verification. Commit-helper exit 2 needs the exact elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip straight to `agent-run.sh --cmd test` then `git push`.
+Run only declared `agent-run.sh --cmd` commands, directly, no approval step: a focused suite during red/green, full suite before commit, never push without local verification. Commit-helper exit 2 needs the elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip to `agent-run.sh --cmd test` then `git push`.
 
 ### 0c — Resolve the durable per-PR review-artifact directory
 
@@ -372,21 +372,13 @@ if ((rc == 0)); then mv -f -- "$tmp" "$RUN_DIR/baseline-evidence.md"; else rm -f
 
 ### Wait contract: one turn-free wait
 
-Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) before waits (no-model-turn, bounds, durable-state; Step 4 adds CI settlement). This loop keeps waits silent until terminal: log heartbeats, emit one completion/expiry line.
+Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) before waits (no-model-turn, bounds, durable-state; Step 4 adds CI settlement). Keep waits silent until terminal: log heartbeats, emit one completion/expiry line.
 
 ### Adversarial-review receipt:
 
-After all confirmed adversarial findings are fixed or explicitly declined, push those fixes; the
-receipt is published **after fixes are pushed** and **before draft-phase-complete handoff**, as
-exactly one durable top-level PR comment. Required for both a material review and a verified
-trivial-diff skip — a review or skip without it is never complete. It records provider, model,
-effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
-`confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
-or the `verified-skip rationale` + oracle. The order is executable: `adversarial-run.sh` must
-return `0` before `finding-ledger.sh add` records any disposition (exit `13` means the review
-result is missing or incomplete), and receipt publication consumes that ledger. Create an empty
-`$RUN_DIR/findings.ndjson` for a clean review or verified skip. `post-receipt.sh publish` derives it from RUN_DIR the same way `finding-ledger.sh` does, refusing evidence-unavailable and naming the expected path if RUN_DIR is bad. Run it
-(only after the finding-fix push — this is the final Phase A action):
+After all confirmed adversarial findings are fixed or explicitly declined, push those fixes; the receipt publishes **after fixes are pushed** and **before draft-phase-complete handoff**, as one durable top-level PR comment — required for a material review and a verified trivial-diff skip alike, never complete without it. It records provider, model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`), or the `verified-skip rationale` + oracle.
+Order is executable: `adversarial-run.sh` must return `0` before `finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.
+`post-receipt.sh publish` derives it from RUN_DIR like `finding-ledger.sh` does, refusing evidence-unavailable if RUN_DIR is bad. Run it (only after the finding-fix push — the final Phase A action):
 
 ```bash
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
@@ -399,13 +391,16 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
 publish_rc=0
+# --head-sha unlocks post-receipt.sh's own ledger write-back (issue #486 item 4).
+rhs=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha') || rhs=''
+rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs")
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
-    --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
-# The ledger owns titles, dispositions, SHAs, and rationales; the script owns
-# every receipt byte, deriving findings.ndjson from RUN_DIR (--findings-file PATH overrides it). Pass --skip-rationale S --oracle S for a verified skip.
+    --agent-identity "$AGENT_IDENTITY" "${rla[@]}" || publish_rc=$?
+# The ledger owns titles/dispositions/SHAs/rationales; the script owns every
+# receipt byte (--findings-file PATH overrides RUN_DIR). --skip-rationale S --oracle S for a skip.
 case "$publish_rc" in
     0)  : ;; # posted and byte-verified
     11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
@@ -479,11 +474,11 @@ hand-rolled GraphQL re-query:
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
 ```
 
-The digest's `agent-docs: N eligible` line reports this workflow's own marked agent-doc threads
-(resolution rule: provider-rules.md, loaded in Step 1a). Any CI failure, unhandled automated-review
-thread/finding, or unaddressed body nitpick/adversarial finding → back to Step 1 (max 3 cycles —
-The Loop's cap). Human-authored content lacking an explicit user decision surfaces the gate and
-waits; never post, resolve, or claim readiness.
+The digest's `agent-docs: N eligible` line reports this workflow's marked agent-doc threads
+(rule: provider-rules.md, Step 1a). Any CI failure, unhandled automated-review thread/finding, or
+unaddressed body nitpick/adversarial finding → back to Step 1 (max 3 cycles — The Loop's cap).
+Human-authored content lacking an explicit user decision surfaces the gate and waits; never post,
+resolve, or claim readiness.
 
 ---
 
@@ -509,8 +504,8 @@ Human review: [none | H1 approved/replied/open, H2 declined/open | H3 awaiting c
 [Ready to merge | Awaiting user confirmation; not claiming readiness].
 ```
 (Identify which reviewer ran and any fallback reason; who wrote the code and its model/effort or
-`worker=self` reason; every human-review item's decision, verified-reply state, and open-thread state.)
+`worker=self` reason; every human-review item's decision, verified-reply state, open-thread state.)
 
 Then run **Backlog grooming** — read ["$agentkit/review-remote-pr/references/grooming.md"](references/grooming.md) in full —
-before handing back. It proposes Ready candidates from the Backlog and never auto-promotes; it
-no-ops silently when there is no board/scope for it, never failing the PR handoff.
+before handing back. It proposes Ready candidates from the Backlog, never auto-promotes, and
+no-ops silently with no board/scope for it, never failing the PR handoff.

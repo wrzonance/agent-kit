@@ -455,4 +455,80 @@ assert_eq '1' "$observe_no_since_rc" '--observe without --since is refused'
 assert_contains "$(cat "$tmp/observe-no-since.err")" '--since is required' \
     'the refusal names the missing --since boundary'
 
+# --- issue #486 item 3: a live --observe poll that resolves LANDED must
+# write its own derived state back to the review ledger, not just consult it
+# before polling (issue #477 §3). Best-effort: --ledger-comments/--repo-root
+# are optional, and a failed append never turns a LANDED result into a
+# non-zero exit.
+
+cat >"$tmp/ledger-append-stub" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ledger %s\n' "$*" >>"$LEDGER_APPEND_LOG"
+if [[ ${1:-} == append ]]; then
+    entry_file=''
+    prev=''
+    for arg in "$@"; do
+        [[ $prev == --entry-file ]] && entry_file=$arg
+        prev=$arg
+    done
+    [[ -n $entry_file ]] && cat "$entry_file" >>"$LEDGER_APPEND_LOG"
+    [[ ${LEDGER_APPEND_FAIL:-0} == 1 ]] && exit 1
+fi
+exit 0
+EOF
+chmod +x "$tmp/ledger-append-stub"
+
+run_observe_with_ledger() {
+    TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
+        REVIEW_TRANSITION_REVIEW_LEDGER="$tmp/ledger-append-stub" \
+        LEDGER_APPEND_LOG="$tmp/ledger-append.log" \
+        bash "$transition" --observe --repo owner/repo --pr 14 --since "$1" \
+        --ledger-comments "$tmp/ledger-comments.json" --repo-root "$tmp"
+}
+printf '[]\n' >"$tmp/ledger-comments.json"
+
+rm -f "$tmp/ledger-append.log"
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7004,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-22T07:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
+    run_observe_with_ledger '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=LANDED' \
+    'a LANDED write-back call still prints the LANDED result'
+ledger_append_log=$(cat "$tmp/ledger-append.log" 2>/dev/null || true)
+assert_contains "$ledger_append_log" 'ledger append' \
+    'a LANDED result appends a ledger entry through review-ledger.sh'
+assert_contains "$ledger_append_log" '"kind":"bot"' \
+    'the write-back entry is recorded as kind=bot'
+assert_contains "$ledger_append_log" '"provider":"coderabbit"' \
+    'the write-back entry names the coderabbit provider'
+assert_contains "$ledger_append_log" "\"head_sha\":\"$OBSERVE_HEAD_SHA\"" \
+    'the write-back entry records the current head SHA'
+assert_contains "$ledger_append_log" '"state":"APPROVED"' \
+    'the write-back entry records the review state'
+assert_contains "$ledger_append_log" '"review_id":7004' \
+    'the write-back entry records the review id'
+
+# Without --ledger-comments/--repo-root, no write-back is attempted at all --
+# the flags stay optional and the existing no-write-back callers are unaffected.
+rm -f "$tmp/ledger-append.log"
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7005,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-22T07:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
+    REVIEW_TRANSITION_REVIEW_LEDGER="$tmp/ledger-append-stub" LEDGER_APPEND_LOG="$tmp/ledger-append.log" \
+    run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=LANDED' \
+    'LANDED is still reported without --ledger-comments/--repo-root'
+assert_eq '' "$(cat "$tmp/ledger-append.log" 2>/dev/null || true)" \
+    'no write-back is attempted without --ledger-comments and --repo-root'
+
+# A failed append is best-effort: it never turns a LANDED result into a
+# blocked/non-zero exit, matching post-receipt.sh's write-back house style.
+rm -f "$tmp/ledger-append.log"
+out=$(REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON="[{\"id\":7006,\"user\":{\"login\":\"coderabbitai[bot]\",\"type\":\"Bot\"},\"state\":\"APPROVED\",\"submitted_at\":\"2026-08-22T07:00:00Z\",\"commit_id\":\"$OBSERVE_HEAD_SHA\"}]" \
+    LEDGER_APPEND_FAIL=1 run_observe_with_ledger '2026-08-22T06:30:00Z')
+rc=$?
+assert_contains "$out" 'provider=coderabbit result=LANDED' \
+    'a failed ledger append never withholds the already-earned LANDED result'
+assert_eq '0' "$rc" 'a failed ledger append never turns LANDED into a non-zero exit'
+
 finish

@@ -182,7 +182,7 @@ if [[ $head_sha != '' ]]; then
     # unreadable is unknown, never complete.
     findings_response=''
     if ! findings_response=$(gh api -X GET \
-        "repos/$repository/code-quality/findings?state=open&per_page=100" \
+        "repos/$repository/code-quality/findings?state=open&per_page=100" --paginate \
         -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
         if [[ $findings_response == *'HTTP 403'* ]] && grep -qi 'not enabled' <<<"$findings_response"; then
             printf 'scan-state=not-enabled\n'
@@ -191,16 +191,20 @@ if [[ $head_sha != '' ]]; then
         printf 'scan-state=unknown reason=%s\n' "$(first_error_line "$findings_response")"
         exit 1
     fi
-    if ! jq -e '(type == "array") or ((.findings? | type) == "array")' \
+    # --paginate concatenates one JSON value per page; slurp them, same as
+    # the check-runs/comments reads above, so repoWideOpen counts every page
+    # instead of the first 100 findings (issue #486 item 1).
+    if ! jq -se '[.[]? | (type == "array") or ((.findings? | type) == "array")] | all' \
         <<<"$findings_response" >/dev/null 2>&1; then
         printf 'scan-state=unknown reason=%s\n' \
             'Code Quality findings response was not readable JSON'
         exit 1
     fi
-    repo_wide_open=$(jq '
-        if type == "array" then length
-        elif (.findings? | type) == "array" then (.findings | length)
-        else 0 end
+    repo_wide_open=$(jq -s '
+        [.[]? | if type == "array" then .[]
+                 elif (.findings? | type) == "array" then .findings[]
+                 else empty end]
+        | length
     ' <<<"$findings_response" 2>/dev/null) || repo_wide_open=''
     [[ $repo_wide_open =~ ^[0-9]+$ ]] || repo_wide_open=0
 
