@@ -191,6 +191,26 @@ symlinked, or empty (or whitespace-only) diff record fails closed -- `payload` r
 identity for an empty diff itself, the same emptiness check the launcher already enforces before
 it ever calls this helper.
 
+From the repository root, this is the complete explicit-path sequence. Set `WORKTREE` to the PR
+worktree and `RUN_DIR` to its durable private review-artifact directory; every consent operation
+uses both values, and the grant writes the exact state filename the launcher checks:
+
+```bash
+WORKTREE=/path/to/pr-worktree
+RUN_DIR=/path/to/pr-worktree/.agent/evidence/pr-N
+REPO=OWNER/NAME
+PR=N
+PAYLOAD=$(scripts/consent-record.sh payload --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
+    --repo "$REPO" --pr "$PR" --base-ref main)
+scripts/consent-record.sh disclose --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
+    --payload "$PAYLOAD" --destination 'Anthropic via Claude' \
+    --purpose 'one adversarial review of that diff'
+scripts/consent-record.sh grant --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
+    --provider anthropic --payload "$PAYLOAD" --source interactive
+scripts/adversarial-run.sh --worktree "$WORKTREE" --pr "$PR" --repo "$REPO" \
+    --run-dir "$RUN_DIR"
+```
+
 ### Provider tokens
 
 `adversarial-run.sh` checks the consent record against the model-provider token the *resolved*
@@ -269,13 +289,14 @@ been declared.
 
 The one-shot blocking entry point is:
 
-    scripts/adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+    scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
                                [--provenance TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
 publication of adversarial.diff and adversarial.result.json. Its stdout receipt line is shaped for
 post-receipt.sh publish. A provider failure, missing provider, or unparseable verdict is blocked
-and is never clean.
+and is never clean. The legacy invocation `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR`
+remains accepted for callers that already enter the PR worktree before launching.
 
 For detached executors only, use:
 
