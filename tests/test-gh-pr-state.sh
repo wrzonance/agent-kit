@@ -930,9 +930,12 @@ assert_eq 1 "$other_failure_rc" \
 assert_not_contains "$(cat "$other_failure_err")" 'reset=' \
     'a non-rate-limit API failure never fabricates a reset time'
 
-# --- --full head-SHA cache: an unchanged head reuses the expensive evidence
-# cluster (reviews/comments/issue_comments/threads/code-scanning); --no-cache
-# forces a refetch (agent-kit#475) ---------------------------------------------
+# --- --full head-SHA cache: an unchanged head AND PR AND updated_at reuses
+# the expensive evidence cluster (reviews/comments/issue_comments/threads/
+# code-scanning); a different PR sharing the same head never reads it, a
+# newer updated_at (a review/comment/label landing with no push) still
+# misses, and --no-cache forces a refetch (agent-kit#475, review findings
+# F1a/F1b) ------------------------------------------------------------------
 
 cache_call_log="$tmp/cache-calls.log"
 : >"$cache_call_log"
@@ -944,9 +947,13 @@ cat >"$tmp/case-full-cache/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >>"$cache_call_log"
+updated_at=\${CACHE_UPDATED_AT:-2026-08-20T00:00:00Z}
 case " \$* " in
     *" api repos/owner/repo/pulls/900 "*)
-        printf '%s\n' '{"number":900,"draft":true,"mergeable":true,"head":{"ref":"feat/cache","sha":"cachesha1"},"base":{"ref":"main"}}'
+        printf '{"number":900,"draft":true,"mergeable":true,"head":{"ref":"feat/cache","sha":"cachesha1"},"base":{"ref":"main"},"updated_at":"%s"}\n' "\$updated_at"
+        ;;
+    *" api repos/owner/repo/pulls/903 "*)
+        printf '{"number":903,"draft":true,"mergeable":true,"head":{"ref":"feat/other","sha":"cachesha1"},"base":{"ref":"main"},"updated_at":"%s"}\n' "\$updated_at"
         ;;
     *" api repos/owner/repo/commits/cachesha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -954,16 +961,19 @@ case " \$* " in
     *" api repos/owner/repo/commits/cachesha1/status"*)
         printf '%s\n' '{"statuses":[]}'
         ;;
-    *"compare/main...feat/cache"*)
+    *"compare/main...feat/cache"*|*"compare/main...feat/other"*)
         printf '%s\n' '{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0,"commits":[]}'
         ;;
     *" api repos/owner/repo/pulls/900/reviews "*)
-        printf '%s\n' '[{"id":1,"user":{"login":"someone"},"state":"COMMENTED","submitted_at":"2026-08-20T00:00:00Z","commit_id":"cachesha1"}]'
+        printf '%s\n' '[{"id":1,"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","submitted_at":"2026-08-20T00:00:00Z","commit_id":"cachesha1"}]'
         ;;
-    *" api repos/owner/repo/pulls/900/comments "*)
+    *" api repos/owner/repo/pulls/903/reviews "*)
         printf '%s\n' '[]'
         ;;
-    *" api repos/owner/repo/issues/900/comments "*)
+    *" api repos/owner/repo/pulls/900/comments "* | *" api repos/owner/repo/pulls/903/comments "*)
+        printf '%s\n' '[]'
+        ;;
+    *" api repos/owner/repo/issues/900/comments "* | *" api repos/owner/repo/issues/903/comments "*)
         printf '%s\n' '[]'
         ;;
     *" graphql "*)
@@ -975,32 +985,76 @@ esac
 EOF
 chmod +x "$tmp/case-full-cache/gh"
 
+count_new_big_five() {
+    local before=$1 after=$2 n
+    n=$(sed -n "$((before + 1)),${after}p" "$cache_call_log" |
+        { grep -cE 'pulls/[0-9]+/reviews|pulls/[0-9]+/comments |issues/[0-9]+/comments|graphql|code-scanning' || true; })
+    printf '%s' "${n:-0}"
+}
+
+before1=$(wc -l <"$cache_call_log")
 first_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir")
+after1=$(wc -l <"$cache_call_log")
 assert_contains "$first_full" 'cache: full=miss' \
-    'the first --full call for a head is a cache miss'
-big_five_calls_after_first=$(grep -cE 'pulls/900/reviews|pulls/900/comments |issues/900/comments|graphql|code-scanning' "$cache_call_log")
+    'the first --full call for a PR/head is a cache miss'
+assert_contains "$first_full" 'provider: coderabbit=reviewed' \
+    'PR 900 digest reflects its own cached review'
+new1=$(count_new_big_five "$before1" "$after1")
+if ((new1 > 0)); then assert_eq true true 'a cache miss actually issues the big-five calls'
+else assert_eq true false 'a cache miss actually issues the big-five calls'; fi
 
+# A different PR whose head happens to collide with PR 900's, sharing the
+# same --tmpdir, must never read PR 900's cached evidence (F1a).
+before2=$(wc -l <"$cache_call_log")
+cross_pr_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 903 --repo owner/repo --full --tmpdir "$cache_tmpdir")
+after2=$(wc -l <"$cache_call_log")
+assert_contains "$cross_pr_full" 'cache: full=miss' \
+    'a different PR sharing the same head is a cache miss, never a cross-PR hit'
+assert_contains "$cross_pr_full" 'provider: coderabbit=none' \
+    'the different PR digest reflects its own (empty) reviews, never PR 900''s cached review'
+new2=$(count_new_big_five "$before2" "$after2")
+if ((new2 > 0)); then assert_eq true true 'a same-head different-PR miss issues its own fetch'
+else assert_eq true false 'a same-head different-PR miss issues its own fetch'; fi
+
+# Same PR, same head, unchanged updated_at: a real cache hit.
+before3=$(wc -l <"$cache_call_log")
 second_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir")
+after3=$(wc -l <"$cache_call_log")
 assert_contains "$second_full" 'cache: full=hit' \
-    'a second --full call for the same head reuses the cached evidence'
-big_five_calls_after_second=$(grep -cE 'pulls/900/reviews|pulls/900/comments |issues/900/comments|graphql|code-scanning' "$cache_call_log")
-assert_eq "$big_five_calls_after_first" "$big_five_calls_after_second" \
-    'a same-head cache hit makes zero additional reviews/comments/threads/code-scanning calls'
-assert_contains "$second_full" 'provider: coderabbit=' \
+    'a second --full call for the same PR/head/updated_at reuses the cached evidence'
+new3=$(count_new_big_five "$before3" "$after3")
+assert_eq 0 "$new3" \
+    'a same-PR/head/updated_at cache hit makes zero additional reviews/comments/threads/code-scanning calls'
+assert_contains "$second_full" 'provider: coderabbit=reviewed' \
     'a cache-hit digest still derives provider state from the cached reviews'
 
-no_cache_full=$(PATH="$tmp/case-full-cache:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+# Same PR, same head, but updated_at moved (a review/comment/label landed
+# with no push): the cache entry is stale and must miss (F1b).
+before4=$(wc -l <"$cache_call_log")
+updated_full=$(CACHE_UPDATED_AT='2026-08-21T00:00:00Z' PATH="$tmp/case-full-cache:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir")
+after4=$(wc -l <"$cache_call_log")
+assert_contains "$updated_full" 'cache: full=miss reason=updated' \
+    'a newer PR updated_at with an unchanged head still misses the cache'
+new4=$(count_new_big_five "$before4" "$after4")
+if ((new4 > 0)); then assert_eq true true 'an updated_at miss actually re-issues the big-five calls'
+else assert_eq true false 'an updated_at miss actually re-issues the big-five calls'; fi
+
+# --no-cache forces a refetch even though a matching, non-stale entry exists.
+before5=$(wc -l <"$cache_call_log")
+no_cache_full=$(CACHE_UPDATED_AT='2026-08-21T00:00:00Z' PATH="$tmp/case-full-cache:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 900 --repo owner/repo --full --tmpdir "$cache_tmpdir" --no-cache)
+after5=$(wc -l <"$cache_call_log")
 assert_contains "$no_cache_full" 'cache: full=miss' \
     '--no-cache forces a refetch even though a same-head cache entry exists'
-big_five_calls_after_no_cache=$(grep -cE 'pulls/900/reviews|pulls/900/comments |issues/900/comments|graphql|code-scanning' "$cache_call_log")
-if ((big_five_calls_after_no_cache > big_five_calls_after_second)); then
-    assert_eq true true '--no-cache actually re-issued the big-five calls'
-else
-    assert_eq true false '--no-cache actually re-issued the big-five calls'
-fi
+new5=$(count_new_big_five "$before5" "$after5")
+if ((new5 > 0)); then assert_eq true true '--no-cache actually re-issued the big-five calls'
+else assert_eq true false '--no-cache actually re-issued the big-five calls'; fi
 
 # --- --wait-ci rounds after the first make at most check-runs + status
 # (agent-kit#475) ---------------------------------------------------------------
@@ -1035,11 +1089,62 @@ EOF
 chmod +x "$tmp/case-wait-cheap/gh"
 PATH="$tmp/case-wait-cheap:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 902 --repo owner/repo --wait-ci --rounds 3 --interval 1 >/dev/null
-round2_and_later=$(grep -cE 'pulls/902 |compare/main' "$wait_call_log")
-assert_eq 1 "$round2_and_later" \
-    'wait_for_ci fetches pull-request metadata and base state only in round 1'
-check_run_calls=$(grep -c 'commits/waitsha1/check-runs' "$wait_call_log")
-assert_eq 3 "$check_run_calls" \
+pulls_calls=$(grep -c 'pulls/902$' "$wait_call_log" || true)
+assert_eq 3 "${pulls_calls:-0}" \
+    'wait_for_ci cheaply re-reads pull-request metadata every round to detect a mid-wait head advance (F2)'
+compare_calls=$(grep -c 'compare/main' "$wait_call_log" || true)
+assert_eq 1 "${compare_calls:-0}" \
+    'wait_for_ci fetches base state only in round 1 when the head never changes'
+check_run_calls=$(grep -c 'commits/waitsha1/check-runs' "$wait_call_log" || true)
+assert_eq 3 "${check_run_calls:-0}" \
     'wait_for_ci re-fetches check-runs every round, including after round 1'
+
+# A head that advances mid-wait (agent-kit#475 review finding F2) must never
+# settle on the stale round-1 commit: the round-2 pulls/N read detects the
+# new head, re-fetches full evidence for it, and the digest reports the
+# advanced SHA, never the one the wait started with.
+mkdir -p "$tmp/case-wait-retarget"
+retarget_counter="$tmp/case-wait-retarget/pulls-count"
+: >"$retarget_counter"
+cat >"$tmp/case-wait-retarget/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case " \$* " in
+    *" api repos/owner/repo/pulls/905 "*)
+        n=\$(( \$(cat "$retarget_counter" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "\$n" >"$retarget_counter"
+        sha=oldsha1
+        ((n > 1)) && sha=newsha2
+        printf '{"number":905,"draft":true,"mergeable":true,"head":{"ref":"feat/retarget","sha":"%s"},"base":{"ref":"main"}}\n' "\$sha"
+        ;;
+    *" api repos/owner/repo/commits/oldsha1/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"in_progress"}]}'
+        ;;
+    *" api repos/owner/repo/commits/newsha2/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api repos/owner/repo/commits/oldsha1/status"* | *" api repos/owner/repo/commits/newsha2/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *"compare/main...feat/retarget"*)
+        printf '%s\n' '{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0,"commits":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-retarget/gh"
+retarget_err="$tmp/wait-retarget.err"
+retarget_output=$(PATH="$tmp/case-wait-retarget:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 905 --repo owner/repo --wait-ci --rounds 2 --interval 1 2>"$retarget_err")
+assert_contains "$retarget_output" 'sha=newsha2' \
+    'a head that advances mid-wait is reflected in the final digest, never the stale round-1 head'
+assert_not_contains "$retarget_output" 'sha=oldsha1' \
+    'the final digest never reports the pre-advance head'
+assert_contains "$(cat "$retarget_err")" 'head advanced mid-wait' \
+    'a mid-wait head advance is named in the diagnostic'
 
 finish

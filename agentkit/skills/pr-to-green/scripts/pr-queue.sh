@@ -14,7 +14,7 @@ readonly EXIT_RATE_LIMITED=$GH_BUDGET_RATE_LIMIT_EXIT
 # (agent-kit#475): pr-to-green's own SKILL.md documents --full running at
 # several phases per queued PR (pre-review digest, post-push refresh,
 # pre-gate refresh) at ~8 REST calls apiece on a cache miss, plus one
-# --wait-ci cycle at its default --rounds (~5 REST calls on round 1, ~2/round
+# --wait-ci cycle at its default --rounds (~5 REST calls on round 1, ~3/round
 # after -- rounded up to a flat ~5/round here since the estimate only needs
 # to be a believable order of magnitude, not exact).
 readonly FULL_READS_PER_PR=3

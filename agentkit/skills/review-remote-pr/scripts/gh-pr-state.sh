@@ -97,10 +97,19 @@ WANT_WAIT=0
 SAW_DIGEST=0
 NO_CACHE=0
 FULL_CACHE_HIT=0
+# Set only on a cache miss caused by a staleness check (never on "no entry
+# exists yet"), so print_digest can name the reason instead of leaving the
+# operator to guess. Reset at the top of every full_cache_load() call.
+CACHE_MISS_REASON=""
 PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
 HEAD_SHA=""
+# The PR's own updated_at (bumped by GitHub on reviews, comments, and label
+# changes -- not only on a head push), read from the same pulls/N response
+# fetch_meta already fetches. The --full cache's staleness check keys off
+# this at zero extra API cost (agent-kit#475 review finding F1).
+PR_UPDATED_AT=""
 BASE_REF=""
 BASE_BEHIND=""
 BASE_STATUS=unknown
@@ -348,6 +357,7 @@ fetch_meta() {
             headRefName: ($p.head.ref // ""),
             headRefOid: ($p.head.sha // ""),
             baseRefName: ($p.base.ref // ""),
+            updatedAt: ($p.updated_at // ""),
             statusCheckRollup: (
               [$pages[]? | select(type == "object") | .check_runs[]?]
               + [$status_pages[]? | select(type == "object") | .statuses[]?
@@ -357,20 +367,36 @@ fetch_meta() {
         preserve_raw_and_die "could not normalize REST pull-request metadata for $REPO#$PR"
     fi
     HEAD_SHA=$head_sha
+    PR_UPDATED_AT=$(jq -r '.updatedAt // ""' <"$WORK_DIR/pr.json" 2>/dev/null) || PR_UPDATED_AT=""
     return 0
 }
 
-# Lightweight refresh for --wait-ci rounds after the first: re-reads only the
-# two per-round-volatile REST endpoints (check-runs, status) against the head
-# SHA fetch_meta already established, and folds them into the existing
-# pr.json in place -- draft/mergeable/head/base fields are left exactly as
-# round 1 reported them. This drops a wait-ci round from ~5 REST calls
-# (pulls, check-runs, status, plus the two-way compare inside
-# fetch_base_state) to 2, at the cost of trusting that the head does not
-# advance mid-wait; a genuine mid-wait retarget is caught by the next --full
-# or plain digest call, which always re-runs fetch_meta from scratch
-# (agent-kit#475).
+# Lightweight refresh for --wait-ci rounds after the first. A bare re-read of
+# check-runs/status against the round-1 head silently settles on a stale
+# commit if the PR advances mid-wait (agent-kit#475 review finding F2), so
+# this first spends one cheap REST call re-reading pulls/N and comparing its
+# head SHA to what fetch_meta last established:
+#   - unchanged: fold a fresh check-runs+status read into the existing pr.json
+#     in place (draft/mergeable/base stay as round 1 reported them) -- 3 REST
+#     calls this round (pulls, check-runs, status), one more than a bare
+#     check-runs+status read, in exchange for never settling on a stale head.
+#   - changed: log one note line and re-run the full fetch_meta +
+#     fetch_base_state for the new head, so the rest of this round (and every
+#     round after it) evaluates the PR the wait is actually supposed to be
+#     watching, never the one it started with.
 fetch_ci_only() {
+    local previous_head=$HEAD_SHA current_head
+    gh api "repos/$REPO/pulls/$PR" \
+        >"$WORK_DIR/pr-raw.json" 2>"$WORK_DIR/err" ||
+        die_on_gh_failure "gh api pull request failed for $REPO#$PR"
+    current_head=$(jq -er '.head.sha // empty' <"$WORK_DIR/pr-raw.json" 2>/dev/null) ||
+        die "REST pull request metadata has no head SHA for $REPO#$PR"
+    if [[ $current_head != "$previous_head" ]]; then
+        note "head advanced mid-wait ($previous_head -> $current_head); re-fetching full evidence for the new head"
+        fetch_meta
+        fetch_base_state
+        return 0
+    fi
     gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate \
         >"$WORK_DIR/check-runs.raw" 2>"$WORK_DIR/err" ||
         die_on_gh_failure "gh api check runs failed for $REPO#$PR"
@@ -579,29 +605,58 @@ fetch_all() {
 # alerts -- is the cost the issue context calls out explicitly: several calls
 # each, invoked again at every phase (pre-review digest, post-push refresh,
 # pre-gate refresh) even when the head has not moved since the last --full
-# (agent-kit#475). A cache entry is keyed by head SHA under --tmpdir, which
-# --full already requires to be a private owned 0700 directory, so reusing it
-# across separate invocations in the same run is safe. Cheap per-call state
-# (draft/mergeable/CI/base) is never cached here and always re-fetched.
+# (agent-kit#475). Cheap per-call state (draft/mergeable/CI/base) is never
+# cached here and always re-fetched.
+#
+# A cache entry is namespaced by repository + PR + head SHA under --tmpdir
+# (which --full already requires to be a private owned 0700 directory), and
+# its content additionally records the exact repo/PR/head it was written for
+# -- full_cache_load rejects (never serves) an entry whose recorded identity
+# does not match the request, so two PRs whose heads happen to collide on the
+# same commit in one --tmpdir can never read each other's evidence even if a
+# path-namespacing bug ever reintroduced a collision (agent-kit#475 review
+# finding F1a).
+#
+# A head SHA alone is also not "nothing changed": GitHub bumps a PR's
+# updated_at on a new review, comment, label, or code-scanning result with no
+# push at all, so a same-head cache keyed only by SHA can serve stale
+# feedback forever. Every entry also records the PR's updated_at (already
+# read for free out of the pulls/N response fetch_meta always fetches), and
+# full_cache_load treats any mismatch against the live value as a miss --
+# zero extra API calls, and the cache can never outlive the evidence it
+# summarizes (finding F1b).
 full_cache_path() {
-    printf '%s/pr-state-full.%s.json' "$OUT_DIR" "$HEAD_SHA"
+    local repo_slug=${REPO//\//_}
+    printf '%s/pr-state-full.%s.%s.%s.json' "$OUT_DIR" "$repo_slug" "$PR" "$HEAD_SHA"
 }
 
-# Loads a same-head cache entry into the WORK_DIR files fetch_all would have
-# produced, plus THREADS_AVAILABLE and ALERTS_VALUE. Returns 1 (nothing
-# loaded) on any absence, symlink, non-owned file, or parse failure -- a
-# caller that gets 1 back must fall through to a fresh fetch_all, never
-# treat a cache miss as evidence of anything.
+# Loads a same-repo/PR/head, not-stale cache entry into the WORK_DIR files
+# fetch_all would have produced, plus THREADS_AVAILABLE and ALERTS_VALUE.
+# Returns 1 (nothing loaded) on any absence, symlink, non-owned file, parse
+# failure, identity mismatch, or updated_at staleness -- a caller that gets 1
+# back must fall through to a fresh fetch_all, never treat a cache miss as
+# evidence of anything. Sets CACHE_MISS_REASON=updated only for the
+# staleness case, so the digest can name why a same-head entry still missed.
 full_cache_load() {
-    local cache
+    local cache cached_repo cached_pr cached_updated
+    CACHE_MISS_REASON=""
     cache=$(full_cache_path)
     [[ -e $cache ]] || return 1
     [[ ! -L $cache && -f $cache && -O $cache ]] || return 1
     jq -e 'type == "object" and (.threadsAvailable | type) == "boolean" and
-           (.alerts | type) == "string" and
+           (.alerts | type) == "string" and (.repo | type) == "string" and
+           (.pr | type) == "number" and (.updatedAt | type) == "string" and
            ([.reviews, .comments, .issueComments, .threads, .codeQualityComments] |
              all(type == "array" or type == "object"))' \
         "$cache" >/dev/null 2>&1 || return 1
+    cached_repo=$(jq -r '.repo' "$cache" 2>/dev/null) || return 1
+    cached_pr=$(jq -r '.pr' "$cache" 2>/dev/null) || return 1
+    cached_updated=$(jq -r '.updatedAt' "$cache" 2>/dev/null) || return 1
+    [[ $cached_repo == "$REPO" && $cached_pr == "$PR" ]] || return 1
+    if [[ $cached_updated != "$PR_UPDATED_AT" ]]; then
+        CACHE_MISS_REASON=updated
+        return 1
+    fi
     jq -c '.reviews' "$cache" >"$WORK_DIR/reviews.json" 2>/dev/null &&
         jq -c '.comments' "$cache" >"$WORK_DIR/comments.json" 2>/dev/null &&
         jq -c '.issueComments' "$cache" >"$WORK_DIR/issue_comments.json" 2>/dev/null &&
@@ -629,8 +684,10 @@ full_cache_save() {
         --slurpfile threads "$WORK_DIR/threads.json" \
         --slurpfile cq "$WORK_DIR/code_quality_comments.json" \
         --argjson threadsAvailable "$([[ $THREADS_AVAILABLE == 1 ]] && printf true || printf false)" \
-        --arg alerts "$ALERTS_VALUE" '
-        {reviews: $reviews[0], comments: $comments[0], issueComments: $issue_comments[0],
+        --arg alerts "$ALERTS_VALUE" \
+        --arg repo "$REPO" --argjson pr "$PR" --arg updatedAt "$PR_UPDATED_AT" '
+        {repo: $repo, pr: $pr, updatedAt: $updatedAt,
+         reviews: $reviews[0], comments: $comments[0], issueComments: $issue_comments[0],
          threads: $threads[0], codeQualityComments: $cq[0],
          threadsAvailable: $threadsAvailable, alerts: $alerts}' >"$staged" 2>/dev/null; then
         rm -f -- "$staged"
@@ -996,7 +1053,13 @@ print_digest() {
     ((WANT_FULL)) || return 0
     printf 'saved: %s/pr_%s_{reviews,comments,issue_comments,threads,code_quality_comments}.json\n' \
         "$OUT_DIR" "$PR"
-    printf 'cache: full=%s\n' "$([[ $FULL_CACHE_HIT == 1 ]] && printf hit || printf miss)"
+    if ((FULL_CACHE_HIT)); then
+        printf 'cache: full=hit\n'
+    elif [[ -n $CACHE_MISS_REASON ]]; then
+        printf 'cache: full=miss reason=%s\n' "$CACHE_MISS_REASON"
+    else
+        printf 'cache: full=miss\n'
+    fi
 }
 
 main() {
