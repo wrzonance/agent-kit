@@ -109,7 +109,9 @@ The rest of the gate stands unchanged:
   into shell source:
 
   ```sh
-  provenance="RUN_ID=<id>; consent=<cross_provider_consent record>; invocation=<verbatim quote>"
+  # RUN_ID, consent_record, and invocation_quote are existing data variables
+  # (the quote read from its ledger/quote file, never retyped into shell source).
+  provenance="RUN_ID=${RUN_ID}; consent=${consent_record}; invocation=${invocation_quote}"
   "$agentkit/review-remote-pr/scripts/adversarial-run.sh" --pr N --repo OWNER/NAME \
       --run-dir "$RUN_DIR" --provenance "$provenance"
   ```
