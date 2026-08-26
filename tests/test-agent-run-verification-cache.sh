@@ -221,4 +221,55 @@ assert_not_contains "$out" 'verification current:' \
 assert_eq '1' "$rc" 'the changed declaration actually re-runs and reports the new failure'
 assert_contains "$out" 'FAIL(rc=1)' 'the re-run reports the false command failing'
 
+# --- worker baseline exclusion: unchanged test blob + identical base failure
+baseline_repo=$(mktemp -d "$tmp/baseline-repo.XXXXXX")
+git -C "$baseline_repo" init -q -b main
+git -C "$baseline_repo" config user.name test
+git -C "$baseline_repo" config user.email test@example.invalid
+mkdir -p "$baseline_repo/.agent" "$baseline_repo/tests"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "demo-test: expected 1, got 0\\n"' \
+    'exit 1' >"$baseline_repo/tests/demo-test.sh"
+chmod +x "$baseline_repo/tests/demo-test.sh"
+printf 'AGENT_CMD_TEST=tests/demo-test.sh\n' >"$baseline_repo/.agent/config.env"
+printf '.agent/*\n!.agent/config.env\n' >"$baseline_repo/.gitignore"
+git -C "$baseline_repo" add -A
+git -C "$baseline_repo" commit -qm base
+baseline_sha=$(git -C "$baseline_repo" rev-parse HEAD)
+git -C "$baseline_repo" checkout -qb feature
+printf 'unrelated feature documentation\n' >"$baseline_repo/feature.md"
+git -C "$baseline_repo" add feature.md
+git -C "$baseline_repo" commit -qm 'feature: unrelated documentation'
+baseline_log_output=$(cd "$baseline_repo" && "$real_run_sh" --cmd test \
+    --baseline-ref main --baseline-path tests/demo-test.sh --baseline-id demo-test 2>&1)
+baseline_rc=$?
+assert_eq '0' "$baseline_rc" \
+    'an unchanged test with an identical base failure is an auto-excluded worker outcome'
+assert_contains "$baseline_log_output" 'baseline-excluded test=demo-test' \
+    'the worker output reports the baseline exclusion'
+assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" "$baseline_sha" \
+    'the exclusion records the resolved chain-base SHA'
+assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" 'tests/demo-test.sh' \
+    'the exclusion records the failing test id/path'
+assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" '.agent/logs/' \
+    'the exclusion records the worker evidence log path'
+
+# A changed test blob must remain a genuine verification failure even when its
+# output happens to match the chain-base failure.
+printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "demo-test: expected 1, got 0\\n"' \
+    'printf "changed implementation\\n"' \
+    'exit 1' >"$baseline_repo/tests/demo-test.sh"
+git -C "$baseline_repo" add tests/demo-test.sh
+git -C "$baseline_repo" commit -qm 'feature: change failing test'
+changed_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
+    --baseline-ref main --baseline-path tests/demo-test.sh --baseline-id demo-test 2>&1) || changed_rc=$?
+: "${changed_rc:=0}"
+assert_eq '1' "$changed_rc" \
+    'a changed test blob remains change-caused red and is not auto-excluded'
+assert_contains "$changed_output" 'FAIL(rc=1)' \
+    'a changed test blob preserves the ordinary failure result'
+assert_eq '1' "$([[ ! -e "$baseline_repo/.agent/baseline-exclusion.md" ]] && printf 1 || printf 0)" \
+    'a stale exclusion is removed when a later verification is change-caused red'
+
 finish

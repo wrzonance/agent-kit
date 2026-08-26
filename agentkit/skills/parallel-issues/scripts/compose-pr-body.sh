@@ -11,13 +11,15 @@ WHAT_FILE=''
 DECISIONS_FILE=''
 TESTING_FILE=''
 BASELINE_FILE=''
+BASELINE_EXCLUSION_FILE=''
 AGENT=''
 OUTPUT=''
 OUTPUT_TMP=''
 
 usage() {
-    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
+    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE [--baseline-exclusion-file FILE] --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
     printf '  --baseline-file FILE   optional verification-baseline.sh evidence block, appended as a "## Verification" section\n' >&2
+    printf '  --baseline-exclusion-file FILE   optional worker baseline-exclusion checkbox appended inside Testing\n' >&2
 }
 
 die() {
@@ -32,7 +34,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
-            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--agent|--output)
+            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--agent|--output)
                 require_value "$1" "${2-}"
                 case $1 in
                     --issue) ISSUE=$2 ;;
@@ -41,6 +43,7 @@ parse_args() {
                     --decisions-file) DECISIONS_FILE=$2 ;;
                     --testing-file) TESTING_FILE=$2 ;;
                     --baseline-file) BASELINE_FILE=$2 ;;
+                    --baseline-exclusion-file) BASELINE_EXCLUSION_FILE=$2 ;;
                     --agent) AGENT=$2 ;;
                     --output) OUTPUT=$2 ;;
                 esac
@@ -52,6 +55,7 @@ parse_args() {
             --decisions-file=* ) DECISIONS_FILE=${1#*=}; shift ;;
             --testing-file=* ) TESTING_FILE=${1#*=}; shift ;;
             --baseline-file=* ) BASELINE_FILE=${1#*=}; shift ;;
+            --baseline-exclusion-file=* ) BASELINE_EXCLUSION_FILE=${1#*=}; shift ;;
             --agent=* ) AGENT=${1#*=}; shift ;;
             --output=* ) OUTPUT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -78,6 +82,16 @@ validate_testing() {
     done <"$TESTING_FILE"
 }
 
+validate_testing_file() {
+    local label=$1 path=$2 line
+    validate_section "$label" "$path"
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line ]] && continue
+        [[ $line =~ ^-[[:space:]]\[[xX[:space:]]\][[:space:]].+ ]] ||
+            die "$label must contain only markdown checkbox lines"
+    done <"$path"
+}
+
 validate_args() {
     [[ $ISSUE =~ $UINT_RE ]] || die '--issue must be a positive integer'
     [[ -n $AGENT && $AGENT != *$'\n'* && $AGENT != *$'\r'* ]] ||
@@ -88,6 +102,7 @@ validate_args() {
     validate_section '--testing-file' "$TESTING_FILE"
     validate_testing
     [[ -z $BASELINE_FILE ]] || validate_section '--baseline-file' "$BASELINE_FILE"
+    [[ -z $BASELINE_EXCLUSION_FILE ]] || validate_testing_file '--baseline-exclusion-file' "$BASELINE_EXCLUSION_FILE"
     [[ $OUTPUT != *$'\n'* && $OUTPUT != *$'\r'* ]] || die '--output must be a single-line path'
     if [[ -n $OUTPUT && $OUTPUT != - ]]; then
         [[ ! -L $OUTPUT ]] || die "refusing symlink output: $OUTPUT"
@@ -112,7 +127,12 @@ emit_body() {
     emit_section '## Why' "$WHY_FILE"
     emit_section '## What' "$WHAT_FILE"
     emit_section '## Decisions' "$DECISIONS_FILE"
-    emit_section '## Testing' "$TESTING_FILE"
+    testing_contents=$(<"$TESTING_FILE")
+    printf '## Testing\n\n%s' "$testing_contents"
+    if [[ -n $BASELINE_EXCLUSION_FILE ]]; then
+        printf '\n%s' "$(<"$BASELINE_EXCLUSION_FILE")"
+    fi
+    printf '\n\n'
     # verification-baseline.sh's evidence block already opens with its own
     # "## Baseline verification evidence" heading, so it is appended as-is
     # rather than wrapped in a second heading here.
