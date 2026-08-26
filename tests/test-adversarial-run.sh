@@ -1080,4 +1080,32 @@ assert_contains "$(cat -- "$tmp/roster-absent.out")" 'effort=medium' \
 assert_contains "$(cat -- "$tmp/roster-absent.out")" 'mode=blind-fallback' \
     'a same-harness roster fallback is reported as blind-fallback, never cross-provider'
 
+# --- roster form, unrecognized model family: refused outright, never
+# silently classified as codex (a well-formed value repo-config.sh's
+# open-ended worker-model validator still accepts, but neither claude-* nor
+# gpt-5.6-*) ------------------------------------------------------------
+repo_roster_unknown=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=some-other-provider-high')
+write_contract_at "$repo_roster_unknown" codex claude "present path=$tmp/fake-claude"
+git -C "$repo_roster_unknown" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_unknown/example.txt"
+git -C "$repo_roster_unknown" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_unknown" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_unknown="$tmp/repo-roster-unknown.diff"
+git -C "$repo_roster_unknown" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_unknown"
+roster_unknown_run="$tmp/roster-unknown-run"
+grant "$roster_unknown_run" openai "$diff_roster_unknown"
+roster_unknown_rc=0
+(cd "$repo_roster_unknown" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CODEX_CALLED="$tmp/roster-unknown-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_unknown_run") \
+    >"$tmp/roster-unknown.out" 2>"$tmp/roster-unknown.err" || roster_unknown_rc=$?
+assert_eq 1 "$roster_unknown_rc" 'a roster compound in neither known family refuses outright'
+assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'unrecognized model family' \
+    'the refusal names the unrecognized-family condition'
+assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'some-other-provider-high' \
+    'the refusal names the offending declared value'
+assert_eq no "$( [[ -e $tmp/roster-unknown-codex.called ]] && printf yes || printf no )" \
+    'an unrecognized family never silently launches codex (or any CLI)'
+
 finish

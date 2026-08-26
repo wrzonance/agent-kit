@@ -65,6 +65,15 @@ readonly ACCEPTED_KEYS=(
 # shape that survives being lowercased into a filename and an argument.
 readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
 
+# Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
+# `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
+# the adversarial helpers reject would pass here and only fail at launch,
+# after consent and diff construction already ran. This is also the single
+# source of truth adversarial-run.sh reads via `--list-adversarial-efforts`
+# to split a roster `<model-id>-<effort>` compound -- see that mode below --
+# so the validator here and the parser there cannot silently drift apart.
+readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
+
 # The directory a named command runs in. Paths may contain spaces and are
 # quoted in generated config. Values are argv executed from the
 # repository root, which suits a single-component repo and breaks a monorepo:
@@ -94,6 +103,7 @@ while (($#)); do
         --export) mode='export' ;;
         --list) mode='list' ;;
         --list-keys) mode='keys' ;;
+        --list-adversarial-efforts) mode='efforts' ;;
         --diagnose) mode='diagnose' ;;
         --get)
             mode='get'
@@ -144,6 +154,16 @@ if [[ $mode == keys ]]; then
     printf '%s\n' "${ACCEPTED_KEYS[@]}"
     printf 'AGENT_CMD_<NAME>\n'
     printf 'AGENT_RUNDIR_<NAME>\n'
+    exit 0
+fi
+
+# The accepted adversarial-review effort names, one per line -- the single
+# source of truth adversarial-run.sh reads to split a roster
+# `<model-id>-<effort>` compound, so its parser and this validator can never
+# silently drift apart. Schema, not a repository fact -- same early exit as
+# --list-keys.
+if [[ $mode == efforts ]]; then
+    printf '%s\n' "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"
     exit 0
 fi
 
@@ -309,12 +329,6 @@ reviewer_roster_entry_valid() {
 # policy input, so an unsupported spelling is refused outright rather than
 # kept visible for a later authorization gate.
 readonly ADVERSARIAL_REVIEWER_ACCEPTED_NAMES=(codex claude)
-
-# Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
-# `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
-# the adversarial helpers reject would pass here and only fail at launch,
-# after consent and diff construction already ran.
-readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
 
 names_display() {
     local out='' name

@@ -16,6 +16,22 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 
 readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
 
+# Loaded lazily from repo-config.sh's own accepted set (its single source of
+# truth) the first time a roster compound needs splitting, so this parser's
+# effort list can never silently drift from the validator that already
+# proved the value well-formed. The literal fallback only guards a missing
+# or non-executable resolver -- repo-config.sh ships beside this script, so
+# it is never expected to actually fire.
+declare -a ADVERSARIAL_REVIEW_EFFORT_NAMES=()
+load_adversarial_review_effort_names() {
+    ((${#ADVERSARIAL_REVIEW_EFFORT_NAMES[@]} > 0)) && return 0
+    if [[ -x $REPO_CONFIG_SH ]]; then
+        mapfile -t ADVERSARIAL_REVIEW_EFFORT_NAMES < <("$REPO_CONFIG_SH" --list-adversarial-efforts 2>/dev/null)
+    fi
+    ((${#ADVERSARIAL_REVIEW_EFFORT_NAMES[@]} > 0)) ||
+        ADVERSARIAL_REVIEW_EFFORT_NAMES=(low medium high xhigh max)
+}
+
 PR=''
 REPO=''
 RUN_DIR=''
@@ -207,27 +223,39 @@ resolve_config_value() {
 # revision instead, and only when the reviewed diff itself does not touch
 # that file.
 # reviewer_roster_family MODEL-ID -- self-detects the family a roster model
-# id belongs to (claude-* -> claude, everything else -> codex, the only two
-# CLIs this runner knows how to launch), mirroring spawn-contract.md's
-# model_family for workers.
+# id belongs to, mirroring spawn-contract.md's model_family for workers.
+# Unlike that resolver (which also has an `unknown`/opencode fallthrough),
+# this runner launches exactly two CLIs -- codex or claude -- so a model id
+# in neither known family is a configuration error, not a default: silently
+# classifying it as codex would start the wrong CLI on an unrecognized model
+# id (e.g. a typo, or a well-formed but foreign `provider/model-id-high`
+# roster value) and fail with a confusing launch-time error attributed to
+# the wrong provider. Returns 1, printing nothing, for an unrecognized
+# family; the caller decides how to report it.
 reviewer_roster_family() {
     case $1 in
         claude-*) printf claude ;;
-        *) printf codex ;;
+        gpt-5.6-*) printf codex ;;
+        *) return 1 ;;
     esac
 }
 
 # reviewer_roster_parse VALUE -- splits a `<model-id>-<effort>` roster
 # compound (repo-config.sh's reviewer_roster_entry_valid already proved this
 # shape) into ROSTER_MODEL/ROSTER_EFFORT/ROSTER_FAMILY globals. Returns 1 for
-# a bare CLI name (codex|claude), which is not a roster compound.
+# a bare CLI name (codex|claude), which is not a roster compound. Effort
+# names are read from repo-config.sh's own accepted set (never a
+# hand-duplicated literal here) so the validator that proved this value
+# well-formed and the parser that splits it can never silently drift apart.
 reviewer_roster_parse() {
     local value=$1 effort
-    for effort in low medium high xhigh max; do
+    load_adversarial_review_effort_names
+    for effort in "${ADVERSARIAL_REVIEW_EFFORT_NAMES[@]}"; do
         [[ $value == *-"$effort" ]] || continue
         ROSTER_MODEL=${value%-"$effort"}
         ROSTER_EFFORT=$effort
-        ROSTER_FAMILY=$(reviewer_roster_family "$ROSTER_MODEL")
+        ROSTER_FAMILY=$(reviewer_roster_family "$ROSTER_MODEL") ||
+            die "unrecognized model family for adversarial reviewer roster entry '$value': '$ROSTER_MODEL' is neither a claude-* nor a gpt-5.6-* model id"
         return 0
     done
     return 1
