@@ -894,6 +894,70 @@ reaffirm_over_guard_marker_after=$(sha256sum -- "$reaffirm_over_guard_run/state/
 assert_eq "$reaffirm_over_guard_marker_before" "$reaffirm_over_guard_marker_after" \
     'the reaffirm short-circuit never touches the pre-existing (ambiguous) launch-attempted marker'
 
+# --- #473 follow-up (T1, PR #479 CodeRabbit): --provenance carries the
+# launch-authorization text as one argv element -- never eval'd, never
+# re-parsed -- so a value containing a single quote, a $(...) or `...`
+# command substitution, and a ';' statement separator must all land as inert
+# bytes, never execute, and never suppress the launcher.
+provenance_hazard_run="$tmp/provenance-hazard-run"
+grant "$provenance_hazard_run" anthropic
+hazard_marker_dollar="$tmp/should-not-exist-dollar"
+hazard_marker_backtick="$tmp/should-not-exist-backtick"
+hazard_marker_semi="$tmp/should-not-exist-semi"
+provenance_hazard="RUN_ID=r1; consent=granted; invocation='review PR #283' \$(touch $hazard_marker_dollar) \`touch $hazard_marker_backtick\` ; touch $hazard_marker_semi"
+provenance_hazard_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$provenance_hazard_run" \
+        --provenance "$provenance_hazard") \
+    >"$tmp/provenance-hazard.out" 2>"$tmp/provenance-hazard.err" || provenance_hazard_rc=$?
+assert_eq 0 "$provenance_hazard_rc" \
+    'a provenance value with shell metacharacters still completes a normal review'
+assert_contains "$(cat -- "$tmp/provenance-hazard.out")" 'verdict=findings' \
+    'the hazardous-provenance launch completes a genuine review, not a silent no-op'
+assert_eq "$provenance_hazard" "$(cat -- "$provenance_hazard_run/state/provenance")" \
+    'the provenance record holds the value byte-for-byte, unmodified'
+assert_eq 600 "$(stat -c %a "$provenance_hazard_run/state/provenance")" \
+    'the provenance record is owner-private'
+assert_contains "$(cat -- "$tmp/provenance-hazard.err")" "provenance: $provenance_hazard" \
+    'the provenance value is echoed to stderr with its prefix'
+assert_eq no "$( [[ -e $hazard_marker_dollar ]] && printf yes || printf no )" \
+    'a dollar-paren command substitution inside the provenance value is never executed'
+assert_eq no "$( [[ -e $hazard_marker_backtick ]] && printf yes || printf no )" \
+    'a backtick command substitution inside the provenance value is never executed'
+assert_eq no "$( [[ -e $hazard_marker_semi ]] && printf yes || printf no )" \
+    'a statement after a semicolon inside the provenance value is never executed'
+
+# --- #473 follow-up (T2, PR #479 CodeRabbit): two concurrent invocations
+# sharing a RUN_DIR must not both proceed -- the second must refuse outright
+# rather than race the first to a possible double send. Simulated here by
+# holding the same exclusive flock the script itself takes, from this test
+# process, before invoking the script.
+lock_run="$tmp/lock-run"
+grant "$lock_run" anthropic
+lock_file="$lock_run/state/.launch.lock"
+: >"$lock_file"
+chmod 600 -- "$lock_file"
+exec {TEST_LOCK_FD}>"$lock_file"
+flock -n "$TEST_LOCK_FD" || {
+    printf 'test setup failed to take the run lock\n' >&2
+    exit 1
+}
+lock_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/lock.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$lock_run") \
+    >"$tmp/lock.out" 2>"$tmp/lock.err" || lock_rc=$?
+exec {TEST_LOCK_FD}>&-
+assert_eq 1 "$lock_rc" 'a concurrently held run lock refuses this invocation'
+assert_contains "$(cat -- "$tmp/lock.err")" 'holds the launch lock' \
+    'the lock refusal names the concurrency conflict'
+assert_eq no "$( [[ -e $tmp/lock.called ]] && printf yes || printf no )" \
+    'the lock refusal never invokes the provider helper'
+assert_eq no "$( [[ -e $lock_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'the lock refusal never writes the launch-attempted marker'
+assert_eq no "$( [[ -e $lock_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'the lock refusal never writes a result; the lock holder owns that file'
+
 # A tracked `.agent` symlink bypasses leaf-only provenance checks: Git tracks
 # the link itself, not the resolved `.agent/env-contract.txt` path. The runner
 # must reject it before consulting attacker-controlled reviewer facts or

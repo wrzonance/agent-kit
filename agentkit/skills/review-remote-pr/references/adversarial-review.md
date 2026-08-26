@@ -102,26 +102,37 @@ The rest of the gate stands unchanged:
   the validated result to the loop.
 - **Make the grant legible to harness approval layers.** A sandbox or approval reviewer
   judges the launch command in front of it and cannot see the invocation line, so an
-  external send can read as unauthorized even when it is not. Carry the provenance inline
-  at the launch site — the session-ledger `RUN_ID`, the recorded `cross_provider_consent`
-  record, and the user's verbatim invocation quote carrying `--auto-review` — **as an
-  argument, never a comment**, in the block that launches the reviewer, so "is this send
-  authorized?" is answerable from the command itself. Use the no-op-statement idiom, not a
-  `#` comment:
+  external send can read as unauthorized even when it is not. Carry the provenance —
+  the session-ledger `RUN_ID`, the recorded `cross_provider_consent` record, and the
+  user's verbatim invocation quote carrying `--auto-review` — **as the `--provenance`
+  argument on the launcher itself**, passed as data from a shell variable, never composed
+  into shell source:
 
   ```sh
-  : 'provenance: RUN_ID=<id>; consent=<cross_provider_consent record>; invocation=<verbatim quote>'; \
-      "$agentkit/review-remote-pr/scripts/adversarial-run.sh" --pr N --repo OWNER/NAME --run-dir "$RUN_DIR"
+  # RUN_ID, consent_record, and invocation_quote are existing data variables
+  # (the quote read from its ledger/quote file, never retyped into shell source).
+  provenance="RUN_ID=${RUN_ID}; consent=${consent_record}; invocation=${invocation_quote}"
+  "$agentkit/review-remote-pr/scripts/adversarial-run.sh" --pr N --repo OWNER/NAME \
+      --run-dir "$RUN_DIR" --provenance "$provenance"
   ```
 
-  or pass the provenance directly as data via `--provenance TEXT` on the helper itself, if one is
-  declared. Never write the provenance as a `#` comment. In a single-line shell cell, `#` starts a
-  comment that runs to end of line — including the launcher after it — so a `# provenance: …;
-  adversarial-run.sh …` line is a silent no-op: it exits 0, sends nothing, and produces no
-  artifact, while looking exactly like a normal review to a script that only checks the exit code.
-  The `: '…'; launcher` form cannot do that: `:` is itself an ordinary (no-op) command, so the
-  `;` after its argument still separates two real statements and the launcher always runs. A
-  denial that still occurs is surfaced to the user as a direct question, never routed around.
+  `adversarial-run.sh` takes the value as one argv element — never eval'd, never re-parsed — so
+  "is this send authorized?" is answerable from the command itself. It also echoes the value to
+  stderr with a `provenance:` prefix and writes it to `$RUN_DIR/state/provenance` (mode 600)
+  before any external call, so the answer survives durably on disk too. Assemble the `provenance`
+  variable from data (RUN_ID, consent record, invocation quote); never build it by string-splicing
+  into a command you then `eval` or hand to a shell. Never write the provenance as a `#` comment:
+  in a single-line shell cell, `#` starts a comment that runs to end of line — including the
+  launcher after it — so a `# provenance: …; adversarial-run.sh …` line is a silent no-op that
+  exits 0, sends nothing, and produces no artifact, while looking exactly like a normal review to
+  a script that only checks the exit code. An earlier version of this idiom recommended a
+  no-op-statement form instead (`: 'provenance text'; launcher`) specifically to avoid that `#`
+  trap — but splicing the
+  operator's *verbatim* invocation quote into a single-quoted shell word is itself unsafe: a `'`
+  (or any other shell metacharacter) inside that quote terminates the word early, and the
+  remainder becomes executable shell rather than inert text. `--provenance` removes that hazard
+  entirely, since the value is data from the start and is never parsed as shell. A denial that
+  still occurs is surfaced to the user as a direct question, never routed around.
 - **A pre-send marker makes a no-op provably distinguishable from a lost receipt, and the
   launcher enforces it itself.** `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted`
   (timestamp, PR, head SHA, payload id) once every local output-path preparation for the run has
@@ -136,6 +147,13 @@ The rest of the gate stands unchanged:
   second, silent disclosure — so clearing it takes a fresh `--run-dir` or explicit operator
   review, never an automatic retry. A marker next to an already-valid completed or blocked result
   is left to the ordinary findings-ledger / result-clearing flow, unaffected by this guard.
+- **One invocation per RUN_DIR at a time.** `adversarial-run.sh` takes an exclusive,
+  non-blocking lock on `$RUN_DIR/state/.launch.lock` before it looks at the marker or the
+  result, and holds it until the process exits — through provider launch and terminal-result
+  publication. A second invocation sharing the same `--run-dir` while the first is still running
+  refuses immediately rather than racing it: without this, two concurrent launches could each
+  observe "no marker yet," each pass consent, and each send the diff. The refused invocation
+  touches neither the marker nor the result file — the concurrent holder owns both.
 - **Still disclose.** Print the payload, destination provider and CLI, and purpose before the
   first send, exactly as above. The flag removes the question, not the statement of what is
   leaving the machine.
@@ -235,6 +253,7 @@ been declared.
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                               [--provenance TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
 publication of adversarial.diff and adversarial.result.json. Its stdout receipt line is shaped for
