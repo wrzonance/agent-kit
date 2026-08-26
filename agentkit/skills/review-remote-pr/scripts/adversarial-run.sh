@@ -20,6 +20,7 @@ PR=''
 REPO=''
 RUN_DIR=''
 PEER_CLI_ABSENT=0
+PROVENANCE=''
 PAYLOAD=''
 HARNESS_NAME=''
 RUNNING_PROVIDER=''
@@ -37,6 +38,7 @@ TRANSCRIPT_NAME=''
 usage() {
     cat <<EOF
 Usage: $PROGNAME --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                        [--provenance TEXT]
 
 Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
 publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
@@ -45,6 +47,14 @@ line containing provider, model, effort, mode, P1, and P2.
 Reviewer selection comes from the running harness and peer-cli facts in the
 untracked environment contract at the repository root. The optional
 --peer-cli-absent flag must agree with a peer-cli= ... absent contract fact.
+
+--provenance TEXT carries launch authorization (the session-ledger RUN_ID, the
+recorded cross_provider_consent record, the user's verbatim invocation quote)
+as one argv element, so a harness approval layer can see it in the launch
+command itself. It is taken verbatim -- never eval'd, never re-parsed -- echoed
+to stderr with a "provenance:" prefix, and written to DIR/state/provenance
+(mode 600) before any external call. Pass it as data from a shell variable at
+the call site; never compose it into shell source.
 
 This is the real PR-diff review path. Capability probes use the provider helper
 with --mode probe --no-payload, send only a synthetic snippet, and never spend
@@ -84,6 +94,8 @@ parse_args() {
             --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;
             --run-dir=*) RUN_DIR=${1#*=}; shift ;;
             --peer-cli-absent) PEER_CLI_ABSENT=1; shift ;;
+            --provenance) require_value "$1" "${2:-}"; PROVENANCE=$2; shift 2 ;;
+            --provenance=*) PROVENANCE=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown option: $1" ;;
         esac
@@ -494,6 +506,49 @@ initialize_finding_ledger() {
     chmod 600 -- "$ledger" || die "could not secure findings ledger: $ledger"
 }
 
+# acquire_run_lock -- #473 follow-up (T2, PR #479 CodeRabbit). Takes an
+# exclusive, non-blocking flock on DIR/state/.launch.lock before any of the
+# marker/result decisions below are made, and holds it (via the open file
+# descriptor) for the rest of this process's life -- through provider launch
+# and terminal-result publication -- so it releases automatically on any
+# exit path, including die(). Without this, two concurrent invocations
+# sharing a RUN_DIR could both observe "no marker yet", both pass consent,
+# and both send the diff. A refusal here touches neither the launch marker
+# nor the result file: this invocation never got far enough to own either,
+# and the concurrent holder is the one actually deciding their fate.
+acquire_run_lock() {
+    local lock=$RUN_DIR/state/.launch.lock
+    local lock_fd
+    [[ ! -L $lock ]] || die "refusing to use a run lock symlink: $lock"
+    if [[ ! -e $lock ]]; then
+        (umask 077 && : >"$lock") || die "could not create run lock: $lock"
+    fi
+    [[ -f $lock && -O $lock ]] || die "refusing to use a run lock not owned by this user: $lock"
+    chmod 600 -- "$lock" || die "could not secure run lock: $lock"
+    exec {lock_fd}>"$lock" || die "could not open run lock: $lock"
+    flock -n "$lock_fd" ||
+        die "another adversarial-run.sh invocation already holds the launch lock for this run-dir; refusing to launch concurrently: $lock"
+}
+
+# write_provenance_record -- #473 follow-up (T1, PR #479 CodeRabbit). The
+# adversarial-review.md idiom previously told callers to splice the
+# operator's verbatim invocation quote into a single-quoted shell word
+# (`: '...'; launcher`); any `'` or other shell metacharacter in that quote
+# terminates the word early and the remainder becomes executable shell --
+# exactly the class of bug this option exists to remove. --provenance TEXT
+# is one argv element: bash hands it to this function as plain data, with no
+# shell interpretation of its contents, and it is never eval'd or re-parsed
+# here either. Optional: a caller that omits --provenance gets no record.
+write_provenance_record() {
+    [[ -n $PROVENANCE ]] || return 0
+    printf 'provenance: %s\n' "$PROVENANCE" >&2
+    local path=$RUN_DIR/state/provenance tmp="$RUN_DIR/state/provenance.tmp"
+    prepare_owned_artifact "$path"
+    printf '%s' "$PROVENANCE" >"$tmp" || die 'could not write the provenance record'
+    chmod 600 -- "$tmp" || die "could not secure the provenance record: $tmp"
+    mv -f -- "$tmp" "$path" || die "could not publish the provenance record: $path"
+}
+
 # guard_prior_launch_attempt -- #473 follow-up (F1). Refuses to relaunch into
 # a RUN_DIR whose launch-attempted marker is already present unless the
 # result it left behind is a validated terminal one (completed or blocked).
@@ -566,6 +621,10 @@ main() {
     validate_args
     private_dir_ensure "$RUN_DIR" '--run-dir'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'
+    # Serializes this whole invocation against any concurrent one sharing the
+    # same RUN_DIR before either the marker or the result is ever inspected.
+    acquire_run_lock
+    write_provenance_record
     # Must run before the result artifact below is cleared: it needs to read
     # whatever terminal status (if any) a prior attempt actually left behind.
     guard_prior_launch_attempt
