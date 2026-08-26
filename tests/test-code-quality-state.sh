@@ -87,122 +87,218 @@ assert_rc 1 '--probe cannot be combined with --summary' -- \
 assert_rc 1 '--probe still validates --repo' -- \
     env PATH="$tmp/bin:$PATH" "$quality" --repo not-a-slug --probe
 
-# --- --head: the merge-gate scan-state token (issue #472) ------------------
+# --- --head: the merge-gate scan-state token (issue #472, reworked) --------
 #
 # merge-gate.sh needs a token produced from live evidence, not asserted by
-# hand -- --head derives it from the Code Quality API's own completed-
-# analysis record for the exact commit, mirroring the code-scanning/analyses
-# precedent (#413) instead of a check-run app slug.
+# hand. code-quality/analyses and pulls/N/code-quality both 404 in a real
+# repository (confirmed live against GitHub -- the offline PR review that
+# shipped the analyses-endpoint version could not see this), so --head
+# derives its evidence from two surfaces that are actually live: the head's
+# check-runs (in-flight detection) and the PR's own review comments
+# (per-head attributable findings), corroborated by the repository-wide
+# findings list for reachability.
 
 readonly HEAD_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 readonly OTHER_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+readonly PR=9
 
-# complete: a completed analysis is recorded against this exact commit_sha,
-# and its own findings_count -- not the repository-wide open-finding count
-# -- is reported as findings-on-head.
-write_gh "[{\"commit_sha\":\"$HEAD_SHA\",\"findings_count\":0,\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
-rc=$?
-assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
-    'a completed analysis for the exact head reports complete with its own findings count'
-assert_eq '0' "$rc" 'a complete scan-state exits 0'
+# Routes a gh stub across the three endpoints --head consults, each
+# independently controllable: check-runs, the findings reachability probe,
+# and the PR's review comments. "ok" prints the given body on stdout and
+# exits 0; anything else prints the body on stderr and exits 1. Logs every
+# invocation's argv (one "---" per call) so a test can assert exact argv
+# shape (e.g. -X GET) for a specific endpoint.
+write_gh_head() {
+    local cr_mode=$1 cr_body=$2 f_mode=$3 f_body=$4 c_mode=$5 c_body=$6
+    cat >"$tmp/bin/gh" <<EOF
+#!/usr/bin/env bash
+endpoint=''
+for arg in "\$@"; do
+    case "\$arg" in repos/*) endpoint="\$arg" ;; esac
+done
+{
+    for a in "\$@"; do printf 'ARG:%s\n' "\$a"; done
+    printf -- '---\n'
+} >> "$tmp/gh-argv.log"
+case "\$endpoint" in
+repos/o/r/commits/*/check-runs\?*)
+    if [[ '$cr_mode' == ok ]]; then printf '%s\n' '$cr_body'; exit 0; fi
+    printf '%s\n' '$cr_body' >&2
+    exit 1
+    ;;
+repos/o/r/code-quality/findings\?*)
+    if [[ '$f_mode' == ok ]]; then printf '%s\n' '$f_body'; exit 0; fi
+    printf '%s\n' '$f_body' >&2
+    exit 1
+    ;;
+repos/o/r/pulls/*/comments\?*)
+    if [[ '$c_mode' == ok ]]; then printf '%s\n' '$c_body'; exit 0; fi
+    printf '%s\n' '$c_body' >&2
+    exit 1
+    ;;
+*)
+    printf 'unexpected endpoint %s\n' "\$endpoint" >&2
+    exit 1
+    ;;
+esac
+EOF
+    chmod +x "$tmp/bin/gh"
+    rm -f "$tmp/gh-argv.log"
+}
 
-# A PR with zero attributable findings passes even while the repository
-# carries pre-existing, unrelated open findings elsewhere -- findings_count
-# on the matched analysis is the only number that reaches the token.
-write_gh "[{\"commit_sha\":\"$OTHER_SHA\",\"findings_count\":18,\"created_at\":\"2026-08-19T00:00:00Z\"},{\"commit_sha\":\"$HEAD_SHA\",\"findings_count\":0,\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
-assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
-    'a zero-finding head is reported complete even alongside a repository-wide open finding elsewhere'
+run_head() {
+    PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --pr "$PR" "$@"
+}
 
-# Regression (issue #472 review, F1): a missing or null findings_count on the
-# matched analysis must never be read as a clean zero-finding scan via a `//
-# 0` default -- it is unreadable evidence and must report unknown, never
-# complete.
-write_gh "[{\"commit_sha\":\"$HEAD_SHA\",\"findings_count\":null,\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
-rc=$?
-assert_contains "$out" 'scan-state=unknown' \
-    'a null findings_count on the matched analysis is reported unknown, never complete'
-assert_eq '1' "$rc" 'a null findings_count exits 1'
-
-write_gh "[{\"commit_sha\":\"$HEAD_SHA\",\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
-rc=$?
-assert_contains "$out" 'scan-state=unknown' \
-    'an absent findings_count key on the matched analysis is reported unknown, never complete'
-assert_eq '1' "$rc" 'an absent findings_count key exits 1'
-
-# pending: a readable but empty (no match for this commit) analyses array is
-# a normal still-outstanding scan, never an error.
-write_gh '[]' 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
+# --- Step 1: an in-flight github-code-quality check-run always blocks as
+# pending, before anything else is consulted.
+write_gh_head \
+    ok '{"check_runs":[{"app":{"slug":"github-code-quality"},"status":"in_progress"}]}' \
+    ok '[]' \
+    ok '[]'
+out=$(run_head)
 rc=$?
 assert_eq "scan-state=pending head=$HEAD_SHA" "$out" \
-    'no matching completed analysis for the head reports pending'
+    'an in-flight github-code-quality check-run reports pending'
 assert_eq '0' "$rc" 'a pending scan-state exits 0'
 
-write_gh "[{\"commit_sha\":\"$OTHER_SHA\",\"findings_count\":0,\"created_at\":\"2026-08-20T00:00:00Z\"}]" 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
-assert_eq "scan-state=pending head=$HEAD_SHA" "$out" \
-    'an analysis recorded for a different commit never satisfies this head'
+# A check-run under a different app slug (e.g. github-actions/CodeQL) never
+# satisfies the pending match, even if it is itself still running.
+write_gh_head \
+    ok '{"check_runs":[{"app":{"slug":"github-actions"},"status":"in_progress"}]}' \
+    ok '[]' \
+    ok '[]'
+out=$(run_head)
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
+    'an in-flight check-run under an unrelated app slug is never mistaken for a pending Code Quality scan'
 
-# not-enabled: the same confirmed 403 rule as --probe.
-write_gh '' 1 'gh: Code quality is not enabled for this repository (HTTP 403)'
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
+# --- Step 2/3: no in-flight run -- findings-on-head is counted from
+# github-code-quality[bot]'s own PR review comments attributed to this exact
+# head, distinct from any comment on a different (e.g. pre-force-push) head.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"},{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"},{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$OTHER_SHA\"}]"
+out=$(run_head)
 rc=$?
-assert_eq 'scan-state=not-enabled' "$out" 'a confirmed not-enabled 403 reports not-enabled for --head too'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=2" "$out" \
+    'two bot comments attributed to the exact head report complete findings-on-head=2, excluding the one on another head'
+assert_eq '0' "$rc" 'a complete scan-state exits 0'
+
+# A bot comment recorded only against a different head never counts, and
+# zero attributable comments is itself a valid, complete, zero-finding scan.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$OTHER_SHA\"}]"
+out=$(run_head)
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
+    'a bot comment attributed only to a different head reports complete findings-on-head=0'
+
+# original_commit_id also attributes a comment to this head (a thread that
+# outlived a force-push still carries its original head SHA).
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"original_commit_id\":\"$HEAD_SHA\"}]"
+out=$(run_head)
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    'original_commit_id also attributes a bot comment to this head'
+
+# A non-bot human comment on the exact head is never counted as a finding.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"alice\"},\"commit_id\":\"$HEAD_SHA\"}]"
+out=$(run_head)
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
+    'a human comment on the exact head is never counted as a Code Quality finding'
+
+# --- not-enabled: decided by the findings reachability probe's confirmed
+# 403, exactly as before.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    error 'gh: Code quality is not enabled for this repository (HTTP 403)' \
+    ok '[]'
+out=$(run_head)
+rc=$?
+assert_eq 'scan-state=not-enabled' "$out" 'a confirmed not-enabled 403 on the findings probe reports not-enabled'
 assert_eq '0' "$rc" 'a not-enabled scan-state exits 0'
 
-# unknown: every other failure fails closed, and never reports complete.
-write_gh '' 1 'gh: Resource not accessible by integration (HTTP 403)'
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
+# --- unknown: every other failure on any of the three surfaces fails
+# closed, and never reports complete.
+write_gh_head error 'gh: Internal Server Error (HTTP 500)' ok '[]' ok '[]'
+out=$(run_head)
+rc=$?
+assert_contains "$out" 'scan-state=unknown' 'an unreadable check-runs response is reported unknown, never complete'
+assert_eq '1' "$rc" 'an unknown scan-state from check-runs exits 1'
+
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    error 'gh: Resource not accessible by integration (HTTP 403)' \
+    ok '[]'
+out=$(run_head)
 rc=$?
 assert_contains "$out" 'scan-state=unknown' \
-    'an auth/scope 403 is reported unknown, never complete or not-enabled'
-assert_eq '1' "$rc" 'an unknown scan-state exits 1 so callers fail closed'
+    'an auth/scope 403 on the findings probe is reported unknown, never not-enabled or complete'
+assert_eq '1' "$rc" 'an unknown scan-state from the findings probe exits 1'
 
-write_gh '' 1 'gh: Internal Server Error (HTTP 500)'
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
+write_gh_head ok '{"check_runs":[]}' ok '[]' error 'gh: Internal Server Error (HTTP 500)'
+out=$(run_head)
 rc=$?
-assert_contains "$out" 'scan-state=unknown' 'a 5xx is reported unknown for --head too'
-assert_eq '1' "$rc" 'a 5xx --head probe exits 1'
+assert_contains "$out" 'scan-state=unknown' 'an unreadable comments response is reported unknown, never complete'
+assert_eq '1' "$rc" 'an unknown scan-state from comments exits 1'
 
-# A readable 2xx response that is not a JSON array is unreadable evidence,
-# never proof of completion.
-write_gh '{"findings":[]}' 0
-out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA")
-rc=$?
-assert_contains "$out" 'scan-state=unknown' \
-    'a non-array analyses response is reported unknown, never complete'
-assert_eq '1' "$rc" 'a malformed analyses response exits 1'
+# Regression: a gh failure body is often pretty-printed multi-line JSON --
+# head -n 1 on that would print a bare, useless "{". The reason must be the
+# JSON body's own .message, never a truncated brace.
+write_gh_head ok '{"check_runs":[]}' ok '[]' error $'{\n  "message": "Resource not accessible by integration",\n  "status": "403"\n}'
+out=$(run_head)
+assert_contains "$out" 'reason=Resource not accessible by integration' \
+    'a multi-line JSON error body surfaces its .message, never a bare "{"'
+assert_not_contains "$out" 'reason={' 'the reason is never a truncated opening brace'
 
-# Regression (issue #472 review): `gh api` infers POST whenever -f/-F fields
-# are present -- the analyses call passes -f ref=... -F per_page=100, so
-# without an explicit -X GET this filtered read silently becomes a write
-# against the repository. Assert the exact method is forced.
-cat >"$tmp/bin/gh" <<EOF
-#!/usr/bin/env bash
-for arg in "\$@"; do printf 'ARG:%s\n' "\$arg"; done >> "$tmp/gh-analyses-argv.log"
-printf '[]\n'
-exit 0
-EOF
-chmod +x "$tmp/bin/gh"
-rm -f "$tmp/gh-analyses-argv.log"
-PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" >/dev/null
-assert_contains "$(cat "$tmp/gh-analyses-argv.log")" $'ARG:-X\nARG:GET' \
-    'the analyses read is forced to GET, never inferred as POST from its -f/-F fields'
+# --- --baseline-file: a per-PR evidence artifact measured, never copied ----
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"number":1},{"number":2},{"number":3}]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+baseline="$tmp/baseline.json"
+rm -f "$baseline"
+out=$(run_head --baseline-file "$baseline")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--baseline-file does not change the printed token'
+assert_eq '1' "$(jq -r '.findingsOnHead' "$baseline")" \
+    'the baseline artifact records the same findings-on-head count'
+assert_eq '3' "$(jq -r '.repoWideOpen' "$baseline")" \
+    'the baseline artifact records the repository-wide open-finding count separately'
+assert_eq "$HEAD_SHA" "$(jq -r '.head' "$baseline")" 'the baseline artifact records the head SHA'
+mode=$(stat -c %a "$baseline" 2>/dev/null || stat -f %Lp "$baseline")
+assert_eq '600' "$mode" 'the baseline artifact is written mode 600'
+
+# Regression (issue #472 review): every filtered read (-f/-F present or not)
+# --head issues is forced to GET, never inferred as POST.
+write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'
+run_head >/dev/null
+argv=$(cat "$tmp/gh-argv.log")
+assert_contains "$argv" $'ARG:-X\nARG:GET' 'each --head read is forced to GET'
 
 # --- --head usage validation -------------------------------------------------
 
-write_gh '[]' 0
+write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'
 assert_rc 1 '--head cannot be combined with --probe' -- \
-    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --probe
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --pr "$PR" --probe
 
 assert_rc 1 '--head cannot be combined with --summary' -- \
-    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --summary
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --pr "$PR" --summary
 
 assert_rc 1 '--head requires a full 40-character SHA' -- \
-    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head short
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head short --pr "$PR"
+
+assert_rc 1 '--head requires --pr' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA"
+
+assert_rc 1 '--pr is only meaningful with --head' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --probe --pr "$PR"
 
 finish
