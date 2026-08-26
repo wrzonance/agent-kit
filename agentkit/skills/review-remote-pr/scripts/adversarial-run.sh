@@ -206,8 +206,93 @@ resolve_config_value() {
 # that may pass a real path (main, below) resolves it from the PR's BASE
 # revision instead, and only when the reviewed diff itself does not touch
 # that file.
+# reviewer_roster_family MODEL-ID -- self-detects the family a roster model
+# id belongs to (claude-* -> claude, everything else -> codex, the only two
+# CLIs this runner knows how to launch), mirroring spawn-contract.md's
+# model_family for workers.
+reviewer_roster_family() {
+    case $1 in
+        claude-*) printf claude ;;
+        *) printf codex ;;
+    esac
+}
+
+# reviewer_roster_parse VALUE -- splits a `<model-id>-<effort>` roster
+# compound (repo-config.sh's reviewer_roster_entry_valid already proved this
+# shape) into ROSTER_MODEL/ROSTER_EFFORT/ROSTER_FAMILY globals. Returns 1 for
+# a bare CLI name (codex|claude), which is not a roster compound.
+reviewer_roster_parse() {
+    local value=$1 effort
+    for effort in low medium high xhigh max; do
+        [[ $value == *-"$effort" ]] || continue
+        ROSTER_MODEL=${value%-"$effort"}
+        ROSTER_EFFORT=$effort
+        ROSTER_FAMILY=$(reviewer_roster_family "$ROSTER_MODEL")
+        return 0
+    done
+    return 1
+}
+
 select_reviewer() {
     local config_file=$1 reviewer_cli=$PEER_CLI_NAME declared_reviewer='' declared_value='' fell_back=0
+    local roster_fallback='' primary_family='' fallback_family=''
+
+    # Roster form: AGENT_ADVERSARIAL_REVIEWER / AGENT_ADVERSARIAL_REVIEWER_FALLBACK
+    # each carry a `<model-id>-<effort>` compound naming one candidate; together
+    # they form the pool. Self-detect the running harness (never guess from a
+    # value's shape) and prefer the candidate belonging to a family that is NOT
+    # the running harness -- cross-harness by default, matching the existing
+    # adversarial-review contract. When the peer CLI is absent, fall back to
+    # the same-harness candidate if the pool carries one, else the documented
+    # blind same-harness fallback below (unchanged).
+    if declared_reviewer=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER "$config_file") &&
+        reviewer_roster_parse "$declared_reviewer"; then
+        primary_family=$ROSTER_FAMILY
+        local primary_model=$ROSTER_MODEL primary_effort=$ROSTER_EFFORT
+        roster_fallback=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER_FALLBACK "$config_file") || roster_fallback=''
+        if [[ -n $roster_fallback ]] && reviewer_roster_parse "$roster_fallback"; then
+            fallback_family=$ROSTER_FAMILY
+            local fallback_model=$ROSTER_MODEL fallback_effort=$ROSTER_EFFORT
+        fi
+
+        if [[ $primary_family != "$HARNESS_NAME" ]]; then
+            reviewer_cli=$primary_family; MODEL=$primary_model; EFFORT=$primary_effort
+        elif [[ -n $fallback_family && $fallback_family != "$HARNESS_NAME" ]]; then
+            reviewer_cli=$fallback_family; MODEL=$fallback_model; EFFORT=$fallback_effort
+        else
+            reviewer_cli=$HARNESS_NAME
+            MODEL=${fallback_family:+$fallback_model}
+            [[ -n $MODEL ]] || MODEL=$primary_model
+            EFFORT=${fallback_family:+$fallback_effort}
+            [[ -n $EFFORT ]] || EFFORT=$primary_effort
+        fi
+
+        if [[ $reviewer_cli == "$PEER_CLI_NAME" ]] && ((PEER_CLI_ABSENT)); then
+            warn "declared adversarial reviewer roster resolved to peer '$reviewer_cli', which is not available on this machine; falling back to the running harness '$HARNESS_NAME'"
+            reviewer_cli=$HARNESS_NAME
+            if [[ $primary_family == "$HARNESS_NAME" ]]; then
+                MODEL=$primary_model; EFFORT=$primary_effort
+            elif [[ $fallback_family == "$HARNESS_NAME" ]]; then
+                MODEL=$fallback_model; EFFORT=$fallback_effort
+            else
+                # Neither roster entry belongs to the running harness -- the
+                # documented blind same-harness fallback keeps that CLI's
+                # own built-in default model/effort, assigned below.
+                MODEL=''; EFFORT=''
+            fi
+        fi
+
+        case $reviewer_cli in
+            codex) PROVIDER=openai; HELPER=$SCRIPT_DIR/codex-adversarial-review.sh; TRANSCRIPT_NAME=codex.jsonl ;;
+            claude) PROVIDER=anthropic; HELPER=$SCRIPT_DIR/claude-adversarial-review.sh; TRANSCRIPT_NAME=claude.ndjson ;;
+            *) die "unsupported reviewer CLI: $reviewer_cli" ;;
+        esac
+        [[ -n $MODEL ]] || MODEL=$([[ $reviewer_cli == codex ]] && printf gpt-5.6-terra || printf claude-opus-5)
+        [[ -n $EFFORT ]] || EFFORT=$([[ $reviewer_cli == codex ]] && printf xhigh || printf high)
+        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_EFFORT "$config_file") && EFFORT=$declared_value
+        if [[ $PROVIDER == "$RUNNING_PROVIDER" ]]; then MODE=blind-fallback; else MODE=cross-provider; fi
+        return
+    fi
 
     if declared_reviewer=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER "$config_file"); then
         reviewer_cli=$declared_reviewer
