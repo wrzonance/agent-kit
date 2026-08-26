@@ -151,14 +151,22 @@ and additionally consumes:
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.
-- `--code-quality-scan-state complete|pending|not-enabled` — whether the
-  `github-code-quality` scan for the current head has finished. `pending`
-  blocks (a finding merely replied-to, with the rescan still outstanding, is
-  not finished). `not-enabled` (issue #403) means Code Quality is disabled
-  for the repository — a stable repository fact, not a scan in flight — and
-  gates exactly like `complete`; only a confirmed "not enabled" 403 from
-  `code-quality-state.sh --probe` earns this value, never an unreadable probe
-  (network failure, an auth/scope 403, a 5xx), which stays blocked instead.
+- `--code-quality-scan-state complete|pending|not-enabled` and/or
+  `--code-quality-state-file FILE` — whether the `github-code-quality` scan
+  for the current head has finished. `pending` blocks (a finding merely
+  replied-to, with the rescan still outstanding, is not finished). `complete`
+  and `pending` have exactly one sanctioned source: `code-quality-state.sh
+  --head SHA` (issue #472), which derives the token from the Code Quality
+  API's own completed-analysis record for that exact commit — never a
+  check-run app slug, and never asserted by hand from repository-wide
+  finding counts. `--code-quality-state-file` names that helper's output
+  file directly; when both flags are given they must agree, byte-for-byte on
+  the `scan-state=` token, or the gate refuses outright. `not-enabled`
+  (issue #403) means Code Quality is disabled for the repository — a stable
+  repository fact, not a scan in flight — and gates exactly like `complete`;
+  only a confirmed "not enabled" 403 from `code-quality-state.sh --probe` (or
+  `--head`) earns this value, never an unreadable probe (network failure, an
+  auth/scope 403, a 5xx), which reports `unknown` and stays blocked instead.
 
 Code-scanning completion is proven from `GET code-scanning/analyses` — the
 surface that actually records a completed analysis — not from a check-run's

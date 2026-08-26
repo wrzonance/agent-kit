@@ -180,6 +180,22 @@ run_gate() {
         --code-quality-scan-state "${GATE_CQ_STATE:-complete}"
 }
 
+# Bare invocation with no fixed --code-quality-scan-state default, so
+# --code-quality-state-file tests can supply their own combination of flags.
+run_gate_raw() {
+    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
+        --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
+        --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
+        --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
+        "$@"
+}
+
+write_cq_state_file() {
+    # $1: full scan-state= line content (without the trailing newline)
+    printf '%s\n' "$1" >"$tmp/cq-state.txt"
+    chmod 600 "$tmp/cq-state.txt"
+}
+
 good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
@@ -270,6 +286,109 @@ set -e
 assert_eq '1' "$rc" '--code-quality-scan-state rejects a value other than complete, pending, or not-enabled'
 assert_contains "$out" '--code-quality-scan-state must be complete, pending, or not-enabled' \
     'the rejection names the accepted values'
+
+# --- issue #472: --code-quality-state-file, the sole sanctioned producer of
+# complete/pending (code-quality-state.sh --head), as a standalone source and
+# reconciled against --code-quality-scan-state when both are supplied. -------
+
+good_digest
+write_cq_state_file "scan-state=complete head=$HEAD_SHA findings-on-head=0"
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt")
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a complete code-quality-state-file alone passes the gate with no --code-quality-scan-state flag'
+
+good_digest
+write_cq_state_file "scan-state=pending head=$HEAD_SHA"
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt")
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a pending code-quality-state-file blocks the merge'
+assert_contains "$out" 'blocked reason=github-code-quality scan is still pending' \
+    'the file-sourced pending block uses the same reason as the flag'
+
+good_digest
+write_cq_state_file 'scan-state=not-enabled'
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt")
+assert_contains "$out" 'gate=PASS pr=9' 'a not-enabled code-quality-state-file passes the gate'
+
+good_digest
+write_cq_state_file 'scan-state=unknown reason=analyses response was not a readable JSON array'
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt")
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an unknown code-quality-state-file blocks the merge -- unknown never passes as complete'
+assert_contains "$out" 'blocked reason=github-code-quality scan state is unknown' \
+    'the unknown block is named'
+assert_contains "$out" 'analyses response was not a readable JSON array' \
+    'the unknown block surfaces the reason carried by the file'
+
+good_digest
+write_cq_state_file "scan-state=complete head=$HEAD_SHA findings-on-head=0"
+out=$(run_gate_raw --code-quality-scan-state complete --code-quality-state-file "$tmp/cq-state.txt")
+assert_contains "$out" 'gate=PASS pr=9' \
+    'an agreeing flag and code-quality-state-file pass the gate together'
+
+good_digest
+write_cq_state_file "scan-state=complete head=$HEAD_SHA findings-on-head=0"
+set +e
+out=$(run_gate_raw --code-quality-scan-state pending --code-quality-state-file "$tmp/cq-state.txt" 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a disagreeing --code-quality-scan-state and --code-quality-state-file die instead of silently choosing one'
+assert_contains "$out" 'disagree' 'the disagreement error is named'
+
+good_digest
+write_cq_state_file "scan-state=complete head=${HEAD_SHA7}bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb findings-on-head=0"
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt")
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a code-quality-state-file whose head predates the current head blocks the merge'
+assert_contains "$out" 'blocked reason=code-quality state file predates the current head' \
+    'the stale code-quality-state-file is caught as stale evidence'
+
+# Regression: a findings-on-head value that is itself 7+ hex-valid digits
+# (e.g. a large finding count) must never be mistaken for the head= field --
+# "findings-on-head=" contains its own "head=" substring with no space
+# before it, unlike the real " head=<sha>" field.
+good_digest
+write_cq_state_file "scan-state=complete head=$HEAD_SHA findings-on-head=1234567"
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt")
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a large all-hex-digit findings-on-head count is never mistaken for a stale/mismatched head SHA'
+
+good_digest
+printf 'not a scan-state line at all\n' >"$tmp/cq-state.txt"
+chmod 600 "$tmp/cq-state.txt"
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt" 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a malformed code-quality-state-file dies instead of blocking as if it were readable evidence'
+assert_contains "$out" 'code-quality state file is malformed' 'the malformed-file error is named'
+
+good_digest
+set +e
+out=$(run_gate_raw 2>&1)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'omitting both --code-quality-scan-state and --code-quality-state-file dies'
+assert_contains "$out" '--code-quality-scan-state or --code-quality-state-file is required' \
+    'the missing-input error names both accepted sources'
+
+good_digest
+write_cq_state_file "scan-state=complete head=$HEAD_SHA findings-on-head=0"
+chmod 660 "$tmp/cq-state.txt"
+set +e
+out=$(run_gate_raw --code-quality-state-file "$tmp/cq-state.txt" 2>&1)
+rc=$?
+set -e
+chmod 600 "$tmp/cq-state.txt"
+assert_eq '1' "$rc" 'a group-writable code-quality-state-file is refused'
+assert_contains "$out" '--code-quality-state-file must not be group- or world-writable' \
+    'the group-writable code-quality-state-file refusal is named'
 
 good_digest
 set +e
