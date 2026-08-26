@@ -243,10 +243,16 @@ conflict analysis. The plan uses this schema:
 
 The dispatch-time artifact stays at schema version 1 while PR numbers and
 pushed heads do not exist. Immediately after atomically persisting it, run
-`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only`;
+`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`;
 the dispatch must not begin unless the helper prints `schemaVersion=1 valid`.
-This catches a missing or malformed schema at the write boundary instead of in
-the downstream queue consumer.
+The validator resolves every prediction against the chain-base tree; a glob
+that matches nothing fails closed and reports the nearest existing sibling. It
+also uses configured test-command run directories and conventional test roots
+found by tree detection to propose the project's tests. The entry must include
+each proposed root in `predictedWriteSet` or explicitly list it in
+`testRootExclusions`; an exclusion is an auditable decision, not implicit
+permission to omit tests. This catches a missing or malformed schema or path at
+the write boundary instead of in the downstream queue consumer.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with
@@ -395,6 +401,33 @@ Late-discovered overlap names inherited #137 chain conversion + merge-down as
 the sanctioned response. Record the affected paths and reason in the plan,
 then validate the handback against that revised artifact. Do not swap a
 successor or widen a write set in prose after dispatch.
+
+If a lead cannot proceed because its prediction omits a required path, it emits
+one `needs-paths: <glob>[,<glob>...]` line and preserves the worktree. The root
+validates those repository-relative globs, appends them to that entry's
+`predictedWriteSet`, and records a matching `conflictMap.revisions` object with
+`issues`, `paths`, and a non-empty reason. That bound revision is the
+`prediction-expansion` disposition. The root then resumes the same lead with
+`followup_task` and the exact remaining step; it does not create a new worktree
+or worker prompt cycle.
+
+The root-side round trip is data-only and atomic:
+
+```bash
+mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*$' "$raw_report")
+(( ${#needs_lines[@]} == 1 )) || exit 1
+IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
+for path in "${needs_paths[@]}"; do [[ -n $path && $path != /* && $path != *[[:cntrl:]]* ]] || exit 1; case "/$path/" in *'/../'*|*'//'*|*'/./'*) exit 1;; esac; done
+needs_json=$(printf '%s\n' "${needs_paths[@]}" | jq -R -s 'split("\n") | map(select(length > 0))')
+jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
+  '.entries |= map(if .issue == $issue then .predictedWriteSet += $paths else . end) |
+   .conflictMap.revisions += [{issues: [$issue], paths: $paths,
+     reason: "worker requested missing write-set paths (prediction expansion)"}]' \
+  "$dispatch_plan" >"$plan_tmp" && mv -f -- "$plan_tmp" "$dispatch_plan"
+```
+
+Re-run the chain-base validator on the updated plan, then call `followup_task`
+once with the expanded globs and exact remaining step.
 
 ## Board adjudication
 

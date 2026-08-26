@@ -47,6 +47,82 @@ EOF
 assert_contains "$(cat "$tmp/validate.out")" 'schemaVersion=1 valid' \
     'the write-time gate accepts a complete schema-1 dispatch plan'
 
+# --- predicted write-set globs resolve against the chain-base tree ---------
+chain_base="$tmp/chain-base"
+mkdir -p "$chain_base/tests/CableTool.Core.Tests" "$chain_base/src" "$chain_base/.agent"
+printf '%s\n' 'test' >"$chain_base/tests/CableTool.Core.Tests/Smoke.sh"
+printf '%s\n' 'source' >"$chain_base/src/main.sh"
+mkdir -p "$chain_base/docs"
+printf '%s\n' 'docs' >"$chain_base/docs/README.md"
+cat >"$chain_base/.agent/config.env" <<'EOF'
+AGENT_RUNDIR_ADDIN_TEST=tests/CableTool.Core.Tests
+EOF
+git init -q -b main "$chain_base"
+git -C "$chain_base" config user.email test@example.invalid
+git -C "$chain_base" config user.name test
+git -C "$chain_base" add -- .
+git -C "$chain_base" commit -qm base
+
+zero_match_plan="$tmp/zero-match.json"
+cat >"$zero_match_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 14, "predictedWriteSet": ["addin/tests/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+zero_match_rc=0
+zero_match_err=$("$writer" --dispatch-plan "$zero_match_plan" --chain-base "$chain_base" \
+    --validate-only 2>&1 >/dev/null) || zero_match_rc=$?
+assert_eq 1 "$zero_match_rc" 'a predicted glob matching no chain-base paths is rejected'
+assert_contains "$zero_match_err" 'addin/tests/**' \
+    'the zero-match refusal names the missing prediction'
+assert_contains "$zero_match_err" 'tests/CableTool.Core.Tests/**' \
+    'the zero-match refusal names the nearest existing sibling'
+
+matching_plan="$tmp/matching.json"
+cat >"$matching_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 15, "predictedWriteSet": ["src/**", "tests/CableTool.Core.Tests/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'predicted globs matching the chain-base tree are accepted' -- \
+    "$writer" --dispatch-plan "$matching_plan" --chain-base "$chain_base" --validate-only
+
+test_root_plan="$tmp/test-root-missing.json"
+cat >"$test_root_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 16, "predictedWriteSet": ["src/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+test_root_rc=0
+test_root_err=$("$writer" --dispatch-plan "$test_root_plan" --chain-base "$chain_base" \
+    --validate-only 2>&1 >/dev/null) || test_root_rc=$?
+assert_eq 1 "$test_root_rc" 'source predictions require a project test-root decision'
+assert_contains "$test_root_err" 'tests/CableTool.Core.Tests/**' \
+    'test-root refusal proposes the configured test root'
+
+test_root_excluded="$tmp/test-root-excluded.json"
+jq '.entries[0].testRootExclusions = ["tests/CableTool.Core.Tests/**"]' \
+    "$test_root_plan" >"$test_root_excluded"
+assert_rc 0 'an explicit test-root exclusion satisfies validation' -- \
+    "$writer" --dispatch-plan "$test_root_excluded" --chain-base "$chain_base" --validate-only
+
+docs_plan="$tmp/docs-only.json"
+cat >"$docs_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 17, "predictedWriteSet": ["docs/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'documentation-only predictions do not require project test roots' -- \
+    "$writer" --dispatch-plan "$docs_plan" --chain-base "$chain_base" --validate-only
+
 jq '.conflictMap.pairs = [{"issues":[11,12],"overlap":["src/shared/**"]}] |
     .conflictMap.revisions = [{"phase":"post-selection","reason":"retain the reviewed edge"}, {"reason":"authorize merge-down","issues":[12],"paths":["src/b"]}]' \
     "$plan" >"$tmp/valid-conflict-members.json"

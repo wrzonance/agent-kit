@@ -456,11 +456,13 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan; validate via `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --validate-only` and require `schemaVersion=1 valid`. Each entry gets a non-empty
+Before dispatch, write the root-owned dispatch plan; require `schemaVersion=1 valid` via `write-merge-plan.sh --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`. It resolves globs against the chain-base tree and checks test roots. Each entry gets a non-empty
 repository-relative `predictedWriteSet` (paths/globs), the work-shape verdict, `conflictMap.pairs`, and reasoned
 revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
 [references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
 for the schema. Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down.
+
+On `needs-paths: <glob>[,<glob>...]`, record `prediction-expansion`; `followup_task` the lead.
 
 Combine Step 2 triage and board findings, then get approval before continuing.
 
@@ -808,7 +810,7 @@ Act on each lead result as soon as it arrives:
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
   the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → report the reason and preserved worktree; do not blindly restart. When the blocker clears, use `collaboration.followup_task` on the same lead if it remains available, otherwise spawn a fresh lead with the completed state and exact remaining step.
+- **BLOCKED** → sole `needs-paths: <glob>[,<glob>...]` resumes the lead; otherwise report preserved worktree.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
@@ -872,10 +874,7 @@ mapfile -d '' -t validated_argv <"$validated_argv_file"
 (cd -- "$worktree" && "${validated_argv[@]}")
 ```
 
-Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full
-for the composer recipe and stacked retarget/linkage proof before opening any
-draft PR — it is dispatch-*output* content, read at the moment of publication rather than pasted
-in advance.
+Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full for the composer recipe and stacked retarget/linkage proof before opening any draft PR — it is dispatch-*output* content, read at publication rather than pasted in advance.
 
 The worker commits and pushes its own branch and returns a completion report; root reviews
 the pushed diff and opens the DRAFT PR; root handles CI state/verification, forge conflicts,
@@ -883,26 +882,11 @@ adversarial review, consent, replies, and publication.
 
 ### Polling discipline (applies to every wait in this skill)
 
-Waiting is not work, and narrating a wait is not a status report. Read
-[.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before issuing any wait in this
-skill — it is the single detailed home for the no-model-turn wait rule, the one-wait-per-interval
-and completion-only-read bullets, the silent-until-terminal rule, and the durable-state recipe
-below. A bounded wait is silent until terminal: background output wakes the orchestrator for a
-turn, so emit only the one completion or expiry line and redirect any genuine heartbeat to a log.
+Waiting is not work, and narrating a wait is not a status report. Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before issuing any wait in this skill — it is the single detailed home for the no-model-turn wait rule, the one-wait-per-interval and completion-only-read bullets, the silent-until-terminal rule, and the durable-state recipe below. A bounded wait is silent until terminal: background output wakes the orchestrator for a turn, so emit only the one completion or expiry line and redirect any genuine heartbeat to a log.
 
-Every wait names its numeric bound at the call site: worker implementation waits are
-**900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's
-default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=`
-line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that
-printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at
-the same duration — it carried zero information and will again; escalate the bound or run the
-Collect section's stall check instead.
+Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration — it carried zero information and will again; escalate the bound or run the Collect section's stall check instead.
 
-Durable state to inspect after a wait reports an actual completion, and the runnable
-recipe (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO`):
-[.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion).
-`gh-pr-state.sh` returns a five-line digest and exits 0 whether CI is green, failing, or
-pending — CI state is data, not an error. Read the digest and stop.
+Durable state to inspect after a wait reports an actual completion, and the runnable recipe (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO`): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). `gh-pr-state.sh` returns a five-line digest and exits 0 whether CI is green, failing, or pending — CI state is data, not an error. Read the digest and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
