@@ -681,6 +681,113 @@ assert_eq blocked "$(jq -r '.status' <"$noreceipt_run/adversarial.result.json")"
 assert_not_contains "$(cat -- "$tmp/noreceipt.out")" 'verdict=findings' \
     'marker-present-no-receipt is never reported as a genuine completed review'
 
+# -- issue #477: --reaffirm-if-covered short-circuits when the ledger already
+#    proves this exact tree (or a base-merge-only advance of it) was reviewed
+
+reaffirm_payload=$(/bin/bash "$consent" payload --repo acme/widget --pr 42 --diff "$expected")
+
+# review-ledger.sh only trusts a comment from a resolved author (root review
+# finding F1); pin it deterministically instead of falling through to a live
+# `gh api user` call (the fake_bin/gh stub below only understands the PR-
+# metadata endpoint and would fail that call anyway).
+export REVIEW_LEDGER_VIEWER='ledger-test-author'
+
+make_ledger_comments() {
+    # $1 = output path, $2 = reviews JSON array (compact)
+    jq -n --argjson reviews "$2" --arg login "$REVIEW_LEDGER_VIEWER" \
+        '[{id: 77, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+            ({version:1, pr:42, repo:"acme/widget", reviews:$reviews} | tojson) +
+            "\n```\n<!-- /review-ledger:v1 -->")}]' >"$1"
+}
+
+covered_reviews="[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$head_oid\",\"diff_payload\":\"$reaffirm_payload\"}]"
+covered_comments="$tmp/reaffirm-covered-comments.json"
+make_ledger_comments "$covered_comments" "$covered_reviews"
+
+reaffirm_run="$tmp/reaffirm-covered-run"
+mkdir -- "$reaffirm_run" "$reaffirm_run/state"
+chmod 700 "$reaffirm_run" "$reaffirm_run/state"
+# Deliberately NO consent grant: a reaffirmed-from-ledger short circuit must
+# never require (or consult) the consent gate, since no reviewer is launched.
+reaffirm_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-covered.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reaffirm_run" \
+        --reaffirm-if-covered --comments "$covered_comments") \
+    >"$tmp/reaffirm-covered.out" 2>"$tmp/reaffirm-covered.err" || reaffirm_rc=$?
+assert_eq 0 "$reaffirm_rc" '--reaffirm-if-covered exits 0 for a covered-head ledger entry, with no consent grant'
+assert_contains "$(cat -- "$tmp/reaffirm-covered.out")" 'reaffirmed-from-ledger' \
+    'a reaffirmed run reports itself distinctly from a genuine completed review'
+assert_eq no "$( [[ -e $tmp/reaffirm-covered.called ]] && printf yes || printf no )" \
+    'a reaffirmed run never launches the reviewer CLI'
+assert_eq no "$( [[ -e $reaffirm_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'a reaffirmed run never writes a result artifact of its own'
+
+# The ledger comment append itself only round-trips through gh-comment.sh,
+# which this test harness does not stub for adversarial-run.sh's own
+# invocation -- review-ledger.sh append fails closed here (no gh on this PATH
+# beyond the PR-metadata stub above). That failure is deliberately
+# NON-FATAL to the reaffirm decision: the ORIGINAL ledger entry already
+# proves coverage, so the review is still skipped even though the
+# audit-trail append could not be recorded. Confirmed above by the covered
+# run's rc=0 and no-reviewer-launch assertions; here confirm the warning was
+# actually surfaced, not silently swallowed.
+assert_contains "$(cat -- "$tmp/reaffirm-covered.err")" 'could not append a reaffirmed-from ledger entry' \
+    'a failed audit-trail append is surfaced as a warning, not hidden'
+
+# -- a malformed ledger fence (blocks, per rule 1) is never treated as
+#    covered: the review always runs -------------------------------------
+
+malformed_comments="$tmp/reaffirm-malformed-comments.json"
+jq -n --arg login "$REVIEW_LEDGER_VIEWER" \
+    '[{id: 78, user: {login: $login}, body: "<!-- review-ledger:v1 -->\n```json\n{not valid json\n```\n<!-- /review-ledger:v1 -->"}]' \
+    >"$malformed_comments"
+
+malformed_run="$tmp/reaffirm-malformed-run"
+grant "$malformed_run" anthropic
+malformed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-malformed.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$malformed_run" \
+        --reaffirm-if-covered --comments "$malformed_comments") \
+    >"$tmp/reaffirm-malformed.out" 2>"$tmp/reaffirm-malformed.err" || malformed_rc=$?
+assert_eq 0 "$malformed_rc" \
+    'a malformed ledger falls back to running a real review rather than failing the whole run'
+assert_eq yes "$( [[ -e $tmp/reaffirm-malformed.called ]] && printf yes || printf no )" \
+    'a malformed (blocked) ledger still launches the reviewer CLI -- it is never read as covered'
+assert_eq yes "$( [[ -s $malformed_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'the fallback review publishes a real result artifact'
+
+# -- a stale ledger (different head, no matching diff payload) never
+#    short-circuits: the review always runs -----------------------------
+
+stale_reviews='[{"kind":"adversarial","provider":"anthropic","head_sha":"0000000000000000000000000000000000000f","diff_payload":"acme/widget:42:zzzz"}]'
+stale_comments="$tmp/reaffirm-stale-comments.json"
+make_ledger_comments "$stale_comments" "$stale_reviews"
+
+stale_run="$tmp/reaffirm-stale-run"
+grant "$stale_run" anthropic
+stale_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-stale.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$stale_run" \
+        --reaffirm-if-covered --comments "$stale_comments") \
+    >"$tmp/reaffirm-stale.out" 2>"$tmp/reaffirm-stale.err" || stale_rc=$?
+assert_eq 0 "$stale_rc" 'a stale ledger entry never blocks the review from running'
+assert_eq yes "$( [[ -e $tmp/reaffirm-stale.called ]] && printf yes || printf no )" \
+    'a stale ledger entry still launches the reviewer CLI'
+assert_not_contains "$(cat -- "$tmp/reaffirm-stale.out")" 'reaffirmed-from-ledger' \
+    'a stale ledger entry is never reported as a reaffirmed run'
+
+# -- --reaffirm-if-covered requires --comments -------------------------------
+
+usage_rc=0
+bash "$script" --pr 42 --repo acme/widget --run-dir "$tmp/unused-run" \
+    --reaffirm-if-covered >"$tmp/usage.out" 2>"$tmp/usage.err" || usage_rc=$?
+assert_eq 2 "$usage_rc" '--reaffirm-if-covered without --comments is a usage error'
+assert_contains "$(cat -- "$tmp/usage.err")" '--reaffirm-if-covered requires --comments' \
+    'the usage error names the missing flag'
+
 # --- #473 follow-up (F1, PR #479 adversarial review): a RUN_DIR whose
 # launch-attempted marker is already present with no terminal (completed or
 # blocked) result must refuse to relaunch, even with fully valid consent --
@@ -754,6 +861,76 @@ assert_eq no "$( [[ -e $tmp/local-abort.called ]] && printf yes || printf no )" 
     'a purely local abort never reaches the provider helper'
 assert_eq no "$( [[ -e $local_abort_run/state/launch-attempted ]] && printf yes || printf no )" \
     'a purely local abort never writes the launch-attempted marker'
+
+# --- issue #477 x #473 follow-up: the reaffirm short-circuit must win over
+# an ambiguous prior-launch marker, not be blocked by it. A RUN_DIR carrying
+# exactly the same "marker present, no terminal result" ambiguity as the F1
+# case above, but where the ledger ALSO proves this exact head was already
+# reviewed, must still reaffirm and skip -- the durable ledger's coverage
+# guarantee does not depend on this RUN_DIR's own local launch history, and
+# guard_prior_launch_attempt must never even run for a reaffirmed request.
+reaffirm_over_guard_run="$tmp/reaffirm-over-guard-run"
+mkdir -- "$reaffirm_over_guard_run" "$reaffirm_over_guard_run/state"
+chmod 700 "$reaffirm_over_guard_run" "$reaffirm_over_guard_run/state"
+printf '%s' '{"timestamp":"2020-01-01T00:00:00Z","pr":42,"head":"deadbeef","payload":"stale"}' \
+    >"$reaffirm_over_guard_run/state/launch-attempted"
+chmod 600 -- "$reaffirm_over_guard_run/state/launch-attempted"
+reaffirm_over_guard_marker_before=$(sha256sum -- "$reaffirm_over_guard_run/state/launch-attempted" | awk '{print $1}')
+reaffirm_over_guard_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-over-guard.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reaffirm_over_guard_run" \
+        --reaffirm-if-covered --comments "$covered_comments") \
+    >"$tmp/reaffirm-over-guard.out" 2>"$tmp/reaffirm-over-guard.err" || reaffirm_over_guard_rc=$?
+assert_eq 0 "$reaffirm_over_guard_rc" \
+    'a covered-head ledger entry reaffirms successfully even with an ambiguous prior-launch marker present'
+assert_contains "$(cat -- "$tmp/reaffirm-over-guard.out")" 'reaffirmed-from-ledger' \
+    'the reaffirm short-circuit reports itself, not a guard block'
+assert_eq no "$( [[ -e $tmp/reaffirm-over-guard.called ]] && printf yes || printf no )" \
+    'the reaffirm short-circuit never launches the reviewer CLI, guard notwithstanding'
+assert_eq no "$( [[ -e $reaffirm_over_guard_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'the reaffirm short-circuit never writes a blocked result from the guard'
+reaffirm_over_guard_marker_after=$(sha256sum -- "$reaffirm_over_guard_run/state/launch-attempted" | awk '{print $1}')
+assert_eq "$reaffirm_over_guard_marker_before" "$reaffirm_over_guard_marker_after" \
+    'the reaffirm short-circuit never touches the pre-existing (ambiguous) launch-attempted marker'
+
+# --- CodeRabbit review of PR #484 (issue #477 T1): try_reaffirm_if_covered's
+# `status` call already passed --repo-root, but its `read` and `append`
+# calls did not -- so resolve_trusted_author inside THOSE calls could never
+# see a repository-declared AGENT_LEDGER_AUTHOR and silently fell back to
+# REVIEW_LEDGER_VIEWER/gh instead. A ledger comment authored by the
+# CONFIGURED author (not REVIEW_LEDGER_VIEWER, which stays exported to a
+# different value for the whole suite) proves `read` now resolves the same
+# configured identity `status` already did: pre-fix, `read` would have found
+# nothing under REVIEW_LEDGER_VIEWER's identity, `try_reaffirm_if_covered`
+# would have returned 1, and this run would have fallen back to a genuine
+# (CLI-launching) review instead of reaffirming.
+configured_author='configured-ledger-author'
+printf 'AGENT_LEDGER_AUTHOR=%s\n' "$configured_author" >"$repo/.agent/config.env"
+
+configured_author_comments="$tmp/reaffirm-configured-author-comments.json"
+jq -n --argjson reviews "$covered_reviews" --arg login "$configured_author" \
+    '[{id: 91, user: {login: $login}, body: ("<!-- review-ledger:v1 -->\n```json\n" +
+        ({version:1, pr:42, repo:"acme/widget", reviews:$reviews} | tojson) +
+        "\n```\n<!-- /review-ledger:v1 -->")}]' >"$configured_author_comments"
+
+configured_author_run="$tmp/reaffirm-configured-author-run"
+mkdir -- "$configured_author_run" "$configured_author_run/state"
+chmod 700 "$configured_author_run" "$configured_author_run/state"
+configured_author_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-configured-author.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$configured_author_run" \
+        --reaffirm-if-covered --comments "$configured_author_comments") \
+    >"$tmp/reaffirm-configured-author.out" 2>"$tmp/reaffirm-configured-author.err" || configured_author_rc=$?
+assert_eq 0 "$configured_author_rc" \
+    'a repository-declared AGENT_LEDGER_AUTHOR resolves through the read call too (CodeRabbit #484 T1), not just status'
+assert_contains "$(cat -- "$tmp/reaffirm-configured-author.out")" 'reaffirmed-from-ledger' \
+    'the reaffirm short-circuit succeeds via the config-resolved author, proving read found the trusted comment'
+assert_eq no "$( [[ -e $tmp/reaffirm-configured-author.called ]] && printf yes || printf no )" \
+    'a config-resolved reaffirm still never launches the reviewer CLI'
+
+rm -f -- "$repo/.agent/config.env"
 
 # --- #473 follow-up (T1, PR #479 CodeRabbit): --provenance carries the
 # launch-authorization text as one argv element -- never eval'd, never

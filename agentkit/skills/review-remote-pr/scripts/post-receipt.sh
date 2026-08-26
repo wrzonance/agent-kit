@@ -88,7 +88,15 @@ Usage: $PROGNAME precheck --comments FILE
                  --mode cross-provider|blind-fallback [--mode-reason S] \\
                  --p1 N --p2 N \\
                  [--skip-rationale S --oracle S] \\
-                 --agent-identity S [--require-pushed]
+                 --agent-identity S [--require-pushed] \\
+                 [--head-sha SHA [--diff-payload ID] [--harness codex|claude]]
+
+--head-sha additionally renders "- Reviewed head: SHA" (and, with
+--diff-payload, "- Diff payload: ID") into the receipt body, and appends a
+best-effort entry to this PR's review-ledger.sh record (see review-ledger.sh)
+so a later run can tell this exact review apart from one covering different
+code. A failed ledger append never fails an already-posted, byte-verified
+receipt -- it only warns.
 
 precheck: reports whether the PR's fetched comment artifact already carries
 the stable adversarial-review spent marker.
@@ -243,6 +251,13 @@ ORACLE=''
 AGENT_IDENTITY=''
 REQUIRE_PUSHED=0
 GH_COMMENT_SCRIPT=''
+# review-ledger.sh integration (issue #477): optional so existing callers
+# keep working unmodified, but required in practice for the ledger entry to
+# be worth appending -- see append_ledger_entry.
+HEAD_SHA=''
+DIFF_PAYLOAD=''
+HARNESS=''
+REVIEW_LEDGER_SCRIPT=''
 # Global, not local to cmd_publish: an EXIT trap fires after the function that
 # set it has returned, so a deferred '"$var"' expansion in the trap needs the
 # variable to still be in scope at that point.
@@ -265,6 +280,9 @@ parse_publish_args() {
             --skip-rationale) [[ ${2-} ]] || die_usage '--skip-rationale requires a value'; SKIP_RATIONALE=$2; shift 2 ;;
             --oracle) [[ ${2-} ]] || die_usage '--oracle requires a value'; ORACLE=$2; shift 2 ;;
             --agent-identity) [[ ${2-} ]] || die_usage '--agent-identity requires a value'; AGENT_IDENTITY=$2; shift 2 ;;
+            --head-sha) [[ ${2-} ]] || die_usage '--head-sha requires a value'; HEAD_SHA=$2; shift 2 ;;
+            --diff-payload) [[ ${2-} ]] || die_usage '--diff-payload requires a value'; DIFF_PAYLOAD=$2; shift 2 ;;
+            --harness) [[ ${2-} ]] || die_usage '--harness requires a value'; HARNESS=$2; shift 2 ;;
             --require-pushed) REQUIRE_PUSHED=1; shift ;;
             -h | --help) usage; exit 0 ;;
             *) die_usage "unknown argument: $1" ;;
@@ -311,6 +329,10 @@ validate_publish_args() {
     reject_unsafe_field '--agent-identity' "$AGENT_IDENTITY"
     reject_unsafe_field '--skip-rationale' "$SKIP_RATIONALE"
     reject_unsafe_field '--oracle' "$ORACLE"
+    reject_unsafe_field '--harness' "$HARNESS"
+    reject_unsafe_field '--diff-payload' "$DIFF_PAYLOAD"
+    [[ -z $HEAD_SHA || $HEAD_SHA =~ ^[0-9a-f]{7,40}$ ]] ||
+        die_usage "--head-sha must look like a git SHA, got: $HEAD_SHA"
 }
 
 # The receipt asserts that a review happened and how many findings it produced.
@@ -510,6 +532,73 @@ resolve_gh_comment_script() {
         die_usage "sibling gh-comment.sh not found or not executable: $GH_COMMENT_SCRIPT"
 }
 
+resolve_review_ledger_script() {
+    local here
+    here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    REVIEW_LEDGER_SCRIPT="$here/review-ledger.sh"
+    [[ -x $REVIEW_LEDGER_SCRIPT ]] || REVIEW_LEDGER_SCRIPT=''
+}
+
+# Deliberately best-effort and never fatal, the same posture as record_spend
+# just above it: by the time this runs the receipt is already posted and
+# byte-verified on the PR (the durable, load-bearing evidence). The ledger
+# entry is a SEPARATE, additive record of the same review -- a later
+# review-ledger.sh consumer degrades to treating the PR as unreviewed when
+# the ledger is missing/stale, which is the safe direction to fail in, so a
+# lost ledger append here must never turn an already-successful publish into
+# a reported failure.
+append_ledger_entry() {
+    [[ -n $HEAD_SHA ]] || return 0
+    resolve_review_ledger_script
+    if [[ -z $REVIEW_LEDGER_SCRIPT ]]; then
+        printf '%s: review-ledger.sh not found beside this script; ledger entry not recorded\n' \
+            "$PROGNAME" >&2
+        return 0
+    fi
+    local entry_file
+    entry_file=$(mktemp "${TMPDIR:-/tmp}/post-receipt-ledger-entry.XXXXXXXXXX") || {
+        printf '%s: could not stage a ledger entry temp file; ledger entry not recorded\n' "$PROGNAME" >&2
+        return 0
+    }
+    chmod 600 -- "$entry_file" 2>/dev/null || true
+    if ! jq -cn \
+        --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
+        --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
+        --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
+        --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson p1 "$P1" --argjson p2 "$P2" \
+        '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
+         + (if $harness == "" then {} else {harness:$harness} end)
+         + {head_sha:$head}
+         + (if $diff_payload == "" then {} else {diff_payload:$diff_payload} end)
+         + {counts:{p1:$p1, p2:$p2}, reviewed_at:$reviewed_at}' >"$entry_file" 2>/dev/null; then
+        printf '%s: could not encode a ledger entry; ledger entry not recorded\n' "$PROGNAME" >&2
+        rm -f -- "$entry_file"
+        return 0
+    fi
+    # Best-effort: CodeRabbit review of PR #484 (issue #477 T1) -- without
+    # --repo-root, resolve_trusted_author inside review-ledger.sh can never
+    # see a repository-declared AGENT_LEDGER_AUTHOR and silently falls back
+    # to the authenticated gh login instead. When that differs from the
+    # configured author, a later run reads the ledger as covered by the
+    # WRONG identity (or absent), and this call creates a second ledger
+    # comment instead of updating the configured author's own. A failed
+    # `git rev-parse` here degrades to the pre-existing (gh-login) fallback,
+    # exactly as before this fix -- never fatal to the receipt itself.
+    local ledger_repo_root=''
+    ledger_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || ledger_repo_root=''
+    local -a ledger_repo_root_args=()
+    [[ -z $ledger_repo_root ]] || ledger_repo_root_args=(--repo-root "$ledger_repo_root")
+    if ! "$REVIEW_LEDGER_SCRIPT" append --repo "$REPO" --pr "$PR" --comments "$COMMENTS" \
+        --entry-file "$entry_file" --agent-identity "$AGENT_IDENTITY" \
+        "${ledger_repo_root_args[@]}" >&2; then
+        printf '%s: receipt POSTED and verified, but the review-ledger entry was not recorded; a later run may not see this review\n' \
+            "$PROGNAME" >&2
+    fi
+    rm -f -- "$entry_file"
+    return 0
+}
+
 render_findings_block() {
     if [[ ! -s $FINDINGS_FILE ]]; then
         printf '%s\n' '- Confirmed finding: none confirmed'
@@ -531,6 +620,17 @@ render_skip_line() {
         "$SKIP_RATIONALE" "$ORACLE"
 }
 
+# Closes the "no SHA on a clean review" hole (issue #477): every publish that
+# names --head-sha records it in the human body independently of whatever the
+# review-ledger JSON on the same PR ends up saying, so a later run (or a
+# human) can see which tree this receipt covers without needing the ledger to
+# be present, parseable, or even attempted.
+render_head_lines() {
+    [[ -n $HEAD_SHA ]] || return 0
+    printf -- '- Reviewed head: %s\n' "$HEAD_SHA"
+    [[ -z $DIFF_PAYLOAD ]] || printf -- '- Diff payload: %s\n' "$DIFF_PAYLOAD"
+}
+
 render_body() {
     local total=$((P1 + P2))
     printf 'This was written agentically; verify its assertions:\n'
@@ -539,6 +639,7 @@ render_body() {
     printf -- '- Reviewer: provider=%s; model=%s; effort=%s; mode=%s (reason: %s)\n' \
         "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$MODE_REASON"
     printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
+    render_head_lines
     render_findings_block
     render_skip_line
     printf '%s\n' "$RECEIPT_MARKER"
@@ -615,6 +716,7 @@ cmd_publish() {
 
     if "$GH_COMMENT_SCRIPT" --pr "$PR" --repo "$REPO" --body-file "$RECEIPT_BODY_FILE"; then
         record_spend
+        append_ledger_entry
     else
         local post_rc=$?
         recover_after_failed_publish "$post_rc"

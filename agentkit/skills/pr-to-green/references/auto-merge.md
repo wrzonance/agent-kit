@@ -151,6 +151,21 @@ and additionally consumes:
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.
+- `--adversarial-review-status covered-head|covered-diff|stale|absent|blocked|not-required`
+  (issue #477) — the verdict word `review-ledger.sh status` prints for this
+  PR's current head, read from the already-fetched issue-comments artifact
+  (no extra API call). `covered-head` and `covered-diff` both pass, exactly
+  like an `AUTO_REVIEW`/`LANDED` CodeRabbit result — `covered-diff` means the
+  head moved by a base-merge-only advance since the recorded review, not a
+  source change, so the reviewed tree is still byte-identical. `stale` (the
+  ledger has an entry, but for different code) and `absent` (no ledger entry
+  at all) each block exactly like an unreviewed head. `blocked` (the ledger
+  comment is present but its fence/JSON is unparseable) blocks too — corrupt
+  evidence is never treated as missing evidence, let alone as satisfied.
+  `not-required` is the one value that opts a repository's adversarial-review
+  requirement out of this gate entirely; it is never derived here, only
+  passed through from whatever documented materiality skip decided it
+  upstream.
 - `--code-quality-scan-state complete|pending|not-enabled` and/or
   `--code-quality-state-file FILE` — whether the `github-code-quality` scan
   for the current head has finished. `pending` blocks (a finding merely
