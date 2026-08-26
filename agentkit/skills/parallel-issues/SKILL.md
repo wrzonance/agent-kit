@@ -954,22 +954,21 @@ loop: a relayed grant manufactures child-context consent. The loop prechecks, ha
 state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
 
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
-
 The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
-cap includes the root; reserve it before deriving child capacity:
-
+cap includes the root and active issue leads; reserve those before deriving child capacity. The
+effective cap is the smaller of the number of open PRs and the remaining runtime slots:
 ```bash
-PR_LOOP_CONCURRENCY_CAP=2
-runtime_child_cap=$((max_concurrent_threads_per_session - 1))
-pr_loop_dispatch_cap=$((runtime_child_cap < PR_LOOP_CONCURRENCY_CAP ? runtime_child_cap : PR_LOOP_CONCURRENCY_CAP))
-((pr_loop_dispatch_cap > 0)) || {
+open_pr_count=${open_pr_count:?count of open PRs in this draft phase}
+active_leads=${active_leads:?number of active issue leads}
+runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))
+((runtime_loop_budget > 0 && open_pr_count > 0)) || {
     printf '%s\n' 'No child capacity remains for PR loops; do not dispatch.' >&2
     exit 1
 }
-printf 'PR-loop dispatch cap: %s agents (hard cap=%s, runtime children=%s)\n' \
-    "$pr_loop_dispatch_cap" "$PR_LOOP_CONCURRENCY_CAP" "$runtime_child_cap"
+pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : runtime_loop_budget))
+printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
+    "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
-
 Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and
 refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker
 slot: the loop agent uses the documented spawn-unavailable path for root-approved fix batches.
@@ -1047,19 +1046,23 @@ Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The recei
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
 
-Dispatch no more than the `pr_loop_dispatch_cap` computed above, which is never greater than
-`PR_LOOP_CONCURRENCY_CAP=2`. **Do not reserve a slot for a nested worker: a spawned PR-loop
-agent cannot spawn one.** It runs `review-remote-pr`'s documented spawn-unavailable path and
+Dispatch no more than the `pr_loop_dispatch_cap` computed above.
+**Do not reserve a slot for a nested worker: a spawned PR-loop agent cannot spawn one.** It runs
+`review-remote-pr`'s documented spawn-unavailable path and
 does the implementation itself under the same six-step gate, labelling its report
 `worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
-The root reads `peer-cli=` from the contract: when absent, skip the probe and use the blind
-same-harness `gpt-5.6-terra` xhigh fallback exactly once; this reviewer decision is root-owned.
+The root owns peer-provider selection and the single blind fallback when `peer-cli=` is absent.
 
-**Degraded path — `spawn_agent` unavailable (`multi_agent = false`):** run the draft-phase loop **yourself**, one PR at a time, treating the template below as your own instructions. Identical contract: the same hard rules (never `gh pr ready`, never any `@coderabbitai` command, never resolve a human-touched thread), the same `agent-run.sh` / `worktree-commit.sh` command lines, the same single end-of-draft adversarial cross-review. Label every exit line `worker=self (spawn unavailable)`. Serial self-execution is the correct degradation here; reporting the run as blocked is not.
+**Degraded path — `spawn_agent` unavailable (`multi_agent = false`):** run the draft-phase loop
+yourself, one PR at a time, using `pr-loop-setup` first and `pr-fix-batch` only after accepted
+findings exist. Keep the same no-ready/no-bot/no-human-resolution rules and label each exit
+`worker=self (spawn unavailable)`; serial execution is a valid degradation, not a block.
 
 **Per-agent prompt template:**
 
-Use the same helper with `--template fix-batch` and the fix-batch PR number as `--issue`; pass its composed `worker_prompt` verbatim on both normal and degraded paths.
+Use the same helper with `--template pr-loop-setup` and the PR number as `--issue`; pass its
+composed prompt verbatim. Setup returns `launch-ready`, `ci-red: <check>`, or `cq-open: N`.
+Compose `--template pr-fix-batch` with `--findings-file` only when accepted findings exist.
 
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 

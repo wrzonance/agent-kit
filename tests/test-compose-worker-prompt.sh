@@ -386,6 +386,39 @@ fix_batch_digest=$(bash "$compose" --template fix-batch --worktree "$repo" \
 assert_contains "$fix_batch_digest" "$expected_wait_bound_line" \
     'fix-batch dispatch also emits a per-worker wait bound at composition time'
 
+# Issue #495: setup and mutation are separate templates. Setup is the
+# read-only state/triage phase and must expose terminal handoff markers; a
+# fix-batch requires at least one accepted finding from the root-owned ledger.
+setup_prompt=$(bash "$compose" --template pr-loop-setup --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
+assert_contains "$setup_prompt" 'PR-loop setup worker' \
+    'pr-loop-setup identifies its read-only phase'
+assert_contains "$setup_prompt" 'launch-ready' \
+    'pr-loop-setup has a launch-ready terminal marker'
+assert_contains "$setup_prompt" 'ci-red: <check>' \
+    'pr-loop-setup has a CI-red terminal marker'
+assert_contains "$setup_prompt" 'cq-open: N' \
+    'pr-loop-setup has a Code Quality terminal marker'
+
+empty_findings="$tmp/empty-findings.ndjson"
+: > "$empty_findings"
+empty_findings_rc=0
+bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high --findings-file "$empty_findings" \
+    >/dev/null 2>&1 || empty_findings_rc=$?
+assert_eq nonzero "$([[ $empty_findings_rc != 0 ]] && printf nonzero || printf zero)" \
+    'pr-fix-batch refuses an empty findings ledger'
+
+accepted_findings="$tmp/accepted-findings.ndjson"
+printf '%s\n' '{"title":"Use bounded wait","severity":"P2","verdict":"fixed","sha":"abcdef1"}' > "$accepted_findings"
+pr_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --findings-file "$accepted_findings")
+assert_contains "$pr_fix_prompt" 'Use bounded wait' \
+    'pr-fix-batch renders the accepted findings ledger'
+assert_contains "$pr_fix_prompt" 'accepted findings' \
+    'pr-fix-batch keeps the accepted-findings contract visible'
+
 assert_rc 1 'an omitted worker model is rejected by the composer' -- bash "$compose" \
     --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-effort high
