@@ -9,10 +9,13 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 helper="$root/agentkit/skills/parallel-issues/scripts/materiality-check.sh"
+review_helper="$root/agentkit/skills/review-remote-pr/scripts/materiality-check.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
 assert_eq yes "$([[ -x $helper ]] && printf yes || printf no)" 'materiality helper is executable'
+assert_eq yes "$([[ -x $review_helper ]] && printf yes || printf no)" \
+    'review-remote-pr materiality helper is executable'
 
 repo="$tmp/repo"
 mkdir -p "$repo"
@@ -47,6 +50,26 @@ assert_contains "$out" 'files=2' 'the verdict counts the changed files'
 
 repo_root_alias=$($helper --repo-root "$repo" --base main)
 assert_contains "$repo_root_alias" 'verdict=skip-eligible' '--repo-root remains an alias for --worktree'
+
+# review-remote-pr carries the exact consent payload alongside the oracle, so
+# a later run can invalidate this skip when the PR diff changes.
+review_out_a=$($review_helper --worktree "$repo" --base main --repo owner/repo --pr 24)
+assert_contains "$review_out_a" 'verdict=skip-eligible' \
+    'review-remote-pr reports the test-only diff as skip-eligible'
+review_payload_a=$(sed -n 's/^diff-payload=//p' <<<"$review_out_a")
+expected_payload_a="owner/repo:24:$(gitc diff --no-renames --binary main...HEAD | sha256sum | awk '{print $1}')"
+assert_eq "$expected_payload_a" "$review_payload_a" \
+    'review materiality emits the consent-compatible payload'
+
+printf 'runtime change\n' >> "$repo/src/app.sh"
+gitc add src/app.sh
+gitc commit -q -m 'feat: material change after documented skip'
+review_out_b=$($review_helper --worktree "$repo" --base main --repo owner/repo --pr 24)
+assert_contains "$review_out_b" 'verdict=material' \
+    'a material change invalidates the earlier skip eligibility'
+review_payload_b=$(sed -n 's/^diff-payload=//p' <<<"$review_out_b")
+assert_eq differ "$( [[ $review_payload_a != "$review_payload_b" ]] && printf differ || printf same )" \
+    'a changed diff receives a fresh payload identity'
 
 # A docs-only diff is skip-eligible too.
 start_branch

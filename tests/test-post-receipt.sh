@@ -953,4 +953,43 @@ assert_contains "$repo_root_ledger_body" "$new_head_sha" \
 assert_contains "$repo_root_ledger_body" '9999999999999999999999999999999999999a' \
     'the updated ledger comment still preserves the pre-existing entry (append-only)'
 
+# -- one spend per diff identity: a changed material diff supersedes a skip --
+# A verified skip spends only the diff it classified. When the PR changes, the
+# new review has a fresh budget and its receipt points back to the stale skip;
+# a retry against that new identity is still refused.
+identity_comments="$tmp/identity-comments.json"
+identity_a='owner/repo:900:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+identity_b='owner/repo:900:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+jq -n --arg marker "$marker" --arg diff "$identity_a" \
+    '[{id:77,body:("## Adversarial review receipt\n- Diff payload: " + $diff +
+        "\n- Verified-skip rationale: docs only; mechanical oracle=path\n" + $marker)}]' \
+    >"$identity_comments"
+reset_findings
+: >"$tmp/gh.log"
+identity_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
+    --comments "$identity_comments" --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason changed --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' --diff-payload "$identity_b")
+identity_rc=$?
+assert_eq '0' "$identity_rc" \
+    'a changed diff identity receives a fresh receipt budget after a skip'
+assert_contains "$identity_out" 'posted id=501' \
+    'the changed diff receipt reaches the verified transport'
+identity_body=$(jq -r '.body' "$tmp/payload.json")
+assert_contains "$identity_body" 'supersedes=77' \
+    'a changed diff receipt names the superseded skip comment'
+assert_contains "$identity_body" "- Diff payload: $identity_b" \
+    'the replacement receipt records its own diff identity'
+identity_retry_out=$(GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
+    --comments "$identity_comments" --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason changed --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' --diff-payload "$identity_b" 2>&1)
+identity_retry_rc=$?
+assert_eq '11' "$identity_retry_rc" \
+    'a second publish for the replacement diff is refused'
+assert_contains "$identity_retry_out" 'already spent for diff bbbbbbb' \
+    'the refusal identifies the spent diff by its seven-character ID'
+
 finish
