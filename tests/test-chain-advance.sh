@@ -35,6 +35,9 @@ assert_not_contains "$invalid_resolve" '0000000000000000000000000000000000000000
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n ${GH_CWD_LOG:-} ]]; then
+    printf '%s\n' "$PWD" >>"$GH_CWD_LOG"
+fi
 printf '%q ' "$@" >>"$GH_LOG"
 printf '\n' >>"$GH_LOG"
 case " $* " in
@@ -51,10 +54,12 @@ esac
 EOF
 chmod +x "$tmp/gh"
 
-output=$(GH_LOG="$tmp/gh.log" PATH="$tmp:$PATH" \
+output=$(cd -- "$repo" && GH_CWD_LOG="$tmp/gh-cwd.log" GH_LOG="$tmp/gh.log" PATH="$tmp:$PATH" \
     bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
 assert_contains "$output" 'retargeted pr #7' 'retarget reports a verified result'
 assert_contains "$output" 'closing-issues=1' 'retarget reports linkage evidence'
+assert_eq "$repo" "$(sed -n '1p' "$tmp/gh-cwd.log")" \
+    'retarget runs the fixture forge from the fixture repository'
 log=$(<"$tmp/gh.log")
 assert_not_contains "$log" 'pr edit 7 --repo owner/repo --base main' \
     'retarget skips the already-correct base'
@@ -80,7 +85,7 @@ esac
 EOF
 chmod +x "$tmp/gh-behind"
 set +e
-behind_output=$(GH_LOG="$tmp/gh-behind.log" PATH="$tmp:$PATH" \
+behind_output=$(cd -- "$repo" && GH_LOG="$tmp/gh-behind.log" PATH="$tmp:$PATH" \
     CHAIN_ADVANCE_GH="$tmp/gh-behind" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 behind_rc=$?
@@ -107,7 +112,7 @@ esac
 EOF
 chmod +x "$tmp/gh-sha"
 set +e
-sha_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-sha" bash "$advance" \
+sha_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-sha" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 sha_rc=$?
 set -e
@@ -129,7 +134,7 @@ esac
 EOF
 chmod +x "$tmp/gh-empty"
 set +e
-empty_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-empty" bash "$advance" \
+empty_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-empty" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 empty_rc=$?
 set -e
@@ -160,7 +165,7 @@ esac
 EOF
 chmod +x "$tmp/gh-edit-nonzero"
 set +e
-edit_nonzero_output=$(EDIT_STATE="$tmp/edit-nonzero.state" PATH="$tmp:$PATH" \
+edit_nonzero_output=$(cd -- "$repo" && EDIT_STATE="$tmp/edit-nonzero.state" PATH="$tmp:$PATH" \
     CHAIN_ADVANCE_GH="$tmp/gh-edit-nonzero" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 edit_nonzero_rc=$?
@@ -170,7 +175,7 @@ assert_eq '2' "$edit_nonzero_rc" \
 assert_contains "$edit_nonzero_output" 'applied base=main' \
     'ambiguous edit failure reports the live applied base'
 set +e
-edit_noop_output=$(EDIT_APPLIES=false EDIT_STATE="$tmp/edit-noop.state" PATH="$tmp:$PATH" \
+edit_noop_output=$(cd -- "$repo" && EDIT_APPLIES=false EDIT_STATE="$tmp/edit-noop.state" PATH="$tmp:$PATH" \
     CHAIN_ADVANCE_GH="$tmp/gh-edit-nonzero" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 edit_noop_rc=$?
@@ -196,7 +201,7 @@ esac
 EOF
 chmod +x "$tmp/gh-stale"
 set +e
-stale_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-stale" bash "$advance" \
+stale_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-stale" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 stale_rc=$?
 set -e
@@ -220,7 +225,7 @@ esac
 EOF
 chmod +x "$tmp/gh-pending"
 set +e
-pending_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pending" bash "$advance" \
+pending_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pending" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 pending_rc=$?
 set -e
@@ -245,7 +250,7 @@ esac
 EOF
 chmod +x "$tmp/gh-old-approval"
 set +e
-approval_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-approval" bash "$advance" \
+approval_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-approval" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 approval_rc=$?
 set -e
@@ -268,7 +273,7 @@ esac
 EOF
 chmod +x "$tmp/gh-no-link"
 set +e
-link_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-no-link" bash "$advance" \
+link_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-no-link" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 link_rc=$?
 set -e
@@ -297,7 +302,7 @@ esac
 EOF
 chmod +x "$tmp/gh-prestale"
 set +e
-prestale_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-prestale" bash "$advance" \
+prestale_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-prestale" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 prestale_rc=$?
 set -e
@@ -324,7 +329,7 @@ esac
 EOF
 chmod +x "$tmp/gh-old-check-start"
 set +e
-old_check_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-check-start" \
+old_check_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-check-start" \
     bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
 old_check_rc=$?
 set -e
@@ -349,7 +354,7 @@ esac
 EOF
 chmod +x "$tmp/gh-boundary-after-edit"
 set +e
-boundary_output=$(EDIT_STATE="$tmp/boundary-after-edit.state" PATH="$tmp:$PATH" \
+boundary_output=$(cd -- "$repo" && EDIT_STATE="$tmp/boundary-after-edit.state" PATH="$tmp:$PATH" \
     CHAIN_ADVANCE_GH="$tmp/gh-boundary-after-edit" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 boundary_rc=$?
@@ -374,7 +379,7 @@ esac
 EOF
 chmod +x "$tmp/gh-preapproval"
 set +e
-preapproval_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-preapproval" bash "$advance" \
+preapproval_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-preapproval" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 preapproval_rc=$?
 set -e
@@ -402,7 +407,7 @@ esac
 EOF
 chmod +x "$tmp/gh-splitapproval"
 set +e
-split_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-splitapproval" bash "$advance" \
+split_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-splitapproval" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 split_rc=$?
 set -e
@@ -434,7 +439,7 @@ esac
 EOF
 chmod +x "$tmp/gh-pr440"
 set +e
-pr440_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pr440" bash "$advance" \
+pr440_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pr440" bash "$advance" \
     --retarget --repo owner/repo --pr 440 --base main 2>&1)
 pr440_rc=$?
 set -e
@@ -461,7 +466,7 @@ esac
 EOF
 chmod +x "$tmp/gh-unreadable-reviews"
 set +e
-unreadable_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-unreadable-reviews" bash "$advance" \
+unreadable_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-unreadable-reviews" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 unreadable_rc=$?
 set -e
@@ -496,11 +501,11 @@ esac
 EOF
 chmod +x "$tmp/gh-idempotent"
 set +e
-first_idempotent=$(EDIT_STATE="$tmp/idempotent.state" GH_LOG="$tmp/idempotent.log" \
+first_idempotent=$(cd -- "$repo" && EDIT_STATE="$tmp/idempotent.state" GH_LOG="$tmp/idempotent.log" \
     PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-idempotent" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 first_idempotent_rc=$?
-second_idempotent=$(EDIT_STATE="$tmp/idempotent.state" GH_LOG="$tmp/idempotent.log" \
+second_idempotent=$(cd -- "$repo" && EDIT_STATE="$tmp/idempotent.state" GH_LOG="$tmp/idempotent.log" \
     PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-idempotent" bash "$advance" \
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 second_idempotent_rc=$?
