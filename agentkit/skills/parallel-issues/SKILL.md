@@ -785,18 +785,16 @@ printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$
 printf '%s\n' "$wait_bound"
 ```
 
-Composer publishes once; root installs and verifies its hashed `uncoveredVerification` candidate before spawn. Store reports; `classification=majority-uncovered` is conspicuous. Coverage never blocks.
+Composer publishes once; root stores `uncoveredVerification`; `classification=majority-uncovered`. Coverage never blocks.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
-Act on each lead result as soon as it arrives:
+Act on each result:
 
-- **Cross-write check first** → run the root-checkout Collect check against the immutable
-  dispatch snapshot before reading the worker's handback as a clean result. Keep the helper's
-  incident line, mtime-window attribution, branch byte-compare, and explicit duplicate/divergent
-  disposition with that worker's evidence. A dirty path in a dispatched write set is never an
-  "unrelated local change" until the check proves it predates dispatch or names a divergent
-  disposition.
+- **Cross-write check first** → run root-checkout Collect against the immutable dispatch snapshot
+  before reading handback. Keep incident line, mtime-window attribution, branch byte-compare, and
+  duplicate/divergent disposition with evidence. A dirty path is never an "unrelated local change"
+  until the check proves it predates dispatch or is divergent.
 
 - **Completion report (branch + pushed SHA)** → the root reviews the pushed diff ("Root
   review and draft PR after a worker push"), opens the draft PR, moves the issue to
@@ -807,6 +805,9 @@ Act on each lead result as soon as it arrives:
 - **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, clear the blocker. For `write-set`, the root must widen the fence and recheck every active worker; only after the blocker clears, do one `collaboration.followup_task` and record `auto_redrive_attempted[issue]`. If the same lead is unavailable, use a fresh lead with preserved state and the exact resume command `followup_task(<same lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
   A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request that
   drives that recheck; otherwise report the preserved worktree with the blocker evidence.
+- **needs-authorization** → final non-blank line ending `?`/`reply yes` => this class. Under
+  `--yolo`, exactly once, `followup_task` resumes the same worker with stored grant; log
+  `auto_resume_authorization=needs-authorization attempt=1`; park repeats.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
