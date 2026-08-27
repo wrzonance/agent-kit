@@ -1202,4 +1202,19 @@ assert_not_contains "$retarget_output" 'sha=oldsha1' \
 assert_contains "$(cat "$retarget_err")" 'head advanced mid-wait' \
     'a mid-wait head advance is named in the diagnostic'
 
+# --full artifacts are evidence, not ordinary world-readable report files.
+# The output directory and every published artifact must remain owner-private
+# even when a caller's ambient umask would otherwise expose them.
+full_output_dir="$tmp/full-output"
+mkdir -- "$full_output_dir"
+chmod 700 -- "$full_output_dir"
+full_output=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --full --no-cache --tmpdir "$full_output_dir")
+assert_contains "$full_output" "saved: $full_output_dir/pr_14_" \
+    '--full reports the private evidence artifact location'
+for artifact in reviews comments issue_comments threads code_quality_comments; do
+    assert_eq '600' "$(stat -c %a -- "$full_output_dir/pr_14_${artifact}.json" 2>/dev/null || stat -f %Lp -- "$full_output_dir/pr_14_${artifact}.json")" \
+        "--full $artifact artifact is owner-private"
+done
+
 finish

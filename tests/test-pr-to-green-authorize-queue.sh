@@ -80,6 +80,22 @@ esac
 EOF
 chmod +x "$tmp/gh"
 
+cat >"$tmp/provider-config" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case ${PROVIDER_MODE:-coderabbit} in
+    coderabbit) printf '%s\n' 'provider=coderabbit mode=triggerable source=declared' ;;
+    observe) printf '%s\n' 'provider=github-code-quality mode=observe-only source=declared' ;;
+    none) printf '%s\n' 'provider=none mode=disabled source=declared' ;;
+    pair)
+        printf '%s\n' 'provider=coderabbit mode=triggerable source=declared'
+        printf '%s\n' 'provider=other mode=observe-only source=declared'
+        ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod +x "$tmp/provider-config"
+
 run_authorize() {
     run_authorize_provider coderabbit:trigger:capability-default
 }
@@ -89,10 +105,20 @@ run_authorize_provider() {
     shift || true
     AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
         AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+        AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
         bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
         --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
         --confirmed-queue-file "$confirmed" \
         --provider "$provider" "$@"
+}
+
+run_authorize_no_providers() {
+    AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+        AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+        AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
+        bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+        --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
+        --confirmed-queue-file "$confirmed" --no-providers
 }
 
 write_confirmed() {
@@ -258,6 +284,7 @@ cp "$tmp/reordered-providers.json" "$confirmed"
 reordered_provider_head_drift_rc=0
 AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" PROVIDER_MODE=pair \
     QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
@@ -300,6 +327,7 @@ artifact_exists=false
 assert_eq false "$artifact_exists" 'missing explicit consent produces no artifact'
 
 auto_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --ready-transition --auto-merge --merge-method squash --delete-branch \
     --confirmed-queue-file "$confirmed" \
@@ -310,6 +338,29 @@ assert_eq '["autoMerge","deleteBranch","mergeMethod","providers","queue","readyT
 assert_eq 'true:squash:true' \
     "$(jq -r '[.autoMerge,.mergeMethod,.deleteBranch] | join(":")' "$auth")" \
     'explicit auto-merge choices are recorded unchanged'
+
+# --- Issue #509: authorization must reject a trigger for an observe-only
+# provider before writing a replacement artifact, and name both sets. ---
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes github-code-quality:trigger:capability-default
+before_observe_plan_failure=$(sha256sum "$auth")
+observe_plan_rc=0
+PROVIDER_MODE=observe run_authorize_provider github-code-quality:trigger:capability-default \
+    >"$tmp/observe-plan.out" 2>"$tmp/observe-plan.err" || observe_plan_rc=$?
+assert_eq '1' "$observe_plan_rc" \
+    'a trigger authorization for an observe-only provider fails at authorization time'
+assert_contains "$(cat "$tmp/observe-plan.err")" \
+    'authorized={github-code-quality:trigger} trigger-capable={}' \
+    'the capability mismatch names authorized and trigger-capable sets'
+assert_eq "$before_observe_plan_failure" "$(sha256sum "$auth")" \
+    'a capability mismatch preserves the prior authorization artifact'
+
+# An explicit no-provider confirmation remains valid for an effective disabled
+# plan, preserving the documented --no-providers path.
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes __NONE__
+none_out=$(PROVIDER_MODE=none run_authorize_no_providers)
+assert_eq "authorization=$auth queue=2" "$none_out" \
+    'an effective disabled plan still authorizes through --no-providers'
 
 before_failure=$(sha256sum "$auth")
 queue_failure_rc=0
@@ -466,8 +517,9 @@ assert_eq "authorization=$auth queue=2" "$disabled_retarget_out" \
     'a disabled provider authorizes a stacked retarget without a synthetic approval requirement'
 
 write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes __NONE__
-none_retarget_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+none_retarget_out=$(PROVIDER_MODE=none AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
     QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
@@ -639,6 +691,7 @@ printf 'retargeted pr #15 base=main head=feat/next sha=ddddddddddddddddddddddddd
 : >"$tmp/queue.log"; : >"$tmp/gh.log"
 combined_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
     QUEUE_OMIT_14=1 QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
     QUEUE_STATE_15=RUNNABLE QUEUE_INCLUDE_16=1 QUEUE_SHA_16=7777777777777777777777777777777777777777 \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \

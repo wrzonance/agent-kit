@@ -7,6 +7,7 @@ readonly PROGRAM=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 QUEUE_HELPER=${AUTHORIZE_QUEUE_HELPER:-$SCRIPT_DIR/pr-queue.sh}
+PROVIDER_CONFIG=${AUTHORIZE_QUEUE_PROVIDER_CONFIG:-$SCRIPT_DIR/../../.shared/scripts/review-provider-config.sh}
 GH_BIN=${AUTHORIZE_QUEUE_GH:-gh}
 
 repo=''
@@ -193,6 +194,7 @@ if ((${#retarget_proof_file[@]})); then
 fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; authorization evidence unavailable'
 [[ -x $QUEUE_HELPER ]] || die "queue helper is not executable: $QUEUE_HELPER"
+[[ -x $PROVIDER_CONFIG ]] || die "provider resolver is not executable: $PROVIDER_CONFIG"
 if ((allow_mechanical_advance)); then
     command -v "$GH_BIN" >/dev/null 2>&1 ||
         die "required tool not found: $GH_BIN"
@@ -225,6 +227,76 @@ if ((no_providers == 0)); then
     done
 fi
 jq -s '.' "$work_dir/providers.jsonl" >"$work_dir/providers.json"
+
+# Resolve the same declared capability plan used by the transition helper before
+# reading the live queue. Every declared provider must have a compatible
+# per-run action, while the synthetic disabled `none` plan is represented by
+# the explicit --no-providers choice.
+declare -a plan_providers=()
+declare -A plan_modes=()
+plan_output=$("$PROVIDER_CONFIG" --repo-root "$repo_root") ||
+    die 'provider capability resolution failed'
+[[ -n $plan_output ]] || die 'provider capability resolver returned an empty plan'
+while IFS= read -r line; do
+    if [[ $line =~ ^provider=([a-z0-9-]+)[[:space:]]mode=([a-z-]+)[[:space:]]source=([a-z]+)$ ]]; then
+        plan_provider=${BASH_REMATCH[1]}
+        plan_mode=${BASH_REMATCH[2]}
+    else
+        die 'provider capability resolver returned a malformed record'
+    fi
+    [[ -z ${plan_modes[$plan_provider]+set} ]] ||
+        die "provider capability plan duplicates $plan_provider"
+    case $plan_mode in triggerable|observe-only|none|disabled) ;;
+        *) die "provider capability plan contains unsupported capability: $plan_provider:$plan_mode" ;;
+    esac
+    plan_providers+=("$plan_provider")
+    plan_modes[$plan_provider]=$plan_mode
+done <<< "$plan_output"
+
+declare -A requested_actions=()
+if ((no_providers == 0)); then
+    while IFS=$'\t' read -r requested_name requested_action; do
+        requested_actions[$requested_name]=$requested_action
+    done < <(jq -r '.[] | [.name, .action] | @tsv' "$work_dir/providers.json")
+fi
+authorized_display=$(jq -r '.[] | [.name, .action] | join(":")' "$work_dir/providers.json" |
+    sort | paste -sd, -)
+triggerable_display=''
+for plan_provider in "${plan_providers[@]}"; do
+    [[ ${plan_modes[$plan_provider]} == triggerable ]] || continue
+    triggerable_display+="${triggerable_display:+,}$plan_provider"
+done
+authorization_mismatch=0
+for plan_provider in "${plan_providers[@]}"; do
+    plan_mode=${plan_modes[$plan_provider]}
+    requested_action=${requested_actions[$plan_provider]-}
+    # `none:disabled` is the resolver's effective plan for --no-providers;
+    # there is no provider decision to record for that synthetic entry.
+    [[ $plan_provider == none && $plan_mode == disabled && -z $requested_action ]] && continue
+    if [[ -z $requested_action ]]; then
+        # Observe-only providers never mutate the forge, so omitting their
+        # optional authorization keeps the mixed-plan observation path intact.
+        [[ $plan_mode == observe-only ]] && continue
+        authorization_mismatch=1
+        continue
+    fi
+    case $plan_mode in
+        triggerable)
+            [[ $requested_action == trigger || $requested_action == observe ||
+               $requested_action == disabled ]] || authorization_mismatch=1
+            ;;
+        observe-only|none|disabled)
+            [[ $requested_action == observe || $requested_action == disabled ]] ||
+                authorization_mismatch=1
+            ;;
+    esac
+done
+for requested_name in "${!requested_actions[@]}"; do
+    [[ -n ${plan_modes[$requested_name]+set} ]] || authorization_mismatch=1
+done
+if ((authorization_mismatch)); then
+    die "authorization provider set does not match capability plan: authorized={${authorized_display:-}} trigger-capable={${triggerable_display:-}}"
+fi
 
 queue_args=(--repo "$repo" --repo-root "$repo_root" --format json)
 [[ -z $merge_plan ]] || queue_args+=(--merge-plan "$merge_plan")

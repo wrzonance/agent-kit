@@ -737,15 +737,20 @@ append_ledger_entry() {
         return 0
     }
     chmod 600 -- "$entry_file" 2>/dev/null || true
+    local covered_heads='[]'
+    covered_heads=$(jq -c -s \
+        '[.[] | select(.verdict == "fixed") | .sha | split(",")[]] | unique' \
+        "$FINDINGS_FILE" 2>/dev/null) || covered_heads='[]'
     if ! jq -cn \
         --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
         --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
         --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
+        --argjson covered_heads "$covered_heads" \
         --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
          + (if $harness == "" then {} else {harness:$harness} end)
-         + {head_sha:$head}
+         + {head_sha:$head, covered_heads:([$head] + $covered_heads | unique)}
          + (if $diff_payload == "" then {} else {diff_payload:$diff_payload} end)
          + {counts:{p1:$p1, p2:$p2}, reviewed_at:$reviewed_at}' >"$entry_file" 2>/dev/null; then
         printf '%s: could not encode a ledger entry; ledger entry not recorded\n' "$PROGNAME" >&2
