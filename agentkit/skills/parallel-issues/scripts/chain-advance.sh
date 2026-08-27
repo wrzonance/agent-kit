@@ -142,7 +142,7 @@ iso_to_epoch() {
     local value=$1 epoch
     [[ -n $value && $value != null ]] || return 1
     epoch=$(date -u -d "$value" +%s 2> /dev/null) || return 1
-    [[ $epoch =~ ^[0-9]+$ ]] || return 1
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || return 1
     printf '%s\n' "$epoch"
 }
 
@@ -153,10 +153,12 @@ timeline_boundary() {
     local timeline event_time epoch
     timeline=$("$GH_BIN" api --paginate "repos/$REPO/issues/$PR/timeline" 2>/dev/null) || return 1
     event_time=$(jq -r --arg base "$BASE" '
+        def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .[]?
           | select((.event // "") == "base_ref_changed")
-          | select((.base_ref // .baseRefName // .base_ref_name // "") == $base)
-          | (.created_at // .createdAt // "")
+          | ([.base_ref, .baseRefName, .base_ref_name] | first_nonempty) as $event_base
+          | select($event_base == "" or $event_base == $base)
+          | ([.created_at, .createdAt] | first_nonempty)
           | select(length > 0)
         ] | last // empty
     ' <<<"$timeline") || return 1
@@ -165,36 +167,63 @@ timeline_boundary() {
     printf '%s\n' "$epoch"
 }
 
+path_has_symlink() {
+    local path=$1 current=/ component
+    local -a components
+    [[ $path = /* ]] || return 1
+    IFS=/ read -r -a components <<<"${path#/}"
+    for component in "${components[@]}"; do
+        [[ -n $component && $component != . && $component != .. ]] || return 1
+        current+="/$component"
+        [[ ! -L $current ]] || return 1
+    done
+}
+
 boundary_file() {
-    local root safe_base
-    root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+    local git_dir safe_base
+    git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    [[ $git_dir = /* && -d $git_dir ]] || return 1
+    path_has_symlink "$git_dir" || return 1
     safe_base=${BASE//\//-}
-    printf '%s/.agent/evidence/chain-advance-pr-%s-base-%s.json\n' "$root" "$PR" "$safe_base"
+    printf '%s/chain-advance-evidence/chain-advance-pr-%s-base-%s.json\n' \
+        "$git_dir" "$PR" "$safe_base"
 }
 
 persist_boundary() {
     local file dir tmp
     file=$(boundary_file) || return 1
+    path_has_symlink "$file" || return 1
     dir=${file%/*}
-    [[ ! -e $dir || ( -d $dir && ! -L $dir ) ]] || return 1
-    mkdir -p -- "$dir" || return 1
+    if [[ -e $dir ]]; then
+        [[ -d $dir && ! -L $dir ]] || return 1
+    else
+        mkdir -p -- "$dir" || return 1
+    fi
+    path_has_symlink "$file" || return 1
     [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 1
-    tmp=$file.tmp.$$
-    jq -n --argjson pr "$PR" --arg base "$BASE" --arg head "$1" \
-        --argjson boundary "$2" '{pr:$pr,base:$base,headSha:$head,boundaryEpoch:$boundary}' >"$tmp" || return 1
-    chmod 600 -- "$tmp" || return 1
-    mv -f -- "$tmp" "$file" || return 1
+    tmp=$(mktemp "$dir/.chain-advance-boundary.XXXXXX") || return 1
+    if ! jq -n --argjson pr "$PR" --arg base "$BASE" --arg head "$1" \
+        --argjson boundary "$2" '{pr:$pr,base:$base,headSha:$head,boundaryEpoch:$boundary}' >"$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    if ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$file"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
 }
 
 persisted_boundary() {
     local file value
     file=$(boundary_file) || return 1
+    path_has_symlink "$file" || return 1
     [[ -f $file && ! -L $file ]] || return 1
     value=$(jq -r --argjson pr "$PR" --arg base "$BASE" --arg head "$1" '
         select(.pr == $pr and .base == $base and .headSha == $head)
-        | .boundaryEpoch // empty
+        | .boundaryEpoch
+        | select(type == "number" and floor == . and . > 0)
     ' "$file" 2>/dev/null) || return 1
-    [[ $value =~ ^[0-9]+$ ]] || return 1
+    [[ $value =~ ^[1-9][0-9]*$ ]] || return 1
     printf '%s\n' "$value"
 }
 
@@ -203,6 +232,9 @@ boundary_for() {
     if boundary=$(timeline_boundary); then
         BOUNDARY_SOURCE=timeline
         BOUNDARY_EPOCH=$boundary
+        # Keep persistence fail-closed: a timeline value can authorize this
+        # proof, but silently dropping its retry provenance would make a later
+        # run unable to distinguish a fresh boundary from an untrusted cache.
         persist_boundary "$head_sha" "$boundary" ||
             die 'could not persist the retarget boundary evidence'
     elif boundary=$(persisted_boundary "$head_sha"); then
@@ -213,22 +245,19 @@ boundary_for() {
     fi
 }
 
-# `gh pr edit --base` leaves headRefOid untouched, and both the check rollup and
-# provider approvals hang off the head commit. A check with explicit current-head
-# evidence therefore remains valid across the mechanical base edit; otherwise
-# timestamped evidence must postdate the forge timeline boundary. The workflow
-# does not re-run on a base change either (`pull_request` defaults to
-# opened/synchronize/reopened), so missing provenance still fails closed.
+# `gh pr edit --base` leaves headRefOid untouched, and the check rollup may still
+# be attached to that same head commit. Its timestamp must nevertheless postdate
+# the forge timeline boundary: the workflow does not re-run on a base change
+# (`pull_request` defaults to opened/synchronize/reopened), so a current-head
+# digest alone cannot establish post-retarget CI provenance.
 check_ci_fresh() {
-    local pr_json=$1 boundary=$2 head_sha=$3 stale
-    stale=$(jq -r --argjson boundary "$boundary" --arg head "$head_sha" '
+    local pr_json=$1 boundary=$2 stale
+    stale=$(jq -r --argjson boundary "$boundary" '
+        def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .statusCheckRollup[]?
-          | (.headSha // .head_sha // .sha // .commitSha
-             // (.commit.oid // "") // .workflowRun.headSha // "") as $check_head
-          | (.startedAt // .createdAt // "") as $ts
-          | (.name // .context // "check") as $label
-          | if $check_head == $head and ($check_head | length) > 0 then empty
-            elif ($ts | length) == 0 then $label
+          | ([.startedAt, .started_at, .createdAt, .created_at] | first_nonempty) as $ts
+          | ([.name, .context] | first_nonempty) as $label
+          | if ($ts | length) == 0 then $label
             else ($ts | fromdateiso8601) as $epoch
                  | if $epoch <= $boundary then $label else empty end
             end
@@ -368,7 +397,7 @@ retarget() {
     check_ancestry "$head_sha"
     ci_counts=$(check_ci "$pr_json")
     IFS=$'\t' read -r total pass <<<"$ci_counts"
-    check_ci_fresh "$pr_json" "$BOUNDARY_EPOCH" "$head_sha"
+    check_ci_fresh "$pr_json" "$BOUNDARY_EPOCH"
     approval_token=$(describe_approval "$pr_json" "$head_sha" "$BOUNDARY_EPOCH")
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'

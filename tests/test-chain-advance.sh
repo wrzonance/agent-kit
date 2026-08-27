@@ -519,4 +519,143 @@ assert_eq '1' "$(grep -c 'pr edit 7 --repo owner/repo --base main' "$tmp/idempot
 assert_not_contains "$idempotent_log" '/rate_limit' \
     'timeline-backed retarget never stamps the boundary from the current clock'
 
+# --- REST timeline events may omit the changed ref -------------------------
+# The REST representation of a base_ref_changed event carries the event kind
+# and timestamp, but not always the ref. A ref-less event is still authoritative
+# for this retarget; when a ref is present, timeline_boundary must continue to
+# require the requested base.
+cat >"$tmp/gh-rest-ref-less" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *"timeline"*)
+        # This mirrors the REST payload: no base_ref/base_ref_name field.
+        printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z","performed_via_github_app":null}]'
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-rest-ref-less"
+set +e
+ref_less_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-rest-ref-less" \
+    bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
+ref_less_rc=$?
+set -e
+assert_eq '0' "$ref_less_rc" 'a REST base_ref_changed event without a ref proves the retarget boundary'
+assert_contains "$ref_less_output" 'boundarySource=timeline' \
+    'a ref-less REST event is accepted as the authoritative boundary'
+metadata_evidence=$(git -C "$repo" rev-parse --path-format=absolute --git-path chain-advance-evidence)/chain-advance-pr-7-base-main.json
+assert_eq 'yes' "$( [[ -f $metadata_evidence && ! -L $metadata_evidence ]] && printf yes || printf no )" \
+    'retarget evidence is persisted as a regular file under Git metadata'
+assert_eq 'no' "$( [[ -e $repo/.agent/evidence/chain-advance-pr-7-base-main.json ]] && printf yes || printf no )" \
+    'successful retarget evidence is not written beneath the caller-controlled worktree'
+
+# --- current-head checks still require a post-retarget timestamp ------------
+cat >"$tmp/gh-current-head-stale" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","headSha":"1111111111111111111111111111111111111111","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-current-head-stale"
+set +e
+current_head_stale_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-current-head-stale" \
+    bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
+current_head_stale_rc=$?
+set -e
+assert_eq '1' "$current_head_stale_rc" \
+    'a check tied to the current head is stale when its timestamp predates retarget'
+assert_contains "$current_head_stale_output" 'predates the retarget' \
+    'current-head stale CI reports its timestamp provenance'
+
+# Empty timestamp fields must not mask a later populated fallback field.
+cat >"$tmp/gh-empty-start-fresh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"","createdAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-empty-start-fresh"
+set +e
+empty_start_fresh_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-empty-start-fresh" \
+    bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
+empty_start_fresh_rc=$?
+set -e
+assert_eq '0' "$empty_start_fresh_rc" \
+    'a later populated CI timestamp remains fresh when an earlier field is empty'
+assert_contains "$empty_start_fresh_output" 'retargeted pr #7' \
+    'fresh fallback timestamp permits the retarget proof to complete'
+
+# --- worktree-controlled .agent evidence cannot substitute for metadata ------
+mkdir -p "$repo/.agent/evidence"
+cat >"$repo/.agent/evidence/chain-advance-pr-8-base-main.json" <<'EOF'
+{"pr":8,"base":"main","headSha":"1111111111111111111111111111111111111111","boundaryEpoch":4102444800}
+EOF
+# A zero epoch is not a valid forge timestamp and cannot be used as retry
+# provenance, even when it is placed under Git metadata.
+metadata_zero=$(git -C "$repo" rev-parse --path-format=absolute --git-path chain-advance-evidence)/chain-advance-pr-8-base-main.json
+mkdir -p "${metadata_zero%/*}"
+printf '%s\n' '{"pr":8,"base":"main","headSha":"1111111111111111111111111111111111111111","boundaryEpoch":0}' >"$metadata_zero"
+# Even if an attacker commits the worktree-controlled evidence, it remains
+# outside Git's metadata and must not become a persisted boundary.
+git -C "$repo" add -f .agent/evidence/chain-advance-pr-8-base-main.json
+git -C "$repo" commit -qm attacker-evidence
+cat >"$tmp/gh-no-timeline" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":8,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z"}],"reviews":[],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) exit 23 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-no-timeline"
+set +e
+worktree_evidence_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-no-timeline" \
+    bash "$advance" --retarget --repo owner/repo --pr 8 --base main 2>&1)
+worktree_evidence_rc=$?
+set -e
+assert_eq '1' "$worktree_evidence_rc" \
+    'a committed or worktree .agent evidence file cannot replace forge provenance'
+assert_contains "$worktree_evidence_output" 'evidence provenance is unavailable' \
+    'untrusted worktree evidence is ignored when the timeline is unavailable'
+
+# Existing metadata evidence paths are also a trust boundary: a symlink there
+# must not redirect persistence into an attacker-controlled directory.
+metadata_dir=${metadata_evidence%/*}
+mv -- "$metadata_dir" "$tmp/metadata-backup"
+ln -s -- "$tmp/attacker-evidence" "$metadata_dir"
+set +e
+metadata_symlink_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-rest-ref-less" \
+    bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
+metadata_symlink_rc=$?
+set -e
+assert_eq '1' "$metadata_symlink_rc" \
+    'metadata evidence persistence fails closed at a symlink boundary'
+assert_contains "$metadata_symlink_output" 'could not persist the retarget boundary evidence' \
+    'symlinked metadata evidence names the persistence failure'
+rm -- "$metadata_dir"
+mv -- "$tmp/metadata-backup" "$metadata_dir"
+
 finish
