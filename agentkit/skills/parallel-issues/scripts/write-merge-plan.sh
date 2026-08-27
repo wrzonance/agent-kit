@@ -147,10 +147,8 @@ glob_regex() {
                     ((index++))
                 fi
                 ;;
-            [.^$'+'\'|'('')'])
-                    # shellcheck disable=SC1003
-                    regex+='\'
-                regex+=$character
+            '.'|'^'|'$'|'+'|'|'|'('|')'|'{'|'}')
+                regex+="\\$character"
                 ((index++))
                 ;;
             *) regex+=$character; ((index++)) ;;
