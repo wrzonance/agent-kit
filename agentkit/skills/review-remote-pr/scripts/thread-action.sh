@@ -139,8 +139,26 @@ original_login=$(jq -r '.comments.nodes[0].author.login // "" | ascii_downcase' 
     "$work_dir/target.json")
 original_type=$(jq -r '.comments.nodes[0].author.__typename // .comments.nodes[0].author.type // ""' \
     "$work_dir/target.json")
+
+# A marked anchor can be opened by the authenticated workflow account instead
+# of the review provider. Fetch that identity before classifying the opener so
+# its marker can carry the provider lane into the settlement path.
+workflow_login=$("$GH_BIN" api user 2>"$work_dir/api.err" | jq -er '.login | select(type == "string" and length > 0)' 2>/dev/null) ||
+    die "authenticated workflow identity unavailable: $(head -n 1 "$work_dir/api.err" 2>/dev/null)"
+
+marker_provider=$(jq -r --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
+  .comments.nodes[0] as $comment |
+  if (($comment.body // "") | contains($marker)) and
+     ((($comment.author.login // "") | ascii_downcase) == ($login | ascii_downcase)) then
+    try (($comment.body | capture("provider=(?<provider>[A-Za-z0-9_-]+)")).provider) catch ""
+  else ""
+  end
+' "$work_dir/target.json") || die 'could not inspect agent marker provider'
+
 if provider=$(review_provider_from_login "$original_login" 2>/dev/null); then
     :
+elif [[ -n $marker_provider ]] && review_provider_mode "$marker_provider" >/dev/null 2>&1; then
+    provider=$marker_provider
 elif [[ $original_login == *'[bot]' || $original_type == Bot ]]; then
     provider=generic
 else
@@ -150,21 +168,23 @@ fi
 # An agent marker identifies only that individual comment -- and only when
 # posted by the authenticated workflow account. A human quoting the marker
 # does not get to exempt their own comment from the human-touched gate.
-workflow_login=$("$GH_BIN" api user 2>"$work_dir/api.err" | jq -er '.login | select(type == "string" and length > 0)' 2>/dev/null) ||
-    die "authenticated workflow identity unavailable: $(head -n 1 "$work_dir/api.err" 2>/dev/null)"
-
-human_count=$(jq -r --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
+human_comments=$(jq -c --arg marker "$AGENT_MARKER" --arg login "$workflow_login" '
   [.comments.nodes[]? | select(
     ((((.body // "") | contains($marker)) and
       (((.author.login // "") | ascii_downcase) == ($login | ascii_downcase))) | not) and
     (((.author.login // "") | ascii_downcase) as $c_login |
-      (($c_login == "coderabbitai") or ($c_login == "coderabbitai[bot]") or
+       (($c_login == "coderabbitai") or ($c_login == "coderabbitai[bot]") or
        ($c_login == "github-code-quality") or ($c_login == "github-code-quality[bot]") or
        (($c_login | test("\\[bot\\]$"))) or
        ((.author.__typename // .author.type // "") == "Bot")) | not)
-  )] | length
+  )]
 ' "$work_dir/target.json") || die 'could not classify thread authors'
-((human_count == 0)) || die 'target thread is human-touched; refusing automated handling'
+human_count=$(jq 'length' <<<"$human_comments")
+if ((human_count > 0)); then
+    human_comment_id=$(jq -r '.[0].databaseId // "unknown"' <<<"$human_comments")
+    human_comment_login=$(jq -r '.[0].author.login // "unknown"' <<<"$human_comments")
+    die "target thread is human-touched; comment id=$human_comment_id login=$human_comment_login"
+fi
 [[ $provider != human ]] || die 'target thread is human-authored'
 
 resolve_thread() {

@@ -48,6 +48,14 @@ cat >"$artifact" <<'EOF'
       {"databaseId":811,"body":"bot finding","author":{"login":"coderabbitai[bot]","__typename":"Bot"}},
       {"databaseId":812,"body":"<!-- review-remote-pr:agent-reply disposition=fixed provider=coderabbit -->\nspoofed by a human","author":{"login":"reviewer-jane","__typename":"User"}}
     ]}},
+    {"id":"PRRT_operator_anchor","isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[
+      {"databaseId":1411,"body":"<!-- review-remote-pr:agent-reply disposition=fixed provider=coderabbit -->\nanchored agent reply","author":{"login":"workflow-account","__typename":"User"}},
+      {"databaseId":1412,"body":"Verified. This is resolved.","author":{"login":"coderabbitai[bot]","__typename":"Bot"}}
+    ]}},
+    {"id":"PRRT_operator_human","isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[
+      {"databaseId":1511,"body":"<!-- review-remote-pr:agent-reply disposition=fixed provider=coderabbit -->\nanchored agent reply","author":{"login":"workflow-account","__typename":"User"}},
+      {"databaseId":1512,"body":"I changed the request by hand.","author":{"login":"workflow-account","__typename":"User"}}
+    ]}},
     {"id":"PRRT_pushback_negated1","isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[
       {"databaseId":911,"body":"bot finding","author":{"login":"coderabbitai[bot]","__typename":"Bot"}},
       {"databaseId":912,"body":"<!-- review-remote-pr:agent-reply disposition=fixed provider=coderabbit -->\nfixed","author":{"login":"workflow-account","__typename":"User"}},
@@ -180,6 +188,25 @@ assert_rc 1 'a human comment containing the agent marker is not agent-lane (repl
     bash "$action" --pr 14 --repo owner/repo --threads-artifact "$artifact" \
     --thread-id PRRT_marker_spoof --disposition fixed --reasoning-file "$reason" --sha abc1234
 assert_eq '' "$(cat "$tmp/action.log")" 'spoofed-marker reply never posts'
+
+: >"$tmp/action.log"
+out=$(run_action --settle --thread-id PRRT_operator_anchor)
+assert_contains "$out" 'settlement=SETTLED' \
+    'an operator-authored marked anchor can settle after the provider replies'
+assert_eq 'resolve' "$(cat "$tmp/action.log")" \
+    'a marked operator anchor resolves only after provider acknowledgement'
+
+: >"$tmp/action.log"
+set +e
+err=$(run_action --settle --thread-id PRRT_operator_human 2>&1 >/dev/null)
+operator_human_rc=$?
+set -e
+assert_eq '1' "$operator_human_rc" \
+    'an unmarked operator comment keeps the thread human-touched'
+assert_contains "$err" 'comment id=1512 login=workflow-account' \
+    'human-touched refusal names the blocking comment id and login'
+assert_eq '' "$(cat "$tmp/action.log")" \
+    'an unmarked operator comment never resolves'
 
 : >"$tmp/action.log"
 set +e
