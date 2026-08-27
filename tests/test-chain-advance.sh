@@ -768,4 +768,91 @@ assert_contains "$metadata_symlink_output" 'could not persist the retarget bound
 rm -- "$metadata_dir"
 mv -- "$tmp/metadata-backup" "$metadata_dir"
 
+# --- PR #536 F1/F2: stale scan evidence drives refresh across retries -------
+# A skipped CodeQL check from before the retarget boundary is not post-retarget
+# evidence. The first invocation refreshes it, then rejects the unchanged
+# stale proof; a second invocation (with RETARGET_APPLIED reset) must make the
+# same refresh decision from the durable stale evidence rather than bypassing it.
+cat >"$tmp/gh-stale-scan" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":null,\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:00:00Z\"},{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}' ;;
+    *"actions/runs/42/rerun"*) : ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-stale-scan"
+: >"$tmp/stale-scan.log"
+set +e
+stale_first_out=$(EDIT_STATE="$tmp/stale-scan.state" GH_LOG="$tmp/stale-scan.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-stale-scan" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+stale_first_rc=$?
+stale_second_out=$(EDIT_STATE="$tmp/stale-scan.state" GH_LOG="$tmp/stale-scan.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-stale-scan" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+stale_second_rc=$?
+set -e
+assert_eq '2' "$stale_first_rc" 'pre-retarget skipped scan evidence blocks after refresh'
+assert_contains "$stale_first_out" 'CI evidence predates the retarget' \
+    'stale skipped scan names the missing post-boundary evidence'
+assert_eq '1' "$stale_second_rc" 'a retry remains blocked until post-boundary scan evidence exists'
+assert_contains "$stale_second_out" 'CI evidence predates the retarget' \
+    'retry reports the same stale scan proof failure'
+assert_eq '1' "$(grep -c 'pr edit 7 --repo owner/repo --base main' "$tmp/stale-scan.log")" \
+    'the stale-scan retry does not re-edit an already-retargeted PR'
+assert_eq '2' "$(grep -c 'actions/runs/42/rerun' "$tmp/stale-scan.log")" \
+    'durable stale evidence refreshes the scan on both invocations'
+
+# --- PR #536 F3: refresh diagnostics stay off the proof stdout --------------
+cat >"$tmp/gh-refresh-output" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":null,\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:05:00Z\"},{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL\\u001b[31m\\nInjected","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}' ;;
+    *"actions/runs/42/rerun"*) : ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-refresh-output"
+set +e
+refresh_output_rc=0
+EDIT_STATE="$tmp/refresh-output.state" GH_LOG="$tmp/refresh-output.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-output" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main \
+    1>"$tmp/refresh-output.stdout" 2>"$tmp/refresh-output.stderr" || refresh_output_rc=$?
+set -e
+refresh_stdout=$(<"$tmp/refresh-output.stdout")
+refresh_stderr=$(<"$tmp/refresh-output.stderr")
+assert_eq '0' "$refresh_output_rc" 'successful refresh preserves the retarget proof'
+assert_eq '1' "$(wc -l <"$tmp/refresh-output.stdout")" \
+    'retarget proof stdout remains exactly one line'
+assert_not_contains "$refresh_stdout" 'analysis-refresh=' \
+    'refresh diagnostics never appear on proof stdout'
+assert_contains "$refresh_stderr" 'analysis-refresh=rerun workflow=' \
+    'refresh diagnostics are available on stderr'
+assert_not_contains "$refresh_stderr" $'\033' \
+    'workflow names are sanitized before diagnostic output'
+
 finish
