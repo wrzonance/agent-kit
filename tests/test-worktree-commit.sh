@@ -244,7 +244,7 @@ git -C "$merge_repo" checkout -q feature
 git -C "$merge_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$merge_repo/change.txt"
 park_rc=0
-park_out=$(cd "$merge_repo" && "$script" --message 'fix: park merge content' --trailer "$TEST_TRAILER" \
+park_out=$(cd "$merge_repo" && "$script" --include-staged --message 'fix: park merge content' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || park_rc=$?
 assert_eq '3' "$park_rc" 'attended inherited protected content parks before commit'
 assert_contains "$park_out" '.github/workflows/ci.yml' 'park output names the inherited protected path'
@@ -256,7 +256,7 @@ before_yolo=$(git -C "$merge_repo" diff --cached --name-only)
 assert_contains "$before_yolo" '.github/workflows/ci.yml' \
     'the parked protected path remains staged before authorization'
 yolo_rc=0
-yolo_out=$(cd "$merge_repo" && "$script" --yolo --message 'fix: carry base merge' --trailer "$TEST_TRAILER" \
+yolo_out=$(cd "$merge_repo" && "$script" --include-staged --yolo --message 'fix: carry base merge' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || yolo_rc=$?
 assert_eq '0' "$yolo_rc" 'yolo named-base authorization permits verified inherited content'
 assert_contains "$yolo_out" 'committed' 'the authorized helper reports its commit'
@@ -292,7 +292,7 @@ git -C "$delete_repo" checkout -q feature
 git -C "$delete_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$delete_repo/change.txt"
 delete_rc=0
-delete_out=$(cd "$delete_repo" && "$script" --yolo --message 'fix: carry base deletion' --trailer "$TEST_TRAILER" \
+delete_out=$(cd "$delete_repo" && "$script" --include-staged --yolo --message 'fix: carry base deletion' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$delete_base" -- change.txt 2>&1) || delete_rc=$?
 assert_eq '0' "$delete_rc" 'named-base authorization permits an inherited protected deletion'
 assert_contains "$delete_out" 'committed' 'the deletion authorization reports its commit'
@@ -325,7 +325,7 @@ git -C "$quoted_repo" checkout -q feature
 git -C "$quoted_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$quoted_repo/change.txt"
 quoted_rc=0
-quoted_out=$(cd "$quoted_repo/subdir" && "$script" --message 'fix: park quoted protected path' --trailer "$TEST_TRAILER" \
+quoted_out=$(cd "$quoted_repo/subdir" && "$script" --include-staged --message 'fix: park quoted protected path' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$quoted_base" -- ../change.txt 2>&1) || quoted_rc=$?
 assert_eq '3' "$quoted_rc" 'quoted protected paths park from a subdirectory'
 assert_contains "$quoted_out" 'migrations/001_init.sql' \
@@ -385,7 +385,7 @@ assert_eq "$(git -C "$chained_repo" rev-parse feat/issue-predecessor)" "$derived
     'MERGE_HEAD alone names the exact predecessor commit, with no prior knowledge'
 printf 'more successor change\n' > "$chained_repo/successor2.txt"
 derive_rc=0
-derive_out=$(cd "$chained_repo" && "$script" --yolo --message 'fix: merge-down predecessor' --trailer "$TEST_TRAILER" \
+derive_out=$(cd "$chained_repo" && "$script" --include-staged --yolo --message 'fix: merge-down predecessor' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$derived_base" -- successor2.txt 2>&1) || derive_rc=$?
 assert_eq '0' "$derive_rc" \
     'a base derived from MERGE_HEAD alone authorizes the inherited protected content'
@@ -605,5 +605,22 @@ assert_contains "$e2e_commit_out" 'committed' \
 e2e_trailers=$(git -C "$e2e_repo" log -1 --format='%(trailers:only=true,unfold=true)')
 assert_eq 'Co-Authored-By: Claude claude-sonnet-5 <noreply@anthropic.com>' "$e2e_trailers" \
     'the documented worker path produces a non-empty, git-parseable trailer naming the worker model'
+
+# Exact mode must refuse a commit when an unrelated path was already staged.
+# This is the regression for root corrections accidentally sweeping a lead's
+# staged work into the correction commit.
+exact_repo="$tmp/exact-scope-repo"
+new_repo "$exact_repo"
+printf 'foreign\n' > "$exact_repo/foreign.txt"
+printf 'requested\n' > "$exact_repo/requested.txt"
+git -C "$exact_repo" add -- foreign.txt
+exact_rc=0
+exact_out=$(cd "$exact_repo" && "$script" --exact --message 'fix: exact scope' \
+    --trailer "$TEST_TRAILER" -- requested.txt 2>&1) || exact_rc=$?
+assert_eq '1' "$exact_rc" 'exact mode refuses a foreign staged path'
+assert_contains "$exact_out" 'foreign.txt' \
+    'exact-mode refusal names the foreign staged path'
+assert_eq '' "$(git -C "$exact_repo" log -1 --format=%s | grep -F 'exact scope' || true)" \
+    'exact-mode refusal does not create a commit'
 
 finish

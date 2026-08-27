@@ -41,6 +41,8 @@ source "$SCRIPT_DIR/lib/trunk-policy.sh"
 SUBJECT=""
 BODY=""
 ALLOW_EMPTY=0
+EXACT=1
+SCOPE_MODE=""
 ALLOW_BASE_INHERITED=0
 BASE_INHERITED_REF=""
 YOLO=0
@@ -53,7 +55,7 @@ LOCK_FD=""
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
+Usage: $PROGNAME [--exact|--include-staged] --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
                  [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
@@ -70,6 +72,10 @@ Options:
                       Omitted entirely, a "Co-Authored-By:" trailer is derived
                       from this repository's environment contract instead.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
+  --exact             Refuse staged paths outside FILE operands and mismatched
+                      committed file counts (the default scope).
+  --include-staged    Include existing staged paths, preserving legacy behavior.
+                      This explicitly opts out of exact scope checks.
   --allow-base-inherited BASE
                       Name the exact merge base whose protected paths may be
                       carried into this commit after byte-identity checks.
@@ -84,7 +90,8 @@ Behaviour:
     BEFORE staging anything; exits 2 naming the unwritable path if either fails.
   * Refuses to commit while HEAD is on main, master or trunk.
   * Runs 'git diff --cached --check' after staging and aborts on its findings.
-  * Anything already staged in the index is included in the commit.
+  * Exact mode refuses staged paths outside the FILE operands before staging.
+  * Include-staged mode includes anything already staged in the index.
   * Every trailer -- supplied or derived -- is validated before staging and
     verified against the commit's own parsed trailers after committing.
 
@@ -142,6 +149,18 @@ parse_args() {
                 ;;
             --trailer) need_value "$@"; TRAILERS+=("$2"); shift 2 ;;
             --allow-empty) ALLOW_EMPTY=1; shift ;;
+            --exact)
+                [[ $SCOPE_MODE != include ]] || die 1 "--exact and --include-staged are mutually exclusive"
+                EXACT=1
+                SCOPE_MODE=exact
+                shift
+                ;;
+            --include-staged)
+                [[ $SCOPE_MODE != exact ]] || die 1 "--exact and --include-staged are mutually exclusive"
+                EXACT=0
+                SCOPE_MODE=include
+                shift
+                ;;
             --allow-base-inherited)
                 need_value "$@"
                 (( ALLOW_BASE_INHERITED == 0 )) || die 1 "--allow-base-inherited given more than once"
@@ -250,6 +269,48 @@ validate_args() {
     if (( ${#FILES[@]} == 0 && ALLOW_EMPTY == 0 )); then
         die 1 "no FILE operands given; pass at least one file or --allow-empty"
     fi
+}
+
+# Exact mode is the safe default for root corrections: a pre-existing staged
+# path must be one of the explicit operands, otherwise the caller may commit a
+# worker's unrelated work. Resolve the scope with Git's own pathspec matcher so
+# directory operands and other supported pathspec forms remain usable.
+refuse_staged_outside_operands() {
+    local path
+    local -a staged_paths=() offending=()
+    local -A declared=()
+    (( EXACT == 1 )) || return 0
+
+    while IFS= read -r -d '' path; do
+        staged_paths+=("$path")
+    done < <(git diff --cached --name-only -z --diff-filter=ACDMRTUXB)
+    if (( ${#FILES[@]} > 0 )); then
+        while IFS= read -r -d '' path; do
+            declared["$path"]=1
+        done < <(git diff --cached --name-only -z --diff-filter=ACDMRTUXB -- "${FILES[@]}")
+    fi
+    for path in "${staged_paths[@]}"; do
+        [[ ${declared["$path"]+yes} == yes ]] || offending+=("$path")
+    done
+    ((${#offending[@]} == 0)) || {
+        printf '%s: --exact refuses staged paths outside FILE operands:\n' "$PROGNAME" >&2
+        printf '  %s\n' "${offending[@]}" >&2
+        die 1 "remove the foreign paths from the index or pass --include-staged explicitly"
+    }
+}
+
+staged_file_count() {
+    git diff --cached --name-only --no-renames --diff-filter=ACDMRTUXB |
+        awk 'NF { n++ } END { print n + 0 }'
+}
+
+guard_exact_operand_count() {
+    local count expected
+    (( EXACT == 1 )) || return 0
+    count=$(staged_file_count)
+    expected=${#FILES[@]}
+    (( count == expected )) || die 1 \
+        "--exact expected $expected operand file(s), but the staged commit contains $count file(s)"
 }
 
 # Leading/trailing whitespace trim -- the standard parameter-expansion idiom,
@@ -528,8 +589,10 @@ main() {
     require_writable_git_dirs
     refuse_trunk
     acquire_transaction_lock
+    refuse_staged_outside_operands
     stage_files
     guard_staged_protected_paths
+    guard_exact_operand_count
     check_staged
     build_message_args
     do_commit
