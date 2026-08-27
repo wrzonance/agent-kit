@@ -33,6 +33,12 @@ if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
 fi
 
 readonly PROGRAM=${0##*/}
+script_source=${BASH_SOURCE[0]}
+if [[ $script_source != */* ]]; then
+    script_source=$(command -v -- "$script_source" 2>/dev/null || printf '%s' "$script_source")
+fi
+SCRIPT_PATH=$(readlink -f -- "$script_source" 2>/dev/null || printf '%s/%s' "$PWD" "$script_source")
+readonly SCRIPT_PATH
 
 warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
@@ -103,6 +109,7 @@ readonly SECRET_PATTERN='(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PROXY|CA_BUNDL
 mode=''
 want_key=''
 repo_root=''
+repo_root_explicit=0
 config_file_opt=''
 base_ref_opt=''
 canonical_keys_csv=''
@@ -154,6 +161,7 @@ while (($#)); do
             shift
             (($#)) || die_usage '--repo-root requires a directory'
             repo_root=$1
+            repo_root_explicit=1
             ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -194,6 +202,15 @@ if [[ -z $repo_root ]]; then
 fi
 [[ -n $repo_root ]] || exit 0
 repo_root=$(cd -- "$repo_root" 2> /dev/null && pwd -P) || exit 0
+
+if ((repo_root_explicit)); then
+    supplied_top=$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n $supplied_top ]]; then
+        supplied_top=$(cd -- "$supplied_top" 2>/dev/null && pwd -P) || exit 0
+        [[ $supplied_top == "$repo_root" ]] || die_usage \
+            "--repo-root must be the Git toplevel (got $repo_root; toplevel is $supplied_top)"
+    fi
+fi
 
 config_file=${config_file_opt:-$repo_root/.agent/config.env}
 [[ -f $config_file ]] || exit 0
@@ -304,7 +321,7 @@ resolve_base_trusted_get() {
         fi
         return 0
     fi
-    base_value=$("$0" --repo-root "$repo_root" --config-file "$base_file" \
+    base_value=$(bash "$SCRIPT_PATH" --repo-root "$repo_root" --config-file "$base_file" \
         --get "$want_key" 2>/dev/null || true)
     rm -f -- "$base_file"
     printf 'source=base:%s key=%s' "${base_sha:0:7}" "$want_key" >&2

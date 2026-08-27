@@ -249,6 +249,12 @@ verify_base_inherited() {
     done <<< "$paths"
 }
 
+config_merge_authorized() {
+    active_merge || return 1
+    (( ALLOW_BASE_INHERITED == 1 && YOLO == 1 )) || return 1
+    verify_base_inherited '.agent/config.env'
+}
+
 guard_staged_protected_paths() {
     local paths
     active_merge || return 0
@@ -353,18 +359,33 @@ refuse_staged_outside_operands() {
 # --include-staged, which intentionally opts out of the ordinary exact-scope
 # check above.
 config_operand_named() {
-    local file candidate
+    local file candidate root magic suffix
+    root=$(git rev-parse --show-toplevel 2>/dev/null || return 1)
+    root=$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")
     for file in "${FILES[@]}"; do
-        candidate=${file#./}
-        [[ $candidate == .agent/config.env ]] && return 0
+        if [[ ${file:0:2} == ':(' ]]; then
+            magic=${file#':('}
+            suffix=${magic#*)}
+            magic=${magic%%\)*}
+            [[ $magic == top || $magic == top,* ]] &&
+                [[ $suffix == .agent/config.env ]] && return 0
+        elif [[ $file == ':/.agent/config.env' ]]; then
+            return 0
+        fi
+        if [[ $file == /* ]]; then
+            candidate=$(readlink -m -- "$file" 2>/dev/null || true)
+        else
+            candidate=$(readlink -m -- "$PWD/$file" 2>/dev/null || true)
+        fi
+        [[ $candidate == "$root/.agent/config.env" ]] && return 0
     done
     return 1
 }
 
 refuse_unrequested_config() {
     local staged
-    staged=$(git diff --cached --name-only --no-renames -- .agent/config.env)
-    [[ -z $staged ]] || config_operand_named || die 1 \
+    staged=$(git diff --cached --name-only --no-renames -- ':(top).agent/config.env')
+    [[ -z $staged ]] || config_operand_named || config_merge_authorized || die 1 \
         'refusing unrequested .agent/config.env change; name .agent/config.env explicitly in the issue write set'
 }
 

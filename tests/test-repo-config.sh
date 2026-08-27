@@ -55,6 +55,24 @@ assert_contains "$base_get" \
     'working-tree=codex (not in effect until on main)' \
     'base-trusted --get explains a divergent working-tree value'
 
+# A bare PATH invocation must resolve its own script path before recursively
+# reading the base snapshot; invoking from a subdirectory must not lose policy.
+mkdir -p "$base_repo/bin" "$base_repo/subdir"
+cp "$rc_sh" "$base_repo/bin/repo-config.sh"
+chmod +x "$base_repo/bin/repo-config.sh"
+bare_get=$(cd "$base_repo/subdir" && PATH="$base_repo/bin:$PATH" \
+    repo-config.sh --repo-root "$base_repo" --get AGENT_ADVERSARIAL_REVIEWER 2>&1)
+assert_contains "$bare_get" 'base=claude' \
+    'bare PATH repo-config invocation preserves base policy during self-read'
+
+# An explicit root inside a Git checkout must not inherit the enclosing
+# repository's .agent/config.env or origin/base policy.
+subdir_rc=0
+subdir_out=$("$rc_sh" --repo-root "$base_repo/subdir" --get AGENT_ADVERSARIAL_REVIEWER 2>&1) || subdir_rc=$?
+assert_eq '2' "$subdir_rc" 'repo-config rejects a supplied subdirectory root'
+assert_contains "$subdir_out" 'Git toplevel' \
+    'subdirectory-root refusal explains the required Git toplevel boundary'
+
 printf 'AGENT_ONBOARDED_BY=agentkit/0.1.0\n' >> "$repo/.agent/config.env"
 stamp_out=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$stamp_out" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' 'accepts the generator stamp'

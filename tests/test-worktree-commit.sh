@@ -225,6 +225,28 @@ assert_contains "$config_guard_out" '.agent/config.env' \
 assert_eq '1' "$(git -C "$config_guard_repo" rev-list --count HEAD)" \
     'config.env refusal creates no commit'
 
+# Canonical root-relative and top pathspec operands authorize config.env when
+# explicitly named, including from a subdirectory of the checkout.
+mkdir -p "$config_guard_repo/subdir"
+canonical_out=''; canonical_rc=0
+canonical_out=$(cd "$config_guard_repo/subdir" && "$script" --include-staged \
+    --message 'fix: authorize config handoff' --trailer "$TEST_TRAILER" -- \
+    ../.agent/config.env 2>&1) || canonical_rc=$?
+assert_eq '0' "$canonical_rc" \
+    'a root-relative config.env operand is accepted from a subdirectory'
+assert_contains "$canonical_out" 'committed' \
+    'root-relative config.env authorization reports a commit'
+
+printf 'AGENT_BASE_BRANCH=main\nAGENT_ADVERSARIAL_REVIEWER=claude\n' \
+    > "$config_guard_repo/.agent/config.env"
+top_out=''; top_rc=0
+top_out=$(cd "$config_guard_repo/subdir" && "$script" --include-staged \
+    --message 'fix: authorize top config handoff' --trailer "$TEST_TRAILER" -- \
+    ':(top).agent/config.env' 2>&1) || top_rc=$?
+assert_eq '0' "$top_rc" 'a top pathspec config.env operand is accepted'
+assert_contains "$top_out" 'committed' \
+    'top pathspec config.env authorization reports a commit'
+
 # An unwritable metadata preflight points workers back to the designed root
 # publication handback, rather than asking the worker to escalate itself.
 assert_contains "$(cat "$script")" 'hand the identical command back to the top-level session for publication' \
@@ -291,6 +313,39 @@ assert_eq 'workflow-base-v2' "$(git -C "$merge_repo" show HEAD:.github/workflows
     'the authorized commit carries the inherited protected bytes'
 assert_eq 'change' "$(git -C "$merge_repo" show HEAD:change.txt)" \
     'the authorized commit carries the explicit path'
+
+# .agent/config.env is also legitimate merge-inherited content when the named
+# merge parent and --yolo authorization prove its bytes are unchanged.
+merge_config_repo="$tmp/merge-config-repo"
+git init -q -b main "$merge_config_repo"
+git -C "$merge_config_repo" config user.name test
+git -C "$merge_config_repo" config user.email test@example.invalid
+mkdir -p "$merge_config_repo/.agent"
+printf 'AGENT_BASE_BRANCH=main\n' > "$merge_config_repo/.agent/config.env"
+printf 'base\n' > "$merge_config_repo/base.txt"
+git -C "$merge_config_repo" add -- .
+git -C "$merge_config_repo" commit -qm base
+git -C "$merge_config_repo" checkout -qb feature
+git -C "$merge_config_repo" checkout -q main
+printf 'AGENT_BASE_BRANCH=main\nAGENT_ADVERSARIAL_REVIEWER=claude\n' \
+    > "$merge_config_repo/.agent/config.env"
+git -C "$merge_config_repo" add -- .agent/config.env
+git -C "$merge_config_repo" commit -qm 'base config update'
+merge_config_base=$(git -C "$merge_config_repo" rev-parse HEAD)
+git -C "$merge_config_repo" checkout -q feature
+git -C "$merge_config_repo" merge --no-commit --no-ff -q main
+printf 'change\n' > "$merge_config_repo/change.txt"
+merge_config_out=''; merge_config_rc=0
+merge_config_out=$(cd "$merge_config_repo" && "$script" --include-staged --yolo \
+    --message 'fix: carry inherited config' --trailer "$TEST_TRAILER" \
+    --allow-base-inherited "$merge_config_base" -- change.txt 2>&1) || merge_config_rc=$?
+assert_eq '0' "$merge_config_rc" \
+    'named-base authorization permits inherited config.env content'
+assert_contains "$merge_config_out" 'committed' \
+    'inherited config authorization reports a commit'
+assert_eq $'AGENT_BASE_BRANCH=main\nAGENT_ADVERSARIAL_REVIEWER=claude' \
+    "$(git -C "$merge_config_repo" show HEAD:.agent/config.env)" \
+    'inherited config authorization carries the merge-parent bytes'
 
 # A named base may prove a protected deletion too: the base and the merge
 # index both lack the blob, so identity comparison must not require cat-file -e.
