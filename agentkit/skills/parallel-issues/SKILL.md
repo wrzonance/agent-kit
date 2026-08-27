@@ -819,9 +819,9 @@ step, and if the re-dispatch stalls too, park the workstream and name it in the 
 
 ### Quiescence gate for root writes
 
-Before root writes in worker worktree, prove no unacknowledged `SendMessage`; clean status except
-declared operator-pending paths; and `quiescence:` evidence. Idle older than newest outbound is
-stale. Prefer `followup_task`; inline requires gate, `--exact`, evidence.
+Before root writes in a worker worktree, prove no unacknowledged `SendMessage`, clean status except
+declared operator-pending paths, and `quiescence:` evidence.
+Prefer `followup_task`; inline requires `--exact`.
 
 ### Root review and draft PR after a worker push
 
@@ -843,8 +843,8 @@ this issue, or the root records one of the sanctioned `chain-conversion`, `merge
 `prediction-expansion` dispositions with an evidence-based reason before opening the PR.
 Confirmed findings go back to the same worker as one batch (`followup_task`); at every correction
 call site, resume the same worker with `followup_task` first and make a fresh dispatch the exception.
-A root may apply an inline correction at zero dispatches for a mechanical, ≤5-line diff authored during
-review when gate holds; rerun full verification with root attribution and record why dispatch was skipped.
+Root may make a mechanical, ≤5-line inline correction, review-authored when gate holds; it costs zero dispatches;
+rerun full verification with root attribution and record why dispatch was skipped.
 Then root must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
 feeds Collect and Step 3a.
@@ -869,6 +869,8 @@ validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXX
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
+# Validator-proved staged paths are published.
+validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
 ```
 

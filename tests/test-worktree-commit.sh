@@ -623,4 +623,48 @@ assert_contains "$exact_out" 'foreign.txt' \
 assert_eq '' "$(git -C "$exact_repo" log -1 --format=%s | grep -F 'exact scope' || true)" \
     'exact-mode refusal does not create a commit'
 
+# Git pathspecs can expand one directory operand to several staged paths. Exact
+# scope follows that expansion instead of treating the directory as one file.
+directory_repo="$tmp/exact-directory-repo"
+new_repo "$directory_repo"
+mkdir -p "$directory_repo/src"
+printf 'one\n' > "$directory_repo/src/one.txt"
+printf 'two\n' > "$directory_repo/src/two.txt"
+directory_rc=0
+directory_out=$(cd "$directory_repo" && "$script" --exact --message 'feat: commit directory scope' \
+    --trailer "$TEST_TRAILER" -- src 2>&1) || directory_rc=$?
+assert_eq '0' "$directory_rc" 'exact mode accepts a directory pathspec'
+assert_contains "$directory_out" 'committed' 'directory pathspec commit reports success'
+assert_eq $'src/one.txt\nsrc/two.txt' \
+    "$(git -C "$directory_repo" diff-tree --no-commit-id --name-only -r HEAD | sort)" \
+    'directory pathspec commits every matched file and nothing else'
+
+# Unchanged operands produce no staged path, and repeated operands collapse to
+# one path in Git's staged-name set. Neither should trip an argument-arity gate.
+operand_repo="$tmp/exact-operands-repo"
+new_repo "$operand_repo"
+printf 'changed\n' > "$operand_repo/changed.txt"
+operand_rc=0
+operand_out=$(cd "$operand_repo" && "$script" --exact --message 'feat: deduplicate operands' \
+    --trailer "$TEST_TRAILER" -- base.txt changed.txt changed.txt 2>&1) || operand_rc=$?
+assert_eq '0' "$operand_rc" 'exact mode accepts unchanged and repeated operands'
+assert_contains "$operand_out" 'committed' 'unchanged and repeated operands report success'
+assert_eq 'changed.txt' \
+    "$(git -C "$operand_repo" diff-tree --no-commit-id --name-only -r HEAD)" \
+    'unchanged and repeated operands commit only the changed path'
+
+# Rename detection is deliberately disabled for scope accounting: selecting a
+# staged rename's live destination still keeps both old and new paths in scope.
+rename_repo="$tmp/exact-rename-repo"
+new_repo "$rename_repo"
+git -C "$rename_repo" mv base.txt renamed.txt
+rename_rc=0
+rename_out=$(cd "$rename_repo" && "$script" --exact --message 'refactor: rename scoped file' \
+    --trailer "$TEST_TRAILER" -- renamed.txt 2>&1) || rename_rc=$?
+assert_eq '0' "$rename_rc" 'exact mode accepts a staged rename by destination operand'
+assert_contains "$rename_out" 'committed' 'rename commit reports success'
+assert_eq $'base.txt\nrenamed.txt' \
+    "$(git -C "$rename_repo" diff-tree --no-commit-id --name-only --no-renames -r HEAD | sort)" \
+    'rename scope compares old and new paths consistently without rename detection'
+
 finish
