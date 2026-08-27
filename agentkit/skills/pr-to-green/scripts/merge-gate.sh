@@ -23,6 +23,12 @@ adversarial_status=''
 cq_scan_state=''
 cq_state_file=''
 work_dir=''
+scan_settling_rounds=${MERGE_GATE_SCAN_ROUNDS:-3}
+scan_runs_state=unreadable
+scan_runs_names=''
+scan_runs_skipped=''
+scan_runs_failed=''
+scan_boundary_epoch=''
 declare -a reasons=()
 
 die() {
@@ -130,6 +136,8 @@ if [[ -n $cq_state_file ]]; then
 fi
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; gate evidence unavailable'
+[[ $scan_settling_rounds =~ ^[1-9][0-9]*$ && $scan_settling_rounds -le 60 ]] ||
+    die 'MERGE_GATE_SCAN_ROUNDS must be an integer from 1 to 60'
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/merge-gate.XXXXXX") || die 'could not create work directory'
 chmod 700 "$work_dir"
@@ -356,19 +364,103 @@ analyses_recent() {
     return 0
 }
 
-# Secondary signal only: is a code-scanning-related check run still running
-# for this head, under either app slug? Its failure to answer is never
-# itself a block -- absence of a completed analysis (below) is what blocks,
-# not absence of a check run.
-scan_check_run_pending() {
+# Secondary signal: classify code-scanning-related check runs for this head.
+# The API failure is deliberately non-authoritative: analysis evidence below
+# still decides the gate. A readable all-skipped set is the one safe proof of
+# a path-filtered workflow; a failed/cancelled run remains a named block.
+scan_check_runs() {
     local runs_file="$work_dir/cs-runs.json"
+    scan_runs_state=unreadable
+    scan_runs_names=''
+    scan_runs_skipped=''
+    scan_runs_failed=''
     "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
-        >"$runs_file" 2>"$work_dir/api.err" || return 1
-    jq -e '
-      [.check_runs[]? | select(((.app.slug // "") == "github-code-scanning") or
-                                ((.app.slug // "") == "github-advanced-security"))] as $runs |
-      ($runs | length) > 0 and ($runs | any(.status != "completed"))
-    ' "$runs_file" >/dev/null 2>&1
+        >"$runs_file" 2>"$work_dir/api.err" || return 0
+    jq -e 'type == "object" and (.check_runs | type) == "array"' \
+        "$runs_file" >/dev/null 2>&1 || return 0
+
+    scan_runs_names=$(jq -r '
+      [.check_runs[]
+       | select(((.app.slug // "") == "github-code-scanning") or
+                ((.app.slug // "") == "github-advanced-security"))
+       | (.name // .workflow_name // "code-scanning")] | unique | join(", ")
+    ' "$runs_file") || return 0
+    if [[ -z $scan_runs_names ]]; then
+        scan_runs_state=none
+        return 0
+    fi
+    scan_runs_skipped=$(jq -r '
+      [.check_runs[]
+       | select(((.app.slug // "") == "github-code-scanning") or
+                ((.app.slug // "") == "github-advanced-security"))
+       | select((.status // "") == "completed" and (.conclusion // "") == "skipped")
+       | (.name // .workflow_name // "code-scanning")] | unique | join(", ")
+    ' "$runs_file") || return 0
+    scan_runs_failed=$(jq -r '
+      [.check_runs[]
+       | select(((.app.slug // "") == "github-code-scanning") or
+                ((.app.slug // "") == "github-advanced-security"))
+       | select((.status // "") == "completed" and
+                ((.conclusion // "") | ascii_downcase
+                 | IN("failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure")))
+       | (.name // .workflow_name // "code-scanning")] | unique | join(", ")
+    ' "$runs_file") || return 0
+    if jq -e '
+      any(.check_runs[]?;
+          (((.app.slug // "") == "github-code-scanning") or
+           ((.app.slug // "") == "github-advanced-security")) and
+          ((.status // "") != "completed"))
+    ' "$runs_file" >/dev/null 2>&1; then
+        scan_runs_state=pending
+    elif [[ -n $scan_runs_failed ]]; then
+        scan_runs_state=failed
+    elif [[ -n $scan_runs_skipped && $scan_runs_skipped == "$scan_runs_names" &&
+            -n $scan_boundary_epoch ]] &&
+        jq -e --argjson boundary "$scan_boundary_epoch" '
+          [.check_runs[]?
+           | select(((.app.slug // "") == "github-code-scanning") or
+                    ((.app.slug // "") == "github-advanced-security"))] as $scans
+          | ($scans | length) > 0 and
+            all($scans[];
+              (([.started_at, .startedAt, .created_at, .createdAt,
+                 .completed_at, .completedAt]
+                | map(select(type == "string" and length > 0))) as $timestamps
+               | ($timestamps | length) > 0 and
+                 all($timestamps[]; try (fromdateiso8601 > $boundary) catch false)))
+        ' "$runs_file" >/dev/null 2>&1; then
+        scan_runs_state=not-applicable
+    else
+        scan_runs_state=terminal
+    fi
+}
+
+# A path-filtered skipped run is only not-applicable when its timestamps prove
+# it was produced after the latest base retarget. A pre-retarget skipped result
+# must fall through to the ordinary missing-evidence block; an unreadable
+# timeline or timestamp never becomes an implicit zero boundary.
+scan_boundary() {
+    local event_time
+    scan_boundary_epoch=''
+    "$GH_BIN" api --paginate "repos/$repo/issues/$pr/timeline" \
+        >"$work_dir/cs-timeline.json" 2>"$work_dir/api.err" || return 0
+    jq -e 'type == "array"' "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
+    event_time=$(jq -r --arg base "$live_base" '
+      [ .[]?
+        | select((.event // "") == "base_ref_changed")
+        | ([.base_ref, .baseRefName, .base_ref_name]
+           | map(select(type == "string" and length > 0)) | first // "") as $event_base
+        | select($event_base == "" or $event_base == $base)
+        | ([.created_at, .createdAt]
+           | map(select(type == "string" and length > 0)) | first // "")
+        | select(length > 0)
+      ] | sort | last // empty
+    ' "$work_dir/cs-timeline.json" 2>/dev/null) || return 0
+    [[ -n $event_time ]] || return 0
+    scan_boundary_epoch=$(date -u -d "$event_time" +%s 2>/dev/null) || {
+        scan_boundary_epoch=''
+        return 0
+    }
+    [[ $scan_boundary_epoch =~ ^[1-9][0-9]*$ ]] || scan_boundary_epoch=''
 }
 
 # A pull_request-event CodeQL/SARIF upload sets GITHUB_SHA to the GitHub-
@@ -457,8 +549,14 @@ fi
 cs_status=''
 cs_last_ref=''
 cs_last_date=''
-if scan_check_run_pending; then
+scan_boundary
+scan_check_runs
+if [[ $scan_runs_state == pending ]]; then
     cs_status=pending
+elif [[ $scan_runs_state == failed ]]; then
+    cs_status=failed
+elif [[ $scan_runs_state == not-applicable ]]; then
+    cs_status=not-applicable
 elif [[ $cs_any_head_match == yes ]]; then
     cs_status=current
 elif [[ $pr_analyses_state == error ]]; then
@@ -500,14 +598,27 @@ else
 fi
 
 case $cs_status in
-    current|scheduled-only|unused) ;;
-    pending) block 'code-scanning analysis has not completed for the current head' ;;
-    absent) block 'no code-scanning analysis is recorded for the current head' ;;
+    current|scheduled-only|unused|not-applicable) ;;
+    pending)
+        printf 'code-scanning: SETTLING rounds=1/%s runs=%s\n' \
+            "$scan_settling_rounds" "${scan_runs_names:-code-scanning}"
+        block 'code-scanning analysis has not completed for the current head'
+        ;;
+    failed)
+        printf 'code-scanning: FAILED runs=%s\n' "$scan_runs_failed"
+        block "scan-failed: $scan_runs_failed"
+        ;;
+    absent)
+        printf 'scan-missing: codeql (human action: inspect the CodeQL workflow and dispatch it or update its path filter)\n'
+        block 'no code-scanning analysis is recorded for the current head'
+        ;;
     *) block 'code-scanning analysis status is unreadable for the current head' ;;
 esac
 
 if [[ $cs_status == scheduled-only ]]; then
     printf 'code-scanning: scheduled-only, last analysis %s on %s\n' "$cs_last_date" "$cs_last_ref"
+elif [[ $cs_status == not-applicable ]]; then
+    printf 'code-scanning: not-applicable (path-filtered), runs skipped: %s\n' "$scan_runs_skipped"
 fi
 
 # A scheduled-only repository is exempt from the completion-status block
