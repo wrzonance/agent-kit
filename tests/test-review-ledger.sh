@@ -122,15 +122,41 @@ lineage_b=$(git -C "$lineage_repo" rev-parse HEAD)
 printf 'C\n' >"$lineage_repo/file"
 git -C "$lineage_repo" commit -q -am merge-down
 lineage_c=$(git -C "$lineage_repo" rev-parse HEAD)
-lineage_reviews=$(jq -cn --arg a "$lineage_a" --arg b "$lineage_b" \
-    '[{kind:"adversarial",provider:"anthropic",head_sha:$a,covered_heads:[$a,$b]}]')
+lineage_reviews=$(jq -cn --arg a "$lineage_a" --arg b "$lineage_b" --arg c "$lineage_c" \
+    '[{kind:"adversarial",provider:"anthropic",head_sha:$a,covered_heads:[$a,$b,$c]}]')
 lineage_comments="$tmp/lineage.json"
 make_comments "$lineage_comments" "$(ledger_body "$lineage_reviews")" 45
 out=$("$script" status --repo owner/repo --pr 1 --comments "$lineage_comments" \
     --head "$lineage_c" --repo-root "$lineage_repo")
 rc=$?
-assert_eq '0' "$rc" 'status accepts a current head whose intervening lineage is recorded'
-assert_eq 'covered-lineage' "$out" 'status reports covered-lineage when the current tip follows recorded transitions'
+assert_eq '0' "$rc" 'status accepts a current head explicitly recorded in covered_heads'
+assert_eq 'covered-head' "$out" 'an explicitly recorded current tip reports covered-head'
+
+lineage_missing_tip=$(jq -cn --arg a "$lineage_a" --arg b "$lineage_b" \
+    '[{kind:"adversarial",provider:"anthropic",head_sha:$a,covered_heads:[$a,$b]}]')
+lineage_missing_tip_comments="$tmp/lineage-missing-tip.json"
+make_comments "$lineage_missing_tip_comments" "$(ledger_body "$lineage_missing_tip")" 451
+out=$("$script" status --repo owner/repo --pr 1 --comments "$lineage_missing_tip_comments" \
+    --head "$lineage_c" --repo-root "$lineage_repo" 2>"$tmp/lineage-missing-tip.err")
+rc=$?
+assert_eq '10' "$rc" 'status refuses a current tip that is not recorded in covered_heads'
+assert_eq 'stale' "$out" 'an unrecorded current tip reports stale'
+assert_contains "$(cat "$tmp/lineage-missing-tip.err")" "$lineage_c" \
+    'the current-tip refusal names the missing tip SHA'
+
+# A merge-down can add unrecorded commits while preserving the reviewed diff.
+# The matching diff payload is sufficient only after the old review head is
+# proven to be an ancestor; an uncovered-lineage candidate must not short
+# circuit that covered-diff path.
+lineage_diff_reviews=$(jq -cn --arg a "$lineage_a" --arg payload "$payload" \
+    '[{kind:"adversarial",provider:"anthropic",head_sha:$a,diff_payload:$payload,covered_heads:[$a]}]')
+lineage_diff_comments="$tmp/lineage-diff.json"
+make_comments "$lineage_diff_comments" "$(ledger_body "$lineage_diff_reviews")" 452
+out=$("$script" status --repo owner/repo --pr 1 --comments "$lineage_diff_comments" \
+    --head "$lineage_c" --diff-payload "$payload" --repo-root "$lineage_repo")
+rc=$?
+assert_eq '0' "$rc" 'status accepts a matching diff after an uncovered merge-down lineage'
+assert_eq 'covered-diff' "$out" 'matching diff payload wins after ancestry is proven'
 
 lineage_missing=$(jq -cn --arg a "$lineage_a" \
     '[{kind:"adversarial",provider:"anthropic",head_sha:$a,covered_heads:[$a]}]')

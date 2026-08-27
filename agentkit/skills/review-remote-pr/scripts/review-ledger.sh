@@ -477,12 +477,9 @@ cmd_status() {
 
     # A covered lineage is stronger than a matching diff payload: it proves
     # locally that the review head reaches the requested head and that every
-    # intervening fix/merge-down commit was recorded by the workflow. The
-    # current tip itself is intentionally not classified as "between" its
-    # parent and the tip; when it is recorded it is handled by covered_heads
-    # above. This permits the status caller to explain a missing tip while
-    # still accepting a mechanically advanced tree whose intermediate history
-    # is fully accounted for.
+    # intervening fix/merge-down commit was recorded by the workflow. Include
+    # the current tip in that check: a tip produced by a fix or merge-down is
+    # itself a transition that must be recorded in covered_heads.
     local lineage_unknown=0 lineage_candidate_count=0
     local i entry entry_head covered_heads reach commits missing
     local candidate_count
@@ -500,7 +497,6 @@ cmd_status() {
         [[ $reach == yes ]] || continue
         commits=$(git -C "$repo_root" rev-list --reverse "$entry_head..$head" 2>/dev/null) || continue
         missing=$(while IFS= read -r commit; do
-            [[ $commit == "$head" ]] && continue
             jq -e --arg commit "$commit" 'index($commit) != null' <<<"$covered_heads" \
                 >/dev/null 2>&1 || printf '%s\n' "$commit"
         done <<<"$commits")
@@ -512,15 +508,6 @@ cmd_status() {
             "${missing//$'\n'/,}" >&2
         lineage_candidate_count=$((lineage_candidate_count + 1))
     done
-    if ((lineage_unknown)); then
-        printf '%s: covered lineage reachability could not be proven; reporting stale\n' \
-            "$PROGNAME" >&2
-    fi
-    ((lineage_candidate_count > 0)) && {
-        printf 'stale\n'
-        exit 10
-    }
-
     if [[ -n $diff_payload ]]; then
         local matches match_count
         matches=$(jq -c --arg dp "$diff_payload" \
@@ -557,6 +544,19 @@ cmd_status() {
                 "$PROGNAME" >&2
         fi
     fi
+
+    # A matching diff payload can cover an advanced tree only after its review
+    # head is proven reachable. Therefore defer the uncovered-lineage refusal
+    # until after the diff-payload path above has had a chance to establish
+    # that stronger proof.
+    if ((lineage_unknown)); then
+        printf '%s: covered lineage reachability could not be proven; reporting stale\n' \
+            "$PROGNAME" >&2
+    fi
+    ((lineage_candidate_count > 0)) && {
+        printf 'stale\n'
+        exit 10
+    }
 
     printf 'stale\n'
     exit 10

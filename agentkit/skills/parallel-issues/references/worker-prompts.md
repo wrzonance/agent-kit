@@ -298,6 +298,9 @@ __SPEC_COMMAND_PRECEDENCE__
 ## Spec
 <PASTE the complete output selected by the boundary mode for the approved design-doc contents or full issue body>
 
+Declared issue acceptance commands (recorded for the implementation and loop gates):
+__ACCEPTANCE_DECLARATIONS__
+
 ## Prior art
 <PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>
 
@@ -341,12 +344,18 @@ assigned worktree; this setup phase is read-only and must not write to it.
 Use the supplied helpers and preserve their machine-readable output. First fetch the complete PR
 state and evidence:
 
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full
+acceptance_args=()
+if [[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt ]]; then
+  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
+    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
+  done < FULL_PATH/.agent/acceptance.txt
+fi
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full "${acceptance_args[@]}"
 
 Wait for CI with the bounded helper, then inspect the resulting digest. A failing check is a
 terminal setup result, not a fix batch:
 
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --wait-ci --rounds 60 --interval 10
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --wait-ci --rounds 60 --interval 10 "${acceptance_args[@]}"
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence; an open finding is
 reported, never silently treated as zero:
@@ -356,7 +365,10 @@ reported, never silently treated as zero:
 
 Run the materiality precheck against the PR's current head before any review spend:
 
-"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "__MATERIALITY_BASE__"
+materiality_acceptance_args=()
+[[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt ]] && materiality_acceptance_args+=(--acceptance-file FULL_PATH/.agent/acceptance.txt)
+[[ -f FULL_PATH/.agent/acceptance-status.txt && ! -L FULL_PATH/.agent/acceptance-status.txt ]] && materiality_acceptance_args+=(--acceptance-status-file FULL_PATH/.agent/acceptance-status.txt)
+"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "__MATERIALITY_BASE__" "${materiality_acceptance_args[@]}"
 
 If CI is red, return exactly `ci-red: <check>` naming the failing check. If Code Quality has open
 findings, return exactly `cq-open: N` with the count. Otherwise return exactly `launch-ready`.

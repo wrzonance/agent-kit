@@ -294,25 +294,54 @@ jq -e --arg repo "$repo" --argjson pr "$pr" '
     die 'authorization does not confirm this repository, runnable PR, and ready transition'
 
 mapfile -t authorized_providers < <(jq -r '.providers[].name' "$authorization_file" | sort -u)
+while IFS=$'\t' read -r auth_name auth_action auth_source; do
+    provider_action[$auth_name]=$auth_action
+    provider_source[$auth_name]=$auth_source
+done < <(jq -r '.providers[] | [.name, .action, .source] | @tsv' "$authorization_file")
 triggerable=()
 for provider in "${providers[@]}"; do
     [[ ${modes[$provider]} != triggerable ]] || triggerable+=("$provider")
 done
 mapfile -t triggerable < <(printf '%s\n' "${triggerable[@]}" | sed '/^$/d' | sort -u)
-if [[ $(printf '%s\n' "${authorized_providers[@]}" | sed '/^$/d') != \
-      $(printf '%s\n' "${triggerable[@]}" | sed '/^$/d') ]]; then
-    die 'authorization provider set does not match the trigger-capable plan'
+authorized_display=$(jq -r '.providers[] | [.name, .action] | join(":")' "$authorization_file" |
+    sort | paste -sd, -)
+triggerable_display=$(printf '%s\n' "${triggerable[@]}" | sed '/^$/d' | paste -sd, -)
+authorization_mismatch=0
+for provider in "${providers[@]}"; do
+    mode=${modes[$provider]}
+    action=${provider_action[$provider]-}
+    # `none=disabled` is the resolver's effective plan for --no-providers;
+    # there is no provider decision to record for that synthetic entry.
+    [[ $provider == none && $mode == disabled && -z $action ]] && continue
+    if [[ -z $action ]]; then
+        # Observe-only providers have no forge mutation and may be left out of
+        # an authorization record; an explicit observe/disabled action is also
+        # accepted and is handled by the provider loop below.
+        [[ $mode == observe-only ]] && continue
+        authorization_mismatch=1
+        continue
+    fi
+    case $mode in
+        triggerable)
+            [[ $action == trigger || $action == observe || $action == disabled ]] ||
+                authorization_mismatch=1
+            ;;
+        observe-only|none|disabled)
+            [[ $action == observe || $action == disabled ]] || authorization_mismatch=1
+            ;;
+    esac
+done
+for auth_provider in "${authorized_providers[@]}"; do
+    [[ -n ${modes[$auth_provider]+set} ]] || authorization_mismatch=1
+done
+if ((authorization_mismatch)); then
+    die "authorization provider set does not match capability plan: authorized={${authorized_display:-}} trigger-capable={${triggerable_display:-}}"
 fi
 
 # Every trigger-capable provider carries a per-run action decision: the
 # operator's queue confirmation authorizes trigger (the capability default)
 # or explicitly opts a provider out to observe/disabled without a ping --
 # the path a "declared triggerable, operator says no" instruction takes.
-while IFS=$'\t' read -r auth_name auth_action auth_source; do
-    provider_action[$auth_name]=$auth_action
-    provider_source[$auth_name]=$auth_source
-done < <(jq -r '.providers[] | [.name, .action, .source] | @tsv' "$authorization_file")
-
 "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" ||
     die 'pull request metadata unavailable'
 jq -e --argjson pr "$pr" '

@@ -728,6 +728,61 @@ assert_contains "$(cat "$wait_none_err")" 'reporting none-configured' \
 assert_eq '3' "$(cat "$tmp/wait-none-count")" \
     '--wait-ci stops at the grace window instead of consuming the full --rounds budget'
 
+# Acceptance state is reported independently from the repository verify
+# rollup. A repo-verify check can be green while the issue's browser command
+# is absent, which is not ready-eligible for a stacked PR.
+mkdir -p "$tmp/case-acceptance"
+cat >"$tmp/case-acceptance/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/515 "*)
+        printf '%s\n' '{"number":515,"draft":true,"mergeable":true,"head":{"ref":"feat/acceptance","sha":"5155155155"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/5155155155/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"repo-verify","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-acceptance/gh"
+acceptance_output=$(PATH="$tmp/case-acceptance:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 515 --repo owner/repo --acceptance-command 'npm run test:browser')
+assert_contains "$acceptance_output" 'repo-verify=green acceptance=npm run test:browser:not-run' \
+    'a green repository verify check does not imply acceptance passed'
+assert_contains "$acceptance_output" 'ready-eligible=no reason=acceptance-not-run' \
+    'an acceptance command that did not run blocks ready eligibility'
+
+# A trailing runner flag is not the provider's check name. The acceptance
+# command must match the check named by its final non-option token.
+mkdir -p "$tmp/case-acceptance-flag"
+cat >"$tmp/case-acceptance-flag/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/516 "*)
+        printf '%s\n' '{"number":516,"draft":false,"mergeable":true,"head":{"ref":"feat/acceptance-flag","sha":"5165165165"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/5165165165/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tools/certify","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-acceptance-flag/gh"
+acceptance_flag_output=$(PATH="$tmp/case-acceptance-flag:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 516 --repo owner/repo --acceptance-command 'tools/certify --browser')
+assert_contains "$acceptance_flag_output" 'acceptance=tools/certify --browser:pass' \
+    'acceptance matching ignores trailing flags and recognizes the provider check'
+
 bare_output=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     14 --repo owner/repo)
 assert_contains "$bare_output" 'pr=14' 'a bare positional PR number is accepted'
