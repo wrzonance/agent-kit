@@ -2073,6 +2073,8 @@ assert_not_contains "$ctx" "$stale_version_path" \
     'the advisory does not repeat a non-existent stale helper path'
 assert_contains "$ctx" "$correct_skills_dir" \
     'the advisory names the contract-resolved skills tree including skills'
+assert_not_contains "$ctx" $'do\ndo not' \
+    'the advisory wording does not duplicate do across its line break'
 # The prescribed remedy is never byte-equal to the flagged path (acceptance
 # criterion 3) -- asserted programmatically here, not only by review.
 remedy_line=$(grep -m1 '^  agentkit=' <<< "$ctx" | sed 's/^  agentkit=//')
@@ -2080,6 +2082,8 @@ assert_eq no "$([[ $remedy_line == "$stale_version_path" ]] && printf yes || pri
     'the prescribed remedy is never byte-equal to the flagged path'
 assert_eq "$correct_skills_dir" "$remedy_line" \
     'the remedy is the contract-resolved tree, not the stale one'
+assert_eq yes "$([[ -d $remedy_line ]] && printf yes || printf no)" \
+    'the emitted resolver-derived path exists as a directory'
 
 # The correctness check above must be LEXICAL, not a plain string-prefix
 # compare -- a `..` traversal that starts with the resolved tree AS TEXT and
