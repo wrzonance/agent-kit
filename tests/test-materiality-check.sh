@@ -113,6 +113,55 @@ assert_contains "$out" 'verdict=material' \
 assert_contains "$out" 'first-material=src/app.sh' \
     'the rename verdict names the removed source path'
 
+# The consent payload must hash the exact canonical diff bytes, including the
+# default context and binary patches. A wider-context or rename-aware render
+# can produce a different identity for the same tree.
+start_branch
+for line in $(seq 1 40); do printf 'line-%s\n' "$line"; done > "$repo/src/long.sh"
+gitc add src/long.sh
+gitc commit -q -m 'feat: add long executable'
+long_review_out=$($review_helper --worktree "$repo" --base main --repo owner/repo --pr 25)
+long_review_payload=$(sed -n 's/^diff-payload=//p' <<<"$long_review_out")
+long_expected_payload="owner/repo:25:$(gitc diff --no-renames --binary main...HEAD | sha256sum | awk '{print $1}')"
+assert_eq "$long_expected_payload" "$long_review_payload" \
+    'review materiality hashes the default-context canonical diff'
+
+start_branch
+printf '\000\377\001\002' > "$repo/src/blob.bin"
+gitc add src/blob.bin
+gitc commit -q -m 'feat: add binary executable'
+binary_review_out=$($review_helper --worktree "$repo" --base main --repo owner/repo --pr 26)
+binary_review_payload=$(sed -n 's/^diff-payload=//p' <<<"$binary_review_out")
+binary_expected_payload="owner/repo:26:$(gitc diff --no-renames --binary main...HEAD | sha256sum | awk '{print $1}')"
+assert_eq "$binary_expected_payload" "$binary_review_payload" \
+    'review materiality includes binary patch bytes in the payload'
+
+# A PR worktree may have only origin/main, not a local main ref. The helper
+# refreshes that remote ref before resolving the diff base.
+remote_origin="$tmp/materiality-origin.git"
+git init -q --bare "$remote_origin"
+remote_seed="$tmp/materiality-seed"
+git init -q -b main "$remote_seed"
+git -C "$remote_seed" config user.email test@example.invalid
+git -C "$remote_seed" config user.name test
+printf 'base\n' > "$remote_seed/app.sh"
+git -C "$remote_seed" add app.sh
+git -C "$remote_seed" commit -qm base
+git -C "$remote_seed" remote add origin "$remote_origin"
+git -C "$remote_seed" push -q -u origin main
+remote_work="$tmp/materiality-work"
+git clone -q "$remote_origin" "$remote_work"
+git -C "$remote_work" config user.email test@example.invalid
+git -C "$remote_work" config user.name test
+git -C "$remote_work" switch -q -c work
+git -C "$remote_work" branch -D main >/dev/null
+printf 'runtime\n' >> "$remote_work/app.sh"
+git -C "$remote_work" add app.sh
+git -C "$remote_work" commit -qm change
+remote_review_out=$($review_helper --worktree "$remote_work" --base main --repo owner/repo --pr 27)
+assert_contains "$remote_review_out" 'verdict=material' \
+    'review materiality refreshes origin/main when no local main exists'
+
 # Evidence failures are loud and fail closed: no verdict means no skip.
 start_branch
 assert_rc 2 'an empty diff refuses to classify' -- "$helper" --worktree "$repo" --base main

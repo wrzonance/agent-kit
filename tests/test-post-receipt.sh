@@ -1052,5 +1052,36 @@ rc=$?
 assert_eq '1' "$rc" 'status rejects a supersession chain that leaves an earlier receipt unsuperseded'
 assert_contains "$(cat "$tmp/status-broken-chain.err")" 'exactly one' \
     'broken supersession chain reports the duplicate-spend refusal'
+# Every superseding receipt must link directly to the immediately preceding
+# receipt. An unlinked earlier spend must fail closed instead of being hidden
+# by the last receipt's supersedes line.
+rogue_chain_comments="$tmp/rogue-chain.json"
+jq -n --arg marker "$marker" \
+    '[{id:70,body:("rogue\n" + $marker)},
+      {id:77,body:("skip A\n" + $marker)},
+      {id:88,body:("supersedes=77\n" + $marker)}]' \
+    >"$rogue_chain_comments"
+rogue_chain_out=$($script status --comments "$rogue_chain_comments" 2>&1)
+rogue_chain_rc=$?
+assert_eq '1' "$rogue_chain_rc" \
+    'status rejects a receipt chain with an unlinked earlier spend'
+assert_contains "$rogue_chain_out" 'exactly one' \
+    'unlinked receipt chains report the exact-one invariant'
+
+# Recovery after an ambiguous POST must match the current diff identity. A
+# marker for a superseded diff is not proof that this diff was posted.
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+identity_recovery_out=$(GH_FAIL_POST=1 GH_RECOVERY_JSON="$identity_skip_comments" run_publish \
+    --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' --diff-payload "$precheck_diff_b" 2>&1)
+identity_recovery_rc=$?
+assert_eq '1' "$identity_recovery_rc" \
+    'ambiguous recovery blocks when only a superseded diff marker is live'
+assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt marker' \
+    'identity-aware recovery names the absence of a current-diff marker'
 
 finish

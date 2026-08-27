@@ -318,6 +318,7 @@ assert_contains "$out" 'provider=none result=DISABLED' \
 assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
     'disabled plan cannot reach comment posting'
 
+write_auth '[{"name":"github-code-quality","action":"observe","source":"capability-default"}]'
 : >"$tmp/transition.log"
 out=$(PROVIDER_MODE=observe run_transition)
 assert_contains "$out" 'provider=github-code-quality result=OBSERVE_ONLY' \
