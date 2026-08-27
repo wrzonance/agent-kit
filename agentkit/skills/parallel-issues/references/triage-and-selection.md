@@ -217,9 +217,11 @@ hold it silently and allow its selected children to proceed. Record the structur
 hold is auditable.
 
 With `--fast-mode`, every other `active` candidate is dropped with a one-line `active` reason;
-there is no hold/skip question. Tracker holds are counted separately from the cap overflow queue.
-The queue contains the first-N pickup-order overflow implementation candidates and is refilled as
-slots free. A fast-mode disclosure therefore includes `queued=` and `tracker=` even when either is
+there is no hold/skip question. Tracker holds are counted separately from the refill queue. The
+queue contains the first-N pickup-order overflow implementation candidates and is refilled as
+slots free. Under `--auto-serialize`, a chain-depth overflow enters this same queue rather than
+becoming an exclusion; the successor is refilled only after its immediate predecessor's commit
+is pushed. A fast-mode disclosure therefore includes `queued=` and `tracker=` even when either is
 zero.
 
 ## Conflict analysis and dispatch-plan write sets
@@ -521,14 +523,16 @@ After conflict analysis and the slot cap have fixed the dispatch set, print exac
 single-line reconciliation in this shape:
 
 ```text
-Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count> tracker=<tracker-count> exclusions=<reason>:<count>[#<issue>,...]|none
+Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count>[#<issue>,...] tracker=<tracker-count> exclusions=<reason>:<count>[#<issue>,...]|none
 ```
 
 For automatic selection with no supplied count, `requested` is the effective Limits-section slot cap.
 For a numbered invocation, it is the number of supplied candidates. `eligible` is the number that survived existing triage and
-mechanical eligibility before conflict/serialization and the slot cap. `dispatched` is the number
-actually launched in this wave; `queued` is the number retained for fast-mode refill after the
-wave cap; `tracker` is the number of active parent/epic records held without a prompt. Group all
+mechanical eligibility before conflict/serialization and the slot cap, so it may exceed
+`requested`. `dispatched` is the number actually launched in this wave and must not exceed
+`requested`; `queued` is the number retained for refill after the wave cap or
+chain-depth cap, followed by its issue IDs in pickup order as `queued=N[#...]` (use `queued=0`
+when empty); `tracker` is the number of active parent/epic records held without a prompt. Group all
 other candidates not dispatched under stable categorical reasons such as
 `blocked-by`, `tier`, `already-implemented`, `conflict-serialized`, or `slot-cap`; use the
 specific existing verdict instead of a catch-all when one applies. Each considered candidate
@@ -543,6 +547,8 @@ Examples cover all queue shapes:
 ```text
 Selection funnel: requested=3 eligible=3 dispatched=3 queued=0 tracker=0 exclusions=none
 Selection funnel: requested=3 eligible=2 dispatched=1 queued=0 tracker=0 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
+Selection funnel: requested=11 eligible=11 dispatched=10 queued=1[#12] tracker=1 exclusions=none
+Selection funnel: requested=6 eligible=6 dispatched=5 queued=1[#6] tracker=0 exclusions=none
 Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]
 Selection funnel: requested=12 eligible=11 dispatched=10 queued=1 tracker=1 exclusions=none
 ```
@@ -552,9 +558,11 @@ For compatibility with pre-queue attended logs, these legacy examples remain rec
 `Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]`,
 and `Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]`.
 
-The first line says the full requested count was dispatched. The second makes a thin dispatch
-legible without widening it. The third is emitted before the empty-selection stop below. The fourth
-line records the fast-mode queue: a held tracker alongside one queued overflow candidate.
+The full-request example says every requested issue was dispatched. The thin-dispatch example
+makes blocked and serialized candidates legible without widening the wave. The fast-mode example
+records a queued issue identity, while the depth-queue example shows chain refill. The empty-set
+example shows categorical exclusions, and the eligible-overflow example keeps the larger
+eligible count visible without inflating dispatched work.
 
 Announce the chosen set, every promoted-from-Backlog issue with its ranking reason, the
 dropped-for-conflict set, and the skipped-as-blocked set before dispatching. `--fast-mode`

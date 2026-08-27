@@ -482,11 +482,7 @@ those. A multi-predecessor join is **scheduled, not dropped**: defer it until ev
 predecessor's commit is pushed, then merge those commits down into its start point and push
 that merged result before dispatch (a conflict parks the join by name) — an unpushed join
 base lives only in local git objects and can be lost if the session or worktree that built
-it is torn down first. Chains respect a chain depth cap: 4; deeper tails
-are dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
-state or publication. See [references/chains.md](references/chains.md) for the walkthrough
-behind these rules — building the graph, publishing a locally-built base, deferred dispatch,
-the join merge-down, and the merge-order retarget.
+it is torn down first. Chains cap 4 successor links; deeper tails enter the same refill queue as slot-cap overflow (`queued=N[#...]`). When a predecessor publishes, refill the next queued successor from that exact pushed SHA. See [references/chains.md](references/chains.md).
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -586,7 +582,7 @@ else
 fi
 ```
 
-When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
+When runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
 
 **Chained issues defer — but only on the commit, not the publication.** A chain successor's
 worktree is created and its lead dispatched as soon as the predecessor's worker has
@@ -1122,7 +1118,8 @@ for dispatch_report in "$dispatch_reports_dir"/issue-*.report; do
 done
 shopt -u nullglob
 ```
-Cleanup requires user request after merge.
+
+At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`. A nonzero queue is incomplete.
 
 ## Common Mistakes
 
@@ -1134,7 +1131,7 @@ Gate-local failures are documented where they bind. Cross-cutting rules live in
 ## Limits
 
 - Maximum 10 per wave; include root in cap; fast-mode queues overflow; attended asks.
-- Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
+- Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop; chains count toward the issue limit.
 - Invocation opts into issue leads; only root spawns.
 - Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
 - Requires local instructions and a `main` or `master` branch.
