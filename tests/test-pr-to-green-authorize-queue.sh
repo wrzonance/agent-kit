@@ -128,11 +128,13 @@ write_confirmed() {
     local base14=${4:-main}
     local state14=${5:-RUNNABLE}
     jq -cn --arg sha "$sha" --arg includeSecond "$include_second" --arg provider "$provider" \
+        --arg plan "$tmp/merge-plan.json" \
         --arg base14 "$base14" --arg state14 "$state14" \
         --arg fp14 10633847aa4a03af3ace3e56e24dfff1db569b771793fe2152ef9ceb34f17eee \
         --arg fp15 14293f2536894b3ed4b275126b42dd9c85cb5dbf323df8ce7bf94b9e66563f31 '{
       repository:"owner/repo",
       budget:null,
+      argv:{plan:{flag:"merge-plan",path:$plan},prs:[]},
       providers:(if $provider == "__NONE__" then [] else ($provider | split(":")) as $parts |
         [{name:$parts[0],action:$parts[1],source:$parts[2]}] end),
       queue:([{
@@ -166,6 +168,19 @@ assert_eq '14:RUNNABLE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:main' \
 assert_eq '["providers","queue","readyTransition","repository"]' \
     "$(jq -c 'keys | sort' "$auth")" 'non-auto-merge authorization has the exact schema'
 
+# The display selector is part of the confirmation contract. A queue displayed
+# with explicit --pr selectors must not be authorized through --merge-plan,
+# even if both forms happen to derive the same live PR rows.
+write_confirmed
+jq '.argv={plan:null,prs:[14]}' "$confirmed" >"$tmp/argv-pr-display.json"
+cp "$tmp/argv-pr-display.json" "$confirmed"
+argv_mismatch_rc=0
+run_authorize >"$tmp/argv-mismatch.out" 2>"$tmp/argv-mismatch.err" || argv_mismatch_rc=$?
+assert_eq '1' "$argv_mismatch_rc" 'authorization rejects a different queue selector form'
+assert_contains "$(cat "$tmp/argv-mismatch.err")" 'argv differs: plan' \
+    'selector mismatch names the differing argv field'
+
+write_confirmed
 jq '.budget={restRemaining:1,warning:true}' "$confirmed" >"$tmp/budget-drift.json"
 cp "$tmp/budget-drift.json" "$confirmed"
 budget_drift_out=$(run_authorize)
@@ -179,7 +194,7 @@ key_mismatch_rc=0
 run_authorize >"$tmp/key-mismatch.out" 2>"$tmp/key-mismatch.err" || key_mismatch_rc=$?
 assert_eq '1' "$key_mismatch_rc" 'an unknown snapshot key blocks authorization'
 assert_contains "$(cat "$tmp/key-mismatch.err")" \
-    'snapshot.keys snapshot=["budget","providers","queue","repository","unexpected"] live=["budget","providers","queue","repository"]' \
+    'snapshot.keys snapshot=["argv","budget","providers","queue","repository","unexpected"] live=["argv","budget","providers","queue","repository"]' \
     'snapshot key drift identifies the differing key sets'
 
 write_confirmed
@@ -308,7 +323,7 @@ auto_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --ready-transition --auto-merge --merge-method squash --delete-branch \
-    --confirmed-queue-file "$confirmed" \
+    --confirmed-queue-file "$confirmed" --merge-plan "$tmp/merge-plan.json" \
     --provider coderabbit:trigger:capability-default)
 assert_eq "authorization=$auth queue=2" "$auto_out" 'auto-merge record is written'
 assert_eq '["autoMerge","deleteBranch","mergeMethod","providers","queue","readyTransition","repository"]' \
@@ -652,6 +667,7 @@ assert_eq '1' "$added_rc" 'a PR the operator never confirmed is never silently a
 jq -cn '{
   repository:"owner/repo",
   budget:null,
+  argv:{plan:{flag:"merge-plan",path:"'"$tmp"'/merge-plan.json"},prs:[]},
   providers:[{name:"coderabbit",action:"trigger",source:"capability-default"}],
   queue:[
     {pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base:"main",
