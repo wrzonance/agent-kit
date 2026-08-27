@@ -47,6 +47,9 @@ fi
 default_pr_analyses='[{"ref":"refs/pull/9/merge","commit_sha":"$HEAD_SHA","tool":{"name":"CodeQL"},"created_at":"2026-08-20T00:00:00Z"}]'
 default_check_runs='{"check_runs":[]}'
 case \$endpoint in
+repos/owner/repo)
+    printf '{"security_and_analysis":{"code_security":{"status":"%s"}}}\n' "\${REPO_CODE_SECURITY_STATUS:-enabled}"
+    ;;
 repos/owner/repo/pulls/9)
     mergeable=\${PR_MERGEABLE:-true}
     draft=\${PR_DRAFT:-false}
@@ -72,6 +75,10 @@ repos/owner/repo/code-scanning/analyses)
         case \${CS_PR_ANALYSES_MODE:-ok} in
         ok)
             printf '%s\n' "\${CS_PR_ANALYSES_JSON:-\$default_pr_analyses}"
+            ;;
+        code-security-disabled)
+            printf '{"message":"Code Security must be enabled for this repository to use code scanning.","status":"403"}\n'
+            exit 1
             ;;
         empty)
             printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
@@ -845,6 +852,36 @@ good_digest
 out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
     'a configured repository with zero open alerts keeps passing, unaffected by the corroboration'
+
+# --- issue #522: Code Security disabled is a readable repository fact, and
+# the exact code-scanning 403 is the second signal needed for not-enabled.
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=code-security-disabled REPO_CODE_SECURITY_STATUS=disabled \
+    CS_ALERTS_PROBE=forbidden-403 run_gate)
+rc=$?
+set -e
+assert_eq '0' "$rc" 'disabled Code Security fixture exits successfully'
+assert_contains "$out" 'code-scanning: not-enabled (code_security disabled)' \
+    'a disabled Code Security repository reports code scanning as not-enabled'
+assert_contains "$out" 'gate=PASS pr=9' \
+    'disabled Code Security plus its exact 403 lets the gate pass like not-enabled Code Quality'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=code-security-disabled REPO_CODE_SECURITY_STATUS=enabled \
+    CS_ALERTS_PROBE=forbidden-403 run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'the exact Code Security 403 still blocks when repository security is enabled'
+assert_contains "$out" 'blocked reason=code-scanning analysis status is unreadable for the current head' \
+    'an enabled Code Security repository never receives the not-enabled exemption'
+assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
+    'an enabled Code Security repository still blocks unreadable alerts evidence'
 
 # -- issue #477: --adversarial-review-status takes review-ledger.sh's own
 #    verdict word as the adversarial-review completion signal ---------------

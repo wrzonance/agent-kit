@@ -121,6 +121,10 @@ REPO_ROOT=""
 # Set once per run, from either a fresh alert_count() call or a cache hit;
 # print_digest reads this instead of re-invoking alert_count() itself.
 ALERTS_VALUE=""
+# Repository-level Code Security state, fetched with the cheap PR metadata
+# pass so the digest can distinguish a disabled feature from an unreadable
+# code-scanning alerts endpoint.
+CODE_SECURITY_STATUS=""
 # Distinct exit code for a die() path whose cause was rate-limit exhaustion,
 # so a caller (pr-to-green prose, wait-discipline.md) can tell "stop and
 # report the reset time" apart from an ordinary usage/API error. See
@@ -347,6 +351,15 @@ fetch_meta() {
     gh api "repos/$REPO/pulls/$PR" \
         >"$WORK_DIR/pr-raw.json" 2>"$WORK_DIR/err" ||
         die_on_gh_failure "gh api pull request failed for $REPO#$PR"
+    CODE_SECURITY_STATUS=""
+    if gh api "repos/$REPO" >"$WORK_DIR/repo-raw.json" 2>"$WORK_DIR/err"; then
+        CODE_SECURITY_STATUS=$(jq -r '
+            if (.security_and_analysis.code_security.status? | type) == "string"
+            then .security_and_analysis.code_security.status
+            else ""
+            end
+        ' <"$WORK_DIR/repo-raw.json" 2>/dev/null) || CODE_SECURITY_STATUS=""
+    fi
     head_sha=$(jq -er '.head.sha // empty' <"$WORK_DIR/pr-raw.json" 2>/dev/null) ||
         die "REST pull request metadata has no head SHA for $REPO#$PR"
     gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" --paginate \
@@ -913,9 +926,14 @@ provider_state() {
             else . end)' <"$WORK_DIR/issue_comments.json"
 }
 
-# Code scanning is optional per repository: the endpoint 403s or 404s where it is
-# not enabled. That is reported as n/a, never as an error.
+# Code scanning is optional per repository: a repository-level disabled state
+# is reported as not-enabled; other unavailable alerts responses are n/a,
+# never an error.
 alert_count() {
+    if [[ $CODE_SECURITY_STATUS == disabled ]]; then
+        printf 'not-enabled\n'
+        return 0
+    fi
     if ! gh api "repos/$REPO/code-scanning/alerts?state=open&per_page=100" --paginate \
         >"$WORK_DIR/raw" 2>"$WORK_DIR/err"; then
         note "code-scanning alerts unavailable ($(first_error)) -> reporting n/a"
@@ -1108,7 +1126,9 @@ print_digest() {
     printf 'provider: coderabbit=%s\n' "$provider"
     print_thread_lines
     alerts=$ALERTS_VALUE
-    if [[ $alerts == "n/a" ]]; then
+    if [[ $alerts == "not-enabled" ]]; then
+        printf 'alerts: code-scanning not-enabled\n'
+    elif [[ $alerts == "n/a" ]]; then
         printf 'alerts: code-scanning n/a\n'
     else
         printf 'alerts: code-scanning open=%s\n' "$alerts"

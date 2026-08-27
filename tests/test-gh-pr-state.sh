@@ -13,6 +13,9 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
+    *" api repos/owner/repo "*)
+        printf '{"security_and_analysis":{"code_security":{"status":"%s"}}}\n' "${REPO_CODE_SECURITY_STATUS:-enabled}"
+        ;;
     *" api repos/owner/repo/pulls/14 "*)
         printf '%s\n' '{"number":14,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"abcdef0123456789"},"base":{"ref":"main"}}'
         ;;
@@ -67,6 +70,15 @@ assert_not_contains "$output" 'next: nitpicks' \
     'a zero nitpicks lane prints no next hint'
 assert_not_contains "$output" 'next: agent-docs' \
     'a zero agent-docs lane prints no next hint'
+
+# A repository with Code Security disabled is readable repository metadata,
+# not an unavailable alerts endpoint; surface that distinction in the digest.
+not_enabled_output=$(REPO_CODE_SECURITY_STATUS=disabled PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo)
+assert_contains "$not_enabled_output" 'alerts: code-scanning not-enabled' \
+    'digest reports repository-level Code Security disabled as not-enabled'
+assert_not_contains "$not_enabled_output" 'alerts: code-scanning n/a' \
+    'Code Security disabled is not collapsed into an unreadable alerts result'
 
 # --- a child whose base advanced after its checks completed -----------------
 
