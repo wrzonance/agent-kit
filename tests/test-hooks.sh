@@ -2069,6 +2069,10 @@ out=$(post_input "$correct_repo" "$stale_version_path" "$correct_sid" |
 ctx=$(ctx_of "$out")
 assert_contains "$ctx" 'Wrong plugin path' \
     'a genuinely stale version path still emits the advisory after a correct read'
+assert_not_contains "$ctx" "$stale_version_path" \
+    'the advisory does not repeat a non-existent stale helper path'
+assert_contains "$ctx" "$correct_skills_dir" \
+    'the advisory names the contract-resolved skills tree including skills'
 # The prescribed remedy is never byte-equal to the flagged path (acceptance
 # criterion 3) -- asserted programmatically here, not only by review.
 remedy_line=$(grep -m1 '^  agentkit=' <<< "$ctx" | sed 's/^  agentkit=//')

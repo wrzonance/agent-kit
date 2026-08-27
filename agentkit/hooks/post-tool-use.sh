@@ -253,13 +253,13 @@ if [[ -n $matched_path ]]; then
         elif [[ -n $resolved_skills ]]; then
             # shellcheck disable=SC2016  # the $agentkit reference is literal text, see teach()
             teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit; do
-not conflate them: $matched_path
+do not conflate them; the requested helper path did not resolve.
 Use exactly:
   agentkit=$resolved_skills"
         else
             # shellcheck disable=SC2016  # literal text, see teach()
             teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit; do
-not conflate them: $matched_path
+do not conflate them; the requested helper path did not resolve.
 $RESOLVE_HINT
 The find picks the highest version present, which is what you want even when
 only one is installed. If it came back empty, the plugin is not installed where
