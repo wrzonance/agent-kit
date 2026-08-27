@@ -47,6 +47,24 @@ EOF
 assert_contains "$(cat "$tmp/validate.out")" 'schemaVersion=1 valid' \
     'the write-time gate accepts a complete schema-1 dispatch plan'
 
+# Selection accounting is optional for older plans, but when present it must
+# be typed so the fast-mode funnel cannot be made to claim a queue or tracker
+# count from malformed run data.
+jq '.selection = {"requested":11,"eligible":11,"dispatched":10,
+                  "queued":[14],"tracker":[15]}' "$plan" >"$tmp/selection-valid.json"
+assert_rc 0 'valid fast-mode selection accounting is accepted' -- \
+    "$writer" --dispatch-plan "$tmp/selection-valid.json" --validate-only
+jq '.selection.requested = 3 | .selection.eligible = 5 | .selection.dispatched = 3' \
+    "$tmp/selection-valid.json" >"$tmp/selection-overflow.json"
+assert_rc 0 'selection accounting permits eligible candidates beyond the requested slots' -- \
+    "$writer" --dispatch-plan "$tmp/selection-overflow.json" --validate-only
+jq '.selection.dispatched = 4' "$tmp/selection-overflow.json" >"$tmp/selection-over-dispatched.json"
+assert_rc 1 'selection accounting rejects dispatched work beyond requested slots' -- \
+    "$writer" --dispatch-plan "$tmp/selection-over-dispatched.json" --validate-only
+jq '.selection.queued = ["14"]' "$tmp/selection-valid.json" >"$tmp/selection-bad.json"
+assert_rc 1 'selection queue issue numbers must be positive integers' -- \
+    "$writer" --dispatch-plan "$tmp/selection-bad.json" --validate-only
+
 jq '.conflictMap.pairs = [{"issues":[11,12],"overlap":["src/shared/**"]}] |
     .conflictMap.revisions = [{"phase":"post-selection","reason":"retain the reviewed edge"}, {"reason":"authorize merge-down","issues":[12],"paths":["src/b"]}]' \
     "$plan" >"$tmp/valid-conflict-members.json"

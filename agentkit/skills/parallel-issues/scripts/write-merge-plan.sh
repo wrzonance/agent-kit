@@ -88,6 +88,18 @@ if ((validate_only)); then
           (.workShape == "no-code" and
             (.holdReason | type) == "string" and (.holdReason | test("[^[:space:]]")))
         end;
+      def issue_set_or_count:
+        (type == "number" and . >= 0 and floor == .) or
+        (type == "array" and all(.[]; uint) and (map(.) | unique | length) == length);
+      def selection:
+        if (has("selection") | not) then true
+        elif (.selection | type) != "object" then false
+        else .selection as $s |
+          ($s.requested | uint) and ($s.eligible | type) == "number" and ($s.eligible >= 0) and ($s.eligible | floor) == $s.eligible and
+          ($s.dispatched | type) == "number" and ($s.dispatched >= 0) and ($s.dispatched | floor) == $s.dispatched and ($s.dispatched <= $s.eligible) and ($s.dispatched <= $s.requested) and
+          ($s.queued | issue_set_or_count) and
+          ($s.tracker | issue_set_or_count)
+        end;
       type == "object" and .schemaVersion == 1 and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
@@ -101,7 +113,8 @@ if ((validate_only)); then
       ((.conflictMap.pairs | type) == "array") and
       all(.conflictMap.pairs[]; pair) and
       ((.conflictMap.revisions | type) == "array") and
-      all(.conflictMap.revisions[]; revision)
+      all(.conflictMap.revisions[]; revision) and
+      selection
     ' "$dispatch_plan" >/dev/null 2>&1 ||
         die 'dispatch plan is invalid: expected schemaVersion 1 with entries and conflictMap'
     printf 'dispatch-plan=%s schemaVersion=1 valid\n' "$dispatch_plan"
