@@ -85,7 +85,7 @@ readonly ROBOT
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME precheck --comments FILE
+Usage: $PROGNAME precheck --comments FILE [--diff-payload ID]
        $PROGNAME status --comments FILE
        $PROGNAME --require-pushed publish ...
        $PROGNAME publish --pr N --repo OWNER/REPO --comments FILE \\
@@ -105,7 +105,8 @@ code. A failed ledger append never fails an already-posted, byte-verified
 receipt -- it only warns.
 
 precheck: reports whether the PR's fetched comment artifact already carries
-the stable adversarial-review spent marker.
+the stable adversarial-review spent marker for the requested diff payload. If
+--diff-payload is omitted, it retains the legacy conservative PR-wide check.
   stdout 'spent'     and exit 0   marker found
   stdout 'not-spent' and exit 10  marker provably absent
   exit 1 (stderr only, fails closed) missing jq, unreadable FILE, invalid JSON
@@ -330,6 +331,11 @@ cmd_precheck() {
             --comments)
                 [[ ${2-} ]] || die_usage '--comments requires a path'
                 comments=$2
+                shift 2
+                ;;
+            --diff-payload)
+                [[ ${2-} ]] || die_usage '--diff-payload requires a value'
+                DIFF_PAYLOAD=$2
                 shift 2
                 ;;
             -h | --help)

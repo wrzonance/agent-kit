@@ -30,6 +30,16 @@ printf '%s\n' \
 not_spent_comments="$tmp/not-spent.json"
 printf '%s\n' '[{"id":1,"body":"just talk, no marker here"}]' >"$not_spent_comments"
 
+# Identity-aware precheck fixtures: the old skip covered diff A, while the
+# current material review is for diff B.
+precheck_diff_a='owner/repo:24:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+precheck_diff_b='owner/repo:24:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+identity_skip_comments="$tmp/identity-skip.json"
+jq -n --arg marker "$marker" --arg diff "$precheck_diff_a" \
+    '[{id:41,body:("## Adversarial review receipt\n- Diff payload: " + $diff +
+        "\n- Verified-skip rationale: docs only; mechanical oracle=path\n" + $marker)}]' \
+    >"$identity_skip_comments"
+
 findings_file="$tmp/findings.ndjson"
 
 reset_findings() {
@@ -66,6 +76,15 @@ out=$("$script" precheck --comments "$empty_comments")
 rc=$?
 assert_eq '10' "$rc" 'precheck exits 10 on an empty comment array'
 assert_eq 'not-spent' "$out" 'precheck prints not-spent on an empty comment array'
+
+out=$("$script" precheck --comments "$identity_skip_comments" --diff-payload "$precheck_diff_a")
+rc=$?
+assert_eq '0' "$rc" 'identity-aware precheck reports spent for the same diff'
+assert_eq 'spent' "$out" 'same-diff precheck prints spent'
+out=$("$script" precheck --comments "$identity_skip_comments" --diff-payload "$precheck_diff_b")
+rc=$?
+assert_eq '10' "$rc" 'identity-aware precheck allows a changed diff after a skip'
+assert_eq 'not-spent' "$out" 'changed-diff precheck prints not-spent'
 
 # -- status: final-sweep receipt classification -----------------------------
 # The completion sweep must distinguish a real adversarial receipt from a
