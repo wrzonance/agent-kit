@@ -36,6 +36,16 @@ stdout for the single completion or expiry line.
 - **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
+### Idle notices are not quiescence proof
+
+An `idle_notification` is a point-in-time observation, not a terminal worker state. Before
+any root write in that worker's worktree, compare the notice timestamp with the timestamp of
+the newest outbound message sent to that same lead. If the idle notice is older than that
+message, it is stale evidence and cannot satisfy the quiescence gate; the lead may have been
+resumed by the queued message. Require the other quiescence evidence as well: no unacknowledged
+outbound message, a clean `git status --porcelain` apart from declared operator-pending paths,
+and a recorded `quiescence:` ledger line naming those observations.
+
 ## GitHub API budget — a rate-limit exit is not a wait to retry
 
 Every `gh`-authenticated tool run by this account shares two hourly pools (REST, GraphQL) across

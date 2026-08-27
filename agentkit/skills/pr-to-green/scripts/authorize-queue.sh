@@ -261,7 +261,7 @@ base_ok_jq='
   def diff_fingerprint_ok:
     . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   def canonical: sort_by([.name,.action,.source]);
-  type == "object" and (keys | sort) == ["providers","queue","repository"] and
+  type == "object" and (keys | sort) == ["budget","providers","queue","repository"] and
   .repository == $repo and
   (.providers | type) == "array" and all(.providers[]; provider) and
   ((.providers | map(.name) | unique | length) == (.providers | length)) and
@@ -278,6 +278,59 @@ base_ok_jq='
     (.diffFingerprint | diff_fingerprint_ok)) and
   ((.queue | map(.pr) | unique | length) == (.queue | length))
 '
+
+# Report a stable, actionable explanation for the first mismatch. `budget` is
+# deliberately excluded from the leaf comparison: it is an informational
+# preflight snapshot, not authorization consent. The top-level key comparison
+# still requires the four-key schema emitted by pr-queue.sh.
+snapshot_mismatch() {
+    jq -r --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
+      --slurpfile requested "$work_dir/providers.json" '
+      ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $liveQueue |
+      {repository:$repo, providers:$requested[0], budget:null, queue:$liveQueue} as $expected |
+      . as $snapshot |
+      def present($object; $path): [$object | paths] | any(. == $path);
+      def value_at($object; $path):
+        if present($object; $path) then ($object | getpath($path))
+        else {__missing__:true} end;
+      def display:
+        if . == {__missing__:true} then "<missing>"
+        elif type == "string" then .
+        else tojson end;
+      def path_text:
+        reduce .[] as $part ("";
+          . + (if ($part | type) == "number" then "[\($part)]" else ".\($part)" end));
+      def canonicalize_providers:
+        if type == "object" and (.providers | type) == "array" then
+          .providers |= sort_by(
+            if type == "object" then
+              [((.name? // "") | tostring), ((.action? // "") | tostring),
+               ((.source? // "") | tostring)]
+            else
+              [type, tostring]
+            end)
+        else .
+        end;
+      if ($snapshot | type) != "object" then
+        "snapshot.type snapshot=\($snapshot | type) live=object"
+      elif (($snapshot | keys | sort) != ($expected | keys | sort)) then
+        "snapshot.keys snapshot=\($snapshot | keys | sort | tojson) live=\($expected | keys | sort | tojson)"
+      else
+        ($snapshot | canonicalize_providers) as $normalizedSnapshot |
+        ($expected | canonicalize_providers) as $normalizedExpected |
+        ($normalizedSnapshot | [paths(scalars)]) as $snapshotPaths |
+        ($normalizedExpected | [paths(scalars)]) as $expectedPaths |
+        (($snapshotPaths + $expectedPaths) | unique |
+          map(select(length == 0 or .[0] != "budget"))) as $paths |
+        first($paths[] as $path |
+          (value_at($normalizedSnapshot; $path)) as $snapshotValue |
+          (value_at($normalizedExpected; $path)) as $liveValue |
+          select($snapshotValue != $liveValue) |
+          "\($path | path_text) snapshot=\($snapshotValue | display) live=\($liveValue | display)") // empty
+      end
+    ' "$confirmed_queue_file"
+}
+
 full_match_ok=1
 jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
   --slurpfile requested "$work_dir/providers.json" \
@@ -286,12 +339,23 @@ jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
 
 if ((full_match_ok == 0)); then
     ((allow_mechanical_advance)) ||
-        die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+        {
+            mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+            if [[ -n $mismatch_detail ]]; then
+                die "live queue or provider decisions differ from the displayed confirmation: $mismatch_detail; redisplay and reconfirm before authorization"
+            fi
+            die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+        }
     base_ok=1
     jq -e --arg repo "$repo" --slurpfile requested "$work_dir/providers.json" \
       "$base_ok_jq" "$confirmed_queue_file" >/dev/null 2>&1 || base_ok=0
-    ((base_ok)) ||
+    if ((base_ok == 0)); then
+        mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+        if [[ -n $mismatch_detail ]]; then
+            die "live queue or provider decisions differ from the displayed confirmation: $mismatch_detail; redisplay and reconfirm before authorization"
+        fi
         die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+    fi
 
     # Every confirmed PR must resolve to unchanged, a verified mechanical
     # advance, or a verified merge -- never silently dropped. A confirmed PR
@@ -342,8 +406,13 @@ if ((full_match_ok == 0)); then
     ' >"$work_dir/reconcile.json" || die 'could not evaluate mechanical-advance reconciliation'
 
     added_list=$(jq -r '.added | map(tostring) | join(",")' "$work_dir/reconcile.json")
-    [[ -z $added_list ]] ||
+    if [[ -n $added_list ]]; then
+        mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+        if [[ -n $mismatch_detail ]]; then
+            die "live queue includes pr(s) $added_list that were never in the displayed confirmation: $mismatch_detail; redisplay and reconfirm before authorization"
+        fi
         die "live queue includes pr(s) $added_list that were never in the displayed confirmation; redisplay and reconfirm before authorization"
+    fi
 
     # F3 (issue #450 review finding): the retarget path previously trusted the
     # proof file's own text without independently verifying that the live
@@ -366,6 +435,10 @@ if ((full_match_ok == 0)); then
             vanished)
                 merged_json=$("$GH_BIN" api "repos/$repo/pulls/$recon_pr" 2>/dev/null) || merged_json=''
                 if [[ $(jq -r '.merged // false' <<<"$merged_json" 2>/dev/null) != true ]]; then
+                    mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+                    if [[ -n $mismatch_detail ]]; then
+                        die "pr $recon_pr is missing from the live queue and is not verified merged: $mismatch_detail; redisplay and reconfirm before authorization"
+                    fi
                     die "pr $recon_pr is missing from the live queue and is not verified merged; redisplay and reconfirm before authorization"
                 fi
                 ;;
@@ -407,6 +480,10 @@ if ((full_match_ok == 0)); then
                     die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
                 ;;
             *)
+                mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+                if [[ -n $mismatch_detail ]]; then
+                    die "pr $recon_pr changed in a way that is not a verified mechanical advance (diff expanded, not runnable, or evidence unavailable): $mismatch_detail; redisplay and reconfirm before authorization"
+                fi
                 die "pr $recon_pr changed in a way that is not a verified mechanical advance (diff expanded, not runnable, or evidence unavailable); redisplay and reconfirm before authorization"
                 ;;
         esac
