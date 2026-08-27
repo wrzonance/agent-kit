@@ -22,6 +22,7 @@ no_providers=0
 allow_mechanical_advance=0
 declare -a providers=()
 declare -a prs=()
+requested_prs_json='[]'
 declare -A retarget_proof_file=()
 
 die() {
@@ -89,7 +90,12 @@ while (($#)); do
             merge_plan=$2
             shift 2
             ;;
-        --pr) (($# >= 2)) || usage; prs+=("$2"); shift 2 ;;
+        --pr)
+            (($# >= 2)) || usage
+            prs+=("$2")
+            requested_prs_json=$(jq -cn --argjson current "$requested_prs_json" --arg number "$2" '$current + [($number | tonumber)]')
+            shift 2
+            ;;
         --confirmed-queue-file)
             (($# >= 2)) || usage
             [[ -z $confirmed_queue_file ]] || die 'only one confirmed queue file may be supplied'
@@ -298,6 +304,17 @@ if ((authorization_mismatch)); then
     die "authorization provider set does not match capability plan: authorized={${authorized_display:-}} trigger-capable={${triggerable_display:-}}"
 fi
 
+requested_argv=$(jq -cn --arg plan "$merge_plan" --argjson prs "$requested_prs_json" '
+  {plan:(if $plan == "" then null else {flag:"merge-plan",path:$plan} end),prs:$prs}
+')
+argv_diff=$(jq -r --argjson requested "$requested_argv" '
+  if (.argv | type) != "object" then "argv"
+  elif .argv.plan != $requested.plan then "plan"
+  elif .argv.prs != $requested.prs then "prs"
+  else "" end
+' "$confirmed_queue_file")
+[[ -z $argv_diff ]] ||
+    die "argv differs: $argv_diff; redisplay and reconfirm before authorization"
 queue_args=(--repo "$repo" --repo-root "$repo_root" --format json)
 [[ -z $merge_plan ]] || queue_args+=(--merge-plan "$merge_plan")
 for pr in "${prs[@]}"; do queue_args+=(--pr "$pr"); done
@@ -311,7 +328,7 @@ jq -e '
     (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
     (.state == "RUNNABLE" or .state == "WAITING_FOR_MERGE" or
       .state == "RETARGET_REQUIRED" or .state == "BLOCKED" or
-      .state == "MERGEABLE_UNKNOWN") and
+      .state == "MERGEABLE_UNKNOWN" or .state == "SETTLING") and
     (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$")) and
     (.base | type) == "string" and (.base | length) > 0 and
     (.diffFingerprint | diff_fingerprint_ok)) and
@@ -333,7 +350,13 @@ base_ok_jq='
   def diff_fingerprint_ok:
     . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   def canonical: sort_by([.name,.action,.source]);
-  type == "object" and (keys | sort) == ["budget","providers","queue","repository"] and
+  type == "object" and (keys | sort) == ["argv","budget","providers","queue","repository"] and
+  (.argv |
+    type == "object" and (keys | sort) == ["plan","prs"] and
+    (.plan == null or
+      (.plan | type == "object" and (keys | sort) == ["flag","path"] and
+        .flag == "merge-plan" and (.path | type) == "string" and (.path | length) > 0)) and
+    (.prs | type) == "array" and all(.prs[]; type == "number" and . > 0 and floor == .)) and
   .repository == $repo and
   (.providers | type) == "array" and all(.providers[]; provider) and
   ((.providers | map(.name) | unique | length) == (.providers | length)) and
@@ -344,7 +367,7 @@ base_ok_jq='
     (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
     (.state == "RUNNABLE" or .state == "WAITING_FOR_MERGE" or
       .state == "RETARGET_REQUIRED" or .state == "BLOCKED" or
-      .state == "MERGEABLE_UNKNOWN") and
+      .state == "MERGEABLE_UNKNOWN" or .state == "SETTLING") and
     (.headSha | type) == "string" and (.headSha | test("^[0-9a-f]{40}$")) and
     (.base | type) == "string" and (.base | length) > 0 and
     (.diffFingerprint | diff_fingerprint_ok)) and
@@ -356,10 +379,10 @@ base_ok_jq='
 # preflight snapshot, not authorization consent. The top-level key comparison
 # still requires the four-key schema emitted by pr-queue.sh.
 snapshot_mismatch() {
-    jq -r --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
+    jq -r --arg repo "$repo" --argjson argv "$requested_argv" --slurpfile live "$work_dir/queue.json" \
       --slurpfile requested "$work_dir/providers.json" '
       ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $liveQueue |
-      {repository:$repo, providers:$requested[0], budget:null, queue:$liveQueue} as $expected |
+      {repository:$repo, argv:$argv, providers:$requested[0], budget:null, queue:$liveQueue} as $expected |
       . as $snapshot |
       def present($object; $path): [$object | paths] | any(. == $path);
       def value_at($object; $path):
