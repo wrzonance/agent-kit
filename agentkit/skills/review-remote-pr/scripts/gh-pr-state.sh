@@ -938,6 +938,10 @@ save_artifacts() {
             rm -f -- "$staged"
             die "could not stage $target"
         fi
+        chmod 600 -- "$staged" || {
+            rm -f -- "$staged"
+            die "could not secure evidence artifact: $target (written by gh-pr-state.sh)"
+        }
         if ! mv -f -- "$staged" "$target"; then
             rm -f -- "$staged"
             die "could not publish artifact atomically: $target"

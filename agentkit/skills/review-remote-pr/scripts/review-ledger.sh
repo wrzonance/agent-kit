@@ -58,7 +58,9 @@
 #       carried through verbatim).
 #
 # status verdicts:
-#   covered-head   an entry's head_sha equals --head                    exit 0
+#   covered-head   an entry's head_sha or covered_heads includes --head exit 0
+#   covered-lineage review head is an ancestor and every intervening commit
+#                  is explicitly recorded in covered_heads              exit 0
 #   covered-diff   head_sha differs but diff_payload matches (the tree
 #                  under review is byte-identical) on AT LEAST ONE matching
 #                  entry whose head_sha is PROVEN (via --repo-root; "unknown"
@@ -190,7 +192,10 @@ readonly LEDGER_SCHEMA_JQ='
     (.kind == "adversarial" or .kind == "bot") and
     (.head_sha | type) == "string" and (.head_sha | test("^[0-9a-f]{7,40}$")) and
     (.provider | type) == "string" and (.provider | length) > 0 and
-    ((has("diff_payload") | not) or (.diff_payload | type) == "string"))
+    ((has("diff_payload") | not) or (.diff_payload | type) == "string") and
+    ((has("covered_heads") | not) or
+      ((.covered_heads | type) == "array") and
+      all(.covered_heads[]; type == "string" and test("^[0-9a-f]{7,40}$"))))
 '
 
 # jq filter validating one NEW entry (a single object, same per-entry shape
@@ -201,7 +206,10 @@ readonly ENTRY_SCHEMA_JQ='
   (.kind == "adversarial" or .kind == "bot") and
   (.head_sha | type) == "string" and (.head_sha | test("^[0-9a-f]{7,40}$")) and
   (.provider | type) == "string" and (.provider | length) > 0 and
-  ((has("diff_payload") | not) or (.diff_payload | type) == "string")
+  ((has("diff_payload") | not) or (.diff_payload | type) == "string") and
+  ((has("covered_heads") | not) or
+    ((.covered_heads | type) == "array") and
+    all(.covered_heads[]; type == "string" and test("^[0-9a-f]{7,40}$")))
 '
 
 # ledger_fence_regex -- the oniguruma regex (jq's capture/test flavor) that
@@ -456,6 +464,50 @@ cmd_status() {
         exit 0
     fi
 
+    # A receipt may be posted before a mechanically-required fix or merge-down
+    # advances the PR. Those transitions are recorded append-only in the
+    # review entry's covered_heads set. A current head in that set is an exact
+    # coverage match, even though the original review head remains head_sha.
+    if jq -e --arg head "$head" \
+        'any(.[]; ((.covered_heads // []) | index($head)) != null)' \
+        <<<"$candidates" >/dev/null 2>&1; then
+        printf 'covered-head\n'
+        exit 0
+    fi
+
+    # A covered lineage is stronger than a matching diff payload: it proves
+    # locally that the review head reaches the requested head and that every
+    # intervening fix/merge-down commit was recorded by the workflow. Include
+    # the current tip in that check: a tip produced by a fix or merge-down is
+    # itself a transition that must be recorded in covered_heads.
+    local lineage_unknown=0 lineage_candidate_count=0
+    local i entry entry_head covered_heads reach commits missing
+    local candidate_count
+    candidate_count=$(jq 'length' <<<"$candidates") || candidate_count=0
+    for ((i = 0; i < candidate_count; i++)); do
+        entry=$(jq -c ".[$i]" <<<"$candidates") || continue
+        entry_head=$(jq -r '.head_sha' <<<"$entry") || continue
+        covered_heads=$(jq -c '.covered_heads // []' <<<"$entry") || continue
+        [[ $covered_heads != '[]' ]] || continue
+        reach=$(git_ancestor "$entry_head" "$head" "$repo_root")
+        if [[ $reach == unknown ]]; then
+            lineage_unknown=1
+            continue
+        fi
+        [[ $reach == yes ]] || continue
+        commits=$(git -C "$repo_root" rev-list --reverse "$entry_head..$head" 2>/dev/null) || continue
+        missing=$(while IFS= read -r commit; do
+            jq -e --arg commit "$commit" 'index($commit) != null' <<<"$covered_heads" \
+                >/dev/null 2>&1 || printf '%s\n' "$commit"
+        done <<<"$commits")
+        if [[ -z $missing ]]; then
+            printf 'covered-lineage\n'
+            exit 0
+        fi
+        printf '%s: uncovered-head=%s commits-between=%s\n' "$PROGNAME" "$head" \
+            "${missing//$'\n'/,}" >&2
+        lineage_candidate_count=$((lineage_candidate_count + 1))
+    done
     if [[ -n $diff_payload ]]; then
         local matches match_count
         matches=$(jq -c --arg dp "$diff_payload" \
@@ -492,6 +544,19 @@ cmd_status() {
                 "$PROGNAME" >&2
         fi
     fi
+
+    # A matching diff payload can cover an advanced tree only after its review
+    # head is proven reachable. Therefore defer the uncovered-lineage refusal
+    # until after the diff-payload path above has had a chance to establish
+    # that stronger proof.
+    if ((lineage_unknown)); then
+        printf '%s: covered lineage reachability could not be proven; reporting stale\n' \
+            "$PROGNAME" >&2
+    fi
+    ((lineage_candidate_count > 0)) && {
+        printf 'stale\n'
+        exit 10
+    }
 
     printf 'stale\n'
     exit 10
