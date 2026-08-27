@@ -30,6 +30,7 @@ scan_runs_skipped=''
 scan_runs_failed=''
 repo_code_security_status=''
 cs_code_security_disabled_probe=no
+scan_boundary_epoch=''
 declare -a reasons=()
 
 die() {
@@ -421,11 +422,53 @@ scan_check_runs() {
         scan_runs_state=pending
     elif [[ -n $scan_runs_failed ]]; then
         scan_runs_state=failed
-    elif [[ -n $scan_runs_skipped && $scan_runs_skipped == "$scan_runs_names" ]]; then
+    elif [[ -n $scan_runs_skipped && $scan_runs_skipped == "$scan_runs_names" &&
+            -n $scan_boundary_epoch ]] &&
+        jq -e --argjson boundary "$scan_boundary_epoch" '
+          [.check_runs[]?
+           | select(((.app.slug // "") == "github-code-scanning") or
+                    ((.app.slug // "") == "github-advanced-security"))] as $scans
+          | ($scans | length) > 0 and
+            all($scans[];
+              (([.started_at, .startedAt, .created_at, .createdAt,
+                 .completed_at, .completedAt]
+                | map(select(type == "string" and length > 0))) as $timestamps
+               | ($timestamps | length) > 0 and
+                 all($timestamps[]; try (fromdateiso8601 > $boundary) catch false)))
+        ' "$runs_file" >/dev/null 2>&1; then
         scan_runs_state=not-applicable
     else
         scan_runs_state=terminal
     fi
+}
+
+# A path-filtered skipped run is only not-applicable when its timestamps prove
+# it was produced after the latest base retarget. A pre-retarget skipped result
+# must fall through to the ordinary missing-evidence block; an unreadable
+# timeline or timestamp never becomes an implicit zero boundary.
+scan_boundary() {
+    local event_time
+    scan_boundary_epoch=''
+    "$GH_BIN" api --paginate "repos/$repo/issues/$pr/timeline" \
+        >"$work_dir/cs-timeline.json" 2>"$work_dir/api.err" || return 0
+    jq -e 'type == "array"' "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
+    event_time=$(jq -r --arg base "$live_base" '
+      [ .[]?
+        | select((.event // "") == "base_ref_changed")
+        | ([.base_ref, .baseRefName, .base_ref_name]
+           | map(select(type == "string" and length > 0)) | first // "") as $event_base
+        | select($event_base == "" or $event_base == $base)
+        | ([.created_at, .createdAt]
+           | map(select(type == "string" and length > 0)) | first // "")
+        | select(length > 0)
+      ] | sort | last // empty
+    ' "$work_dir/cs-timeline.json" 2>/dev/null) || return 0
+    [[ -n $event_time ]] || return 0
+    scan_boundary_epoch=$(date -u -d "$event_time" +%s 2>/dev/null) || {
+        scan_boundary_epoch=''
+        return 0
+    }
+    [[ $scan_boundary_epoch =~ ^[1-9][0-9]*$ ]] || scan_boundary_epoch=''
 }
 
 # A pull_request-event CodeQL/SARIF upload sets GITHUB_SHA to the GitHub-
@@ -535,6 +578,7 @@ fi
 cs_status=''
 cs_last_ref=''
 cs_last_date=''
+scan_boundary
 scan_check_runs
 if [[ $scan_runs_state == pending ]]; then
     cs_status=pending
