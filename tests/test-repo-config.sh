@@ -57,6 +57,29 @@ for provider in coderabbit github-code-quality none; do
 done
 assert_rc 0 'a fully invalid config still exits 0' -- "$rc_sh" --repo-root "$repo" --export
 
+# Unknown declarations are onboarding drift, not a per-helper emergency. One
+# parse session reports each unknown key once and points at the non-mutating
+# refresh report that explains how to repair an older config.
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ADVERSARIAL_REVIEW_PROVIDERS=codex\nAGENT_ADVERSARIAL_REVIEW_PROVIDERS=claude\n' \
+    > "$repo/.agent/config.env"
+err=$($rc_sh --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$err" || true)" \
+    'a repeated unknown key warns only once per parse session'
+assert_contains "$err" 'onboard-refresh.sh' \
+    'the unknown-key warning points at onboarding refresh'
+
+# Helper calls are separate processes, so the warning's once-per-session claim
+# must be durable outside one parser invocation. A new session is re-armed.
+warning_session="repo-config-warning-session-$$"
+first=$(AGENTKIT_SESSION_ID="$warning_session" "$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+second=$(AGENTKIT_SESSION_ID="$warning_session" "$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$first$second" || true)" \
+    'repeated helper calls emit an unknown-key warning once per session'
+new_session=$(AGENTKIT_SESSION_ID="repo-config-warning-new-session-$$" \
+    "$rc_sh" --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$new_session" || true)" \
+    'a new helper session receives the unknown-key warning again'
+
 # --- --list-keys: the accepted key set is discoverable on its own ----------
 list_out=$("$rc_sh" --list-keys 2> /dev/null)
 assert_rc 0 '--list-keys succeeds with no repo context' -- "$rc_sh" --list-keys

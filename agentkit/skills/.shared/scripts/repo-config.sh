@@ -35,6 +35,32 @@ readonly PROGRAM=${0##*/}
 
 warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
+# Resolver calls are separate processes, and a legacy config may be inspected
+# by several helpers during one agent turn. Keep unknown-key noise to one
+# diagnostic per caller session without mutating the repository. Hooks can
+# provide the runtime session id; ordinary shell callers get their parent
+# process as a useful session boundary. Failure to create the marker is
+# deliberately fail-open: a warning is safer than silently dropping drift.
+warning_session=${AGENTKIT_SESSION_ID:-${AGENT_SESSION_ID:-pid-${PPID:-unknown}}}
+warning_session=${warning_session//[^A-Za-z0-9._-]/_}
+warning_state_root=/tmp/agentkit-repo-config-warnings
+
+warn_unknown_once() {
+    local key=$1 marker_key marker_dir marker config_key
+    marker_key=${key//[^A-Za-z0-9._-]/_}
+    [[ -n $marker_key ]] || marker_key=unknown
+    config_key=$(printf '%s' "$config_file" | cksum 2> /dev/null | awk '{print $1}') || config_key='unknown'
+    marker_dir="$warning_state_root/$config_key/$warning_session"
+    marker="$marker_dir/$marker_key"
+    if mkdir -p -- "$marker_dir" 2> /dev/null && mkdir -- "$marker" 2> /dev/null; then
+        warn "$2"
+    elif [[ -d $marker ]]; then
+        :
+    else
+        warn "$2"
+    fi
+}
+
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
     printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
@@ -701,6 +727,7 @@ shell_quote() {
 declare -a out_keys=() out_values=()
 declare -A value_by_key=() seen_by_key=()
 declare -A invalid_command_keys=() checked_command_keys=()
+declare -A warned_unknown_keys=()
 # Canonical comparison is strict for every parse error. Resolve mode keeps the
 # established warn/drop behavior for the file as a whole, but tracks whether a
 # parse error occurred so a caller reading __AGENT_CONFIG_PARSE_STATUS__ below
@@ -733,7 +760,14 @@ while IFS= read -r line || [[ -n $line ]]; do
         if [[ $key =~ $SECRET_PATTERN ]]; then
             warn "refusing credential-shaped key on line $lineno: $key"
         else
-            warn "unknown key on line $lineno, ignoring: $key (run '$PROGRAM --list-keys' to see the accepted keys)"
+            # A legacy config can be parsed by several helpers during one
+            # turn. Report each unknown declaration once, then direct the
+            # operator to the non-mutating onboarding report for the repair.
+            if [[ -z ${warned_unknown_keys[$key]+yes} ]]; then
+                warned_unknown_keys[$key]=yes
+                warn_unknown_once "$key" \
+                    "unknown key on line $lineno, ignoring: $key (run '$PROGRAM --list-keys' to see accepted keys; run 'onboard-refresh.sh --report' to review onboarding drift)"
+            fi
         fi
         # Unknown keys are deliberately dropped. In resolve mode they are not
         # relevant to the requested declaration set.

@@ -948,6 +948,28 @@ for hidden in 'git reset $(printf -- --hard) HEAD~1'; do
     assert_contains "$out" 'inside a substitution' 'and says why it could not be read as written'
 done
 
+# A sanctioned recipe wrapper may carry the hook-skipping flag in its heredoc
+# script body. It is still the executed command, so refuse it, but the reason
+# must identify only the policy (not blame the recipe's command substitution).
+# shellcheck disable=SC2016,SC2041  # the literal recipe is what the hook sees.
+recipe_wrapped=$'bash -c "$(cat <<\x27BASH_RECIPE\x27\ngit commit --no-verify -m x\nBASH_RECIPE\n)"'
+out=$(pre_input "$repo" "$recipe_wrapped" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a hook-skipping flag inside the sanctioned recipe wrapper is refused'
+assert_contains "$out" 'Refused the hook-skipping flag; drop it.' \
+    'the recipe refusal gives the short hook-skipping guidance'
+assert_not_contains "$out" 'hides' \
+    'the recipe refusal does not blame the wrapper as hidden text'
+assert_not_contains "$out" 'substitution' \
+    'the recipe refusal does not blame the wrapper as a substitution'
+
+# The same spelling in a quoted heredoc body is documentation data, not an
+# executed flag, and must remain allowed.
+recipe_note=$'cat <<\x27EOF\x27\nThe recipe uses --no-verify only as a warning.\nEOF'
+out=$(pre_input "$repo" "$recipe_note" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a hook-skipping mention in inert heredoc text is not refused'
+
 # Content-bearing tools carry prose, not shell commands. Substitution flattening
 # must not turn a code span mentioning the no-verify flag into a command.
 content='Markdown mentions `--no-ver'
