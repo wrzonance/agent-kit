@@ -972,7 +972,7 @@ the receipt is a **no-silent-skip** failure. Materiality, consent, and exit code
 
 ```bash
 # The loop runs this before handing the launch to root, using the Step 1 artifact.
-: "${PR:?re-set PR to the current pull request; shell state does not persist}"
+: "${PR:?set PR}" "${worktree:?set worktree}" "${REPO:?set REPO}" "${base:?set base}"
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1

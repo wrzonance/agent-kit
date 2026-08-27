@@ -290,9 +290,15 @@ check_receipt_status() {
             if .[0].body | contains("Verified-skip rationale:") then "verified-skip"
             else "adversarial" end
           elif (
-            (([.[-1].body | capture("(?m)^supersedes=(?<id>[^\\r\\n]+)$").id]
-              | first) // "") as $sup
-            | ($sup != "" and any(.[0:-1][]; (.id | tostring) == $sup))
+            # A replacement receipt is valid only when the latest receipt
+            # supersedes every prior receipt exactly once. Checking only the
+            # latest link lets a duplicate middle receipt hide behind a
+            # superficially valid final supersession.
+            (.[-1].body | ((capture("(?m)^supersedes=(?<id>[^\\r\\n]+)$")? // {}).id // "")) as $latest_sup
+            | ([.[0:-1][] | .id] | sort) as $prior_ids
+            | ([.[1:][] | (.body | ((capture("(?m)^supersedes=(?<id>[^\\r\\n]+)$")? // {}).id // ""))] | map(select(. != "")) | sort) as $superseded_ids
+            | ($latest_sup != "" and ($superseded_ids == $prior_ids)
+               and (($superseded_ids | group_by(.) | all(length == 1))))
           ) then
             if .[-1].body | contains("Verified-skip rationale:") then "verified-skip"
             else "adversarial" end
@@ -856,9 +862,23 @@ recover_after_failed_publish() {
         rm -f -- "$fresh_file" "$fresh_err"
         exit 1
     fi
-    jq -s -e --arg marker "$RECEIPT_MARKER" \
-        'add | type == "array" and any(.[]?; ((.body // "") | contains($marker)))' \
-        "$fresh_file" >/dev/null 2>&1 || marker_rc=$?
+    if [[ -n $DIFF_PAYLOAD ]]; then
+        # Recovery must prove that the failed publish landed the receipt for
+        # this exact diff. A prior receipt for another payload is not evidence
+        # that this attempt was stored and must not consume the new budget.
+        jq -s -e --arg marker "$RECEIPT_MARKER" --arg diff "$DIFF_PAYLOAD" '
+            add | type == "array" and any(.[]?;
+              ((.body // "") | contains($marker)) and
+              (([.body | ((capture("(?m)^- Diff payload: (?<payload>[^\\r\\n]+)")? // {}).payload // "")]
+                | first) // "") == $diff)' \
+            "$fresh_file" >/dev/null 2>&1 || marker_rc=$?
+    else
+        # Legacy callers without a payload retain the conservative PR-wide
+        # marker check.
+        jq -s -e --arg marker "$RECEIPT_MARKER" \
+            'add | type == "array" and any(.[]?; ((.body // "") | contains($marker)))' \
+            "$fresh_file" >/dev/null 2>&1 || marker_rc=$?
+    fi
     if ((marker_rc == 0)); then
         printf '%s: receipt POST/verify failed (rc=%s), but fresh live comments contain the receipt marker; do not retry\n' \
             "$PROGNAME" "$post_rc" >&2

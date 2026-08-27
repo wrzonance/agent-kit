@@ -313,9 +313,9 @@ contract. Provider selection uses `harness=`/`peer-cli=`; pass `--peer-cli-absen
 the Step 1 PR-conversation artifact:
 
 ```bash
-# Step 1 already fetched this file; do not make a second comments query here.
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${PR:?set PR}" "${PR_WORKTREE:?set PR_WORKTREE}" "${REPO:?set REPO}" "${BASE_BRANCH:?set BASE_BRANCH}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$PR_WORKTREE" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH") || exit 1

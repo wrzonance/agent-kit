@@ -468,6 +468,20 @@ assert_eq '1' "$recovery_rc" \
 assert_contains "$recovery_out" 'fresh live comments contain no receipt marker' \
     'ambiguous recovery does not treat a cached not-spent artifact as proof'
 
+# Recovery must use the same diff identity as the attempted publish. A prior
+# receipt for diff A is not evidence that a failed publish for diff B landed.
+: >"$tmp/gh.log"
+recovery_out=$(GH_FAIL_POST=1 GH_RECOVERY_JSON="$identity_skip_comments" run_publish \
+    --pr 24 --repo owner/repo --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' --diff-payload "$precheck_diff_b" 2>&1)
+recovery_rc=$?
+assert_eq '1' "$recovery_rc" \
+    'ambiguous recovery ignores a receipt for a different diff payload'
+assert_contains "$recovery_out" 'fresh live comments contain no receipt marker' \
+    'different-diff recovery remains blocked without exact receipt evidence'
+
 # -- publish: a newly-created RUN_DIR is secured explicitly -----------------
 
 fresh_run_dir="$tmp/fresh-run/nested/private"
@@ -1012,5 +1026,31 @@ assert_eq '11' "$identity_retry_rc" \
     'a second publish for the replacement diff is refused'
 assert_contains "$identity_retry_out" 'already spent for diff bbbbbbb' \
     'the refusal identifies the spent diff by its seven-character ID'
+
+# -- status: a complete supersession chain is required ----------------------
+# A latest receipt superseding only an earlier receipt is insufficient when a
+# middle receipt is also present. Every prior receipt must be superseded once.
+chain_comments="$tmp/chain-comments.json"
+jq -n --arg marker "$marker" \
+    '[{id:101,body:("## Adversarial review receipt\n" + $marker)},
+      {id:102,body:("## Adversarial review receipt\nsupersedes=101\n" + $marker)},
+      {id:103,body:("## Adversarial review receipt\nsupersedes=102\n" + $marker)}]' \
+    >"$chain_comments"
+out=$("$script" status --comments "$chain_comments")
+rc=$?
+assert_eq '0' "$rc" 'status accepts a complete receipt supersession chain'
+assert_eq 'receipt=adversarial' "$out" 'a complete supersession chain is adversarial'
+
+broken_chain_comments="$tmp/broken-chain-comments.json"
+jq -n --arg marker "$marker" \
+    '[{id:111,body:("## Adversarial review receipt\n" + $marker)},
+      {id:112,body:("## Adversarial review receipt\n" + $marker)},
+      {id:113,body:("## Adversarial review receipt\nsupersedes=112\n" + $marker)}]' \
+    >"$broken_chain_comments"
+out=$("$script" status --comments "$broken_chain_comments" 2>"$tmp/status-broken-chain.err")
+rc=$?
+assert_eq '1' "$rc" 'status rejects a supersession chain that leaves an earlier receipt unsuperseded'
+assert_contains "$(cat "$tmp/status-broken-chain.err")" 'exactly one' \
+    'broken supersession chain reports the duplicate-spend refusal'
 
 finish
