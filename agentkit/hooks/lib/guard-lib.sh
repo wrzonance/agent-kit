@@ -1603,7 +1603,13 @@ guard_destructive_reason() {
             # Name the offending line once more than one command shares this
             # payload, so a multi-line script is not refused wholesale over a
             # single dangerous line -- the agent can see which one to redo.
-            if ((${#lines[@]} > 1)); then
+            # The hook-skipping flag has one deliberately terse diagnostic.
+            # In particular, a sanctioned bash recipe is often multi-line;
+            # appending the offending heredoc line or substitution framing
+            # blames the recipe shape instead of naming the policy.
+            if [[ $reason == 'Refused the hook-skipping flag; drop it.' ]]; then
+                printf '%s' "$reason"
+            elif ((${#lines[@]} > 1)); then
                 printf '%s (the offending line is: %s)' "$reason" "$segment"
             else
                 printf '%s' "$reason"
@@ -1918,7 +1924,11 @@ guard_destructive_segment_reason() {
     if [[ $flattened != "$cmd" ]]; then
         local hidden
         if hidden=$(guard_destructive_segment_reason "$flattened" "$cwd"); then
-            printf '%s (the command hides that flag inside a substitution; write it literally if you mean it)' "$hidden"
+            if [[ $hidden == 'Refused the hook-skipping flag; drop it.' ]]; then
+                printf '%s' "$hidden"
+            else
+                printf '%s (the command hides that flag inside a substitution; write it literally if you mean it)' "$hidden"
+            fi
             return 0
         fi
     fi
@@ -1941,7 +1951,11 @@ guard_destructive_segment_reason() {
     while IFS= read -r payload; do
         [[ -n $payload ]] || continue
         if payload_reason=$(guard_destructive_segment_reason "$payload" "$cwd"); then
-            printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
+            if [[ $payload_reason == 'Refused the hook-skipping flag; drop it.' ]]; then
+                printf '%s' "$payload_reason"
+            else
+                printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
+            fi
             return 0
         fi
     done < <(guard_segment_substitutions "$cmd")
@@ -2057,8 +2071,11 @@ guard_destructive_segment_reason() {
         printf '%s' "$api_merge_reason"
         return 0
     fi
-    if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then
-        printf '--no-verify skips the checks the repository installed on purpose. Fix what they are reporting.'
+    # Match the flag as a shell token, not as a substring of a quoted prose
+    # argument. Quoted data remains one word in `words`, while an executed
+    # recipe's command body is tokenized on its recursive check above.
+    if guard_words_contain_sequence words --no-verify; then
+        printf '%s' 'Refused the hook-skipping flag; drop it.'
         return 0
     fi
     # Flags in any arrangement, then the target. -R is the same as -r here, so

@@ -57,6 +57,37 @@ for provider in coderabbit github-code-quality none; do
 done
 assert_rc 0 'a fully invalid config still exits 0' -- "$rc_sh" --repo-root "$repo" --export
 
+# Unknown declarations are onboarding drift, not a per-line emergency. One
+# parser invocation reports each unknown key once and points at the non-mutating
+# refresh report that explains how to repair an older config.
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ADVERSARIAL_REVIEW_PROVIDERS=codex\nAGENT_ADVERSARIAL_REVIEW_PROVIDERS=claude\n' \
+    > "$repo/.agent/config.env"
+err=$($rc_sh --repo-root "$repo" --list 2>&1 > /dev/null)
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$err" || true)" \
+    'a repeated unknown key warns only once per parse session'
+assert_contains "$err" 'onboard-refresh.sh' \
+    'the unknown-key warning points at onboarding refresh'
+
+# Resolver helpers are separate processes, so each invocation starts with a
+# fresh deduplication map. Discarding one invocation's stderr must not suppress
+# the warning from a later invocation.
+"$rc_sh" --repo-root "$repo" --list >/dev/null 2>/dev/null
+visible=$(
+    "$rc_sh" --repo-root "$repo" --list 2>&1 >/dev/null
+)
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$visible" || true)" \
+    'a later helper invocation warns even when an earlier invocation discarded stderr'
+first=$(
+    "$rc_sh" --repo-root "$repo" --list 2>&1 >/dev/null
+)
+second=$(
+    "$rc_sh" --repo-root "$repo" --list 2>&1 >/dev/null
+)
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$first" || true)" \
+    'the first helper invocation reports the unknown declaration'
+assert_eq '1' "$(grep -c 'unknown key.*AGENT_ADVERSARIAL_REVIEW_PROVIDERS' <<< "$second" || true)" \
+    'the second helper invocation reports the unknown declaration again'
+
 # --- --list-keys: the accepted key set is discoverable on its own ----------
 list_out=$("$rc_sh" --list-keys 2> /dev/null)
 assert_rc 0 '--list-keys succeeds with no repo context' -- "$rc_sh" --list-keys

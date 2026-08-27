@@ -137,7 +137,7 @@ rebase and not a promise that the old checks still describe the child:
    tree — re-verify on the merged tree itself. Publish before handing the commit to the next
    descendant or to review; see "Publishing a locally-built chain base" above for why a
    worker's own interim check does not need this. If the merge carries a protected path
-   forward unchanged, commit it with `worktree-commit.sh --yolo --allow-base-inherited
+   forward unchanged, commit it with `worktree-commit.sh --include-staged --yolo --allow-base-inherited
    <full-SHA>` — the same full SHA from step 1. Nothing has to carry that SHA in the dispatch
    prompt for this: `--allow-base-inherited` only ever applies while a merge is active, and
    its `verify_base_inherited` check requires the named commit to equal the worktree's own
@@ -222,7 +222,10 @@ the chain or merge-down failed.
 
 Resolve it from content evidence, never from the conflict labels alone:
 
-1. Compare both complete conflict blobs before choosing a side. For a default-branch merge into
+1. Before reading `--theirs`, `:2:`, or `:3:` content, assert that this is still an active merge:
+   `git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || { echo 'MERGE_HEAD absent; stop' >&2; exit 1; }`.
+   An aborted merge is a hard stop; never run a conflict-resolution fallback without `MERGE_HEAD`.
+   Compare both complete conflict blobs before choosing a side. For a default-branch merge into
    the successor, the branch is normally `ours` and the updated default branch is `theirs`; verify
    that orientation from the merge being performed rather than assuming it.
 2. Establish whether the branch is a superset of the default-branch blob. Account for every block

@@ -708,6 +708,8 @@ chmod 600 "$tmp/digest.txt"
 assert_eq '1' "$rc" 'a group-writable pr-state digest is refused'
 assert_contains "$out" '--pr-state-digest must not be group- or world-writable' \
     'the group-writable digest refusal is named'
+assert_contains "$out" 'written by gh-pr-state.sh' \
+    'the digest permission refusal names the helper that wrote it'
 
 # --- F4 (accepted, in-scope half): the SHA binding matches the digest length -
 
@@ -818,6 +820,11 @@ good_digest
 out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
     'a covered-diff adversarial-review ledger verdict passes the gate exactly like covered-head'
+
+good_digest
+out=$(GATE_ADVERSARIAL_STATUS=covered-lineage run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a covered-lineage adversarial-review ledger verdict passes after ledgered fix/merge-down commits'
 
 good_digest
 out=$(GATE_ADVERSARIAL_STATUS=not-required run_gate)

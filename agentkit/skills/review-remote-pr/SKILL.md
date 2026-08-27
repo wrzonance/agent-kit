@@ -305,24 +305,22 @@ wait for an explicit per-item decision before acting.
 
 ## Step 1b (runs as 2b): Adversarial Review — ONCE, at the end of the draft phase
 
-Apply this gate once as the LAST step of Phase A, after CI is green and conflicts are resolved.
 Read ["$agentkit/review-remote-pr/references/adversarial-review.md"](references/adversarial-review.md) in full before running
-or skipping — it carries materiality, attribution, external-service authorization/consent, the
-exit-code table and one-shot `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR` contract;
-the runner reads `harness=`/`peer-cli=` facts for selection and blind same-harness fallback. Pass
-`--peer-cli-absent` only with `peer-cli= ... absent`.
+or skipping — it carries materiality, attribution, consent, exit codes, and the one-shot runner
+contract. Provider selection uses `harness=`/`peer-cli=`; pass `--peer-cli-absent` only when absent.
 
-**Spent-budget precheck (must precede launch).** Before starting any reviewer, run
-`post-receipt.sh precheck` against the Step 1 PR-conversation artifact:
+**Spent-budget precheck (must precede launch).** Before review, run `post-receipt.sh precheck` on
+the Step 1 PR-conversation artifact:
 
 ```bash
-# Step 1 already fetched this file; do not make a second comments query here.
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${PR:?set PR}" "${PR_WORKTREE:?set PR_WORKTREE}" "${REPO:?set REPO}" "${BASE_BRANCH:?set BASE_BRANCH}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$PR_WORKTREE" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH") || exit 1
 precheck_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
 case "$precheck_rc" in
     0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
     10) printf '%s\n' 'not spent — proceed to the adversarial review gate below' ;;

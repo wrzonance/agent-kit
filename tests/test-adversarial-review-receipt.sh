@@ -78,6 +78,10 @@ assert_contains "$review_text" 'no-silent-skip' \
     'review-remote-pr receipt contract rejects silent skips'
 assert_contains "$review_text" 'fresh live comments' \
     'review-remote-pr requires fresh recovery evidence before retry'
+assert_contains "$review_text" 'consent-record.sh" payload' \
+    'review-remote-pr derives the current canonical diff payload before precheck'
+assert_contains "$review_text" '--diff-payload "$current_diff_payload"' \
+    'review-remote-pr passes the current diff payload into precheck'
 
 assert_contains "$parallel_text" 'post-receipt.sh precheck' \
     'parallel-issues precheck delegates to post-receipt.sh precheck'
@@ -89,6 +93,26 @@ assert_contains "$parallel_text" 'no-silent-skip' \
     'parallel-issues receipt contract rejects silent skips'
 assert_contains "$parallel_text" 'fresh live comments' \
     'parallel-issues requires fresh recovery evidence before retry'
+assert_contains "$parallel_text" 'consent-record.sh" payload' \
+    'parallel-issues derives the current canonical diff payload before precheck'
+assert_contains "$parallel_text" '--diff-payload "$current_diff_payload"' \
+    'parallel-issues passes the current diff payload into precheck'
+
+# Each precheck recipe is a fresh shell boundary. Every value supplied by an
+# earlier setup step must therefore be guarded before it is interpolated into
+# a helper invocation; an empty path or repository must fail closed.
+assert_contains "$parallel_text" '${worktree:?set worktree}' \
+    'parallel-issues guards the worktree before deriving the payload'
+assert_contains "$parallel_text" '${REPO:?set REPO}' \
+    'parallel-issues guards the repository before deriving the payload'
+assert_contains "$parallel_text" '${base:?set base}' \
+    'parallel-issues guards the base before deriving the payload'
+assert_contains "$review_text" '${PR_WORKTREE:?set PR_WORKTREE}' \
+    'review-remote-pr guards the worktree before deriving the payload'
+assert_contains "$review_text" '${REPO:?set REPO}' \
+    'review-remote-pr guards the repository before deriving the payload'
+assert_contains "$review_text" '${BASE_BRANCH:?set BASE_BRANCH}' \
+    'review-remote-pr guards the base before deriving the payload'
 
 # -- publish delegates to post-receipt.sh publish -----------------------
 
