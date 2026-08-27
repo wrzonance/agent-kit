@@ -146,4 +146,26 @@ out=$(bash "$refresh_sh" --repo-root "$repo" --summary 2>&1)
 assert_eq 'drift= none' "$out" \
     'a roster-only declaration with a fallback candidate is quiet'
 
+# Base-trusted reviewer settings are read from origin/main by the resolver;
+# onboarding must surface the same divergence warning for a local edit.
+base_repo="$tmp/base-trusted-repo"
+mkdir -p "$base_repo/.agent"
+git -C "$base_repo" init -q -b main
+git -C "$base_repo" config user.email test@example.com
+git -C "$base_repo" config user.name test
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ADVERSARIAL_REVIEWER=claude\n' \
+    > "$base_repo/.agent/config.env"
+git -C "$base_repo" add -- .agent/config.env
+git -C "$base_repo" commit -qm base
+git -C "$base_repo" update-ref refs/remotes/origin/main HEAD
+printf 'AGENT_REPO_SLUG=example-org/example-repo\nAGENT_ADVERSARIAL_REVIEWER=codex\n' \
+    > "$base_repo/.agent/config.env"
+out=$(bash "$refresh_sh" --repo-root "$base_repo" --report 2>&1)
+assert_contains "$out" 'config=base-drift' \
+    'report summarizes divergence in a base-trusted reviewer setting'
+assert_contains "$out" 'source=base:' \
+    'report names the origin/base source for the reviewer setting'
+assert_contains "$out" 'working-tree=codex (not in effect until on main)' \
+    'report warns that the working-tree reviewer is not in effect yet'
+
 finish

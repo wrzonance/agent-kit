@@ -11,7 +11,7 @@
 #
 # Usage:
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
-#   repo-config.sh --get KEY         # one value; exit 1 if absent
+#   repo-config.sh --get KEY         # one effective value; exit 1 if absent
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
 #   repo-config.sh --list            # K=V lines for accepted keys actually declared
 #   repo-config.sh --list-keys       # the accepted key set itself, one per line
@@ -20,6 +20,7 @@
 #   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
 # Options:
 #   --repo-root DIR                  # skip git-toplevel detection
+#   --base-ref REF                   # override the origin base ref for --get
 #   --diagnose                       # report path roots/candidates without rejecting declarations
 #
 # Exit: 0 success (including no config found), 2 bad usage.
@@ -32,6 +33,12 @@ if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
 fi
 
 readonly PROGRAM=${0##*/}
+script_source=${BASH_SOURCE[0]}
+if [[ $script_source != */* ]]; then
+    script_source=$(command -v -- "$script_source" 2>/dev/null || printf '%s' "$script_source")
+fi
+SCRIPT_PATH=$(readlink -f -- "$script_source" 2>/dev/null || printf '%s/%s' "$PWD" "$script_source")
+readonly SCRIPT_PATH
 
 warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
@@ -53,6 +60,15 @@ readonly ACCEPTED_KEYS=(
     AGENT_ADVERSARIAL_REVIEW_MODEL
     AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK AGENT_ADVERSARIAL_REVIEW_EFFORT
     AGENT_LEDGER_AUTHOR
+)
+
+# adversarial-run.sh deliberately reads these settings from the PR base
+# revision, never from the checkout under review. Keep this list here so a
+# direct --get reports the same effective source as the launcher.
+readonly BASE_TRUSTED_KEYS=(
+    AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEWER_FALLBACK
+    AGENT_ADVERSARIAL_REVIEW_MODEL AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK
+    AGENT_ADVERSARIAL_REVIEW_EFFORT
 )
 
 # AGENT_CMD_<NAME> is open-ended by design. A fixed five (VERIFY, TEST, LINT,
@@ -93,7 +109,9 @@ readonly SECRET_PATTERN='(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PROXY|CA_BUNDL
 mode=''
 want_key=''
 repo_root=''
+repo_root_explicit=0
 config_file_opt=''
+base_ref_opt=''
 canonical_keys_csv=''
 declare -a resolve_keys=()
 declare -A resolve_requested_keys=()
@@ -134,10 +152,16 @@ while (($#)); do
             (($#)) || die_usage '--config-file requires a file'
             config_file_opt=$1
             ;;
+        --base-ref)
+            shift
+            (($#)) || die_usage '--base-ref requires a ref'
+            base_ref_opt=$1
+            ;;
         --repo-root)
             shift
             (($#)) || die_usage '--repo-root requires a directory'
             repo_root=$1
+            repo_root_explicit=1
             ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -179,8 +203,25 @@ fi
 [[ -n $repo_root ]] || exit 0
 repo_root=$(cd -- "$repo_root" 2> /dev/null && pwd -P) || exit 0
 
+if ((repo_root_explicit)); then
+    supplied_top=$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n $supplied_top ]]; then
+        supplied_top=$(cd -- "$supplied_top" 2>/dev/null && pwd -P) || exit 0
+        [[ $supplied_top == "$repo_root" ]] || die_usage \
+            "--repo-root must be the Git toplevel (got $repo_root; toplevel is $supplied_top)"
+    fi
+fi
+
 config_file=${config_file_opt:-$repo_root/.agent/config.env}
 [[ -f $config_file ]] || exit 0
+
+base_trusted_key() {
+    local candidate=$1 key
+    for key in "${BASE_TRUSTED_KEYS[@]}"; do
+        [[ $key == "$candidate" ]] && return 0
+    done
+    return 1
+}
 
 is_accepted() {
     local candidate=$1 key
@@ -216,6 +257,86 @@ safe_ref() {
     [[ $value != */ ]] || return 1
     [[ $value != *.lock ]] || return 1
     return 0
+}
+
+effective_get_state='working-tree'
+effective_get_value=''
+
+# Resolve the origin base used by adversarial-run.sh without fetching. A caller
+# may provide the PR base explicitly; otherwise follow origin/HEAD and the same
+# conventional fallback order used by agent-preflight.sh.
+base_ref_for_get() {
+    local candidate ref
+    if [[ -n $base_ref_opt ]]; then
+        safe_ref "$base_ref_opt" || return 1
+        if [[ $base_ref_opt == origin/* ]]; then
+            printf '%s' "$base_ref_opt"
+        else
+            printf 'origin/%s' "$base_ref_opt"
+        fi
+        return 0
+    fi
+    ref=$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    if [[ -n $ref ]]; then
+        printf '%s' "$ref"
+        return 0
+    fi
+    for candidate in main master trunk develop; do
+        if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/$candidate"; then
+            printf 'origin/%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# For a base-trusted --get, stdout remains the effective value so existing
+# consumers do not need to parse diagnostics. The source and divergence facts
+# go to stderr, where session/reporting callers can retain them without
+# corrupting the one-value API.
+resolve_base_trusted_get() {
+    local ref base_sha base_branch base_file base_value current_value
+    effective_get_state='working-tree'
+    effective_get_value=${value_by_key[$want_key]:-}
+    ref=$(base_ref_for_get 2>/dev/null || true)
+    if [[ -z $ref ]]; then
+        printf 'source=working-tree key=%s (base ref unavailable)\n' "$want_key" >&2
+        return 0
+    fi
+    base_sha=$(git -C "$repo_root" rev-parse --verify "$ref^{commit}" 2>/dev/null || true)
+    if [[ -z $base_sha ]]; then
+        printf 'source=working-tree key=%s (base %s unavailable)\n' "$want_key" "$ref" >&2
+        return 0
+    fi
+    base_branch=${ref#origin/}
+    base_file=$(mktemp "${TMPDIR:-/tmp}/repo-config-base.XXXXXX") || return 0
+    if ! git -C "$repo_root" show "$ref:.agent/config.env" > "$base_file" 2>/dev/null; then
+        rm -f -- "$base_file"
+        effective_get_state='base-absent'
+        printf 'source=base:%s key=%s absent (base file unavailable)\n' \
+            "${base_sha:0:7}" "$want_key" >&2
+        if [[ -n ${value_by_key[$want_key]+yes} ]]; then
+            printf 'working-tree=%s (not in effect until on %s)\n' \
+                "${value_by_key[$want_key]}" "$base_branch" >&2
+        fi
+        return 0
+    fi
+    base_value=$(bash "$SCRIPT_PATH" --repo-root "$repo_root" --config-file "$base_file" \
+        --get "$want_key" 2>/dev/null || true)
+    rm -f -- "$base_file"
+    printf 'source=base:%s key=%s' "${base_sha:0:7}" "$want_key" >&2
+    if [[ -n $base_value ]]; then
+        effective_get_state='base'
+        effective_get_value=$base_value
+        printf ' base=%s\n' "$base_value" >&2
+    else
+        effective_get_state='base-absent'
+        printf ' absent\n' >&2
+    fi
+    current_value=${value_by_key[$want_key]:-}
+    if [[ -n ${value_by_key[$want_key]+yes} && $current_value != "$base_value" ]]; then
+        printf 'working-tree=%s (not in effect until on %s)\n' "$current_value" "$base_branch" >&2
+    fi
 }
 
 # Comma-separated human labels; spaces allowed ("In progress"), controls not.
@@ -853,6 +974,15 @@ case $mode in
         done
         ;;
     get)
+        if [[ -z $config_file_opt ]] && base_trusted_key "$want_key"; then
+            resolve_base_trusted_get
+            if [[ $effective_get_state == base ]]; then
+                printf '%s\n' "$effective_get_value"
+                exit 0
+            elif [[ $effective_get_state == base-absent ]]; then
+                exit 1
+            fi
+        fi
         for i in "${!out_keys[@]}"; do
             if [[ ${out_keys[$i]} == "$want_key" ]]; then
                 printf '%s\n' "${out_values[$i]}"

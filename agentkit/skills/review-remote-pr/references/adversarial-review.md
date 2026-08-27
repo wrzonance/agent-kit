@@ -250,6 +250,16 @@ repository can override it in `.agent/config.env`, named consistently with `AGEN
 | `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` | the model used if the declared bare-CLI reviewer falls back (below) |
 | `AGENT_ADVERSARIAL_REVIEW_EFFORT` | reasoning effort, harness-neutral — applies whichever CLI is used |
 
+#### Base-trusted configuration
+
+The five `AGENT_ADVERSARIAL_*` keys above are base-trusted: the launcher reads
+them from `origin/<base>:.agent/config.env`, not from the pull request's working
+tree. A working-tree edit therefore has no effect until it is present on the
+base branch. Changing any of these keys is a trunk change and must be made in a
+separate commit to the repository's base branch before a review can use it.
+The commit helper refuses a worker's `.agent/config.env` change unless that
+path is explicitly named in the issue write set.
+
 ### Roster form — self-detected, harness-neutral
 
 `AGENT_ADVERSARIAL_REVIEWER` and `AGENT_ADVERSARIAL_REVIEWER_FALLBACK` also accept a

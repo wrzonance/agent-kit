@@ -322,6 +322,24 @@ if [[ -x $resolver && -r $config ]]; then
     fi
 fi
 
+# Adversarial-run.sh reads reviewer policy from the PR base revision. Reuse the
+# resolver's source diagnostic so onboarding reports the same effective source
+# and makes a local edit visible before an operator mistakes it for a live
+# policy change.
+base_trusted_drift_lines=''
+if [[ -x $resolver && -r $config ]]; then
+    for trusted_key in \
+        AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEWER_FALLBACK \
+        AGENT_ADVERSARIAL_REVIEW_MODEL AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK \
+        AGENT_ADVERSARIAL_REVIEW_EFFORT; do
+        trusted_diagnostic=$("$resolver" --repo-root "$repo_root" --get "$trusted_key" \
+            2>&1 > /dev/null || true)
+        if grep -q '^working-tree=' <<< "$trusted_diagnostic"; then
+            base_trusted_drift_lines+="$trusted_diagnostic"$'\n'
+        fi
+    done
+fi
+
 review_provider_status=unavailable
 review_provider_config=$self_dir/review-provider-config.sh
 if [[ -f $review_provider_config ]]; then
@@ -353,6 +371,7 @@ if [[ ${ci_uncovered:-0} =~ ^[1-9][0-9]*$ ]]; then
 fi
 [[ -n $path_drift ]] && parts+=("paths=drift")
 [[ -n $roster_hint_lines ]] && parts+=("model-roster=hint")
+[[ -n $base_trusted_drift_lines ]] && parts+=("config=base-drift")
 
 if ((${#parts[@]} == 0)) && [[ -z $path_drift ]]; then
     summary='drift= none'
@@ -376,6 +395,9 @@ if [[ -n $path_drift ]]; then
 fi
 if [[ -n $roster_hint_lines ]]; then
     printf '%s' "$roster_hint_lines"
+fi
+if [[ -n $base_trusted_drift_lines ]]; then
+    printf '%s' "$base_trusted_drift_lines"
 fi
 if [[ -n $ci_gates ]]; then
     printf '%s\n' "$ci_gates"
