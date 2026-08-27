@@ -59,11 +59,14 @@ assert_not_contains "$text" '@coderabbitai full review' \
 assert_not_contains "$text" 'gh pr ready' 'coordinator contains no raw ready transition'
 
 if command -v rg >/dev/null 2>&1; then
-    invokers=$(rg -l 'review-transition\.sh' "$skills" --glob '!pr-to-green/scripts/review-transition.sh' || true)
+    invokers=$(rg -l 'review-transition\.sh' "$skills" \
+        --glob '!pr-to-green/scripts/review-transition.sh' \
+        --glob '!**/parallel-issues/references/worker-prompts.md' || true)
     assert_eq "$skill" "$invokers" 'only pr-to-green invokes the transition engine'
 else
     invokers=$(grep -rl 'review-transition\.sh' "$skills" 2>/dev/null |
-        grep -v '/pr-to-green/scripts/review-transition\.sh$' || true)
+        grep -v '/pr-to-green/scripts/review-transition\.sh$' |
+        grep -v '/parallel-issues/references/worker-prompts\.md$' || true)
     assert_eq "$skill" "$invokers" 'only pr-to-green invokes the transition engine (grep fallback: rg unavailable)'
 fi
 

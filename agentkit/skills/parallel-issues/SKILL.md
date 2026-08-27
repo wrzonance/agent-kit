@@ -51,9 +51,7 @@ must not stop to approve the set either; a run that still wants design steering
 has not asked for unattended dispatch. Re-invoke with both, or with neither.
 ```
 
-Do not infer one from the other. Someone who asked for unattended dispatch *and* to
-steer every design has asked for two things that cannot both happen, and picking one
-for them is worse than the extra round trip.
+Do not infer one from the other.
 
 **Declared commands run directly.** `agent-run.sh --cmd NAME` runs a repository's declared
 command with no approval step and no trust record — `--yolo` only ever governed Step 4's
