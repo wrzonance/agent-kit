@@ -51,13 +51,30 @@ repos/owner/repo)
 repos/owner/repo/pulls/11)
     sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     [[ ${QUEUE_DRIFT:-0} == 0 ]] || sha=dddddddddddddddddddddddddddddddddddddddd
-    printf '{"number":11,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"%s"},"base":{"ref":"main"},"additions":5,"deletions":2,"changed_files":3}\n' "$sha"
+    state=open
+    merged=false
+    if [[ ${QUEUE_MERGED_11:-0} == 1 ]]; then
+        state=closed
+        merged=true
+    fi
+    printf '{"number":11,"state":"%s","draft":true,"merged":%s,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"%s"},"base":{"ref":"main"},"additions":5,"deletions":2,"changed_files":3}\n' \
+        "$state" "$merged" "$sha"
     ;;
 repos/owner/repo/pulls/12)
-    printf '%s\n' '{"number":12,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/root"}}'
+    mergeable=true
+    if [[ ${QUEUE_SETTLE_12:-0} == 1 ]]; then
+        settle_reads=$(grep -c 'repos/owner/repo/pulls/12$' "$GH_LOG" || true)
+        ((settle_reads > 1)) || mergeable=null
+    fi
+    printf '{"number":12,"state":"open","draft":true,"merged":false,"mergeable":%s,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/root"}}\n' \
+        "$mergeable"
     ;;
 repos/owner/repo/pulls/13)
-    printf '%s\n' '{"number":13,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/independent","sha":"cccccccccccccccccccccccccccccccccccccccc"},"base":{"ref":"main"}}'
+    if [[ ${QUEUE_MERGED_13:-0} == 1 ]]; then
+        printf '%s\n' '{"number":13,"state":"closed","draft":true,"merged":true,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/independent","sha":"cccccccccccccccccccccccccccccccccccccccc"},"base":{"ref":"main"}}'
+    else
+        printf '%s\n' '{"number":13,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/independent","sha":"cccccccccccccccccccccccccccccccccccccccc"},"base":{"ref":"main"}}'
+    fi
     ;;
 repos/owner/repo/pulls/14)
     printf '%s\n' '{"number":14,"state":"open","draft":false,"merged":false,"mergeable":true,"created_at":"2026-08-04T00:00:00Z","head":{"ref":"feat/ready","sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"base":{"ref":"main"}}'
@@ -148,7 +165,7 @@ cat >"$tmp/dispatch-plan.json" <<'EOF'
 EOF
 
 run_queue() {
-    GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" \
+    GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" PR_QUEUE_SETTLE_INTERVAL=0 \
         bash "$queue" --repo owner/repo "$@"
 }
 
@@ -176,6 +193,15 @@ run_queue --dispatch-plan "$schema_one" --format records \
 assert_eq '1' "$schema_one_rc" 'a schema-1 dispatch plan requires its lifecycle upgrade'
 assert_contains "$(cat "$tmp/schema-one.err")" 'write-merge-plan.sh' \
     'the stale-plan refusal names the ready-flip upgrade helper'
+
+missing_plan_pr_rc=0
+run_queue --merge-plan "$tmp/dispatch-plan.json" --pr 99 --format records \
+    >"$tmp/missing-plan-pr.out" 2>"$tmp/missing-plan-pr.err" || missing_plan_pr_rc=$?
+assert_eq '1' "$missing_plan_pr_rc" \
+    'an explicitly selected PR absent from the merge plan fails closed'
+assert_contains "$(cat "$tmp/missing-plan-pr.err")" \
+    'explicit PR #99 is not present in merge plan' \
+    'the absent plan selector names the requested PR and reason'
 
 : >"$tmp/gh.log"
 out=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format records)
@@ -239,8 +265,7 @@ display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
 assert_contains "$display" '#11' 'the confirmation writer preserves the displayed queue'
 assert_eq '600' "$(stat -c '%a' "$confirmed")" \
     'the displayed queue snapshot is owner-only'
-assert_eq '["budget","providers","queue","repository"]' "$(jq -c 'keys | sort' "$confirmed")" \
-    'the displayed queue snapshot records provider decisions'
+assert_eq '["argv","budget","providers","queue","repository"]' "$(jq -c 'keys | sort' "$confirmed")" 'the displayed queue snapshot records provider decisions'
 assert_eq 'null' "$(jq -c '.budget' "$confirmed")" \
     'an unavailable rate_limit read leaves the budget snapshot null, never fabricated'
 
@@ -310,10 +335,24 @@ assert_eq "authorization=$repo_root/.agent/pr-to-green-auth.json queue=3" "$roun
     'a pr-queue writer snapshot round-trips directly through authorize-queue'
 
 out=$(QUEUE_DRIFT=1 run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/drift.err")
-assert_contains "$(cat "$tmp/drift.err")" 'recorded head drift' \
-    'head drift is reported before forge-graph fallback'
-assert_contains "$out" 'pr=11 issue=11 state=RUNNABLE source=fallback' \
-    'head drift falls back to verified forge relationships'
+assert_contains "$(cat "$tmp/drift.err")" 'refreshed=#11 old=aaaaaaa new=ddddddd' \
+    'head drift reports the refreshed plan record and abbreviated SHAs'
+assert_contains "$out" 'pr=11 issue=11 state=RUNNABLE source=plan' \
+    'head drift refreshes the plan record without switching derivation mode'
+
+merged_out=$(QUEUE_MERGED_13=1 run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/merged.err")
+assert_not_contains "$merged_out" 'pr=13' 'merged plan PRs are removed from the queue'
+assert_contains "$(cat "$tmp/merged.err")" 'merged PR #13 dropped from queue' \
+    'dropping a merged plan PR emits an actionable one-line note'
+
+: >"$tmp/gh.log"
+retarget_settle_out=$(QUEUE_MERGED_11=1 QUEUE_SETTLE_12=1 \
+    run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/retarget-settle.err")
+assert_not_contains "$retarget_settle_out" 'pr=11' \
+    'a merged predecessor is absent while its successor is settling'
+assert_contains "$retarget_settle_out" \
+    'pr=12 issue=12 state=RETARGET_REQUIRED source=plan base=feat/root' \
+    'settling preserves predecessor-aware retarget state after mergeability resolves'
 
 : >"$tmp/gh.log"
 out=$(run_queue --format records)
@@ -327,9 +366,16 @@ out=$(run_queue --pr 14 --format records)
 assert_contains "$out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
     'an explicitly named ready PR can resume'
 
+: >"$tmp/gh.log"
+multi_settle_out=$(run_queue --pr 14 --pr 15 --format records)
+assert_contains "$multi_settle_out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
+    'settling one PR preserves unaffected queue rows'
+assert_contains "$multi_settle_out" 'pr=15 issue=0 state=SETTLING source=forge' \
+    'the settled row remains explicit when mergeability stays unknown'
+
 out=$(run_queue --pr 15 --format records)
-assert_contains "$out" 'pr=15 issue=0 state=MERGEABLE_UNKNOWN source=forge' \
-    'a PR with unresolved mergeability never yields RUNNABLE'
+assert_contains "$out" 'pr=15 issue=0 state=SETTLING source=forge' \
+    'a PR with unresolved mergeability remains explicitly settling after bounded retries'
 assert_not_contains "$out" 'state=RUNNABLE' \
     'unknown mergeability fails closed rather than open'
 

@@ -23,6 +23,14 @@ adversarial_status=''
 cq_scan_state=''
 cq_state_file=''
 work_dir=''
+scan_settling_rounds=${MERGE_GATE_SCAN_ROUNDS:-3}
+scan_runs_state=unreadable
+scan_runs_names=''
+scan_runs_skipped=''
+scan_runs_failed=''
+repo_code_security_status=''
+cs_code_security_disabled_probe=no
+scan_boundary_epoch=''
 declare -a reasons=()
 
 die() {
@@ -130,6 +138,8 @@ if [[ -n $cq_state_file ]]; then
 fi
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; gate evidence unavailable'
+[[ $scan_settling_rounds =~ ^[1-9][0-9]*$ && $scan_settling_rounds -le 60 ]] ||
+    die 'MERGE_GATE_SCAN_ROUNDS must be an integer from 1 to 60'
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/merge-gate.XXXXXX") || die 'could not create work directory'
 chmod 700 "$work_dir"
@@ -312,6 +322,12 @@ fi
 # 404 "no analysis found" body for this ref/repo), or "error" (403, a
 # malformed body, or any other unreadable response) -- the caller must treat
 # "error" as unreadable, never as "empty".
+code_security_disabled_response() {
+    jq -e '(.status == 403 or .status == "403") and
+           .message == "Code Security must be enabled for this repository to use code scanning."' \
+        "$1" >/dev/null 2>&1
+}
+
 analyses_for_ref() {
     local ref=$1 out=$2
     if "$GH_BIN" api -X GET "repos/$repo/code-scanning/analyses" -f "ref=$ref" -F per_page=100 \
@@ -356,19 +372,103 @@ analyses_recent() {
     return 0
 }
 
-# Secondary signal only: is a code-scanning-related check run still running
-# for this head, under either app slug? Its failure to answer is never
-# itself a block -- absence of a completed analysis (below) is what blocks,
-# not absence of a check run.
-scan_check_run_pending() {
+# Secondary signal: classify code-scanning-related check runs for this head.
+# The API failure is deliberately non-authoritative: analysis evidence below
+# still decides the gate. A readable all-skipped set is the one safe proof of
+# a path-filtered workflow; a failed/cancelled run remains a named block.
+scan_check_runs() {
     local runs_file="$work_dir/cs-runs.json"
+    scan_runs_state=unreadable
+    scan_runs_names=''
+    scan_runs_skipped=''
+    scan_runs_failed=''
     "$GH_BIN" api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
-        >"$runs_file" 2>"$work_dir/api.err" || return 1
-    jq -e '
-      [.check_runs[]? | select(((.app.slug // "") == "github-code-scanning") or
-                                ((.app.slug // "") == "github-advanced-security"))] as $runs |
-      ($runs | length) > 0 and ($runs | any(.status != "completed"))
-    ' "$runs_file" >/dev/null 2>&1
+        >"$runs_file" 2>"$work_dir/api.err" || return 0
+    jq -e 'type == "object" and (.check_runs | type) == "array"' \
+        "$runs_file" >/dev/null 2>&1 || return 0
+
+    scan_runs_names=$(jq -r '
+      [.check_runs[]
+       | select(((.app.slug // "") == "github-code-scanning") or
+                ((.app.slug // "") == "github-advanced-security"))
+       | (.name // .workflow_name // "code-scanning")] | unique | join(", ")
+    ' "$runs_file") || return 0
+    if [[ -z $scan_runs_names ]]; then
+        scan_runs_state=none
+        return 0
+    fi
+    scan_runs_skipped=$(jq -r '
+      [.check_runs[]
+       | select(((.app.slug // "") == "github-code-scanning") or
+                ((.app.slug // "") == "github-advanced-security"))
+       | select((.status // "") == "completed" and (.conclusion // "") == "skipped")
+       | (.name // .workflow_name // "code-scanning")] | unique | join(", ")
+    ' "$runs_file") || return 0
+    scan_runs_failed=$(jq -r '
+      [.check_runs[]
+       | select(((.app.slug // "") == "github-code-scanning") or
+                ((.app.slug // "") == "github-advanced-security"))
+       | select((.status // "") == "completed" and
+                ((.conclusion // "") | ascii_downcase
+                 | IN("failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure")))
+       | (.name // .workflow_name // "code-scanning")] | unique | join(", ")
+    ' "$runs_file") || return 0
+    if jq -e '
+      any(.check_runs[]?;
+          (((.app.slug // "") == "github-code-scanning") or
+           ((.app.slug // "") == "github-advanced-security")) and
+          ((.status // "") != "completed"))
+    ' "$runs_file" >/dev/null 2>&1; then
+        scan_runs_state=pending
+    elif [[ -n $scan_runs_failed ]]; then
+        scan_runs_state=failed
+    elif [[ -n $scan_runs_skipped && $scan_runs_skipped == "$scan_runs_names" &&
+            -n $scan_boundary_epoch ]] &&
+        jq -e --argjson boundary "$scan_boundary_epoch" '
+          [.check_runs[]?
+           | select(((.app.slug // "") == "github-code-scanning") or
+                    ((.app.slug // "") == "github-advanced-security"))] as $scans
+          | ($scans | length) > 0 and
+            all($scans[];
+              (([.started_at, .startedAt, .created_at, .createdAt,
+                 .completed_at, .completedAt]
+                | map(select(type == "string" and length > 0))) as $timestamps
+               | ($timestamps | length) > 0 and
+                 all($timestamps[]; try (fromdateiso8601 > $boundary) catch false)))
+        ' "$runs_file" >/dev/null 2>&1; then
+        scan_runs_state=not-applicable
+    else
+        scan_runs_state=terminal
+    fi
+}
+
+# A path-filtered skipped run is only not-applicable when its timestamps prove
+# it was produced after the latest base retarget. A pre-retarget skipped result
+# must fall through to the ordinary missing-evidence block; an unreadable
+# timeline or timestamp never becomes an implicit zero boundary.
+scan_boundary() {
+    local event_time
+    scan_boundary_epoch=''
+    "$GH_BIN" api --paginate "repos/$repo/issues/$pr/timeline" \
+        >"$work_dir/cs-timeline.json" 2>"$work_dir/api.err" || return 0
+    jq -e 'type == "array"' "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
+    event_time=$(jq -r --arg base "$live_base" '
+      [ .[]?
+        | select((.event // "") == "base_ref_changed")
+        | ([.base_ref, .baseRefName, .base_ref_name]
+           | map(select(type == "string" and length > 0)) | first // "") as $event_base
+        | select($event_base == "" or $event_base == $base)
+        | ([.created_at, .createdAt]
+           | map(select(type == "string" and length > 0)) | first // "")
+        | select(length > 0)
+      ] | sort | last // empty
+    ' "$work_dir/cs-timeline.json" 2>/dev/null) || return 0
+    [[ -n $event_time ]] || return 0
+    scan_boundary_epoch=$(date -u -d "$event_time" +%s 2>/dev/null) || {
+        scan_boundary_epoch=''
+        return 0
+    }
+    [[ $scan_boundary_epoch =~ ^[1-9][0-9]*$ ]] || scan_boundary_epoch=''
 }
 
 # A pull_request-event CodeQL/SARIF upload sets GITHUB_SHA to the GitHub-
@@ -387,6 +487,10 @@ pr_ref="refs/pull/$pr/merge"
 pr_head_ref="refs/pull/$pr/head"
 pr_analyses_state=$(analyses_for_ref "$pr_ref" "$work_dir/cs-analyses-pr.json")
 pr_head_analyses_state=$(analyses_for_ref "$pr_head_ref" "$work_dir/cs-analyses-pr-head.json")
+if code_security_disabled_response "$work_dir/cs-analyses-pr.json" ||
+   code_security_disabled_response "$work_dir/cs-analyses-pr-head.json"; then
+    cs_code_security_disabled_probe=yes
+fi
 
 cs_head_matches=0
 if [[ $pr_analyses_state == ok ]]; then
@@ -399,6 +503,19 @@ cs_head_ref_matches=0
 if [[ $pr_head_analyses_state == ok ]]; then
     cs_head_ref_matches=$(jq --arg sha "$head_sha" '[.[] | select(.commit_sha == $sha)] | length' \
         "$work_dir/cs-analyses-pr-head.json" 2>/dev/null) || cs_head_ref_matches=''
+fi
+
+# Repository metadata exposes whether Code Security itself is disabled without
+# requiring code-scanning API scope. It is only an exemption when paired with
+# the exact 403 response below; unreadable or malformed repository metadata is
+# deliberately indistinguishable from an unknown status here.
+if "$GH_BIN" api "repos/$repo" >"$work_dir/repo.json" 2>"$work_dir/api.err"; then
+    repo_code_security_status=$(jq -r '
+        if (.security_and_analysis.code_security.status? | type) == "string"
+        then .security_and_analysis.code_security.status
+        else ""
+        end
+    ' "$work_dir/repo.json" 2>/dev/null) || repo_code_security_status=''
 fi
 
 cs_any_head_match=no
@@ -417,10 +534,11 @@ fi
 # that must keep being gated. Signal 2 is the alerts endpoint's definitive
 # 404 "no analysis found" body: GitHub's own readable, structured answer
 # that no analysis of any kind has ever been recorded for this repository
-# (gh still writes that JSON body to stdout on the non-2xx response). A 403,
-# a malformed body, a "configured" state, a 2xx alerts response, or either
-# probe simply failing to run leaves this "no" -- n/a is still never read as
-# "zero findings" anywhere below.
+# (gh still writes that JSON body to stdout on the non-2xx response). A 403
+# without the exact Code Security-disabled repository signal, a malformed
+# body, a "configured" state, a 2xx alerts response, or either probe simply
+# failing to run leaves this "no" -- n/a is still never read as "zero
+# findings" anywhere below.
 default_setup_state=''
 if "$GH_BIN" api "repos/$repo/code-scanning/default-setup" \
     >"$work_dir/cs-default-setup.json" 2>"$work_dir/api.err"; then
@@ -430,6 +548,9 @@ fi
 alerts_probe_definitive_404=no
 if ! "$GH_BIN" api "repos/$repo/code-scanning/alerts?per_page=1" \
     >"$work_dir/cs-alerts-probe.json" 2>"$work_dir/api.err"; then
+    if code_security_disabled_response "$work_dir/cs-alerts-probe.json"; then
+        cs_code_security_disabled_probe=yes
+    fi
     if jq -e '(.status == "404") and ((.message // "") == "no analysis found")' \
         "$work_dir/cs-alerts-probe.json" >/dev/null 2>&1; then
         alerts_probe_definitive_404=yes
@@ -457,8 +578,16 @@ fi
 cs_status=''
 cs_last_ref=''
 cs_last_date=''
-if scan_check_run_pending; then
+scan_boundary
+scan_check_runs
+if [[ $scan_runs_state == pending ]]; then
     cs_status=pending
+elif [[ $scan_runs_state == failed ]]; then
+    cs_status=failed
+elif [[ $scan_runs_state == not-applicable ]]; then
+    cs_status=not-applicable
+elif [[ $repo_code_security_status == disabled && $cs_code_security_disabled_probe == yes ]]; then
+    cs_status=not-enabled
 elif [[ $cs_any_head_match == yes ]]; then
     cs_status=current
 elif [[ $pr_analyses_state == error ]]; then
@@ -466,6 +595,9 @@ elif [[ $pr_analyses_state == error ]]; then
 else
     base_ref="refs/heads/$base"
     base_analyses_state=$(analyses_for_ref "$base_ref" "$work_dir/cs-analyses-base.json")
+    if code_security_disabled_response "$work_dir/cs-analyses-base.json"; then
+        cs_code_security_disabled_probe=yes
+    fi
     base_has_analyses=no
     if [[ $base_analyses_state == ok ]] &&
         jq -e 'length > 0' "$work_dir/cs-analyses-base.json" >/dev/null 2>&1; then
@@ -479,6 +611,9 @@ else
     repo_confirmed_no_pr_scans=no
     if [[ $base_has_analyses == yes ]]; then
         recent_state=$(analyses_recent "$work_dir/cs-analyses-recent.json")
+        if code_security_disabled_response "$work_dir/cs-analyses-recent.json"; then
+            cs_code_security_disabled_probe=yes
+        fi
         if [[ $recent_state == ok ]] &&
             ! jq -e 'any(.[]?; (.ref // "") | startswith("refs/pull/"))' \
                 "$work_dir/cs-analyses-recent.json" >/dev/null 2>&1; then
@@ -499,15 +634,40 @@ else
     fi
 fi
 
+# The analyses probes above are normally the first place this 403 is seen,
+# but keep the decision independent of which code-scanning endpoint supplied
+# it. This late reconciliation also covers a repository-level 403 observed
+# while checking the base or recent analysis history.
+if [[ ( $cs_status == absent || $cs_status == unreadable ) &&
+      $repo_code_security_status == disabled &&
+      $cs_code_security_disabled_probe == yes ]]; then
+    cs_status=not-enabled
+fi
+
 case $cs_status in
-    current|scheduled-only|unused) ;;
-    pending) block 'code-scanning analysis has not completed for the current head' ;;
-    absent) block 'no code-scanning analysis is recorded for the current head' ;;
+    current|scheduled-only|unused|not-applicable|not-enabled) ;;
+    pending)
+        printf 'code-scanning: SETTLING rounds=1/%s runs=%s\n' \
+            "$scan_settling_rounds" "${scan_runs_names:-code-scanning}"
+        block 'code-scanning analysis has not completed for the current head'
+        ;;
+    failed)
+        printf 'code-scanning: FAILED runs=%s\n' "$scan_runs_failed"
+        block "scan-failed: $scan_runs_failed"
+        ;;
+    absent)
+        printf 'scan-missing: codeql (human action: inspect the CodeQL workflow and dispatch it or update its path filter)\n'
+        block 'no code-scanning analysis is recorded for the current head'
+        ;;
     *) block 'code-scanning analysis status is unreadable for the current head' ;;
 esac
 
 if [[ $cs_status == scheduled-only ]]; then
     printf 'code-scanning: scheduled-only, last analysis %s on %s\n' "$cs_last_date" "$cs_last_ref"
+elif [[ $cs_status == not-applicable ]]; then
+    printf 'code-scanning: not-applicable (path-filtered), runs skipped: %s\n' "$scan_runs_skipped"
+elif [[ $cs_status == not-enabled ]]; then
+    printf 'code-scanning: not-enabled (code_security disabled)\n'
 fi
 
 # A scheduled-only repository is exempt from the completion-status block
@@ -515,7 +675,7 @@ fi
 # only the two-signal "never used at all" exception waives that below. n/a
 # stays blocked for a scheduled-only repository the same as for any other.
 cs_completion_exempt=no
-[[ $cs_status == unused ]] && cs_completion_exempt=yes
+[[ $cs_status == unused || $cs_status == not-enabled ]] && cs_completion_exempt=yes
 
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||
