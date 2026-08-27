@@ -41,6 +41,8 @@ source "$SCRIPT_DIR/lib/trunk-policy.sh"
 SUBJECT=""
 BODY=""
 ALLOW_EMPTY=0
+EXACT=1
+SCOPE_MODE=""
 ALLOW_BASE_INHERITED=0
 BASE_INHERITED_REF=""
 YOLO=0
@@ -53,7 +55,7 @@ LOCK_FD=""
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
+Usage: $PROGNAME [--exact|--include-staged] --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
                  [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
@@ -70,6 +72,10 @@ Options:
                       Omitted entirely, a "Co-Authored-By:" trailer is derived
                       from this repository's environment contract instead.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
+  --exact             Refuse staged paths outside FILE operands and mismatched
+                      committed file counts (the default scope).
+  --include-staged    Include existing staged paths, preserving legacy behavior.
+                      This explicitly opts out of exact scope checks.
   --allow-base-inherited BASE
                       Name the exact merge base whose protected paths may be
                       carried into this commit after byte-identity checks.
@@ -84,7 +90,8 @@ Behaviour:
     BEFORE staging anything; exits 2 naming the unwritable path if either fails.
   * Refuses to commit while HEAD is on main, master or trunk.
   * Runs 'git diff --cached --check' after staging and aborts on its findings.
-  * Anything already staged in the index is included in the commit.
+  * Exact mode refuses staged paths outside the FILE operands before staging.
+  * Include-staged mode includes anything already staged in the index.
   * Every trailer -- supplied or derived -- is validated before staging and
     verified against the commit's own parsed trailers after committing.
 
@@ -142,6 +149,18 @@ parse_args() {
                 ;;
             --trailer) need_value "$@"; TRAILERS+=("$2"); shift 2 ;;
             --allow-empty) ALLOW_EMPTY=1; shift ;;
+            --exact)
+                [[ $SCOPE_MODE != include ]] || die 1 "--exact and --include-staged are mutually exclusive"
+                EXACT=1
+                SCOPE_MODE=exact
+                shift
+                ;;
+            --include-staged)
+                [[ $SCOPE_MODE != exact ]] || die 1 "--exact and --include-staged are mutually exclusive"
+                EXACT=0
+                SCOPE_MODE=include
+                shift
+                ;;
             --allow-base-inherited)
                 need_value "$@"
                 (( ALLOW_BASE_INHERITED == 0 )) || die 1 "--allow-base-inherited given more than once"
@@ -250,6 +269,87 @@ validate_args() {
     if (( ${#FILES[@]} == 0 && ALLOW_EMPTY == 0 )); then
         die 1 "no FILE operands given; pass at least one file or --allow-empty"
     fi
+}
+
+# Exact mode is the safe default for root corrections: a pre-existing staged
+# path must be one of the explicit operands, otherwise the caller may commit a
+# worker's unrelated work. Resolve both sides with Git's own pathspec matcher
+# and --no-renames output so directory operands, duplicates, and rename pairs
+# use the same de-duplicated path set.
+scope_paths() {
+    local path status old new
+    local -A scoped=()
+    (( ${#FILES[@]} > 0 )) || return 0
+
+    while IFS= read -r -d '' path; do
+        scoped["$path"]=1
+    done < <(git diff --cached --name-only --no-renames -z \
+        --diff-filter=ACDMRTUXB -- "${FILES[@]}")
+
+    # A rename is represented as a deletion and an addition by --no-renames.
+    # When either side is selected, retain both paths in the expected set so a
+    # staged rename can be named by its live destination or its old source.
+    while IFS= read -r -d '' status; do
+        case "$status" in
+            R*)
+                IFS= read -r -d '' old || break
+                IFS= read -r -d '' new || break
+                if [[ ${scoped["$old"]+yes} == yes || ${scoped["$new"]+yes} == yes ]]; then
+                    scoped["$old"]=1
+                    scoped["$new"]=1
+                fi
+                ;;
+        esac
+    done < <(git diff --cached --name-status --find-renames -z --diff-filter=R)
+
+    for path in "${!scoped[@]}"; do
+        printf '%s\0' "$path"
+    done
+}
+
+exact_scope_paths_match() {
+    local path
+    local -A staged=() expected=()
+
+    while IFS= read -r -d '' path; do
+        staged["$path"]=1
+    done < <(git diff --cached --name-only --no-renames -z --diff-filter=ACDMRTUXB)
+    while IFS= read -r -d '' path; do
+        expected["$path"]=1
+    done < <(scope_paths)
+
+    for path in "${!staged[@]}"; do
+        [[ ${expected["$path"]+yes} == yes ]] || return 1
+    done
+    for path in "${!expected[@]}"; do
+        [[ ${staged["$path"]+yes} == yes ]] || return 1
+    done
+    return 0
+}
+
+refuse_staged_outside_operands() {
+    local path
+    local -a offending=()
+    local -A expected=()
+    (( EXACT == 1 )) || return 0
+
+    while IFS= read -r -d '' path; do
+        expected["$path"]=1
+    done < <(scope_paths)
+    while IFS= read -r -d '' path; do
+        [[ ${expected["$path"]+yes} == yes ]] || offending+=("$path")
+    done < <(git diff --cached --name-only --no-renames -z --diff-filter=ACDMRTUXB)
+    ((${#offending[@]} == 0)) || {
+        printf '%s: --exact refuses staged paths outside FILE operands:\n' "$PROGNAME" >&2
+        printf '  %s\n' "${offending[@]}" >&2
+        die 1 "remove the foreign paths from the index or pass --include-staged explicitly"
+    }
+}
+
+guard_exact_operand_scope() {
+    (( EXACT == 1 )) || return 0
+    exact_scope_paths_match || die 1 \
+        '--exact staged paths do not match the FILE operand pathspec scope'
 }
 
 # Leading/trailing whitespace trim -- the standard parameter-expansion idiom,
@@ -441,9 +541,22 @@ explain_ignored() {
 }
 
 stage_files() {
-    local rc=0
+    local rc=0 file
+    local -a stageable=()
     (( ${#FILES[@]} > 0 )) || return 0
-    git add -- "${FILES[@]}" || rc=$?
+    for file in "${FILES[@]}"; do
+        # An already-staged deletion (the old side of a staged rename) has no
+        # live path for git add to match. Its index entry is already in scope;
+        # stage the remaining operands and leave that deletion untouched.
+        if [[ ! -e $file && ! -L $file ]] &&
+            ! git diff --cached --quiet -- "$file"; then
+            continue
+        fi
+        stageable+=("$file")
+    done
+    if ((${#stageable[@]} > 0)); then
+        git add -- "${stageable[@]}" || rc=$?
+    fi
     if (( rc != 0 )); then
         explain_ignored
         die 1 "git add failed (rc=$rc) for: ${FILES[*]}"
@@ -528,8 +641,10 @@ main() {
     require_writable_git_dirs
     refuse_trunk
     acquire_transaction_lock
+    refuse_staged_outside_operands
     stage_files
     guard_staged_protected_paths
+    guard_exact_operand_scope
     check_staged
     build_message_args
     do_commit

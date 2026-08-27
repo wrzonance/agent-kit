@@ -817,6 +817,12 @@ threshold (`STALL_THRESHOLD_MINUTES`, default 12) print `verdict=stalled`: inter
 worker, re-dispatch it once with the preserved worktree evidence and the exact remaining
 step, and if the re-dispatch stalls too, park the workstream and name it in the report.
 
+### Quiescence gate for root writes
+
+Before root writes in a worker worktree, prove no unacknowledged `SendMessage`, clean status except
+declared operator-pending paths, and `quiescence:` evidence.
+Prefer `followup_task`; inline requires `--exact`.
+
 ### Root review and draft PR after a worker push
 
 The worker committed and pushed its own branch; the root reviews and publishes — it never
@@ -826,9 +832,8 @@ declared-skip form `SPIKE + REVERT: SKIPPED — extends existing pattern <name>`
 one-line justification for why nothing in the change is novel), the performed form
 `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`
 when immutable transcript evidence names both operations, or `SPIKE + REVERT: N/A — <concrete
-reason>` for a no-code scope. This prose read bounces only absent or unjustified
-Stage 4 reports, preserving the worktree for the next disposition; it never asks the worker to
-rewrite a completed report.
+reason>` for a no-code scope. This read bounces only absent or unjustified Stage 4 reports; it
+never asks workers to rewrite.
 
 Design review runs **after** the push, never as a gate that blocks a finished worker. Review
 the pushed diff once — `git -C "$worktree" diff "origin/$base...HEAD"` (a chained issue diffs
@@ -838,12 +843,9 @@ this issue, or the root records one of the sanctioned `chain-conversion`, `merge
 `prediction-expansion` dispositions with an evidence-based reason before opening the PR.
 Confirmed findings go back to the same worker as one batch (`followup_task`); at every correction
 call site, resume the same worker with `followup_task` first and make a fresh dispatch the exception.
-A root may apply an inline correction only when it is purely mechanical, has no new behavior, data
-shape, or control flow, is at most five changed lines, and the root authored the exact diff during
-review; it must rerun the full declared verification, use root harness attribution, and record the
-reason it skipped dispatch. A qualifying two-line correction costs zero dispatches. A follow-up
-commit on a pushed branch is cheap, a blocked worker is not. When the review clears, root
-must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
+Root may make a mechanical, ≤5-line inline correction, review-authored when gate holds; it costs zero dispatches;
+rerun full verification with root attribution and record why dispatch was skipped.
+Then root must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
 feeds Collect and Step 3a.
 
@@ -867,6 +869,8 @@ validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXX
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
+# Validator-proved staged paths are published.
+validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
 ```
 
