@@ -234,6 +234,8 @@ assert_contains "$prompt" "SPEC-BYTES \$(must-stay-literal)" 'spec bytes stay li
 assert_contains "$prompt" 'PRIOR-BYTES' 'prior-art bytes are injected'
 assert_contains "$prompt" 'worker_model='"'"'gpt-5.6-luna' 'worker model is filled'
 assert_contains "$prompt" 'AGENT_CMD_TEST_FOCUS' 'declared focus contract remains documented'
+assert_contains "$prompt" 'needs-paths: <glob>' \
+    'issue leads emit a machine-readable write-set expansion request when blocked'
 assert_not_contains "$prompt" '<PASTE' 'issue lead has no PASTE placeholder'
 assert_not_contains "$prompt" '<WHEN' 'issue lead has no WHEN placeholder'
 assert_not_contains "$prompt" '__BOUNDARY_DISCLOSURE__' 'boundary disclosure token never survives composition'
