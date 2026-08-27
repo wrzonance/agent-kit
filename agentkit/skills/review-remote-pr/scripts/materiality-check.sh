@@ -55,8 +55,6 @@ done
 [[ -n $base ]] || die '--base is required'
 git -C "$worktree" check-ref-format --branch "$base" >/dev/null 2>&1 ||
     die '--base must be a safe branch name'
-git -C "$worktree" rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
-    die "--base does not resolve to a commit: $base"
 [[ $repo =~ $SLUG_RE ]] || die '--repo must be OWNER/NAME using safe characters'
 [[ $pr =~ $PR_RE ]] || die '--pr must be a positive integer'
 
@@ -75,12 +73,15 @@ if git -C "$worktree" remote get-url origin >/dev/null 2>&1; then
     diff_base="origin/$fetch_base"
 fi
 
+git -C "$worktree" rev-parse --verify --quiet "$diff_base^{commit}" >/dev/null ||
+    die "--base does not resolve to a commit: $base"
+
 changed=$(git -C "$worktree" diff --no-renames --name-only "$diff_base...HEAD") ||
     die 'could not compute the changed-file list'
 canonical_file=$(mktemp "${TMPDIR:-/tmp}/materiality-diff.XXXXXXXXXX") ||
     die 'could not create a temporary file for the canonical diff'
 trap 'rm -f -- "$canonical_file"' EXIT
-git -C "$worktree" diff --find-renames --unified=25 "$diff_base...HEAD" >"$canonical_file" ||
+git -C "$worktree" diff --no-renames --binary "$diff_base...HEAD" >"$canonical_file" ||
     die 'could not render the canonical diff'
 [[ -s $canonical_file ]] || die 'the diff is empty; nothing to classify'
 grep -q '[^[:space:]]' -- "$canonical_file" || die 'the diff is empty; nothing to classify'
