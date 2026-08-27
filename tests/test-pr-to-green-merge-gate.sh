@@ -46,7 +46,11 @@ fi
 # unescaped { and } this JSON itself contains.
 default_pr_analyses='[{"ref":"refs/pull/9/merge","commit_sha":"$HEAD_SHA","tool":{"name":"CodeQL"},"created_at":"2026-08-20T00:00:00Z"}]'
 default_check_runs='{"check_runs":[]}'
+default_timeline='[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]'
 case \$endpoint in
+repos/owner/repo)
+    printf '{"security_and_analysis":{"code_security":{"status":"%s"}}}\n' "\${REPO_CODE_SECURITY_STATUS:-enabled}"
+    ;;
 repos/owner/repo/pulls/9)
     mergeable=\${PR_MERGEABLE:-true}
     draft=\${PR_DRAFT:-false}
@@ -66,12 +70,19 @@ repos/owner/repo/pulls/9)
 repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
     ;;
+repos/owner/repo/issues/9/timeline)
+    printf '%s\n' "\${CS_TIMELINE_JSON:-\$default_timeline}"
+    ;;
 repos/owner/repo/code-scanning/analyses)
     case "\$ref_param_set:\$ref_param" in
     yes:refs/pull/9/merge)
         case \${CS_PR_ANALYSES_MODE:-ok} in
         ok)
             printf '%s\n' "\${CS_PR_ANALYSES_JSON:-\$default_pr_analyses}"
+            ;;
+        code-security-disabled)
+            printf '{"message":"Code Security must be enabled for this repository to use code scanning.","status":"403"}\n'
+            exit 1
             ;;
         empty)
             printf '{"message":"no analysis found","documentation_url":"https://docs.github.com/rest","status":"404"}\n'
@@ -550,6 +561,79 @@ for slug in github-code-scanning github-advanced-security; do
         "the pending block is named for app.slug=$slug"
 done
 
+# --- issue #518: distinguish settling, failed, missing, and path-filtered scans
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an active CodeQL run remains a bounded settling block'
+assert_contains "$out" 'code-scanning: SETTLING' \
+    'active scan evidence reports the settling state'
+assert_contains "$out" 'rounds=' \
+    'settling state discloses its bounded round budget'
+assert_contains "$out" 'gate=BLOCKED' \
+    'settling state cannot pass the merge gate'
+assert_contains "$out" 'blocked reason=code-scanning analysis has not completed' \
+    'settling state names the incomplete analysis reason'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"failure"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a failed CodeQL run blocks the merge'
+assert_contains "$out" 'scan-failed: CodeQL' \
+    'a failed scan names the workflow that failed'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty CS_RUNS_JSON='{"check_runs":[]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'missing scan evidence blocks the merge'
+assert_contains "$out" 'scan-missing: codeql' \
+    'missing scan evidence names the workflow and required human action'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped","created_at":"2026-08-20T00:00:00Z"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '0' "$rc" 'all-skipped code scanning is not an execution failure'
+assert_contains "$out" 'code-scanning: not-applicable (path-filtered), runs skipped: CodeQL' \
+    'all skipped code-scanning runs are classified as path-filtered'
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a path-filtered scan does not block when alerts are readable and empty'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped","created_at":"2026-08-20T00:00:00Z"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'path-filtered scans still require readable alerts evidence'
+assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
+    'not-applicable does not turn unreadable alert evidence into zero findings'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_TIMELINE_JSON='[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]' \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped","created_at":"2026-08-18T00:00:00Z"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a pre-retarget skipped scan does not qualify as not-applicable'
+assert_contains "$out" 'scan-missing: codeql' \
+    'a skipped scan before the latest retarget falls through to missing evidence'
+assert_not_contains "$out" 'not-applicable (path-filtered)' \
+    'pre-retarget skipped evidence is never classified as path-filtered'
+
 # --- PR #413 follow-up F1: a still-running scan blocks as pending even when
 # an earlier analysis already matches the head (a rerun or a second SARIF
 # upload in flight is real, incomplete evidence; scan_check_run_pending is
@@ -785,6 +869,36 @@ good_digest
 out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)
 assert_contains "$out" 'gate=PASS pr=9' \
     'a configured repository with zero open alerts keeps passing, unaffected by the corroboration'
+
+# --- issue #522: Code Security disabled is a readable repository fact, and
+# the exact code-scanning 403 is the second signal needed for not-enabled.
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=code-security-disabled REPO_CODE_SECURITY_STATUS=disabled \
+    CS_ALERTS_PROBE=forbidden-403 run_gate)
+rc=$?
+set -e
+assert_eq '0' "$rc" 'disabled Code Security fixture exits successfully'
+assert_contains "$out" 'code-scanning: not-enabled (code_security disabled)' \
+    'a disabled Code Security repository reports code scanning as not-enabled'
+assert_contains "$out" 'gate=PASS pr=9' \
+    'disabled Code Security plus its exact 403 lets the gate pass like not-enabled Code Quality'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=code-security-disabled REPO_CODE_SECURITY_STATUS=enabled \
+    CS_ALERTS_PROBE=forbidden-403 run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" \
+    'the exact Code Security 403 still blocks when repository security is enabled'
+assert_contains "$out" 'blocked reason=code-scanning analysis status is unreadable for the current head' \
+    'an enabled Code Security repository never receives the not-enabled exemption'
+assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
+    'an enabled Code Security repository still blocks unreadable alerts evidence'
 
 # -- issue #477: --adversarial-review-status takes review-ledger.sh's own
 #    verdict word as the adversarial-review completion signal ---------------

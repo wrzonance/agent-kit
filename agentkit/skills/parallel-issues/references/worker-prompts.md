@@ -315,6 +315,14 @@ __ACCEPTANCE_DECLARATIONS__
 ## Prior art
 <PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>
 
+### Completion handoff
+
+If a worker completion still asks for approval, the root classifies it as
+`needs-authorization` when its final non-blank line ends in `?` or `reply yes`; it is not a
+successful completion. Under `--yolo`, the root resumes the same worker with its stored grant
+exactly once via `followup_task` and logs
+`auto_resume_authorization=needs-authorization attempt=1`; repeated approval requests are parked.
+
 Return the six-step/review/finish status and the completion report (branch, full commit SHA,
 diffstat, green verification log path) — or, on an environment refusal, the fallback
 publication handback — or BLOCKED with one concrete reason. Do not contact the forge beyond

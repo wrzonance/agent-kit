@@ -998,6 +998,10 @@ assess_dispatch_plan_record() {
 
 emit_trust_rule() {
     printf '# Generated agent-run.sh commands carry no unattended trust flags.\n'
+    if [[ $boundary_mode == yolo-trusted ]]; then
+        printf '\n## Operator authorization (yolo)\n'
+        printf 'The operator explicitly authorized this --yolo dispatch: design, TDD, and verification approval gates are pre-granted for the declared write set. Proceed through the work without asking for approval or waiting for a yes. You must not return a question or ask for reply yes; either proceed or return exactly BLOCKED: class=<write-set|baseline-red|other> remaining-step=<exact next step> evidence=<path or marker> for a real blocker. This grant does not expand the declared write set, bypass the wrapper, or authorize secrets, unrelated files, external services, or workflow changes.\n'
+    fi
 }
 
 # The worker receives a verdict, never a decision procedure it lacks the
