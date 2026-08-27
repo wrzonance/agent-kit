@@ -818,6 +818,12 @@ threshold (`STALL_THRESHOLD_MINUTES`, default 12) print `verdict=stalled`: inter
 worker, re-dispatch it once with the preserved worktree evidence and the exact remaining
 step, and if the re-dispatch stalls too, park the workstream and name it in the report.
 
+### Quiescence gate for root writes
+
+Before root writes in a worker worktree, prove no unacknowledged `SendMessage`, clean status except
+declared operator-pending paths, and `quiescence:` evidence.
+Prefer `followup_task`; inline requires `--exact`.
+
 ### Root review and draft PR after a worker push
 
 The worker committed and pushed its own branch; the root reviews and publishes — it never
@@ -827,9 +833,8 @@ declared-skip form `SPIKE + REVERT: SKIPPED — extends existing pattern <name>`
 one-line justification for why nothing in the change is novel), the performed form
 `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`
 when immutable transcript evidence names both operations, or `SPIKE + REVERT: N/A — <concrete
-reason>` for a no-code scope. This prose read bounces only absent or unjustified
-Stage 4 reports, preserving the worktree for the next disposition; it never asks the worker to
-rewrite a completed report.
+reason>` for a no-code scope. This read bounces only absent or unjustified Stage 4 reports; it
+never asks workers to rewrite.
 
 Design review runs **after** the push, never as a gate that blocks a finished worker. Review
 the pushed diff once — `git -C "$worktree" diff "origin/$base...HEAD"` (a chained issue diffs
@@ -839,12 +844,9 @@ this issue, or the root records one of the sanctioned `chain-conversion`, `merge
 `prediction-expansion` dispositions with an evidence-based reason before opening the PR.
 Confirmed findings go back to the same worker as one batch (`followup_task`); at every correction
 call site, resume the same worker with `followup_task` first and make a fresh dispatch the exception.
-A root may apply an inline correction only when it is purely mechanical, has no new behavior, data
-shape, or control flow, is at most five changed lines, and the root authored the exact diff during
-review; it must rerun the full declared verification, use root harness attribution, and record the
-reason it skipped dispatch. A qualifying two-line correction costs zero dispatches. A follow-up
-commit on a pushed branch is cheap, a blocked worker is not. When the review clears, root
-must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
+Root may make a mechanical, ≤5-line inline correction, review-authored when gate holds; it costs zero dispatches;
+rerun full verification with root attribution and record why dispatch was skipped.
+Then root must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
 feeds Collect and Step 3a.
 
@@ -868,6 +870,8 @@ validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXX
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
+# Validator-proved staged paths are published.
+validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
 ```
 
@@ -883,7 +887,7 @@ Waiting is not work, and narrating a wait is not a status report. Read [.shared/
 
 Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration — it carried zero information and will again; escalate the bound or run the Collect section's stall check instead.
 
-Durable state to inspect after a wait reports an actual completion, and the runnable recipe (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO`): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). `gh-pr-state.sh` returns a five-line digest and exits 0 whether CI is green, failing, or pending — CI state is data, not an error. Read the digest and stop.
+After completion, inspect durable state (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). Digest exits 0 for green, failing, or pending CI; read it and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
@@ -917,11 +921,11 @@ Same evidence rule as the dispatch move: the helper's printed line is the record
 ### Step 3a: Dispatch draft-phase agents immediately
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
-**The materiality gate runs before the review spend.** Before launching any reviewer, the
-loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base"`
+**Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
+`"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.
 — for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
-predecessor's changes contaminate the successor's verdict.
-`verdict=skip-eligible` (every changed file is test-only or docs-only) takes the
+predecessor's changes contaminate successor's verdict. Pass acceptance.txt; non-pass blocks.
+`verdict=skip-eligible` (test/docs-only and acceptance green) takes the
 documented-skip path: publish the receipt with `--skip-rationale` and the helper's printed
 oracle line, and launch no reviewer. `verdict=material` — any file touching executable
 logic, workflow, authorization, or persistence — proceeds to the full review. Either way the
@@ -961,25 +965,22 @@ Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults t
 
 ### Adversarial-review receipt:
 
-Every dispatched `review-remote-pr` loop must run `post-receipt.sh precheck` before handing off to
-the consent-holding context, against the fetched PR conversation artifact
-`$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker already present means
-`adversarial review budget spent`, do not rerun. A missing/unreadable artifact is evidence
-unavailable, not an empty comment set — a completed review or verified skip without the receipt
-below is a **no-silent-skip** failure and cannot be handed off as draft-phase-complete. Materiality,
-consent-holder ownership, exit codes, monitoring, and the blind fallback are
-`review-remote-pr`'s ["$agentkit/review-remote-pr/references/adversarial-review.md"](../review-remote-pr/references/adversarial-review.md)
-contract; this loop runs precheck before root launch and publishes after root returns the result.
+Every dispatched loop must run `post-receipt.sh precheck` before handing off to the consent-holder,
+against `$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker means spent, do not rerun.
+A missing/unreadable artifact is evidence unavailable, not an empty set: a review or skip without
+the receipt is a **no-silent-skip** failure. Materiality, consent, and exit codes follow
+`review-remote-pr`'s [adversarial-review reference](../review-remote-pr/references/adversarial-review.md).
 
 ```bash
 # The loop runs this before handing the launch to root, using the Step 1 artifact.
-: "${PR:?re-set PR to the current pull request; shell state does not persist}"
+: "${PR:?set PR}" "${worktree:?set worktree}" "${REPO:?set REPO}" "${base:?set base}"
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$worktree" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$base") || exit 1
 precheck_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
 case "$precheck_rc" in
     0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
     10) printf '%s\n' 'not spent — proceed to the adversarial review gate' ;;
@@ -1033,8 +1034,8 @@ rather than double-posting when the marker is already present.
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
 
 ```
-#57 Parser resilience  → ✅ PR #67 draft-ready (CI green, adversarial review 3/3 handled)  worker=<model> <effort>
-#54 Rate limiting      → ✅ PR #68 draft-ready (CI green, adversarial review 0 findings)   worker=<model> <effort>
+#57 Parser resilience  → ✅ PR #67 draft-ready (repo-verify=green acceptance=<cmd>:<status>)  worker=<model> <effort>
+#54 Rate limiting      → ✅ PR #68 draft-ready (CI green, review 0 findings)   worker=<model> <effort>
 #62 Logging cleanup    → ⚠️  PR #69 BLOCKED — coverage 78% < 80% gate; needs more tests    worker=<model> <effort>
 
 Mark the ✅ PRs ready when you want to review them — provider review behavior is repository-configured;
@@ -1058,9 +1059,8 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. For each PR, resolve `RUN_DIR`, refresh live comments immediately with `gh-pr-state.sh --full --no-cache` into `RUN_DIR/state`, then run `post-receipt.sh" status` on that fresh artifact.
-For each PR, after the resolver guard, refresh `RUN_DIR/state` with `gh-pr-state.sh --full --no-cache`,
-then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
+With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt`, append them to every `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`, then run `post-receipt.sh" status`.
+After the resolver guard, refresh with those same acceptance args, then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
 successful adversarial/verified-skip result increments receipts; `10:receipt=none` may set
 `receipt_redrive_attempted[pr]` and re-enter the draft loop once. Any duplicate/invalid result parks
 the PR and increments `++parked_count`.

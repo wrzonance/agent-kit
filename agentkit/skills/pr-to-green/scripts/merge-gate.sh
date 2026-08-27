@@ -47,9 +47,9 @@ file_mode() {
 }
 
 reject_writable_by_others() {
-    local path=$1 label=$2 mode
+    local path=$1 label=$2 writer=${3:-} mode
     mode=$(file_mode "$path") || die "could not inspect $label permissions: $path"
-    (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
+    (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path${writer:+ (written by $writer)}"
 }
 
 usage() {
@@ -71,8 +71,9 @@ one over the other.
 --adversarial-review-status STATUS (issue #477) takes the verdict word
 review-ledger.sh status prints for this PR's current head as the adversarial-
 review completion signal, replacing reliance on an operator's memory that a
-review happened. STATUS must be one of: covered-head, covered-diff (either
-passes, exactly like an AUTO_REVIEW/LANDED CodeRabbit result), stale, absent,
+review happened. STATUS must be one of: covered-head, covered-diff, or
+covered-lineage (each passes, exactly like an AUTO_REVIEW/LANDED CodeRabbit
+result), stale, absent,
 or blocked (each of those three blocks the merge, naming the reason), or
 not-required (this repository's adversarial review requirement is disabled;
 never re-derived here -- the caller decides that upstream).
@@ -103,7 +104,7 @@ done
 [[ -n $base ]] || die '--base is required'
 [[ -f $digest_file && ! -L $digest_file && -O $digest_file ]] ||
     die '--pr-state-digest must be an owned regular file, not a symlink'
-reject_writable_by_others "$digest_file" '--pr-state-digest'
+reject_writable_by_others "$digest_file" '--pr-state-digest' 'gh-pr-state.sh'
 case $provider_result in
     AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|LANDED|STALE_HEAD|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
     *) die "--provider-result is not a recognized transition-engine result: $provider_result" ;;
@@ -111,7 +112,7 @@ esac
 case $human_decided in yes|no) ;; *) die '--human-items-decided must be yes or no' ;; esac
 [[ -n $adversarial_status ]] || die '--adversarial-review-status is required'
 case $adversarial_status in
-    covered-head|covered-diff|stale|absent|blocked|not-required) ;;
+    covered-head|covered-diff|covered-lineage|stale|absent|blocked|not-required) ;;
     *) die "--adversarial-review-status is not a recognized review-ledger.sh verdict: $adversarial_status" ;;
 esac
 [[ -n $cq_scan_state || -n $cq_state_file ]] ||
@@ -537,7 +538,7 @@ esac
 # operator can tell "never reviewed" from "reviewed, but not this tree" from
 # "the ledger itself is corrupt".
 case $adversarial_status in
-    covered-head|covered-diff|not-required) ;;
+    covered-head|covered-diff|covered-lineage|not-required) ;;
     stale) block 'adversarial review ledger is stale for the current head (reviewed a different tree)' ;;
     absent) block 'no adversarial review is recorded in the ledger for the current head' ;;
     blocked) block 'adversarial review ledger is present but unparseable (fails closed, never read as absent)' ;;

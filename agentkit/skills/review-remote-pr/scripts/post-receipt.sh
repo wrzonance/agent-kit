@@ -85,7 +85,7 @@ readonly ROBOT
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME precheck --comments FILE
+Usage: $PROGNAME precheck --comments FILE [--diff-payload ID]
        $PROGNAME status --comments FILE
        $PROGNAME --require-pushed publish ...
        $PROGNAME publish --pr N --repo OWNER/REPO --comments FILE \\
@@ -105,7 +105,8 @@ code. A failed ledger append never fails an already-posted, byte-verified
 receipt -- it only warns.
 
 precheck: reports whether the PR's fetched comment artifact already carries
-the stable adversarial-review spent marker.
+the stable adversarial-review spent marker for the requested diff payload. If
+--diff-payload is omitted, it retains the legacy conservative PR-wide check.
   stdout 'spent'     and exit 0   marker found
   stdout 'not-spent' and exit 10  marker provably absent
   exit 1 (stderr only, fails closed) missing jq, unreadable FILE, invalid JSON
@@ -113,7 +114,9 @@ the stable adversarial-review spent marker.
 status: classifies the final-sweep receipt artifact. Exactly one spent marker
 prints receipt=adversarial or receipt=verified-skip and exits 0. No marker
 prints receipt=none and exits 10. Duplicate markers or invalid evidence fail
-closed with exit 1.
+closed with exit 1. A changed diff may leave a superseded receipt alongside
+the replacement; a valid supersedes=<comment-id> chain is classified by its
+latest receipt.
 
 publish: validates the NDJSON findings ledger, renders the one-spend receipt,
 and posts it via gh-comment.sh's byte-verified transport. Runs the same
@@ -178,8 +181,19 @@ reject_unsafe_field() {
 # Prints 'spent' and returns 0, prints 'not-spent' and returns 10, or prints
 # nothing and returns 1 (message already sent to stderr by the caller's
 # evidence_unavailable, or by this function for the jq/file checks it owns).
+# When DIFF_PAYLOAD is set, a receipt for another known payload is not a spend
+# of this diff. The latest such receipt ID is retained in SUPERSEDES_ID so the
+# replacement can make the supersession explicit in its durable body.
+SUPERSEDES_ID=''
+SPENT_DIFF_PAYLOAD=''
+short_diff_id() {
+    local payload=$1 digest=${1##*:}
+    [[ $digest =~ ^[[:xdigit:]]{7,64}$ ]] || digest=$payload
+    printf '%.7s\n' "$digest"
+}
+
 check_receipt_spent() {
-    local file=$1
+    local file=$1 record_count=0 record_id='' record_diff=''
     command -v jq >/dev/null 2>&1 || {
         printf '%s\n' 'jq not found on PATH' >&2
         return 1
@@ -192,23 +206,57 @@ check_receipt_spent() {
         printf 'PR comment artifact is not readable: %s\n' "$file" >&2
         return 1
     }
-    local jq_rc=0
-    jq -e --arg marker "$RECEIPT_MARKER" \
-        'any(.[]?; ((.body // "") | contains($marker)))' <"$file" >/dev/null || jq_rc=$?
-    case $jq_rc in
-        0)
-            printf 'spent\n'
-            return 0
-            ;;
-        1)
-            printf 'not-spent\n'
-            return 10
-            ;;
-        *)
-            printf 'PR comment artifact is not valid JSON: %s\n' "$file" >&2
-            return 1
-            ;;
-    esac
+    local jq_rc=0 records=''
+    records=$(jq -r --arg marker "$RECEIPT_MARKER" '
+        if type != "array" then error("comments must be an array")
+        else .[]?
+        | (.body // "") as $body
+        | select($body | contains($marker))
+        | [("id:" + (.id // "" | tostring)),
+           ("diff:" + (([$body | capture("(?m)^- Diff payload: (?<diff>[^\\r\\n]+)").diff]
+             | first) // ""))]
+        | @tsv
+        end
+    ' <"$file") || jq_rc=$?
+    ((jq_rc == 0)) || {
+        printf 'PR comment artifact is not valid JSON: %s\n' "$file" >&2
+        return 1
+    }
+    if [[ -n $records ]]; then
+        while IFS=$'\t' read -r record_id record_diff; do
+            record_id=${record_id#id:}
+            record_diff=${record_diff#diff:}
+            record_count=$((record_count + 1))
+            # Without a requested identity, retain the historical conservative
+            # behavior: any spent marker blocks publication.
+            if [[ -z $DIFF_PAYLOAD ]]; then
+                printf 'spent\n'
+                return 0
+            fi
+            if [[ -z $record_diff ]]; then
+                # Legacy receipts did not identify their diff, so they cannot
+                # be proven to cover a different payload and remain spent.
+                SPENT_DIFF_PAYLOAD='unknown'
+                printf 'spent\n'
+                return 0
+            fi
+            if [[ $record_diff == "$DIFF_PAYLOAD" ]]; then
+                SPENT_DIFF_PAYLOAD=$record_diff
+                printf 'spent\n'
+                return 0
+            fi
+            # A known different identity is a prior spend, not this diff's
+            # spend. Keep the last ID, matching GitHub chronological ordering.
+            SUPERSEDES_ID=$record_id
+            SPENT_DIFF_PAYLOAD=$record_diff
+        done <<<"$records"
+    fi
+    ((record_count == 0)) || {
+        printf 'not-spent\n'
+        return 10
+    }
+    printf 'not-spent\n'
+    return 10
 }
 
 # check_receipt_status FILE
@@ -234,11 +282,20 @@ check_receipt_status() {
         if type != "array" then error("comments must be an array")
         else [ .[] | (.body // "") as $body
                | select($body | contains($marker))
-               | {body: $body, markers: ($body | split($marker) | length - 1)} ]
-        | if length == 0 then "none"
-          elif length != 1 or .[0].markers != 1 then "duplicate"
-          elif .[0].body | contains("Verified-skip rationale:") then "verified-skip"
-          else "adversarial"
+               | {id: (.id // "" | tostring), body: $body,
+                  markers: ($body | split($marker) | length - 1)} ] as $receipts
+        | if ($receipts | length) == 0 then "none"
+          elif any($receipts[]; .markers != 1) then "duplicate"
+          elif ($receipts | length) == 1 then
+            if $receipts[0].body | contains("Verified-skip rationale:") then "verified-skip"
+            else "adversarial" end
+          elif all(range(1; ($receipts | length)); . as $i
+            | (((($receipts[$i].body
+                   | (capture("(?m)^supersedes=(?<id>[^\\r\\n]+)$")? | .id) // "")))
+               == ($receipts[$i - 1].id | tostring))) then
+            if $receipts[-1].body | contains("Verified-skip rationale:") then "verified-skip"
+            else "adversarial" end
+          else "duplicate"
           end
         end
     ' <"$file") || jq_rc=$?
@@ -273,6 +330,11 @@ cmd_precheck() {
             --comments)
                 [[ ${2-} ]] || die_usage '--comments requires a path'
                 comments=$2
+                shift 2
+                ;;
+            --diff-payload)
+                [[ ${2-} ]] || die_usage '--diff-payload requires a value'
+                DIFF_PAYLOAD=$2
                 shift 2
                 ;;
             -h | --help)
@@ -475,11 +537,14 @@ write_skip_result() {
     if [[ -e $path ]]; then
         [[ -f $path && ! -L $path && -O $path ]] ||
             evidence_unavailable "a result artifact blocks the verified-skip result: $path"
-        jq -s -e --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" '
+        jq -s -e --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" \
+            --arg diff "$DIFF_PAYLOAD" '
             length == 1 and
             (.[0] |
                 type == "object" and .status == "skipped" and
-                .skipRationale == $rationale and .oracle == $oracle)
+                .skipRationale == $rationale and .oracle == $oracle and
+                (($diff == "" and (has("diffPayload") | not)) or
+                 ($diff != "" and .diffPayload == $diff)))
         ' "$path" >/dev/null 2>&1 && return 0
         evidence_unavailable "an existing adversarial review result does not match this verified skip: $path"
     fi
@@ -491,7 +556,9 @@ write_skip_result() {
             evidence_unavailable "could not clear a stale result temp artifact: $tmp"
     fi
     jq -cn --arg rationale "$SKIP_RATIONALE" --arg oracle "$ORACLE" \
-        '{status: "skipped", skipRationale: $rationale, oracle: $oracle}' >"$tmp" ||
+        --arg diff "$DIFF_PAYLOAD" \
+        '{status: "skipped", skipRationale: $rationale, oracle: $oracle}
+         + (if $diff == "" then {} else {diffPayload: $diff} end)' >"$tmp" ||
         evidence_unavailable "could not encode the verified-skip result artifact: $tmp"
     chmod 600 -- "$tmp" ||
         evidence_unavailable "could not secure the verified-skip result artifact: $tmp"
@@ -670,15 +737,20 @@ append_ledger_entry() {
         return 0
     }
     chmod 600 -- "$entry_file" 2>/dev/null || true
+    local covered_heads='[]'
+    covered_heads=$(jq -c -s \
+        '[.[] | select(.verdict == "fixed") | .sha | split(",")[]] | unique' \
+        "$FINDINGS_FILE" 2>/dev/null) || covered_heads='[]'
     if ! jq -cn \
         --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
         --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
         --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
+        --argjson covered_heads "$covered_heads" \
         --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
          + (if $harness == "" then {} else {harness:$harness} end)
-         + {head_sha:$head}
+         + {head_sha:$head, covered_heads:([$head] + $covered_heads | unique)}
          + (if $diff_payload == "" then {} else {diff_payload:$diff_payload} end)
          + {counts:{p1:$p1, p2:$p2}, reviewed_at:$reviewed_at}' >"$entry_file" 2>/dev/null; then
         printf '%s: could not encode a ledger entry; ledger entry not recorded\n' "$PROGNAME" >&2
@@ -735,9 +807,13 @@ render_skip_line() {
 # human) can see which tree this receipt covers without needing the ledger to
 # be present, parseable, or even attempted.
 render_head_lines() {
-    [[ -n $HEAD_SHA ]] || return 0
-    printf -- '- Reviewed head: %s\n' "$HEAD_SHA"
+    [[ -z $HEAD_SHA ]] || printf -- '- Reviewed head: %s\n' "$HEAD_SHA"
     [[ -z $DIFF_PAYLOAD ]] || printf -- '- Diff payload: %s\n' "$DIFF_PAYLOAD"
+}
+
+render_supersedes_line() {
+    [[ -n $SUPERSEDES_ID ]] || return 0
+    printf -- 'supersedes=%s\n' "$SUPERSEDES_ID"
 }
 
 render_body() {
@@ -749,6 +825,7 @@ render_body() {
         "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$MODE_REASON"
     printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
     render_head_lines
+    render_supersedes_line
     render_findings_block
     render_skip_line
     printf '%s\n' "$RECEIPT_MARKER"
@@ -778,9 +855,13 @@ recover_after_failed_publish() {
         rm -f -- "$fresh_file" "$fresh_err"
         exit 1
     fi
-    jq -s -e --arg marker "$RECEIPT_MARKER" \
-        'add | type == "array" and any(.[]?; ((.body // "") | contains($marker)))' \
-        "$fresh_file" >/dev/null 2>&1 || marker_rc=$?
+    DIFF_PAYLOAD=${DIFF_PAYLOAD:-}
+    check_receipt_spent "$fresh_file" >/dev/null || marker_rc=$?
+    # check_receipt_spent returns 10 when the fresh comments contain no
+    # receipt for this diff identity (including a marker for an older diff).
+    # Normalize that result to the existing no-marker recovery path; only a
+    # receipt for the current diff may recover an ambiguous POST as spent.
+    ((marker_rc == 10)) && marker_rc=1
     if ((marker_rc == 0)); then
         printf '%s: receipt POST/verify failed (rc=%s), but fresh live comments contain the receipt marker; do not retry\n' \
             "$PROGNAME" "$post_rc" >&2
@@ -810,9 +891,16 @@ cmd_publish() {
 
     local rc=0
     local result
-    result=$(check_receipt_spent "$COMMENTS") || rc=$?
+    # Run directly (rather than in command substitution) so the helper can
+    # retain the prior comment ID for a supersession line.
+    check_receipt_spent "$COMMENTS" >/dev/null || rc=$?
     if ((rc == 0)); then
-        printf '%s: receipt already spent for PR #%s\n' "$PROGNAME" "$PR" >&2
+        if [[ -n $DIFF_PAYLOAD && $SPENT_DIFF_PAYLOAD != unknown ]]; then
+            printf '%s: receipt already spent for diff %s\n' "$PROGNAME" \
+                "$(short_diff_id "$SPENT_DIFF_PAYLOAD")" >&2
+        else
+            printf '%s: receipt already spent for PR #%s\n' "$PROGNAME" "$PR" >&2
+        fi
         exit 11
     elif ((rc != 10)); then
         evidence_unavailable "receipt precheck could not read $COMMENTS"

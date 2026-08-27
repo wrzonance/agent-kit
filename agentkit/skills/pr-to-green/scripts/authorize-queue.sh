@@ -7,6 +7,7 @@ readonly PROGRAM=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 QUEUE_HELPER=${AUTHORIZE_QUEUE_HELPER:-$SCRIPT_DIR/pr-queue.sh}
+PROVIDER_CONFIG=${AUTHORIZE_QUEUE_PROVIDER_CONFIG:-$SCRIPT_DIR/../../.shared/scripts/review-provider-config.sh}
 GH_BIN=${AUTHORIZE_QUEUE_GH:-gh}
 
 repo=''
@@ -193,6 +194,7 @@ if ((${#retarget_proof_file[@]})); then
 fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; authorization evidence unavailable'
 [[ -x $QUEUE_HELPER ]] || die "queue helper is not executable: $QUEUE_HELPER"
+[[ -x $PROVIDER_CONFIG ]] || die "provider resolver is not executable: $PROVIDER_CONFIG"
 if ((allow_mechanical_advance)); then
     command -v "$GH_BIN" >/dev/null 2>&1 ||
         die "required tool not found: $GH_BIN"
@@ -225,6 +227,76 @@ if ((no_providers == 0)); then
     done
 fi
 jq -s '.' "$work_dir/providers.jsonl" >"$work_dir/providers.json"
+
+# Resolve the same declared capability plan used by the transition helper before
+# reading the live queue. Every declared provider must have a compatible
+# per-run action, while the synthetic disabled `none` plan is represented by
+# the explicit --no-providers choice.
+declare -a plan_providers=()
+declare -A plan_modes=()
+plan_output=$("$PROVIDER_CONFIG" --repo-root "$repo_root") ||
+    die 'provider capability resolution failed'
+[[ -n $plan_output ]] || die 'provider capability resolver returned an empty plan'
+while IFS= read -r line; do
+    if [[ $line =~ ^provider=([a-z0-9-]+)[[:space:]]mode=([a-z-]+)[[:space:]]source=([a-z]+)$ ]]; then
+        plan_provider=${BASH_REMATCH[1]}
+        plan_mode=${BASH_REMATCH[2]}
+    else
+        die 'provider capability resolver returned a malformed record'
+    fi
+    [[ -z ${plan_modes[$plan_provider]+set} ]] ||
+        die "provider capability plan duplicates $plan_provider"
+    case $plan_mode in triggerable|observe-only|none|disabled) ;;
+        *) die "provider capability plan contains unsupported capability: $plan_provider:$plan_mode" ;;
+    esac
+    plan_providers+=("$plan_provider")
+    plan_modes[$plan_provider]=$plan_mode
+done <<< "$plan_output"
+
+declare -A requested_actions=()
+if ((no_providers == 0)); then
+    while IFS=$'\t' read -r requested_name requested_action; do
+        requested_actions[$requested_name]=$requested_action
+    done < <(jq -r '.[] | [.name, .action] | @tsv' "$work_dir/providers.json")
+fi
+authorized_display=$(jq -r '.[] | [.name, .action] | join(":")' "$work_dir/providers.json" |
+    sort | paste -sd, -)
+triggerable_display=''
+for plan_provider in "${plan_providers[@]}"; do
+    [[ ${plan_modes[$plan_provider]} == triggerable ]] || continue
+    triggerable_display+="${triggerable_display:+,}$plan_provider"
+done
+authorization_mismatch=0
+for plan_provider in "${plan_providers[@]}"; do
+    plan_mode=${plan_modes[$plan_provider]}
+    requested_action=${requested_actions[$plan_provider]-}
+    # `none:disabled` is the resolver's effective plan for --no-providers;
+    # there is no provider decision to record for that synthetic entry.
+    [[ $plan_provider == none && $plan_mode == disabled && -z $requested_action ]] && continue
+    if [[ -z $requested_action ]]; then
+        # Observe-only providers never mutate the forge, so omitting their
+        # optional authorization keeps the mixed-plan observation path intact.
+        [[ $plan_mode == observe-only ]] && continue
+        authorization_mismatch=1
+        continue
+    fi
+    case $plan_mode in
+        triggerable)
+            [[ $requested_action == trigger || $requested_action == observe ||
+               $requested_action == disabled ]] || authorization_mismatch=1
+            ;;
+        observe-only|none|disabled)
+            [[ $requested_action == observe || $requested_action == disabled ]] ||
+                authorization_mismatch=1
+            ;;
+    esac
+done
+for requested_name in "${!requested_actions[@]}"; do
+    [[ -n ${plan_modes[$requested_name]+set} ]] || authorization_mismatch=1
+done
+if ((authorization_mismatch)); then
+    die "authorization provider set does not match capability plan: authorized={${authorized_display:-}} trigger-capable={${triggerable_display:-}}"
+fi
 
 queue_args=(--repo "$repo" --repo-root "$repo_root" --format json)
 [[ -z $merge_plan ]] || queue_args+=(--merge-plan "$merge_plan")
@@ -261,7 +333,7 @@ base_ok_jq='
   def diff_fingerprint_ok:
     . == null or (type == "string" and test("^[0-9a-f]{64}$"));
   def canonical: sort_by([.name,.action,.source]);
-  type == "object" and (keys | sort) == ["providers","queue","repository"] and
+  type == "object" and (keys | sort) == ["budget","providers","queue","repository"] and
   .repository == $repo and
   (.providers | type) == "array" and all(.providers[]; provider) and
   ((.providers | map(.name) | unique | length) == (.providers | length)) and
@@ -278,6 +350,59 @@ base_ok_jq='
     (.diffFingerprint | diff_fingerprint_ok)) and
   ((.queue | map(.pr) | unique | length) == (.queue | length))
 '
+
+# Report a stable, actionable explanation for the first mismatch. `budget` is
+# deliberately excluded from the leaf comparison: it is an informational
+# preflight snapshot, not authorization consent. The top-level key comparison
+# still requires the four-key schema emitted by pr-queue.sh.
+snapshot_mismatch() {
+    jq -r --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
+      --slurpfile requested "$work_dir/providers.json" '
+      ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $liveQueue |
+      {repository:$repo, providers:$requested[0], budget:null, queue:$liveQueue} as $expected |
+      . as $snapshot |
+      def present($object; $path): [$object | paths] | any(. == $path);
+      def value_at($object; $path):
+        if present($object; $path) then ($object | getpath($path))
+        else {__missing__:true} end;
+      def display:
+        if . == {__missing__:true} then "<missing>"
+        elif type == "string" then .
+        else tojson end;
+      def path_text:
+        reduce .[] as $part ("";
+          . + (if ($part | type) == "number" then "[\($part)]" else ".\($part)" end));
+      def canonicalize_providers:
+        if type == "object" and (.providers | type) == "array" then
+          .providers |= sort_by(
+            if type == "object" then
+              [((.name? // "") | tostring), ((.action? // "") | tostring),
+               ((.source? // "") | tostring)]
+            else
+              [type, tostring]
+            end)
+        else .
+        end;
+      if ($snapshot | type) != "object" then
+        "snapshot.type snapshot=\($snapshot | type) live=object"
+      elif (($snapshot | keys | sort) != ($expected | keys | sort)) then
+        "snapshot.keys snapshot=\($snapshot | keys | sort | tojson) live=\($expected | keys | sort | tojson)"
+      else
+        ($snapshot | canonicalize_providers) as $normalizedSnapshot |
+        ($expected | canonicalize_providers) as $normalizedExpected |
+        ($normalizedSnapshot | [paths(scalars)]) as $snapshotPaths |
+        ($normalizedExpected | [paths(scalars)]) as $expectedPaths |
+        (($snapshotPaths + $expectedPaths) | unique |
+          map(select(length == 0 or .[0] != "budget"))) as $paths |
+        first($paths[] as $path |
+          (value_at($normalizedSnapshot; $path)) as $snapshotValue |
+          (value_at($normalizedExpected; $path)) as $liveValue |
+          select($snapshotValue != $liveValue) |
+          "\($path | path_text) snapshot=\($snapshotValue | display) live=\($liveValue | display)") // empty
+      end
+    ' "$confirmed_queue_file"
+}
+
 full_match_ok=1
 jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
   --slurpfile requested "$work_dir/providers.json" \
@@ -286,12 +411,23 @@ jq -e --arg repo "$repo" --slurpfile live "$work_dir/queue.json" \
 
 if ((full_match_ok == 0)); then
     ((allow_mechanical_advance)) ||
-        die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+        {
+            mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+            if [[ -n $mismatch_detail ]]; then
+                die "live queue or provider decisions differ from the displayed confirmation: $mismatch_detail; redisplay and reconfirm before authorization"
+            fi
+            die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+        }
     base_ok=1
     jq -e --arg repo "$repo" --slurpfile requested "$work_dir/providers.json" \
       "$base_ok_jq" "$confirmed_queue_file" >/dev/null 2>&1 || base_ok=0
-    ((base_ok)) ||
+    if ((base_ok == 0)); then
+        mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+        if [[ -n $mismatch_detail ]]; then
+            die "live queue or provider decisions differ from the displayed confirmation: $mismatch_detail; redisplay and reconfirm before authorization"
+        fi
         die 'live queue or provider decisions differ from the displayed confirmation; redisplay and reconfirm before authorization'
+    fi
 
     # Every confirmed PR must resolve to unchanged, a verified mechanical
     # advance, or a verified merge -- never silently dropped. A confirmed PR
@@ -342,8 +478,13 @@ if ((full_match_ok == 0)); then
     ' >"$work_dir/reconcile.json" || die 'could not evaluate mechanical-advance reconciliation'
 
     added_list=$(jq -r '.added | map(tostring) | join(",")' "$work_dir/reconcile.json")
-    [[ -z $added_list ]] ||
+    if [[ -n $added_list ]]; then
+        mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+        if [[ -n $mismatch_detail ]]; then
+            die "live queue includes pr(s) $added_list that were never in the displayed confirmation: $mismatch_detail; redisplay and reconfirm before authorization"
+        fi
         die "live queue includes pr(s) $added_list that were never in the displayed confirmation; redisplay and reconfirm before authorization"
+    fi
 
     # F3 (issue #450 review finding): the retarget path previously trusted the
     # proof file's own text without independently verifying that the live
@@ -366,6 +507,10 @@ if ((full_match_ok == 0)); then
             vanished)
                 merged_json=$("$GH_BIN" api "repos/$repo/pulls/$recon_pr" 2>/dev/null) || merged_json=''
                 if [[ $(jq -r '.merged // false' <<<"$merged_json" 2>/dev/null) != true ]]; then
+                    mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+                    if [[ -n $mismatch_detail ]]; then
+                        die "pr $recon_pr is missing from the live queue and is not verified merged: $mismatch_detail; redisplay and reconfirm before authorization"
+                    fi
                     die "pr $recon_pr is missing from the live queue and is not verified merged; redisplay and reconfirm before authorization"
                 fi
                 ;;
@@ -407,6 +552,10 @@ if ((full_match_ok == 0)); then
                     die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
                 ;;
             *)
+                mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)
+                if [[ -n $mismatch_detail ]]; then
+                    die "pr $recon_pr changed in a way that is not a verified mechanical advance (diff expanded, not runnable, or evidence unavailable): $mismatch_detail; redisplay and reconfirm before authorization"
+                fi
                 die "pr $recon_pr changed in a way that is not a verified mechanical advance (diff expanded, not runnable, or evidence unavailable); redisplay and reconfirm before authorization"
                 ;;
         esac
