@@ -964,6 +964,14 @@ substitution_reason=$(
 assert_eq 'that git config key (core.hooksPath) executes a command during git operations. Setting it is a decision for the user. (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$substitution_reason" \
     'substitution guidance renders literal $(...) without a backslash'
 
+# A quoted argument can contain the flag as ordinary prose. The guard must use
+# shell-token boundaries rather than a raw substring regex, while the actual
+# git commit flag above remains denied.
+quoted_no_verify_prose='printf %s "The --no-verify flag is documented here."'
+out=$(pre_input "$repo" "$quoted_no_verify_prose" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'quoted prose mentioning --no-verify is not treated as a hook-skipping flag'
+
 # A sanctioned recipe wrapper may carry the hook-skipping flag in its heredoc
 # script body. It is still the executed command, so refuse it, but the reason
 # must identify only the policy (not blame the recipe's command substitution).

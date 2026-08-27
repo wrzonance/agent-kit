@@ -2071,7 +2071,10 @@ guard_destructive_segment_reason() {
         printf '%s' "$api_merge_reason"
         return 0
     fi
-    if grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)' <<< "$cmd"; then
+    # Match the flag as a shell token, not as a substring of a quoted prose
+    # argument. Quoted data remains one word in `words`, while an executed
+    # recipe's command body is tokenized on its recursive check above.
+    if guard_words_contain_sequence words --no-verify; then
         printf '%s' 'Refused the hook-skipping flag; drop it.'
         return 0
     fi
