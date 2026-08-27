@@ -701,6 +701,7 @@ shell_quote() {
 declare -a out_keys=() out_values=()
 declare -A value_by_key=() seen_by_key=()
 declare -A invalid_command_keys=() checked_command_keys=()
+declare -A warned_unknown_keys=()
 # Canonical comparison is strict for every parse error. Resolve mode keeps the
 # established warn/drop behavior for the file as a whole, but tracks whether a
 # parse error occurred so a caller reading __AGENT_CONFIG_PARSE_STATUS__ below
@@ -733,7 +734,13 @@ while IFS= read -r line || [[ -n $line ]]; do
         if [[ $key =~ $SECRET_PATTERN ]]; then
             warn "refusing credential-shaped key on line $lineno: $key"
         else
-            warn "unknown key on line $lineno, ignoring: $key (run '$PROGRAM --list-keys' to see the accepted keys)"
+            # Report each unknown declaration once per parse invocation, then
+            # direct the operator to the non-mutating onboarding report for the
+            # repair.
+            if [[ -z ${warned_unknown_keys[$key]+yes} ]]; then
+                warned_unknown_keys[$key]=yes
+                warn "unknown key on line $lineno, ignoring: $key (run '$PROGRAM --list-keys' to see accepted keys; run 'onboard-refresh.sh --report' to review onboarding drift)"
+            fi
         fi
         # Unknown keys are deliberately dropped. In resolve mode they are not
         # relevant to the requested declaration set.
