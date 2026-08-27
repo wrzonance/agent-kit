@@ -135,6 +135,8 @@ wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
 [[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
+fence_script=$script_dir/fence-untrusted-data.sh
+[[ -x $fence_script ]] || die "fence-untrusted-data.sh is missing or not executable: $fence_script"
 
 # The dispatch-time wait bound is READ from wait-discipline.md's own
 # "Default numeric bounds per wait class" table, never duplicated as a
@@ -156,28 +158,42 @@ contract=$worktree/.agent/env-contract.txt
 spec=
 prior_art=
 emit_acceptance_declarations() {
-    if ((${#acceptance_commands[@]} == 0)); then
-        printf 'acceptance=none\n'
+    emit_acceptance_declarations_body() {
+        if ((${#acceptance_commands[@]} == 0)); then
+            printf 'acceptance=none\n'
+            return 0
+        fi
+        local command
+        local helper_path acceptance_name
+        helper_path=$(shell_quote "$shared_path/agent-run.sh")
+        for command in "${acceptance_commands[@]}"; do
+            printf 'acceptance=%s\n' "$command"
+            acceptance_name=''
+            if ((${#scoped_command_tokens[@]})); then
+                acceptance_name=$(match_spec_step "$command" 2>/dev/null) || acceptance_name=''
+            fi
+            if [[ -n $acceptance_name ]]; then
+                printf "Run its declared wrapper equivalent: %s --dir %s --cmd %s. After it exits, record exactly \`%s=pass\` or \`%s=fail\` in %s; if it cannot be run, record \`%s=not-run\`.\n" \
+                    "$helper_path" "\"\$worktree\"" "$acceptance_name" "$command" "$command" \
+                    "\$worktree/.agent/acceptance-status.txt" "$command"
+            else
+                printf "No declared wrapper equivalent is available for this acceptance command; record \`%s=not-run\` in %s and surface the gap.\n" \
+                    "$command" "\$worktree/.agent/acceptance-status.txt"
+            fi
+        done
+    }
+
+    # Acceptance commands originate in issue text. In public-fenced mode the
+    # declaration block must remain untrusted data even though the template
+    # placeholder follows the persisted spec fence; otherwise command text
+    # would be rendered as actionable prompt text outside that boundary.
+    if [[ $boundary_mode == public-fenced ]]; then
+        {
+            emit_acceptance_declarations_body
+        } | "$fence_script"
         return 0
     fi
-    local command
-    local helper_path acceptance_name
-    helper_path=$(shell_quote "$shared_path/agent-run.sh")
-    for command in "${acceptance_commands[@]}"; do
-        printf 'acceptance=%s\n' "$command"
-        acceptance_name=''
-        if ((${#scoped_command_tokens[@]})); then
-            acceptance_name=$(match_spec_step "$command" 2>/dev/null) || acceptance_name=''
-        fi
-        if [[ -n $acceptance_name ]]; then
-            printf "Run its declared wrapper equivalent: %s --dir %s --cmd %s. After it exits, record exactly \`%s=pass\` or \`%s=fail\` in %s; if it cannot be run, record \`%s=not-run\`.\n" \
-                "$helper_path" "\"\$worktree\"" "$acceptance_name" "$command" "$command" \
-                "\$worktree/.agent/acceptance-status.txt" "$command"
-        else
-            printf "No declared wrapper equivalent is available for this acceptance command; record \`%s=not-run\` in %s and surface the gap.\n" \
-                "$command" "\$worktree/.agent/acceptance-status.txt"
-        fi
-    done
+    emit_acceptance_declarations_body
 }
 
 if [[ $template_kind == issue-lead ]]; then
@@ -631,6 +647,7 @@ add_acceptance_command() {
     command=${command%"${command##*[![:space:]]}"}
     [[ -n $command ]] || return 0
     [[ $command != *[[:cntrl:]]* ]] || return 0
+    [[ $command =~ ^[A-Za-z0-9_./:=\ -]{1,120}$ ]] || return 0
     for existing in "${acceptance_commands[@]}"; do
         [[ $existing != "$command" ]] || return 0
     done
@@ -647,10 +664,20 @@ extract_acceptance_commands() {
     local fence_re='^[[:space:]]*(```|~~~)'
     local item_re='^[[:space:]]*([0-9]+[.)]|[-*+])[[:space:]]+'
     local marker_re='^([0-9]+[.)]|[-*+]|\$)[[:space:]]+'
-    local line candidate item level in_section=0 in_fence=0 section_level=0
+    local line candidate item level in_section=0 in_fence=0 section_level=0 in_comments=0 seen_labels=0
     [[ -f $file && -r $file && ! -L $file ]] || return 0
     while IFS= read -r line || [[ -n $line ]]; do
-        if [[ $line =~ ^[[:space:]]*AGENT_ACCEPTANCE_CMD[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+        # The prepared issue format labels the untrusted comment payload
+        # explicitly. Declarations in comments are not acceptance intent from
+        # the issue body and must never become runnable worker data.
+        line=${line%$'\r'}
+        if [[ $line =~ ^[[:space:]]*Labels:[[:space:]]*$ ]]; then
+            seen_labels=1
+        elif ((seen_labels)) && [[ $line =~ ^[[:space:]]*Comments:[[:space:]]*$ ]]; then
+            in_comments=1
+        fi
+        if ((in_fence == 0 && in_comments == 0)) &&
+            [[ $line =~ ^[[:space:]]*AGENT_ACCEPTANCE_CMD[[:space:]]*=[[:space:]]*(.*)$ ]]; then
             candidate=${BASH_REMATCH[1]}
             if [[ $candidate == \"*\" ]]; then
                 candidate=${candidate:1:${#candidate}-2}
@@ -678,6 +705,7 @@ extract_acceptance_commands() {
         if ((in_fence)); then
             candidate=${line#"${line%%[![:space:]]*}"}
             [[ -n $candidate ]] || continue
+            [[ $candidate != \#* ]] || continue
             if [[ $candidate =~ $marker_re ]]; then
                 candidate=${candidate#"${BASH_REMATCH[0]}"}
             fi

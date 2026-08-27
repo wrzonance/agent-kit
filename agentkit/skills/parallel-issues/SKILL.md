@@ -920,8 +920,8 @@ Same evidence rule as the dispatch move: the helper's printed line is the record
 ### Step 3a: Dispatch draft-phase agents immediately
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
-**The materiality gate runs before the review spend.** Before launching any reviewer, the
-loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" --acceptance-file "$worktree/.agent/acceptance.txt" --acceptance-status-file "$worktree/.agent/acceptance-status.txt"`
+**Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
+`"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.
 — for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
 predecessor's changes contaminate successor's verdict. Pass acceptance.txt; non-pass blocks.
 `verdict=skip-eligible` (test/docs-only and acceptance green) takes the

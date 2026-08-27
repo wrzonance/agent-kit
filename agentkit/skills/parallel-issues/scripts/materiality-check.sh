@@ -129,7 +129,6 @@ done <<< "$changed"
 ((count > 0)) || die 'the diff is empty; nothing to classify'
 
 acceptance_records=()
-acceptance_blocked=0
 if [[ -n $acceptance_file ]]; then
     while IFS= read -r command || [[ -n $command ]]; do
         command=${command#"${command%%[![:space:]]*}"}
@@ -154,7 +153,13 @@ if [[ -n $acceptance_file ]]; then
             done < "$acceptance_status_file"
         fi
         acceptance_records+=("acceptance=$command:$status")
-        [[ $status == pass ]] || acceptance_blocked=1
+        if [[ $status != pass ]]; then
+            # Report the first blocked declaration, not merely the first
+            # declaration in the file. A passing command followed by a failed
+            # one must name the failure that made this otherwise mechanical
+            # diff material.
+            [[ -n $first_material ]] || first_material="acceptance=$command:$status"
+        fi
     done < "$acceptance_file"
 fi
 
@@ -162,10 +167,6 @@ acceptance_summary=''
 if ((${#acceptance_records[@]})); then
     acceptance_summary=$(IFS=,; printf '%s' "${acceptance_records[*]}")
 fi
-if ((acceptance_blocked)) && [[ -z $first_material ]]; then
-    first_material=${acceptance_records[0]}
-fi
-
 if [[ -n $first_material ]]; then
     printf 'materiality= files=%s verdict=material first-material=%s\n' \
         "$count" "$first_material"

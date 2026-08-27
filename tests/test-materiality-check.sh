@@ -103,6 +103,18 @@ assert_contains "$out" 'verdict=material' \
 assert_contains "$out" 'acceptance=npm run test:browser:fail' \
     'the material verdict records a failed acceptance result'
 
+# When one acceptance command passes and a later one fails, the later failure
+# is the first material acceptance record; do not report the passing command.
+printf '%s\n' 'npm run test:browser' 'tools/certify --browser' > "$repo/.agent/acceptance.txt"
+printf '%s\n' 'npm run test:browser=pass' 'tools/certify --browser=fail' > "$repo/.agent/acceptance-status.txt"
+start_branch
+printf 'more acceptance notes\n' >> "$repo/README.md"
+gitc add -A
+gitc commit -q -m 'docs: exercise ordered acceptance'
+out=$($helper --worktree "$repo" --base main)
+assert_contains "$out" 'first-material=acceptance=tools/certify --browser:fail' \
+    'materiality reports the first failing acceptance command, not an earlier pass'
+
 # Authorization, workflow, and persistence surfaces are material even when
 # tests change alongside them -- one material file decides.
 start_branch

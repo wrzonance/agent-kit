@@ -741,7 +741,15 @@ ci_counts() {
 # text is never evaluated. CI providers commonly shorten package-runner
 # `foo`, so the final command token is accepted as the provider's check name.
 acceptance_status() {
-    local command=$1 token=${1##* }
+    local command=$1 token='' word
+    local -a words=()
+    read -r -a words <<< "$command"
+    # A trailing option is an invocation flag, not the provider's check name:
+    # `tools/certify --browser` should match a check named `tools/certify`.
+    for word in "${words[@]}"; do
+        [[ $word == -* ]] || token=$word
+    done
+    [[ -n $token ]] || token=${words[0]:-}
     jq -r --arg command "$command" --arg token "$token" '
         [ .statusCheckRollup[]?
           | select((.name // .context // "") == $command
