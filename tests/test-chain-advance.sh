@@ -45,7 +45,7 @@ case " $* " in
 JSON
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -56,7 +56,8 @@ output=$(GH_LOG="$tmp/gh.log" PATH="$tmp:$PATH" \
 assert_contains "$output" 'retargeted pr #7' 'retarget reports a verified result'
 assert_contains "$output" 'closing-issues=1' 'retarget reports linkage evidence'
 log=$(<"$tmp/gh.log")
-assert_contains "$log" 'pr edit 7 --repo owner/repo --base main' 'retarget edits the requested base'
+assert_not_contains "$log" 'pr edit 7 --repo owner/repo --base main' \
+    'retarget skips the already-correct base'
 assert_contains "$log" 'pr view 7 --repo owner/repo' 'retarget re-reads PR metadata'
 assert_contains "$log" 'repos/owner/repo/compare/main...1111111111111111111111111111111111111111' \
     'retarget checks base-to-head ancestry'
@@ -100,7 +101,7 @@ case " $* " in
     *"repos/owner/repo/compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}'
         ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -122,7 +123,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main..."*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -132,11 +133,11 @@ empty_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-empty" bash "$advance
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 empty_rc=$?
 set -e
-assert_eq '2' "$empty_rc" 'post-edit proof failure has the mutated exit status'
+assert_eq '1' "$empty_rc" 'already-correct base proof failure has the non-mutated exit status'
 assert_contains "$empty_output" 'statusCheckRollup is empty' \
     'empty CI failure names the missing evidence'
-assert_contains "$empty_output" 'applied base=main' \
-    'post-edit proof failure reports the applied base'
+assert_not_contains "$empty_output" 'applied base=main' \
+    'already-correct base proof failure reports no mutation'
 
 cat >"$tmp/gh-edit-nonzero" <<'EOF'
 #!/usr/bin/env bash
@@ -189,7 +190,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -213,7 +214,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"IN_PROGRESS","startedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -223,7 +224,7 @@ pending_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-pending" bash "$adv
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 pending_rc=$?
 set -e
-assert_eq '2' "$pending_rc" 'retarget reports mutation when CI is stale or pending'
+assert_eq '1' "$pending_rc" 'already-correct base reports no mutation when CI is stale or pending'
 assert_contains "$pending_output" 'CI' 'pending CI failure is explicit'
 
 # Approval is provider policy, not mechanical base safety (issue #455): an
@@ -238,7 +239,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -261,7 +262,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -271,7 +272,7 @@ link_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-no-link" bash "$advanc
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 link_rc=$?
 set -e
-assert_eq '2' "$link_rc" 'retarget reports mutation when closing linkage is absent'
+assert_eq '1' "$link_rc" 'already-correct base reports no mutation when closing linkage is absent'
 assert_contains "$link_output" 'closingIssuesReferences' \
     'missing linkage failure names the machine proof'
 
@@ -290,7 +291,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2023-12-31T23:00:00Z","completedAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -300,7 +301,7 @@ prestale_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-prestale" bash "$a
     --retarget --repo owner/repo --pr 7 --base main 2>&1)
 prestale_rc=$?
 set -e
-assert_eq '2' "$prestale_rc" 'retarget reports mutation for pre-retarget CI on an unchanged head'
+assert_eq '1' "$prestale_rc" 'already-correct base reports no mutation for stale CI on an unchanged head'
 assert_contains "$prestale_output" 'predates the retarget' \
     'the refusal names pre-retarget evidence as the cause'
 assert_not_contains "$prestale_output" 'retargeted pr #7' \
@@ -317,7 +318,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -327,7 +328,7 @@ old_check_output=$(PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-old-check-start" 
     bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
 old_check_rc=$?
 set -e
-assert_eq '2' "$old_check_rc" 'a pre-retarget check remains stale after completing later'
+assert_eq '1' "$old_check_rc" 'a pre-retarget check remains stale after completing later'
 assert_contains "$old_check_output" 'predates the retarget' \
     'CI freshness is classified by check origin, not completion'
 
@@ -342,13 +343,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"/rate_limit"*)
-        if [[ -e $EDIT_STATE ]]; then
-            printf 'Date: Mon, 01 Jan 2024 00:10:00 GMT\n'
-        else
-            printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n'
-        fi
-        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:10:00Z"}]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -373,7 +368,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -401,7 +396,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}},{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -433,7 +428,7 @@ case " $* " in
     *"compare/main...fd1400424e6617826deb7974dddcda3cb521a051"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -460,7 +455,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":"not-an-array","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"/rate_limit"*) printf 'Date: Mon, 01 Jan 2024 00:00:00 GMT\n' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -473,5 +468,55 @@ set -e
 assert_eq '0' "$unreadable_rc" 'unreadable review evidence never blocks the retarget'
 assert_contains "$unreadable_output" 'approval=unknown' \
     'malformed review evidence is reported as unknown, not silently treated as none or current'
+
+# --- retarget is idempotent and uses the durable forge timeline boundary ---
+# The first invocation applies the base and the second observes that the live
+# base is already correct. Both proofs must use the same timeline event, and
+# the second invocation must not issue another base edit or consult a clock.
+cat >"$tmp/gh-idempotent" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":null,\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"startedAt\":\"2024-01-01T00:05:00Z\",\"completedAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *"timeline"*)
+        printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]'
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-idempotent"
+set +e
+first_idempotent=$(EDIT_STATE="$tmp/idempotent.state" GH_LOG="$tmp/idempotent.log" \
+    PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-idempotent" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+first_idempotent_rc=$?
+second_idempotent=$(EDIT_STATE="$tmp/idempotent.state" GH_LOG="$tmp/idempotent.log" \
+    PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-idempotent" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+second_idempotent_rc=$?
+set -e
+assert_eq '0' "$first_idempotent_rc" 'timeline-backed first retarget proves the current head'
+assert_eq '0' "$second_idempotent_rc" 'already-retargeted PR proves idempotently'
+assert_contains "$first_idempotent" 'boundarySource=timeline' \
+    'first proof records its timeline boundary source'
+assert_contains "$second_idempotent" 'boundarySource=timeline' \
+    'repeat proof records the same timeline boundary source'
+assert_eq "$first_idempotent" "$second_idempotent" \
+    'repeat proof is byte-for-byte stable'
+idempotent_log=$(<"$tmp/idempotent.log")
+assert_eq '1' "$(grep -c 'pr edit 7 --repo owner/repo --base main' "$tmp/idempotent.log")" \
+    'repeat retarget does not issue another base edit'
+assert_not_contains "$idempotent_log" '/rate_limit' \
+    'timeline-backed retarget never stamps the boundary from the current clock'
 
 finish
