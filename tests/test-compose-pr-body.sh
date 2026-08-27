@@ -106,4 +106,28 @@ assert_eq '1' "$optlike_rc" 'a whitespace-only section named --help is rejected,
 assert_not_contains "$optlike_output" 'Usage: grep' \
     'grep usage text never reaches the output'
 
+# --- worker baseline exclusion is rendered inside Testing ------------------
+exclusion="$tmp/baseline-exclusion.md"
+printf '%s\n' '- [ ] Baseline exclusion: `demo-test` is unchanged and red on trunk `abc123` (evidence: `.agent/logs/demo-test.log`)' \
+    >"$exclusion"
+exclusion_body="$tmp/exclusion-body.md"
+assert_rc 0 'composer accepts a worker baseline-exclusion file' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$testing" \
+    --baseline-exclusion-file "$exclusion" \
+    --agent 'Codex gpt-5.6-luna' --output "$exclusion_body"
+exclusion_text=$(<"$exclusion_body")
+assert_contains "$exclusion_text" '- [ ] Baseline exclusion: `demo-test`' \
+    'the worker exclusion is an unchecked Testing box'
+assert_contains "$exclusion_text" '`abc123`' \
+    'the Testing box carries the chain-base SHA'
+testing_idx=$(grep -n '^## Testing$' "$exclusion_body" | head -n1 | cut -d: -f1)
+box_idx=$(grep -n 'Baseline exclusion:' "$exclusion_body" | head -n1 | cut -d: -f1)
+if [[ -n $testing_idx && -n $box_idx ]] && ((box_idx > testing_idx)); then
+    _pass 'the exclusion box is emitted inside the Testing section'
+else
+    _fail 'the exclusion box is emitted inside the Testing section' \
+        "Testing line=$testing_idx exclusion line=$box_idx"
+fi
+
 finish
