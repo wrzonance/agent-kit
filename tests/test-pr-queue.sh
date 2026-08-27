@@ -296,6 +296,19 @@ assert_eq 'coderabbit:observe:operator-instruction' \
     "$(jq -r '.providers[0] | [.name,.action,.source] | join(":")' "$confirmed")" \
     'the displayed provider action and source are durably recorded'
 
+# Contract test: the writer's exact persisted snapshot must be consumable by
+# the authorizer without hand-editing away its budget metadata.
+authorize="$root/agentkit/skills/pr-to-green/scripts/authorize-queue.sh"
+GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \
+    --write-confirmed-queue --no-providers --format json >"$tmp/roundtrip-queue.json"
+roundtrip_auth=$(AUTHORIZE_QUEUE_GH="$tmp/gh" PR_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --merge-plan "$tmp/dispatch-plan.json" --ready-transition --no-auto-merge \
+    --confirmed-queue-file "$confirmed" --no-providers)
+assert_eq "authorization=$repo_root/.agent/pr-to-green-auth.json queue=3" "$roundtrip_auth" \
+    'a pr-queue writer snapshot round-trips directly through authorize-queue'
+
 out=$(QUEUE_DRIFT=1 run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/drift.err")
 assert_contains "$(cat "$tmp/drift.err")" 'recorded head drift' \
     'head drift is reported before forge-graph fallback'
