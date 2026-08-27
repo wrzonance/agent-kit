@@ -78,6 +78,10 @@ assert_contains "$review_text" 'no-silent-skip' \
     'review-remote-pr receipt contract rejects silent skips'
 assert_contains "$review_text" 'fresh live comments' \
     'review-remote-pr requires fresh recovery evidence before retry'
+assert_contains "$review_text" 'consent-record.sh" payload' \
+    'review-remote-pr derives the current canonical diff payload before precheck'
+assert_contains "$review_text" '--diff-payload "$current_diff_payload"' \
+    'review-remote-pr passes the current diff payload into precheck'
 
 assert_contains "$parallel_text" 'post-receipt.sh precheck' \
     'parallel-issues precheck delegates to post-receipt.sh precheck'
@@ -89,6 +93,10 @@ assert_contains "$parallel_text" 'no-silent-skip' \
     'parallel-issues receipt contract rejects silent skips'
 assert_contains "$parallel_text" 'fresh live comments' \
     'parallel-issues requires fresh recovery evidence before retry'
+assert_contains "$parallel_text" 'consent-record.sh" payload' \
+    'parallel-issues derives the current canonical diff payload before precheck'
+assert_contains "$parallel_text" '--diff-payload "$current_diff_payload"' \
+    'parallel-issues passes the current diff payload into precheck'
 
 # -- publish delegates to post-receipt.sh publish -----------------------
 
