@@ -1954,7 +1954,7 @@ guard_destructive_segment_reason() {
             if [[ $payload_reason == 'Refused the hook-skipping flag; drop it.' ]]; then
                 printf '%s' "$payload_reason"
             else
-                printf '%s (the command hides that inside a "\$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
+                printf '%s (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$payload_reason"
             fi
             return 0
         fi
