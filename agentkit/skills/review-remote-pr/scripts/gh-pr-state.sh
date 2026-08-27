@@ -926,16 +926,24 @@ provider_state() {
             else . end)' <"$WORK_DIR/issue_comments.json"
 }
 
-# Code scanning is optional per repository: a repository-level disabled state
-# is reported as not-enabled; other unavailable alerts responses are n/a,
-# never an error.
+# Code scanning is optional per repository. Metadata alone never suppresses a
+# live alerts read: not-enabled requires both repository-level disabled state
+# and the exact feature-disabled API failure; other unavailable responses are
+# n/a, never an error.
+code_security_disabled_alert_error() {
+    jq -e '(.status == 403 or .status == "403") and
+           .message == "Code Security must be enabled for this repository to use code scanning."' \
+        "$1" >/dev/null 2>&1
+}
+
 alert_count() {
-    if [[ $CODE_SECURITY_STATUS == disabled ]]; then
-        printf 'not-enabled\n'
-        return 0
-    fi
     if ! gh api "repos/$REPO/code-scanning/alerts?state=open&per_page=100" --paginate \
         >"$WORK_DIR/raw" 2>"$WORK_DIR/err"; then
+        if [[ $CODE_SECURITY_STATUS == disabled ]] &&
+           code_security_disabled_alert_error "$WORK_DIR/raw"; then
+            printf 'not-enabled\n'
+            return 0
+        fi
         note "code-scanning alerts unavailable ($(first_error)) -> reporting n/a"
         printf 'n/a\n'
         return 0
