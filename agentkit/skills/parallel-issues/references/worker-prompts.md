@@ -24,6 +24,17 @@ is used during rounds and one full suite is run on the final branch state. A mec
 `N/A — mechanical fix batch`; the adversarial review is never rerun. The baseline accounting is
 `28 full runs, 18 commits, 13 rounds, 2h42m`.
 
+## Base-trusted repository configuration
+
+The `AGENT_ADVERSARIAL_REVIEWER`, `AGENT_ADVERSARIAL_REVIEWER_FALLBACK`,
+`AGENT_ADVERSARIAL_REVIEW_MODEL`, `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK`,
+and `AGENT_ADVERSARIAL_REVIEW_EFFORT` keys in `.agent/config.env` are
+base-trusted policy. Review launchers read them from `origin/<base>`; a
+working-tree value is not in effect until committed on the base branch. A
+worker must never stage `.agent/config.env` incidentally. It may do so only
+when the issue's declared write set explicitly names `.agent/config.env`; the
+commit helper enforces this boundary, including for `--include-staged`.
+
 Canonical helper argv is documented here so callers do not reconstruct it from memory:
 `gh-pr-state.sh --full --pr "$PR" --repo "$REPO" --tmpdir "$RUN_DIR/state"` (resolved as `"$agentkit/review-remote-pr/scripts/gh-pr-state.sh"`);
 `"$agentkit/pr-to-green/scripts/review-transition.sh" --repo "$REPO" --repo-root "$REPO_ROOT" --pr "$PR" --authorization-file "$AUTHORIZATION_FILE"`;

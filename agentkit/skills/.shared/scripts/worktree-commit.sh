@@ -346,6 +346,28 @@ refuse_staged_outside_operands() {
     }
 }
 
+# .agent/config.env is base-trusted policy input: adversarial-run.sh reads its
+# reviewer settings from the PR base, so a worker must not carry a local edit
+# along accidentally. An explicit config.env operand is the issue write-set
+# declaration that authorizes the change; this guard also covers
+# --include-staged, which intentionally opts out of the ordinary exact-scope
+# check above.
+config_operand_named() {
+    local file candidate
+    for file in "${FILES[@]}"; do
+        candidate=${file#./}
+        [[ $candidate == .agent/config.env ]] && return 0
+    done
+    return 1
+}
+
+refuse_unrequested_config() {
+    local staged
+    staged=$(git diff --cached --name-only --no-renames -- .agent/config.env)
+    [[ -z $staged ]] || config_operand_named || die 1 \
+        'refusing unrequested .agent/config.env change; name .agent/config.env explicitly in the issue write set'
+}
+
 guard_exact_operand_scope() {
     (( EXACT == 1 )) || return 0
     exact_scope_paths_match || die 1 \
@@ -641,8 +663,10 @@ main() {
     require_writable_git_dirs
     refuse_trunk
     acquire_transaction_lock
+    refuse_unrequested_config
     refuse_staged_outside_operands
     stage_files
+    refuse_unrequested_config
     guard_staged_protected_paths
     guard_exact_operand_scope
     check_staged

@@ -200,6 +200,31 @@ assert_eq '0' "$ordinary_rc" 'ordinary protected edits commit outside an active 
 assert_eq 'workflow-v2' "$(git -C "$ordinary_repo" show HEAD:.github/workflows/ci.yml)" \
     'ordinary protected edit reaches the commit'
 
+# A worker may not smuggle a tracked config.env change through include-staged;
+# only an explicit config.env operand (the issue write set) can authorize it.
+config_guard_repo="$tmp/config-guard-repo"
+mkdir -p "$config_guard_repo/.agent"
+git -C "$config_guard_repo" init -q -b main
+git -C "$config_guard_repo" config user.email test@example.com
+git -C "$config_guard_repo" config user.name test
+printf 'AGENT_BASE_BRANCH=main\n' > "$config_guard_repo/.agent/config.env"
+printf 'base\n' > "$config_guard_repo/base.txt"
+git -C "$config_guard_repo" add -- .agent/config.env base.txt
+git -C "$config_guard_repo" commit -qm init
+git -C "$config_guard_repo" checkout -qb feat/config-guard
+printf 'AGENT_BASE_BRANCH=main\nAGENT_ADVERSARIAL_REVIEWER=codex\n' > "$config_guard_repo/.agent/config.env"
+printf 'allowed\n' > "$config_guard_repo/allowed.txt"
+git -C "$config_guard_repo" add -- .agent/config.env
+config_guard_out=''; config_guard_rc=0
+config_guard_out=$(cd "$config_guard_repo" && "$script" --include-staged \
+    --message 'fix: do not smuggle config' --trailer "$TEST_TRAILER" -- allowed.txt 2>&1) || config_guard_rc=$?
+assert_eq '1' "$config_guard_rc" \
+    'include-staged refuses an unrequested .agent/config.env change'
+assert_contains "$config_guard_out" '.agent/config.env' \
+    'config.env refusal names the unrequested protected path'
+assert_eq '1' "$(git -C "$config_guard_repo" rev-list --count HEAD)" \
+    'config.env refusal creates no commit'
+
 # An unwritable metadata preflight points workers back to the designed root
 # publication handback, rather than asking the worker to escalate itself.
 assert_contains "$(cat "$script")" 'hand the identical command back to the top-level session for publication' \

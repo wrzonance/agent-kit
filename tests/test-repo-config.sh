@@ -32,6 +32,29 @@ got=$("$rc_sh" --repo-root "$repo" --get AGENT_BASE_BRANCH 2> /dev/null)
 assert_eq 'main' "$got" '--get returns a single value'
 assert_rc 1 '--get on an absent key exits 1' -- "$rc_sh" --repo-root "$repo" --get AGENT_NOPE
 
+# Base-trusted adversarial-review settings must follow the same origin/base
+# source as adversarial-run.sh. Keep the effective value on stdout for callers,
+# while the diagnostic names the base source and any local value that is not in
+# effect yet.
+base_repo=$(mktemp -d "$tmp/base-repo.XXXXXX")
+mkdir -p "$base_repo/.agent"
+git -C "$base_repo" init -q -b main
+git -C "$base_repo" config user.email test@example.com
+git -C "$base_repo" config user.name test
+printf 'AGENT_ADVERSARIAL_REVIEWER=claude\n' > "$base_repo/.agent/config.env"
+git -C "$base_repo" add -- .agent/config.env
+git -C "$base_repo" commit -qm base
+git -C "$base_repo" update-ref refs/remotes/origin/main HEAD
+printf 'AGENT_ADVERSARIAL_REVIEWER=codex\n' > "$base_repo/.agent/config.env"
+base_get=$("$rc_sh" --repo-root "$base_repo" --get AGENT_ADVERSARIAL_REVIEWER 2>&1)
+assert_contains "$base_get" $'claude\n' \
+    'base-trusted --get returns the origin/base effective value'
+assert_contains "$base_get" 'source=base:' \
+    'base-trusted --get labels the origin/base source'
+assert_contains "$base_get" \
+    'working-tree=codex (not in effect until on main)' \
+    'base-trusted --get explains a divergent working-tree value'
+
 printf 'AGENT_ONBOARDED_BY=agentkit/0.1.0\n' >> "$repo/.agent/config.env"
 stamp_out=$($rc_sh --repo-root "$repo" --list 2> /dev/null)
 assert_contains "$stamp_out" 'AGENT_ONBOARDED_BY=agentkit/0.1.0' 'accepts the generator stamp'
