@@ -46,6 +46,7 @@ fi
 # unescaped { and } this JSON itself contains.
 default_pr_analyses='[{"ref":"refs/pull/9/merge","commit_sha":"$HEAD_SHA","tool":{"name":"CodeQL"},"created_at":"2026-08-20T00:00:00Z"}]'
 default_check_runs='{"check_runs":[]}'
+default_timeline='[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]'
 case \$endpoint in
 repos/owner/repo/pulls/9)
     mergeable=\${PR_MERGEABLE:-true}
@@ -65,6 +66,9 @@ repos/owner/repo/pulls/9)
     ;;
 repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
+    ;;
+repos/owner/repo/issues/9/timeline)
+    printf '%s\n' "\${CS_TIMELINE_JSON:-\$default_timeline}"
     ;;
 repos/owner/repo/code-scanning/analyses)
     case "\$ref_param_set:\$ref_param" in
@@ -590,7 +594,7 @@ assert_contains "$out" 'scan-missing: codeql' \
 good_digest
 set +e
 out=$(CS_PR_ANALYSES_MODE=empty \
-    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped"}]}' run_gate)
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped","created_at":"2026-08-20T00:00:00Z"}]}' run_gate)
 rc=$?
 set -e
 assert_eq '0' "$rc" 'all-skipped code scanning is not an execution failure'
@@ -603,12 +607,25 @@ good_digest
 sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
 set +e
 out=$(CS_PR_ANALYSES_MODE=empty \
-    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped"}]}' run_gate)
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped","created_at":"2026-08-20T00:00:00Z"}]}' run_gate)
 rc=$?
 set -e
 assert_eq '1' "$rc" 'path-filtered scans still require readable alerts evidence'
 assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
     'not-applicable does not turn unreadable alert evidence into zero findings'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_TIMELINE_JSON='[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]' \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped","created_at":"2026-08-18T00:00:00Z"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a pre-retarget skipped scan does not qualify as not-applicable'
+assert_contains "$out" 'scan-missing: codeql' \
+    'a skipped scan before the latest retarget falls through to missing evidence'
+assert_not_contains "$out" 'not-applicable (path-filtered)' \
+    'pre-retarget skipped evidence is never classified as path-filtered'
 
 # --- PR #413 follow-up F1: a still-running scan blocks as pending even when
 # an earlier analysis already matches the head (a rerun or a second SARIF
