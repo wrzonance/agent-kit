@@ -244,7 +244,7 @@ git -C "$merge_repo" checkout -q feature
 git -C "$merge_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$merge_repo/change.txt"
 park_rc=0
-park_out=$(cd "$merge_repo" && "$script" --message 'fix: park merge content' --trailer "$TEST_TRAILER" \
+park_out=$(cd "$merge_repo" && "$script" --include-staged --message 'fix: park merge content' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || park_rc=$?
 assert_eq '3' "$park_rc" 'attended inherited protected content parks before commit'
 assert_contains "$park_out" '.github/workflows/ci.yml' 'park output names the inherited protected path'
@@ -256,7 +256,7 @@ before_yolo=$(git -C "$merge_repo" diff --cached --name-only)
 assert_contains "$before_yolo" '.github/workflows/ci.yml' \
     'the parked protected path remains staged before authorization'
 yolo_rc=0
-yolo_out=$(cd "$merge_repo" && "$script" --yolo --message 'fix: carry base merge' --trailer "$TEST_TRAILER" \
+yolo_out=$(cd "$merge_repo" && "$script" --include-staged --yolo --message 'fix: carry base merge' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || yolo_rc=$?
 assert_eq '0' "$yolo_rc" 'yolo named-base authorization permits verified inherited content'
 assert_contains "$yolo_out" 'committed' 'the authorized helper reports its commit'
@@ -292,7 +292,7 @@ git -C "$delete_repo" checkout -q feature
 git -C "$delete_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$delete_repo/change.txt"
 delete_rc=0
-delete_out=$(cd "$delete_repo" && "$script" --yolo --message 'fix: carry base deletion' --trailer "$TEST_TRAILER" \
+delete_out=$(cd "$delete_repo" && "$script" --include-staged --yolo --message 'fix: carry base deletion' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$delete_base" -- change.txt 2>&1) || delete_rc=$?
 assert_eq '0' "$delete_rc" 'named-base authorization permits an inherited protected deletion'
 assert_contains "$delete_out" 'committed' 'the deletion authorization reports its commit'
@@ -325,7 +325,7 @@ git -C "$quoted_repo" checkout -q feature
 git -C "$quoted_repo" merge --no-commit --no-ff -q main
 printf 'change\n' > "$quoted_repo/change.txt"
 quoted_rc=0
-quoted_out=$(cd "$quoted_repo/subdir" && "$script" --message 'fix: park quoted protected path' --trailer "$TEST_TRAILER" \
+quoted_out=$(cd "$quoted_repo/subdir" && "$script" --include-staged --message 'fix: park quoted protected path' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$quoted_base" -- ../change.txt 2>&1) || quoted_rc=$?
 assert_eq '3' "$quoted_rc" 'quoted protected paths park from a subdirectory'
 assert_contains "$quoted_out" 'migrations/001_init.sql' \
@@ -385,7 +385,7 @@ assert_eq "$(git -C "$chained_repo" rev-parse feat/issue-predecessor)" "$derived
     'MERGE_HEAD alone names the exact predecessor commit, with no prior knowledge'
 printf 'more successor change\n' > "$chained_repo/successor2.txt"
 derive_rc=0
-derive_out=$(cd "$chained_repo" && "$script" --yolo --message 'fix: merge-down predecessor' --trailer "$TEST_TRAILER" \
+derive_out=$(cd "$chained_repo" && "$script" --include-staged --yolo --message 'fix: merge-down predecessor' --trailer "$TEST_TRAILER" \
     --allow-base-inherited "$derived_base" -- successor2.txt 2>&1) || derive_rc=$?
 assert_eq '0' "$derive_rc" \
     'a base derived from MERGE_HEAD alone authorizes the inherited protected content'
@@ -605,5 +605,100 @@ assert_contains "$e2e_commit_out" 'committed' \
 e2e_trailers=$(git -C "$e2e_repo" log -1 --format='%(trailers:only=true,unfold=true)')
 assert_eq 'Co-Authored-By: Claude claude-sonnet-5 <noreply@anthropic.com>' "$e2e_trailers" \
     'the documented worker path produces a non-empty, git-parseable trailer naming the worker model'
+
+# Exact mode must refuse a commit when an unrelated path was already staged.
+# This is the regression for root corrections accidentally sweeping a lead's
+# staged work into the correction commit.
+exact_repo="$tmp/exact-scope-repo"
+new_repo "$exact_repo"
+printf 'foreign\n' > "$exact_repo/foreign.txt"
+printf 'requested\n' > "$exact_repo/requested.txt"
+git -C "$exact_repo" add -- foreign.txt
+exact_rc=0
+exact_out=$(cd "$exact_repo" && "$script" --exact --message 'fix: exact scope' \
+    --trailer "$TEST_TRAILER" -- requested.txt 2>&1) || exact_rc=$?
+assert_eq '1' "$exact_rc" 'exact mode refuses a foreign staged path'
+assert_contains "$exact_out" 'foreign.txt' \
+    'exact-mode refusal names the foreign staged path'
+assert_eq '' "$(git -C "$exact_repo" log -1 --format=%s | grep -F 'exact scope' || true)" \
+    'exact-mode refusal does not create a commit'
+
+# Git pathspecs can expand one directory operand to several staged paths. Exact
+# scope follows that expansion instead of treating the directory as one file.
+directory_repo="$tmp/exact-directory-repo"
+new_repo "$directory_repo"
+mkdir -p "$directory_repo/src"
+printf 'one\n' > "$directory_repo/src/one.txt"
+printf 'two\n' > "$directory_repo/src/two.txt"
+directory_rc=0
+directory_out=$(cd "$directory_repo" && "$script" --exact --message 'feat: commit directory scope' \
+    --trailer "$TEST_TRAILER" -- src 2>&1) || directory_rc=$?
+assert_eq '0' "$directory_rc" 'exact mode accepts a directory pathspec'
+assert_contains "$directory_out" 'committed' 'directory pathspec commit reports success'
+assert_eq $'src/one.txt\nsrc/two.txt' \
+    "$(git -C "$directory_repo" diff-tree --no-commit-id --name-only -r HEAD | sort)" \
+    'directory pathspec commits every matched file and nothing else'
+
+# Unchanged operands produce no staged path, and repeated operands collapse to
+# one path in Git's staged-name set. Neither should trip an argument-arity gate.
+operand_repo="$tmp/exact-operands-repo"
+new_repo "$operand_repo"
+printf 'changed\n' > "$operand_repo/changed.txt"
+operand_rc=0
+operand_out=$(cd "$operand_repo" && "$script" --exact --message 'feat: deduplicate operands' \
+    --trailer "$TEST_TRAILER" -- base.txt changed.txt changed.txt 2>&1) || operand_rc=$?
+assert_eq '0' "$operand_rc" 'exact mode accepts unchanged and repeated operands'
+assert_contains "$operand_out" 'committed' 'unchanged and repeated operands report success'
+assert_eq 'changed.txt' \
+    "$(git -C "$operand_repo" diff-tree --no-commit-id --name-only -r HEAD)" \
+    'unchanged and repeated operands commit only the changed path'
+
+# Rename detection is deliberately disabled for scope accounting: selecting a
+# staged rename's live destination still keeps both old and new paths in scope.
+rename_repo="$tmp/exact-rename-repo"
+new_repo "$rename_repo"
+git -C "$rename_repo" mv base.txt renamed.txt
+rename_rc=0
+rename_out=$(cd "$rename_repo" && "$script" --exact --message 'refactor: rename scoped file' \
+    --trailer "$TEST_TRAILER" -- renamed.txt 2>&1) || rename_rc=$?
+assert_eq '0' "$rename_rc" 'exact mode accepts a staged rename by destination operand'
+assert_contains "$rename_out" 'committed' 'rename commit reports success'
+assert_eq $'base.txt\nrenamed.txt' \
+    "$(git -C "$rename_repo" diff-tree --no-commit-id --name-only --no-renames -r HEAD | sort)" \
+    'rename scope compares old and new paths consistently without rename detection'
+
+# --allow-empty must not turn an unrelated pre-staged path into an implicit
+# operand. Exact mode keeps the path staged for the caller to handle.
+allow_empty_staged_repo="$tmp/exact-allow-empty-staged-repo"
+new_repo "$allow_empty_staged_repo"
+printf 'foreign\n' > "$allow_empty_staged_repo/foreign.txt"
+git -C "$allow_empty_staged_repo" add -- foreign.txt
+allow_empty_staged_rc=0
+allow_empty_staged_out=$(cd "$allow_empty_staged_repo" && "$script" --exact --allow-empty \
+    --message 'fix: reject staged allow-empty scope' --trailer "$TEST_TRAILER" -- 2>&1) || allow_empty_staged_rc=$?
+assert_eq '1' "$allow_empty_staged_rc" \
+    'exact allow-empty refuses unrelated staged content'
+assert_contains "$allow_empty_staged_out" 'foreign.txt' \
+    'exact allow-empty refusal names the unrelated staged path'
+assert_eq '' "$(git -C "$allow_empty_staged_repo" log -1 --format=%s | \
+    grep -F 'reject staged allow-empty scope' || true)" \
+    'exact allow-empty refusal does not create a commit'
+assert_eq 'foreign.txt' "$(git -C "$allow_empty_staged_repo" diff --cached --name-only)" \
+    'exact allow-empty refusal leaves the staged path untouched'
+
+allow_empty_empty_repo="$tmp/exact-allow-empty-empty-repo"
+new_repo "$allow_empty_empty_repo"
+allow_empty_empty_rc=0
+allow_empty_empty_out=$(cd "$allow_empty_empty_repo" && "$script" --exact --allow-empty \
+    --message 'chore: record empty scope' --trailer "$TEST_TRAILER" -- 2>&1) || allow_empty_empty_rc=$?
+assert_eq '0' "$allow_empty_empty_rc" \
+    'exact allow-empty still permits a truly empty index'
+assert_contains "$allow_empty_empty_out" 'committed' \
+    'truly empty allow-empty commit reports success'
+assert_eq 'chore: record empty scope' \
+    "$(git -C "$allow_empty_empty_repo" log -1 --format=%s)" \
+    'truly empty allow-empty commit keeps its message'
+assert_eq '' "$(git -C "$allow_empty_empty_repo" diff-tree --no-commit-id --name-only -r HEAD)" \
+    'truly empty allow-empty commit contains no paths'
 
 finish
