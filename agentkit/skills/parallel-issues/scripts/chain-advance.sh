@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Resolve chain bases and prove a stacked PR is safe after retargeting.
 set -euo pipefail
+umask 077
 
 readonly PROGNAME=${0##*/}
 readonly UINT_RE='^[1-9][0-9]*$'
@@ -14,6 +15,8 @@ BASE=''
 REPO=''
 GH_BIN=${CHAIN_ADVANCE_GH:-gh}
 RETARGET_APPLIED=false
+BOUNDARY_SOURCE=''
+BOUNDARY_EPOCH=''
 
 usage() {
     cat <<EOF
@@ -135,45 +138,126 @@ fetch_pr() {
         --json number,baseRefName,headRefName,headRefOid,statusCheckRollup,reviewDecision,reviews,closingIssuesReferences
 }
 
-# The retarget boundary, read from the forge's own clock rather than this
-# machine's: every freshness comparison below is against provider timestamps, so
-# a skewed local clock would silently decide the verdict.
-retarget_boundary() {
-    local headers date_line epoch
-    headers=$("$GH_BIN" api --include /rate_limit 2>/dev/null) ||
-        die 'could not read provider time for the retarget boundary; evidence provenance is unavailable'
-    date_line=$(printf '%s\n' "$headers" |
-        sed -nE 's/^[Dd]ate:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' | head -n 1)
-    [[ -n $date_line ]] ||
-        die 'provider response carried no Date header; evidence provenance is unavailable'
-    epoch=$(date -u -d "$date_line" +%s 2> /dev/null) ||
-        die 'provider Date header was unparseable; evidence provenance is unavailable'
-    [[ $epoch =~ ^[0-9]+$ ]] ||
-        die 'provider Date header did not yield an epoch; evidence provenance is unavailable'
-    printf '%s\n' "$epoch"
-}
-
 iso_to_epoch() {
     local value=$1 epoch
     [[ -n $value && $value != null ]] || return 1
     epoch=$(date -u -d "$value" +%s 2> /dev/null) || return 1
-    [[ $epoch =~ ^[0-9]+$ ]] || return 1
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || return 1
     printf '%s\n' "$epoch"
 }
 
-# `gh pr edit --base` leaves headRefOid untouched, and both the check rollup and
-# provider approvals hang off the head commit -- so evidence produced against the
-# OLD base survives the retarget and satisfies a naive green/approved test. The
-# workflow does not re-run on a base change either (`pull_request` defaults to
-# opened/synchronize/reopened), so this cannot self-heal: it must fail closed
-# until CI is actually re-run against the new base. chains.md is explicit that a
-# stale digest is a stop signal, not a green result.
+# GitHub's timeline is the source of truth for a base edit. A local/provider
+# clock read after the edit is not a boundary: it can make the proof impossible
+# when CI started during the edit, and it changes on every retry.
+timeline_boundary() {
+    local timeline event_time epoch
+    timeline=$("$GH_BIN" api --paginate "repos/$REPO/issues/$PR/timeline" 2>/dev/null) || return 1
+    event_time=$(jq -r --arg base "$BASE" '
+        def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
+        [ .[]?
+          | select((.event // "") == "base_ref_changed")
+          | ([.base_ref, .baseRefName, .base_ref_name] | first_nonempty) as $event_base
+          | select($event_base == "" or $event_base == $base)
+          | ([.created_at, .createdAt] | first_nonempty)
+          | select(length > 0)
+        ] | last // empty
+    ' <<<"$timeline") || return 1
+    [[ -n $event_time ]] || return 1
+    epoch=$(iso_to_epoch "$event_time") || return 1
+    printf '%s\n' "$epoch"
+}
+
+path_has_no_symlink() {
+    local path=$1 current='' component
+    local -a components
+    [[ $path = /* ]] || return 1
+    IFS=/ read -r -a components <<<"${path#/}"
+    for component in "${components[@]}"; do
+        [[ -n $component && $component != . && $component != .. ]] || return 1
+        current+="/$component"
+        [[ ! -L $current ]] || return 1
+    done
+}
+
+boundary_file() {
+    local git_dir safe_base
+    git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    [[ $git_dir = /* && -d $git_dir ]] || return 1
+    path_has_no_symlink "$git_dir" || return 1
+    safe_base=${BASE//\//-}
+    printf '%s/chain-advance-evidence/chain-advance-pr-%s-base-%s.json\n' \
+        "$git_dir" "$PR" "$safe_base"
+}
+
+persist_boundary() {
+    local file dir tmp
+    file=$(boundary_file) || return 1
+    path_has_no_symlink "$file" || return 1
+    dir=${file%/*}
+    if [[ -e $dir ]]; then
+        [[ -d $dir && ! -L $dir ]] || return 1
+    else
+        mkdir -p -- "$dir" || return 1
+    fi
+    path_has_no_symlink "$file" || return 1
+    [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 1
+    tmp=$(mktemp "$dir/.chain-advance-boundary.XXXXXX") || return 1
+    if ! jq -n --argjson pr "$PR" --arg base "$BASE" --arg head "$1" \
+        --argjson boundary "$2" '{pr:$pr,base:$base,headSha:$head,boundaryEpoch:$boundary}' >"$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    if ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$file"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+}
+
+persisted_boundary() {
+    local file value
+    file=$(boundary_file) || return 1
+    path_has_no_symlink "$file" || return 1
+    [[ -f $file && ! -L $file ]] || return 1
+    value=$(jq -r --argjson pr "$PR" --arg base "$BASE" --arg head "$1" '
+        select(.pr == $pr and .base == $base and .headSha == $head)
+        | .boundaryEpoch
+        | select(type == "number" and floor == . and . > 0)
+    ' "$file" 2>/dev/null) || return 1
+    [[ $value =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+boundary_for() {
+    local head_sha=$1 boundary
+    if boundary=$(timeline_boundary); then
+        BOUNDARY_SOURCE=timeline
+        BOUNDARY_EPOCH=$boundary
+        # Keep persistence fail-closed: a timeline value can authorize this
+        # proof, but silently dropping its retry provenance would make a later
+        # run unable to distinguish a fresh boundary from an untrusted cache.
+        persist_boundary "$head_sha" "$boundary" ||
+            die 'could not persist the retarget boundary evidence'
+    elif boundary=$(persisted_boundary "$head_sha"); then
+        BOUNDARY_SOURCE=persisted
+        BOUNDARY_EPOCH=$boundary
+    else
+        die 'could not read a base_ref_changed timeline event or persisted retarget boundary; evidence provenance is unavailable'
+    fi
+}
+
+# `gh pr edit --base` leaves headRefOid untouched, and the check rollup may still
+# be attached to that same head commit. Its timestamp must nevertheless postdate
+# the forge timeline boundary: the workflow does not re-run on a base change
+# (`pull_request` defaults to opened/synchronize/reopened), so a current-head
+# digest alone cannot establish post-retarget CI provenance.
 check_ci_fresh() {
     local pr_json=$1 boundary=$2 stale
     stale=$(jq -r --argjson boundary "$boundary" '
+        def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .statusCheckRollup[]?
-          | (.startedAt // .createdAt // "") as $ts
-          | (.name // .context // "check") as $label
+          | ([.startedAt, .started_at, .createdAt, .created_at] | first_nonempty) as $ts
+          | ([.name, .context] | first_nonempty) as $raw_label
+          | (if $raw_label == "" then "unnamed check" else $raw_label end) as $label
           | if ($ts | length) == 0 then $label
             else ($ts | fromdateiso8601) as $epoch
                  | if $epoch <= $boundary then $label else empty end
@@ -276,29 +360,30 @@ closing_issue_count() {
 }
 
 retarget() {
-    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count boundary approval_token
+    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count
     resolve_repo
     pr_json=$(fetch_pr) || die "could not read PR #$PR before retarget"
+    actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
+        die 'baseRefName was unreadable before retarget'
     head_sha=$(jq -r '.headRefOid // empty' <<<"$pr_json") ||
         die 'headRefOid was unreadable before retarget'
     [[ $head_sha =~ $SHA_RE ]] || die 'head SHA evidence was missing before retarget'
-    check_ancestry "$head_sha"
-    if ! "$GH_BIN" pr edit "$PR" --repo "$REPO" --base "$BASE" >/dev/null; then
-        pr_json=$(fetch_pr) ||
-            die "could not retarget PR #$PR to base $BASE or re-read the live base"
-        actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
-            die 'baseRefName was unreadable after the retarget command failed'
-        if [[ $actual_base == "$BASE" ]]; then
-            RETARGET_APPLIED=true
-            die 'retarget command failed after the requested base was applied'
+    if [[ $actual_base != "$BASE" ]]; then
+        check_ancestry "$head_sha"
+        if ! "$GH_BIN" pr edit "$PR" --repo "$REPO" --base "$BASE" >/dev/null; then
+            pr_json=$(fetch_pr) ||
+                die "could not retarget PR #$PR to base $BASE or re-read the live base"
+            actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
+                die 'baseRefName was unreadable after the retarget command failed'
+            if [[ $actual_base == "$BASE" ]]; then
+                RETARGET_APPLIED=true
+                die 'retarget command failed after the requested base was applied'
+            fi
+            die "could not retarget PR #$PR to base $BASE; live base=${actual_base:-missing}"
         fi
-        die "could not retarget PR #$PR to base $BASE; live base=${actual_base:-missing}"
+        RETARGET_APPLIED=true
+        pr_json=$(fetch_pr) || die "could not re-read PR #$PR after retarget"
     fi
-    RETARGET_APPLIED=true
-    # Captured after the edit so evidence produced while it was in flight sorts
-    # below the freshness boundary.
-    boundary=$(retarget_boundary)
-    pr_json=$(fetch_pr) || die "could not re-read PR #$PR after retarget"
     actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
         die 'baseRefName was unreadable after retarget'
     [[ $actual_base == "$BASE" ]] ||
@@ -309,17 +394,18 @@ retarget() {
         die 'headRefOid was unreadable after retarget'
     [[ -n $head_ref && $head_sha =~ $SHA_RE ]] ||
         die 'head ref/SHA evidence was missing after retarget'
+    boundary_for "$head_sha"
     check_ancestry "$head_sha"
     ci_counts=$(check_ci "$pr_json")
     IFS=$'\t' read -r total pass <<<"$ci_counts"
-    check_ci_fresh "$pr_json" "$boundary"
-    approval_token=$(describe_approval "$pr_json" "$head_sha" "$boundary")
+    check_ci_fresh "$pr_json" "$BOUNDARY_EPOCH"
+    approval_token=$(describe_approval "$pr_json" "$head_sha" "$BOUNDARY_EPOCH")
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=%s ancestry=verified closing-issues=%s\n' \
-        "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$approval_token" "$closing_count"
+    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=%s ancestry=verified boundarySource=%s closing-issues=%s\n' \
+        "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$approval_token" "$BOUNDARY_SOURCE" "$closing_count"
 }
 
 main() {
