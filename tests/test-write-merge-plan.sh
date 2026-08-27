@@ -174,7 +174,6 @@ cat >"$docs_plan" <<'EOF'
 EOF
 assert_rc 0 'documentation-only predictions do not require project test roots' -- \
     "$writer" --dispatch-plan "$docs_plan" --chain-base "$chain_base" --validate-only
-
 # Selection accounting is optional for older plans, but when present it must
 # be typed so the fast-mode funnel cannot be made to claim a queue or tracker
 # count from malformed run data.
