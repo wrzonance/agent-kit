@@ -167,8 +167,8 @@ timeline_boundary() {
     printf '%s\n' "$epoch"
 }
 
-path_has_symlink() {
-    local path=$1 current=/ component
+path_has_no_symlink() {
+    local path=$1 current='' component
     local -a components
     [[ $path = /* ]] || return 1
     IFS=/ read -r -a components <<<"${path#/}"
@@ -183,7 +183,7 @@ boundary_file() {
     local git_dir safe_base
     git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
     [[ $git_dir = /* && -d $git_dir ]] || return 1
-    path_has_symlink "$git_dir" || return 1
+    path_has_no_symlink "$git_dir" || return 1
     safe_base=${BASE//\//-}
     printf '%s/chain-advance-evidence/chain-advance-pr-%s-base-%s.json\n' \
         "$git_dir" "$PR" "$safe_base"
@@ -192,14 +192,14 @@ boundary_file() {
 persist_boundary() {
     local file dir tmp
     file=$(boundary_file) || return 1
-    path_has_symlink "$file" || return 1
+    path_has_no_symlink "$file" || return 1
     dir=${file%/*}
     if [[ -e $dir ]]; then
         [[ -d $dir && ! -L $dir ]] || return 1
     else
         mkdir -p -- "$dir" || return 1
     fi
-    path_has_symlink "$file" || return 1
+    path_has_no_symlink "$file" || return 1
     [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 1
     tmp=$(mktemp "$dir/.chain-advance-boundary.XXXXXX") || return 1
     if ! jq -n --argjson pr "$PR" --arg base "$BASE" --arg head "$1" \
@@ -216,7 +216,7 @@ persist_boundary() {
 persisted_boundary() {
     local file value
     file=$(boundary_file) || return 1
-    path_has_symlink "$file" || return 1
+    path_has_no_symlink "$file" || return 1
     [[ -f $file && ! -L $file ]] || return 1
     value=$(jq -r --argjson pr "$PR" --arg base "$BASE" --arg head "$1" '
         select(.pr == $pr and .base == $base and .headSha == $head)
@@ -256,7 +256,8 @@ check_ci_fresh() {
         def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .statusCheckRollup[]?
           | ([.startedAt, .started_at, .createdAt, .created_at] | first_nonempty) as $ts
-          | ([.name, .context] | first_nonempty) as $label
+          | ([.name, .context] | first_nonempty) as $raw_label
+          | (if $raw_label == "" then "unnamed check" else $raw_label end) as $label
           | if ($ts | length) == 0 then $label
             else ($ts | fromdateiso8601) as $epoch
                  | if $epoch <= $boundary then $label else empty end

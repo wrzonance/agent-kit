@@ -561,6 +561,30 @@ assert_eq 'yes' "$( [[ -f $metadata_evidence && ! -L $metadata_evidence ]] && pr
 assert_eq 'no' "$( [[ -e $repo/.agent/evidence/chain-advance-pr-7-base-main.json ]] && printf yes || printf no )" \
     'successful retarget evidence is not written beneath the caller-controlled worktree'
 
+# --- unlabeled CI evidence cannot disappear into an empty diagnostic ----------
+cat >"$tmp/gh-unnamed-check" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":9,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-unnamed-check"
+set +e
+unnamed_check_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-unnamed-check" \
+    bash "$advance" --retarget --repo owner/repo --pr 9 --base main 2>&1)
+unnamed_check_rc=$?
+set -e
+assert_eq '1' "$unnamed_check_rc" \
+    'a timestamp-less unlabeled CI rollup entry blocks the retarget'
+assert_contains "$unnamed_check_output" 'unnamed check' \
+    'unlabeled CI evidence receives a nonempty diagnostic label'
+
 # --- current-head checks still require a post-retarget timestamp ------------
 cat >"$tmp/gh-current-head-stale" <<'EOF'
 #!/usr/bin/env bash
