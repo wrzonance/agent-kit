@@ -75,6 +75,7 @@ fi
 
 git -C "$worktree" rev-parse --verify --quiet "$diff_base^{commit}" >/dev/null ||
     die "--base does not resolve to a commit: $base"
+
 changed=$(git -C "$worktree" diff --no-renames --name-only "$diff_base...HEAD") ||
     die 'could not compute the changed-file list'
 canonical_file=$(mktemp "${TMPDIR:-/tmp}/materiality-diff.XXXXXXXXXX") ||

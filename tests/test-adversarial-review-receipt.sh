@@ -97,6 +97,7 @@ assert_contains "$parallel_text" 'consent-record.sh" payload' \
     'parallel-issues derives the current canonical diff payload before precheck'
 assert_contains "$parallel_text" '--diff-payload "$current_diff_payload"' \
     'parallel-issues passes the current diff payload into precheck'
+
 # Each precheck recipe is a fresh shell boundary. Every value supplied by an
 # earlier setup step must therefore be guarded before it is interpolated into
 # a helper invocation; an empty path or repository must fail closed.
