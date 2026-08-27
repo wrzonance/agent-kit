@@ -106,6 +106,7 @@ write_confirmed() {
         --arg fp14 10633847aa4a03af3ace3e56e24dfff1db569b771793fe2152ef9ceb34f17eee \
         --arg fp15 14293f2536894b3ed4b275126b42dd9c85cb5dbf323df8ce7bf94b9e66563f31 '{
       repository:"owner/repo",
+      budget:null,
       providers:(if $provider == "__NONE__" then [] else ($provider | split(":")) as $parts |
         [{name:$parts[0],action:$parts[1],source:$parts[2]}] end),
       queue:([{
@@ -139,6 +140,32 @@ assert_eq '14:RUNNABLE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:main' \
 assert_eq '["providers","queue","readyTransition","repository"]' \
     "$(jq -c 'keys | sort' "$auth")" 'non-auto-merge authorization has the exact schema'
 
+jq '.budget={restRemaining:1,warning:true}' "$confirmed" >"$tmp/budget-drift.json"
+cp "$tmp/budget-drift.json" "$confirmed"
+budget_drift_out=$(run_authorize)
+assert_eq "authorization=$auth queue=2" "$budget_drift_out" \
+    'budget metadata drift is ignored because it is not authorization consent'
+
+write_confirmed
+jq '.unexpected=true' "$confirmed" >"$tmp/unexpected-key.json"
+cp "$tmp/unexpected-key.json" "$confirmed"
+key_mismatch_rc=0
+run_authorize >"$tmp/key-mismatch.out" 2>"$tmp/key-mismatch.err" || key_mismatch_rc=$?
+assert_eq '1' "$key_mismatch_rc" 'an unknown snapshot key blocks authorization'
+assert_contains "$(cat "$tmp/key-mismatch.err")" \
+    'snapshot.keys snapshot=["budget","providers","queue","repository","unexpected"] live=["budget","providers","queue","repository"]' \
+    'snapshot key drift identifies the differing key sets'
+
+write_confirmed
+jq '.repository="other/repo"' "$confirmed" >"$tmp/repository-mismatch.json"
+cp "$tmp/repository-mismatch.json" "$confirmed"
+repository_mismatch_rc=0
+run_authorize >"$tmp/repository-mismatch.out" 2>"$tmp/repository-mismatch.err" || repository_mismatch_rc=$?
+assert_eq '1' "$repository_mismatch_rc" 'repository drift blocks authorization'
+assert_contains "$(cat "$tmp/repository-mismatch.err")" \
+    '.repository snapshot=other/repo live=owner/repo' \
+    'repository drift identifies the differing field and values'
+
 before_provider_failure=$(sha256sum "$auth")
 provider_action_rc=0
 run_authorize_provider coderabbit:observe:operator-instruction \
@@ -146,6 +173,9 @@ run_authorize_provider coderabbit:observe:operator-instruction \
 assert_eq '1' "$provider_action_rc" 'trigger versus observe cannot change after confirmation'
 assert_contains "$(cat "$tmp/provider-action.err")" 'provider decisions differ' \
     'provider action drift names the required consent refresh'
+assert_contains "$(cat "$tmp/provider-action.err")" \
+    '.providers[0].action snapshot=trigger live=observe' \
+    'provider action drift identifies the first differing field and values'
 assert_eq "$before_provider_failure" "$(sha256sum "$auth")" \
     'provider action drift preserves the prior authorization byte-for-byte'
 
@@ -168,6 +198,14 @@ run_authorize >"$tmp/extra-provider.out" 2>"$tmp/extra-provider.err" || extra_pr
 assert_eq '1' "$extra_provider_rc" 'an extra displayed provider decision cannot be omitted'
 assert_contains "$(cat "$tmp/extra-provider.err")" 'provider decisions differ' \
     'an extra provider decision names the required consent refresh'
+
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:trigger:repository
+provider_source_rc=0
+run_authorize >"$tmp/provider-source.out" 2>"$tmp/provider-source.err" || provider_source_rc=$?
+assert_eq '1' "$provider_source_rc" 'provider source drift blocks authorization'
+assert_contains "$(cat "$tmp/provider-source.err")" \
+    '.providers[0].source snapshot=repository live=capability-default' \
+    'provider source drift identifies the first differing field and values'
 
 write_confirmed
 jq 'del(.providers)' "$confirmed" >"$tmp/missing-providers.json"
@@ -195,6 +233,14 @@ assert_contains "$(cat "$tmp/queue.log")" \
 assert_contains "$(cat "$tmp/queue.log")" \
     '--format json' 'authorization consumes machine-readable live queue state'
 
+write_confirmed
+queue_state_rc=0
+QUEUE_STATE_14=BLOCKED run_authorize >"$tmp/queue-state.out" 2>"$tmp/queue-state.err" || queue_state_rc=$?
+assert_eq '1' "$queue_state_rc" 'queue state drift blocks authorization'
+assert_contains "$(cat "$tmp/queue-state.err")" \
+    '.queue[0].state snapshot=RUNNABLE live=BLOCKED' \
+    'queue state drift identifies the first differing field and values'
+
 before_drift=$(sha256sum "$auth")
 head_drift_rc=0
 QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize \
@@ -204,6 +250,27 @@ assert_contains "$(cat "$tmp/head-drift.err")" 'redisplay and reconfirm' \
     'head drift names the required consent refresh'
 assert_eq "$before_drift" "$(sha256sum "$auth")" \
     'head drift preserves the prior authorization byte-for-byte'
+
+write_confirmed
+jq '.providers += [{name:"other",action:"observe",source:"operator-instruction"}]' \
+    "$confirmed" >"$tmp/reordered-providers.json"
+cp "$tmp/reordered-providers.json" "$confirmed"
+reordered_provider_head_drift_rc=0
+AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
+    --confirmed-queue-file "$confirmed" \
+    --provider other:observe:operator-instruction \
+    --provider coderabbit:trigger:capability-default \
+    >"$tmp/reordered-providers.out" 2>"$tmp/reordered-providers.err" ||
+    reordered_provider_head_drift_rc=$?
+assert_eq '1' "$reordered_provider_head_drift_rc" \
+    'reordered identical providers with head drift still block authorization'
+assert_contains "$(cat "$tmp/reordered-providers.err")" \
+    '.queue[0].headSha snapshot=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa live=cccccccccccccccccccccccccccccccccccccccc' \
+    'provider order drift does not hide the queue head mismatch diagnostic'
 
 write_confirmed cccccccccccccccccccccccccccccccccccccccc
 QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize >/dev/null
@@ -554,6 +621,7 @@ assert_eq '1' "$added_rc" 'a PR the operator never confirmed is never silently a
 
 jq -cn '{
   repository:"owner/repo",
+  budget:null,
   providers:[{name:"coderabbit",action:"trigger",source:"capability-default"}],
   queue:[
     {pr:14,state:"RUNNABLE",headSha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base:"main",
