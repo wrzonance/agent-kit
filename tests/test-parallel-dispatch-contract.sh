@@ -73,7 +73,8 @@ issue_lead_prompt=$(awk '
 # extracted nothing the moment the tag was added, and an empty haystack fails
 # every positive assertion at once rather than pointing at the real cause.
 draft_loop_prompt=$(awk '
-    /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
+    /^## PR-fix-batch worker prompt$/ { section=1; next }
+    section == 1 && /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
     capture == 1 && /^```/ { capture=2; next }
     capture == 2 && /^```$/ { exit }
     capture == 2 { print }
@@ -82,13 +83,24 @@ draft_loop_prompt=$(awk '
     printf 'could not extract the draft-loop prompt block from %s\n' "$worker_prompts" >&2
     exit 1
 }
+setup_prompt=$(awk '
+    /^## PR-loop setup worker prompt$/ { section=1; next }
+    section == 1 && /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
+    capture == 1 && /^```/ { capture=2; next }
+    capture == 2 && /^```$/ { exit }
+    capture == 2 { print }
+' "$worker_prompts")
+[[ -n $setup_prompt ]] || {
+    printf 'could not extract the PR-loop setup prompt block from %s\n' "$worker_prompts" >&2
+    exit 1
+}
 
 # The fix-batch worker runs full verification through the same wrapper as an
 # issue lead, so the Compose isolation rules must reach BOTH templates. Pinning
 # them only on the whole-file text would pass while the fix-batch prompt carried
 # none of them.
 fix_batch_prompt=$(awk '
-    /^## Fix-batch worker prompt$/ { capture=1; next }
+    /^## PR-fix-batch worker prompt$/ { capture=1; next }
     capture && /^## Exit Report$/ { exit }
     capture { print }
 ' "$worker_prompts")
@@ -129,7 +141,15 @@ assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside 
     'chain ordering sources are exactly the two mechanical ones'
 assert_contains "$text" 'never an ordering input' \
     'issue-body prose is excluded from ordering'
-assert_contains "$text" 'chain depth cap: 4' 'chain depth cap is pinned'
+assert_contains "$text" '4-link depth window' 'chain depth window is pinned'
+assert_contains "$normalized_text" 'deeper tails enter the same refill queue as slot-cap overflow' \
+    'chain-depth overflow shares the slot-cap refill queue'
+assert_not_contains "$normalized_text" 'deeper tails are dropped' \
+    'chain-depth overflow is not a membership exclusion'
+assert_contains "$normalized_text" 'depth limits the number of links in flight, not chain membership' \
+    'chain depth is documented as a concurrency limit'
+assert_contains "$normalized_text" 'refill the next queued successor from that exact pushed SHA' \
+    'chain-depth refill is gated by the predecessor pushed SHA'
 assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
 assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
@@ -158,6 +178,14 @@ assert_contains "$normalized_text" 'for a join, this means every predecessor pus
     'the deferred-dispatch gate names the join-specific push requirement'
 assert_contains "$normalized_chains_text" 'interface dependency' \
     'chain edges require an interface dependency'
+assert_contains "$normalized_chains_text" 'a successor that would extend the in-flight depth enters the same refill queue' \
+    'chain reference queues depth overflow instead of dropping it'
+assert_contains "$normalized_chains_text" 'depth-6 fixture' \
+    'chain reference includes the depth-six acceptance fixture'
+assert_contains "$normalized_chains_text" 'queued=1[#6]' \
+    'depth-six fixture reports the queued tail at the funnel'
+assert_contains "$normalized_chains_text" 'dispatch #6 from #5' \
+    'depth-six fixture dispatches the tail after predecessor push'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
@@ -273,6 +301,17 @@ assert_contains "$normalized_triage_and_selection_text" \
     'automatic selection reports requested slots from the effective cap'
 assert_contains "$triage_and_selection_text" 'slot-cap' \
     'selection funnel accounts for eligible candidates beyond the requested slots'
+assert_contains "$triage_and_selection_text" 'queued=<queue-count>[#<issue>,...]' \
+    'selection funnel prints queued issue identities'
+assert_contains "$normalized_triage_and_selection_text" 'chain-depth overflow enters this same queue' \
+    'selection classifies chain-depth overflow as queued'
+assert_contains "$triage_and_selection_text" 'queued=1[#6]' \
+    'selection examples show a queued chain tail'
+assert_contains "$normalized_text" 'At handoff, print each queued reason and exact resume command' \
+    'handoff surfaces queue entries instead of claiming completion'
+assert_contains "$normalized_text" \
+    'queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222' \
+    'handoff prints an exact resume command for a queued chain issue'
 assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
 assert_contains "$wait_discipline_text" 'A bounded wait must be silent until its terminal condition.' \
@@ -318,10 +357,26 @@ assert_contains "$dispatch_section" '[ -d "${agentkit:-}/.shared/scripts" ]' \
     'concurrency dispatch carries the resolver directory guard'
 assert_contains "$dispatch_section" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
-assert_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
-    'dispatch names the hard PR-loop cap at the launch boundary'
+assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
+    'dispatch does not hardcode a two-loop cap'
 assert_contains "$text" 'pr_loop_dispatch_cap' \
     'dispatch derives an effective loop cap before launching agents'
+assert_contains "$text" 'runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))' \
+    'dispatch reserves the root and active issue leads from the runtime cap'
+assert_contains "$text" 'pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : runtime_loop_budget))' \
+    'dispatch bounds loops by open PRs and remaining runtime capacity'
+assert_contains "$text" 'pr-loop-setup' \
+    'dispatch uses the read-only PR-loop setup template'
+assert_contains "$text" 'pr-fix-batch' \
+    'dispatch gates the fix-batch template on accepted findings'
+assert_contains "$text" 'open_pr_count == 0' \
+    'dispatch treats zero open PRs as an explicit no-op case'
+assert_contains "$text" 'exit 0' \
+    'dispatch exits successfully when there are no open PRs'
+assert_eq yes "$([[ $(sed -n '/^### Step 3b: Dispatch review-remote-pr agents (parallel)$/,/^### Adversarial-review receipt:/p' "$skill" | sed -n '2p') == '' ]] && printf yes || printf no)" \
+    'Step 3b heading keeps its required Markdown blank line'
+assert_contains "$normalized_text" 'origin/${base_branch}' \
+    'setup materiality base has an origin-base default'
 assert_contains "$text" 'queue overflow PR loops' \
     'dispatch queues PR loops beyond the effective cap'
 assert_contains "$verification_isolation_text" 'serialize full-suite verification' \
@@ -438,6 +493,57 @@ assert_contains "$text" 'Shell state does not persist: recompute `dispatch_repor
     'final handoff explicitly retrieves reports from durable run evidence'
 assert_contains "$text" 'for dispatch_report in "$dispatch_reports_dir"/issue-*.report' \
     'final handoff enumerates every durable per-issue report'
+
+# --- issue #494: auto-review completion coverage and recoverable redrive ----
+assert_contains "$normalized_text" 'Final draft sweep' \
+    'auto-review performs a named final draft sweep before handoff'
+assert_contains "$normalized_text" 'CI settled' \
+    'the final sweep requires settled CI for every opened PR'
+assert_contains "$normalized_text" 'Code Quality dispositioned' \
+    'the final sweep requires Code Quality disposition for every opened PR'
+assert_contains "$normalized_text" 'exactly one of {adversarial receipt, verified skip receipt}' \
+    'the final sweep requires exactly one receipt kind per opened PR'
+final_sweep_section=$(sed -n '/^### Final draft sweep/,/^### Opt-out/p' "$skill")
+assert_contains "$final_sweep_section" 'gh-pr-state.sh' \
+    'the final sweep refreshes live PR evidence before classifying receipts'
+assert_contains "$final_sweep_section" '--full --no-cache' \
+    'the final sweep forces a fresh live comment fetch'
+assert_contains "$final_sweep_section" 'post-receipt.sh" status' \
+    'the final sweep classifies the refreshed comment artifact'
+assert_eq yes "$([[ $(awk '/gh-pr-state\.sh/{fetch=NR} /post-receipt\.sh.*status/{status=NR} END {print (fetch < status ? "yes" : "no")}' <<< "$final_sweep_section") == yes ]] && printf yes || printf no)" \
+    'the live refresh precedes receipt classification'
+assert_contains "$final_sweep_section" '10:receipt=none' \
+    'only a missing receipt is eligible for final-sweep recovery'
+assert_contains "$final_sweep_section" 'receipt_redrive_attempted' \
+    'receipt recovery is tracked per PR for a one-shot limit'
+assert_contains "$final_sweep_section" 'duplicate/invalid' \
+    'duplicate or invalid receipts are explicitly non-recoverable'
+assert_contains "$final_sweep_section" '++parked_count' \
+    'non-recoverable receipt evidence increments parked_count'
+assert_contains "$normalized_text" 're-enters the draft loop' \
+    'a final-sweep miss re-enters the draft loop'
+assert_contains "$normalized_text" 'handoff cannot print' \
+    'a final-sweep miss prevents the handoff'
+assert_contains "$normalized_text" 'coverage= prs=' \
+    'handoff emits opened-PR receipt coverage totals'
+assert_contains "$normalized_text" 'recoverable' \
+    'Collect classifies recoverable blocked leads'
+assert_contains "$normalized_text" 'baseline-red' \
+    'Collect recognizes baseline-red as recoverable'
+assert_contains "$normalized_text" 'write-set' \
+    'Collect recognizes write-set as recoverable'
+assert_contains "$normalized_text" 'one automatic re-drive' \
+    'recoverable blocked leads receive one automatic re-drive'
+assert_contains "$normalized_text" 'exact resume command' \
+    'parked leads print an exact resume command'
+assert_contains "$normalized_text" 'only after the blocker clears' \
+    'recoverable redrive waits until the blocker is cleared'
+assert_contains "$normalized_text" 'widen the fence' \
+    'write-set recovery requires the root to widen its fence'
+assert_contains "$normalized_text" 'every active worker' \
+    'write-set recovery rechecks every active worker'
+assert_contains "$normalized_text" 'same lead is unavailable' \
+    'blocked recovery falls back to a fresh lead when needed'
 handoff_retrieval=$(awk '
     /Shell state does not persist: recompute `dispatch_reports_dir`/ { armed=1 }
     armed && /^```bash$/ { capture=1; next }
@@ -533,6 +639,17 @@ assert_prompt_instruction_contract() {
 
 assert_prompt_instruction_contract "$issue_lead_prompt" 'issue-lead prompt' 'this issue'
 assert_prompt_instruction_contract "$draft_loop_prompt" 'draft-loop prompt' 'this PR'
+assert_contains "$setup_prompt" 'gh-pr-state.sh' 'setup prompt fetches PR state'
+assert_contains "$setup_prompt" '--wait-ci' 'setup prompt waits for CI'
+assert_contains "$setup_prompt" 'code-quality-state.sh' 'setup prompt triages Code Quality'
+assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs materiality precheck'
+assert_contains "$setup_prompt" 'Zero findings are a successful setup outcome' \
+    'setup prompt treats a zero-finding loop as success'
+assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
+assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
+assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
+    'setup prompt does not encode a zero-finding BLOCKED result'
 
 assert_prompt_scope_contract() {
     local prompt="$1" label="$2"
@@ -730,7 +847,7 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 # but it lives beside the worker prompts it is read alongside. SKILL.md's body
 # keeps only a gate statement + pointer at the binding step.
 publication_section=$(
-    sed -n '/^## Draft PR body template$/,/^## Fix-batch worker prompt$/p' "$worker_prompts"
+    sed -n '/^## Draft PR body template$/,/^## PR-fix-batch worker prompt$/p' "$worker_prompts"
 )
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication uses the byte-verifying body transport'
@@ -1211,6 +1328,8 @@ assert_contains "$normalized_text" 'Never fold dirt first observed inside a disp
     'handoff never misattributes run-window dirt to the human'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'
+assert_contains "$worker_prompts_text" '__BLOCKER_CONTRACT__' \
+    'worker prompt template reserves the blocker contract insertion point'
 
 # --- issue #254: Collect detects, attributes, and disposes cross-writes -----
 cross_write="$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh"

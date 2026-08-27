@@ -213,14 +213,14 @@ name=${slug#*/}
 
 # --------------------------------------------------------------- the query ---
 # Verified against a live Projects v2 board: fieldValueByName("Status"),
-# timelineItems(itemTypes:[CROSS_REFERENCED_EVENT]), and projectItems{id} all
-# resolve. Issue bodies are deliberately NOT fetched: nothing in the digest uses
-# them, and the agent reads the body of the two or three issues it actually
-# picks up rather than all thirty.
+# timelineItems(itemTypes:[CROSS_REFERENCED_EVENT]), projectItems{id}, and
+# subIssues all resolve. Issue bodies remain outside this digest: the selected
+# issue's canonical preparation read supplies task-list tracker evidence.
 readonly ISSUE_FIELDS='
     number
     title
     labels(first: 20) { nodes { name } }
+    subIssues(first: 1) { totalCount }
     projectItems(first: 5) {
       nodes {
         id
@@ -342,10 +342,18 @@ def pulls:
 def board_status:
   (.projectItems.nodes[0]?.fieldValueByName?.name // "-");
 def winner($c): ($c | sort_by(.updatedAt // "") | reverse | .[0]);
-map(
+def tracker_reasons($selected):
+  . as $i
+  | ([ $i.labels.nodes[]?.name? | select(type == "string") | ascii_downcase
+       | select(. == "epic" or . == "tracker")
+       | "label:\(.)" ]
+     + (if (($i.subIssues.totalCount // 0) > 0)
+        then ["sub-issues"] else [] end));
+(. as $input | ($input | map(.number)) as $selected | $input | map(
   . as $i
   | (pulls) as $prs
   | (board_status) as $st
+  | (tracker_reasons($selected)) as $tracker_reasons
   | (if ($i.number == null) or ($i.timelineItems == null) or ($i.projectItems == null)
      then {verdict: "unknown", pr: null, extra: 0}
      elif $st == "Done" then {verdict: "done", pr: null, extra: 0}
@@ -371,7 +379,10 @@ map(
      projectId: ($i.projectItems.nodes[0]?.project?.id // null),
      verdict: $c.verdict,
      pr: $c.pr,
-     extra: (if ($c.extra // 0) > 0 then $c.extra else 0 end)}
+     extra: (if ($c.extra // 0) > 0 then $c.extra else 0 end),
+     tracker: (($tracker_reasons | length) > 0),
+     trackerReason: $tracker_reasons}
+)
 )
 | map(select(.verdict != "done"))
 | sort_by(.number) | reverse'
@@ -459,7 +470,7 @@ if [[ -r $repo_root/.agent/cache/board-items.json ]]; then
 fi
 printf 'triage= repo=%s issues=%s calls=1 items-cached=%s\n\n' "$slug" "$count" "$cached"
 
-while IFS=$'\t' read -r number title status verdict pr_num pr_state pr_merged_at extra; do
+while IFS=$'\t' read -r number title status verdict pr_num pr_state pr_merged_at extra tracker tracker_reason; do
     [[ -n $number ]] || continue
     pr_cell='-'
     if [[ $pr_num != '-' ]]; then
@@ -473,13 +484,16 @@ while IFS=$'\t' read -r number title status verdict pr_num pr_state pr_merged_at
             pr_cell="$pr_cell (+$extra more)"
         fi
     fi
-    printf '#%-5s %-13s %-11s adr=%-24s pr=%s\n' \
-        "$number" "$status" "$verdict" "$(adr_candidates "$title")" "$pr_cell"
+    tracker_cell=''
+    [[ $tracker == true ]] && tracker_cell=" tracker(${tracker_reason:--})"
+    printf '#%-5s %-13s %-11s adr=%-24s pr=%s%s\n' \
+        "$number" "$status" "$verdict" "$(adr_candidates "$title")" "$pr_cell" "$tracker_cell"
     # Every column uses "-" for absent, never "". Tab is an IFS *whitespace*
     # character, so `read` collapses consecutive tabs -- one empty field would
     # silently shift every later column left.
 done < <(jq -r '.[] | [.number, .title, .status, .verdict,
-    (.pr.number // "-"), (.pr.state // "-"), (.pr.mergedAt // "-"), .extra] | @tsv' <<< "$records")
+    (.pr.number // "-"), (.pr.state // "-"), (.pr.mergedAt // "-"), .extra,
+    .tracker, (.trackerReason | join(","))] | @tsv' <<< "$records")
 
 # ------------------------------------------------------------------ fuzzy ----
 # Opt-in only. Finds pull requests that never referenced the issue -- the

@@ -17,6 +17,11 @@
 #       A missing parser, unreadable artifact, or invalid JSON never reports
 #       either word; it fails closed (see Exit status).
 #
+#   status --comments FILE
+#       Classifies the final-sweep receipt artifact. Prints exactly one of
+#       receipt=none, receipt=adversarial, or receipt=verified-skip. A missing
+#       receipt returns 10; duplicate spent markers fail closed.
+#
 #   publish --pr N --repo OWNER/REPO --comments FILE [--findings-file FILE]
 #           --provider S --model S --effort S
 #           --mode cross-provider|blind-fallback [--mode-reason S]
@@ -58,7 +63,7 @@
 #       downstream gh-comment.sh post/verify failed with no recovered marker
 #   2   usage error (bad/missing arguments or the sibling gh-comment.sh is
 #       missing)
-#   10  precheck only: marker provably absent (not spent)
+#   10  precheck/status only: marker provably absent (not spent / no receipt)
 #   11  publish only: refused -- the receipt marker is already present
 #   12  publish only: --require-pushed refused a dirty or unpushed tree
 #   13  publish only: the findings pipeline is out of order
@@ -81,6 +86,7 @@ readonly ROBOT
 usage() {
     cat <<EOF
 Usage: $PROGNAME precheck --comments FILE
+       $PROGNAME status --comments FILE
        $PROGNAME --require-pushed publish ...
        $PROGNAME publish --pr N --repo OWNER/REPO --comments FILE \\
                  [--findings-file FILE] \\
@@ -103,6 +109,11 @@ the stable adversarial-review spent marker.
   stdout 'spent'     and exit 0   marker found
   stdout 'not-spent' and exit 10  marker provably absent
   exit 1 (stderr only, fails closed) missing jq, unreadable FILE, invalid JSON
+
+status: classifies the final-sweep receipt artifact. Exactly one spent marker
+prints receipt=adversarial or receipt=verified-skip and exits 0. No marker
+prints receipt=none and exits 10. Duplicate markers or invalid evidence fail
+closed with exit 1.
 
 publish: validates the NDJSON findings ledger, renders the one-spend receipt,
 and posts it via gh-comment.sh's byte-verified transport. Runs the same
@@ -200,6 +211,61 @@ check_receipt_spent() {
     esac
 }
 
+# check_receipt_status FILE
+# Prints receipt=none and returns 10, receipt=adversarial or
+# receipt=verified-skip and returns 0, or prints nothing and returns 1. This is
+# intentionally stricter than precheck: the final handoff must prove exactly
+# one durable receipt and identify whether it was a verified skip.
+check_receipt_status() {
+    local file=$1 result jq_rc=0
+    command -v jq >/dev/null 2>&1 || {
+        printf '%s\n' 'jq not found on PATH' >&2
+        return 1
+    }
+    [[ -e $file ]] || {
+        printf 'PR comment artifact does not exist: %s\n' "$file" >&2
+        return 1
+    }
+    [[ -r $file ]] || {
+        printf 'PR comment artifact is not readable: %s\n' "$file" >&2
+        return 1
+    }
+    result=$(jq -r --arg marker "$RECEIPT_MARKER" '
+        if type != "array" then error("comments must be an array")
+        else [ .[] | (.body // "") as $body
+               | select($body | contains($marker))
+               | {body: $body, markers: ($body | split($marker) | length - 1)} ]
+        | if length == 0 then "none"
+          elif length != 1 or .[0].markers != 1 then "duplicate"
+          elif .[0].body | contains("Verified-skip rationale:") then "verified-skip"
+          else "adversarial"
+          end
+        end
+    ' <"$file") || jq_rc=$?
+    ((jq_rc == 0)) || {
+        printf 'PR comment artifact is not valid JSON: %s\n' "$file" >&2
+        return 1
+    }
+    case $result in
+        none)
+            printf 'receipt=none\n'
+            return 10
+            ;;
+        adversarial|verified-skip)
+            printf 'receipt=%s\n' "$result"
+            return 0
+            ;;
+        duplicate)
+            printf 'receipt status requires exactly one spent marker: %s\n' "$file" >&2
+            return 1
+            ;;
+        *)
+            printf 'receipt status produced an invalid result: %s\n' "$result" >&2
+            return 1
+            ;;
+    esac
+}
+
 cmd_precheck() {
     local comments=''
     while (($#)); do
@@ -226,6 +292,33 @@ cmd_precheck() {
     if ((rc != 0 && rc != 10)); then
         evidence_unavailable "receipt precheck could not read $comments"
     fi
+    printf '%s\n' "$result"
+    exit "$rc"
+}
+
+cmd_status() {
+    local comments=''
+    while (($#)); do
+        case $1 in
+            --comments)
+                [[ ${2-} ]] || die_usage '--comments requires a path'
+                comments=$2
+                shift 2
+                ;;
+            -h | --help)
+                usage
+                exit 0
+                ;;
+            *)
+                die_usage "unknown argument: $1"
+                ;;
+        esac
+    done
+    [[ -n $comments ]] || die_usage '--comments is required'
+
+    local rc=0 result=''
+    result=$(check_receipt_status "$comments") || rc=$?
+    ((rc == 0 || rc == 10)) || evidence_unavailable "receipt status could not read $comments"
     printf '%s\n' "$result"
     exit "$rc"
 }
@@ -778,6 +871,7 @@ main() {
     shift
     case $sub in
         precheck) cmd_precheck "$@" ;;
+        status) cmd_status "$@" ;;
         publish) cmd_publish "$@" ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $sub (expected precheck or publish)" ;;
