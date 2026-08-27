@@ -886,7 +886,7 @@ Waiting is not work, and narrating a wait is not a status report. Read [.shared/
 
 Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration — it carried zero information and will again; escalate the bound or run the Collect section's stall check instead.
 
-After completion, inspect durable state (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance commands): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). The digest exits 0 for green, failing, or pending CI; read it and stop.
+After completion, inspect durable state (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). Digest exits 0 for green, failing, or pending CI; read it and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
@@ -923,7 +923,7 @@ Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as s
 **The materiality gate runs before the review spend.** Before launching any reviewer, the
 loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" --acceptance-file "$worktree/.agent/acceptance.txt" --acceptance-status-file "$worktree/.agent/acceptance-status.txt"`
 — for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
-predecessor's changes contaminate the successor's verdict. Pass acceptance.txt; non-pass blocks.
+predecessor's changes contaminate successor's verdict. Pass acceptance.txt; non-pass blocks.
 `verdict=skip-eligible` (test/docs-only and acceptance green) takes the
 documented-skip path: publish the receipt with `--skip-rationale` and the helper's printed
 oracle line, and launch no reviewer. `verdict=material` — any file touching executable
