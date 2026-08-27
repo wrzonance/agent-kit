@@ -159,6 +159,25 @@ assert_eq '10' "$(jq -r '.[0].number' <<< "$out")" 'JSON leads with the Ready is
 assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")" \
     'JSON marks the blocked issue ineligible'
 
+# Fast mode caps the current wave and leaves later pickup-order candidates for
+# refill. The attended path still returns the complete eligible set; only the
+# explicit fast-mode cap creates a queue.
+set_board '{"totalCount":3,"items":[
+  {"status":"Ready","content":{"number":31,"type":"Issue","title":"first",
+   "repository":"example-org/example-repo"}},
+  {"status":"Ready","content":{"number":32,"type":"Issue","title":"second",
+   "repository":"example-org/example-repo"}},
+  {"status":"Ready","content":{"number":33,"type":"Issue","title":"third",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i31":{"number":31,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
+    "i32":{"number":32,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
+    "i33":{"number":33,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+out=$(run --fast-mode --slot-cap 2)
+assert_contains "$out" 'dispatched=2' 'fast mode reports the current wave cap'
+assert_contains "$out" 'queued=1' 'fast mode queues overflow for refill'
+assert_contains "$out" 'QUEUE #33' 'queued issues retain pickup order and identity'
+
 # --- a truncated board read refuses to select -------------------------------
 # The regression this issue exists for: a board bigger than --limit must never
 # produce a plausible-looking subset. "candidates=3 of=123" reads as a

@@ -37,7 +37,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 | Flag | Aliases | Effect |
 |------|---------|--------|
 | `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. |
-| `--fast-mode` | — | Select the set and dispatch without the Step 3 approval gate; promote unblocked Backlog issues. **Requires `--yolo`.** |
+| `--fast-mode` | — | Select without the Step 3 approval gate; hold trackers, promote unblocked Backlog issues, queue overflow. **Requires `--yolo`.** |
 | `--auto-review` | `--auto-approve` | Standing consent for this invocation's diff review. The consent-bearing review launch stays in the consent-holding context (root by default); dispatched loops do not launch it. |
 | `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
@@ -184,7 +184,7 @@ digraph process {
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `agent-preflight.sh` once, in the repository you are about to work in, before any other command in this skill. Its stdout block is **the environment contract for the whole run**: resolved skills path, repo slug, branch, base, whether the repository declared its own facts in `.agent/config.env`, git writability, `gh` auth + scopes, sandbox state, CA bundle, cache directories, repo command runner, and adversarial-reviewer availability. Establish these facts once, here — never re-probe them later, and never let a dispatched agent discover them by failing.
+Run `agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing.
 
 #### The resolver (run once per session)
 
@@ -390,7 +390,7 @@ issue needs none of it.
 | `merged-ref` | a merged PR references it | read **that PR only**, then apply the prior-art table |
 | `in-flight` | an open PR references it | flag and ask — already being worked; do not double-dispatch |
 | `attempted` | a closed-unmerged PR references it | read that PR's review threads; they usually say why it died |
-| `active` | Status is In progress or In review | flag and ask before touching |
+| `active` | Status is In progress or In review | **active tracker**: hold; fast-mode drops active; attended asks |
 | `unknown` | the query returned nothing usable | re-run; if it persists, fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` |
 
 An `adr=` path is a **candidate located by token overlap**, not a verdict. Read
@@ -484,11 +484,7 @@ those. A multi-predecessor join is **scheduled, not dropped**: defer it until ev
 predecessor's commit is pushed, then merge those commits down into its start point and push
 that merged result before dispatch (a conflict parks the join by name) — an unpushed join
 base lives only in local git objects and can be lost if the session or worktree that built
-it is torn down first. Chains respect a chain depth cap: 4; deeper tails
-are dropped with a named report. Chains gate on the predecessor's pushed commit, never on PR
-state or publication. See [references/chains.md](references/chains.md) for the walkthrough
-behind these rules — building the graph, publishing a locally-built base, deferred dispatch,
-the join merge-down, and the merge-order retarget.
+it is torn down first. Chains cap 4 successor links; deeper tails enter the same refill queue as slot-cap overflow (`queued=N[#...]`). When a predecessor publishes, refill the next queued successor from that exact pushed SHA. See [references/chains.md](references/chains.md).
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -524,7 +520,7 @@ No design docs created. Step 5 proceeds directly. See [references/worker-prompts
 
 ### Step 5: Create worktrees
 
-Before running this block, determine the repository's documented locked bootstrap command from its applicable instructions -- the `files=` set the environment contract's `instructions=` line resolved, never a path the contract's `unresolved=` names as referenced-but-absent. Store it as an argument array in `dependency_bootstrap`; use an empty array when no bootstrap command is documented. Do not infer a package manager or substitute an unlocked install command. When `unresolved=` names a router reference and no other resolved instruction file documents a bootstrap for a detected component (a `runners= … node-roots=` entry whose `node-pm=unresolved`, for example), that is a real gap, not a silent no-op: record it on the dispatch plan entry for the affected issue so a worker is never dispatched unbootstrapped without the root having said so.
+Before this block, resolve the documented locked bootstrap command from the contract's resolved `instructions=` files (never `unresolved=`) into `dependency_bootstrap`; use an empty array when absent. Never infer a package manager or install command. An unresolved router with no bootstrap for a detected component is a real gap: record it on that issue's dispatch entry before dispatch.
 
 ```bash
 set -euo pipefail
@@ -588,7 +584,7 @@ else
 fi
 ```
 
-When the runtime advertises a cap, include the root in that cap, start the remaining child leads, queue overflow issues, and refill a slot as soon as it frees. If the runtime cannot advertise a cap, stop before dispatching and ask the runtime owner for the session limit. Do not serialize independent work when the advertised cap permits parallelism.
+When runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
 
 **Chained issues defer — but only on the commit, not the publication.** A chain successor's
 worktree is created and its lead dispatched as soon as the predecessor's worker has
@@ -810,7 +806,13 @@ Act on each lead result as soon as it arrives:
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
   the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → sole `needs-paths: <glob>[,<glob>...]` resumes the lead; otherwise report preserved worktree.
+- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. A sole
+  `needs-paths: <glob>[,<glob>...]` line identifies a `write-set` blocker: the root must widen the
+  fence, records the prediction expansion, and rechecks every active worker before resuming the
+  same lead with one `collaboration.followup_task`. Record `auto_redrive_attempted[issue]` only
+  after the blocker clears. If the same lead is unavailable, use a fresh lead with preserved state
+  and the exact remaining step; other blockers park. For `baseline-red`, one automatic re-drive
+  follows the clear-check.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
@@ -901,7 +903,6 @@ pushed. Review
 automation and ready/push behavior are repository and organization configuration; observe the
 state and never initiate a provider review: **never post `@coderabbitai review` or `full review`
 on any PR**.
-
 **As each PR opens, move its issue to `In review`** (see `github-projects.md`):
 ```bash
 set -euo pipefail
@@ -919,7 +920,6 @@ fi
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately
-
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
 **The materiality gate runs before the review spend.** Before launching any reviewer, the
@@ -940,24 +940,29 @@ state to root, then resumes triage; it never stalls waiting for consent it canno
 ### Step 3b: Dispatch review-remote-pr agents (parallel)
 
 The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
-cap includes the root; reserve it before deriving child capacity:
+cap includes the root and active issue leads; reserve those before deriving child capacity. The
+effective cap is the smaller of the number of open PRs and the remaining runtime slots:
 
 ```bash
-PR_LOOP_CONCURRENCY_CAP=2
-runtime_child_cap=$((max_concurrent_threads_per_session - 1))
-pr_loop_dispatch_cap=$((runtime_child_cap < PR_LOOP_CONCURRENCY_CAP ? runtime_child_cap : PR_LOOP_CONCURRENCY_CAP))
-((pr_loop_dispatch_cap > 0)) || {
+open_pr_count=${open_pr_count:?count of open PRs in this draft phase}
+active_leads=${active_leads:?number of active issue leads}
+runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))
+if ((open_pr_count == 0)); then printf '%s\n' 'No open PRs; nothing to dispatch.'; exit 0; fi
+((runtime_loop_budget > 0)) || {
     printf '%s\n' 'No child capacity remains for PR loops; do not dispatch.' >&2
     exit 1
 }
-printf 'PR-loop dispatch cap: %s agents (hard cap=%s, runtime children=%s)\n' \
-    "$pr_loop_dispatch_cap" "$PR_LOOP_CONCURRENCY_CAP" "$runtime_child_cap"
+pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : runtime_loop_budget))
+printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
+    "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
 
-Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and
-refill only after a prior loop reaches its completion marker. Do not reserve a nested-worker
-slot: the loop agent uses the documented spawn-unavailable path for root-approved fix batches.
-This dispatch-time counter is the enforcement point, not a post-hoc report.
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill after
+prior loop reaches completion marker. Do not reserve nested-worker slots; the loop uses
+the documented spawn-unavailable path for root-approved fix batches. This dispatch-time counter
+enforces the cap.
+Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults to
+`origin/${base_branch}`, and chains pass `--materiality-base`.
 
 ### Adversarial-review receipt:
 
@@ -986,7 +991,6 @@ case "$precheck_rc" in
     *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
 esac
 ```
-
 After all confirmed findings are fixed or explicitly declined, push those fixes; the receipt is
 published **after fixes are pushed** and **before draft-phase-complete handoff**, as exactly one
 durable top-level PR comment — a review or skip without it is never complete. It records provider,
@@ -1024,27 +1028,11 @@ esac
 # A different nonzero already caused post-receipt.sh to fetch live comments.
 # Never retry against receipt_comments until the fresh live comments are reviewed.
 ```
-
 The ledger owns titles, dispositions, SHAs, and rationales; the script owns every receipt byte,
 deriving `findings.ndjson` from `RUN_DIR` (`--findings-file PATH` overrides it).
 Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
 durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
 rather than double-posting when the marker is already present.
-
-Dispatch no more than the `pr_loop_dispatch_cap` computed above, which is never greater than
-`PR_LOOP_CONCURRENCY_CAP=2`. **Do not reserve a slot for a nested worker: a spawned PR-loop
-agent cannot spawn one.** It runs `review-remote-pr`'s documented spawn-unavailable path and
-does the implementation itself under the same six-step gate, labelling its report
-`worker=self (spawn unavailable)`. Reserve slots only for the loop agents themselves.
-The root reads `peer-cli=` from the contract: when absent, skip the probe and use the blind
-same-harness `gpt-5.6-terra` xhigh fallback exactly once; this reviewer decision is root-owned.
-
-**Degraded path — `spawn_agent` unavailable (`multi_agent = false`):** run the draft-phase loop **yourself**, one PR at a time, treating the template below as your own instructions. Identical contract: the same hard rules (never `gh pr ready`, never any `@coderabbitai` command, never resolve a human-touched thread), the same `agent-run.sh` / `worktree-commit.sh` command lines, the same single end-of-draft adversarial cross-review. Label every exit line `worker=self (spawn unavailable)`. Serial self-execution is the correct degradation here; reporting the run as blocked is not.
-
-**Per-agent prompt template:**
-
-Use the same helper with `--template fix-batch` and the fix-batch PR number as `--issue`; pass its composed `worker_prompt` verbatim on both normal and degraded paths.
-
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
@@ -1064,20 +1052,8 @@ At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only fil
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
-Review behavior after a ready transition or push is repository/provider configuration; no review
-arriving is an observed state to report, not a trigger decision. Watch each PR on a long interval
-under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6
-`gh-pr-state.sh --full` refresh plus Step 3's and
-["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules
-(real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch
-a follow-up agent per PR (or run it yourself,
-labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and
-["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order:
-approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit
-threads — one push per cycle, no bot commands.
-
+Review behavior after a ready transition or push is repository/provider configuration; no review arriving is an observed state to report, not a trigger decision. Watch each PR on a long interval under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6 `gh-pr-state.sh --full` refresh plus Step 3's and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules (real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch a follow-up agent per PR (or run it yourself, labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order: approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit threads — one push per cycle, no bot commands.
 When human content lands, surface it with per-item labels, exact feedback, assessment, proposed action, and exact attributed draft reply; wait for explicit per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and cannot be called ready to merge.
-
 Per-PR follow-up exit line:
 ```
 "PR #NNN: all CI green, X/X automated threads resolved, Y/Y body nitpicks handled.
@@ -1085,16 +1061,24 @@ Per-PR follow-up exit line:
  Human review: [none | approved replies posted, threads left open | awaiting H1 confirmation].
  [Ready to merge | Awaiting user confirmation]."
 ```
+### Final draft sweep (mandatory before handoff)
+
+With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. For each PR, resolve `RUN_DIR`, refresh live comments immediately with `gh-pr-state.sh --full --no-cache` into `RUN_DIR/state`, then run `post-receipt.sh" status` on that fresh artifact.
+For each PR, after the resolver guard, refresh `RUN_DIR/state` with `gh-pr-state.sh --full --no-cache`,
+then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
+successful adversarial/verified-skip result increments receipts; `10:receipt=none` may set
+`receipt_redrive_attempted[pr]` and re-enter the draft loop once. Any duplicate/invalid result parks
+the PR and increments `++parked_count`.
+
+Only `receipt=none` may re-enter the draft loop once per PR. Duplicate/invalid evidence is not recoverable: park the PR, increment `parked_count`, report it, and do not deadlock. A receipt=none miss re-enters the draft loop only once; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
 
 ### Opt-out
-
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
 
 ## Do NOT Delete Worktrees
-
 **Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff** with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
+**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
 ```bash
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
 [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob
@@ -1108,8 +1092,8 @@ shopt -u nullglob
 ```
 Cleanup requires user request after merge.
 
+At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`. A nonzero queue is incomplete.
 ## Common Mistakes
-
 Gate-local failures are documented where they bind. Cross-cutting rules live in
 [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md),
 [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md),
@@ -1117,8 +1101,8 @@ Gate-local failures are documented where they bind. Cross-cutting rules live in
 
 ## Limits
 
-- Max 10 issues. Include root in the runtime-advertised concurrency cap; queue/refill overflow, and do not dispatch without a cap.
-- Chains respect a chain depth cap: 4 under `--auto-serialize`; chains count against the issue limit.
+- Maximum 10 per wave; include root in cap; fast-mode queues overflow; attended asks.
+- Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop; chains count toward the issue limit.
 - Invocation opts into issue leads; only root spawns.
 - Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
 - Requires local instructions and a `main` or `master` branch.

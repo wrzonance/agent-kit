@@ -67,6 +67,42 @@ rc=$?
 assert_eq '10' "$rc" 'precheck exits 10 on an empty comment array'
 assert_eq 'not-spent' "$out" 'precheck prints not-spent on an empty comment array'
 
+# -- status: final-sweep receipt classification -----------------------------
+# The completion sweep must distinguish a real adversarial receipt from a
+# verified skip and reject zero or duplicate spent markers.
+regular_receipt_comments="$tmp/regular-receipt.json"
+printf '%s\n' '[{"id":1,"body":"## Adversarial review receipt\n'"$marker"'"}]' >"$regular_receipt_comments"
+out=$("$script" status --comments "$regular_receipt_comments")
+rc=$?
+assert_eq '0' "$rc" 'status accepts exactly one adversarial receipt'
+assert_eq 'receipt=adversarial' "$out" 'status classifies an adversarial receipt'
+
+skip_receipt_comments="$tmp/skip-receipt.json"
+printf '%s\n' '[{"id":1,"body":"## Adversarial review receipt\n- Verified-skip rationale: docs only; mechanical oracle=git diff\n'"$marker"'"}]' >"$skip_receipt_comments"
+out=$("$script" status --comments "$skip_receipt_comments")
+rc=$?
+assert_eq '0' "$rc" 'status accepts exactly one verified-skip receipt'
+assert_eq 'receipt=verified-skip' "$out" 'status classifies a verified-skip receipt'
+
+out=$("$script" status --comments "$not_spent_comments" 2>"$tmp/status-missing.err")
+rc=$?
+assert_eq '10' "$rc" 'status returns a non-success result when no receipt exists'
+assert_eq 'receipt=none' "$out" 'status reports a missing receipt'
+
+duplicate_receipt_comments="$tmp/duplicate-receipt.json"
+printf '%s\n' '[{"id":1,"body":"'"$marker"'"},{"id":2,"body":"'"$marker"'"}]' >"$duplicate_receipt_comments"
+out=$("$script" status --comments "$duplicate_receipt_comments" 2>"$tmp/status-duplicate.err")
+rc=$?
+assert_eq '1' "$rc" 'status rejects duplicate receipt markers'
+assert_contains "$(cat "$tmp/status-duplicate.err")" 'exactly one' \
+    'duplicate receipt refusal names the exact-one contract'
+
+duplicate_marker_comments="$tmp/duplicate-marker.json"
+printf '%s\n' '[{"id":1,"body":"'"$marker$marker"'"}]' >"$duplicate_marker_comments"
+out=$("$script" status --comments "$duplicate_marker_comments" 2>"$tmp/status-marker.err")
+rc=$?
+assert_eq '1' "$rc" 'status rejects a receipt comment containing duplicate markers'
+
 # -- precheck: fail-closed, missing file -----------------------------------
 
 out=$("$script" precheck --comments "$tmp/does-not-exist.json" 2>"$tmp/missing.err")

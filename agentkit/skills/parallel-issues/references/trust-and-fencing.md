@@ -25,3 +25,16 @@ and `migrate` are always executed and never cached. After push, GitHub CI is aut
 for that SHA; an unchanged local full-suite request is evidence-backed by the cache rather
 than a new run.
 
+## Worker baseline exclusions
+
+Workers may opt into a baseline comparison for a failed check by supplying the chain-base ref,
+failing test path, and stable test id to `agent-run.sh`. The helper runs the same command from an
+isolated base checkout and appends to `.agent/baseline-exclusion.md` only when the test blob and
+normalized failure signature match, deduplicating the test-id/base pair. `BASELINE-EXCLUDED` means
+publication may continue; it is not green evidence and must not unblock ready or merge. A later
+ordinary green verification clears stale exclusions; the file is rendered as unchecked `Testing`
+boxes carrying each resolved base SHA and evidence-log path.
+
+During the root's final sweep, coalesce exclusions by test id and base SHA and propose one Backlog
+candidate per distinct trunk failure. Candidates are observations only: never promote them to
+Ready or otherwise mutate board status automatically.
