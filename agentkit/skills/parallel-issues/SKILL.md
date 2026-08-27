@@ -51,9 +51,7 @@ must not stop to approve the set either; a run that still wants design steering
 has not asked for unattended dispatch. Re-invoke with both, or with neither.
 ```
 
-Do not infer one from the other. Someone who asked for unattended dispatch *and* to
-steer every design has asked for two things that cannot both happen, and picking one
-for them is worse than the extra round trip.
+Do not infer one from the other.
 
 **Declared commands run directly.** `agent-run.sh --cmd NAME` runs a repository's declared
 command with no approval step and no trust record — `--yolo` only ever governed Step 4's
@@ -806,13 +804,9 @@ Act on each lead result as soon as it arrives:
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
   the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. A sole
-  `needs-paths: <glob>[,<glob>...]` line identifies a `write-set` blocker: the root must widen the
-  fence, records the prediction expansion, and rechecks every active worker before resuming the
-  same lead with one `collaboration.followup_task`. Record `auto_redrive_attempted[issue]` only
-  after the blocker clears. If the same lead is unavailable, use a fresh lead with preserved state
-  and the exact remaining step; other blockers park. For `baseline-red`, one automatic re-drive
-  follows the clear-check.
+- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, clear the blocker. For `write-set`, the root must widen the fence and recheck every active worker; only after the blocker clears, do one `collaboration.followup_task` and record `auto_redrive_attempted[issue]`. If the same lead is unavailable, use a fresh lead with preserved state and the exact resume command `followup_task(<same lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
+  A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request that
+  drives that recheck; otherwise report the preserved worktree with the blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run

@@ -15,6 +15,23 @@ The draft-PR body template is root-owned dispatch-*output* content instead, read
 publication. The dispatcher body names the one-line gate and points here at the exact step where
 each template binds.
 
+## Fast-mode round contract
+
+When `--fast-mode` is selected, the root records one round against the same first pushed diff:
+root design review and the one authorized adversarial review run on that SHA, then all confirmed
+findings go to one combined fix batch. Initial work retains the declared worker tier; code-bearing fixes step effort down; tiny docs-only fixes use the fastest low-effort tier. focused verification
+is used during rounds and one full suite is run on the final branch state. A mechanical fix batch may report stages 1–5 as
+`N/A — mechanical fix batch`; the adversarial review is never rerun. The baseline accounting is
+`28 full runs, 18 commits, 13 rounds, 2h42m`.
+
+Canonical helper argv is documented here so callers do not reconstruct it from memory:
+`gh-pr-state.sh --full --pr "$PR" --repo "$REPO" --tmpdir "$RUN_DIR/state"` (resolved as `"$agentkit/review-remote-pr/scripts/gh-pr-state.sh"`);
+`"$agentkit/pr-to-green/scripts/review-transition.sh" --repo "$REPO" --repo-root "$REPO_ROOT" --pr "$PR" --authorization-file "$AUTHORIZATION_FILE"`;
+`"$agentkit/pr-to-green/scripts/merge-pr.sh" --repo "$REPO" --pr "$PR" --head-sha "$HEAD_SHA" --base "$BASE" --merge-method "$MERGE_METHOD" --authorization-file "$AUTHORIZATION_FILE" --gate-result "$GATE_RESULT_FILE"`.
+
+Pure trigger/command comments skip attribution banners. Compose every comment body with
+`compose-comment-body.sh` from owned body files, then transport it with `gh-comment.sh`; forbid hand-rolled shell heredocs for agent-composed comments.
+
 ## Issue-lead prompt
 Per-issue prompt:
 

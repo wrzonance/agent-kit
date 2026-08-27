@@ -274,6 +274,17 @@ second_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
 assert_eq '1' "$(grep -Fc '`second-test`' "$baseline_repo/.agent/baseline-exclusion.md")" \
     'repeating the same baseline id and base deduplicates its exclusion'
 
+# A failed unrelated command must not discard proven baseline exclusions.
+printf 'AGENT_CMD_TEST=tests/demo-test.sh\n' >"$baseline_repo/.agent/config.env"
+failed_unrelated_rc=0
+failed_unrelated_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test 2>&1) || failed_unrelated_rc=$?
+assert_eq '1' "$failed_unrelated_rc" \
+    'a failed unrelated verification remains a genuine failure'
+assert_contains "$failed_unrelated_output" 'FAIL(rc=1)' \
+    'a failed unrelated verification reports failure'
+assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" '`second-test`' \
+    'a failed unrelated verification preserves baseline exclusions'
+
 # A later ordinary green verification clears all stale exclusion evidence.
 printf 'AGENT_CMD_TEST=true\n' >"$baseline_repo/.agent/config.env"
 assert_rc 0 'an ordinary green verification succeeds after baseline exclusions' -- \
@@ -297,6 +308,29 @@ assert_eq '1' "$changed_rc" \
     'a changed test blob remains change-caused red and is not auto-excluded'
 assert_contains "$changed_output" 'FAIL(rc=1)' \
     'a changed test blob preserves the ordinary failure result'
+
+# A self-referential baseline is not a historical comparison and must not
+# suppress a newly failing test.
+self_rc=0
+self_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
+    --baseline-ref HEAD --baseline-path tests/demo-test.sh --baseline-id self-test 2>&1) || self_rc=$?
+assert_eq '1' "$self_rc" 'HEAD is rejected as a baseline reference'
+assert_not_contains "$self_output" 'baseline-excluded test=self-test' \
+    'a self-referential baseline cannot auto-exclude a failure'
+
+# A resolved baseline from a divergent branch is not an ancestor comparison.
+git -C "$baseline_repo" switch -q -c baseline-divergent
+printf 'divergent baseline\n' >"$baseline_repo/divergent.txt"
+git -C "$baseline_repo" add divergent.txt
+git -C "$baseline_repo" commit -qm 'baseline: divergent history'
+git -C "$baseline_repo" switch -q feature
+divergent_rc=0
+divergent_output=$(cd "$baseline_repo" && "$real_run_sh" --force --cmd test \
+    --baseline-ref baseline-divergent --baseline-path tests/demo-test.sh \
+    --baseline-id divergent-test 2>&1) || divergent_rc=$?
+assert_eq '1' "$divergent_rc" 'a divergent baseline branch is rejected'
+assert_not_contains "$divergent_output" 'baseline-excluded test=divergent-test' \
+    'a divergent baseline cannot auto-exclude a failure'
 
 # --- baseline child sanitizes head-root runtime state -----------------------
 env_repo=$(mktemp -d "$tmp/baseline-env-repo.XXXXXX")

@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Boundary contract for issue #491's fast-mode review accounting.
+# shellcheck disable=SC2016
+set -uo pipefail
+
+TEST_NAME='fast-mode-contract'
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+
+parallel="$root/agentkit/skills/parallel-issues/SKILL.md"
+review="$root/agentkit/skills/review-remote-pr/SKILL.md"
+body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
+comment_composer="$root/agentkit/skills/review-remote-pr/scripts/compose-comment-body.sh"
+worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+fast_reference="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+
+parallel_text=$(<"$parallel")
+review_text=$(<"$review")
+policy_text=$(<"$body_policy")
+worker_text=$(<"$worker_prompts")
+fast_text=$(<"$fast_reference")
+
+# Fast mode must make one pushed diff and one combined finding batch observable.
+assert_contains "$parallel_text$review_text$fast_text" 'same first pushed diff' \
+    'fast mode binds root and adversarial review to the first pushed diff'
+assert_contains "$parallel_text$review_text$fast_text" 'one combined fix batch' \
+    'fast mode combines confirmed findings into one fix batch'
+assert_contains "$parallel_text$review_text$fast_text" 'focused verification' \
+    'fast mode uses focused verification during fix rounds'
+assert_contains "$parallel_text$review_text$fast_text" 'full suite' \
+    'fast mode requires one final full suite'
+assert_contains "$parallel_text$review_text$fast_text" 'code-bearing fixes step effort down' \
+    'code-bearing fix rounds reduce worker effort'
+assert_contains "$parallel_text$review_text$fast_text" 'Initial work retains the declared worker tier' \
+    'initial work keeps the declared worker tier'
+assert_contains "$parallel_text$review_text$fast_text" 'tiny docs-only fixes' \
+    'tiny docs-only fixes use the fastest tier'
+assert_contains "$parallel_text$review_text$fast_text" 'mechanical fix batch' \
+    'mechanical batches may compress design stages'
+assert_contains "$parallel_text$review_text$fast_text" '28 full runs, 18 commits, 13 rounds, 2h42m' \
+    'fast-mode accounting records the baseline comparison'
+
+# Canonical helper argv belongs in a single reference and names all three helpers.
+assert_contains "$fast_text" 'gh-pr-state.sh --full' \
+    'fast-mode reference documents canonical full PR-state argv'
+assert_contains "$fast_text" 'review-transition.sh' \
+    'fast-mode reference documents canonical review-transition argv'
+assert_contains "$fast_text" 'merge-pr.sh' \
+    'fast-mode reference documents canonical merge argv'
+
+# Trigger-only comments have no agent-authorship banner; composed comments are file-backed.
+assert_contains "$parallel_text$review_text$fast_text" 'trigger/command comments' \
+    'trigger-only comments skip attribution banners'
+assert_contains "$policy_text$parallel_text$review_text$fast_text" 'compose-comment-body.sh' \
+    'comment composition is centralized in the safe composer'
+assert_contains "$policy_text$parallel_text$review_text$fast_text" 'forbid hand-rolled shell heredocs' \
+    'comment policy forbids hand-rolled heredoc composition'
+assert_eq 'yes' "$([[ -x "$comment_composer" ]] && printf yes || printf no)" \
+    'safe comment composer is executable'
+
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+part_one="$tmp/one.md"
+part_two="$tmp/two.md"
+plain="$tmp/plain.md"
+printf '%s' 'trigger `literal` $(not-run)' >"$part_one"
+printf '%s\n' 'command body' >"$part_two"
+assert_rc 0 'composer writes a plain trigger/command comment from files' -- bash "$comment_composer" \
+    --output "$plain" --body-file "$part_one" --body-file "$part_two"
+plain_text=$(<"$plain")
+assert_eq 'trigger `literal` $(not-run)command body' "$plain_text" \
+    'plain comment content survives byte-for-byte without attribution'
+assert_not_contains "$plain_text" 'This was written agentically' \
+    'plain trigger/command comments omit the attribution banner'
+
+identity="$tmp/identity.txt"
+agent="$tmp/agent.md"
+printf '%s' 'Codex gpt-5.6-luna' >"$identity"
+assert_rc 0 'composer adds attribution only when explicitly requested' -- bash "$comment_composer" \
+    --output "$agent" --body-file "$part_one" --agent-identity-file "$identity"
+agent_text=$(<"$agent")
+assert_contains "$agent_text" 'This was written agentically; verify its assertions:' \
+    'agent comments receive the canonical front banner'
+assert_contains "$agent_text" '🤖 Co-authored by Codex gpt-5.6-luna.' \
+    'agent comments receive the canonical signature'
+assert_eq '600' "$(stat -c '%a' "$agent")" 'composed comment is private on disk'
+
+# The worker prompt contract must carry the fast-mode behavior as dispatch data,
+# not leave it to a worker to infer from the invocation name.
+assert_contains "$worker_text" 'fast-mode' \
+    'worker prompt reference carries fast-mode context'
+
+finish

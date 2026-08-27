@@ -982,7 +982,7 @@ sanitize_baseline_path() {
 }
 
 try_baseline_exclusion() {
-    local base_sha base_blob current_blob current_file resolved_file
+    local base_sha head_sha base_blob current_blob current_file resolved_file
     local baseline_dir baseline_output baseline_work_dir rel base_rc baseline_path_env baseline_project
     local current_signature baseline_signature exclusion_file exclusion_tmp
     [[ -n $baseline_ref ]] || return 1
@@ -990,6 +990,9 @@ try_baseline_exclusion() {
 
     base_sha=$(git -C "$git_top" rev-parse --verify "$baseline_ref^{commit}" 2>/dev/null) || return 1
     [[ $base_sha =~ ^[[:xdigit:]]{40}$ ]] || return 1
+    head_sha=$(git -C "$git_top" rev-parse --verify HEAD 2>/dev/null) || return 1
+    [[ $base_sha != "$head_sha" ]] || return 1
+    git -C "$git_top" merge-base --is-ancestor "$base_sha" "$head_sha" >/dev/null 2>&1 || return 1
     case $baseline_path in
         ''|.|..|../*|*/../*|*/.. ) return 1 ;;
     esac
@@ -1391,7 +1394,7 @@ original_rc=$rc
 if [[ -n $baseline_ref ]]; then
     baseline_key_sha=$(git -C "$git_top" rev-parse --verify "$baseline_ref^{commit}" 2>/dev/null || true)
     remove_baseline_exclusion "$baseline_id" "$baseline_key_sha" || true
-else
+elif ((rc == 0)); then
     clear_baseline_exclusion || true
 fi
 if ((rc != 0)) && try_baseline_exclusion; then

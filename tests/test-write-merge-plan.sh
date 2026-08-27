@@ -56,6 +56,9 @@ printf '%s\n' 'dotted' >"$chain_base/src/exact.new.txt"
 printf '%s\n' 'bracket' >"$chain_base/src/literal[.txt"
 mkdir -p "$chain_base/docs"
 printf '%s\n' 'docs' >"$chain_base/docs/README.md"
+mkdir -p "$chain_base/docs/c++" "$chain_base/docs/cx"
+printf '%s\n' 'plus' >"$chain_base/docs/c++/README.md"
+printf '%s\n' 'near miss' >"$chain_base/docs/cx/README.md"
 cat >"$chain_base/.agent/config.env" <<'EOF'
 AGENT_RUNDIR_ADDIN_TEST=./tests/CableTool.Core.Tests/
 AGENT_RUNDIR_REPO_ROOT_TEST=.
@@ -104,6 +107,28 @@ cat >"$literal_glob_plan" <<'EOF'
 EOF
 assert_rc 0 'dots and unmatched opening brackets are escaped in predicted globs' -- \
     "$writer" --dispatch-plan "$literal_glob_plan" --chain-base "$chain_base" --validate-only
+
+metachar_glob_plan="$tmp/metachar-glob.json"
+cat >"$metachar_glob_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 143, "predictedWriteSet": ["docs/c++/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'plus signs are escaped in predicted globs' -- \
+    "$writer" --dispatch-plan "$metachar_glob_plan" --chain-base "$chain_base" --validate-only
+
+overmatch_glob_plan="$tmp/overmatch-glob.json"
+cat >"$overmatch_glob_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 144, "predictedWriteSet": ["docs/c+++/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 1 'escaped plus signs prevent a near-match from satisfying a glob' -- \
+    "$writer" --dispatch-plan "$overmatch_glob_plan" --chain-base "$chain_base" --validate-only
 
 matching_plan="$tmp/matching.json"
 cat >"$matching_plan" <<'EOF'
