@@ -493,6 +493,57 @@ assert_contains "$text" 'Shell state does not persist: recompute `dispatch_repor
     'final handoff explicitly retrieves reports from durable run evidence'
 assert_contains "$text" 'for dispatch_report in "$dispatch_reports_dir"/issue-*.report' \
     'final handoff enumerates every durable per-issue report'
+
+# --- issue #494: auto-review completion coverage and recoverable redrive ----
+assert_contains "$normalized_text" 'Final draft sweep' \
+    'auto-review performs a named final draft sweep before handoff'
+assert_contains "$normalized_text" 'CI settled' \
+    'the final sweep requires settled CI for every opened PR'
+assert_contains "$normalized_text" 'Code Quality dispositioned' \
+    'the final sweep requires Code Quality disposition for every opened PR'
+assert_contains "$normalized_text" 'exactly one of {adversarial receipt, verified skip receipt}' \
+    'the final sweep requires exactly one receipt kind per opened PR'
+final_sweep_section=$(sed -n '/^### Final draft sweep/,/^### Opt-out/p' "$skill")
+assert_contains "$final_sweep_section" 'gh-pr-state.sh' \
+    'the final sweep refreshes live PR evidence before classifying receipts'
+assert_contains "$final_sweep_section" '--full --no-cache' \
+    'the final sweep forces a fresh live comment fetch'
+assert_contains "$final_sweep_section" 'post-receipt.sh" status' \
+    'the final sweep classifies the refreshed comment artifact'
+assert_eq yes "$([[ $(awk '/gh-pr-state\.sh/{fetch=NR} /post-receipt\.sh.*status/{status=NR} END {print (fetch < status ? "yes" : "no")}' <<< "$final_sweep_section") == yes ]] && printf yes || printf no)" \
+    'the live refresh precedes receipt classification'
+assert_contains "$final_sweep_section" '10:receipt=none' \
+    'only a missing receipt is eligible for final-sweep recovery'
+assert_contains "$final_sweep_section" 'receipt_redrive_attempted' \
+    'receipt recovery is tracked per PR for a one-shot limit'
+assert_contains "$final_sweep_section" 'duplicate/invalid' \
+    'duplicate or invalid receipts are explicitly non-recoverable'
+assert_contains "$final_sweep_section" '++parked_count' \
+    'non-recoverable receipt evidence increments parked_count'
+assert_contains "$normalized_text" 're-enters the draft loop' \
+    'a final-sweep miss re-enters the draft loop'
+assert_contains "$normalized_text" 'handoff cannot print' \
+    'a final-sweep miss prevents the handoff'
+assert_contains "$normalized_text" 'coverage= prs=' \
+    'handoff emits opened-PR receipt coverage totals'
+assert_contains "$normalized_text" 'recoverable' \
+    'Collect classifies recoverable blocked leads'
+assert_contains "$normalized_text" 'baseline-red' \
+    'Collect recognizes baseline-red as recoverable'
+assert_contains "$normalized_text" 'write-set' \
+    'Collect recognizes write-set as recoverable'
+assert_contains "$normalized_text" 'one automatic re-drive' \
+    'recoverable blocked leads receive one automatic re-drive'
+assert_contains "$normalized_text" 'exact resume command' \
+    'parked leads print an exact resume command'
+assert_contains "$normalized_text" 'only after the blocker clears' \
+    'recoverable redrive waits until the blocker is cleared'
+assert_contains "$normalized_text" 'widen the fence' \
+    'write-set recovery requires the root to widen its fence'
+assert_contains "$normalized_text" 'every active worker' \
+    'write-set recovery rechecks every active worker'
+assert_contains "$normalized_text" 'same lead is unavailable' \
+    'blocked recovery falls back to a fresh lead when needed'
 handoff_retrieval=$(awk '
     /Shell state does not persist: recompute `dispatch_reports_dir`/ { armed=1 }
     armed && /^```bash$/ { capture=1; next }
@@ -1277,6 +1328,8 @@ assert_contains "$normalized_text" 'Never fold dirt first observed inside a disp
     'handoff never misattributes run-window dirt to the human'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'
+assert_contains "$worker_prompts_text" '__BLOCKER_CONTRACT__' \
+    'worker prompt template reserves the blocker contract insertion point'
 
 # --- issue #254: Collect detects, attributes, and disposes cross-writes -----
 cross_write="$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh"

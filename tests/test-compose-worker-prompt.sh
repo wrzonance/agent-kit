@@ -87,6 +87,10 @@ assert_rendered_guard_passes() {
 prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high)
+assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
+    'issue-lead prompt requires a machine-readable blocker class'
+assert_contains "$prompt" 'remaining-step=<exact next step>' \
+    'issue-lead prompt requires the exact remaining step on a blocker'
 
 compose_verification_report() {
     local fixture=$1 spec_body=$2 dispatch_plan=${3:-} output_file

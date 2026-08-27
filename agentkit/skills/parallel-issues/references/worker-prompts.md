@@ -101,6 +101,8 @@ a green verification result or cache entry. Missing or changed evidence stays an
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
 
+__BLOCKER_CONTRACT__
+
 ```bash
 git branch --show-current
 ```

@@ -558,6 +558,11 @@ emit_focus() {
     fi
 }
 
+emit_blocker_contract() {
+    [[ $template_kind == issue-lead ]] || return 0
+    printf 'If work cannot finish because of a blocker, return exactly BLOCKED: class=<write-set|baseline-red|other> remaining-step=<exact next step> evidence=<path or marker>. Use class=write-set for a needed path outside the declared write set and class=baseline-red only for a pre-existing declared-verification failure; classify every other blocker as other. The root may automatically re-drive only the first two classes once, so preserve the exact remaining step and evidence needed to resume.\n'
+}
+
 emit_write_set() {
     # Reaching this token without globs is a template/flag mismatch, not a
     # boundary to improvise: the issue-lead gate above makes it structurally
@@ -969,6 +974,10 @@ while IFS= read -r line || [[ -n $line ]]; do
     fi
     if [[ $line == '__DECLARED_FOCUS__' ]]; then
         emit_focus
+        continue
+    fi
+    if [[ $line == '__BLOCKER_CONTRACT__' ]]; then
+        emit_blocker_contract
         continue
     fi
     if [[ $line == '__COMPOSE_ISOLATION__' ]]; then
