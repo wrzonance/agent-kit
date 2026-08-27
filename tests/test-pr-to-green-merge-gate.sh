@@ -550,6 +550,66 @@ for slug in github-code-scanning github-advanced-security; do
         "the pending block is named for app.slug=$slug"
 done
 
+# --- issue #518: distinguish settling, failed, missing, and path-filtered scans
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"in_progress"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an active CodeQL run remains a bounded settling block'
+assert_contains "$out" 'code-scanning: SETTLING' \
+    'active scan evidence reports the settling state'
+assert_contains "$out" 'rounds=' \
+    'settling state discloses its bounded round budget'
+assert_contains "$out" 'gate=BLOCKED' \
+    'settling state cannot pass the merge gate'
+assert_contains "$out" 'blocked reason=code-scanning analysis has not completed' \
+    'settling state names the incomplete analysis reason'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"failure"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a failed CodeQL run blocks the merge'
+assert_contains "$out" 'scan-failed: CodeQL' \
+    'a failed scan names the workflow that failed'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty CS_RUNS_JSON='{"check_runs":[]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'missing scan evidence blocks the merge'
+assert_contains "$out" 'scan-missing: codeql' \
+    'missing scan evidence names the workflow and required human action'
+
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '0' "$rc" 'all-skipped code scanning is not an execution failure'
+assert_contains "$out" 'code-scanning: not-applicable (path-filtered), runs skipped: CodeQL' \
+    'all skipped code-scanning runs are classified as path-filtered'
+assert_contains "$out" 'gate=PASS pr=9' \
+    'a path-filtered scan does not block when alerts are readable and empty'
+
+good_digest
+sed -i 's/alerts: code-scanning open=0/alerts: code-scanning n\/a/' "$tmp/digest.txt"
+set +e
+out=$(CS_PR_ANALYSES_MODE=empty \
+    CS_RUNS_JSON='{"check_runs":[{"name":"CodeQL","app":{"slug":"github-code-scanning"},"status":"completed","conclusion":"skipped"}]}' run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'path-filtered scans still require readable alerts evidence'
+assert_contains "$out" 'blocked reason=code-scanning evidence is unreadable' \
+    'not-applicable does not turn unreadable alert evidence into zero findings'
+
 # --- PR #413 follow-up F1: a still-running scan blocks as pending even when
 # an earlier analysis already matches the head (a rerun or a second SARIF
 # upload in flight is real, incomplete evidence; scan_check_run_pending is

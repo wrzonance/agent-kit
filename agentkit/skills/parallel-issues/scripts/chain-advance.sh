@@ -320,6 +320,72 @@ check_ci() {
     printf '%s\t%s\n' "$total" "$pass"
 }
 
+# A base edit does not reliably emit a pull_request workflow event. Refresh
+# only a code-scanning workflow named by the PR's check rollup: rerun a known
+# head-associated run, or dispatch its workflow when the API accepts that
+# capability. A missing dispatch is an operator handoff, never a reason to
+# close and reopen a PR. This function intentionally does nothing when the PR
+# has no code-scanning-labelled check, preserving the retarget proof contract
+# for repositories without such a workflow.
+refresh_code_scanning() {
+    local pr_json=$1 head_sha=$2 head_ref=$3 names runs run_id run_name workflows workflow_id
+    names=$(jq -r '
+        [.statusCheckRollup[]?
+         | select(((.name // .context // "") | ascii_downcase)
+                  | test("codeql|code[ -]?scanning"))
+         | (.name // .context)] | unique | join("\n")
+    ' <<<"$pr_json") || die 'could not identify code-scanning checks; refresh evidence unavailable'
+    [[ -n $names ]] || return 0
+
+    runs=$(
+        "$GH_BIN" api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" 2>/dev/null
+    ) || runs='{"workflow_runs":[]}'
+    run_id=''
+    run_name=''
+    while IFS=$'\t' read -r candidate_id candidate_name; do
+        [[ -n $candidate_id ]] || continue
+        run_id=$candidate_id
+        run_name=$candidate_name
+        break
+    done < <(jq -r --arg names "$names" '
+        .workflow_runs[]?
+        | select(((.name // .path // "") | ascii_downcase)
+                 | test("codeql|code[ -]?scanning"))
+        | [(.id // ""), (.name // .path // "code-scanning")] | @tsv
+    ' <<<"$runs" 2>/dev/null || true)
+
+    if [[ -n $run_id ]]; then
+        if "$GH_BIN" api --method POST "repos/$REPO/actions/runs/$run_id/rerun" \
+            >/dev/null 2>&1; then
+            printf 'analysis-refresh=rerun workflow=%s run=%s\n' "$run_name" "$run_id"
+            return 0
+        fi
+        printf 'cannot-trigger: %s rerun unavailable; human action: open Actions, rerun the %s workflow for head %s\n' \
+            "$run_name" "$run_name" "$head_sha" >&2
+        return 1
+    fi
+
+    workflows=$(
+        "$GH_BIN" api "repos/$REPO/actions/workflows?per_page=100" 2>/dev/null
+    ) || workflows='{"workflows":[]}'
+    workflow_id=$(jq -r '
+        [.workflows[]?
+         | select(((.name // .path // "") | ascii_downcase)
+                  | test("codeql|code[ -]?scanning"))
+         | .id] | first // empty
+    ' <<<"$workflows" 2>/dev/null) || workflow_id=''
+    if [[ $workflow_id =~ ^[1-9][0-9]*$ ]]; then
+        if "$GH_BIN" api --method POST "repos/$REPO/actions/workflows/$workflow_id/dispatches" \
+            -f "ref=$head_ref" >/dev/null 2>&1; then
+            printf 'analysis-refresh=dispatch workflow=%s ref=%s\n' "$names" "$head_ref"
+            return 0
+        fi
+    fi
+    printf 'cannot-trigger: %s has no dispatch; human action: open the CodeQL workflow and run it manually for %s, or update its path filter to include this PR\n' \
+        "${names%%$'\n'*}" "$head_ref" >&2
+    return 1
+}
+
 closing_issue_count() {
     jq -r '
         (.closingIssuesReferences // []) as $references
@@ -374,6 +440,9 @@ retarget() {
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
+    if [[ $RETARGET_APPLIED == true ]] && ! refresh_code_scanning "$pr_json" "$head_sha" "$head_ref"; then
+        die 'required code-scanning analysis could not be triggered'
+    fi
     printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=%s ancestry=verified boundarySource=%s closing-issues=%s\n' \
         "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$approval_token" "$BOUNDARY_SOURCE" "$closing_count"
 }

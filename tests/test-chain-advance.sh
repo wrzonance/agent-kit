@@ -519,4 +519,86 @@ assert_eq '1' "$(grep -c 'pr edit 7 --repo owner/repo --base main' "$tmp/idempot
 assert_not_contains "$idempotent_log" '/rate_limit' \
     'timeline-backed retarget never stamps the boundary from the current clock'
 
+# --- issue #518: refresh code-scanning after a retarget --------------------
+# A head-associated workflow run can be safely re-run through the Actions API;
+# the helper must never close/reopen the PR to synthesize a pull_request event.
+cat >"$tmp/gh-refresh-rerun" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":\"APPROVED\",\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"actions/runs?head_sha=1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}'
+        ;;
+    *"actions/runs/42/rerun"*) : ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-refresh-rerun"
+set +e
+refresh_rerun_output=$(EDIT_STATE="$tmp/refresh-rerun.state" GH_LOG="$tmp/refresh-rerun.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-rerun" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+refresh_rerun_rc=$?
+set -e
+assert_eq '0' "$refresh_rerun_rc" 'a head workflow run can be refreshed after retarget'
+assert_contains "$refresh_rerun_output" 'analysis-refresh=rerun workflow=CodeQL' \
+    'retarget reports the rerun used to refresh CodeQL'
+refresh_rerun_log=$(<"$tmp/refresh-rerun.log")
+assert_contains "$refresh_rerun_log" 'actions/runs/42/rerun' \
+    'refresh uses the Actions rerun API'
+assert_not_contains "$refresh_rerun_log" 'pr close' \
+    'refresh never closes the PR to retrigger CodeQL'
+assert_not_contains "$refresh_rerun_log" 'pr reopen' \
+    'refresh never reopens the PR to retrigger CodeQL'
+
+# A path-filtered workflow with no existing run cannot be manufactured by an
+# agent. It must name the missing dispatch capability and the exact human step.
+cat >"$tmp/gh-refresh-missing" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":\"APPROVED\",\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[]}' ;;
+    *"actions/workflows/43/dispatches"*) printf '{"message":"workflow does not support workflow_dispatch","status":422}\n' >&2; exit 1 ;;
+    *"actions/workflows"*) printf '%s\n' '{"workflows":[{"id":43,"name":"CodeQL","path":".github/workflows/codeql.yml","state":"active"}]}' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-refresh-missing"
+set +e
+refresh_missing_output=$(EDIT_STATE="$tmp/refresh-missing.state" GH_LOG="$tmp/refresh-missing.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-missing" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+refresh_missing_rc=$?
+set -e
+assert_eq '2' "$refresh_missing_rc" 'an untriggerable workflow stops after the retarget mutation'
+assert_contains "$refresh_missing_output" 'cannot-trigger: CodeQL has no dispatch' \
+    'missing dispatch capability is named explicitly'
+assert_contains "$refresh_missing_output" 'human action:' \
+    'missing dispatch reports the exact human action'
+refresh_missing_log=$(<"$tmp/refresh-missing.log")
+assert_not_contains "$refresh_missing_log" 'pr close' \
+    'an untriggerable scan never closes the PR'
+assert_not_contains "$refresh_missing_log" 'pr reopen' \
+    'an untriggerable scan never reopens the PR'
+
 finish
