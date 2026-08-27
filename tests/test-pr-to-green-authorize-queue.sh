@@ -89,7 +89,7 @@ case ${PROVIDER_MODE:-coderabbit} in
     none) printf '%s\n' 'provider=none mode=disabled source=declared' ;;
     pair)
         printf '%s\n' 'provider=coderabbit mode=triggerable source=declared'
-        printf '%s\n' 'provider=github-code-quality mode=observe-only source=declared'
+        printf '%s\n' 'provider=other mode=observe-only source=declared'
         ;;
     *) exit 2 ;;
 esac
@@ -284,6 +284,7 @@ cp "$tmp/reordered-providers.json" "$confirmed"
 reordered_provider_head_drift_rc=0
 AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
     AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" PROVIDER_MODE=pair \
     QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc \
     bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
     --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
