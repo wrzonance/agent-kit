@@ -84,7 +84,7 @@ if [[ -n $acceptance_file ]]; then
     [[ -f $acceptance_file && ! -L $acceptance_file && -r $acceptance_file ]] ||
         die '--acceptance-file must be a readable regular file'
 fi
-if [[ -n $acceptance_status_file ]]; then
+if [[ -n $acceptance_status_file && -e $acceptance_status_file ]]; then
     [[ -f $acceptance_status_file && ! -L $acceptance_status_file && -r $acceptance_status_file ]] ||
         die '--acceptance-status-file must be a readable regular file'
 fi
@@ -138,7 +138,8 @@ if [[ -n $acceptance_file ]]; then
         [[ $command == acceptance=* ]] && command=${command#acceptance=}
         [[ $command != *[[:cntrl:]]* ]] || die 'acceptance declaration contains control characters'
         status=not-run
-        if [[ -n $acceptance_status_file ]]; then
+        if [[ -n $acceptance_status_file && -f $acceptance_status_file &&
+            ! -L $acceptance_status_file && -r $acceptance_status_file ]]; then
             while IFS= read -r status_line || [[ -n $status_line ]]; do
                 if [[ $status_line == "$command="* ]]; then
                     candidate=${status_line##*=}

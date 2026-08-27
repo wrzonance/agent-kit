@@ -882,7 +882,7 @@ Waiting is not work, and narrating a wait is not a status report. Read [.shared/
 
 Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration — it carried zero information and will again; escalate the bound or run the Collect section's stall check instead.
 
-Durable state to inspect after a wait reports an actual completion, and the runnable recipe (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO`): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). `gh-pr-state.sh` returns a five-line digest and exits 0 whether CI is green, failing, or pending — CI state is data, not an error. Read the digest and stop.
+After completion, inspect durable state (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance commands): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). The digest exits 0 for green, failing, or pending CI; read it and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
@@ -917,7 +917,7 @@ Same evidence rule as the dispatch move: the helper's printed line is the record
 Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
 
 **The materiality gate runs before the review spend.** Before launching any reviewer, the
-loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base"`
+loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" --acceptance-file "$worktree/.agent/acceptance.txt" --acceptance-status-file "$worktree/.agent/acceptance-status.txt"`
 — for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
 predecessor's changes contaminate the successor's verdict. Pass acceptance.txt; non-pass blocks.
 `verdict=skip-eligible` (test/docs-only and acceptance green) takes the
@@ -1057,9 +1057,8 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. For each PR, resolve `RUN_DIR`, refresh live comments immediately with `gh-pr-state.sh --full --no-cache` into `RUN_DIR/state`, then run `post-receipt.sh" status` on that fresh artifact.
-For each PR, after the resolver guard, refresh `RUN_DIR/state` with `gh-pr-state.sh --full --no-cache`,
-then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
+With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt`, append them to every `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`, then run `post-receipt.sh" status`.
+After the resolver guard, refresh with those same acceptance args, then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
 successful adversarial/verified-skip result increments receipts; `10:receipt=none` may set
 `receipt_redrive_attempted[pr]` and re-enter the draft loop once. Any duplicate/invalid result parks
 the PR and increments `++parked_count`.

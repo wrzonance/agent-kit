@@ -125,11 +125,16 @@ expected_wait_bound_line="wait-bound= issue=136 seconds=$expected_wait_bound_sec
 # boundary as verification steps, including fenced commands and the explicit
 # AGENT_ACCEPTANCE_CMD escape hatch.
 acceptance_prompt=$(compose_verification_report acceptance \
-    $'## Acceptance\n```bash\nnpm run test:browser\n```\n\nAGENT_ACCEPTANCE_CMD=tools/certify --browser\n')
-assert_contains "$acceptance_prompt" 'acceptance=npm run test:browser' \
+    $'## Acceptance\n```bash\ntools/verify\n```\n\nAGENT_ACCEPTANCE_CMD=tools/certify --browser\n')
+assert_contains "$acceptance_prompt" 'acceptance=tools/verify' \
     'issue-lead prompt records fenced acceptance commands'
 assert_contains "$acceptance_prompt" 'acceptance=tools/certify --browser' \
     'issue-lead prompt records AGENT_ACCEPTANCE_CMD declarations'
+acceptance_prompt_text=$(<"$repo/.agent/acceptance-prompt.md")
+assert_contains "$acceptance_prompt_text" 'acceptance-status.txt' \
+    'issue-lead prompt records the durable acceptance status path'
+assert_contains "$acceptance_prompt_text" "record exactly \`tools/verify=pass\` or \`tools/verify=fail\`" \
+    'issue-lead prompt defines pass/fail status recording after wrapper execution'
 
 fully_covered_report=$(compose_verification_report fully-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n')
@@ -428,6 +433,7 @@ assert_contains "$fix_batch_digest" "$expected_wait_bound_line" \
 # Issue #495: setup and mutation are separate templates. Setup is the
 # read-only state/triage phase and must expose terminal handoff markers; a
 # fix-batch requires at least one accepted finding from the root-owned ledger.
+printf '%s\n' 'tools/verify' > "$repo/.agent/acceptance.txt"
 setup_prompt=$(bash "$compose" --template pr-loop-setup --worktree "$repo" --issue 136 \
     --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high)
 assert_contains "$setup_prompt" 'PR-loop setup worker' \
@@ -438,6 +444,10 @@ assert_contains "$setup_prompt" 'ci-red: <check>' \
     'pr-loop-setup has a CI-red terminal marker'
 assert_contains "$setup_prompt" 'cq-open: N' \
     'pr-loop-setup has a Code Quality terminal marker'
+assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acceptance_command\")" \
+    'pr-loop setup forwards each persisted acceptance command to PR-state checks'
+assert_contains "$setup_prompt" '--acceptance-file ' \
+    'pr-loop setup forwards acceptance declarations to materiality'
 
 empty_findings="$tmp/empty-findings.ndjson"
 : > "$empty_findings"

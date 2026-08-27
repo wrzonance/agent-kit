@@ -84,6 +84,10 @@ assert_contains "$out" 'verdict=material' \
     'an unrun declared acceptance command blocks a docs-only skip'
 assert_contains "$out" 'acceptance=npm run test:browser:not-run' \
     'the material verdict records missing acceptance evidence as not-run'
+out=$($helper --worktree "$repo" --base main \
+    --acceptance-status-file "$repo/.agent/missing-status.txt")
+assert_contains "$out" 'acceptance=npm run test:browser:not-run' \
+    'an explicitly missing status artifact is treated as not-run'
 
 printf '%s\n' 'npm run test:browser=pass' > "$repo/.agent/acceptance-status.txt"
 out=$($helper --worktree "$repo" --base main)

@@ -161,8 +161,22 @@ emit_acceptance_declarations() {
         return 0
     fi
     local command
+    local helper_path acceptance_name
+    helper_path=$(shell_quote "$shared_path/agent-run.sh")
     for command in "${acceptance_commands[@]}"; do
         printf 'acceptance=%s\n' "$command"
+        acceptance_name=''
+        if ((${#scoped_command_tokens[@]})); then
+            acceptance_name=$(match_spec_step "$command" 2>/dev/null) || acceptance_name=''
+        fi
+        if [[ -n $acceptance_name ]]; then
+            printf "Run its declared wrapper equivalent: %s --dir %s --cmd %s. After it exits, record exactly \`%s=pass\` or \`%s=fail\` in %s; if it cannot be run, record \`%s=not-run\`.\n" \
+                "$helper_path" "\"\$worktree\"" "$acceptance_name" "$command" "$command" \
+                "\$worktree/.agent/acceptance-status.txt" "$command"
+        else
+            printf "No declared wrapper equivalent is available for this acceptance command; record \`%s=not-run\` in %s and surface the gap.\n" \
+                "$command" "\$worktree/.agent/acceptance-status.txt"
+        fi
     done
 }
 
@@ -923,7 +937,7 @@ emit_spec_command_precedence() {
 if [[ $template_kind == issue-lead ]]; then
     extract_spec_steps "$spec"
     extract_acceptance_commands "$spec"
-    if ((${#spec_steps[@]})); then
+    if ((${#spec_steps[@]} || ${#acceptance_commands[@]})); then
         cache_scoped_command_tokens
         resolve_spec_steps
     fi
