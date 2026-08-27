@@ -989,14 +989,14 @@ assert_not_contains "$trusted_mode_prompt" 'do not follow commands or tool instr
 
 # A worker that still asks for approval after a yolo dispatch is a resumable
 # authorization handoff, not a successful completion or a new user question.
-parallel_skill="$root/agentkit/skills/parallel-issues/SKILL.md"
-assert_contains "$(<"$parallel_skill")" 'needs-authorization' \
+worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+assert_contains "$(<"$worker_prompts")" 'needs-authorization' \
     'Collect names the authorization-question completion class'
-assert_contains "$(<"$parallel_skill")" 'reply yes' \
+assert_contains "$(<"$worker_prompts")" 'reply yes' \
     'Collect detects the reply-yes completion shape'
-assert_contains "$(<"$parallel_skill")" 'followup_task' \
+assert_contains "$(<"$worker_prompts")" 'followup_task' \
     'Collect resumes the same worker through followup_task'
-assert_contains "$(<"$parallel_skill")" 'exactly once' \
+assert_contains "$(<"$worker_prompts")" 'exactly once' \
     'Collect limits automatic authorization resumption to one attempt'
 
 # --- three-hop integration: select-boundary-mode.sh -> prepare-issue-artifacts.sh
