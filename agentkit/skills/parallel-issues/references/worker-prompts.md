@@ -90,6 +90,14 @@ guards against, not something a template author writes by hand. It has nothing t
 say about a trust record.>
 __DECLARED_COMMANDS__
 
+When a declared verification command fails, the worker may retry that same command with
+`--baseline-ref <chain-base> --baseline-path <failing-test-file> --baseline-id <test-id>`.
+`agent-run.sh` runs the command from the chain base in an isolated checkout and only changes the
+failure into `BASELINE-EXCLUDED` when the failing test is the identical blob and its normalized
+failure signature is identical. That outcome exits 0 and writes `.agent/baseline-exclusion.md` with
+the test id, resolved base SHA, and evidence log path; it is unchecked publication evidence, never
+a green verification result or cache entry. Missing or changed evidence stays an ordinary failure.
+
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
 
@@ -391,10 +399,13 @@ default_branch=${default_branch:?set the repository default branch}
 baseline_args=()
 [[ -f "${RUN_DIR:-}/baseline-evidence.md" ]] &&
     baseline_args+=(--baseline-file "$RUN_DIR/baseline-evidence.md")
+baseline_exclusion_args=()
+[[ -f "${worktree:-}/.agent/baseline-exclusion.md" ]] &&
+    baseline_exclusion_args+=(--baseline-exclusion-file "$worktree/.agent/baseline-exclusion.md")
 "$agentkit/parallel-issues/scripts/compose-pr-body.sh" \
   --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
   --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
-  "${baseline_args[@]}" --agent "$agent_identity" --output "$pr_body_file"
+  "${baseline_args[@]}" --agent "$agent_identity" "${baseline_exclusion_args[@]}" --output "$pr_body_file"
 linkage_args=()
 [[ $base == "$default_branch" ]] && linkage_args+=(--expect-closing-issue "$issue_number")
 "$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
