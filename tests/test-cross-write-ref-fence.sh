@@ -297,4 +297,16 @@ assert_eq 10 "$rootmove_rc" \
 assert_contains "$rootmove_out" 'type=head-sha-changed' \
     'the fix narrows scope to worker-owned refs, not what counts as a mutation'
 
+alias_root="$tmp/alias-root"
+alias_worker="$tmp/alias-worker"
+make_repo "$alias_root"
+mkdir -p "$alias_root/.agent"
+git -C "$alias_root" worktree add -q -b feat/alias "$alias_worker"
+alias_snapshot="$alias_root/.agent/alias.snapshot"
+"$cross_write" snapshot --root "$alias_root" --output "$alias_snapshot" --write-set 'src/**' >/dev/null
+alias_out=$("$cross_write" collect --root "$alias_root" --snapshot "$alias_snapshot" \
+    --worktree "$alias_worker" --issue 352 --write-set 'src/**')
+assert_contains "$alias_out" 'cross-write=none' \
+    '--worktree aliases --worker-worktree for Collect'
+
 finish

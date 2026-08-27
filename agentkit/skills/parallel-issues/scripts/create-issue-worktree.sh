@@ -129,6 +129,14 @@ main() {
         worktree_setup_fail "could not create worktree $worktree"
         exit 1
     }
+    for private_dir in prompts evidence logs pr-body; do
+        # Scope the restrictive umask to private state creation; checkout and
+        # setup commands must retain the caller's ambient permissions.
+        (umask 077; mkdir -p -- "$worktree/.agent/$private_dir") || {
+            worktree_setup_fail "could not create private worktree state directory: $worktree/.agent/$private_dir"
+            exit 1
+        }
+    done
     git -C "$worktree" push --set-upstream origin "$branch" || {
         worktree_setup_fail "could not create remote branch origin/$branch"
         exit 1

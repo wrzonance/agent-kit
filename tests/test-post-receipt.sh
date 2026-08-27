@@ -9,6 +9,10 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
+stat_mode() {
+    stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1"
+}
+
 script="$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh"
 
 tmp=$(mktemp -d)
@@ -445,6 +449,22 @@ assert_eq '1' "$recovery_rc" \
 assert_contains "$recovery_out" 'fresh live comments contain no receipt marker' \
     'ambiguous recovery does not treat a cached not-spent artifact as proof'
 
+# -- publish: a newly-created RUN_DIR is secured explicitly -----------------
+
+fresh_run_dir="$tmp/fresh-run/nested/private"
+fresh_run_out=$(RUN_DIR="$fresh_run_dir" "$script" publish --pr 241 --repo owner/repo \
+    --comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+fresh_run_rc=$?
+assert_eq '1' "$fresh_run_rc" \
+    'publish fails closed when a newly-created RUN_DIR has no findings ledger'
+assert_eq '700' "$(stat_mode "$fresh_run_dir")" \
+    'publish secures a newly-created RUN_DIR at mode 0700'
+assert_contains "$fresh_run_out" 'findings file' \
+    'missing findings evidence is reported after RUN_DIR creation'
+
 # -- publish: --require-pushed enforces clean and origin-reachable state ------
 
 push_repo="$tmp/push-repo"
@@ -471,6 +491,40 @@ push_out=$(cd -- "$push_repo" && run_publish --pr 25 --repo owner/repo \
 push_rc=$?
 assert_eq '0' "$push_rc" '--require-pushed permits a clean pushed HEAD'
 assert_contains "$push_out" 'posted id=501' '--require-pushed still uses the verified transport'
+
+mkdir -p "$push_repo/.agent"
+printf '%s\n' board >"$push_repo/.agent/board.json"
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+agent_state_rc=0
+(cd -- "$push_repo" && run_publish --pr 251 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5') >/dev/null || agent_state_rc=$?
+assert_eq '0' "$agent_state_rc" '--require-pushed ignores excluded .agent state dirt'
+
+git -C "$push_repo" add -- .agent/board.json
+git -C "$push_repo" commit -qm 'track agent state fixture'
+git -C "$push_repo" push -q
+printf '%s\n' tracked-dirty >"$push_repo/.agent/board.json"
+reset_not_spent
+reset_findings
+: >"$tmp/gh.log"
+tracked_state_out=$(cd -- "$push_repo" && run_publish --pr 252 --repo owner/repo \
+    --comments "$not_spent_comments" --require-pushed \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+tracked_state_rc=$?
+assert_eq '12' "$tracked_state_rc" \
+    '--require-pushed refuses tracked edits under .agent'
+assert_contains "$tracked_state_out" 'worktree is dirty' \
+    '--require-pushed names tracked .agent edits as dirty'
+assert_eq '' "$(cat "$tmp/gh.log")" \
+    'tracked .agent refusal happens before transport'
+printf '%s\n' board >"$push_repo/.agent/board.json"
 
 printf '%s\n' dirty >"$push_repo/dirty.txt"
 reset_not_spent

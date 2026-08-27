@@ -27,7 +27,7 @@ worktree=''
 base=''
 
 usage() {
-    printf 'usage: %s --worktree PATH --base REF\n' "$PROGRAM" >&2
+    printf 'usage: %s (--worktree PATH|--repo-root PATH) --base REF\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -38,8 +38,8 @@ die() {
 
 while (($#)); do
     case $1 in
-        --worktree)
-            [[ -n ${2:-} ]] || die '--worktree requires a value'
+        --worktree | --repo-root)
+            [[ -n ${2:-} ]] || die "$1 requires a value"
             worktree=$2
             shift 2
             ;;
