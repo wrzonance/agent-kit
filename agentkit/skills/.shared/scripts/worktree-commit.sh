@@ -279,6 +279,7 @@ validate_args() {
 scope_paths() {
     local path status old new
     local -A scoped=()
+    (( ${#FILES[@]} > 0 )) || return 0
 
     while IFS= read -r -d '' path; do
         scoped["$path"]=1

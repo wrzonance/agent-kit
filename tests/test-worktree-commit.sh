@@ -667,4 +667,38 @@ assert_eq $'base.txt\nrenamed.txt' \
     "$(git -C "$rename_repo" diff-tree --no-commit-id --name-only --no-renames -r HEAD | sort)" \
     'rename scope compares old and new paths consistently without rename detection'
 
+# --allow-empty must not turn an unrelated pre-staged path into an implicit
+# operand. Exact mode keeps the path staged for the caller to handle.
+allow_empty_staged_repo="$tmp/exact-allow-empty-staged-repo"
+new_repo "$allow_empty_staged_repo"
+printf 'foreign\n' > "$allow_empty_staged_repo/foreign.txt"
+git -C "$allow_empty_staged_repo" add -- foreign.txt
+allow_empty_staged_rc=0
+allow_empty_staged_out=$(cd "$allow_empty_staged_repo" && "$script" --exact --allow-empty \
+    --message 'fix: reject staged allow-empty scope' --trailer "$TEST_TRAILER" -- 2>&1) || allow_empty_staged_rc=$?
+assert_eq '1' "$allow_empty_staged_rc" \
+    'exact allow-empty refuses unrelated staged content'
+assert_contains "$allow_empty_staged_out" 'foreign.txt' \
+    'exact allow-empty refusal names the unrelated staged path'
+assert_eq '' "$(git -C "$allow_empty_staged_repo" log -1 --format=%s | \
+    grep -F 'reject staged allow-empty scope' || true)" \
+    'exact allow-empty refusal does not create a commit'
+assert_eq 'foreign.txt' "$(git -C "$allow_empty_staged_repo" diff --cached --name-only)" \
+    'exact allow-empty refusal leaves the staged path untouched'
+
+allow_empty_empty_repo="$tmp/exact-allow-empty-empty-repo"
+new_repo "$allow_empty_empty_repo"
+allow_empty_empty_rc=0
+allow_empty_empty_out=$(cd "$allow_empty_empty_repo" && "$script" --exact --allow-empty \
+    --message 'chore: record empty scope' --trailer "$TEST_TRAILER" -- 2>&1) || allow_empty_empty_rc=$?
+assert_eq '0' "$allow_empty_empty_rc" \
+    'exact allow-empty still permits a truly empty index'
+assert_contains "$allow_empty_empty_out" 'committed' \
+    'truly empty allow-empty commit reports success'
+assert_eq 'chore: record empty scope' \
+    "$(git -C "$allow_empty_empty_repo" log -1 --format=%s)" \
+    'truly empty allow-empty commit keeps its message'
+assert_eq '' "$(git -C "$allow_empty_empty_repo" diff-tree --no-commit-id --name-only -r HEAD)" \
+    'truly empty allow-empty commit contains no paths'
+
 finish
