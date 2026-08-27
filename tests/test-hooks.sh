@@ -948,6 +948,52 @@ for hidden in 'git reset $(printf -- --hard) HEAD~1'; do
     assert_contains "$out" 'inside a substitution' 'and says why it could not be read as written'
 done
 
+# The substitution guidance must show the shell syntax literally. A backslash
+# here is not part of the command syntax and makes the repair instruction
+# misleading; keep the full guard-library reason pinned at its boundary.
+substitution_command='printf %s "'
+# shellcheck disable=SC2016  # keep the command-substitution delimiter literal
+substitution_command+='$('
+substitution_command+='git config --local core.hooksPath /tmp/evil'
+substitution_command+=')"'
+substitution_reason=$(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_segment_reason "$substitution_command" || true
+)
+# shellcheck disable=SC2016  # the expected reason intentionally contains a literal $(...)
+assert_eq 'that git config key (core.hooksPath) executes a command during git operations. Setting it is a decision for the user. (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$substitution_reason" \
+    'substitution guidance renders literal $(...) without a backslash'
+
+# A quoted argument can contain the flag as ordinary prose. The guard must use
+# shell-token boundaries rather than a raw substring regex, while the actual
+# git commit flag above remains denied.
+quoted_no_verify_prose='printf %s "The --no-verify flag is documented here."'
+out=$(pre_input "$repo" "$quoted_no_verify_prose" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'quoted prose mentioning --no-verify is not treated as a hook-skipping flag'
+
+# A sanctioned recipe wrapper may carry the hook-skipping flag in its heredoc
+# script body. It is still the executed command, so refuse it, but the reason
+# must identify only the policy (not blame the recipe's command substitution).
+# shellcheck disable=SC2016,SC2041  # the literal recipe is what the hook sees.
+recipe_wrapped=$'bash -c "$(cat <<\x27BASH_RECIPE\x27\ngit commit --no-verify -m x\nBASH_RECIPE\n)"'
+out=$(pre_input "$repo" "$recipe_wrapped" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a hook-skipping flag inside the sanctioned recipe wrapper is refused'
+assert_contains "$out" 'Refused the hook-skipping flag; drop it.' \
+    'the recipe refusal gives the short hook-skipping guidance'
+assert_not_contains "$out" 'hides' \
+    'the recipe refusal does not blame the wrapper as hidden text'
+assert_not_contains "$out" 'substitution' \
+    'the recipe refusal does not blame the wrapper as a substitution'
+
+# The same spelling in a quoted heredoc body is documentation data, not an
+# executed flag, and must remain allowed.
+recipe_note=$'cat <<\x27EOF\x27\nThe recipe uses --no-verify only as a warning.\nEOF'
+out=$(pre_input "$repo" "$recipe_note" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a hook-skipping mention in inert heredoc text is not refused'
+
 # Content-bearing tools carry prose, not shell commands. Substitution flattening
 # must not turn a code span mentioning the no-verify flag into a command.
 content='Markdown mentions `--no-ver'
@@ -2047,6 +2093,12 @@ out=$(post_input "$correct_repo" "$stale_version_path" "$correct_sid" |
 ctx=$(ctx_of "$out")
 assert_contains "$ctx" 'Wrong plugin path' \
     'a genuinely stale version path still emits the advisory after a correct read'
+assert_not_contains "$ctx" "$stale_version_path" \
+    'the advisory does not repeat a non-existent stale helper path'
+assert_contains "$ctx" "$correct_skills_dir" \
+    'the advisory names the contract-resolved skills tree including skills'
+assert_not_contains "$ctx" $'do\ndo not' \
+    'the advisory wording does not duplicate do across its line break'
 # The prescribed remedy is never byte-equal to the flagged path (acceptance
 # criterion 3) -- asserted programmatically here, not only by review.
 remedy_line=$(grep -m1 '^  agentkit=' <<< "$ctx" | sed 's/^  agentkit=//')
@@ -2054,6 +2106,8 @@ assert_eq no "$([[ $remedy_line == "$stale_version_path" ]] && printf yes || pri
     'the prescribed remedy is never byte-equal to the flagged path'
 assert_eq "$correct_skills_dir" "$remedy_line" \
     'the remedy is the contract-resolved tree, not the stale one'
+assert_eq yes "$([[ -d $remedy_line ]] && printf yes || printf no)" \
+    'the emitted resolver-derived path exists as a directory'
 
 # The correctness check above must be LEXICAL, not a plain string-prefix
 # compare -- a `..` traversal that starts with the resolved tree AS TEXT and
