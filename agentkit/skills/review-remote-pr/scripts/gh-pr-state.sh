@@ -113,6 +113,8 @@ PR_UPDATED_AT=""
 BASE_REF=""
 BASE_BEHIND=""
 BASE_STATUS=unknown
+declare -a ACCEPTANCE_COMMANDS=()
+CI_WORD=""
 THREADS_AVAILABLE=1
 CI_NONE_CONFIGURED=0
 REPO_ROOT=""
@@ -163,6 +165,8 @@ Options:
                          A new directory is created when absent; shared /tmp is rejected.
   --rounds N             --wait-ci rounds, 1-60 (default: $ROUNDS).
   --interval SECONDS     --wait-ci seconds between rounds, 1-3600 (default: $INTERVAL).
+  --acceptance-command C  issue-declared acceptance command; repeatable. Its
+                          matching check is reported separately from repo CI.
   -h, --help             Show this help.
 
 Counting rules:
@@ -264,6 +268,8 @@ parse_args() {
         --rounds=*) ROUNDS=${1#*=}; shift ;;
         --interval) require_value "$1" "${2:-}"; INTERVAL=$2; shift 2 ;;
         --interval=*) INTERVAL=${1#*=}; shift ;;
+        --acceptance-command) require_value "$1" "${2:-}"; ACCEPTANCE_COMMANDS+=("$2"); shift 2 ;;
+        --acceptance-command=*) ACCEPTANCE_COMMANDS+=("${1#*=}"); shift ;;
         --digest) SAW_DIGEST=1; shift ;;
         --full) WANT_FULL=1; shift ;;
         --wait-ci) WANT_WAIT=1; shift ;;
@@ -289,6 +295,11 @@ validate_args() {
     ((SAW_DIGEST && WANT_FULL)) && die "--digest and --full are mutually exclusive"
     [[ -z $REPO || $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die "--repo must look like OWNER/REPO, got: $REPO"
+    local acceptance
+    for acceptance in "${ACCEPTANCE_COMMANDS[@]}"; do
+        [[ -n $acceptance && $acceptance != *[[:cntrl:]]* ]] ||
+            die '--acceptance-command must be non-empty and contain no control characters'
+    done
     if [[ ! $ROUNDS =~ ^[1-9][0-9]*$ ]] || ((ROUNDS > 60)); then
         die "--rounds must be an integer 1-60, got: $ROUNDS"
     fi
@@ -726,6 +737,31 @@ ci_counts() {
         | @tsv' <"$WORK_DIR/pr.json"
 }
 
+# An acceptance command is compared with check-run/status names only; issue
+# text is never evaluated. CI providers commonly shorten package-runner
+# `foo`, so the final command token is accepted as the provider's check name.
+acceptance_status() {
+    local command=$1 token=${1##* }
+    jq -r --arg command "$command" --arg token "$token" '
+        [ .statusCheckRollup[]?
+          | select((.name // .context // "") == $command
+                   or (.name // .context // "") == $token
+                   or ((.name // .context // "") | endswith("/" + $token)))
+          | if (has("status") or has("conclusion")) then
+              if ((.status // "") | ascii_upcase) != "COMPLETED" then "not-run"
+              elif ((.conclusion // "") | ascii_upcase
+                    | . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "pass"
+              else "fail" end
+            elif ((.state // "") | ascii_upcase) == "SUCCESS" then "pass"
+            elif ((.state // "") | ascii_upcase
+                  | . == "PENDING" or . == "EXPECTED" or . == "") then "not-run"
+            else "fail" end ]
+        | if length == 0 then "not-run"
+          elif any(.[]; . == "fail") then "fail"
+          elif any(.[]; . == "not-run") then "not-run"
+          else "pass" end' <"$WORK_DIR/pr.json"
+}
+
 # Emits: code-quality<TAB>coderabbit<TAB>human<TAB>generic<TAB>known<TAB>type-bot
 #        <TAB>login-suffix<TAB>human-signal<TAB>truncated<TAB>agent-doc-threads
 #        <TAB>agent-docs-eligible.
@@ -964,7 +1000,21 @@ print_ci_line() {
     else
         word=green
     fi
+    CI_WORD=$word
     printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
+}
+
+print_acceptance_lines() {
+    local command status blocked=0 reason=''
+    for command in "${ACCEPTANCE_COMMANDS[@]}"; do
+        status=$(acceptance_status "$command")
+        printf 'repo-verify=%s acceptance=%s:%s\n' "$CI_WORD" "$command" "$status"
+        if [[ $status != pass ]]; then
+            blocked=1
+            [[ -n $reason ]] || reason="acceptance-$status"
+        fi
+    done
+    ((blocked == 0)) || printf 'ready-eligible=no reason=%s\n' "$reason"
 }
 
 print_base_line() {
@@ -1041,6 +1091,7 @@ print_digest() {
            + " sha=" + (.headRefOid // "")' <"$WORK_DIR/pr.json"
     print_base_line
     print_ci_line
+    print_acceptance_lines
     provider=$(provider_state)
     printf 'provider: coderabbit=%s\n' "$provider"
     print_thread_lines

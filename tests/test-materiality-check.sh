@@ -24,6 +24,7 @@ printf 'auth\n' > "$repo/src/auth.sh"
 printf 'test\n' > "$repo/tests/test-app.sh"
 printf 'wf\n' > "$repo/.github/workflows/ci.yml"
 printf 'readme\n' > "$repo/README.md"
+printf '.agent/\n' > "$repo/.gitignore"
 gitc add -A
 gitc commit -q -m 'base'
 
@@ -66,6 +67,37 @@ out=$("$helper" --worktree "$repo" --base main)
 assert_contains "$out" 'verdict=material' 'executable logic gets the full review'
 assert_contains "$out" 'first-material=src/app.sh' 'the verdict names the first material file'
 assert_not_contains "$out" 'oracle=' 'a material verdict offers no skip oracle'
+
+# An issue-declared acceptance command makes even a docs-only diff material
+# until the assembled branch records a green acceptance result.  The status
+# file is intentionally separate from the declaration so a missing result is
+# unambiguously not-run rather than an accidental pass.
+mkdir -p "$repo/.agent"
+printf '%s\n' 'npm run test:browser' > "$repo/.agent/acceptance.txt"
+rm -f -- "$repo/.agent/acceptance-status.txt"
+start_branch
+printf 'acceptance notes\n' > "$repo/README.md"
+gitc add -A
+gitc commit -q -m 'docs: acceptance notes'
+out=$($helper --worktree "$repo" --base main)
+assert_contains "$out" 'verdict=material' \
+    'an unrun declared acceptance command blocks a docs-only skip'
+assert_contains "$out" 'acceptance=npm run test:browser:not-run' \
+    'the material verdict records missing acceptance evidence as not-run'
+
+printf '%s\n' 'npm run test:browser=pass' > "$repo/.agent/acceptance-status.txt"
+out=$($helper --worktree "$repo" --base main)
+assert_contains "$out" 'verdict=skip-eligible' \
+    'a green declared acceptance command permits a docs-only skip'
+assert_contains "$out" 'acceptance=npm run test:browser:pass' \
+    'the skip oracle records the green acceptance result'
+
+printf '%s\n' 'npm run test:browser=fail' > "$repo/.agent/acceptance-status.txt"
+out=$($helper --worktree "$repo" --base main)
+assert_contains "$out" 'verdict=material' \
+    'a failed declared acceptance command blocks a docs-only skip'
+assert_contains "$out" 'acceptance=npm run test:browser:fail' \
+    'the material verdict records a failed acceptance result'
 
 # Authorization, workflow, and persistence surfaces are material even when
 # tests change alongside them -- one material file decides.

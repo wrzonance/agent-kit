@@ -155,6 +155,17 @@ worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_
 contract=$worktree/.agent/env-contract.txt
 spec=
 prior_art=
+emit_acceptance_declarations() {
+    if ((${#acceptance_commands[@]} == 0)); then
+        printf 'acceptance=none\n'
+        return 0
+    fi
+    local command
+    for command in "${acceptance_commands[@]}"; do
+        printf 'acceptance=%s\n' "$command"
+    done
+}
+
 if [[ $template_kind == issue-lead ]]; then
     # Must agree, filename-for-filename, with prepare-issue-artifacts.sh's
     # own per-mode publish targets (issue #334): only public-fenced actually
@@ -594,6 +605,78 @@ spec_step_render_truncated=0
 declare -a spec_steps=()
 declare -a spec_step_commands=()
 declare -a spec_uncovered_steps=()
+declare -a acceptance_commands=()
+
+# Acceptance is a separate, smaller vocabulary from the general verification
+# correspondence.  It is intentionally extracted as data only: the worker
+# still runs the resulting command through a repository-declared agent-run
+# command, never by evaluating issue text.
+add_acceptance_command() {
+    local command=$1 existing
+    command=${command#"${command%%[![:space:]]*}"}
+    command=${command%"${command##*[![:space:]]}"}
+    [[ -n $command ]] || return 0
+    [[ $command != *[[:cntrl:]]* ]] || return 0
+    for existing in "${acceptance_commands[@]}"; do
+        [[ $existing != "$command" ]] || return 0
+    done
+    acceptance_commands+=("$command")
+}
+
+# Extract fenced commands below ## Acceptance/## Verification plus the
+# explicit AGENT_ACCEPTANCE_CMD declaration.  The whole-document fence state
+# prevents an example heading inside a code block from opening a real section.
+extract_acceptance_commands() {
+    local file=$1
+    local heading_re='^(#{1,6})[[:space:]]+'
+    local acceptance_re='^#{1,6}[[:space:]]*(acceptance|verification|verify)'
+    local fence_re='^[[:space:]]*(```|~~~)'
+    local item_re='^[[:space:]]*([0-9]+[.)]|[-*+])[[:space:]]+'
+    local marker_re='^([0-9]+[.)]|[-*+]|\$)[[:space:]]+'
+    local line candidate item level in_section=0 in_fence=0 section_level=0
+    [[ -f $file && -r $file && ! -L $file ]] || return 0
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line =~ ^[[:space:]]*AGENT_ACCEPTANCE_CMD[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            candidate=${BASH_REMATCH[1]}
+            if [[ $candidate == \"*\" ]]; then
+                candidate=${candidate:1:${#candidate}-2}
+            elif [[ $candidate == \'*\' ]]; then
+                candidate=${candidate:1:${#candidate}-2}
+            fi
+            add_acceptance_command "$candidate"
+        fi
+        if [[ $line =~ $fence_re ]]; then
+            in_fence=$((1 - in_fence))
+            continue
+        fi
+        if ((in_fence == 0)) && [[ $line =~ $heading_re ]]; then
+            level=${#BASH_REMATCH[1]}
+            if [[ ${line,,} =~ $acceptance_re ]]; then
+                in_section=1
+                section_level=$level
+            elif ((in_section)) && ((level <= section_level)); then
+                in_section=0
+            fi
+            continue
+        fi
+        ((in_section)) || continue
+        candidate=''
+        if ((in_fence)); then
+            candidate=${line#"${line%%[![:space:]]*}"}
+            [[ -n $candidate ]] || continue
+            if [[ $candidate =~ $marker_re ]]; then
+                candidate=${candidate#"${BASH_REMATCH[0]}"}
+            fi
+        else
+            [[ $line =~ $item_re ]] || continue
+            item=${line#"${BASH_REMATCH[0]}"}
+            [[ $item == '`'* ]] || continue
+            candidate=${item#\`}
+            candidate=${candidate%%\`*}
+        fi
+        add_acceptance_command "$candidate"
+    done < "$file"
+}
 
 # Prints the comparable tokens of TOKEN..., one per line: option words, the
 # `--` separator, and empty tokens are dropped, and one layer of surrounding
@@ -839,6 +922,7 @@ emit_spec_command_precedence() {
 
 if [[ $template_kind == issue-lead ]]; then
     extract_spec_steps "$spec"
+    extract_acceptance_commands "$spec"
     if ((${#spec_steps[@]})); then
         cache_scoped_command_tokens
         resolve_spec_steps
@@ -1014,6 +1098,10 @@ while IFS= read -r line || [[ -n $line ]]; do
         emit_spec_command_precedence
         continue
     fi
+    if [[ $line == '__ACCEPTANCE_DECLARATIONS__' ]]; then
+        emit_acceptance_declarations
+        continue
+    fi
     line=${line//OWNER\/REPO/$repo_slug}
     line=${line//\/ABS\/PATH\/.worktrees\/feat\/issue-NNN/$worktree}
     line=${line//FULL_PATH/$worktree}
@@ -1038,6 +1126,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         $line == *'__DECLARED_'* || $line == *'__BOUNDARY_'* ||
         $line == *'__COMPOSE_ISOLATION__'* || $line == *'__IMAGE_INVALIDATING_WRITERS__'* ||
         $line == *'__SPEC_COMMAND_PRECEDENCE__'* ||
+        $line == *'__ACCEPTANCE_DECLARATIONS__'* ||
         $line == *'__ACCEPTED_FINDINGS_SECTION__'* ||
         $line == *'<worker model id selected by the root dispatch>'* ]]; then
         template_placeholder=1
@@ -1094,6 +1183,9 @@ else
     # issue's dispatch-plan entry rather than leaving the worker to reconcile
     # the gap mid-implementation.
     if [[ $template_kind == issue-lead ]]; then
+        for acceptance_command in "${acceptance_commands[@]}"; do
+            printf 'acceptance=%s\n' "$acceptance_command"
+        done
         spec_step_count=${#spec_steps[@]}
         spec_uncovered_count=${#spec_uncovered_steps[@]}
         spec_covered_count=$((spec_step_count - spec_uncovered_count))

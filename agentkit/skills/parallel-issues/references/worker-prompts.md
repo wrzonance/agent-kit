@@ -298,6 +298,9 @@ __SPEC_COMMAND_PRECEDENCE__
 ## Spec
 <PASTE the complete output selected by the boundary mode for the approved design-doc contents or full issue body>
 
+Declared issue acceptance commands (recorded for the implementation and loop gates):
+__ACCEPTANCE_DECLARATIONS__
+
 ## Prior art
 <PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>
 

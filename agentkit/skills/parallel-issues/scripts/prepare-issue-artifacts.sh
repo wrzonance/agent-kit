@@ -51,6 +51,7 @@ filenames depend on --boundary:
   published: <worktree>/.agent/fenced-prior-art.txt    (public-fenced only)
   published: <worktree>/.agent/spec.txt                (private-trusted, yolo-trusted)
   published: <worktree>/.agent/prior-art.txt           (private-trusted, yolo-trusted)
+  published: <worktree>/.agent/acceptance.txt          (all modes; one command per line)
   published: <worktree>/.agent/fenced-ready
 
 Exit status:
@@ -159,6 +160,8 @@ esac
 ready_marker="$agent_dir/fenced-ready"
 tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"
+acceptance_target="$agent_dir/acceptance.txt"
+acceptance_tmp="$acceptance_target.tmp"
 
 # Refused BEFORE the fetch. A complete, ready-marked set is deliberate state,
 # and fetched-issue.json is part of that set -- checking only after the fetch
@@ -167,7 +170,8 @@ prior_tmp="$prior_target.tmp"
 # it. The stale-debris cleanup stays below, where the run actually continues,
 # so a failed fetch still leaves the previous artifacts untouched.
 if [[ -d $ready_marker && -f $target && -f $prior_target &&
-    ! -e $tmp && ! -e $prior_tmp ]]; then
+    -f $acceptance_target && ! -e $tmp && ! -e $prior_tmp &&
+    ! -e $acceptance_tmp ]]; then
     die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
 fi
 
@@ -181,7 +185,7 @@ prior_payload=
 
 cleanup_temp_files() {
     [[ -z $issue_payload_tmp ]] || rm -f -- "$issue_payload_tmp"
-    rm -f -- "$tmp" "$prior_tmp"
+    rm -f -- "$tmp" "$prior_tmp" "$acceptance_tmp"
     [[ -z $spec_payload ]] || rm -f -- "$spec_payload"
     [[ -z $prior_payload ]] || rm -f -- "$prior_payload"
 }
@@ -243,11 +247,70 @@ issue_contents=$(jq -r '
 # The complete, ready-marked case was already refused before the fetch, so
 # anything still present here is stale debris from an interrupted run and is
 # cleared before this run republishes both members.
-if [[ -e $ready_marker || -e $target || -e $prior_target || -e $tmp || -e $prior_tmp ]]; then
+if [[ -e $ready_marker || -e $target || -e $prior_target || -e $acceptance_target ||
+    -e $tmp || -e $prior_tmp || -e $acceptance_tmp ]]; then
     printf 'incomplete stale fence artifacts; removing them before retry\n' >&2
-    rm -f -- "$target" "$prior_target" "$tmp" "$prior_tmp"
+    rm -f -- "$target" "$prior_target" "$acceptance_target" "$tmp" "$prior_tmp" "$acceptance_tmp"
     rmdir -- "$ready_marker" 2>/dev/null || rm -f -- "$ready_marker"
 fi
+
+# Persist the issue's acceptance vocabulary beside the canonical spec so the
+# later materiality gate can inspect the declaration without fetching the
+# issue again. This parser never evaluates a command; it only copies fenced
+# command lines, code-span list items, and the explicit AGENT_ACCEPTANCE_CMD
+# escape hatch as data.
+extract_acceptance_to_file() {
+    local file=$1 output=$2
+    local heading_re='^(#{1,6})[[:space:]]+'
+    local acceptance_re='^#{1,6}[[:space:]]*(acceptance|verification|verify)'
+    local fence_re='^[[:space:]]*(```|~~~)'
+    local item_re='^[[:space:]]*([0-9]+[.)]|[-*+])[[:space:]]+'
+    local marker_re='^([0-9]+[.)]|[-*+]|\$)[[:space:]]+'
+    local line candidate item level in_section=0 in_fence=0 section_level=0
+    : > "$output"
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line =~ ^[[:space:]]*AGENT_ACCEPTANCE_CMD[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            candidate=${BASH_REMATCH[1]}
+            case $candidate in
+                \"*\") candidate=${candidate:1:${#candidate}-2} ;;
+                \'*\') candidate=${candidate:1:${#candidate}-2} ;;
+            esac
+            [[ -n $candidate && $candidate != *[[:cntrl:]]* ]] || continue
+            grep -Fqx -- "$candidate" "$output" 2>/dev/null || printf '%s\n' "$candidate" >> "$output"
+        fi
+        if [[ $line =~ $fence_re ]]; then
+            in_fence=$((1 - in_fence))
+            continue
+        fi
+        if ((in_fence == 0)) && [[ $line =~ $heading_re ]]; then
+            level=${#BASH_REMATCH[1]}
+            if [[ ${line,,} =~ $acceptance_re ]]; then
+                in_section=1
+                section_level=$level
+            elif ((in_section)) && ((level <= section_level)); then
+                in_section=0
+            fi
+            continue
+        fi
+        ((in_section)) || continue
+        candidate=''
+        if ((in_fence)); then
+            candidate=${line#"${line%%[![:space:]]*}"}
+            [[ -n $candidate ]] || continue
+            if [[ $candidate =~ $marker_re ]]; then
+                candidate=${candidate#"${BASH_REMATCH[0]}"}
+            fi
+        else
+            [[ $line =~ $item_re ]] || continue
+            item=${line#"${BASH_REMATCH[0]}"}
+            [[ $item == '`'* ]] || continue
+            candidate=${item#\`}
+            candidate=${candidate%%\`*}
+        fi
+        [[ -n $candidate && $candidate != *[[:cntrl:]]* ]] || continue
+        grep -Fqx -- "$candidate" "$output" 2>/dev/null || printf '%s\n' "$candidate" >> "$output"
+    done < "$file"
+}
 
 # Staged outside the worktree so a fence producer is always fed by stdin
 # redirection, never a pipe: a pipe writer that outlives an early-exiting
@@ -261,6 +324,8 @@ chmod 600 -- "$spec_payload" "$prior_payload" ||
 
 printf '%s' "$issue_contents" >"$spec_payload" ||
     die 'Could not stage the spec payload.'
+extract_acceptance_to_file "$spec_payload" "$acceptance_tmp" ||
+    die 'Could not extract the issue acceptance commands.'
 if [[ -n $prior_art_file ]]; then
     cp -- "$prior_art_file" "$prior_payload" ||
         die 'Could not stage the prior-art payload.'
@@ -301,11 +366,15 @@ if ((publish_rc == 0)); then
         { publish_rc=$?; publish_step="publish $prior_target"; }
 fi
 if ((publish_rc == 0)); then
+    mv -f -- "$acceptance_tmp" "$acceptance_target" ||
+        { publish_rc=$?; publish_step="publish $acceptance_target"; }
+fi
+if ((publish_rc == 0)); then
     mkdir -- "$ready_marker" ||
         { publish_rc=$?; publish_step="create the readiness marker $ready_marker"; }
 fi
 if ((publish_rc != 0)); then
-    rm -f -- "$tmp" "$prior_tmp"
+    rm -f -- "$tmp" "$prior_tmp" "$acceptance_tmp"
     printf 'Could not %s (exit %s); the fenced artifact set is incomplete.\n' \
         "$publish_step" "$publish_rc" >&2
     exit "$publish_rc"
@@ -320,4 +389,5 @@ trap - EXIT HUP INT TERM
 printf 'published: %s\n' "$issue_payload_file"
 printf 'published: %s\n' "$target"
 printf 'published: %s\n' "$prior_target"
+printf 'published: %s\n' "$acceptance_target"
 printf 'published: %s\n' "$ready_marker"

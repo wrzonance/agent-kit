@@ -919,8 +919,8 @@ Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as s
 **The materiality gate runs before the review spend.** Before launching any reviewer, the
 loop runs `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base"`
 — for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
-predecessor's changes contaminate the successor's verdict.
-`verdict=skip-eligible` (every changed file is test-only or docs-only) takes the
+predecessor's changes contaminate the successor's verdict. Pass acceptance.txt; non-pass blocks.
+`verdict=skip-eligible` (test/docs-only and acceptance green) takes the
 documented-skip path: publish the receipt with `--skip-rationale` and the helper's printed
 oracle line, and launch no reviewer. `verdict=material` — any file touching executable
 logic, workflow, authorization, or persistence — proceeds to the full review. Either way the
@@ -1032,8 +1032,8 @@ rather than double-posting when the marker is already present.
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
 
 ```
-#57 Parser resilience  → ✅ PR #67 draft-ready (CI green, adversarial review 3/3 handled)  worker=<model> <effort>
-#54 Rate limiting      → ✅ PR #68 draft-ready (CI green, adversarial review 0 findings)   worker=<model> <effort>
+#57 Parser resilience  → ✅ PR #67 draft-ready (repo-verify=green acceptance=<cmd>:<status>)  worker=<model> <effort>
+#54 Rate limiting      → ✅ PR #68 draft-ready (CI green, review 0 findings)   worker=<model> <effort>
 #62 Logging cleanup    → ⚠️  PR #69 BLOCKED — coverage 78% < 80% gate; needs more tests    worker=<model> <effort>
 
 Mark the ✅ PRs ready when you want to review them — provider review behavior is repository-configured;

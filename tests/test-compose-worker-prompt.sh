@@ -121,10 +121,22 @@ compose_verification_report() {
 
 expected_wait_bound_line="wait-bound= issue=136 seconds=$expected_wait_bound_seconds class=worker"
 
+# Acceptance declarations are extracted from the issue artifact at the same
+# boundary as verification steps, including fenced commands and the explicit
+# AGENT_ACCEPTANCE_CMD escape hatch.
+acceptance_prompt=$(compose_verification_report acceptance \
+    $'## Acceptance\n```bash\nnpm run test:browser\n```\n\nAGENT_ACCEPTANCE_CMD=tools/certify --browser\n')
+assert_contains "$acceptance_prompt" 'acceptance=npm run test:browser' \
+    'issue-lead prompt records fenced acceptance commands'
+assert_contains "$acceptance_prompt" 'acceptance=tools/certify --browser' \
+    'issue-lead prompt records AGENT_ACCEPTANCE_CMD declarations'
+
 fully_covered_report=$(compose_verification_report fully-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n')
 assert_eq \
-    "spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered
+    "acceptance=tools/verify
+acceptance=tools/full-test
+spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered
 $expected_wait_bound_line" \
     "$fully_covered_report" \
     'fully covered verification reports its ratio and classification, and its wait bound'
@@ -132,7 +144,10 @@ $expected_wait_bound_line" \
 partially_covered_report=$(compose_verification_report partially-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n- `tools/not-declared`\n')
 assert_eq \
-    "spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered
+    "acceptance=tools/verify
+acceptance=tools/full-test
+acceptance=tools/not-declared
+spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered
 $expected_wait_bound_line" \
     "$partially_covered_report" \
     'partially covered verification reports its ratio and classification, and its wait bound'
@@ -140,7 +155,10 @@ $expected_wait_bound_line" \
 majority_uncovered_report=$(compose_verification_report majority-uncovered \
     $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n- `tools/also-not-declared`\n')
 assert_eq \
-    "spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered
+    "acceptance=tools/verify
+acceptance=tools/not-declared
+acceptance=tools/also-not-declared
+spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered
 $expected_wait_bound_line" \
     "$majority_uncovered_report" \
     'majority-uncovered verification is distinguishable at a glance, and its wait bound is still reported'
