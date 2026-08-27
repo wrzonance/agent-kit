@@ -952,6 +952,7 @@ done
 # here is not part of the command syntax and makes the repair instruction
 # misleading; keep the full guard-library reason pinned at its boundary.
 substitution_command='printf %s "'
+# shellcheck disable=SC2016  # keep the command-substitution delimiter literal
 substitution_command+='$('
 substitution_command+='git config --local core.hooksPath /tmp/evil'
 substitution_command+=')"'
