@@ -350,6 +350,44 @@ check_ci() {
     printf '%s\t%s\n' "$total" "$pass"
 }
 
+# A retry may observe a PR whose base was retargeted by an earlier invocation.
+# Do not use the process-local RETARGET_APPLIED flag as the only refresh signal:
+# stale or missing code-scanning evidence is the durable proof that a scan still
+# needs a post-boundary trigger.
+code_scanning_refresh_needed() {
+    local pr_json=$1 boundary=$2 needed
+    needed=$(jq -r --argjson boundary "$boundary" '
+        def is_scan:
+          (((.name // .context // "") | ascii_downcase)
+           | test("codeql|code[ -]?scanning"));
+        def first_nonempty:
+          first(.[] | select(type == "string" and length > 0)) // "";
+        [ .statusCheckRollup[]?
+          | select(is_scan)
+          | ([.startedAt, .started_at, .createdAt, .created_at] | first_nonempty)
+        ] as $timestamps
+        | if ($timestamps | length) == 0 then "no"
+          elif any($timestamps[];
+                   . == "" or (try (fromdateiso8601 <= $boundary) catch true))
+          then "yes"
+          else "no" end
+    ' <<<"$pr_json") ||
+        die 'code-scanning evidence was unreadable; refresh decision unavailable'
+    [[ $needed == yes ]]
+}
+
+# Workflow/check names are forge-controlled text. Keep them readable in
+# diagnostics while preventing newlines, tabs, and control bytes from becoming
+# extra proof lines or terminal escapes. The proof record itself never includes
+# these names; it remains one machine-readable line on stdout.
+sanitize_label() {
+    local value=${1:-}
+    value=$(printf '%s' "$value" | LC_ALL=C tr '\r\n' '  ' | LC_ALL=C sed 's/[^[:print:]]/?/g') ||
+        value='code-scanning'
+    [[ -n $value ]] || value='code-scanning'
+    printf '%s' "${value:0:120}"
+}
+
 # A base edit does not reliably emit a pull_request workflow event. Refresh
 # only a code-scanning workflow named by the PR's check rollup: rerun a known
 # head-associated run, or dispatch its workflow when the API accepts that
@@ -359,6 +397,7 @@ check_ci() {
 # for repositories without such a workflow.
 refresh_code_scanning() {
     local pr_json=$1 head_sha=$2 head_ref=$3 names runs run_id run_name workflows workflow_id
+    local safe_run_name safe_name
     names=$(jq -r '
         [.statusCheckRollup[]?
          | select(((.name // .context // "") | ascii_downcase)
@@ -387,11 +426,13 @@ refresh_code_scanning() {
     if [[ -n $run_id ]]; then
         if "$GH_BIN" api --method POST "repos/$REPO/actions/runs/$run_id/rerun" \
             >/dev/null 2>&1; then
-            printf 'analysis-refresh=rerun workflow=%s run=%s\n' "$run_name" "$run_id"
+            printf 'analysis-refresh=rerun workflow=%s run=%s\n' \
+                "$(sanitize_label "$run_name")" "$run_id" >&2
             return 0
         fi
+        safe_run_name=$(sanitize_label "$run_name")
         printf 'cannot-trigger: %s rerun unavailable; human action: open Actions, rerun the %s workflow for head %s\n' \
-            "$run_name" "$run_name" "$head_sha" >&2
+            "$safe_run_name" "$safe_run_name" "$head_sha" >&2
         return 1
     fi
 
@@ -407,12 +448,14 @@ refresh_code_scanning() {
     if [[ $workflow_id =~ ^[1-9][0-9]*$ ]]; then
         if "$GH_BIN" api --method POST "repos/$REPO/actions/workflows/$workflow_id/dispatches" \
             -f "ref=$head_ref" >/dev/null 2>&1; then
-            printf 'analysis-refresh=dispatch workflow=%s ref=%s\n' "$names" "$head_ref"
+            printf 'analysis-refresh=dispatch workflow=%s ref=%s\n' \
+                "$(sanitize_label "${names%%$'\n'*}")" "$(sanitize_label "$head_ref")" >&2
             return 0
         fi
     fi
+    safe_name=$(sanitize_label "${names%%$'\n'*}")
     printf 'cannot-trigger: %s has no dispatch; human action: open the CodeQL workflow and run it manually for %s, or update its path filter to include this PR\n' \
-        "${names%%$'\n'*}" "$head_ref" >&2
+        "$safe_name" "$(sanitize_label "$head_ref")" >&2
     return 1
 }
 
@@ -426,7 +469,7 @@ closing_issue_count() {
 }
 
 retarget() {
-    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count
+    local pr_json actual_base head_ref head_sha ci_counts total pass closing_count refreshed_head_sha
     resolve_repo
     pr_json=$(fetch_pr) || die "could not read PR #$PR before retarget"
     actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
@@ -464,15 +507,25 @@ retarget() {
     check_ancestry "$head_sha"
     ci_counts=$(check_ci "$pr_json")
     IFS=$'\t' read -r total pass <<<"$ci_counts"
+    if [[ $RETARGET_APPLIED == true ]] ||
+        code_scanning_refresh_needed "$pr_json" "$BOUNDARY_EPOCH"; then
+        if ! refresh_code_scanning "$pr_json" "$head_sha" "$head_ref"; then
+            die 'required code-scanning analysis could not be triggered'
+        fi
+        pr_json=$(fetch_pr) || die "could not re-read PR #$PR after analysis refresh"
+        refreshed_head_sha=$(jq -r '.headRefOid // empty' <<<"$pr_json") ||
+            die 'headRefOid was unreadable after analysis refresh'
+        [[ $refreshed_head_sha == "$head_sha" ]] ||
+            die 'pull request head changed after analysis refresh; evidence is stale'
+        ci_counts=$(check_ci "$pr_json")
+        IFS=$'\t' read -r total pass <<<"$ci_counts"
+    fi
     check_ci_fresh "$pr_json" "$BOUNDARY_EPOCH"
     approval_token=$(describe_approval "$pr_json" "$head_sha" "$BOUNDARY_EPOCH")
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    if [[ $RETARGET_APPLIED == true ]] && ! refresh_code_scanning "$pr_json" "$head_sha" "$head_ref"; then
-        die 'required code-scanning analysis could not be triggered'
-    fi
     printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget approval=%s ancestry=verified boundarySource=%s closing-issues=%s\n' \
         "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$approval_token" "$BOUNDARY_SOURCE" "$closing_count"
 }
