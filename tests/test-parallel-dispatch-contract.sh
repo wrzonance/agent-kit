@@ -73,7 +73,8 @@ issue_lead_prompt=$(awk '
 # extracted nothing the moment the tag was added, and an empty haystack fails
 # every positive assertion at once rather than pointing at the real cause.
 draft_loop_prompt=$(awk '
-    /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
+    /^## PR-fix-batch worker prompt$/ { section=1; next }
+    section == 1 && /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
     capture == 1 && /^```/ { capture=2; next }
     capture == 2 && /^```$/ { exit }
     capture == 2 { print }
@@ -82,13 +83,24 @@ draft_loop_prompt=$(awk '
     printf 'could not extract the draft-loop prompt block from %s\n' "$worker_prompts" >&2
     exit 1
 }
+setup_prompt=$(awk '
+    /^## PR-loop setup worker prompt$/ { section=1; next }
+    section == 1 && /^\*\*Per-agent prompt template:\*\*$/ { capture=1; next }
+    capture == 1 && /^```/ { capture=2; next }
+    capture == 2 && /^```$/ { exit }
+    capture == 2 { print }
+' "$worker_prompts")
+[[ -n $setup_prompt ]] || {
+    printf 'could not extract the PR-loop setup prompt block from %s\n' "$worker_prompts" >&2
+    exit 1
+}
 
 # The fix-batch worker runs full verification through the same wrapper as an
 # issue lead, so the Compose isolation rules must reach BOTH templates. Pinning
 # them only on the whole-file text would pass while the fix-batch prompt carried
 # none of them.
 fix_batch_prompt=$(awk '
-    /^## Fix-batch worker prompt$/ { capture=1; next }
+    /^## PR-fix-batch worker prompt$/ { capture=1; next }
     capture && /^## Exit Report$/ { exit }
     capture { print }
 ' "$worker_prompts")
@@ -345,10 +357,26 @@ assert_contains "$dispatch_section" '[ -d "${agentkit:-}/.shared/scripts" ]' \
     'concurrency dispatch carries the resolver directory guard'
 assert_contains "$dispatch_section" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
-assert_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
-    'dispatch names the hard PR-loop cap at the launch boundary'
+assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
+    'dispatch does not hardcode a two-loop cap'
 assert_contains "$text" 'pr_loop_dispatch_cap' \
     'dispatch derives an effective loop cap before launching agents'
+assert_contains "$text" 'runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))' \
+    'dispatch reserves the root and active issue leads from the runtime cap'
+assert_contains "$text" 'pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : runtime_loop_budget))' \
+    'dispatch bounds loops by open PRs and remaining runtime capacity'
+assert_contains "$text" 'pr-loop-setup' \
+    'dispatch uses the read-only PR-loop setup template'
+assert_contains "$text" 'pr-fix-batch' \
+    'dispatch gates the fix-batch template on accepted findings'
+assert_contains "$text" 'open_pr_count == 0' \
+    'dispatch treats zero open PRs as an explicit no-op case'
+assert_contains "$text" 'exit 0' \
+    'dispatch exits successfully when there are no open PRs'
+assert_eq yes "$([[ $(sed -n '/^### Step 3b: Dispatch review-remote-pr agents (parallel)$/,/^### Adversarial-review receipt:/p' "$skill" | sed -n '2p') == '' ]] && printf yes || printf no)" \
+    'Step 3b heading keeps its required Markdown blank line'
+assert_contains "$normalized_text" 'origin/${base_branch}' \
+    'setup materiality base has an origin-base default'
 assert_contains "$text" 'queue overflow PR loops' \
     'dispatch queues PR loops beyond the effective cap'
 assert_contains "$verification_isolation_text" 'serialize full-suite verification' \
@@ -560,6 +588,17 @@ assert_prompt_instruction_contract() {
 
 assert_prompt_instruction_contract "$issue_lead_prompt" 'issue-lead prompt' 'this issue'
 assert_prompt_instruction_contract "$draft_loop_prompt" 'draft-loop prompt' 'this PR'
+assert_contains "$setup_prompt" 'gh-pr-state.sh' 'setup prompt fetches PR state'
+assert_contains "$setup_prompt" '--wait-ci' 'setup prompt waits for CI'
+assert_contains "$setup_prompt" 'code-quality-state.sh' 'setup prompt triages Code Quality'
+assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs materiality precheck'
+assert_contains "$setup_prompt" 'Zero findings are a successful setup outcome' \
+    'setup prompt treats a zero-finding loop as success'
+assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
+assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
+assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
+    'setup prompt does not encode a zero-finding BLOCKED result'
 
 assert_prompt_scope_contract() {
     local prompt="$1" label="$2"
@@ -757,7 +796,7 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 # but it lives beside the worker prompts it is read alongside. SKILL.md's body
 # keeps only a gate statement + pointer at the binding step.
 publication_section=$(
-    sed -n '/^## Draft PR body template$/,/^## Fix-batch worker prompt$/p' "$worker_prompts"
+    sed -n '/^## Draft PR body template$/,/^## PR-fix-batch worker prompt$/p' "$worker_prompts"
 )
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication uses the byte-verifying body transport'

@@ -2,12 +2,13 @@
 
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
+- [PR-loop setup worker prompt](#pr-loop-setup-worker-prompt) — read-only state, CI, Code Quality, and materiality triage before any fix batch
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
 - [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
-- [Fix-batch worker prompt](#fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker
+- [PR-fix-batch worker prompt](#pr-fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker with accepted findings
 
 Read this before dispatching any worker in `parallel-issues`, or before the root publishes a
-draft PR. The two worker prompts are pasted **verbatim** — every placeholder filled, every
+draft PR. The worker prompts are pasted **verbatim** — every placeholder filled, every
 environment-contract block pasted in — because a worker forked with `fork_context: false` starts
 with no memory of the dispatching session; a pointer to this file is not something it can follow.
 The draft-PR body template is root-owned dispatch-*output* content instead, read at the moment of
@@ -279,6 +280,65 @@ publication handback — or BLOCKED with one concrete reason. Do not contact the
 pushing your own branch, and do not ask for privilege escalation.
 ````
 
+## PR-loop setup worker prompt
+
+**Per-agent prompt template:**
+
+```text
+You are the read-only PR-loop setup worker for the root session's PR #NNN.
+Prepare the review state and triage evidence; do not edit, commit, push, create a PR, launch a
+provider review, resolve a human thread, or dispatch a fix worker. A clean review is success.
+
+Worktree: .worktrees/feat/issue-NNN  (absolute path: FULL_PATH)
+Branch: feat/issue-NNN
+Base: __BASE_BRANCH__
+Repo: OWNER/REPO
+PR: NNN
+Worker effort: __WORKER_EFFORT__
+
+## Environment contract (established facts — do NOT re-probe any of them)
+
+<PASTE, verbatim, the agent-preflight.sh contract for THIS worktree — never dispatch with this
+placeholder line still in the prompt.>
+
+The contract is authoritative for the repository, branch, base, caches, and network. Harness-global
+rules are already applied. Your working set is this worktree, the contract `skills=` tree, `/tmp`,
+and explicitly supplied paths. Use the
+authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only regular,
+non-symlink instruction files at the worktree root and in directories changed by this PR.
+Never search outside the worktree. Every file operation must use an absolute path rooted in this
+assigned worktree; this setup phase is read-only and must not write to it.
+
+## Setup procedure
+
+Use the supplied helpers and preserve their machine-readable output. First fetch the complete PR
+state and evidence:
+
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full
+
+Wait for CI with the bounded helper, then inspect the resulting digest. A failing check is a
+terminal setup result, not a fix batch:
+
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --wait-ci --rounds 60 --interval 10
+
+Probe and triage Code Quality once. `state=not-enabled` is clean evidence; an open finding is
+reported, never silently treated as zero:
+
+"$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --probe
+"$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --summary
+
+Run the materiality precheck against the PR's current head before any review spend:
+
+"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "__MATERIALITY_BASE__"
+
+If CI is red, return exactly `ci-red: <check>` naming the failing check. If Code Quality has open
+findings, return exactly `cq-open: N` with the count. Otherwise return exactly `launch-ready`.
+The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
+findings ledger contains at least one finding. Zero findings are a successful setup outcome.
+Return the terminal line plus a compact evidence summary; never return BLOCKED merely because
+there is nothing to fix.
+```
+
 ## Draft PR body template
 
 After a worker's completion report lands and the root's post-push review of `base...HEAD`
@@ -361,7 +421,7 @@ banner and closing attribution as the PR template:
 "$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"
 ```
 
-## Fix-batch worker prompt
+## PR-fix-batch worker prompt
 
 **Per-agent prompt template:**
 
@@ -460,6 +520,8 @@ say about a trust record.>
 __DECLARED_COMMANDS__
 
 __COMPOSE_ISOLATION__
+
+__ACCEPTED_FINDINGS_SECTION__
 
 ## How to write a file
 
