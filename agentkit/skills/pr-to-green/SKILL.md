@@ -296,8 +296,12 @@ A PR is evidence-green only when all of these are current for its head and base:
 - every human item has an explicit per-item decision; and
 - no reply is awaiting an unread provider response.
 
-Report formal provider approval separately. It is not required for effective
-`none`, and a stale approval after retarget is not evidence-green.
+The merge gate classifies scans as bounded `SETTLING`, named `scan-failed` or
+`scan-missing` (with human action), and `not-applicable (path-filtered)` for
+all-skipped checks; the last still requires readable zero-alert evidence.
+
+Report provider approval separately; effective `none` and stale approval do not
+block evidence-green.
 
 ### 5. Advance stacks, merging only under `--auto-merge`
 
@@ -319,23 +323,22 @@ guard lives at that point of mutation, not just in the calling order. On its
 success, move that issue's board item to `Done`. No merge starts while a
 predecessor's post-merge revalidation is outstanding.
 
-Only after the predecessor is merged — by the human, or by `merge-pr.sh` under
-`--auto-merge` — may the direct successor become `RETARGET_REQUIRED`. Invoke
-`chain-advance.sh` to retarget it to the default branch and verify the live
-base. Refresh its diff, ancestry, conflicts, checks, head/base evidence, and
-closing linkage — those stay mandatory. Formal approval is reported as
-residue (`approval=current:post-retarget|residue:stale|none|unknown`), never
-required at this step: a trigger/observe provider settles on the current
-head only after the ready/provider transition below, and a disabled/
-effective-none provider may never produce one at all (issue #455).
-Unexpected expansion, conflict, stale mechanical evidence, failed retarget,
-or required history rewrite blocks that successor instead of selecting a
-repair — this applies identically whether merging is human or automated.
+After predecessor merge, make the direct successor `RETARGET_REQUIRED`; run
+`chain-advance.sh` against the default branch and refresh its diff, ancestry,
+conflicts, checks, head/base evidence, and closing linkage. Approval remains
+residue (`current:post-retarget|residue:stale|none|unknown`) until transition;
+disabled providers may never produce one. Unexpected expansion, stale proof,
+failed retarget, or required rewrite blocks the successor for human or
+automated merges.
 
-Regenerate the queue before the successor becomes `RUNNABLE` or spends any
-provider authority. A merge-down or this retarget is deterministic queue
-maintenance under the Step 1 confirmation, not new discretionary scope — refresh
-it through `authorize-queue.sh --allow-mechanical-advance` (see
+After retarget, `chain-advance.sh` reruns a head scan run or requests
+`workflow_dispatch`; otherwise it reports `cannot-trigger: <workflow> has no
+dispatch` and the action. Agents never close/reopen PRs to synthesize
+events; that mutation requires an operator instruction naming the PR/action.
+
+Regenerate the queue before the successor becomes `RUNNABLE` or spends provider
+authority. A merge-down/retarget is deterministic maintenance under Step 1;
+refresh it through `authorize-queue.sh --allow-mechanical-advance` (see
 ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md))
 instead of redisplaying, unless it names a material judgment. Save
 `chain-advance.sh --retarget`'s stdout line and pass it as

@@ -13,6 +13,9 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
+    *" api repos/owner/repo "*)
+        printf '{"security_and_analysis":{"code_security":{"status":"%s"}}}\n' "${REPO_CODE_SECURITY_STATUS:-enabled}"
+        ;;
     *" api repos/owner/repo/pulls/14 "*)
         printf '%s\n' '{"number":14,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"abcdef0123456789"},"base":{"ref":"main"}}'
         ;;
@@ -32,7 +35,15 @@ case " $* " in
           {"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"human missing author","author":null}]}}
         ]}}}}}'
         ;;
-    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *"code-scanning/alerts"*)
+        case ${CS_ALERTS_MODE:-ok} in
+        ok) printf '%s\n' '[]' ;;
+        disabled-403)
+            printf '%s\n' '{"message":"Code Security must be enabled for this repository to use code scanning.","status":"403"}'
+            exit 1
+            ;;
+        esac
+        ;;
     *) printf '%s\n' '[]' ;;
 esac
 EOF
@@ -67,6 +78,22 @@ assert_not_contains "$output" 'next: nitpicks' \
     'a zero nitpicks lane prints no next hint'
 assert_not_contains "$output" 'next: agent-docs' \
     'a zero agent-docs lane prints no next hint'
+
+# A repository with Code Security disabled still queries live alerts. A
+# readable empty response must remain open=0, not be hidden as not-enabled.
+disabled_live_output=$(REPO_CODE_SECURITY_STATUS=disabled PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo)
+assert_contains "$disabled_live_output" 'alerts: code-scanning open=0' \
+    'a live empty alerts response remains visible when metadata says Code Security is disabled'
+assert_not_contains "$disabled_live_output" 'alerts: code-scanning not-enabled' \
+    'disabled metadata alone never hides a live alerts response'
+
+# Only the exact feature-disabled API failure, paired with disabled metadata,
+# is eligible for the not-enabled digest state.
+disabled_error_output=$(REPO_CODE_SECURITY_STATUS=disabled CS_ALERTS_MODE=disabled-403 PATH="$tmp:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 14 --repo owner/repo)
+assert_contains "$disabled_error_output" 'alerts: code-scanning not-enabled' \
+    'disabled metadata plus the exact feature-disabled alerts 403 reports not-enabled'
 
 # --- a child whose base advanced after its checks completed -----------------
 

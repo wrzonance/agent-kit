@@ -24,6 +24,7 @@ readonly REST_CALLS_PER_WAIT_ROUND=5
 repo=''
 repo_root=''
 merge_plan=''
+plan_option=''
 format=table
 write_confirmed_queue=0
 no_providers=0
@@ -83,6 +84,7 @@ while (($#)); do
         --merge-plan|--dispatch-plan)
             (($# >= 2)) || usage
             merge_plan=$2
+            plan_option=merge-plan
             shift 2
             ;;
         --pr)
@@ -214,6 +216,7 @@ fetch_open_one() {
 }
 
 plan_active=0
+# shellcheck disable=SC2034 # retained for transition diagnostics
 plan_drift=0
 if [[ -n $merge_plan ]]; then
     [[ -f $merge_plan && ! -L $merge_plan && -O $merge_plan ]] ||
@@ -254,12 +257,19 @@ if [[ -n $merge_plan ]]; then
     ' "$merge_plan" >/dev/null 2>&1 ||
         die 'schema-2 merge plan has invalid topology: malformed records, cycles, joins, or ambiguity'
 
-    jq '([.chains | to_entries[] as $chain |
-          $chain.value | to_entries[] |
-          .value + {group:("chain-" + ($chain.key|tostring)), position:.key}] +
-         [.independent | to_entries[] |
-          .value + {group:("independent-" + (.key|tostring)), position:0}])' \
+    jq --arg base "$default_branch" '([.chains | to_entries[] as $chain |
+          $chain.value | to_entries[] as $entry |
+          $entry.value + {group:("chain-" + ($chain.key|tostring)), position:$entry.key,
+            expectedBase:(if $entry.key == 0 then $base else $chain.value[$entry.key - 1].branch end)}] +
+         [.independent | to_entries[] as $entry |
+         $entry.value + {group:("independent-" + ($entry.key|tostring)), position:0, expectedBase:$base}])' \
         "$merge_plan" >"$work_dir/plan-records.json"
+
+    for selected_pr in "${explicit_prs[@]}"; do
+        jq -e --argjson pr "$selected_pr" 'any(.[]; .pr == $pr)' \
+            "$work_dir/plan-records.json" >/dev/null ||
+            die "explicit PR #$selected_pr is not present in merge plan"
+    done
 
     while IFS= read -r number; do
         fetch_one "$number" "$work_dir/pr-$number.json"
@@ -271,13 +281,21 @@ if [[ -n $merge_plan ]]; then
       all(.[]; . as $record |
         ([ $live[0][] | select(.number == $record.pr) ] | length) == 1 and
         ([ $live[0][] | select(.number == $record.pr) ][0].head.ref == $record.branch) and
-        ([ $live[0][] | select(.number == $record.pr) ][0].head.sha == $record.headSha))
+        ([ $live[0][] | select(.number == $record.pr) ][0].head.sha == $record.headSha) and
+        ([ $live[0][] | select(.number == $record.pr) ][0].base.ref == $record.expectedBase))
     ' "$work_dir/plan-records.json" >/dev/null; then
         plan_drift=1
-        warn 'recorded head drift detected; re-deriving the queue from verified forge relationships'
-    else
-        plan_active=1
+        while IFS=$'\t' read -r refreshed_pr old_sha new_sha; do
+            warn "refreshed=#$refreshed_pr old=${old_sha:0:7} new=${new_sha:0:7}"
+        done < <(jq -r --slurpfile live "$work_dir/live.json" '
+          .[] as $record |
+          ([ $live[0][] | select(.number == $record.pr) ][0]) as $pr |
+          select($pr.head.sha != $record.headSha or $pr.base.ref != $record.expectedBase) |
+          [$record.pr,$record.headSha,$pr.head.sha] | @tsv
+        ' "$work_dir/plan-records.json")
     fi
+    plan_active=1
+    : "$plan_drift"
 fi
 
 if ((plan_active == 0)); then
@@ -315,7 +333,6 @@ if ((plan_active == 0)); then
     validate_prs "$work_dir/live.json" || die 'pull request discovery returned malformed records'
 
     source=forge
-    ((plan_drift == 0)) || source=fallback
     issue_map='[]'
     [[ ! -f $work_dir/plan-records.json ]] || issue_map=$(jq '[.[] | {pr,issue}]' "$work_dir/plan-records.json")
 
@@ -378,7 +395,9 @@ else
         die 'live base refs disagree with the persisted merge plan; unsafe retarget state'
     fi
 
-    jq --arg base "$default_branch" '
+    # A plan remains the authoritative topology even when one or more records
+    # drifted. Explicit --pr selectors only narrow that same plan-derived set.
+    jq --arg base "$default_branch" --argjson selected "$(printf '%s\n' "${explicit_prs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" '
       . as $all |
       def predecessor($item):
         [ $all[] | select(.group == $item.group and .position == ($item.position - 1)) ][0];
@@ -389,6 +408,7 @@ else
       map(select(.live.state == "open") |
         . as $item |
         (if .position == 0 then null else predecessor($item) end) as $pred |
+        select(($selected | length) == 0 or (.pr as $pr | $selected | index($pr) != null)) |
         {
           pr:.pr, issue:.issue,
           state:(if .live.mergeable == true then
@@ -402,6 +422,65 @@ else
         })
     ' "$work_dir/planned-live.json" >"$work_dir/queue.json"
 fi
+
+if [[ -f $work_dir/planned-live.json ]]; then
+    while IFS= read -r merged_pr; do
+        warn "merged PR #$merged_pr dropped from queue"
+    done < <(jq -r '.[] | select(.live.merged == true) | .pr' "$work_dir/planned-live.json")
+fi
+
+# GitHub can return a transient null mergeability while it recomputes after a
+# base move. Re-read only those rows a bounded number of times; an unresolved
+# row is explicit SETTLING and never silently treated as runnable.
+settle_interval=${PR_QUEUE_SETTLE_INTERVAL:-15}
+settle_rounds=${PR_QUEUE_SETTLE_ROUNDS:-3}
+[[ $settle_interval =~ ^[0-9]+([.][0-9]+)?$ ]] || die 'PR_QUEUE_SETTLE_INTERVAL must be a non-negative number'
+[[ $settle_rounds =~ ^[0-9]+$ ]] || die 'PR_QUEUE_SETTLE_ROUNDS must be a non-negative integer'
+retarget_prs='[]'
+if [[ -f $work_dir/planned-live.json ]]; then
+    retarget_prs=$(jq -c --arg base "$default_branch" '
+      . as $all |
+      [ .[] as $item |
+        select($item.position > 0) |
+        ([ $all[] | select(.group == $item.group and .position == ($item.position - 1)) ][0]) as $pred |
+        select($pred.live.merged == true and $item.live.base.ref != $base) |
+        $item.pr
+      ]
+    ' "$work_dir/planned-live.json") || die 'could not derive predecessor-aware settle state'
+fi
+for ((settle_round=1; settle_round<=settle_rounds; settle_round++)); do
+    unknown_count=$(jq '[.[] | select(.state == "MERGEABLE_UNKNOWN")] | length' "$work_dir/queue.json")
+    ((unknown_count == 0)) && break
+    sleep "$settle_interval"
+    while IFS= read -r settle_pr; do
+        fetch_one "$settle_pr" "$work_dir/settle-read-$settle_pr.json"
+    done < <(jq -r '.[] | select(.state == "MERGEABLE_UNKNOWN") | .pr' "$work_dir/queue.json")
+    jq -s '.' "$work_dir"/settle-read-*.json >"$work_dir/settled-all.json"
+    jq --arg base "$default_branch" --argjson retarget "$retarget_prs" \
+      --slurpfile settled "$work_dir/settled-all.json" '
+      . as $queue |
+      map(. as $item |
+        ([ $settled[0][] | select(.number == $item.pr) ][0]) as $pr |
+        if $pr == null then .
+        elif $pr.merged == true or $pr.state != "open" then empty
+        else . as $old |
+          $old + {
+            state:(if $pr.mergeable == true then
+                     (if (($retarget | index($item.pr)) != null and $pr.base.ref != $base) then "RETARGET_REQUIRED"
+                      elif $old.state == "RETARGET_REQUIRED" then "RETARGET_REQUIRED"
+                      elif $pr.base.ref == $base then "RUNNABLE"
+                      else "WAITING_FOR_MERGE" end)
+                   elif $pr.mergeable == false then "BLOCKED"
+                   else "MERGEABLE_UNKNOWN" end),
+            base:$pr.base.ref, head:$pr.head.ref, sha:$pr.head.sha
+          }
+        end
+      )
+    ' "$work_dir/queue.json" >"$work_dir/settled-queue.json" &&
+        mv -f -- "$work_dir/settled-queue.json" "$work_dir/queue.json"
+done
+jq 'map(if .state == "MERGEABLE_UNKNOWN" then .state = "SETTLING" else . end)' "$work_dir/queue.json" >"$work_dir/settling-queue.json" &&
+    mv -f -- "$work_dir/settling-queue.json" "$work_dir/queue.json"
 
 # Attach a content-sensitive diffFingerprint to every queue entry: a
 # sha256 over the sorted per-file {filename, blob sha, patch} list from
@@ -509,8 +588,11 @@ if ((write_confirmed_queue)); then
           ( ! -f $confirmed_output || -L $confirmed_output || ! -O $confirmed_output ) ]]; then
         die 'confirmed queue output must be an owned regular file, not a symlink'
     fi
-    jq --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" --argjson budget "$budget_json" '{
+    jq --arg repo "$repo" --arg plan "$merge_plan" --arg planOption "$plan_option" \
+      --argjson prs "$(printf '%s\n' "${explicit_prs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" \
+      --slurpfile providers "$work_dir/providers.json" --argjson budget "$budget_json" '{
       repository:$repo,
+      argv:{plan:(if $plan == "" then null else {flag:$planOption,path:$plan} end),prs:$prs},
       providers:$providers[0],
       budget:$budget,
       queue:map({pr,state,headSha:.sha,base,diffFingerprint})
