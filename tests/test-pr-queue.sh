@@ -51,10 +51,23 @@ repos/owner/repo)
 repos/owner/repo/pulls/11)
     sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     [[ ${QUEUE_DRIFT:-0} == 0 ]] || sha=dddddddddddddddddddddddddddddddddddddddd
-    printf '{"number":11,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"%s"},"base":{"ref":"main"},"additions":5,"deletions":2,"changed_files":3}\n' "$sha"
+    state=open
+    merged=false
+    if [[ ${QUEUE_MERGED_11:-0} == 1 ]]; then
+        state=closed
+        merged=true
+    fi
+    printf '{"number":11,"state":"%s","draft":true,"merged":%s,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"%s"},"base":{"ref":"main"},"additions":5,"deletions":2,"changed_files":3}\n' \
+        "$state" "$merged" "$sha"
     ;;
 repos/owner/repo/pulls/12)
-    printf '%s\n' '{"number":12,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/root"}}'
+    mergeable=true
+    if [[ ${QUEUE_SETTLE_12:-0} == 1 ]]; then
+        settle_reads=$(grep -c 'repos/owner/repo/pulls/12$' "$GH_LOG" || true)
+        ((settle_reads > 1)) || mergeable=null
+    fi
+    printf '{"number":12,"state":"open","draft":true,"merged":false,"mergeable":%s,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/child","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/root"}}\n' \
+        "$mergeable"
     ;;
 repos/owner/repo/pulls/13)
     if [[ ${QUEUE_MERGED_13:-0} == 1 ]]; then
@@ -180,6 +193,15 @@ run_queue --dispatch-plan "$schema_one" --format records \
 assert_eq '1' "$schema_one_rc" 'a schema-1 dispatch plan requires its lifecycle upgrade'
 assert_contains "$(cat "$tmp/schema-one.err")" 'write-merge-plan.sh' \
     'the stale-plan refusal names the ready-flip upgrade helper'
+
+missing_plan_pr_rc=0
+run_queue --merge-plan "$tmp/dispatch-plan.json" --pr 99 --format records \
+    >"$tmp/missing-plan-pr.out" 2>"$tmp/missing-plan-pr.err" || missing_plan_pr_rc=$?
+assert_eq '1' "$missing_plan_pr_rc" \
+    'an explicitly selected PR absent from the merge plan fails closed'
+assert_contains "$(cat "$tmp/missing-plan-pr.err")" \
+    'explicit PR #99 is not present in merge plan' \
+    'the absent plan selector names the requested PR and reason'
 
 : >"$tmp/gh.log"
 out=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format records)
@@ -324,6 +346,15 @@ assert_contains "$(cat "$tmp/merged.err")" 'merged PR #13 dropped from queue' \
     'dropping a merged plan PR emits an actionable one-line note'
 
 : >"$tmp/gh.log"
+retarget_settle_out=$(QUEUE_MERGED_11=1 QUEUE_SETTLE_12=1 \
+    run_queue --merge-plan "$tmp/dispatch-plan.json" --format records 2>"$tmp/retarget-settle.err")
+assert_not_contains "$retarget_settle_out" 'pr=11' \
+    'a merged predecessor is absent while its successor is settling'
+assert_contains "$retarget_settle_out" \
+    'pr=12 issue=12 state=RETARGET_REQUIRED source=plan base=feat/root' \
+    'settling preserves predecessor-aware retarget state after mergeability resolves'
+
+: >"$tmp/gh.log"
 out=$(run_queue --format records)
 assert_not_contains "$out" 'pr=14' 'automatic discovery excludes already-ready PRs'
 assert_contains "$out" 'pr=12 issue=0 state=WAITING_FOR_MERGE source=forge' \
@@ -334,6 +365,13 @@ assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
 out=$(run_queue --pr 14 --format records)
 assert_contains "$out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
     'an explicitly named ready PR can resume'
+
+: >"$tmp/gh.log"
+multi_settle_out=$(run_queue --pr 14 --pr 15 --format records)
+assert_contains "$multi_settle_out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
+    'settling one PR preserves unaffected queue rows'
+assert_contains "$multi_settle_out" 'pr=15 issue=0 state=SETTLING source=forge' \
+    'the settled row remains explicit when mergeability stays unknown'
 
 out=$(run_queue --pr 15 --format records)
 assert_contains "$out" 'pr=15 issue=0 state=SETTLING source=forge' \

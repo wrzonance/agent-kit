@@ -265,6 +265,12 @@ if [[ -n $merge_plan ]]; then
          $entry.value + {group:("independent-" + ($entry.key|tostring)), position:0, expectedBase:$base}])' \
         "$merge_plan" >"$work_dir/plan-records.json"
 
+    for selected_pr in "${explicit_prs[@]}"; do
+        jq -e --argjson pr "$selected_pr" 'any(.[]; .pr == $pr)' \
+            "$work_dir/plan-records.json" >/dev/null ||
+            die "explicit PR #$selected_pr is not present in merge plan"
+    done
+
     while IFS= read -r number; do
         fetch_one "$number" "$work_dir/pr-$number.json"
     done < <(jq -r '.[].pr' "$work_dir/plan-records.json")
@@ -430,23 +436,40 @@ settle_interval=${PR_QUEUE_SETTLE_INTERVAL:-15}
 settle_rounds=${PR_QUEUE_SETTLE_ROUNDS:-3}
 [[ $settle_interval =~ ^[0-9]+([.][0-9]+)?$ ]] || die 'PR_QUEUE_SETTLE_INTERVAL must be a non-negative number'
 [[ $settle_rounds =~ ^[0-9]+$ ]] || die 'PR_QUEUE_SETTLE_ROUNDS must be a non-negative integer'
+retarget_prs='[]'
+if [[ -f $work_dir/planned-live.json ]]; then
+    retarget_prs=$(jq -c --arg base "$default_branch" '
+      . as $all |
+      [ .[] as $item |
+        select($item.position > 0) |
+        ([ $all[] | select(.group == $item.group and .position == ($item.position - 1)) ][0]) as $pred |
+        select($pred.live.merged == true and $item.live.base.ref != $base) |
+        $item.pr
+      ]
+    ' "$work_dir/planned-live.json") || die 'could not derive predecessor-aware settle state'
+fi
 for ((settle_round=1; settle_round<=settle_rounds; settle_round++)); do
     unknown_count=$(jq '[.[] | select(.state == "MERGEABLE_UNKNOWN")] | length' "$work_dir/queue.json")
     ((unknown_count == 0)) && break
     sleep "$settle_interval"
     while IFS= read -r settle_pr; do
-        fetch_one "$settle_pr" "$work_dir/settled-$settle_pr.json"
+        fetch_one "$settle_pr" "$work_dir/settle-read-$settle_pr.json"
     done < <(jq -r '.[] | select(.state == "MERGEABLE_UNKNOWN") | .pr' "$work_dir/queue.json")
-    jq -s '.' "$work_dir"/settled-*.json >"$work_dir/settled-all.json"
-    jq --arg base "$default_branch" --slurpfile settled "$work_dir/settled-all.json" '
+    jq -s '.' "$work_dir"/settle-read-*.json >"$work_dir/settled-all.json"
+    jq --arg base "$default_branch" --argjson retarget "$retarget_prs" \
+      --slurpfile settled "$work_dir/settled-all.json" '
       . as $queue |
       map(. as $item |
         ([ $settled[0][] | select(.number == $item.pr) ][0]) as $pr |
-        if $pr == null or $pr.merged == true or $pr.state != "open" then empty
+        if $pr == null then .
+        elif $pr.merged == true or $pr.state != "open" then empty
         else . as $old |
           $old + {
             state:(if $pr.mergeable == true then
-                     (if $old.base == $base then "RUNNABLE" else "WAITING_FOR_MERGE" end)
+                     (if (($retarget | index($item.pr)) != null and $pr.base.ref != $base) then "RETARGET_REQUIRED"
+                      elif $old.state == "RETARGET_REQUIRED" then "RETARGET_REQUIRED"
+                      elif $pr.base.ref == $base then "RUNNABLE"
+                      else "WAITING_FOR_MERGE" end)
                    elif $pr.mergeable == false then "BLOCKED"
                    else "MERGEABLE_UNKNOWN" end),
             base:$pr.base.ref, head:$pr.head.ref, sha:$pr.head.sha
