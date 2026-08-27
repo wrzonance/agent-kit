@@ -18,8 +18,11 @@
 # know the repository's ecosystem: the repository declares what "test" means as
 # AGENT_CMD_TEST in .agent/config.env, else its runner is invoked as `runner test`.
 #
-# Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] (--cmd NAME | [--] <command> ...)
-# Exit status: the wrapped command's status (this script's own usage errors exit 1).
+# Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME]
+#          [--baseline-ref REF --baseline-path PATH --baseline-id ID]
+#          (--cmd NAME | [--] <command> ...)
+# Exit status: 0 when the wrapped command passes or a proven baseline exclusion is
+# recorded; otherwise the wrapped command's non-zero status (usage errors exit 1).
 
 set -euo pipefail
 
@@ -31,7 +34,9 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--only NAME[,NAME...]] (--cmd NAME | [--] <command> ...)
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--only NAME[,NAME...]]
+                    [--baseline-ref REF --baseline-path PATH --baseline-id ID]
+                    (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
@@ -39,6 +44,9 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
+  --baseline-ref REF  On a failed verification, compare against this chain-base ref.
+  --baseline-path PATH  Failing test file whose blob must be unchanged at the base.
+  --baseline-id ID  Stable test/check identifier recorded in baseline-exclusion.md.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --resolve NAME Query a named command without executing it. Prints declared,
@@ -71,6 +79,7 @@ Repository declarations (<git-toplevel>/.agent/config.env):
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
+  BASELINE-EXCLUDED: <test/base/log> (exit 0, not green evidence)
   FAIL(rc=N): <cmd>  + context notes + up to 20 error lines + 'full log: LOG'
 
 Examples:
@@ -95,6 +104,9 @@ cmd=()
 focus_opt=''
 focus_requested=0
 force_cmd=0
+baseline_ref=''
+baseline_path=''
+baseline_id=''
 literal_root_fallback=no
 literal_token=''
 literal_execution_base=''
@@ -117,9 +129,12 @@ while (($#)); do
             focus_opt=$2
             shift 2
             ;;
-        --dir|--label|--cmd|--resolve)
+        --baseline-ref|--baseline-path|--baseline-id|--dir|--label|--cmd|--resolve)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
+                --baseline-ref) baseline_ref=$2 ;;
+                --baseline-path) baseline_path=$2 ;;
+                --baseline-id) baseline_id=$2 ;;
                 --dir) dir_opt=$2 ;;
                 --label) label=$2 ;;
                 --cmd) cmd_name=$2 ;;
@@ -165,6 +180,14 @@ else
 fi
 if ((force_cmd)) && [[ -z $cmd_name ]]; then
     die '--force requires --cmd NAME.'
+fi
+if [[ -n $baseline_ref || -n $baseline_path || -n $baseline_id ]]; then
+    [[ -n $baseline_ref && -n $baseline_path && -n $baseline_id ]] ||
+        die '--baseline-ref, --baseline-path, and --baseline-id are required together.'
+    [[ $baseline_path != /* && $baseline_path != *$'\n'* && $baseline_path != *$'\r'* ]] ||
+        die '--baseline-path must be a relative single-line path.'
+    [[ $baseline_id != *$'\n'* && $baseline_id != *$'\r'* && $baseline_id != *'`'* ]] ||
+        die '--baseline-id must be a single-line identifier without backticks.'
 fi
 
 run_dir=${dir_opt:-$PWD}
@@ -898,6 +921,160 @@ choose_log() {
     printf '%s' "$log"
 }
 
+# A worker may ask for one failed verification to be checked against the chain
+# base.  The test source must be the same blob at both commits, and the base
+# checkout must produce the same failure signature.  This is deliberately
+# opt-in: ordinary failures remain failures when a worker cannot identify a
+# test or cannot obtain a trustworthy base run.
+failure_signature() {
+    local file=$1
+    sed -E \
+        -e '/^=== agent-run /d' \
+        -e '/^=== started /d' \
+        -e '/^=== finding /d' \
+        -e '/^=== agent-run exited /d' \
+        "$file" | sha256sum | awk '{print $1}'
+}
+
+baseline_exclusion_message=''
+baseline_exclusion_base_sha=''
+
+clear_baseline_exclusion() {
+    local exclusion_file=$git_top/.agent/baseline-exclusion.md
+    [[ ! -L $exclusion_file ]] || return 1
+    [[ ! -e $exclusion_file ]] || rm -f -- "$exclusion_file"
+}
+
+remove_baseline_exclusion() {
+    local id=$1 base_sha=$2 exclusion_file=$git_top/.agent/baseline-exclusion.md
+    local prefix line exclusion_tmp
+    [[ ! -L $exclusion_file ]] || return 1
+    [[ -f $exclusion_file ]] || return 0
+    prefix="- [ ] Baseline exclusion: \`$id\` ("
+    exclusion_tmp=$(mktemp "$git_top/.agent/.baseline-exclusion.XXXXXX") || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == "$prefix"* && -n $base_sha &&
+            $line == *"chain base \`$base_sha\`"* ]]; then
+            continue
+        fi
+        printf '%s\n' "$line" >>"$exclusion_tmp" || {
+            rm -f -- "$exclusion_tmp"
+            return 1
+        }
+    done <"$exclusion_file"
+    if [[ -s $exclusion_tmp ]]; then
+        mv -f -- "$exclusion_tmp" "$exclusion_file"
+    else
+        rm -f -- "$exclusion_tmp" "$exclusion_file"
+    fi
+}
+
+sanitize_baseline_path() {
+    local value=$1 part result='' separator=''
+    local -a parts=()
+    IFS=: read -r -a parts <<<"$value"
+    for part in "${parts[@]}"; do
+        [[ -n $part && $part != "$git_top" && $part != "$git_top"/* ]] || continue
+        result+=$separator$part
+        separator=:
+    done
+    printf '%s' "${result:-/usr/bin:/bin}"
+}
+
+try_baseline_exclusion() {
+    local base_sha base_blob current_blob current_file resolved_file
+    local baseline_dir baseline_output baseline_work_dir rel base_rc baseline_path_env baseline_project
+    local current_signature baseline_signature exclusion_file exclusion_tmp
+    [[ -n $baseline_ref ]] || return 1
+    [[ -n $git_top && -d $git_top/.agent/logs ]] || return 1
+
+    base_sha=$(git -C "$git_top" rev-parse --verify "$baseline_ref^{commit}" 2>/dev/null) || return 1
+    [[ $base_sha =~ ^[[:xdigit:]]{40}$ ]] || return 1
+    case $baseline_path in
+        ''|.|..|../*|*/../*|*/.. ) return 1 ;;
+    esac
+    current_file=$git_top/$baseline_path
+    resolved_file=$(readlink -f -- "$current_file" 2>/dev/null || true)
+    [[ -n $resolved_file && $resolved_file == "$git_top"/* && -f $resolved_file ]] || return 1
+    [[ $(git -C "$git_top" cat-file -t "$base_sha:$baseline_path" 2>/dev/null || true) == blob ]] || return 1
+    base_blob=$(git -C "$git_top" rev-parse "$base_sha:$baseline_path" 2>/dev/null) || return 1
+    current_blob=$(git -C "$git_top" hash-object -- "$resolved_file" 2>/dev/null) || return 1
+    [[ $base_blob == "$current_blob" ]] || return 1
+
+    baseline_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-run-baseline.XXXXXX") || return 1
+    baseline_output=$(mktemp "$git_top/.agent/logs/.baseline-run.XXXXXX") || {
+        rmdir -- "$baseline_dir" 2>/dev/null || true
+        return 1
+    }
+    chmod 600 -- "$baseline_output" 2>/dev/null || {
+        rm -f -- "$baseline_output"
+        rmdir -- "$baseline_dir" 2>/dev/null || true
+        return 1
+    }
+    if ! git -C "$git_top" archive "$base_sha" | tar -x -C "$baseline_dir"; then
+        rm -f -- "$baseline_output"
+        rm -rf -- "$baseline_dir"
+        return 1
+    fi
+    baseline_work_dir=$baseline_dir
+    if [[ $work_dir != "$git_top" ]]; then
+        rel=${work_dir#"$git_top"/}
+        baseline_work_dir=$baseline_dir/$rel
+    fi
+    [[ -d $baseline_work_dir ]] || {
+        rm -f -- "$baseline_output"
+        rm -rf -- "$baseline_dir"
+        return 1
+    }
+    baseline_path_env=$(sanitize_baseline_path "${PATH:-}") || {
+        rm -f -- "$baseline_output"
+        rm -rf -- "$baseline_dir"
+        return 1
+    }
+    baseline_project=${COMPOSE_PROJECT_NAME:-agentkit}
+    baseline_project=$baseline_project-baseline
+    base_rc=0
+    (cd -- "$baseline_work_dir" &&
+        env -u PYTHONPATH -u NODE_PATH -u PYTHONHOME -u VIRTUAL_ENV \
+            -u NPM_CONFIG_PREFIX -u npm_config_prefix -u COMPOSE_FILE \
+            -u GIT_DIR -u GIT_WORK_TREE PATH="$baseline_path_env" \
+            COMPOSE_PROJECT_NAME="$baseline_project" "${cmd[@]}") \
+        >"$baseline_output" 2>&1 || base_rc=$?
+    current_signature=$(failure_signature "$log_file") || current_signature=''
+    baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
+    rm -f -- "$baseline_output"
+    rm -rf -- "$baseline_dir"
+    ((base_rc != 0)) || return 1
+    [[ -n $current_signature && $current_signature == "$baseline_signature" ]] || return 1
+
+    exclusion_file=$git_top/.agent/baseline-exclusion.md
+    [[ ! -L $exclusion_file && (! -e $exclusion_file || -f $exclusion_file) ]] || return 1
+    exclusion_tmp=$(mktemp "$git_top/.agent/.baseline-exclusion.XXXXXX") || return 1
+    chmod 600 -- "$exclusion_tmp" 2>/dev/null || {
+        rm -f -- "$exclusion_tmp"
+        return 1
+    }
+    if [[ -e $exclusion_file ]]; then
+        cat -- "$exclusion_file" >"$exclusion_tmp" || {
+            rm -f -- "$exclusion_tmp"
+            return 1
+        }
+    fi
+    # shellcheck disable=SC2016  # backticks are literal Markdown delimiters.
+    printf -- '- [ ] Baseline exclusion: `%s` (`%s`) is unchanged and red on chain base `%s` (evidence: `%s`)\n' \
+        "$baseline_id" "$baseline_path" "$base_sha" "$log_file" >>"$exclusion_tmp" || {
+        rm -f -- "$exclusion_tmp"
+        return 1
+    }
+    mv -f -- "$exclusion_tmp" "$exclusion_file" || {
+        rm -f -- "$exclusion_tmp"
+        return 1
+    }
+    baseline_exclusion_base_sha=$base_sha
+    baseline_exclusion_message="baseline-excluded test=$baseline_id base=$base_sha log=$log_file"
+    return 0
+}
+
 print_notes() {
     local prefix=$1 n
     ((${#notes[@]})) || return 0
@@ -1209,14 +1386,32 @@ trap - INT TERM
 elapsed=$((SECONDS - started_at))
 lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
 ((lines >= 0)) || lines=0
+baseline_excluded=no
+original_rc=$rc
+if [[ -n $baseline_ref ]]; then
+    baseline_key_sha=$(git -C "$git_top" rev-parse --verify "$baseline_ref^{commit}" 2>/dev/null || true)
+    remove_baseline_exclusion "$baseline_id" "$baseline_key_sha" || true
+else
+    clear_baseline_exclusion || true
+fi
+if ((rc != 0)) && try_baseline_exclusion; then
+    baseline_excluded=yes
+    rc=0
+    printf '=== agent-run baseline-excluded original-rc=%s test=%s base=%s\n' \
+        "$original_rc" "$baseline_id" "$baseline_exclusion_base_sha" >> "$log_file"
+fi
 if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
     printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
 fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 
 if ((rc == 0)); then
-    [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
-    printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
+    if [[ $baseline_excluded == yes ]]; then
+        printf 'BASELINE-EXCLUDED: %s\n' "$baseline_exclusion_message"
+    else
+        [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
+        printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
+    fi
 else
     report_failure "$rc" "$log_file"
 fi

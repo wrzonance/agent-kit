@@ -9,10 +9,18 @@ umask 077
 readonly PROGNAME=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+SCRIPT_DIR=$(cd -- "$SCRIPT_DIR" && pwd -P) || {
+    printf '%s: could not resolve helper directory: %s\n' "$PROGNAME" "$SCRIPT_DIR" >&2
+    exit 1
+}
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
+# consent-record.sh owns the state filename so the grant and every check share
+# one spelling. It returns immediately when sourced and has no side effects.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/consent-record.sh"
 
 readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
 
@@ -34,6 +42,7 @@ load_adversarial_review_effort_names() {
 
 PR=''
 REPO=''
+WORKTREE=''
 RUN_DIR=''
 PEER_CLI_ABSENT=0
 PROVENANCE=''
@@ -55,7 +64,7 @@ TRANSCRIPT_NAME=''
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+Usage: $PROGNAME --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
                  [--reaffirm-if-covered --comments FILE] [--provenance TEXT]
 
 Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
@@ -78,7 +87,7 @@ This is the real PR-diff review path. Capability probes use the provider helper
 with --mode probe --no-payload, send only a synthetic snippet, and never spend
 the one-review-per-PR receipt budget.
 
-The consent record is always DIR/state/cross-provider-consent. There is no
+The consent record is always DIR/state/$CONSENT_STATE_FILENAME. There is no
 caller-supplied consent flag.
 
 --reaffirm-if-covered --comments FILE (issue #477): before launching a
@@ -114,6 +123,8 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --worktree) require_value "$1" "${2:-}"; WORKTREE=$2; shift 2 ;;
+            --worktree=*) WORKTREE=${1#*=}; shift ;;
             --pr) require_value "$1" "${2:-}"; PR=$2; shift 2 ;;
             --pr=*) PR=${1#*=}; shift ;;
             --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
@@ -499,21 +510,23 @@ compute_payload() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     PAYLOAD=$(
-        "$consent_script" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
+        "$consent_script" payload --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
+            --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
             --diff "$RUN_DIR/adversarial.diff"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
 }
 
 verify_consent() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
-    local state=$RUN_DIR/state/cross-provider-consent check_error
+    local check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     [[ -n $PAYLOAD ]] || compute_payload
     # Capture only stderr (order matters: dup fd2 to the substitution's pipe
     # before redirecting fd1 away) so a mismatch names the expected and
     # recorded provider tokens instead of a bare boolean refusal.
     check_error=$(
-        "$consent_script" check --state "$state" --provider "$PROVIDER" --payload "$PAYLOAD" \
+        "$consent_script" check --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
+            --provider "$PROVIDER" --payload "$PAYLOAD" \
             2>&1 1>/dev/null
     ) && return 0
     die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
@@ -791,7 +804,7 @@ run_provider() {
     local stdout_path=$RUN_DIR/$PROVIDER.stdout stderr_path=$RUN_DIR/$PROVIDER.stderr rc=0
     local -a helper_args=(
         --mode review --model "$MODEL" --effort "$EFFORT" --pr "$PR" --repo "$REPO"
-        --consent-state "$RUN_DIR/state/cross-provider-consent"
+        --consent-state "$RUN_DIR/state/$CONSENT_STATE_FILENAME"
         --base-ref "$BASE_REF" --diff "$RUN_DIR/adversarial.diff"
         --transcript "$transcript" --output "$result"
         --max-duration-seconds 900
@@ -809,7 +822,7 @@ run_provider() {
     # follow-up F2) -- this is the pre-send marker, not a post-hoc log, and a
     # purely local abort must never leave one behind.
     write_launch_attempted
-    "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
+    CONSENT_WORKTREE="$CONTRACT_ROOT" "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
     cat -- "$stderr_path" >&2 || true
 
     if ((rc == 0)); then
@@ -832,6 +845,12 @@ run_provider() {
 
 main() {
     parse_args "$@"
+    if [[ -n $WORKTREE ]]; then
+        [[ -d $WORKTREE && ! -L $WORKTREE && -O $WORKTREE ]] ||
+            die "worktree must be an owned regular directory, not a symlink: $WORKTREE"
+        WORKTREE=$(cd -- "$WORKTREE" && pwd -P) || die "could not resolve worktree: $WORKTREE"
+        cd -- "$WORKTREE" || die "could not enter worktree: $WORKTREE"
+    fi
     validate_args
     private_dir_ensure "$RUN_DIR" '--run-dir'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'

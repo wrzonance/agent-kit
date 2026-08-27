@@ -141,7 +141,15 @@ assert_contains "$text" 'file-conflict pairs and native blocked-by edges inside 
     'chain ordering sources are exactly the two mechanical ones'
 assert_contains "$text" 'never an ordering input' \
     'issue-body prose is excluded from ordering'
-assert_contains "$text" 'chain depth cap: 4' 'chain depth cap is pinned'
+assert_contains "$text" '4-link depth window' 'chain depth window is pinned'
+assert_contains "$normalized_text" 'deeper tails enter the same refill queue as slot-cap overflow' \
+    'chain-depth overflow shares the slot-cap refill queue'
+assert_not_contains "$normalized_text" 'deeper tails are dropped' \
+    'chain-depth overflow is not a membership exclusion'
+assert_contains "$normalized_text" 'depth limits the number of links in flight, not chain membership' \
+    'chain depth is documented as a concurrency limit'
+assert_contains "$normalized_text" 'refill the next queued successor from that exact pushed SHA' \
+    'chain-depth refill is gated by the predecessor pushed SHA'
 assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
 assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
@@ -170,6 +178,14 @@ assert_contains "$normalized_text" 'for a join, this means every predecessor pus
     'the deferred-dispatch gate names the join-specific push requirement'
 assert_contains "$normalized_chains_text" 'interface dependency' \
     'chain edges require an interface dependency'
+assert_contains "$normalized_chains_text" 'a successor that would extend the in-flight depth enters the same refill queue' \
+    'chain reference queues depth overflow instead of dropping it'
+assert_contains "$normalized_chains_text" 'depth-6 fixture' \
+    'chain reference includes the depth-six acceptance fixture'
+assert_contains "$normalized_chains_text" 'queued=1[#6]' \
+    'depth-six fixture reports the queued tail at the funnel'
+assert_contains "$normalized_chains_text" 'dispatch #6 from #5' \
+    'depth-six fixture dispatches the tail after predecessor push'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
@@ -285,6 +301,17 @@ assert_contains "$normalized_triage_and_selection_text" \
     'automatic selection reports requested slots from the effective cap'
 assert_contains "$triage_and_selection_text" 'slot-cap' \
     'selection funnel accounts for eligible candidates beyond the requested slots'
+assert_contains "$triage_and_selection_text" 'queued=<queue-count>[#<issue>,...]' \
+    'selection funnel prints queued issue identities'
+assert_contains "$normalized_triage_and_selection_text" 'chain-depth overflow enters this same queue' \
+    'selection classifies chain-depth overflow as queued'
+assert_contains "$triage_and_selection_text" 'queued=1[#6]' \
+    'selection examples show a queued chain tail'
+assert_contains "$normalized_text" 'At handoff, print each queued reason and exact resume command' \
+    'handoff surfaces queue entries instead of claiming completion'
+assert_contains "$normalized_text" \
+    'queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222' \
+    'handoff prints an exact resume command for a queued chain issue'
 assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its own tool call is churn' \
     'parallel wait rule rejects sleep and re-check tool churn'
 assert_contains "$wait_discipline_text" 'A bounded wait must be silent until its terminal condition.' \

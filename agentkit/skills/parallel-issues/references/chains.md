@@ -53,9 +53,12 @@ step parks exactly C by
 name for human resolution — never pick one predecessor and silently drop the other's
 commits, and never invent a merge base by hand.
 Report the join, its predecessors, and the merged base in the chain plan so a five-issue set
-dispatches five issues. Chains respect a hard depth cap of 4; an issue that would extend a
-chain past that depth is dropped from the chain with a named report rather than silently
-truncated or silently included.
+dispatches five issues. Chains respect a hard depth cap of 4 concurrent successor links. The
+cap limits how many links may be in flight; it does not limit chain membership; a successor
+that would extend the in-flight depth enters the same refill queue as slot-cap overflow, with
+`queued=N[#...]` accounting, and is dispatched from its predecessor's pushed SHA as soon as a
+link completes. Never turn a depth-overflow tail into an exclusion or silently truncate the
+chain.
 
 ## Publishing a locally-built chain base
 
@@ -98,6 +101,23 @@ A deferred issue holds no concurrency slot while it waits — it is not "dispatc
 it simply has not started. If the predecessor's lead fails or returns BLOCKED, every
 successor in that chain is never dispatched: park the whole chain and name it in the report,
 rather than guessing at a substitute base commit.
+
+### Depth overflow and refill
+
+The chain-depth queue is a ready-to-refill queue, not a second class of selection. At the
+funnel, list queued issue numbers in pickup order and count them in the same `queued=` field as
+ordinary slot-cap overflow. A depth-6 fixture with the four-link cap starts issue #1. Issues
+#2--#5 make up the depth window, but become dispatchable one at a time as their immediate
+predecessors push (#2 after #1, #3 after #2, #4 after #3, and #5 after #4). Issue #6 stays
+queued as `queued=1[#6]` until #5 pushes; then dispatch #6 from #5's exact full SHA and report
+`queued=0` at handoff. This demonstrates that depth is a concurrency window while all six
+selected issues remain members of one chain.
+
+On every predecessor completion, refill only the next successor whose immediate predecessor
+has a pushed commit. Preserve the queued issue's original worktree/branch/write-set plan and
+do not consume a slot for a tail whose base is not published. If a run ends before a queued
+successor's predecessor publishes, print the still-queued IDs, their `chain-depth` reason, and
+the exact command that resumes the original selection with those IDs.
 
 ## Merge-down after a predecessor advances
 
