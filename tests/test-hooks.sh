@@ -956,8 +956,10 @@ substitution_command='printf %s "'
 substitution_command+='$('
 substitution_command+='git config --local core.hooksPath /tmp/evil'
 substitution_command+=')"'
-source "$hooks/lib/guard-lib.sh" 2>/dev/null
-substitution_reason=$(guard_destructive_segment_reason "$substitution_command" || true)
+substitution_reason=$(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_segment_reason "$substitution_command" || true
+)
 # shellcheck disable=SC2016  # the expected reason intentionally contains a literal $(...)
 assert_eq 'that git config key (core.hooksPath) executes a command during git operations. Setting it is a decision for the user. (the command hides that inside a "$(...)"/`...` substitution; write it literally if you mean it)' "$substitution_reason" \
     'substitution guidance renders literal $(...) without a backslash'
