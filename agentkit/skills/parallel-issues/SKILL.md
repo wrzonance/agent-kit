@@ -964,25 +964,25 @@ Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults t
 
 ### Adversarial-review receipt:
 
-Every dispatched `review-remote-pr` loop must run `post-receipt.sh precheck` before handing off to
-the consent-holding context, against the fetched PR conversation artifact
-`$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker already present means
-`adversarial review budget spent`, do not rerun. A missing/unreadable artifact is evidence
-unavailable, not an empty comment set — a completed review or verified skip without the receipt
-below is a **no-silent-skip** failure and cannot be handed off as draft-phase-complete. Materiality,
-consent-holder ownership, exit codes, monitoring, and the blind fallback are
-`review-remote-pr`'s ["$agentkit/review-remote-pr/references/adversarial-review.md"](../review-remote-pr/references/adversarial-review.md)
-contract; this loop runs precheck before root launch and publishes after root returns the result.
+Every dispatched loop must run `post-receipt.sh precheck` before handing off to the consent-holder,
+against `$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker means spent, do not rerun.
+A missing/unreadable artifact is evidence unavailable, not an empty set: a review or skip without
+the receipt is a **no-silent-skip** failure. Materiality, consent, and exit codes follow
+`review-remote-pr`'s [adversarial-review reference](../review-remote-pr/references/adversarial-review.md).
 
 ```bash
-# The loop runs this before handing the launch to root, using the Step 1 artifact.
+# Precheck the Step 1 artifact before launch.
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
+: "${worktree:?re-set PR worktree; shell state does not persist}"
+: "${REPO:?re-set OWNER/REPO; shell state does not persist}"
+: "${base:?re-set base; shell state does not persist}"
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
+current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$worktree" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$base") || exit 1
 precheck_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" || precheck_rc=$?
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
 case "$precheck_rc" in
     0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
     10) printf '%s\n' 'not spent — proceed to the adversarial review gate' ;;
