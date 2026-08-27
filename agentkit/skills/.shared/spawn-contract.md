@@ -426,12 +426,21 @@ spawn a fresh worker carrying the completed state and the exact remaining step.
 
 ## Bounded inline corrections
 
-The root may apply a correction inline, at zero dispatches, only when **all** four conditions
-hold: the diff is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed lines; the root authored the exact diff
-during review; and the full declared verification is rerun afterward. The root records the decision and its recorded reason, and the commit uses
-root harness attribution rather than the worker's. Anything past this bar resumes
-the same worker with `collaboration.followup_task` first; a fresh worker is the exception when
-follow-up is unavailable. The inline/dispatch decision is never silent.
+Before any root write in a worker worktree, including an inline correction, merge-down, or
+chain-base publish, prove quiescence: no unacknowledged `SendMessage` remains for that lead,
+`git status --porcelain` is clean except declared operator-pending paths, and a ledger line
+beginning `quiescence:` records the worktree and status evidence. An `idle_notification` whose
+timestamp predates the newest outbound message to that lead is stale and cannot satisfy this gate.
+Prefer `collaboration.followup_task` for a resumable lead.
+
+The root may apply a correction inline, at zero dispatches, only when **all** conditions hold:
+the diff is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed lines;
+the quiescence gate holds; the root authored the exact diff during review; and
+the full declared verification is rerun afterward. Inline corrections commit with
+`worktree-commit.sh --exact`. The root records the decision and its reason, and the commit uses
+root harness attribution rather than the worker's. Anything past this bar resumes the same worker
+with `collaboration.followup_task` first; a fresh worker is the exception when follow-up is
+unavailable. The inline/dispatch decision is never silent.
 
 ## Tier mapping
 

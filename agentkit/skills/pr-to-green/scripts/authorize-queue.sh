@@ -372,18 +372,31 @@ snapshot_mismatch() {
       def path_text:
         reduce .[] as $part ("";
           . + (if ($part | type) == "number" then "[\($part)]" else ".\($part)" end));
+      def canonicalize_providers:
+        if type == "object" and (.providers | type) == "array" then
+          .providers |= sort_by(
+            if type == "object" then
+              [((.name? // "") | tostring), ((.action? // "") | tostring),
+               ((.source? // "") | tostring)]
+            else
+              [type, tostring]
+            end)
+        else .
+        end;
       if ($snapshot | type) != "object" then
         "snapshot.type snapshot=\($snapshot | type) live=object"
       elif (($snapshot | keys | sort) != ($expected | keys | sort)) then
         "snapshot.keys snapshot=\($snapshot | keys | sort | tojson) live=\($expected | keys | sort | tojson)"
       else
-        ($snapshot | [paths(scalars)]) as $snapshotPaths |
-        ($expected | [paths(scalars)]) as $expectedPaths |
+        ($snapshot | canonicalize_providers) as $normalizedSnapshot |
+        ($expected | canonicalize_providers) as $normalizedExpected |
+        ($normalizedSnapshot | [paths(scalars)]) as $snapshotPaths |
+        ($normalizedExpected | [paths(scalars)]) as $expectedPaths |
         (($snapshotPaths + $expectedPaths) | unique |
           map(select(length == 0 or .[0] != "budget"))) as $paths |
         first($paths[] as $path |
-          (value_at($snapshot; $path)) as $snapshotValue |
-          (value_at($expected; $path)) as $liveValue |
+          (value_at($normalizedSnapshot; $path)) as $snapshotValue |
+          (value_at($normalizedExpected; $path)) as $liveValue |
           select($snapshotValue != $liveValue) |
           "\($path | path_text) snapshot=\($snapshotValue | display) live=\($liveValue | display)") // empty
       end
