@@ -860,6 +860,8 @@ assert_contains "$ledger_body" '<!-- review-ledger:v1 -->' \
     'the second POST carries the review-ledger fence'
 assert_contains "$ledger_body" "$head_sha" \
     'the review-ledger entry records the reviewed head SHA'
+assert_contains "$ledger_body" '"covered_heads": [' \
+    'the review-ledger entry initializes its append-only covered-head lineage'
 assert_contains "$ledger_body" '"kind": "adversarial"' \
     'the review-ledger entry records kind=adversarial'
 assert_contains "$ledger_body" '"reviewed_at"' \
