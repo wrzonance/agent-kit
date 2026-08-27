@@ -251,6 +251,27 @@ assert_contains "$(cat "$tmp/head-drift.err")" 'redisplay and reconfirm' \
 assert_eq "$before_drift" "$(sha256sum "$auth")" \
     'head drift preserves the prior authorization byte-for-byte'
 
+write_confirmed
+jq '.providers += [{name:"other",action:"observe",source:"operator-instruction"}]' \
+    "$confirmed" >"$tmp/reordered-providers.json"
+cp "$tmp/reordered-providers.json" "$confirmed"
+reordered_provider_head_drift_rc=0
+AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --merge-plan "$tmp/merge-plan.json" --ready-transition --no-auto-merge \
+    --confirmed-queue-file "$confirmed" \
+    --provider other:observe:operator-instruction \
+    --provider coderabbit:trigger:capability-default \
+    >"$tmp/reordered-providers.out" 2>"$tmp/reordered-providers.err" ||
+    reordered_provider_head_drift_rc=$?
+assert_eq '1' "$reordered_provider_head_drift_rc" \
+    'reordered identical providers with head drift still block authorization'
+assert_contains "$(cat "$tmp/reordered-providers.err")" \
+    '.queue[0].headSha snapshot=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa live=cccccccccccccccccccccccccccccccccccccccc' \
+    'provider order drift does not hide the queue head mismatch diagnostic'
+
 write_confirmed cccccccccccccccccccccccccccccccccccccccc
 QUEUE_SHA=cccccccccccccccccccccccccccccccccccccccc run_authorize >/dev/null
 assert_eq 'cccccccccccccccccccccccccccccccccccccccc' \
