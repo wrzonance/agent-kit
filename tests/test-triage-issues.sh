@@ -86,6 +86,24 @@ assert_contains "$(line_for 48)" 'active' '#48 In progress is active'
 assert_contains "$(line_for 41)" 'attempted' '#41 with a closed-unmerged PR is attempted'
 assert_contains "$(line_for 39)" 'clean' '#39 on no board is clean'
 
+# An active issue can still have an open referencing PR. Preserve that PR in
+# the digest so fast-mode can distinguish a genuinely held issue from a stale
+# board status without spending another per-issue query.
+active_pr_fixture="$tmp/triage-active-pr.json"
+jq '(.data.repository.issues.nodes[] | select(.number == 48))
+    |= (.timelineItems.nodes = [{"source":{"number":535,"state":"OPEN","merged":false,
+        "mergedAt":null,"updatedAt":"2026-08-27T09:00:00Z","title":"Retry policy WIP"}}])' \
+    "$here/fixtures/triage-mixed.json" > "$active_pr_fixture"
+repo=$(make_repo)
+active_pr_out=$(GH_STUB_LOG="$tmp/gh-active-pr.log" GH_STUB_RESPONSE="$active_pr_fixture" \
+    PATH="$tmp/stub:$PATH" "$tr_sh" --repo-root "$repo")
+assert_contains "$(printf '%s\n' "$active_pr_out" | grep -E '^#48[[:space:]]')" '#535 open' \
+    'an active issue retains its open PR evidence'
+active_pr_json=$(GH_STUB_LOG="$tmp/gh-active-pr-json.log" GH_STUB_RESPONSE="$active_pr_fixture" \
+    PATH="$tmp/stub:$PATH" "$tr_sh" --repo-root "$repo" --json)
+assert_eq '535' "$(jq -r '.[] | select(.number == 48) | .pr.number' <<< "$active_pr_json")" \
+    'machine-readable active evidence names the open PR'
+
 # An active tracker is evidence for a hold, not an attended-mode question. The
 # triage response carries the structural signals the fast-mode selector needs:
 # an epic/tracker label, sub-issues, and a task-list reference to another
