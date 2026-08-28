@@ -20,6 +20,17 @@ Bump the version in all four plugin manifests together, and in `opencode/package
 Nothing here requires the version to *increase* for a given change -- see below for what that
 implies.
 
+Use the fixed-scope bump helper from the repository root so linked worktrees cannot be touched:
+
+```bash
+agentkit/skills/.shared/scripts/bump-version.sh "$VERSION"
+```
+
+It updates exactly the three source manifests above and refuses to run from inside `.worktrees/`.
+Before committing worker changes, `worktree-commit.sh` rejects staged tracked files outside the
+declared issue operands unless each exception is named with `--allow-outside PATH`. Refreshing
+onboarding also reports such worktree drift and prunes dangling Git worktree registrations.
+
 ## Step 0: does the installed tree match `main`? (#453)
 
 Two trees can answer to the same version string: `main` with a fix, and an already-installed

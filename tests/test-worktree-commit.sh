@@ -781,4 +781,26 @@ assert_eq 'chore: record empty scope' \
 assert_eq '' "$(git -C "$allow_empty_empty_repo" diff-tree --no-commit-id --name-only -r HEAD)" \
     'truly empty allow-empty commit contains no paths'
 
+# A tracked file outside the issue operands is refused even in include-staged
+# mode, unless the caller names that exact path with --allow-outside.
+outside_repo="$tmp/allow-outside-repo"
+new_repo "$outside_repo"
+printf 'manifest-v2\n' > "$outside_repo/manifest.txt"
+printf 'requested\n' > "$outside_repo/requested.txt"
+git -C "$outside_repo" add -- manifest.txt
+outside_rc=0
+outside_out=$(cd "$outside_repo" && "$script" --include-staged --message 'fix: reject outside path' \
+    --trailer "$TEST_TRAILER" -- requested.txt 2>&1) || outside_rc=$?
+assert_eq '1' "$outside_rc" 'include-staged refuses a tracked path outside the issue operands'
+assert_contains "$outside_out" 'manifest.txt' 'outside-path refusal names the tracked path'
+assert_contains "$outside_out" '--allow-outside' 'outside-path refusal names the explicit escape hatch'
+allow_outside_rc=0
+allow_outside_out=$(cd "$outside_repo" && "$script" --include-staged --message 'fix: allow outside path' \
+    --trailer "$TEST_TRAILER" --allow-outside manifest.txt -- requested.txt 2>&1) || allow_outside_rc=$?
+assert_eq '0' "$allow_outside_rc" 'allow-outside permits a deliberately named tracked path'
+assert_contains "$allow_outside_out" 'committed' 'allow-outside reports the committed change'
+assert_eq $'manifest.txt\nrequested.txt' \
+    "$(git -C "$outside_repo" diff-tree --no-commit-id --name-only -r HEAD | sort)" \
+    'allow-outside commits only the requested and explicitly allowed paths'
+
 finish

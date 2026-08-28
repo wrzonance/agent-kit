@@ -48,6 +48,7 @@ BASE_INHERITED_REF=""
 YOLO=0
 TRAILERS=()
 FILES=()
+ALLOW_OUTSIDE=()
 MESSAGE_ARGS=()
 META_COMMON_DIR=""
 META_WORKTREE_DIR=""
@@ -56,7 +57,7 @@ LOCK_FD=""
 usage() {
     cat <<EOF
 Usage: $PROGNAME [--exact|--include-staged] --message SUBJECT [--body TEXT] [--trailer LINE]... [--allow-empty]
-                 [--allow-base-inherited BASE [--yolo]] [--] FILE...
+                 [--allow-outside PATH]... [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
 front that the repository's git metadata directories are writable.
@@ -75,7 +76,11 @@ Options:
   --exact             Refuse staged paths outside FILE operands and mismatched
                       committed file counts (the default scope).
   --include-staged    Include existing staged paths, preserving legacy behavior.
-                      This explicitly opts out of exact scope checks.
+                      Existing staged paths still require an explicit operand or
+                      --allow-outside PATH.
+  --allow-outside PATH
+                      Explicitly authorize this tracked staged path outside the
+                      issue FILE operands. Repeat for multiple paths.
   --allow-base-inherited BASE
                       Name the exact merge base whose protected paths may be
                       carried into this commit after byte-identity checks.
@@ -149,6 +154,11 @@ parse_args() {
                 ;;
             --trailer) need_value "$@"; TRAILERS+=("$2"); shift 2 ;;
             --allow-empty) ALLOW_EMPTY=1; shift ;;
+            --allow-outside)
+                need_value "$@"
+                ALLOW_OUTSIDE+=("$2")
+                shift 2
+                ;;
             --exact)
                 [[ $SCOPE_MODE != include ]] || die 1 "--exact and --include-staged are mutually exclusive"
                 EXACT=1
@@ -282,15 +292,16 @@ validate_args() {
 # worker's unrelated work. Resolve both sides with Git's own pathspec matcher
 # and --no-renames output so directory operands, duplicates, and rename pairs
 # use the same de-duplicated path set.
-scope_paths() {
+scope_paths_for() {
     local path status old new
+    local -a operands=("$@")
     local -A scoped=()
-    (( ${#FILES[@]} > 0 )) || return 0
+    (( ${#operands[@]} > 0 )) || return 0
 
     while IFS= read -r -d '' path; do
         scoped["$path"]=1
     done < <(git diff --cached --name-only --no-renames -z \
-        --diff-filter=ACDMRTUXB -- "${FILES[@]}")
+        --diff-filter=ACDMRTUXB -- "${operands[@]}")
 
     # A rename is represented as a deletion and an addition by --no-renames.
     # When either side is selected, retain both paths in the expected set so a
@@ -313,6 +324,14 @@ scope_paths() {
     done
 }
 
+scope_paths() {
+    scope_paths_for "${FILES[@]}"
+}
+
+authorized_scope_paths() {
+    scope_paths_for "${FILES[@]}" "${ALLOW_OUTSIDE[@]}"
+}
+
 exact_scope_paths_match() {
     local path
     local -A staged=() expected=()
@@ -322,7 +341,7 @@ exact_scope_paths_match() {
     done < <(git diff --cached --name-only --no-renames -z --diff-filter=ACDMRTUXB)
     while IFS= read -r -d '' path; do
         expected["$path"]=1
-    done < <(scope_paths)
+    done < <(authorized_scope_paths)
 
     for path in "${!staged[@]}"; do
         [[ ${expected["$path"]+yes} == yes ]] || return 1
@@ -337,18 +356,29 @@ refuse_staged_outside_operands() {
     local path
     local -a offending=()
     local -A expected=()
-    (( EXACT == 1 )) || return 0
-
     while IFS= read -r -d '' path; do
         expected["$path"]=1
-    done < <(scope_paths)
+    done < <(authorized_scope_paths)
     while IFS= read -r -d '' path; do
-        [[ ${expected["$path"]+yes} == yes ]] || offending+=("$path")
+        [[ ${expected["$path"]+yes} == yes ]] && continue
+        # A merge-down brings protected base files into the index by design;
+        # let the dedicated park/authorize guard below handle those bytes.
+        if active_merge && { protected_pattern "$path" >/dev/null ||
+            [[ $path == .agent/config.env ]]; }; then
+            continue
+        fi
+        offending+=("$path")
     done < <(git diff --cached --name-only --no-renames -z --diff-filter=ACDMRTUXB)
     ((${#offending[@]} == 0)) || {
-        printf '%s: --exact refuses staged paths outside FILE operands:\n' "$PROGNAME" >&2
+        if (( EXACT == 1 )); then
+            printf '%s: --exact refuses staged paths outside FILE operands or --allow-outside paths:\n' \
+                "$PROGNAME" >&2
+        else
+            printf '%s: refuses staged paths outside FILE operands or --allow-outside paths:\n' \
+                "$PROGNAME" >&2
+        fi
         printf '  %s\n' "${offending[@]}" >&2
-        die 1 "remove the foreign paths from the index or pass --include-staged explicitly"
+        die 1 'remove the foreign paths from the index or name each one with --allow-outside PATH'
     }
 }
 
@@ -356,13 +386,13 @@ refuse_staged_outside_operands() {
 # reviewer settings from the PR base, so a worker must not carry a local edit
 # along accidentally. An explicit config.env operand is the issue write-set
 # declaration that authorizes the change; this guard also covers
-# --include-staged, which intentionally opts out of the ordinary exact-scope
-# check above.
+# --include-staged, which stages existing operands but must not silently sweep
+# unrelated tracked changes into a commit.
 config_operand_named() {
     local file candidate root magic suffix
     root=$(git rev-parse --show-toplevel 2>/dev/null || return 1)
     root=$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")
-    for file in "${FILES[@]}"; do
+    for file in "${FILES[@]}" "${ALLOW_OUTSIDE[@]}"; do
         if [[ ${file:0:2} == ':(' ]]; then
             magic=${file#':('}
             suffix=${magic#*)}

@@ -168,4 +168,41 @@ assert_contains "$out" 'source=base:' \
 assert_contains "$out" 'working-tree=codex (not in effect until on main)' \
     'report warns that the working-tree reviewer is not in effect yet'
 
+# The refresh report audits linked worktrees against the active write set in
+# their lead prompt and prunes registrations whose checkout disappeared.
+fleet_repo="$tmp/fleet-repo"
+mkdir -p "$fleet_repo/.agent"
+git -C "$fleet_repo" init -q -b main
+git -C "$fleet_repo" config user.email test@example.com
+git -C "$fleet_repo" config user.name test
+printf '%s\n' tracked > "$fleet_repo/tracked.txt"
+git -C "$fleet_repo" add -- tracked.txt
+git -C "$fleet_repo" commit -qm init
+fleet_worktree="$tmp/fleet-worktree"
+git -C "$fleet_repo" worktree add -q -b feat/fleet "$fleet_worktree"
+mkdir -p "$fleet_worktree/.agent/prompts"
+cat > "$fleet_worktree/.agent/prompts/issue-9-lead.md" <<'EOF'
+## Declared write set (the files this dispatch owns)
+
+- allowed.txt
+EOF
+printf '%s\n' changed > "$fleet_worktree/foreign.txt"
+printf '%s\n' allowed > "$fleet_worktree/allowed.txt"
+git -C "$fleet_worktree" add -- allowed.txt foreign.txt
+fleet_out=$(bash "$refresh_sh" --repo-root "$fleet_repo" --report 2>&1)
+assert_contains "$fleet_out" 'worktree= path=' \
+    'refresh reports a linked worktree with tracked drift'
+assert_contains "$fleet_out" 'outside-write-set=foreign.txt' \
+    'refresh names tracked modifications outside the active write set'
+assert_not_contains "$fleet_out" 'outside-write-set=allowed.txt' \
+    'refresh accepts tracked modifications inside the active write set'
+missing_registration="$tmp/missing-worktree"
+git -C "$fleet_repo" worktree add -q -b feat/missing "$missing_registration"
+rm -rf -- "$missing_registration"
+prune_out=$(bash "$refresh_sh" --repo-root "$fleet_repo" --report 2>&1)
+assert_contains "$prune_out" 'worktree= pruned path=' \
+    'refresh reports pruning a dangling worktree registration'
+assert_eq '2' "$(git -C "$fleet_repo" worktree list --porcelain | grep -c '^worktree ' | tr -d ' ')" \
+    'refresh prunes the dangling registration while retaining the live worktree'
+
 finish
