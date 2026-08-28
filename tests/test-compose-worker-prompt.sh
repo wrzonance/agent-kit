@@ -476,6 +476,24 @@ assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acce
     'pr-loop setup forwards each persisted acceptance command to PR-state checks'
 assert_contains "$setup_prompt" '--acceptance-file ' \
     'pr-loop setup forwards acceptance declarations to materiality'
+assert_contains "$setup_prompt" 'run-dir.sh" --pr 136 --repo-root' \
+    'pr-loop setup resolves one canonical PR run directory'
+for artifact_suffix in reviews comments issue_comments threads code_quality_comments; do
+    assert_contains "$setup_prompt" "state/pr_136_${artifact_suffix}.json" \
+        "pr-loop setup persists the ${artifact_suffix} state artifact"
+done
+assert_contains "$setup_prompt" 'setup.result' \
+    'pr-loop setup persists a terminal setup result line'
+assert_contains "$setup_prompt" 'BLOCKED: artifacts-missing' \
+    'pr-loop setup rejects completion when persisted artifacts are missing'
+assert_contains "$setup_prompt" 'setup-artifacts-missing' \
+    'pr-loop setup root gate records regenerated-artifact evidence'
+assert_contains "$setup_prompt" 'completion line names the run-dir' \
+    'pr-loop setup requires the canonical run directory in completion output'
+assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
+    'pr-loop setup does not discard state from a temporary evidence directory'
+assert_not_contains "$setup_prompt" 'cq_evidence_dir' \
+    'pr-loop setup does not clean up the canonical evidence directory'
 
 empty_findings="$tmp/empty-findings.ndjson"
 : > "$empty_findings"

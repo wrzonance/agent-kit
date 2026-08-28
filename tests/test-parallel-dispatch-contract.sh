@@ -660,6 +660,16 @@ assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
     'setup prompt does not encode a zero-finding BLOCKED result'
+assert_contains "$setup_prompt" 'test -s "$run_dir/state/pr_NNN_threads.json"' \
+    'setup completion acceptance requires a non-empty threads artifact'
+assert_contains "$setup_prompt" 'gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root' \
+    'setup completion acceptance regenerates missing state through gh-pr-state'
+assert_contains "$setup_prompt" 'setup-artifacts-missing' \
+    'setup completion acceptance records missing-artifact evidence'
+assert_contains "$setup_prompt" 'exactly once' \
+    'setup completion acceptance bounds artifact regeneration to one retry'
+assert_contains "$setup_prompt" 'run-dir=' \
+    'setup completion line names the canonical run directory'
 
 assert_prompt_scope_contract() {
     local prompt="$1" label="$2"

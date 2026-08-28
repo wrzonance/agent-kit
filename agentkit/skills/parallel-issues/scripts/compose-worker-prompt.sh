@@ -1184,6 +1184,35 @@ if ((template_placeholder)); then
     die 'unresolved <PASTE ...> or <WHEN ...> placeholder remains'
 fi
 
+# A setup prompt is a protocol boundary: the root cannot safely accept a
+# terminal marker unless the worker has left durable, PR-namespaced evidence.
+# Keep this contract fail-closed at composition time so a template edit cannot
+# silently reintroduce the old temporary-directory cleanup or omit the root's
+# one-retry recovery gate (issue #542).
+validate_setup_artifact_contract() {
+    [[ $template_kind == pr-loop-setup ]] || return 0
+    local suffix needle
+    grep -Fq -- 'run-dir.sh' "$temporary" ||
+        die 'pr-loop-setup template must resolve the canonical run directory'
+    for suffix in reviews comments issue_comments threads code_quality_comments; do
+        needle="state/pr_${issue}_${suffix}.json"
+        grep -Fq -- "$needle" "$temporary" ||
+            die "pr-loop-setup template must name persisted artifact: $needle"
+    done
+    # shellcheck disable=SC2016  # these are literal prompt-contract markers
+    for needle in \
+        'setup.result' \
+        'BLOCKED: artifacts-missing' \
+        'test -s "$run_dir/state/pr_' \
+        'setup-artifacts-missing' \
+        'exactly once' \
+        'run-dir=$RUN_DIR'; do
+        grep -Fq -- "$needle" "$temporary" ||
+            die "pr-loop-setup template is missing artifact contract text: $needle"
+    done
+}
+validate_setup_artifact_contract
+
 if [[ -z $output || $output == - ]]; then
     cat -- "$temporary"
 else

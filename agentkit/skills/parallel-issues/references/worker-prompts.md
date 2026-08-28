@@ -360,8 +360,8 @@ assigned worktree; this setup phase is read-only and must not write to it.
 
 ## Setup procedure
 
-Use the supplied helpers and preserve their machine-readable output. First fetch the complete PR
-state and evidence:
+Use the supplied helpers and preserve their machine-readable output. Resolve the one canonical
+PR-scoped run directory first; never use a temporary directory for review state:
 
 acceptance_args=()
 if [[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt ]]; then
@@ -369,10 +369,14 @@ if [[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt
     [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
   done < FULL_PATH/.agent/acceptance.txt
 fi
-cq_evidence_dir=$(mktemp -d "${TMPDIR:-/tmp}/pr-loop-cq.XXXXXXXXXX")
-trap 'rm -rf -- "$cq_evidence_dir"' EXIT
+RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr NNN --repo-root FULL_PATH) || exit 1
+state_dir="$RUN_DIR/state"
+printf 'run-dir=%s\n' "$RUN_DIR"
+
+First fetch the complete PR state and evidence into that durable directory:
+
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
-  --tmpdir "$cq_evidence_dir" "${acceptance_args[@]}"
+  --tmpdir "$state_dir" "${acceptance_args[@]}"
 
 Wait for CI with the bounded helper, then inspect the resulting digest. A failing check is a
 terminal setup result, not a fix batch:
@@ -385,23 +389,22 @@ repository-wide remainder is informational and never gates the loop:
 
 cq_probe=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --probe)
 printf '%s\n' "$cq_probe"
+setup_terminal='launch-ready'
 if [[ $cq_probe == state=enabled ]]; then
   cq_state=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --pr NNN \
-    --comments-file "$cq_evidence_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__")
+    --comments-file "$state_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__")
   printf '%s\n' "$cq_state"
   cq_open=$(sed -n 's/^cq-open: \([0-9][0-9]*\) source=.*/\1/p' <<<"$cq_state")
   if [[ $cq_open =~ ^[1-9][0-9]*$ ]]; then
-    : # cq-open is the terminal gate line, including its source artifact.
-  else
-    printf 'launch-ready\n'
+    setup_terminal="cq-open: $cq_open source=pr_NNN_code_quality_comments.json"
   fi
 elif [[ $cq_probe == state=not-enabled ]]; then
   printf 'cq-repo: 0\n'
   printf 'cq-open: 0 source=pr_NNN_code_quality_comments.json\n'
-  printf 'launch-ready\n'
 else
   printf 'Code Quality findings unavailable; setup cannot classify findings.\n'
   printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
+  setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
 fi
 
 Run the materiality precheck against the PR's current head before any review spend:
@@ -410,6 +413,67 @@ materiality_acceptance_args=()
 [[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt ]] && materiality_acceptance_args+=(--acceptance-file FULL_PATH/.agent/acceptance.txt)
 [[ -f FULL_PATH/.agent/acceptance-status.txt && ! -L FULL_PATH/.agent/acceptance-status.txt ]] && materiality_acceptance_args+=(--acceptance-status-file FULL_PATH/.agent/acceptance-status.txt)
 "$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "__MATERIALITY_BASE__" "${materiality_acceptance_args[@]}"
+
+### Setup finish contract
+
+The setup completion is accepted only when the canonical `RUN_DIR` is printed and it contains
+these non-empty files:
+
+`````text
+$RUN_DIR/state/pr_NNN_reviews.json
+$RUN_DIR/state/pr_NNN_comments.json
+$RUN_DIR/state/pr_NNN_issue_comments.json
+$RUN_DIR/state/pr_NNN_threads.json
+$RUN_DIR/state/pr_NNN_code_quality_comments.json
+$RUN_DIR/setup.result
+`````
+
+Before returning any terminal result, write one `setup.result` line naming the `RUN_DIR` and
+result. If any required state file or `setup.result` is missing or empty, the setup is a contract
+violation: return exactly `BLOCKED: artifacts-missing run-dir=$RUN_DIR` (with the missing paths in
+the compact evidence summary) instead of `launch-ready`, `cq-open`, or `ci-red`.
+The completion line names the run-dir: successful terminal completion lines must include
+`run-dir=$RUN_DIR` so the root can use the same directory.
+
+Use this final check (after inspecting CI, Code Quality, and materiality) to make the result
+durable and to ensure no earlier evidence line is mistaken for completion:
+
+`````bash
+required_state=(reviews comments issue_comments threads code_quality_comments)
+missing_state=()
+for suffix in "${required_state[@]}"; do
+  test -s "$state_dir/pr_NNN_${suffix}.json" || missing_state+=("$state_dir/pr_NNN_${suffix}.json")
+done
+if ((${#missing_state[@]})); then
+  printf 'setup.result status=blocked reason=artifacts-missing run-dir=%s missing=%s\n' \
+    "$RUN_DIR" "${missing_state[*]}" > "$RUN_DIR/setup.result"
+  printf 'BLOCKED: artifacts-missing run-dir=%s\n' "$RUN_DIR"
+else
+  printf 'setup.result status=complete result=%s run-dir=%s\n' "$setup_terminal" "$RUN_DIR" > "$RUN_DIR/setup.result"
+  printf '%s run-dir=%s\n' "$setup_terminal" "$RUN_DIR"
+fi
+`````
+
+The root's completion-acceptance gate is separate from this worker and runs once before accepting
+`launch-ready` or `cq-open`. It receives the `run-dir=` value from the completion line and must
+regenerate missing state once, recording the recovery in that run's evidence:
+
+`````bash
+run_dir=<run-dir from the setup completion line>
+if ! test -s "$run_dir/state/pr_NNN_threads.json"; then
+  printf 'setup-artifacts-missing run-dir=%s\n' "$run_dir" >> "$run_dir/setup.result"
+  "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH \
+    --full --tmpdir "$run_dir/state" "${acceptance_args[@]}"
+fi
+if ! test -s "$run_dir/state/pr_NNN_threads.json"; then
+  printf 'BLOCKED: artifacts-missing run-dir=%s\n' "$run_dir"
+  exit 1
+fi
+`````
+
+That root regeneration is bounded to exactly once; a completion is not accepted until the
+non-empty threads artifact is present after the retry. `setup-artifacts-missing` in
+`setup.result` is the durable run-evidence marker for the simulated empty-run-dir case.
 
 If CI is red, return exactly `ci-red: <check>` naming the failing check. If the attribution report
 has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_comments.json` line;
