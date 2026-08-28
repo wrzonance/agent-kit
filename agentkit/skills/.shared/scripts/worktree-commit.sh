@@ -352,6 +352,14 @@ exact_scope_paths_match() {
     return 0
 }
 
+merge_inherited_path_authorized() {
+    local path=$1 merge_head
+    active_merge || return 1
+    protected_pattern "$path" >/dev/null && return 1
+    merge_head=$(git rev-parse --verify 'MERGE_HEAD^{commit}' 2>/dev/null) || return 1
+    git diff --quiet --cached "$merge_head" -- "$path"
+}
+
 refuse_staged_outside_operands() {
     local path
     local -a offending=()
@@ -365,6 +373,9 @@ refuse_staged_outside_operands() {
         # let the dedicated park/authorize guard below handle those bytes.
         if active_merge && { protected_pattern "$path" >/dev/null ||
             [[ $path == .agent/config.env ]]; }; then
+            continue
+        fi
+        if merge_inherited_path_authorized "$path"; then
             continue
         fi
         offending+=("$path")
