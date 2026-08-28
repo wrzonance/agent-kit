@@ -676,6 +676,12 @@ assert_contains "$setup_prompt" 'ci_line=$(sed -n' \
     'setup prompt parses the captured CI digest'
 assert_contains "$setup_prompt" 'ci_failing=' \
     'setup prompt retains the failing CI count'
+assert_contains "$setup_prompt" 'failing-checks=' \
+    'setup prompt receives stable failing-check names'
+assert_contains "$setup_prompt" 'ci_failing_checks=$(sed -n' \
+    'setup prompt parses stable failing-check names'
+assert_contains "$setup_prompt" 'setup_terminal="ci-red: $ci_failing_checks"' \
+    'setup prompt names the failing check in its terminal marker'
 assert_contains "$setup_prompt" 'ci-red:' \
     'setup prompt preserves a failing CI terminal result'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \

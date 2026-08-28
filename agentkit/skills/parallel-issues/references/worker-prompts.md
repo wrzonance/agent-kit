@@ -388,9 +388,14 @@ ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo 
 printf '%s\n' "$ci_digest"
 ci_line=$(sed -n '/^ci=/p' <<<"$ci_digest")
 ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
+ci_failing_checks=$(sed -n 's/^ci=.*failing=[1-9][0-9]* failing-checks=\(.*\)$/\1/p' <<<"$ci_line")
 if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
   ci_red=1
-  setup_terminal='ci-red: ci'
+  if [[ -n $ci_failing_checks ]]; then
+    setup_terminal="ci-red: $ci_failing_checks"
+  else
+    setup_terminal='ci-red: unknown-check'
+  fi
 fi
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
@@ -416,7 +421,11 @@ else
   setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
 fi
 if ((ci_red)); then
-  setup_terminal='ci-red: ci'
+  if [[ -n $ci_failing_checks ]]; then
+    setup_terminal="ci-red: $ci_failing_checks"
+  else
+    setup_terminal='ci-red: unknown-check'
+  fi
 fi
 
 Run the materiality precheck against the PR's current head before any review spend:
