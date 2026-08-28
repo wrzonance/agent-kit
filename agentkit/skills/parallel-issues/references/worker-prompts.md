@@ -378,10 +378,20 @@ First fetch the complete PR state and evidence into that durable directory:
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
   --tmpdir "$state_dir" "${acceptance_args[@]}"
 
-Wait for CI with the bounded helper, then inspect the resulting digest. A failing check is a
+Wait for CI with the bounded helper, capture and inspect its bounded digest. A failing check is a
 terminal setup result, not a fix batch:
 
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --wait-ci --rounds 60 --interval 10 "${acceptance_args[@]}"
+setup_terminal='launch-ready'
+ci_red=0
+ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO \
+  --wait-ci --rounds 60 --interval 10 "${acceptance_args[@]}") || exit 1
+printf '%s\n' "$ci_digest"
+ci_line=$(sed -n '/^ci=/p' <<<"$ci_digest")
+ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
+if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
+  ci_red=1
+  setup_terminal='ci-red: ci'
+fi
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
 second call attributes only persisted PR comments whose path+line is inside the PR diff; the
@@ -389,7 +399,6 @@ repository-wide remainder is informational and never gates the loop:
 
 cq_probe=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --probe)
 printf '%s\n' "$cq_probe"
-setup_terminal='launch-ready'
 if [[ $cq_probe == state=enabled ]]; then
   cq_state=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --pr NNN \
     --comments-file "$state_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__")
@@ -405,6 +414,9 @@ else
   printf 'Code Quality findings unavailable; setup cannot classify findings.\n'
   printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
   setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
+fi
+if ((ci_red)); then
+  setup_terminal='ci-red: ci'
 fi
 
 Run the materiality precheck against the PR's current head before any review spend:
@@ -432,8 +444,9 @@ Before returning any terminal result, write one `setup.result` line naming the `
 result. If any required state file or `setup.result` is missing or empty, the setup is a contract
 violation: return exactly `BLOCKED: artifacts-missing run-dir=$RUN_DIR` (with the missing paths in
 the compact evidence summary) instead of `launch-ready`, `cq-open`, or `ci-red`.
-The completion line names the run-dir: successful terminal completion lines must include
-`run-dir=$RUN_DIR` so the root can use the same directory.
+The completion line names the run-dir: every successful terminal completion line must be exactly
+`<terminal-marker> run-dir=$RUN_DIR`, so the root can use the same directory. Never emit a bare
+`launch-ready`, `cq-open`, or `ci-red` completion line.
 
 Use this final check (after inspecting CI, Code Quality, and materiality) to make the result
 durable and to ensure no earlier evidence line is mistaken for completion:
@@ -460,6 +473,13 @@ regenerate missing state once, recording the recovery in that run's evidence:
 
 `````bash
 run_dir=<run-dir from the setup completion line>
+# Rebuild `acceptance_args` inside this root block from the assigned worktree before regeneration:
+acceptance_args=()
+if [[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt ]]; then
+  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
+    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
+  done < FULL_PATH/.agent/acceptance.txt
+fi
 if ! test -s "$run_dir/state/pr_NNN_threads.json"; then
   printf 'setup-artifacts-missing run-dir=%s\n' "$run_dir" >> "$run_dir/setup.result"
   "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH \
@@ -475,10 +495,12 @@ That root regeneration is bounded to exactly once; a completion is not accepted 
 non-empty threads artifact is present after the retry. `setup-artifacts-missing` in
 `setup.result` is the durable run-evidence marker for the simulated empty-run-dir case.
 
-If CI is red, return exactly `ci-red: <check>` naming the failing check. If the attribution report
+If CI is red, set the terminal marker to exactly `ci-red: <check>` naming the failing check. If the attribution report
 has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_comments.json` line;
 `cq-repo: M` is reported separately and never gates. Otherwise return exactly `launch-ready`.
-The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
+The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
+`ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,
+or `launch-ready run-dir=$RUN_DIR`). The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
 findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
 setup outcome, even when `cq-repo: M` is non-zero.
 Return the terminal line plus a compact evidence summary; never return BLOCKED merely because

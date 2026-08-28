@@ -490,6 +490,18 @@ assert_contains "$setup_prompt" 'setup-artifacts-missing' \
     'pr-loop setup root gate records regenerated-artifact evidence'
 assert_contains "$setup_prompt" 'completion line names the run-dir' \
     'pr-loop setup requires the canonical run directory in completion output'
+assert_contains "$setup_prompt" "ci_digest=\$(" \
+    'pr-loop setup captures the bounded CI digest'
+assert_contains "$setup_prompt" "ci_line=\$(sed -n" \
+    'pr-loop setup parses the captured CI digest'
+assert_contains "$setup_prompt" 'ci_failing=' \
+    'pr-loop setup retains the failing CI count'
+assert_contains "$setup_prompt" 'ci-red:' \
+    'pr-loop setup preserves a failing CI terminal result'
+assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
+    'pr-loop setup appends the run-dir to every terminal line'
+assert_contains "$setup_prompt" "Rebuild \`acceptance_args\` inside this root block" \
+    'pr-loop setup rebuilds acceptance arguments during root recovery'
 assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
     'pr-loop setup does not discard state from a temporary evidence directory'
 assert_not_contains "$setup_prompt" 'cq_evidence_dir' \
