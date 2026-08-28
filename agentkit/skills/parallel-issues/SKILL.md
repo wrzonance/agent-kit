@@ -982,7 +982,7 @@ RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$worktree" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$base") || exit 1
 precheck_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --issue-comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
 case "$precheck_rc" in
     0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
     10) printf '%s\n' 'not spent — proceed to the adversarial review gate' ;;
@@ -1012,7 +1012,7 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
 publish_rc=0
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" --require-pushed \
+    --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
