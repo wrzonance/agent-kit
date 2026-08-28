@@ -305,11 +305,7 @@ if [[ -n $comments_file ]]; then
     # The public findings endpoint is repository-wide. Attribute only the
     # path/line pairs present in the PR's persisted bot-comment artifact and
     # inside an actual changed-line range from the local PR diff.
-    comments_json=''
-    if ! comments_json=$(cat -- "$comments_file" 2>&1); then
-        die "could not read Code Quality comments artifact: $comments_file"
-    fi
-    jq -e 'type == "array" and all(.[]; type == "object")' <<<"$comments_json" >/dev/null 2>&1 ||
+    jq -e 'type == "array" and all(.[]; type == "object")' "$comments_file" >/dev/null 2>&1 ||
         die 'Code Quality comments artifact was not a JSON array of objects'
 
     current_head=$(git -C "$repo_root" rev-parse --verify "$diff_head^{commit}" 2>/dev/null) ||
@@ -352,12 +348,12 @@ if [[ -n $comments_file ]]; then
     fi
 
     source_file=${comments_file##*/}
-    cq_open=$(jq -nr --arg range_text "$changed_ranges" --arg head_sha "$current_head" --argjson comments "$comments_json" '
+    cq_open=$(jq -nr --slurpfile comments "$comments_file" --arg range_text "$changed_ranges" --arg head_sha "$current_head" '
         def changed_ranges:
           [$range_text | split("\n")[] | select(length > 0) | split("\t")
            | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber)}];
         def line_of: .line | tonumber;
-        ($comments | map(select((.commit_id // "") == $head_sha and .line != null and ( .path // "") != "")
+        ($comments[0] | map(select((.commit_id // "") == $head_sha and .line != null and ( .path // "") != "")
           | {path: .path, line: line_of})) as $comment_records
         |
         (changed_ranges) as $ranges
@@ -369,14 +365,14 @@ if [[ -n $comments_file ]]; then
     ' 2>/dev/null) || cq_open=''
     [[ $cq_open =~ ^[0-9]+$ ]] || die 'Code Quality comments artifact could not be attributed'
 
-    cq_repo=$(jq -s --arg range_text "$changed_ranges" --arg head_sha "$current_head" --argjson comments "$comments_json" '
+    cq_repo=$(jq -s --slurpfile comments "$comments_file" --arg range_text "$changed_ranges" --arg head_sha "$current_head" '
         def changed_ranges:
           [$range_text | split("\n")[] | select(length > 0) | split("\t")
            | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber)}];
         def line_of: .line | tonumber;
         (changed_ranges) as $ranges
-        | ($comments
-          | [$comments[] | . as $comment
+        | ($comments[0]
+          | [.[] | . as $comment
             | select(($comment.commit_id // "") == $head_sha and $comment.line != null and ($comment.path // "") != "")
             | {path: $comment.path, line: ($comment | line_of)}
             | . as $comment_record
