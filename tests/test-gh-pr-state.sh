@@ -1239,6 +1239,8 @@ full_output=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scr
     --pr 14 --repo owner/repo --full --no-cache --tmpdir "$full_output_dir")
 assert_contains "$full_output" "saved: $full_output_dir/pr_14_" \
     '--full reports the private evidence artifact location'
+assert_contains "$full_output" 'receipts: pr_14_issue_comments.json' \
+    '--full names the issue-comments artifact consumed by receipt helpers'
 for artifact in reviews comments issue_comments threads code_quality_comments; do
     assert_eq '600' "$(stat -c %a -- "$full_output_dir/pr_14_${artifact}.json" 2>/dev/null || stat -f %Lp -- "$full_output_dir/pr_14_${artifact}.json")" \
         "--full $artifact artifact is owner-private"

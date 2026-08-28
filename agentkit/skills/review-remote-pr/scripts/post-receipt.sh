@@ -9,7 +9,7 @@
 # so both skills call one tested command instead of copy-pasted shell.
 #
 # Subcommands:
-#   precheck --comments FILE
+#   precheck --issue-comments FILE
 #       Inspects the Step 1 pr_N_issue_comments.json artifact for the stable
 #       spent marker. Prints exactly one word on stdout.
 #         spent      marker found            -> exit 0
@@ -17,12 +17,12 @@
 #       A missing parser, unreadable artifact, or invalid JSON never reports
 #       either word; it fails closed (see Exit status).
 #
-#   status --comments FILE
+#   status --issue-comments FILE
 #       Classifies the final-sweep receipt artifact. Prints exactly one of
 #       receipt=none, receipt=adversarial, or receipt=verified-skip. A missing
 #       receipt returns 10; duplicate spent markers fail closed.
 #
-#   publish --pr N --repo OWNER/REPO --comments FILE [--findings-file FILE]
+#   publish --pr N --repo OWNER/REPO --issue-comments FILE [--findings-file FILE]
 #           --provider S --model S --effort S
 #           --mode cross-provider|blind-fallback [--mode-reason S]
 #           --p1 N --p2 N
@@ -32,7 +32,7 @@
 #       "## Adversarial review receipt" section, exactly one spent marker,
 #       agentic footer) from the validated NDJSON findings ledger into a private
 #       0600 temp file and posts it through the sibling gh-comment.sh, which
-#       byte-verifies the stored body. Runs its own precheck against --comments
+#       byte-verifies the stored body. Runs its own precheck against --issue-comments
 #       first and refuses to double-spend.
 #
 #       The findings ledger is addressed the same way finding-ledger.sh
@@ -58,7 +58,7 @@
 #
 # Exit status:
 #   0   success (precheck: spent; publish: comment posted and verified)
-#   1   evidence unavailable: jq missing, --comments/findings-file
+#   1   evidence unavailable: jq missing, --issue-comments/findings-file
 #       missing/unreadable/invalid, live recovery unavailable, or the
 #       downstream gh-comment.sh post/verify failed with no recovered marker
 #   2   usage error (bad/missing arguments or the sibling gh-comment.sh is
@@ -85,10 +85,10 @@ readonly ROBOT
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME precheck --comments FILE [--diff-payload ID]
-       $PROGNAME status --comments FILE
+Usage: $PROGNAME precheck --issue-comments FILE [--diff-payload ID]
+       $PROGNAME status --issue-comments FILE
        $PROGNAME --require-pushed publish ...
-       $PROGNAME publish --pr N --repo OWNER/REPO --comments FILE \\
+       $PROGNAME publish --pr N --repo OWNER/REPO --issue-comments FILE \\
                  [--findings-file FILE] \\
                  --provider S --model S --effort S \\
                  --mode cross-provider|blind-fallback [--mode-reason S] \\
@@ -104,14 +104,14 @@ so a later run can tell this exact review apart from one covering different
 code. A failed ledger append never fails an already-posted, byte-verified
 receipt -- it only warns.
 
-precheck: reports whether the PR's fetched comment artifact already carries
+precheck: reports whether the PR's fetched issue-comment artifact already carries
 the stable adversarial-review spent marker for the requested diff payload. If
 --diff-payload is omitted, it retains the legacy conservative PR-wide check.
   stdout 'spent'     and exit 0   marker found
   stdout 'not-spent' and exit 10  marker provably absent
   exit 1 (stderr only, fails closed) missing jq, unreadable FILE, invalid JSON
 
-status: classifies the final-sweep receipt artifact. Exactly one spent marker
+status: classifies the final-sweep issue-comment artifact. Exactly one spent marker
 prints receipt=adversarial or receipt=verified-skip and exits 0. No marker
 prints receipt=none and exits 10. Duplicate markers or invalid evidence fail
 closed with exit 1. A changed diff may leave a superseded receipt alongside
@@ -120,7 +120,7 @@ latest receipt.
 
 publish: validates the NDJSON findings ledger, renders the one-spend receipt,
 and posts it via gh-comment.sh's byte-verified transport. Runs the same
-precheck against --comments first and refuses (exit 11) when the marker is
+precheck against --issue-comments first and refuses (exit 11) when the marker is
 already present. --require-pushed additionally requires a clean tree whose HEAD
 is reachable from an origin/* remote-tracking ref.
 
@@ -186,6 +186,39 @@ reject_unsafe_field() {
 # replacement can make the supersession explicit in its durable body.
 SUPERSEDES_ID=''
 SPENT_DIFF_PAYLOAD=''
+
+# Receipt evidence comes from the issue-comments endpoint. Inline review
+# comments carry pull_request_review_id/path fields; consuming that artifact
+# would turn a published receipt into a false "none" result.
+validate_issue_comments_shape() {
+    local file=$1 surface jq_rc=0
+    surface=$(jq -r '
+        if type != "array" then error("comments must be an array")
+        elif any(.[]; if type != "object" then true
+                  else has("pull_request_review_id") or has("path") end)
+             then "review-comments"
+        else "issue-comments"
+        end
+    ' <"$file") || jq_rc=$?
+    ((jq_rc == 0)) || {
+        printf 'PR comment artifact is not valid JSON: %s\n' "$file" >&2
+        return 1
+    }
+    if [[ $surface == review-comments ]]; then
+        printf 'wrong surface: expected pr_N_issue_comments.json (review-comments artifact: %s)\n' \
+            "$file" >&2
+        return 1
+    fi
+    [[ $surface == issue-comments ]] || {
+        printf 'PR comment artifact has an unrecognised surface: %s\n' "$file" >&2
+        return 1
+    }
+}
+
+deprecated_comments_alias() {
+    printf '%s: --comments is deprecated; reading issue-comments surface (deprecated alias)\n' "$PROGNAME" >&2
+}
+
 short_diff_id() {
     local payload=$1 digest=${1##*:}
     [[ $digest =~ ^[[:xdigit:]]{7,64}$ ]] || digest=$payload
@@ -206,6 +239,7 @@ check_receipt_spent() {
         printf 'PR comment artifact is not readable: %s\n' "$file" >&2
         return 1
     }
+    validate_issue_comments_shape "$file" || return 1
     local jq_rc=0 records=''
     records=$(jq -r --arg marker "$RECEIPT_MARKER" '
         if type != "array" then error("comments must be an array")
@@ -278,6 +312,7 @@ check_receipt_status() {
         printf 'PR comment artifact is not readable: %s\n' "$file" >&2
         return 1
     }
+    validate_issue_comments_shape "$file" || return 1
     result=$(jq -r --arg marker "$RECEIPT_MARKER" '
         if type != "array" then error("comments must be an array")
         else [ .[] | (.body // "") as $body
@@ -327,8 +362,9 @@ cmd_precheck() {
     local comments=''
     while (($#)); do
         case $1 in
-            --comments)
-                [[ ${2-} ]] || die_usage '--comments requires a path'
+            --issue-comments|--comments)
+                [[ ${2-} ]] || die_usage "$1 requires a path"
+                [[ $1 == --comments ]] && deprecated_comments_alias
                 comments=$2
                 shift 2
                 ;;
@@ -346,7 +382,7 @@ cmd_precheck() {
                 ;;
         esac
     done
-    [[ -n $comments ]] || die_usage '--comments is required'
+    [[ -n $comments ]] || die_usage '--issue-comments is required'
 
     local rc=0
     local result
@@ -362,8 +398,9 @@ cmd_status() {
     local comments=''
     while (($#)); do
         case $1 in
-            --comments)
-                [[ ${2-} ]] || die_usage '--comments requires a path'
+            --issue-comments|--comments)
+                [[ ${2-} ]] || die_usage "$1 requires a path"
+                [[ $1 == --comments ]] && deprecated_comments_alias
                 comments=$2
                 shift 2
                 ;;
@@ -376,7 +413,7 @@ cmd_status() {
                 ;;
         esac
     done
-    [[ -n $comments ]] || die_usage '--comments is required'
+    [[ -n $comments ]] || die_usage '--issue-comments is required'
 
     local rc=0 result=''
     result=$(check_receipt_status "$comments") || rc=$?
@@ -423,7 +460,12 @@ parse_publish_args() {
         case $1 in
             --pr) [[ ${2-} ]] || die_usage '--pr requires a value'; PR=$2; shift 2 ;;
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; REPO=$2; shift 2 ;;
-            --comments) [[ ${2-} ]] || die_usage '--comments requires a path'; COMMENTS=$2; shift 2 ;;
+            --issue-comments|--comments)
+                [[ ${2-} ]] || die_usage "$1 requires a path"
+                [[ $1 == --comments ]] && deprecated_comments_alias
+                COMMENTS=$2
+                shift 2
+                ;;
             --findings-file) [[ ${2-} ]] || die_usage '--findings-file requires a path'; FINDINGS_FILE=$2; shift 2 ;;
             --provider) [[ ${2-} ]] || die_usage '--provider requires a value'; PROVIDER=$2; shift 2 ;;
             --model) [[ ${2-} ]] || die_usage '--model requires a value'; MODEL=$2; shift 2 ;;
@@ -450,7 +492,7 @@ validate_publish_args() {
     require_uint '--pr' "$PR"
     [[ -n $REPO ]] || die_usage '--repo is required'
     [[ $REPO =~ $SLUG_RE ]] || die_usage "--repo must look like OWNER/REPO, got: $REPO"
-    [[ -n $COMMENTS ]] || die_usage '--comments is required'
+    [[ -n $COMMENTS ]] || die_usage '--issue-comments is required'
     [[ -n $FINDINGS_FILE || -n $RUN_DIR ]] ||
         die_usage '--findings-file or RUN_DIR is required'
     [[ -n $PROVIDER ]] || die_usage '--provider is required'

@@ -15,12 +15,14 @@ body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 comment_composer="$root/agentkit/skills/review-remote-pr/scripts/compose-comment-body.sh"
 worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
 fast_reference="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+triage_reference="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 
 parallel_text=$(<"$parallel")
 review_text=$(<"$review")
 policy_text=$(<"$body_policy")
 worker_text=$(<"$worker_prompts")
 fast_text=$(<"$fast_reference")
+triage_text=$(<"$triage_reference")
 
 # Fast mode must make one pushed diff and one combined finding batch observable.
 assert_contains "$parallel_text$review_text$fast_text" 'same first pushed diff' \
@@ -91,5 +93,25 @@ assert_eq '600' "$(stat -c '%a' "$agent")" 'composed comment is private on disk'
 # not leave it to a worker to infer from the invocation name.
 assert_contains "$worker_text" 'fast-mode' \
     'worker prompt reference carries fast-mode context'
+
+# Named active issues are re-adjudicated with local liveness evidence rather
+# than silently dropped by the fast-mode selection funnel.
+assert_contains "$parallel_text$fast_text$triage_text" 'stale-active' \
+    'fast mode names stale active candidates'
+assert_contains "$parallel_text$fast_text$triage_text" 'held-active' \
+    'fast mode names genuinely active candidates'
+assert_contains "$parallel_text$fast_text$triage_text" 'reason=pr' \
+    'held active output identifies an open PR'
+assert_contains "$parallel_text$fast_text$triage_text" 'reason=worktree' \
+    'held active output identifies a live worktree'
+assert_contains "$parallel_text$fast_text$triage_text" 'reason=heartbeat' \
+    'held active output identifies a fresh worker heartbeat'
+assert_contains "$parallel_text$fast_text$triage_text" \
+    'requested = dispatched + tracker + duplicate + held-active + stale-active + queued' \
+    'fast mode funnel accounts for every named issue'
+assert_contains "$parallel_text$fast_text$triage_text" 'stale-active=1[#' \
+    'fast mode example prints stale-active issue identity'
+assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
+    'fast mode example prints held-active issue identity'
 
 finish

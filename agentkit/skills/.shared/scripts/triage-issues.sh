@@ -335,6 +335,8 @@ nodes=$(jq -c '
 # Precedence, highest first: unknown, done, active, in-flight, attempted,
 # merged-ref, clean. A state that should stop a dispatch outranks a state that
 # merely warrants reading, so the most restrictive applicable verdict wins.
+# Active status does not discard open-PR evidence: fast-mode's named-issue
+# adjudication needs that evidence to distinguish held-active from stale-active.
 # shellcheck disable=SC2016  # $i/$prs/$st/$c are jq bindings, not shell ones.
 readonly CLASSIFY_JQ='
 def pulls:
@@ -358,7 +360,10 @@ def tracker_reasons($selected):
      then {verdict: "unknown", pr: null, extra: 0}
      elif $st == "Done" then {verdict: "done", pr: null, extra: 0}
      elif ($st == "In progress" or $st == "In review")
-       then {verdict: "active", pr: null, extra: 0}
+       then ([$prs[] | select(.state == "OPEN")] as $open
+         | {verdict: "active",
+            pr: (if ($open | length) > 0 then winner($open) else null end),
+            extra: (if ($open | length) > 1 then (($open | length) - 1) else 0 end)})
      else
        ([$prs[] | select(.state == "OPEN")]) as $open
        | ([$prs[] | select(.state == "CLOSED" and (.merged != true))]) as $dead

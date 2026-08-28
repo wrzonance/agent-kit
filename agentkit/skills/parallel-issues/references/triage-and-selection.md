@@ -217,12 +217,39 @@ hold it silently and allow its selected children to proceed. Record the structur
 hold is auditable.
 
 With `--fast-mode`, every other `active` candidate is dropped with a one-line `active` reason;
-there is no hold/skip question. Tracker holds are counted separately from the refill queue. The
-queue contains the first-N pickup-order overflow implementation candidates and is refilled as
-slots free. Under `--auto-serialize`, a chain-depth overflow enters this same queue rather than
-becoming an exclusion; the successor is refilled only after its immediate predecessor's commit
-is pushed. A fast-mode disclosure therefore includes `queued=` and `tracker=` even when either is
-zero.
+there is no hold/skip question. That rule applies to automatic candidates; an explicitly
+operator-named active issue gets one additional liveness adjudication. Tracker holds are counted
+separately from the refill queue. The queue contains the first-N pickup-order overflow
+implementation candidates and is refilled as slots free. Under `--auto-serialize`, a chain-depth
+overflow enters this same queue rather than becoming an exclusion; the successor is refilled only
+after its immediate predecessor's commit is pushed. A fast-mode disclosure therefore includes
+`queued=` and `tracker=` even when either is zero.
+
+### Named active issue adjudication
+
+An explicit issue number is a request to account for that number, not permission to lose it in the
+active filter. The triage digest keeps the winning open-PR evidence even when the board Status is
+`In progress` or `In review`; use it as the first liveness check. Then consult only the current
+run's root-owned dispatch ledger for a live worktree lock and the assigned worker's heartbeat
+evidence for freshness. A live worktree lock means an active ledger entry for that issue whose
+worktree remains registered; merely finding a directory, branch, or process is not a lock. A
+heartbeat is fresh when it is inside the invocation's declared `N`-hour window; use the same
+declared window for every candidate in the run.
+
+Classify the named issue in this order:
+
+```text
+held-active:#N reason=pr pr=#M
+held-active:#N reason=worktree
+held-active:#N reason=heartbeat
+stale-active=1[#N]
+```
+
+The first three lines are terminal holds. If an open PR, live worktree lock, and fresh heartbeat
+are all absent, `stale-active` is eligible and proceeds through the normal named-issue selection.
+Do not re-fetch board state to second-guess the digest, and do not infer a heartbeat from a stale
+directory or an unbounded process probe. Automatic (unnamed) active candidates retain the existing
+tracker/drop behavior.
 
 ## Conflict analysis and dispatch-plan write sets
 
@@ -559,7 +586,7 @@ After conflict analysis and the slot cap have fixed the dispatch set, print exac
 single-line reconciliation in this shape:
 
 ```text
-Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count>[#<issue>,...] tracker=<tracker-count> exclusions=<reason>:<count>[#<issue>,...]|none
+Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> tracker=<tracker-count> duplicate=<duplicate-count> held-active=<held-count> stale-active=<stale-count>[#<issue>,...] queued=<queue-count>[#<issue>,...] exclusions=<reason>:<count>[#<issue>,...]|none
 ```
 
 For automatic selection with no supplied count, `requested` is the effective Limits-section slot cap.
@@ -568,11 +595,17 @@ mechanical eligibility before conflict/serialization and the slot cap, so it may
 `requested`. `dispatched` is the number actually launched in this wave and must not exceed
 `requested`; `queued` is the number retained for refill after the wave cap or
 chain-depth cap, followed by its issue IDs in pickup order as `queued=N[#...]` (use `queued=0`
-when empty); `tracker` is the number of active parent/epic records held without a prompt. Group all
-other candidates not dispatched under stable categorical reasons such as
+when empty); `tracker` is the number of active parent/epic records held without a prompt;
+`duplicate` is the number of repeated operator-supplied numbers; `held-active` is the number of
+named active issues held by a PR, live worktree lock, or fresh heartbeat; and `stale-active` is the
+number of named active issues promoted after all three liveness checks were absent, followed by
+their issue IDs as `stale-active=N[#...]` (use `stale-active=0` when empty). The accounting
+invariant is: `requested = dispatched + tracker + duplicate + held-active + stale-active + queued`.
+Group all other candidates not dispatched under stable categorical reasons such as
 `blocked-by`, `tier`, `already-implemented`, `conflict-serialized`, or `slot-cap`; use the
 specific existing verdict instead of a catch-all when one applies. Each considered candidate
-appears exactly once: in the dispatched set, queue, tracker holds, or exactly one exclusion group.
+appears exactly once: in the dispatched set, queue, tracker holds, duplicate, held-active,
+stale-active, or exactly one exclusion group.
 When more than one exclusion could describe it, use the earliest terminal decision made by the existing
 selection procedure, so the groups are mutually exclusive and their counts match their issue
 lists. This is reporting only; never change eligibility to make the arithmetic look fuller.
@@ -587,7 +620,12 @@ Selection funnel: requested=11 eligible=11 dispatched=10 queued=1[#12] tracker=1
 Selection funnel: requested=6 eligible=6 dispatched=5 queued=1[#6] tracker=0 exclusions=none
 Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]
 Selection funnel: requested=12 eligible=11 dispatched=10 queued=1 tracker=1 exclusions=none
+Selection funnel: requested=1 eligible=1 dispatched=1 tracker=0 duplicate=0 held-active=0 stale-active=1[#511] queued=0 exclusions=none
+Selection funnel: requested=1 eligible=1 dispatched=0 tracker=0 duplicate=0 held-active=1 stale-active=0 queued=0 exclusions=none
 ```
+
+The first named-active example demonstrates a stale `In progress` issue being dispatched; the
+second demonstrates an open-PR hold (`held-active:#513 reason=pr pr=#535`).
 
 For compatibility with pre-queue attended logs, these legacy examples remain recognizable:
 `Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none`,

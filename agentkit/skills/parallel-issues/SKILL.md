@@ -388,7 +388,7 @@ issue needs none of it.
 | `merged-ref` | a merged PR references it | read **that PR only**, then apply the prior-art table |
 | `in-flight` | an open PR references it | flag and ask — already being worked; do not double-dispatch |
 | `attempted` | a closed-unmerged PR references it | read that PR's review threads; they usually say why it died |
-| `active` | Status is In progress or In review | **active tracker**: hold; fast-mode drops active; attended asks |
+| `active` | Status is In progress or In review | active tracker holds; named fast-mode candidates are re-adjudicated as held-active or stale-active |
 | `unknown` | the query returned nothing usable | re-run; if it persists, fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` |
 
 An `adr=` path is a **candidate located by token overlap**, not a verdict. Read
@@ -545,7 +545,7 @@ setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns the mutating branch/exclude operations. Before preflight it excludes `.agent/*` and securely carries a root-local, ignored `.agent/config.env` into a new worktree when present; symlinked or non-regular state fails closed, while an existing regular target is preserved. It also performs the per-worktree preflight and runs the repository-declared `AGENT_CMD_SETUP` through `agent-run.sh` when present. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
+The helper owns branch/exclude operations, config propagation, preflight, and declared setup. It prints `resumable: yes|no untracked=N modified=M`; an existing path or branch still refuses duplicate creation, so use the summary to resume. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -692,19 +692,22 @@ else
 fi
 [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file"
 
+# Re-running the script for an existing complete set is churn; use --resume.
 case "$fetch_rc" in
     0)  : ;; # published fetched-issue.json, fenced-spec.txt, fenced-prior-art.txt, fenced-ready
-    12) printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2; exit 1 ;;
+    12) printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing; use the printed exact --resume command to archive and regenerate them' >&2; exit 1 ;;
     *)  exit 1 ;; # bad args, missing evidence, or any staging/fence/publish failure
 esac
 ```
 
-The root is the sole issue-artifact producer; the script fetches, validates, and atomically
-publishes both fenced files plus the raw payload and ready marker into the worktree's excluded
-`.agent/` state before any prompt is constructed. The worker prompt below embeds those
-persisted bytes verbatim. Re-running the script for an existing complete set is churn (exit
-`12`); delete the affected file deliberately before re-fencing. The selected mode is
-disclosed immediately above those persisted bytes.
+The root is the sole artifact producer; the script fetches, validates, and atomically
+publishes both fenced files plus raw payload and ready marker into excluded `.agent/` state.
+The prompt embeds those bytes verbatim. Re-running the script for an existing
+complete set is churn (exit `12`): it refuses `fence artifacts already exist; delete the affected
+file deliberately before re-fencing` and prints an exact command. `--resume` archives the set
+under `.agent/evidence/fence-history/<timestamp>/`, reports `untracked=N modified=M`, and
+regenerates artifacts without touching implementation files. The selected mode is disclosed
+above.
 
 ### Root-checkout cross-write fence
 
@@ -979,7 +982,7 @@ RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$worktree" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$base") || exit 1
 precheck_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --issue-comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
 case "$precheck_rc" in
     0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
     10) printf '%s\n' 'not spent — proceed to the adversarial review gate' ;;
@@ -1009,7 +1012,7 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
 publish_rc=0
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" --require-pushed \
+    --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?

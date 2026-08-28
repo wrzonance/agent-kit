@@ -20,7 +20,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-    printf 'Usage: %s --worktree PATH --issue N --boundary MODE [--prior-art FILE]\n' "${0##*/}"
+    printf 'Usage: %s --worktree PATH --issue N --boundary MODE [--prior-art FILE] [--resume]\n' "${0##*/}"
     cat <<'EOF'
 
 Options:
@@ -42,6 +42,8 @@ Options:
                                           private-trusted.
   --prior-art FILE  File holding prior-art digest text. Defaults to the
                     literal "(no prior art selected by triage digest)".
+  --resume          Archive existing generated artifacts and regenerate them
+                    while preserving all other worktree contents.
   -h, --help        Print this help and exit 0.
 
 Published on success (stdout, one line per artifact). The spec/prior-art
@@ -71,6 +73,7 @@ worktree=
 issue_number=
 boundary_mode=
 prior_art_file=
+resume=0
 
 while (($#)); do
     case $1 in
@@ -93,6 +96,10 @@ while (($#)); do
             (($# >= 2)) || die "Missing value for $1."
             prior_art_file=$2
             shift 2
+            ;;
+        --resume)
+            resume=1
+            shift
             ;;
         -h | --help)
             usage
@@ -162,6 +169,72 @@ tmp="$target.tmp"
 prior_tmp="$prior_target.tmp"
 acceptance_target="$agent_dir/acceptance.txt"
 acceptance_tmp="$acceptance_target.tmp"
+
+resume_untracked=0
+resume_modified=0
+resume_history_dir=
+
+count_preserved_worktree_state() {
+    local status_line status_code
+    if ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+    while IFS= read -r status_line; do
+        [[ -n $status_line ]] || continue
+        status_code=${status_line:0:2}
+        if [[ $status_code == '??' ]]; then
+            resume_untracked=$((resume_untracked + 1))
+        elif [[ $status_code != '!!' ]]; then
+            resume_modified=$((resume_modified + 1))
+        fi
+    done < <(git -C "$worktree" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)
+}
+
+print_resume_command() {
+    local script_path=$1
+    printf 'resume command:' >&2
+    printf ' %q' "$script_path" --resume --worktree "$worktree" --issue "$issue_number" \
+        --boundary "$boundary_mode" >&2
+    [[ -z $prior_art_file ]] || printf ' %q %q' --prior-art "$prior_art_file" >&2
+    printf '\n' >&2
+}
+
+archive_existing_artifacts() {
+    local artifact history_root timestamp basename
+    local -a artifacts=(
+        "$issue_payload_file"
+        "$agent_dir/fenced-spec.txt"
+        "$agent_dir/fenced-prior-art.txt"
+        "$agent_dir/spec.txt"
+        "$agent_dir/prior-art.txt"
+        "$acceptance_target"
+        "$ready_marker"
+    )
+    for artifact in "${artifacts[@]}"; do
+        if [[ -e $artifact || -L $artifact ]]; then
+            if [[ -z $resume_history_dir ]]; then
+                history_root="$agent_dir/evidence/fence-history"
+                if [[ -L "$agent_dir/evidence" ||
+                    (-e "$agent_dir/evidence" && ! -d "$agent_dir/evidence") ]]; then
+                    die "$agent_dir/evidence exists and is not a plain directory"
+                fi
+                if [[ -L "$history_root" ||
+                    (-e "$history_root" && ! -d "$history_root") ]]; then
+                    die "$history_root exists and is not a plain directory"
+                fi
+                mkdir -p -- "$history_root" || die "Could not create $history_root"
+                timestamp=$(date -u +%Y%m%dT%H%M%SZ) || die 'Could not generate fence history timestamp'
+                resume_history_dir=$(mktemp -d "$history_root/${timestamp}.XXXXXX") ||
+                    die "Could not create a fence history directory under $history_root"
+                chmod 700 -- "$resume_history_dir" || die 'Could not secure the fence history directory'
+            fi
+            basename=${artifact##*/}
+            mv -f -- "$artifact" "$resume_history_dir/$basename" ||
+                die "Could not archive $artifact under $resume_history_dir"
+        fi
+    done
+    [[ -z $resume_history_dir ]] || printf 'archived: %s\n' "$resume_history_dir"
+}
 
 # Persisted acceptance declarations are data only. Keep the parser before the
 # complete-artifact refusal so an interrupted run that published the spec but
@@ -239,9 +312,14 @@ extract_acceptance_to_file() {
 # raw payload the previous run left behind, and had spent two gh calls doing
 # it. The stale-debris cleanup stays below, where the run actually continues,
 # so a failed fetch still leaves the previous artifacts untouched.
-if [[ -d $ready_marker && -f $target && -f $prior_target &&
+if ((resume)); then
+    count_preserved_worktree_state
+    printf 'preserved: untracked=%d modified=%d\n' "$resume_untracked" "$resume_modified"
+    archive_existing_artifacts
+elif [[ -d $ready_marker && -f $target && -f $prior_target &&
     ! -e $tmp && ! -e $prior_tmp && ! -e $acceptance_tmp ]]; then
     if [[ -f $acceptance_target ]]; then
+        print_resume_command "$script_dir/prepare-issue-artifacts.sh"
         die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
     fi
     # Recover only the missing derived acceptance artifact. The source target
@@ -251,6 +329,7 @@ if [[ -d $ready_marker && -f $target && -f $prior_target &&
         die 'could not recover the missing acceptance artifact' 1
     chmod 600 -- "$acceptance_tmp" || die 'could not set permissions on the recovered acceptance artifact'
     mv -f -- "$acceptance_tmp" "$acceptance_target" || die 'could not publish the recovered acceptance artifact'
+    print_resume_command "$script_dir/prepare-issue-artifacts.sh"
     die 'fence artifacts already exist; delete the affected file deliberately before re-fencing' 12
 fi
 

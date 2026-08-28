@@ -27,11 +27,12 @@ new_worktree() {
     mktemp -d "$tmp_dir/worktree.XXXXXX"
 }
 
-# run_prepare WORKTREE ISSUE BOUNDARY [PRIOR_ART_FILE]
+# run_prepare WORKTREE ISSUE BOUNDARY [PRIOR_ART_FILE] [--resume]
 run_prepare() {
-    local worktree=$1 issue=$2 boundary=$3 prior=${4:-}
+    local worktree=$1 issue=$2 boundary=$3 prior=${4:-} resume=${5:-}
     local -a args=(--worktree "$worktree" --issue "$issue" --boundary "$boundary")
     [[ -z $prior ]] || args+=(--prior-art "$prior")
+    [[ $resume == --resume ]] && args+=(--resume)
     PATH="$stub_path:$PATH" "$bash_bin" "$script" "${args[@]}"
 }
 
@@ -208,6 +209,8 @@ GH_STUB_RESPONSE="$refuse_fixture" run_prepare "$worktree" 42 private-trusted \
 assert_eq 12 "$rc" 'a complete fenced artifact set refuses re-fencing with exit 12'
 assert_contains "$(<"$err")" 'delete the affected file deliberately before re-fencing' \
     'the refusal names the deliberate-delete remedy'
+assert_contains "$(<"$err")" '--resume --worktree' \
+    'the refusal prints an exact resume command'
 assert_eq "$spec_before" "$(<"$worktree/.agent/spec.txt")" \
     'the refusal leaves the existing spec artifact untouched'
 assert_eq "$prior_before" "$(<"$worktree/.agent/prior-art.txt")" \
@@ -250,6 +253,41 @@ if cmp -s "$recovery_spec_before" "$recovery_worktree/.agent/spec.txt"; then
 else
     _fail 'complete-set recovery leaves spec.txt byte-identical'
 fi
+
+# --------------------------------------------------------------- resume path
+# A resumed run archives the previous generated set, keeps implementation
+# work in place, and reports the status it preserved before refetching.
+resume_worktree=$(new_worktree)
+git -C "$resume_worktree" init -q
+git -C "$resume_worktree" config user.name test
+git -C "$resume_worktree" config user.email test@example.invalid
+printf '.agent/\n' >"$resume_worktree/.git/info/exclude"
+git -C "$resume_worktree" commit --allow-empty -qm baseline
+GH_STUB_RESPONSE="$fixture" run_prepare "$resume_worktree" 42 private-trusted >/dev/null 2>&1
+resume_spec_before=$(<"$resume_worktree/.agent/spec.txt")
+mkdir -p "$resume_worktree/src"
+printf 'preserve me\n' >"$resume_worktree/src/implementation.bicep"
+resume_out="$tmp_dir/resume.out"
+resume_err="$tmp_dir/resume.err"
+rc=0
+GH_STUB_RESPONSE="$refuse_fixture" run_prepare "$resume_worktree" 42 private-trusted '' \
+    --resume >"$resume_out" 2>"$resume_err" || rc=$?
+assert_eq 0 "$rc" 'resume regenerates a complete artifact set'
+assert_contains "$(<"$resume_out")" 'untracked=1 modified=0' \
+    'resume reports preserved untracked and modified counts'
+assert_eq 'preserve me' "$(<"$resume_worktree/src/implementation.bicep")" \
+    'resume preserves untracked implementation work'
+assert_contains "$(<"$resume_worktree/.agent/spec.txt")" 'CHANGED AFTER THE FIRST RUN' \
+    'resume publishes freshly fetched issue artifacts'
+history_root="$resume_worktree/.agent/evidence/fence-history"
+history_dir=$(find "$history_root" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null)
+assert_eq yes "$([[ -n $history_dir ]] && printf yes || printf no)" \
+    'resume creates a fence history directory'
+assert_eq yes "$([[ -n $history_dir && -f "$history_dir/spec.txt" && -f "$history_dir/prior-art.txt" && \
+    -f "$history_dir/fetched-issue.json" && -d "$history_dir/fenced-ready" ]] && printf yes || printf no)" \
+    'resume archives the previous generated artifact set'
+assert_eq "$resume_spec_before" "$(<"$history_dir/spec.txt")" \
+    'resume archives the previous spec bytes unchanged'
 
 # ------------------------------------------------- step-named publish failure
 # The trio is published one member at a time and is not atomic, so a failure

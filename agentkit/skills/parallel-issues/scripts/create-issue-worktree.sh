@@ -97,6 +97,23 @@ validate_args() {
     fi
 }
 
+worktree_setup_state_counts() {
+    local worktree=$1 status_line status_code untracked=0 modified=0
+    if [[ -d $worktree && ! -L $worktree ]] &&
+        git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        while IFS= read -r status_line; do
+            [[ -n $status_line ]] || continue
+            status_code=${status_line:0:2}
+            if [[ $status_code == '??' ]]; then
+                untracked=$((untracked + 1))
+            elif [[ $status_code != '!!' ]]; then
+                modified=$((modified + 1))
+            fi
+        done < <(git -C "$worktree" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)
+    fi
+    printf '%d %d\n' "$untracked" "$modified"
+}
+
 main() {
     parse_args "$@"
     validate_args
@@ -111,6 +128,18 @@ main() {
     branch="feat/issue-$ISSUE"
     worktree="$root/$worktree_root/$branch"
     start=${CHAIN_BASE:-origin/$BASE}
+
+    local resumable=no untracked=0 modified=0 state_counts
+    if [[ -e $worktree || -L $worktree ]] ||
+        git -C "$root" show-ref --verify --quiet "refs/heads/$branch" ||
+        git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        resumable=yes
+        if [[ -d $worktree && ! -L $worktree ]]; then
+            state_counts=$(worktree_setup_state_counts "$worktree") || state_counts='0 0'
+            read -r untracked modified <<<"$state_counts"
+        fi
+    fi
+    printf 'resumable: %s untracked=%d modified=%d\n' "$resumable" "$untracked" "$modified"
 
     worktree_setup_ensure_exclude "$root" "$worktree_root/" || exit 1
     git -C "$root" fetch origin || {
