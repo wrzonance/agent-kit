@@ -977,7 +977,7 @@ register_suite_run() {
     [[ ${cmd_name:-} == test && -z ${focus_opt:-} ]] || return 0
     assert_private_dir "$suite_marker_dir"
     shopt -s nullglob
-    for existing in "$suite_marker_dir"/*.run; do
+    for existing in "$suite_marker_dir"/agent-run.*; do
         suite_marker_live "$existing" || rm -f -- "$existing"
     done
     shopt -u nullglob

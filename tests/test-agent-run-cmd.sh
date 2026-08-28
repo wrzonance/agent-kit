@@ -405,11 +405,17 @@ done
 exec /usr/bin/mktemp "$@"
 EOF
 chmod +x -- "$marker_repo/bin/mktemp"
+marker_suite_dir="$tmp/agent-run-suites-$(id -u)"
+mkdir -p "$marker_suite_dir"
+printf '999999 1\n' >"$marker_suite_dir/agent-run.stale"
 marker_out=$(cd "$marker_repo" && PATH="$marker_repo/bin:$PATH" \
-    "$real_run_sh" --force --cmd test 2>&1)
+    TMPDIR="$tmp" "$real_run_sh" --force --cmd test 2>&1)
+marker_log=$(find "$marker_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
 assert_contains "$marker_out" 'marker-ok' 'a no-proc marker accepts the alive fallback'
 assert_not_contains "$marker_out" 'marker template is not BSD-compatible' \
     'the active marker uses a BSD-compatible trailing-X template'
+assert_contains "$(cat "$marker_log")" 'concurrent-suites=1' \
+    'a stale new-format marker is removed before counting active suites'
 
 # --- load-flake retry acceptance -------------------------------------------
 # An explicit scale is the deterministic seam for the live concurrent-suite
