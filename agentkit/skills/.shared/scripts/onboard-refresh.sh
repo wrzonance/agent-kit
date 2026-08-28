@@ -276,6 +276,7 @@ collect_worktree_audit() {
     done < <(git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
 
     for worktree in "${registered[@]}"; do
+        [[ $worktree == "$repo_root" ]] && continue
         [[ -d $worktree ]] || continue
         changed=()
         while IFS= read -r -d '' path; do
@@ -290,7 +291,10 @@ collect_worktree_audit() {
 
     if ((${#missing[@]} > 0)); then
         git -C "$repo_root" worktree prune --verbose >/dev/null 2>&1 || true
+        local remaining
+        remaining=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
         for worktree in "${missing[@]}"; do
+            grep -F -qx "worktree $worktree" <<< "$remaining" && continue
             worktree_pruned_count=$((worktree_pruned_count + 1))
             worktree_pruned_lines+="worktree= pruned path=$worktree"$'\n'
         done
@@ -322,7 +326,9 @@ collect_worktree_audit
 if [[ ! -r $config ]]; then
     if ((worktree_drift_count || worktree_pruned_count)); then
         printf 'drift= worktrees=drift\n'
-        printf '%s%s' "$worktree_drift_lines" "$worktree_pruned_lines"
+        if [[ $mode != summary ]]; then
+            printf '%s%s' "$worktree_drift_lines" "$worktree_pruned_lines"
+        fi
     else
         printf 'drift= none\n'
     fi

@@ -471,6 +471,66 @@ assert_eq '0' "$derive_rc" \
     'a base derived from MERGE_HEAD alone authorizes the inherited protected content'
 assert_contains "$derive_out" 'committed' 'the derived-base authorization reports its commit'
 
+# Merge-downs may also carry non-protected predecessor files. They are safe
+# only when the staged bytes remain identical to MERGE_HEAD's commit.
+merge_plain_repo="$tmp/merge-plain-repo"
+git init -q -b main "$merge_plain_repo"
+git -C "$merge_plain_repo" config user.name test
+git -C "$merge_plain_repo" config user.email test@example.invalid
+mkdir -p "$merge_plain_repo/.agent"
+printf 'AGENT_BASE_BRANCH=main\n' > "$merge_plain_repo/.agent/config.env"
+printf 'feature-base\n' > "$merge_plain_repo/base.txt"
+git -C "$merge_plain_repo" add -- base.txt
+git -C "$merge_plain_repo" commit -qm base
+git -C "$merge_plain_repo" checkout -qb feature/plain
+git -C "$merge_plain_repo" checkout -q main
+printf 'inherited\n' > "$merge_plain_repo/inherited.txt"
+git -C "$merge_plain_repo" add -- inherited.txt
+git -C "$merge_plain_repo" commit -qm 'base adds plain file'
+merge_plain_base=$(git -C "$merge_plain_repo" rev-parse HEAD)
+git -C "$merge_plain_repo" checkout -q feature/plain
+git -C "$merge_plain_repo" merge --no-commit --no-ff -q main
+printf 'successor\n' > "$merge_plain_repo/successor.txt"
+plain_rc=0
+plain_out=$(cd "$merge_plain_repo" && "$script" --include-staged --yolo \
+    --message 'fix: carry plain merge content' --trailer "$TEST_TRAILER" \
+    --allow-base-inherited "$merge_plain_base" -- successor.txt 2>&1) || plain_rc=$?
+assert_eq '0' "$plain_rc" \
+    'merge-down permits byte-identical inherited non-protected content'
+assert_contains "$plain_out" 'committed' \
+    'plain merge-down authorization reports a commit'
+assert_eq 'inherited' "$(git -C "$merge_plain_repo" show HEAD:inherited.txt)" \
+    'plain merge-down carries the inherited non-protected bytes'
+
+merge_plain_mismatch="$tmp/merge-plain-mismatch"
+git init -q -b main "$merge_plain_mismatch"
+git -C "$merge_plain_mismatch" config user.name test
+git -C "$merge_plain_mismatch" config user.email test@example.invalid
+mkdir -p "$merge_plain_mismatch/.agent"
+printf 'AGENT_BASE_BRANCH=main\n' > "$merge_plain_mismatch/.agent/config.env"
+printf 'base\n' > "$merge_plain_mismatch/base.txt"
+git -C "$merge_plain_mismatch" add -- base.txt
+git -C "$merge_plain_mismatch" commit -qm base
+git -C "$merge_plain_mismatch" checkout -qb feature/plain
+git -C "$merge_plain_mismatch" checkout -q main
+printf 'from-main\n' > "$merge_plain_mismatch/inherited.txt"
+git -C "$merge_plain_mismatch" add -- inherited.txt
+git -C "$merge_plain_mismatch" commit -qm 'base adds plain file'
+merge_plain_mismatch_base=$(git -C "$merge_plain_mismatch" rev-parse HEAD)
+git -C "$merge_plain_mismatch" checkout -q feature/plain
+git -C "$merge_plain_mismatch" merge --no-commit --no-ff -q main
+printf 'tampered\n' > "$merge_plain_mismatch/inherited.txt"
+git -C "$merge_plain_mismatch" add -- inherited.txt
+printf 'successor\n' > "$merge_plain_mismatch/successor.txt"
+mismatch_rc=0
+mismatch_out=$(cd "$merge_plain_mismatch" && "$script" --include-staged --yolo \
+    --message 'fix: reject tampered merge content' --trailer "$TEST_TRAILER" \
+    --allow-base-inherited "$merge_plain_mismatch_base" -- successor.txt 2>&1) || mismatch_rc=$?
+assert_eq '1' "$mismatch_rc" \
+    'merge-down refuses non-protected content whose bytes differ from MERGE_HEAD'
+assert_contains "$mismatch_out" 'inherited.txt' \
+    'tampered merge-down refusal names the mismatched path'
+
 # --- Issue #305: the helper owns the trailer instead of trusting its caller ---
 #
 # A five-issue parallel run gave three workers byte-identical trailer
