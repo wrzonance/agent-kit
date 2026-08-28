@@ -405,12 +405,17 @@ repository-wide remainder is informational and never gates the loop:
 cq_probe=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --probe)
 printf '%s\n' "$cq_probe"
 if [[ $cq_probe == state=enabled ]]; then
-  cq_state=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --pr NNN \
-    --comments-file "$state_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__")
-  printf '%s\n' "$cq_state"
-  cq_open=$(sed -n 's/^cq-open: \([0-9][0-9]*\) source=.*/\1/p' <<<"$cq_state")
-  if [[ $cq_open =~ ^[1-9][0-9]*$ ]]; then
-    setup_terminal="cq-open: $cq_open source=pr_NNN_code_quality_comments.json"
+  if ! cq_state=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --pr NNN \
+    --comments-file "$state_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__" \
+    --repo-root FULL_PATH); then
+    printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
+    setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
+  else
+    printf '%s\n' "$cq_state"
+    cq_open=$(sed -n 's/^cq-open: \([0-9][0-9]*\) source=.*/\1/p' <<<"$cq_state")
+    if [[ $cq_open =~ ^[1-9][0-9]*$ ]]; then
+      setup_terminal="cq-open: $cq_open source=pr_NNN_code_quality_comments.json"
+    fi
   fi
 elif [[ $cq_probe == state=not-enabled ]]; then
   printf 'cq-repo: 0\n'

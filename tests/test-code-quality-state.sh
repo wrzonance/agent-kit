@@ -377,14 +377,18 @@ attribution_base=$(git -C "$attribution_repo" rev-parse HEAD)
 printf 'unchanged\nchanged\n' >"$attribution_repo/tracked.txt"
 git -C "$attribution_repo" add tracked.txt
 git -C "$attribution_repo" commit -q -m change
+attribution_head=$(git -C "$attribution_repo" rev-parse HEAD)
 attribution_comments="$tmp/pr_9_code_quality_comments.json"
-printf '%s\n' '[{"path":"tracked.txt","line":2}]' >"$attribution_comments"
+printf '%s\n' "[{\"path\":\"tracked.txt\",\"line\":2,\"commit_id\":\"$attribution_head\"},{\"path\":\"tracked.txt\",\"line\":null,\"original_line\":2,\"commit_id\":\"$OTHER_SHA\"}]" >"$attribution_comments"
+assert_rc 1 '--pr attribution requires --repo-root' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$attribution_comments" --diff-base "$attribution_base"
 write_gh_head \
     ok '{"check_runs":[]}' \
     ok '[{"location":{"path":"tracked.txt","start_line":2}},{"location":{"path":"repo-a.py","start_line":10}},{"location":{"path":"repo-b.py","start_line":20}},{"location":{"path":"repo-c.py","start_line":30}}]' \
     ok '[]'
-out=$(cd "$attribution_repo" && PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
-    --comments-file "$attribution_comments" --diff-base "$attribution_base")
+out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$attribution_comments" --diff-base "$attribution_base" --repo-root "$attribution_repo")
 rc=$?
 assert_eq $'cq-repo: 3\ncq-open: 1 source=pr_9_code_quality_comments.json' "$out" \
     'three repository-global findings are separated from one changed-line PR finding'
@@ -392,14 +396,40 @@ assert_eq '0' "$rc" 'PR attribution exits successfully when findings are present
 
 # A PR comment on an unchanged line is still repository-global for setup
 # purposes: it must not gate the loop, while the global count remains visible.
-printf '%s\n' '[{"path":"tracked.txt","line":1}]' >"$attribution_comments"
+printf '%s\n' "[{\"path\":\"tracked.txt\",\"line\":1,\"commit_id\":\"$attribution_head\"}]" >"$attribution_comments"
 write_gh_head \
     ok '{"check_runs":[]}' \
     ok '[{"location":{"path":"repo-a.py","start_line":10}},{"location":{"path":"repo-b.py","start_line":20}},{"location":{"path":"repo-c.py","start_line":30}}]' \
     ok '[]'
-out=$(cd "$attribution_repo" && PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
-    --comments-file "$attribution_comments" --diff-base "$attribution_base")
+out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$attribution_comments" --diff-base "$attribution_base" --repo-root "$attribution_repo")
 assert_eq $'cq-repo: 3\ncq-open: 0 source=pr_9_code_quality_comments.json' "$out" \
     'a comment outside the PR diff does not become a PR blocker'
+
+# A plus sign in the hunk's function-context suffix must not be mistaken for
+# the plus that introduces the new-file range.
+hunk_repo="$tmp/hunk-repo"
+mkdir -p "$hunk_repo"
+git -C "$hunk_repo" init -q
+git -C "$hunk_repo" config user.email test@example.invalid
+git -C "$hunk_repo" config user.name 'Code Quality Test'
+printf 'int add(int a + b) {\n    return 1;\n}\n' >"$hunk_repo/context.c"
+git -C "$hunk_repo" add context.c
+git -C "$hunk_repo" commit -q -m base
+hunk_base=$(git -C "$hunk_repo" rev-parse HEAD)
+printf 'int add(int a + b) {\n    return 2;\n}\n' >"$hunk_repo/context.c"
+git -C "$hunk_repo" add context.c
+git -C "$hunk_repo" commit -q -m change
+hunk_head=$(git -C "$hunk_repo" rev-parse HEAD)
+hunk_comments="$tmp/pr_9_hunk_comments.json"
+printf '%s\n' "[{\"path\":\"context.c\",\"line\":2,\"commit_id\":\"$hunk_head\"}]" >"$hunk_comments"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"location":{"path":"context.c","start_line":2}},{"location":{"path":"repo-a.py","start_line":10}},{"location":{"path":"repo-b.py","start_line":20}},{"location":{"path":"repo-c.py","start_line":30}}]' \
+    ok '[]'
+out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$hunk_comments" --diff-base "$hunk_base" --repo-root "$hunk_repo" --diff-head "$hunk_head")
+assert_eq $'cq-repo: 3\ncq-open: 1 source=pr_9_hunk_comments.json' "$out" \
+    'a plus sign in hunk context does not corrupt changed-line attribution'
 
 finish

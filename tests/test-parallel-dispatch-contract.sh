@@ -656,6 +656,12 @@ assert_contains "$setup_prompt" '--comments-file' \
     'setup prompt attributes findings from the persisted PR artifact'
 assert_contains "$setup_prompt" '--diff-base' \
     'setup prompt attributes findings against the PR diff base'
+assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
+    'setup prompt passes the checkout root for Code Quality attribution'
+assert_contains "$setup_prompt" 'if ! cq_state=' \
+    'setup prompt fails closed when Code Quality attribution fails'
+assert_contains "$setup_prompt" 'cq-open: unavailable' \
+    'setup prompt names the unavailable Code Quality terminal marker'
 assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
