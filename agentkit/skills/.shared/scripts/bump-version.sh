@@ -23,6 +23,27 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
     exit 1
 }
 repo_root=$(cd -- "$repo_root" && pwd -P) || exit 1
+
+# A linked worktree can be created anywhere, not only below the conventional
+# .worktrees/ directory. In the primary checkout Git's per-worktree and common
+# metadata directories resolve to the same path; linked worktrees keep their
+# own metadata below the shared common directory.
+git_dir=$(git rev-parse --git-dir 2>/dev/null) || {
+    printf '%s: could not resolve Git metadata directory\n' "$PROGRAM" >&2
+    exit 1
+}
+common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || {
+    printf '%s: could not resolve Git common directory\n' "$PROGRAM" >&2
+    exit 1
+}
+git_dir=$(cd -- "$git_dir" && pwd -P) || exit 1
+common_dir=$(cd -- "$common_dir" && pwd -P) || exit 1
+if [[ $git_dir != "$common_dir" ]]; then
+    printf '%s: refusing to run inside a linked worktree; invoke it from the primary repository checkout\n' \
+        "$PROGRAM" >&2
+    exit 1
+fi
+
 current_dir=$(pwd -P)
 case "$current_dir" in
     "$repo_root/.worktrees"|"$repo_root/.worktrees"/*)

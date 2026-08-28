@@ -139,6 +139,27 @@ assert_eq '1' "$worktree_bump_rc" 'the bump helper refuses execution inside .wor
 assert_contains "$worktree_bump_out" 'refusing to run inside .worktrees' \
     'the worktree refusal explains the safe invocation boundary'
 
+# A real linked worktree may live outside the repository's conventional
+# .worktrees/ directory, so Git metadata—not the checkout path—must trigger the
+# refusal and preserve all manifests byte-for-byte.
+real_linked="$tmp/real-linked-bump"
+git -C "$bump_fixture" worktree add -q -b bump-linked "$real_linked"
+linked_before=$(sha256sum \
+    "$real_linked/agentkit/.claude-plugin/plugin.json" \
+    "$real_linked/agentkit/.codex-plugin/plugin.json" \
+    "$real_linked/opencode/package.json")
+linked_bump_rc=0
+linked_bump_out=$(cd "$real_linked" && "$bump" 0.7.4 2>&1) || linked_bump_rc=$?
+assert_eq '1' "$linked_bump_rc" 'the bump helper refuses a real linked worktree'
+assert_contains "$linked_bump_out" 'refusing to run inside a linked worktree' \
+    'the linked-worktree refusal identifies the Git metadata boundary'
+linked_after=$(sha256sum \
+    "$real_linked/agentkit/.claude-plugin/plugin.json" \
+    "$real_linked/agentkit/.codex-plugin/plugin.json" \
+    "$real_linked/opencode/package.json")
+assert_eq "$linked_before" "$linked_after" \
+    'a linked-worktree refusal leaves every source manifest byte-identical'
+
 cp -- "$fixture/agentkit/.claude-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json"
 out="$tmp/tag-context.out"
