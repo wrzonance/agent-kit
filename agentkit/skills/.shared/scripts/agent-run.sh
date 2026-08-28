@@ -840,19 +840,14 @@ resolve_named_command() {
         resolution_kind=declared
 
         # Formatter diagnostics commonly contain volatile order, colour, and
-        # timing text. Optional kind metadata selects path-set comparison while
-        # the command-name fallback preserves existing formatter declarations.
+        # timing text. Only explicit kind metadata selects path-set comparison;
+        # Command-name heuristics would misclassify tools with similar names.
         command_kind=generic
         declared_kind=${resolved_config_values[$kind_key]:-}
         case $declared_kind in
             format) command_kind=format ;;
             generic|'') ;;
         esac
-        if [[ -z $declared_kind ]]; then
-            case $name in
-                format|formatter|*-format|format-*) command_kind=format ;;
-            esac
-        fi
 
         # A monorepo command usually has to run IN its component. Without this
         # the only root-runnable form of a dashboard test invocation globbed
@@ -875,9 +870,6 @@ resolve_named_command() {
         cmd=("$name")
         resolution_kind=runner
         command_kind=generic
-        case $name in
-            format|formatter|*-format|format-*) command_kind=format ;;
-        esac
         return 0
     fi
 
@@ -977,15 +969,15 @@ register_suite_run() {
     [[ ${cmd_name:-} == test && -z ${focus_opt:-} ]] || return 0
     assert_private_dir "$suite_marker_dir"
     shopt -s nullglob
-    for existing in "$suite_marker_dir"/*.run; do
+    for existing in "$suite_marker_dir"/agent-run.*; do
         suite_marker_live "$existing" || rm -f -- "$existing"
     done
     shopt -u nullglob
-    marker=$(mktemp "$suite_marker_dir/agent-run.XXXXXX.run") ||
+    marker=$(mktemp "$suite_marker_dir/agent-run.XXXXXX") ||
         die "cannot create active-suite marker in $suite_marker_dir"
     pid=$$
     start=$(current_process_start "$pid")
-    [[ $start =~ ^[0-9]+$ ]] || {
+    [[ $start =~ ^[0-9]+$ || $start == alive ]] || {
         rm -f -- "$marker"
         die "cannot identify active-suite process $pid"
     }
@@ -994,7 +986,7 @@ register_suite_run() {
         die "cannot write active-suite marker $marker"
     }
     suite_marker=$marker
-    concurrent_suites=$(find "$suite_marker_dir" -maxdepth 1 -type f -name '*.run' -print 2> /dev/null |
+    concurrent_suites=$(find "$suite_marker_dir" -maxdepth 1 -type f -name 'agent-run.*' -print 2> /dev/null |
         wc -l | tr -d '[:space:]')
     [[ $concurrent_suites =~ ^[1-9][0-9]*$ ]] || concurrent_suites=1
     local timeout_scale_key=AGENT_TEST_TIMEOUT_SCALE
@@ -1032,21 +1024,44 @@ failure_signature() {
 
 # Formatter diagnostics are intentionally compared as a normalized set of
 # repository-relative paths. Prettier's output can vary in order, colour, and
-# timing while still identifying exactly the same drift. Only its stable
-# `[warn] path` records are accepted; arbitrary diagnostic text is never a
-# candidate path.
+# timing while still identifying exactly the same drift. Only stable
+# `[warn] path` records naming files under the command cwd are accepted;
+# summaries and arbitrary diagnostic text are never candidate paths.
 format_failure_paths() {
-    local file=$1 line path
+    local file=$1 cwd=$2 repo_root=$3 line path marker candidate rel paths_tmp rc
+    paths_tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-format-paths.XXXXXX") || return 1
     while IFS= read -r line || [[ -n $line ]]; do
         line=$(printf '%s\n' "$line" | sed $'s/\033\\[[0-9;]*m//g;s/\r$//')
+        if [[ $line =~ ^[[:space:]]*\[([^]]+)\] ]]; then
+            marker=${BASH_REMATCH[1]}
+            [[ $marker == warn ]] || {
+                rm -f -- "$paths_tmp"
+                return 1
+            }
+        elif [[ ${line,,} =~ ^[[:space:]]*(error|fatal|panic)(:|[[:space:]]) ]]; then
+            rm -f -- "$paths_tmp"
+            return 1
+        else
+            continue
+        fi
         [[ $line =~ ^[[:space:]]*\[warn\][[:space:]]+(.+)$ ]] || continue
         path=${BASH_REMATCH[1]}
         path=${path#./}
         case $path in
             ''|/*|../*|*/../*|*/..|*'\n'*) continue ;;
         esac
-        printf '%s\n' "$path"
-    done <"$file" | sort -u
+        candidate=$(readlink -f -- "$cwd/$path" 2>/dev/null || true)
+        [[ -n $candidate && $candidate == "$repo_root"/* && -f $candidate ]] || continue
+        rel=${candidate#"$repo_root"/}
+        printf '%s\n' "$rel" >>"$paths_tmp" || {
+            rm -f -- "$paths_tmp"
+            return 1
+        }
+    done <"$file"
+    sort -u -- "$paths_tmp"
+    rc=$?
+    rm -f -- "$paths_tmp"
+    return "$rc"
 }
 
 format_paths_csv() {
@@ -1165,8 +1180,8 @@ try_baseline_exclusion() {
     current_failure_paths=''
     baseline_failure_paths=''
     if [[ $command_kind == format ]]; then
-        current_failure_paths=$(format_failure_paths "$log_file") || current_failure_paths=''
-        baseline_failure_paths=$(format_failure_paths "$baseline_output") || baseline_failure_paths=''
+        current_failure_paths=$(format_failure_paths "$log_file" "$work_dir" "$git_top") || current_failure_paths=''
+        baseline_failure_paths=$(format_failure_paths "$baseline_output" "$baseline_work_dir" "$baseline_dir") || baseline_failure_paths=''
     else
         current_signature=$(failure_signature "$log_file") || current_signature=''
         baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
@@ -1232,9 +1247,8 @@ print_notes() {
 
 probe_timeout_load_flake() {
     ((concurrent_suites > 1 || timeout_scale > 1)) || return 1
-    grep -Eiq \
-        '=== finding load-flake:|probe[^[:cntrl:]]*(did not finish|timed out|timeout)|probe timeout' \
-        "$1" 2> /dev/null
+    tail -n +"$attempt_start_line" "$1" 2> /dev/null |
+        grep -Eiq '^FAIL: probe did not finish within [0-9]+s( \(watchdog bound killed its process group, rc=[0-9]+\))?$'
 }
 
 # Compose's dependency-start messages are often the only durable signal that
@@ -1256,7 +1270,7 @@ compose_dependency_start_collision() {
 }
 
 report_failure() {
-    local rc=$1 log=$2 excerpt
+    local rc=$1 log=$2 excerpt formatter_paths
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
     printf '  cwd=%s runner=none\n' "$work_dir"
     print_notes '  '
@@ -1272,6 +1286,12 @@ report_failure() {
     if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
         printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around the resolved execution base.\n' \
             "$literal_token" "$literal_repository_base" "$literal_execution_base"
+    fi
+    if [[ $command_kind == format ]]; then
+        formatter_paths=$(format_failure_paths "$log" "$work_dir" "$git_top" 2>/dev/null || true)
+        if [[ -n $formatter_paths ]]; then
+            printf '  formatter failing paths: %s\n' "$(format_paths_csv "$formatter_paths")"
+        fi
     fi
     excerpt=$(grep -iE 'error|fail|traceback|assert|refused|denied' "$log" 2>/dev/null | head -n 20 || true)
     [[ -n $excerpt ]] || excerpt=$(tail -n 20 "$log" 2>/dev/null || true)
@@ -1543,12 +1563,14 @@ trap 'log_interrupted SIGTERM' TERM
 
 started_at=$SECONDS
 rc=0
+attempt_start_line=3
 (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
 load_flake_retry=0
 if ((rc != 0)) && probe_timeout_load_flake "$log_file"; then
     load_flake_retry=1
     printf '=== finding load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
         "$concurrent_suites" >> "$log_file"
+    attempt_start_line=$(($(wc -l < "$log_file" | tr -d '[:space:]') + 1))
     rc=0
     (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
 fi
