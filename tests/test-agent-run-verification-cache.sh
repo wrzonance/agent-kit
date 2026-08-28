@@ -257,6 +257,100 @@ assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" 'tests/demo-
 assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" '.agent/logs/' \
     'the exclusion records the worker evidence log path'
 
+# --- formatter baseline exclusion: normalized failing-path set --------------
+# The base and head deliberately report the same files in different orders and
+# with different timing text. A formatter-kind declaration must compare the
+# path set, not the byte-for-byte output.
+format_repo=$(mktemp -d "$tmp/format-repo.XXXXXX")
+git -C "$format_repo" init -q -b main
+git -C "$format_repo" config user.name test
+git -C "$format_repo" config user.email test@example.invalid
+mkdir -p "$format_repo/.agent" "$format_repo/frontend/tools" "$format_repo/frontend"
+printf 'base\n' >"$format_repo/frontend/one.ts"
+printf 'base\n' >"$format_repo/frontend/two.ts"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'if [[ -f format-order ]]; then' \
+    '    printf "[warn] two.ts\\n[warn] one.ts\\n"' \
+    'else' \
+    '    printf "[warn] one.ts\\n[warn] two.ts\\n"' \
+    'fi' \
+    'printf "[warn] Code style issues found in 2 files.\\n"' \
+    'if [[ -f format-error ]]; then printf "[error] formatter parser failure\\n"; fi' \
+    'printf "checked in %ss\\n" "$SECONDS"' \
+    'exit 1' >"$format_repo/frontend/tools/format-check"
+chmod +x "$format_repo/frontend/tools/format-check"
+printf 'AGENT_CMD_FORMAT=tools/format-check\nAGENT_RUNDIR_FORMAT=frontend\nAGENT_CMD_FORMAT_KIND=format\n' \
+    >"$format_repo/.agent/config.env"
+printf '.agent/*\n!.agent/config.env\n' >"$format_repo/.gitignore"
+git -C "$format_repo" add -A
+git -C "$format_repo" commit -qm base
+git -C "$format_repo" checkout -qb feature
+printf 'head-only formatter metadata\n' >"$format_repo/format-order"
+mv -- "$format_repo/format-order" "$format_repo/frontend/format-order"
+git -C "$format_repo" add frontend/format-order
+git -C "$format_repo" commit -qm 'feature: reorder formatter diagnostics'
+format_output=$(cd "$format_repo" && "$real_run_sh" --force --cmd format \
+    --baseline-ref main --baseline-path frontend/one.ts --baseline-id format-drift 2>&1)
+format_rc=$?
+assert_eq '0' "$format_rc" \
+    'formatter output drift with the same failing path set is baseline-excluded'
+assert_contains "$format_output" 'baseline-excluded test=format-drift' \
+    'formatter baseline output reports the exclusion'
+format_exclusion=$(<"$format_repo/.agent/baseline-exclusion.md")
+assert_contains "$format_exclusion" 'failing paths: frontend/one.ts, frontend/two.ts' \
+    'formatter exclusion records the normalized failing path set'
+
+# Without the explicit KIND contract, a formatter-shaped command retains the
+# generic byte-normalized signature behavior; command-name heuristics must not
+# silently opt cargo fmt/black/gofmt-style tools into path parsing.
+printf 'AGENT_CMD_FORMAT=tools/format-check\nAGENT_RUNDIR_FORMAT=frontend\n' \
+    >"$format_repo/.agent/config.env"
+format_without_kind_rc=0
+format_without_kind_output=$(cd "$format_repo" && "$real_run_sh" --force --cmd format \
+    --baseline-ref main --baseline-path frontend/one.ts --baseline-id format-no-kind 2>&1) ||
+    format_without_kind_rc=$?
+assert_eq '1' "$format_without_kind_rc" \
+    'formatter-shaped commands without KIND retain generic failure comparison'
+assert_not_contains "$format_without_kind_output" 'baseline-excluded test=format-no-kind' \
+    'a formatter-shaped command without KIND is not path-set excluded'
+
+# A formatter parser/error diagnostic must never be hidden by a matching warn
+# path set from the chain base.
+printf 'formatter parser failure\n' >"$format_repo/frontend/format-error"
+git -C "$format_repo" add frontend/format-error
+git -C "$format_repo" commit -qm 'feature: surface formatter diagnostic error'
+printf 'AGENT_CMD_FORMAT=tools/format-check\nAGENT_RUNDIR_FORMAT=frontend\nAGENT_CMD_FORMAT_KIND=format\n' \
+    >"$format_repo/.agent/config.env"
+format_error_rc=0
+format_error_output=$(cd "$format_repo" && "$real_run_sh" --force --cmd format \
+    --baseline-ref main --baseline-path frontend/one.ts --baseline-id format-drift 2>&1) ||
+    format_error_rc=$?
+assert_eq '1' "$format_error_rc" \
+    'formatter error diagnostics remain ordinary failures'
+assert_not_contains "$format_error_output" 'baseline-excluded test=format-drift' \
+    'formatter error diagnostics cannot be baseline-excluded'
+assert_contains "$format_error_output" '[error] formatter parser failure' \
+    'formatter error failure output preserves the diagnostic'
+
+# Touching one reported drift path makes the same failure change-caused-red,
+# even though the formatter still reports the same set.
+rm -- "$format_repo/frontend/format-error"
+git -C "$format_repo" add -u frontend/format-error
+git -C "$format_repo" commit -qm 'feature: clear formatter diagnostic'
+printf 'changed by this feature\n' >"$format_repo/frontend/one.ts"
+git -C "$format_repo" add frontend/one.ts
+git -C "$format_repo" commit -qm 'feature: touch formatter drift'
+format_changed_rc=0
+format_changed_output=$(cd "$format_repo" && "$real_run_sh" --force --cmd format \
+    --baseline-ref main --baseline-path frontend/one.ts --baseline-id format-drift 2>&1) ||
+    format_changed_rc=$?
+assert_eq '1' "$format_changed_rc" \
+    'touching a reported formatter path remains a genuine failure'
+assert_contains "$format_changed_output" 'FAIL(rc=1)' \
+    'a touched formatter path reports ordinary failure'
+assert_contains "$format_changed_output" 'frontend/one.ts' \
+    'ordinary formatter failure names the touched drift path'
+
 # A second proven baseline failure is appended and deduplicated rather than
 # overwriting the first exclusion.
 printf 'AGENT_CMD_TEST=tests/second-test.sh\n' >"$baseline_repo/.agent/config.env"
