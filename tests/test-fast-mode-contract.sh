@@ -107,8 +107,15 @@ assert_contains "$parallel_text$fast_text$triage_text" 'reason=worktree' \
 assert_contains "$parallel_text$fast_text$triage_text" 'reason=heartbeat' \
     'held active output identifies a fresh worker heartbeat'
 assert_contains "$parallel_text$fast_text$triage_text" \
-    'requested = dispatched + tracker + duplicate + held-active + stale-active + queued' \
-    'fast mode funnel accounts for every named issue'
+    'requested = dispatched + queued + tracker + duplicate + held-active + sum(exclusions)' \
+    'fast mode funnel accounts for every named issue and exclusions'
+assert_contains "$triage_text" 'stale-active is a disclosure sub-count' \
+    'stale-active is not double-counted in the funnel invariant'
+assert_contains "$triage_text" \
+    'requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count>' \
+    'funnel declares one canonical field order'
+assert_contains "$triage_text" 'Legacy forms are compatibility-only and are not emitted' \
+    'legacy funnel forms are explicitly demoted'
 assert_contains "$parallel_text$fast_text$triage_text" 'stale-active=1[#' \
     'fast mode example prints stale-active issue identity'
 assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
