@@ -67,6 +67,11 @@ def parse_cli(args):
     index = 0
     while index < len(args):
         option = args[index]
+        if option == "--":
+            index += 1
+            if index < len(args):
+                invalid(f"unexpected argument after --: {args[index]}")
+            break
         if option in ("--worktree", "--handback-file", "--dispatch-plan", "--issue"):
             if index + 1 >= len(args) or not args[index + 1]:
                 invalid(f"{option} requires a value")

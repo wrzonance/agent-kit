@@ -86,6 +86,10 @@ assert_contains "$out" 'items=12 of=12' \
 assert_not_contains "$out" 'unknown argument: --' \
     'a standalone end-of-options marker is not rejected'
 
+out=$(run_board "$bin" -- extra)
+assert_contains "$out" 'unexpected argument after --: extra' \
+    'board-list rejects an operand after the end-of-options marker'
+
 # --- the case this exists for ----------------------------------------------
 # 230 items, a 200-item window. Every count printed is a count of the window.
 bin=$(make_gh big 230)

@@ -68,7 +68,7 @@ die_blocked() {
 
 while (($#)); do
     case $1 in
-        --) shift; break ;;
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --repo-root)
             [[ ${2:-} ]] || die_usage '--repo-root requires a value'
             ARG_REPO_ROOT=$2

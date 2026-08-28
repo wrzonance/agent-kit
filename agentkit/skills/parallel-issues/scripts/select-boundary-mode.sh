@@ -23,7 +23,17 @@ die() {
 
 while (($#)); do
     case $1 in
-        --) shift; break ;;
+        --)
+            shift
+            (($# <= 1)) || die "unexpected argument after --: $2"
+            if (($# == 1)); then
+                [[ $1 != -* ]] || { usage >&2; die "unknown option: $1"; }
+                [[ $visibility == unknown ]] || { usage >&2; die "unexpected argument after --: $1"; }
+                visibility=$1
+                shift
+            fi
+            break
+            ;;
         --visibility|--repository-visibility)
             (($# >= 2)) || die "$1 requires a value"
             visibility=$2

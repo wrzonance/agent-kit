@@ -91,7 +91,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
-            --) shift; break ;;
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --base) require_value "$1" "${2:-}"; BASE=$2; shift 2 ;;
             --base=*) BASE=${1#*=}; shift ;;
             --log) require_value "$1" "${2:-}"; LOG=$2; shift 2 ;;

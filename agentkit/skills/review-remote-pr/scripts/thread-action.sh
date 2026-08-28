@@ -46,7 +46,7 @@ EOF
 
 while (($#)); do
     case $1 in
-        --) shift; break ;;
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --pr) (($# >= 2)) || usage; pr=$2; shift 2 ;;
         --repo) (($# >= 2)) || usage; repo=$2; shift 2 ;;
         --threads-artifact|--artifact) (($# >= 2)) || usage; artifact=$2; shift 2 ;;

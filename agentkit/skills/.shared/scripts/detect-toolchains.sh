@@ -720,7 +720,7 @@ ARG_FORMAT=suggestions
 
 while (($#)); do
     case $1 in
-        --) shift; break ;;
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --repo-root)
             shift
             (($#)) || {

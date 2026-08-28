@@ -123,7 +123,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
-            --) shift; break ;;
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --worktree) require_value "$1" "${2:-}"; WORKTREE=$2; shift 2 ;;
             --worktree=*) WORKTREE=${1#*=}; shift ;;
             --pr) require_value "$1" "${2:-}"; PR=$2; shift 2 ;;
