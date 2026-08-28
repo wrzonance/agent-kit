@@ -215,6 +215,10 @@ KNOWN_OVERSIZE[parallel-issues]="1133:19713:900"
 # and set to the minimum that passes, never padded. Line target unchanged.
 # test-skill-size.sh's pinned token-ratchet message moves with it.
 KNOWN_OVERSIZE[parallel-issues]="1133:19743:900"
+# Issue #549 integrates the receipt-surface wording from the predecessor
+# chain, raising the measured body by two tokens. Keep the conscious ratchet
+# at the exact merged-tree measurement rather than weakening the gate.
+KNOWN_OVERSIZE[parallel-issues]="1133:19745:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
