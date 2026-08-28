@@ -617,7 +617,7 @@ Examples cover all queue shapes:
 ```text
 Selection funnel: requested=3 eligible=3 dispatched=3 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=none
 Selection funnel: requested=3 eligible=2 dispatched=1 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
-Selection funnel: requested=11 eligible=11 dispatched=10 queued=1[#12] tracker=1 duplicate=0 held-active=0 stale-active=0 exclusions=none
+Selection funnel: requested=12 eligible=11 dispatched=10 queued=1[#12] tracker=1 duplicate=0 held-active=0 stale-active=0 exclusions=none
 Selection funnel: requested=6 eligible=6 dispatched=5 queued=1[#6] tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=none
 Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]
 Selection funnel: requested=12 eligible=11 dispatched=10 queued=1 tracker=1 duplicate=0 held-active=0 stale-active=0 exclusions=none

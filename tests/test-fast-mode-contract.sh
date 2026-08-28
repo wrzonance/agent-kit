@@ -121,4 +121,35 @@ assert_contains "$parallel_text$fast_text$triage_text" 'stale-active=1[#' \
 assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
     'fast mode example prints held-active issue identity'
 
+# Parse every currently emitted canonical example and verify the accounting
+# invariant, including exclusion groups. Compatibility-only legacy strings do
+# not match this shape and are intentionally excluded from the parse.
+canonical_funnels=$(printf '%s\n' "$triage_text" | grep -E \
+    '^Selection funnel: requested=[0-9]+ eligible=[0-9]+ dispatched=[0-9]+ queued=[0-9]+(\[[^]]*\])?[[:space:]]tracker=[0-9]+ duplicate=[0-9]+ held-active=[0-9]+ stale-active=[0-9]+(\[[^]]*\])?[[:space:]]exclusions=')
+canonical_count=$(printf '%s\n' "$canonical_funnels" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+assert_eq '8' "$canonical_count" 'all canonical funnel examples are discoverable'
+canonical_mismatches=0
+while IFS= read -r funnel; do
+    [[ -n $funnel ]] || continue
+    requested=$(grep -oE 'requested=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    dispatched=$(grep -oE 'dispatched=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    queued=$(grep -oE 'queued=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    tracker=$(grep -oE 'tracker=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    duplicate=$(grep -oE 'duplicate=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    held=$(grep -oE 'held-active=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    exclusions=${funnel#* exclusions=}
+    exclusion_total=0
+    if [[ $exclusions != none ]]; then
+        while IFS= read -r group; do
+            count=${group#*:}
+            count=${count%%\[*}
+            exclusion_total=$((exclusion_total + count))
+        done < <(tr ',' '\n' <<< "$exclusions")
+    fi
+    expected=$((dispatched + queued + tracker + duplicate + held + exclusion_total))
+    [[ $requested == "$expected" ]] || canonical_mismatches=$((canonical_mismatches + 1))
+done <<< "$canonical_funnels"
+assert_eq '0' "$canonical_mismatches" \
+    'every canonical funnel example satisfies the accounting invariant'
+
 finish
