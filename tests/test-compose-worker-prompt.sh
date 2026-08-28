@@ -472,6 +472,12 @@ assert_contains "$setup_prompt" '--comments-file' \
     'pr-loop-setup passes the persisted PR Code Quality artifact for attribution'
 assert_contains "$setup_prompt" '--diff-base' \
     'pr-loop-setup passes the PR diff base for line attribution'
+assert_contains "$setup_prompt" '--repo-root ' \
+    'pr-loop-setup passes the checkout root for Code Quality diff attribution'
+assert_contains "$setup_prompt" "if ! cq_state=\$(" \
+    'pr-loop-setup fails closed when Code Quality attribution fails'
+assert_contains "$setup_prompt" 'cq-open: unavailable' \
+    'pr-loop-setup names the unavailable Code Quality terminal marker'
 assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acceptance_command\")" \
     'pr-loop setup forwards each persisted acceptance command to PR-state checks'
 assert_contains "$setup_prompt" '--acceptance-file ' \
