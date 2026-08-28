@@ -981,11 +981,11 @@ register_suite_run() {
         suite_marker_live "$existing" || rm -f -- "$existing"
     done
     shopt -u nullglob
-    marker=$(mktemp "$suite_marker_dir/agent-run.XXXXXX.run") ||
+    marker=$(mktemp "$suite_marker_dir/agent-run.XXXXXX") ||
         die "cannot create active-suite marker in $suite_marker_dir"
     pid=$$
     start=$(current_process_start "$pid")
-    [[ $start =~ ^[0-9]+$ ]] || {
+    [[ $start =~ ^[0-9]+$ || $start == alive ]] || {
         rm -f -- "$marker"
         die "cannot identify active-suite process $pid"
     }
@@ -994,7 +994,7 @@ register_suite_run() {
         die "cannot write active-suite marker $marker"
     }
     suite_marker=$marker
-    concurrent_suites=$(find "$suite_marker_dir" -maxdepth 1 -type f -name '*.run' -print 2> /dev/null |
+    concurrent_suites=$(find "$suite_marker_dir" -maxdepth 1 -type f -name 'agent-run.*' -print 2> /dev/null |
         wc -l | tr -d '[:space:]')
     [[ $concurrent_suites =~ ^[1-9][0-9]*$ ]] || concurrent_suites=1
     local timeout_scale_key=AGENT_TEST_TIMEOUT_SCALE
@@ -1232,9 +1232,8 @@ print_notes() {
 
 probe_timeout_load_flake() {
     ((concurrent_suites > 1 || timeout_scale > 1)) || return 1
-    grep -Eiq \
-        '=== finding load-flake:|probe[^[:cntrl:]]*(did not finish|timed out|timeout)|probe timeout' \
-        "$1" 2> /dev/null
+    tail -n +"$attempt_start_line" "$1" 2> /dev/null |
+        grep -Eiq '^FAIL: probe did not finish within [0-9]+s( \(watchdog bound killed its process group, rc=[0-9]+\))?$'
 }
 
 # Compose's dependency-start messages are often the only durable signal that
@@ -1543,12 +1542,14 @@ trap 'log_interrupted SIGTERM' TERM
 
 started_at=$SECONDS
 rc=0
+attempt_start_line=3
 (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
 load_flake_retry=0
 if ((rc != 0)) && probe_timeout_load_flake "$log_file"; then
     load_flake_retry=1
     printf '=== finding load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
         "$concurrent_suites" >> "$log_file"
+    attempt_start_line=$(($(wc -l < "$log_file" | tr -d '[:space:]') + 1))
     rc=0
     (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
 fi

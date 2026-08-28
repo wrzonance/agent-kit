@@ -376,6 +376,41 @@ assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bo
 log=$(cat "$repo"/.agent/logs/*-bad.log)
 assert_contains "$log" '=== agent-run exited rc=1' 'a failing command records its exit code too'
 
+# --- active-suite marker portability ---------------------------------------
+# macOS has no /proc and BSD mktemp requires XXXXXX at the end of its template.
+# Force both portability paths through small process-edge seams so this stays
+# deterministic on Linux too.
+marker_repo=$(make_repo)
+mkdir -p "$marker_repo/bin"
+printf 'AGENT_CMD_TEST=printf marker-ok\n' >"$marker_repo/.agent/config.env"
+cat >"$marker_repo/bin/awk" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ ${1:-} == '{print $22}' ]]; then
+    printf 'alive\n'
+else
+    exec /usr/bin/awk "$@"
+fi
+EOF
+chmod +x -- "$marker_repo/bin/awk"
+cat >"$marker_repo/bin/mktemp" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+for arg in "$@"; do
+    if [[ $arg == */agent-run.* && $arg != *XXXXXX ]]; then
+        printf 'marker template is not BSD-compatible: %s\n' "$arg" >&2
+        exit 91
+    fi
+done
+exec /usr/bin/mktemp "$@"
+EOF
+chmod +x -- "$marker_repo/bin/mktemp"
+marker_out=$(cd "$marker_repo" && PATH="$marker_repo/bin:$PATH" \
+    "$real_run_sh" --force --cmd test 2>&1)
+assert_contains "$marker_out" 'marker-ok' 'a no-proc marker accepts the alive fallback'
+assert_not_contains "$marker_out" 'marker template is not BSD-compatible' \
+    'the active marker uses a BSD-compatible trailing-X template'
+
 # --- load-flake retry acceptance -------------------------------------------
 # An explicit scale is the deterministic seam for the live concurrent-suite
 # marker count. The fixture makes the first probe invocation fail and the
@@ -390,7 +425,7 @@ count=0
 count=$((count + 1))
 printf '%s' "$count" >"$COUNT_FILE"
 if [[ ${MODE:-} == always || $count == 1 ]]; then
-    printf 'FAIL: probe did not finish within 10s\n' >&2
+    printf 'FAIL: probe did not finish within 10s (watchdog bound killed its process group, rc=1)\n' >&2
     exit 1
 fi
 printf 'probe recovered\n'
@@ -415,5 +450,55 @@ assert_eq '1' "$genuine_rc" 'a genuine probe timeout remains red after one retry
 assert_contains "$genuine_out" 'load-flake' 'the persistent timeout retains load-flake classification'
 assert_contains "$genuine_out" 'one retry was exhausted' 'the persistent timeout reports exhaustion'
 assert_eq '2' "$(<"$retry_count")" 'the persistent timeout is attempted exactly twice'
+
+# A non-probe failure that merely mentions the timeout phrase is never retried.
+false_positive_repo=$(make_repo)
+mkdir -p "$false_positive_repo/tools"
+cat >"$false_positive_repo/tools/probe-result" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'passing test text: probe did not finish within 10s\n'
+exit 1
+EOF
+chmod +x -- "$false_positive_repo/tools/probe-result"
+printf 'AGENT_CMD_TEST=tools/probe-result\n' >"$false_positive_repo/.agent/config.env"
+false_positive_out=''
+false_positive_rc=0
+false_positive_out=$(cd "$false_positive_repo" && AGENT_TEST_TIMEOUT_SCALE=2 \
+    "$real_run_sh" --force --cmd test 2>&1) || false_positive_rc=$?
+assert_eq '1' "$false_positive_rc" 'passing test text does not turn a genuine failure green'
+assert_not_contains "$false_positive_out" 'classification: load-flake' \
+    'passing test text cannot trigger load-flake classification or retry'
+
+# If a real timeout triggers the one retry, classify only the second attempt:
+# its unrelated failure must not inherit the first attempt's timeout record.
+latest_attempt_repo=$(make_repo)
+mkdir -p "$latest_attempt_repo/tools"
+cat >"$latest_attempt_repo/tools/probe-result" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+count_file=${COUNT_FILE:?}
+count=0
+[[ -f $count_file ]] && count=$(<$count_file)
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [[ $count == 1 ]]; then
+    printf 'FAIL: probe did not finish within 10s (watchdog bound killed its process group, rc=1)\n' >&2
+else
+    printf 'passing test text: probe did not finish within 10s\n'
+fi
+exit 1
+EOF
+chmod +x -- "$latest_attempt_repo/tools/probe-result"
+printf 'AGENT_CMD_TEST=tools/probe-result\n' >"$latest_attempt_repo/.agent/config.env"
+latest_attempt_count=$tmp/latest-attempt-count
+latest_attempt_out=''
+latest_attempt_rc=0
+latest_attempt_out=$(cd "$latest_attempt_repo" && COUNT_FILE="$latest_attempt_count" \
+    AGENT_TEST_TIMEOUT_SCALE=2 "$real_run_sh" --force --cmd test 2>&1) || latest_attempt_rc=$?
+assert_eq '1' "$latest_attempt_rc" 'a second non-probe failure remains red after a load retry'
+assert_not_contains "$latest_attempt_out" 'classification: load-flake' \
+    'classification uses only the just-failed retry attempt'
+assert_eq '2' "$(<"$latest_attempt_count")" 'the mixed failure runs exactly the initial attempt and one retry'
 
 finish
