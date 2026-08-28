@@ -22,12 +22,16 @@ probe=no
 head_sha=''
 pr=''
 baseline_file=''
+comments_file=''
+diff_base=''
+diff_head=HEAD
 
 usage() {
     cat <<'EOF'
 Usage: code-quality-state.sh --repo OWNER/REPO [--state open|dismissed] [--per-page N] [--summary]
        code-quality-state.sh --repo OWNER/REPO --probe
        code-quality-state.sh --repo OWNER/REPO --head SHA40 --pr N [--baseline-file FILE]
+       code-quality-state.sh --repo OWNER/REPO --pr N --comments-file FILE --diff-base REF [--diff-head REF]
 
 Reads Code Quality findings through the public read-only API. The default
 output is the API JSON; --summary emits one compact line per finding.
@@ -65,6 +69,14 @@ vs an unreadable repository (unknown). --head always queries its own pages;
 combined with --probe or --summary). --baseline-file FILE additionally
 writes a mode-600 JSON evidence artifact
 {head, findingsOnHead, repoWideOpen, timestamp} for this run.
+
+--pr N --comments-file FILE --diff-base REF reports the open findings attributed
+to a PR's persisted Code Quality comments artifact and the remaining
+repository-wide findings. A finding is PR-attributed only when its path and
+line are inside a changed-line range in REF...HEAD (or --diff-head REF).
+It prints:
+  cq-repo: M
+  cq-open: N source=pr_N_code_quality_comments.json
 EOF
 }
 
@@ -116,6 +128,21 @@ while (($#)); do
             pr=$2
             shift 2
             ;;
+        --comments-file)
+            (($# >= 2)) || die '--comments-file requires a path'
+            comments_file=$2
+            shift 2
+            ;;
+        --diff-base)
+            (($# >= 2)) || die '--diff-base requires a git ref'
+            diff_base=$2
+            shift 2
+            ;;
+        --diff-head)
+            (($# >= 2)) || die '--diff-head requires a git ref'
+            diff_head=$2
+            shift 2
+            ;;
         --baseline-file)
             (($# >= 2)) || die '--baseline-file requires a path'
             baseline_file=$2
@@ -135,7 +162,19 @@ if [[ -n $head_sha ]]; then
     [[ -n $pr ]] || die '--head requires --pr N'
     [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
 else
-    [[ -z $pr ]] || die '--pr is only meaningful with --head'
+    if [[ -n $pr || -n $comments_file || -n $diff_base ]]; then
+        [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr requires a positive integer'
+        [[ -n $comments_file && -n $diff_base ]] ||
+            die '--pr requires --comments-file and --diff-base'
+        [[ -f $comments_file && ! -L $comments_file && -r $comments_file ]] ||
+            die '--comments-file must be a readable regular file'
+        [[ -n $diff_head ]] || die '--diff-head must not be empty'
+        [[ $probe == no && $summary == no ]] ||
+            die '--pr attribution cannot be combined with --probe or --summary'
+    else
+        [[ -z $pr ]] || die '--pr is only meaningful with --head or attribution'
+        [[ -z $comments_file && -z $diff_base ]] || die '--comments-file and --diff-base require --pr'
+    fi
     [[ -z $baseline_file ]] || die '--baseline-file is only meaningful with --head'
 fi
 case $state in
@@ -247,6 +286,107 @@ if [[ $head_sha != '' ]]; then
     fi
 
     printf 'scan-state=complete head=%s findings-on-head=%s\n' "$head_sha" "$findings_on_head"
+    exit 0
+fi
+
+if [[ -n $comments_file ]]; then
+    # The public findings endpoint is repository-wide. Attribute only the
+    # path/line pairs present in the PR's persisted bot-comment artifact and
+    # inside an actual changed-line range from the local PR diff.
+    comments_json=''
+    if ! comments_json=$(cat -- "$comments_file" 2>&1); then
+        die "could not read Code Quality comments artifact: $comments_file"
+    fi
+    jq -e 'type == "array" and all(.[]; type == "object")' <<<"$comments_json" >/dev/null 2>&1 ||
+        die 'Code Quality comments artifact was not a JSON array of objects'
+
+    diff_output=''
+    if ! diff_output=$(git diff --no-ext-diff --unified=0 --no-renames \
+        "$diff_base...$diff_head" -- 2>&1); then
+        die "could not read PR diff $diff_base...$diff_head: $diff_output"
+    fi
+    changed_ranges=$(awk '
+        /^\+\+\+ / {
+            path = substr($0, 5)
+            sub(/^b\//, "", path)
+            next
+        }
+        /^@@ / {
+            hunk = $0
+            sub(/^.*\+/, "", hunk)
+            sub(/ .*/, "", hunk)
+            split(hunk, fields, ",")
+            start = fields[1] + 0
+            count = (fields[2] == "" ? 1 : fields[2] + 0)
+            if (count > 0 && path != "") {
+                printf "%s\t%d\t%d\n", path, start, start + count - 1
+            }
+        }
+    ' <<<"$diff_output")
+
+    findings_response=''
+    if ! findings_response=$(gh api -X GET \
+        "repos/$repository/code-quality/findings?state=open&per_page=100" --paginate \
+        -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
+        die "Code Quality findings request failed: $(first_error_line "$findings_response")"
+    fi
+    if ! jq -se '
+        (length >= 1) and
+        all(.[]; (type == "array") or ((.findings? | type) == "array"))
+    ' <<<"$findings_response" >/dev/null 2>&1; then
+        die 'Code Quality findings response was not readable JSON'
+    fi
+
+    source_file=${comments_file##*/}
+    cq_open=$(jq -nr --arg range_text "$changed_ranges" --argjson comments "$comments_json" '
+        def changed_ranges:
+          [$range_text | split("\n")[] | select(length > 0) | split("\t")
+           | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber)}];
+        def line_of:
+          (.line // .original_line // .location.start_line // empty) | tonumber;
+        ($comments | map(select((.path // "") != "")
+          | {path: .path, line: line_of})) as $comment_records
+        |
+        (changed_ranges) as $ranges
+        | [$comment_records[] | . as $comment
+          | select(any($ranges[]; . as $range
+              | $range.path == $comment.path and $comment.line >= $range.start and $comment.line <= $range.end))
+          | $comment]
+        | length
+    ' 2>/dev/null) || cq_open=''
+    [[ $cq_open =~ ^[0-9]+$ ]] || die 'Code Quality comments artifact could not be attributed'
+
+    cq_repo=$(jq -s --arg range_text "$changed_ranges" --argjson comments "$comments_json" '
+        def changed_ranges:
+          [$range_text | split("\n")[] | select(length > 0) | split("\t")
+           | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber)}];
+        def line_of:
+          (.line // .original_line // empty) | tonumber;
+        (changed_ranges) as $ranges
+        | ($comments
+          | [$comments[] | . as $comment
+            | select(($comment.path // "") != "")
+            | {path: $comment.path, line: ($comment | line_of)}
+            | . as $comment_record
+            | select(any($ranges[]; . as $range
+                | $range.path == $comment_record.path and $comment_record.line >= $range.start and $comment_record.line <= $range.end))
+            | $comment_record]
+          | unique) as $attributed
+        | [ .[]? | if type == "array" then .[]
+                  elif (.findings? | type) == "array" then .findings[]
+                  else empty end
+          | .location? // empty
+          | select((.path // "") != "" and (.start_line? != null)) ] as $findings
+        | [$findings[] | . as $finding
+          | select(any($attributed[]; . as $attributed_finding
+              | $attributed_finding.path == $finding.path and $attributed_finding.line == ($finding.start_line | tonumber)) | not)
+          | $finding]
+        | length
+    ' <<<"$findings_response" 2>/dev/null) || cq_repo=''
+    [[ $cq_repo =~ ^[0-9]+$ ]] || die 'Code Quality findings could not be classified'
+
+    printf 'cq-repo: %s\n' "$cq_repo"
+    printf 'cq-open: %s source=%s\n' "$cq_open" "$source_file"
     exit 0
 fi
 

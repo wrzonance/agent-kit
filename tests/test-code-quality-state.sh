@@ -362,4 +362,44 @@ assert_rc 1 '--head requires --pr' -- \
 assert_rc 1 '--pr is only meaningful with --head' -- \
     env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --probe --pr "$PR"
 
+# --- --pr attribution: repository-wide findings are split from findings that
+# are both present in the persisted PR comments artifact and inside the PR's
+# changed line ranges. The setup gate must act only on the first count.
+attribution_repo="$tmp/attribution-repo"
+mkdir -p "$attribution_repo"
+git -C "$attribution_repo" init -q
+git -C "$attribution_repo" config user.email test@example.invalid
+git -C "$attribution_repo" config user.name 'Code Quality Test'
+printf 'unchanged\nold\n' >"$attribution_repo/tracked.txt"
+git -C "$attribution_repo" add tracked.txt
+git -C "$attribution_repo" commit -q -m base
+attribution_base=$(git -C "$attribution_repo" rev-parse HEAD)
+printf 'unchanged\nchanged\n' >"$attribution_repo/tracked.txt"
+git -C "$attribution_repo" add tracked.txt
+git -C "$attribution_repo" commit -q -m change
+attribution_comments="$tmp/pr_9_code_quality_comments.json"
+printf '%s\n' '[{"path":"tracked.txt","line":2}]' >"$attribution_comments"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"location":{"path":"tracked.txt","start_line":2}},{"location":{"path":"repo-a.py","start_line":10}},{"location":{"path":"repo-b.py","start_line":20}},{"location":{"path":"repo-c.py","start_line":30}}]' \
+    ok '[]'
+out=$(cd "$attribution_repo" && PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$attribution_comments" --diff-base "$attribution_base")
+rc=$?
+assert_eq $'cq-repo: 3\ncq-open: 1 source=pr_9_code_quality_comments.json' "$out" \
+    'three repository-global findings are separated from one changed-line PR finding'
+assert_eq '0' "$rc" 'PR attribution exits successfully when findings are present'
+
+# A PR comment on an unchanged line is still repository-global for setup
+# purposes: it must not gate the loop, while the global count remains visible.
+printf '%s\n' '[{"path":"tracked.txt","line":1}]' >"$attribution_comments"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"location":{"path":"repo-a.py","start_line":10}},{"location":{"path":"repo-b.py","start_line":20}},{"location":{"path":"repo-c.py","start_line":30}}]' \
+    ok '[]'
+out=$(cd "$attribution_repo" && PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$attribution_comments" --diff-base "$attribution_base")
+assert_eq $'cq-repo: 3\ncq-open: 0 source=pr_9_code_quality_comments.json' "$out" \
+    'a comment outside the PR diff does not become a PR blocker'
+
 finish

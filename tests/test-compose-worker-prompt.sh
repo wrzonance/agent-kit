@@ -464,6 +464,14 @@ assert_contains "$setup_prompt" 'ci-red: <check>' \
     'pr-loop-setup has a CI-red terminal marker'
 assert_contains "$setup_prompt" 'cq-open: N' \
     'pr-loop-setup has a Code Quality terminal marker'
+assert_contains "$setup_prompt" 'source=pr_136_code_quality_comments.json' \
+    'pr-loop-setup names the PR-scoped Code Quality source artifact'
+assert_contains "$setup_prompt" 'cq-repo: M' \
+    'pr-loop-setup reports repository-global Code Quality findings separately'
+assert_contains "$setup_prompt" '--comments-file' \
+    'pr-loop-setup passes the persisted PR Code Quality artifact for attribution'
+assert_contains "$setup_prompt" '--diff-base' \
+    'pr-loop-setup passes the PR diff base for line attribution'
 assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acceptance_command\")" \
     'pr-loop setup forwards each persisted acceptance command to PR-state checks'
 assert_contains "$setup_prompt" '--acceptance-file ' \
