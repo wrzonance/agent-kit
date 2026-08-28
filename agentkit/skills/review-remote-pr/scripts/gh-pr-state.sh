@@ -32,6 +32,7 @@
 #   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
 #   base: ref=main behind=1 stale=yes
 #   ci=3/3 green pending=0 failing=0
+#   ci=1/3 failing pending=1 failing=1 failing-checks=lint
 #   provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T06:36:18Z
 #   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
 #   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
@@ -746,7 +747,8 @@ ci_counts() {
             ([$c[] | select(.b == "pass")]    | length),
             ([$c[] | select(.b == "pending")] | length),
             ([$c[] | select(.b == "fail")]    | length),
-            ([$c[] | select((.b == "pending") and ((.n | test($re; "i")) | not))] | length) ]
+            ([$c[] | select((.b == "pending") and ((.n | test($re; "i")) | not))] | length),
+            ([$c[] | select(.b == "fail") | .n] | sort | join(",")) ]
         | @tsv' <"$WORK_DIR/pr.json"
 }
 
@@ -1021,8 +1023,8 @@ save_artifacts() {
 }
 
 print_ci_line() {
-    local total pass pending fail pending_nb word
-    IFS=$'\t' read -r total pass pending fail pending_nb < <(ci_counts)
+    local total pass pending fail pending_nb failing_checks word
+    IFS=$'\t' read -r total pass pending fail pending_nb failing_checks < <(ci_counts)
     if ((total == 0)); then
         if ((CI_NONE_CONFIGURED)); then
             word=none-configured
@@ -1039,7 +1041,12 @@ print_ci_line() {
         word=green
     fi
     CI_WORD=$word
-    printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
+    if ((fail > 0)); then
+        printf 'ci=%s/%s %s pending=%s failing=%s failing-checks=%s\n' \
+            "$pass" "$total" "$word" "$pending" "$fail" "$failing_checks"
+    else
+        printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
+    fi
 }
 
 print_acceptance_lines() {

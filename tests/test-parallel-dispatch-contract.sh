@@ -656,6 +656,12 @@ assert_contains "$setup_prompt" '--comments-file' \
     'setup prompt attributes findings from the persisted PR artifact'
 assert_contains "$setup_prompt" '--diff-base' \
     'setup prompt attributes findings against the PR diff base'
+assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
+    'setup prompt passes the checkout root for Code Quality attribution'
+assert_contains "$setup_prompt" 'if ! cq_state=' \
+    'setup prompt fails closed when Code Quality attribution fails'
+assert_contains "$setup_prompt" 'cq-open: unavailable' \
+    'setup prompt names the unavailable Code Quality terminal marker'
 assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
@@ -670,6 +676,24 @@ assert_contains "$setup_prompt" 'exactly once' \
     'setup completion acceptance bounds artifact regeneration to one retry'
 assert_contains "$setup_prompt" 'run-dir=' \
     'setup completion line names the canonical run directory'
+assert_contains "$setup_prompt" 'ci_digest=$(' \
+    'setup prompt captures the bounded CI digest'
+assert_contains "$setup_prompt" 'ci_line=$(sed -n' \
+    'setup prompt parses the captured CI digest'
+assert_contains "$setup_prompt" 'ci_failing=' \
+    'setup prompt retains the failing CI count'
+assert_contains "$setup_prompt" 'failing-checks=' \
+    'setup prompt receives stable failing-check names'
+assert_contains "$setup_prompt" 'ci_failing_checks=$(sed -n' \
+    'setup prompt parses stable failing-check names'
+assert_contains "$setup_prompt" 'setup_terminal="ci-red: $ci_failing_checks"' \
+    'setup prompt names the failing check in its terminal marker'
+assert_contains "$setup_prompt" 'ci-red:' \
+    'setup prompt preserves a failing CI terminal result'
+assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
+    'setup prompt appends the run-dir to every terminal line'
+assert_contains "$setup_prompt" 'Rebuild `acceptance_args` inside this root block' \
+    'setup prompt rebuilds acceptance arguments during root recovery'
 
 assert_prompt_scope_contract() {
     local prompt="$1" label="$2"

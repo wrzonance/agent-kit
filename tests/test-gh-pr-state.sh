@@ -57,6 +57,8 @@ assert_not_contains "$output" $'sha=abcdef0\n' \
     'the digest never truncates the head SHA to a 7-character prefix'
 assert_contains "$output" 'ci=1/3 failing pending=1 failing=1' \
     'digest reports check counts'
+assert_contains "$output" 'failing-checks=lint' \
+    'digest names failing checks in stable order'
 assert_contains "$output" 'threads: coderabbit=1 unresolved  code-quality=0 open  human=2  generic=2' \
     'known and generic bot lanes stay separate from human threads'
 assert_contains "$output" 'classification: known-provider=1 type=Bot=1 login-suffix=1 human=2' \

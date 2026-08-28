@@ -25,13 +25,14 @@ baseline_file=''
 comments_file=''
 diff_base=''
 diff_head=HEAD
+repo_root=''
 
 usage() {
     cat <<'EOF'
 Usage: code-quality-state.sh --repo OWNER/REPO [--state open|dismissed] [--per-page N] [--summary]
        code-quality-state.sh --repo OWNER/REPO --probe
        code-quality-state.sh --repo OWNER/REPO --head SHA40 --pr N [--baseline-file FILE]
-       code-quality-state.sh --repo OWNER/REPO --pr N --comments-file FILE --diff-base REF [--diff-head REF]
+       code-quality-state.sh --repo OWNER/REPO --pr N --comments-file FILE --diff-base REF --repo-root DIR [--diff-head REF]
 
 Reads Code Quality findings through the public read-only API. The default
 output is the API JSON; --summary emits one compact line per finding.
@@ -72,8 +73,9 @@ writes a mode-600 JSON evidence artifact
 
 --pr N --comments-file FILE --diff-base REF reports the open findings attributed
 to a PR's persisted Code Quality comments artifact and the remaining
-repository-wide findings. A finding is PR-attributed only when its path and
-line are inside a changed-line range in REF...HEAD (or --diff-head REF).
+repository-wide findings. A finding is PR-attributed only when its current
+comment path and line are inside a changed-line range in REF...HEAD (or
+--diff-head REF).
 It prints:
   cq-repo: M
   cq-open: N source=pr_N_code_quality_comments.json
@@ -144,6 +146,11 @@ while (($#)); do
             diff_head=$2
             shift 2
             ;;
+        --repo-root)
+            (($# >= 2)) || die '--repo-root requires a path'
+            repo_root=$2
+            shift 2
+            ;;
         --baseline-file)
             (($# >= 2)) || die '--baseline-file requires a path'
             baseline_file=$2
@@ -160,6 +167,7 @@ if [[ -n $head_sha ]]; then
     [[ $probe == no ]] || die '--head cannot be combined with --probe'
     [[ $summary == no ]] || die '--head cannot be combined with --summary'
     [[ $head_sha =~ $SHA_RE ]] || die '--head must be a full 40-character SHA'
+    [[ -z $repo_root ]] || die '--repo-root is only meaningful with attribution'
     [[ -n $pr ]] || die '--head requires --pr N'
     [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
 else
@@ -167,6 +175,10 @@ else
         [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr requires a positive integer'
         [[ -n $comments_file && -n $diff_base ]] ||
             die '--pr requires --comments-file and --diff-base'
+        [[ $repo_root == /* && -d $repo_root && ! -L $repo_root ]] ||
+            die '--pr attribution requires an absolute, non-symlink --repo-root directory'
+        git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+            die "--repo-root is not a git worktree: $repo_root"
         [[ -f $comments_file && ! -L $comments_file && -r $comments_file ]] ||
             die '--comments-file must be a readable regular file'
         [[ -n $diff_head ]] || die '--diff-head must not be empty'
@@ -301,8 +313,10 @@ if [[ -n $comments_file ]]; then
     jq -e 'type == "array" and all(.[]; type == "object")' <<<"$comments_json" >/dev/null 2>&1 ||
         die 'Code Quality comments artifact was not a JSON array of objects'
 
+    current_head=$(git -C "$repo_root" rev-parse --verify "$diff_head^{commit}" 2>/dev/null) ||
+        die "--diff-head is not a commit in --repo-root: $diff_head"
     diff_output=''
-    if ! diff_output=$(git diff --no-ext-diff --unified=0 --no-renames \
+    if ! diff_output=$(git -C "$repo_root" diff --no-ext-diff --unified=0 --no-renames \
         "$diff_base...$diff_head" -- 2>&1); then
         die "could not read PR diff $diff_base...$diff_head: $diff_output"
     fi
@@ -314,8 +328,8 @@ if [[ -n $comments_file ]]; then
         }
         /^@@ / {
             hunk = $0
-            sub(/^.*\+/, "", hunk)
-            sub(/ .*/, "", hunk)
+            sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", hunk)
+            sub(/ @@.*$/, "", hunk)
             split(hunk, fields, ",")
             start = fields[1] + 0
             count = (fields[2] == "" ? 1 : fields[2] + 0)
@@ -339,13 +353,12 @@ if [[ -n $comments_file ]]; then
     fi
 
     source_file=${comments_file##*/}
-    cq_open=$(jq -nr --arg range_text "$changed_ranges" --argjson comments "$comments_json" '
+    cq_open=$(jq -nr --arg range_text "$changed_ranges" --arg head_sha "$current_head" --argjson comments "$comments_json" '
         def changed_ranges:
           [$range_text | split("\n")[] | select(length > 0) | split("\t")
            | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber)}];
-        def line_of:
-          (.line // .original_line // .location.start_line // empty) | tonumber;
-        ($comments | map(select((.path // "") != "")
+        def line_of: .line | tonumber;
+        ($comments | map(select((.commit_id // "") == $head_sha and .line != null and ( .path // "") != "")
           | {path: .path, line: line_of})) as $comment_records
         |
         (changed_ranges) as $ranges
@@ -357,16 +370,15 @@ if [[ -n $comments_file ]]; then
     ' 2>/dev/null) || cq_open=''
     [[ $cq_open =~ ^[0-9]+$ ]] || die 'Code Quality comments artifact could not be attributed'
 
-    cq_repo=$(jq -s --arg range_text "$changed_ranges" --argjson comments "$comments_json" '
+    cq_repo=$(jq -s --arg range_text "$changed_ranges" --arg head_sha "$current_head" --argjson comments "$comments_json" '
         def changed_ranges:
           [$range_text | split("\n")[] | select(length > 0) | split("\t")
            | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber)}];
-        def line_of:
-          (.line // .original_line // empty) | tonumber;
+        def line_of: .line | tonumber;
         (changed_ranges) as $ranges
         | ($comments
           | [$comments[] | . as $comment
-            | select(($comment.path // "") != "")
+            | select(($comment.commit_id // "") == $head_sha and $comment.line != null and ($comment.path // "") != "")
             | {path: $comment.path, line: ($comment | line_of)}
             | . as $comment_record
             | select(any($ranges[]; . as $range
