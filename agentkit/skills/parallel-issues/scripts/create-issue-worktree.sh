@@ -129,6 +129,11 @@ main() {
     worktree="$root/$worktree_root/$branch"
     start=${CHAIN_BASE:-origin/$BASE}
 
+    worktree_setup_ensure_exclude "$root" "$worktree_root/" || exit 1
+    git -C "$root" fetch origin || {
+        worktree_setup_fail 'could not fetch origin'
+        exit 1
+    }
     local resumable=no untracked=0 modified=0 state_counts
     if [[ -e $worktree || -L $worktree ]] ||
         git -C "$root" show-ref --verify --quiet "refs/heads/$branch" ||
@@ -141,11 +146,6 @@ main() {
     fi
     printf 'resumable: %s untracked=%d modified=%d\n' "$resumable" "$untracked" "$modified"
 
-    worktree_setup_ensure_exclude "$root" "$worktree_root/" || exit 1
-    git -C "$root" fetch origin || {
-        worktree_setup_fail 'could not fetch origin'
-        exit 1
-    }
     if git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
         worktree_setup_fail "remote branch origin/$branch already exists; choose a different issue branch"
         exit 1

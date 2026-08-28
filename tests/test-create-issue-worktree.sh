@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # assertions intentionally match literal recipe variables
 # Suite: create-issue-worktree.sh carries session-scoped facts into new worktrees.
 #
 # sandbox=, caches=, and tls= describe the SESSION (which process is running
@@ -42,6 +43,13 @@ assert_exec() {
     fi
 }
 assert_exec "$create_sh" 'create-issue-worktree.sh is executable'
+
+# Fetch must complete before resumability is calculated, so a newly discovered
+# remote branch cannot contradict the summary printed to the caller.
+fetch_line=$(grep -n 'git -C "$root" fetch origin' "$create_sh" | head -n1 | cut -d: -f1)
+resumable_line=$(grep -n "printf 'resumable:" "$create_sh" | head -n1 | cut -d: -f1)
+assert_eq yes "$([[ -n $fetch_line && -n $resumable_line && $fetch_line -lt $resumable_line ]] && printf yes || printf no)" \
+    'resumability is calculated after the origin fetch'
 
 make_repo() {
     local repo=$1 origin
