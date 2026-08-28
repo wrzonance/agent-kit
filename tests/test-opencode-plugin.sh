@@ -21,6 +21,12 @@ index_js="$opencode_dir/index.js"
 run_wrapper="$opencode_dir/test/run-wrapper.mjs"
 run_probe="$opencode_dir/test/run-probe.sh"
 
+probe_timeout_scale=${AGENT_TEST_TIMEOUT_SCALE:-1}
+if [[ ! $probe_timeout_scale =~ ^[1-9][0-9]*$ ]]; then
+    probe_timeout_scale=1
+fi
+probe_bound_seconds=$((10 * probe_timeout_scale))
+
 # --- zero-runtime-dependency invariant --------------------------------------
 # @opencode-ai/plugin is a devDependency for typings only (see
 # opencode/package.json); the shipped module must never import it (or
@@ -58,17 +64,24 @@ assert_not_contains "$probe_src" 'timeout -k' \
     'run-probe.sh has no bare hardcoded "timeout -k" invocation'
 
 # --- run-probe.sh: real probe against the real session-start.sh -----------
-probe_out=$("$run_probe" 2>&1)
+probe_out=$(AGENTKIT_PROBE_BOUND_SECONDS="$probe_bound_seconds" "$run_probe" 2>&1)
 probe_rc=$?
 assert_eq 0 "$probe_rc" 'run-probe.sh exits 0 against this repository'
 assert_contains "$probe_out" 'gh=' 'run-probe.sh output contains the expected gh= line'
+
+# Concurrent full-suite verification supplies a load-derived scale so the
+# probe has enough time to start under CPU contention instead of failing at a
+# fixed ten-second bound. The normal probe output pins the effective bound.
+assert_contains "$probe_out" " $probe_bound_seconds (" \
+    'probe bound scales with AGENT_TEST_TIMEOUT_SCALE'
 
 # --- run-probe.sh fallback: forced no-timeout path still finds gh= --------
 # Exercises the AGENTKIT_PROBE_FORCE_NO_TIMEOUT test seam against the REAL
 # probe on this host: the fallback path must behave identically to the
 # timeout_bin path here, exiting 0 with the expected gh= line, comfortably
 # inside the default 10s bound.
-forced_fallback_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 "$run_probe" 2>&1)
+forced_fallback_out=$(AGENTKIT_PROBE_FORCE_NO_TIMEOUT=1 \
+    AGENTKIT_PROBE_BOUND_SECONDS="$probe_bound_seconds" "$run_probe" 2>&1)
 forced_fallback_rc=$?
 assert_eq 0 "$forced_fallback_rc" 'run-probe.sh forced-fallback path exits 0 against the real probe'
 assert_contains "$forced_fallback_out" 'gh=' 'run-probe.sh forced-fallback path still finds the gh= line'

@@ -365,6 +365,7 @@ out=$(cd "$repo" && "$real_run_sh" --cmd ok 2>&1)
 log=$(cat "$repo"/.agent/logs/*-ok.log)
 assert_contains "$log" '=== agent-run echo hello' 'the log names the command it is running'
 assert_contains "$log" '=== started' 'and when it started'
+assert_contains "$log" 'concurrent-suites=1' 'the log records the active full-suite count'
 assert_contains "$log" '=== agent-run exited rc=0' 'and terminates with the verdict'
 assert_contains "$out" 'has NOT finished' 'and the caller is told what an unterminated log means'
 

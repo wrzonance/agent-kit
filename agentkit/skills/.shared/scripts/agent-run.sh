@@ -942,6 +942,73 @@ choose_log() {
     printf '%s' "$log"
 }
 
+# Full-suite runs share a host, so a probe that is healthy in isolation can
+# cross its fixed startup bound while sibling suites consume the same cores.
+# Keep short-lived, owner-only markers in /tmp to derive a conservative load
+# count without relying on process-name matching (which is ambiguous in nested
+# shells and across worktrees).
+suite_marker=''
+concurrent_suites=1
+suite_marker_dir=${TMPDIR:-/tmp}/agent-run-suites-$(id -u)
+
+current_process_start() {
+    local pid=$1
+    if [[ -r /proc/$pid/stat ]]; then
+        awk '{print $22}' "/proc/$pid/stat" 2> /dev/null
+    else
+        # macOS has no /proc; kill -0 is the portable liveness fallback. The
+        # marker is still short-lived and is removed by the EXIT trap.
+        kill -0 "$pid" 2> /dev/null || return 1
+        printf 'alive'
+    fi
+}
+
+suite_marker_live() {
+    local marker=$1 pid start current
+    read -r pid start < "$marker" 2> /dev/null || return 1
+    [[ $pid =~ ^[0-9]+$ && ($start =~ ^[0-9]+$ || $start == alive) ]] || return 1
+    current=$(current_process_start "$pid")
+    [[ -n $current && $current == "$start" ]]
+}
+
+register_suite_run() {
+    local marker existing pid start
+    [[ ${cmd_name:-} == test && -z ${focus_opt:-} ]] || return 0
+    assert_private_dir "$suite_marker_dir"
+    shopt -s nullglob
+    for existing in "$suite_marker_dir"/*.run; do
+        suite_marker_live "$existing" || rm -f -- "$existing"
+    done
+    shopt -u nullglob
+    marker=$(mktemp "$suite_marker_dir/agent-run.XXXXXX.run") ||
+        die "cannot create active-suite marker in $suite_marker_dir"
+    pid=$$
+    start=$(current_process_start "$pid")
+    [[ $start =~ ^[0-9]+$ ]] || {
+        rm -f -- "$marker"
+        die "cannot identify active-suite process $pid"
+    }
+    printf '%s %s\n' "$pid" "$start" > "$marker" || {
+        rm -f -- "$marker"
+        die "cannot write active-suite marker $marker"
+    }
+    suite_marker=$marker
+    concurrent_suites=$(find "$suite_marker_dir" -maxdepth 1 -type f -name '*.run' -print 2> /dev/null |
+        wc -l | tr -d '[:space:]')
+    [[ $concurrent_suites =~ ^[1-9][0-9]*$ ]] || concurrent_suites=1
+    local timeout_scale_key=AGENT_TEST_TIMEOUT_SCALE
+    if [[ -z ${!timeout_scale_key:-} ]]; then
+        export "$timeout_scale_key=$concurrent_suites"
+    fi
+}
+
+# shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below.
+cleanup_suite_run() {
+    [[ -n $suite_marker ]] || return 0
+    rm -f -- "$suite_marker" 2> /dev/null || true
+    suite_marker=''
+}
+
 # A worker may ask for one failed verification to be checked against the chain
 # base. The source path must be the same blob at both commits, and the base
 # checkout must produce matching failure evidence. This is deliberately opt-in:
@@ -1157,6 +1224,13 @@ print_notes() {
     done
 }
 
+probe_timeout_load_flake() {
+    ((concurrent_suites > 1)) || return 1
+    grep -Eiq \
+        '=== finding load-flake:|probe[^[:cntrl:]]*(did not finish|timed out|timeout)|probe timeout' \
+        "$1" 2> /dev/null
+}
+
 # Compose's dependency-start messages are often the only durable signal that
 # concurrent worktrees contended for a container, port, or network. Require
 # POSITIVE evidence that the runner itself contended for a Compose resource --
@@ -1183,6 +1257,11 @@ report_failure() {
     if compose_dependency_start_collision "$log"; then
         printf '  classification: environment-retry-eligible — Compose dependency-start collision; not a code regression.\n'
         printf '  retry guidance: rerun the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
+    fi
+    if probe_timeout_load_flake "$log"; then
+        printf '  classification: load-flake — probe timeout while concurrent-suites=%s; one retry was exhausted.\n' \
+            "$concurrent_suites"
+        printf '  retry guidance: the runner already retried this timeout once; inspect the probe failure if it persists.\n'
     fi
     if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
         printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around the resolved execution base.\n' \
@@ -1413,6 +1492,8 @@ if [[ $cmd_declared == no ]] && resolve_runner; then
 fi
 
 log_file=$(choose_log)
+register_suite_run
+trap cleanup_suite_run EXIT
 
 # Announced BEFORE the run, not only after it. Output is captured, so a long
 # command looks identical to a hung one until it exits -- and an agent watching
@@ -1436,8 +1517,9 @@ printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 readonly LOG_HEADER_LINES=2
 {
     printf '=== agent-run %s\n' "$cmd_str"
-    printf '=== started %s  pid=%s  cwd=%s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir"
+    printf '=== started %s  pid=%s  cwd=%s  concurrent-suites=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir" \
+        "$concurrent_suites"
 } > "$log_file"
 
 # A killed run cannot write its own terminator on SIGKILL, which is correct:
@@ -1456,6 +1538,14 @@ trap 'log_interrupted SIGTERM' TERM
 started_at=$SECONDS
 rc=0
 (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+load_flake_retry=0
+if ((rc != 0)) && probe_timeout_load_flake "$log_file"; then
+    load_flake_retry=1
+    printf '=== finding load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
+        "$concurrent_suites" >> "$log_file"
+    rc=0
+    (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+fi
 trap - INT TERM
 elapsed=$((SECONDS - started_at))
 lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
@@ -1483,6 +1573,10 @@ if ((rc == 0)); then
     if [[ $baseline_excluded == yes ]]; then
         printf 'BASELINE-EXCLUDED: %s\n' "$baseline_exclusion_message"
     else
+        if ((load_flake_retry)); then
+            printf 'load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
+                "$concurrent_suites"
+        fi
         [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
         printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
     fi
