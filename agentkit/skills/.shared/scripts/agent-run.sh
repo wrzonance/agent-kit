@@ -949,6 +949,7 @@ choose_log() {
 # shells and across worktrees).
 suite_marker=''
 concurrent_suites=1
+timeout_scale=1
 suite_marker_dir=${TMPDIR:-/tmp}/agent-run-suites-$(id -u)
 
 current_process_start() {
@@ -999,6 +1000,11 @@ register_suite_run() {
     local timeout_scale_key=AGENT_TEST_TIMEOUT_SCALE
     if [[ -z ${!timeout_scale_key:-} ]]; then
         export "$timeout_scale_key=$concurrent_suites"
+    fi
+    timeout_scale=$concurrent_suites
+    local requested_scale=${!timeout_scale_key:-}
+    if [[ $requested_scale =~ ^[1-9][0-9]*$ ]]; then
+        timeout_scale=$requested_scale
     fi
 }
 
@@ -1225,7 +1231,7 @@ print_notes() {
 }
 
 probe_timeout_load_flake() {
-    ((concurrent_suites > 1)) || return 1
+    ((concurrent_suites > 1 || timeout_scale > 1)) || return 1
     grep -Eiq \
         '=== finding load-flake:|probe[^[:cntrl:]]*(did not finish|timed out|timeout)|probe timeout' \
         "$1" 2> /dev/null
