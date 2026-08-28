@@ -101,6 +101,44 @@ assert_contains "$(cat -- "$out")" \
     'manifest has no non-empty string version: plugin/agentkit/.claude-plugin/plugin.json' \
     'empty version identifies the required relative path'
 
+# The bump helper edits only the three source manifests from the checkout root.
+bump="$root/agentkit/skills/.shared/scripts/bump-version.sh"
+bump_fixture="$tmp/bump-tree"
+mkdir -p "$bump_fixture/agentkit/.claude-plugin" \
+    "$bump_fixture/agentkit/.codex-plugin" "$bump_fixture/opencode"
+cp -- "$root/agentkit/.claude-plugin/plugin.json" \
+    "$bump_fixture/agentkit/.claude-plugin/plugin.json"
+cp -- "$root/agentkit/.codex-plugin/plugin.json" \
+    "$bump_fixture/agentkit/.codex-plugin/plugin.json"
+cp -- "$root/opencode/package.json" "$bump_fixture/opencode/package.json"
+git -C "$bump_fixture" init -q -b main
+git -C "$bump_fixture" config user.name test
+git -C "$bump_fixture" config user.email test@example.invalid
+git -C "$bump_fixture" add -- .
+git -C "$bump_fixture" commit -qm init
+bump_out="$tmp/bump.out"
+bump_rc=0
+(cd "$bump_fixture" && "$bump" 0.7.3 >"$bump_out" 2>&1) || bump_rc=$?
+assert_eq '0' "$bump_rc" 'the version bump helper succeeds from a repository root'
+assert_contains "$(cat -- "$bump_out")" 'bumped version to 0.7.3 (3 files)' \
+    'the bump helper reports its exact three-file scope'
+assert_eq $'agentkit/.claude-plugin/plugin.json\nagentkit/.codex-plugin/plugin.json\nopencode/package.json' \
+    "$(git -C "$bump_fixture" diff --name-only | sort)" \
+    'the bump helper edits exactly the three source manifests'
+assert_eq '0.7.3' "$(jq -r '.version' "$bump_fixture/agentkit/.claude-plugin/plugin.json")" \
+    'the bump helper updates the Claude manifest'
+assert_eq '0.7.3' "$(jq -r '.version' "$bump_fixture/agentkit/.codex-plugin/plugin.json")" \
+    'the bump helper updates the Codex manifest'
+assert_eq '0.7.3' "$(jq -r '.version' "$bump_fixture/opencode/package.json")" \
+    'the bump helper updates the OpenCode manifest'
+
+mkdir -p "$bump_fixture/.worktrees/child"
+worktree_bump_rc=0
+worktree_bump_out=$(cd "$bump_fixture/.worktrees/child" && "$bump" 0.7.4 2>&1) || worktree_bump_rc=$?
+assert_eq '1' "$worktree_bump_rc" 'the bump helper refuses execution inside .worktrees'
+assert_contains "$worktree_bump_out" 'refusing to run inside .worktrees' \
+    'the worktree refusal explains the safe invocation boundary'
+
 cp -- "$fixture/agentkit/.claude-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json"
 out="$tmp/tag-context.out"
