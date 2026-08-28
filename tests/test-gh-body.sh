@@ -152,6 +152,25 @@ fi
 assert_contains "$(cat "$tmp/gh.log")" '--body-file' 'PR create uses gh body-file transport'
 assert_contains "$(cat "$tmp/gh.log")" '--draft' 'PR create forwards non-body options'
 
+# Body-policy options after the POSIX end-of-options marker must not reach gh:
+# forwarding them would let a caller replace the validated file-backed body
+# with an inline body or a second body file after the wrapper stopped parsing.
+for bypass in --body -b --body-file; do
+    gh_calls_before=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+    set +e
+    bypass_output=$(run_body pr create --repo owner/repo --body-file "$body" -- \
+        "$bypass" "$body" 2>"$tmp/bypass.err")
+    bypass_rc=$?
+    set -e
+    assert_eq '1' "$bypass_rc" "post-marker $bypass is rejected before mutation"
+    assert_eq '' "$bypass_output" "post-marker $bypass emits no success output"
+    assert_contains "$(cat "$tmp/bypass.err")" \
+        'body options must precede --' \
+        "post-marker $bypass names the body-policy boundary"
+    assert_eq "$gh_calls_before" "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+        "post-marker $bypass never calls gh"
+done
+
 output=$(run_body pr edit 41 --repo owner/repo --body-file "$body" --title 'edited')
 assert_contains "$output" 'updated pr #41' 'PR edit verifies a target with no gh stdout URL'
 
