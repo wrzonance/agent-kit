@@ -91,6 +91,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --base) require_value "$1" "${2:-}"; BASE=$2; shift 2 ;;
             --base=*) BASE=${1#*=}; shift ;;
             --log) require_value "$1" "${2:-}"; LOG=$2; shift 2 ;;

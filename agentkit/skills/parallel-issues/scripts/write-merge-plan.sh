@@ -21,6 +21,7 @@ usage() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --dispatch-plan)
             (($# >= 2)) || usage
             dispatch_plan=$2

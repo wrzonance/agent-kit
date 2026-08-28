@@ -52,6 +52,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --run-dir) require_value "$1" "${2:-}"; run_dir=$2; shift 2 ;;
             --run-dir=*) run_dir=${1#*=}; shift ;;
             --transcript) require_value "$1" "${2:-}"; transcript=$2; shift 2 ;;

@@ -66,6 +66,7 @@ EOF
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo) (($# >= 2)) || usage; repo=$2; shift 2 ;;
         --pr) (($# >= 2)) || usage; pr=$2; shift 2 ;;
         --head-sha) (($# >= 2)) || usage; head_sha=$2; shift 2 ;;

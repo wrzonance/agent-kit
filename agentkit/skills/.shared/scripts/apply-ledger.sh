@@ -76,6 +76,7 @@ pending_mode=json
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --ledger)
             (($# >= 2)) || { usage >&2; exit 2; }
             ledger=$2

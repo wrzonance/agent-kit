@@ -65,6 +65,7 @@ slot_cap_supplied=0
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             shift
             (($#)) || die_usage '--repo-root requires a directory'

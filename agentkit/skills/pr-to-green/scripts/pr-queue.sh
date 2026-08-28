@@ -71,6 +71,7 @@ EOF
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo)
             (($# >= 2)) || usage
             repo=$2

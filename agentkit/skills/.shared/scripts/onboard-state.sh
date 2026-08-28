@@ -7,6 +7,7 @@ die() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; exit 1; }
 repo_root=''; mode=''
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
         --report) mode=report; shift ;;
         --next) mode=next; shift ;;

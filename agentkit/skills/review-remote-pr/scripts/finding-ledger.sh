@@ -51,6 +51,7 @@ parse_add_args() {
     shift
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --title)
                 require_value "$1" "${2-}"
                 [[ -z $TITLE ]] || die_usage '--title may be given only once'

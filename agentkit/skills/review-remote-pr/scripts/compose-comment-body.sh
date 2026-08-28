@@ -40,6 +40,7 @@ require_file() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --output)
             (($# >= 2)) || usage
             output=$2

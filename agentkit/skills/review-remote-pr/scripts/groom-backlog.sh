@@ -25,6 +25,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             (($# >= 2)) || die '--repo-root requires a value'
             repo_root=$2

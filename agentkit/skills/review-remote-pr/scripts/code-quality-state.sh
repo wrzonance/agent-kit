@@ -100,6 +100,7 @@ first_error_line() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo|--repository)
             (($# >= 2)) || die "$1 requires OWNER/REPO"
             repository=$2

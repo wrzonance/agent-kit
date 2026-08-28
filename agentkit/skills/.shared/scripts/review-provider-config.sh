@@ -25,6 +25,7 @@ repo_root=''
 probe=no
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             (($# >= 2)) || usage
             repo_root=$2

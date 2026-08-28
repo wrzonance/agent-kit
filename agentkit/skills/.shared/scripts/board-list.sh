@@ -68,6 +68,7 @@ die_blocked() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             [[ ${2:-} ]] || die_usage '--repo-root requires a value'
             ARG_REPO_ROOT=$2

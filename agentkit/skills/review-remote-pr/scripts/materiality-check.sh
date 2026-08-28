@@ -25,6 +25,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --worktree|--repo-root)
             [[ -n ${2:-} ]] || die "$1 requires a value"
             worktree=$2

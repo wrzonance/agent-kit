@@ -720,6 +720,7 @@ ARG_FORMAT=suggestions
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             shift
             (($#)) || {

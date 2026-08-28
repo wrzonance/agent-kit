@@ -39,6 +39,7 @@ EOF
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             ARG_REPO_ROOT=${2:-}
             shift 2 || shift

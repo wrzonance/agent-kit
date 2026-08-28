@@ -185,6 +185,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --) shift; break ;;
         --mode) require_value "$1" "${2:-}" && MODE=${2,,} && shift 2 ;;
         --mode=*) MODE=${1#*=} && MODE=${MODE,,} && shift ;;
         --no-payload) NO_PAYLOAD=1 && shift ;;

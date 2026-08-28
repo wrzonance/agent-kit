@@ -148,6 +148,7 @@ write_back_bot_ledger_entry() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo) (($# >= 2)) || usage; repo=$2; shift 2 ;;
         --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
         --pr) (($# >= 2)) || usage; pr=$2; shift 2 ;;

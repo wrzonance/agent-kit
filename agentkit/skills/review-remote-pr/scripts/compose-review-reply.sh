@@ -43,6 +43,7 @@ EOF
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --pr) (($# >= 2)) || usage; pr=$2; shift 2 ;;
         --repo) (($# >= 2)) || usage; repo=$2; shift 2 ;;
         --provider) (($# >= 2)) || usage; provider=$2; shift 2 ;;

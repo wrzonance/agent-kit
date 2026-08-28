@@ -82,6 +82,7 @@ EOF
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo) (($# >= 2)) || usage; repo=$2; shift 2 ;;
         --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
         --merge-plan|--dispatch-plan)

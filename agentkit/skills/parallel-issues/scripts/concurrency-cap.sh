@@ -29,6 +29,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --config)
             (($# >= 2)) || die '--config requires a file path'
             config_file=$2

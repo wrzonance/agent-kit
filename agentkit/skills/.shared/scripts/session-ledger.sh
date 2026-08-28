@@ -72,6 +72,7 @@ parse_options() {
     shift
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --ledger)
                 require_value "$1" "${2:-}"
                 LEDGER=$2

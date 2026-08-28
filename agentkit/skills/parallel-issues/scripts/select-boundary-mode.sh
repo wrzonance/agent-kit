@@ -23,6 +23,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --visibility|--repository-visibility)
             (($# >= 2)) || die "$1 requires a value"
             visibility=$2

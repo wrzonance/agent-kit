@@ -81,6 +81,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --pr) require_value "$1" "${2:-}"; PR=$2; shift 2 ;;
             --pr=*) PR=${1#*=}; shift ;;
             --run-id) require_value "$1" "${2:-}"; RUN_ID=$2; shift 2 ;;

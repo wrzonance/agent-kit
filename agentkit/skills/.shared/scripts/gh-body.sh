@@ -78,6 +78,7 @@ parse_args() {
 
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --body-file)
                 require_value "$1" "${2-}"
                 BODY_FILE=$2

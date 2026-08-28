@@ -26,6 +26,7 @@ repo_root=''
 base=''
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --worktree | --repo-root)
             (($# >= 2)) || usage
             repo_root=$2

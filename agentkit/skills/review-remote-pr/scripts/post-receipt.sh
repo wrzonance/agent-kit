@@ -362,6 +362,7 @@ cmd_precheck() {
     local comments=''
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --issue-comments|--comments)
                 [[ ${2-} ]] || die_usage "$1 requires a path"
                 [[ $1 == --comments ]] && deprecated_comments_alias
@@ -398,6 +399,7 @@ cmd_status() {
     local comments=''
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --issue-comments|--comments)
                 [[ ${2-} ]] || die_usage "$1 requires a path"
                 [[ $1 == --comments ]] && deprecated_comments_alias
@@ -458,6 +460,7 @@ RECEIPT_BODY_FILE=''
 parse_publish_args() {
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --pr) [[ ${2-} ]] || die_usage '--pr requires a value'; PR=$2; shift 2 ;;
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; REPO=$2; shift 2 ;;
             --issue-comments|--comments)

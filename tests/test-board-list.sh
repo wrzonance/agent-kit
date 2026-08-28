@@ -72,6 +72,20 @@ assert_contains "$out" 'board=example-board project=7 owner=example-org' \
 assert_contains "$out" 'items=12 of=12' 'a complete read reports both counts agreeing'
 assert_not_contains "$out" 'TRUNCATED' 'and does not warn about a board it read fully'
 
+# POSIX callers commonly append `--` to every helper invocation, including
+# option-only calls. It is an end-of-options marker, not an unknown flag.
+out=$(run_board "$bin" --status Ready --)
+assert_contains "$out" 'items=1 of=12' \
+    'board-list accepts the end-of-options marker after options'
+assert_not_contains "$out" 'unknown argument: --' \
+    'the end-of-options marker is not rejected after options'
+
+out=$(run_board "$bin" --)
+assert_contains "$out" 'items=12 of=12' \
+    'board-list accepts a standalone end-of-options marker'
+assert_not_contains "$out" 'unknown argument: --' \
+    'a standalone end-of-options marker is not rejected'
+
 # --- the case this exists for ----------------------------------------------
 # 230 items, a 200-item window. Every count printed is a count of the window.
 bin=$(make_gh big 230)

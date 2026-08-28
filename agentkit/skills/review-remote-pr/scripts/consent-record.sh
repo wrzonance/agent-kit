@@ -71,6 +71,7 @@ parse_options() {
     shift
     while (($#)); do
         case $1 in
+            --) shift; break ;;
         --worktree) require_value "$1" "${2:-}"; WORKTREE=$2; shift 2 ;;
         --worktree=*) WORKTREE=${1#*=}; shift ;;
         --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;

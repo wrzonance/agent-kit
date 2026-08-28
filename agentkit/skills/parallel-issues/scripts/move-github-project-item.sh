@@ -121,6 +121,7 @@ add_issue_numbers() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --issue-number)
             (($# >= 2)) || die "Missing value for $1."
             add_issue_number "$2"

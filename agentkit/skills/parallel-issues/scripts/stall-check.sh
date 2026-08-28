@@ -41,6 +41,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --worktree)
             [[ -n ${2:-} ]] || die '--worktree requires a value'
             worktree=$2

@@ -118,6 +118,7 @@ declare -A resolve_requested_keys=()
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --export) mode='export' ;;
         --list) mode='list' ;;
         --list-keys) mode='keys' ;;

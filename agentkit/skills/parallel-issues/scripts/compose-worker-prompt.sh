@@ -30,6 +30,7 @@ materiality_base=
 materiality_base_supplied=0
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary|--dispatch-plan|--findings-file|--materiality-base|--chain-base)
             (($# >= 2)) || die "$1 requires a value"
             case $1 in

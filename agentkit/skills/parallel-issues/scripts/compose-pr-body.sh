@@ -34,6 +34,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --) shift; break ;;
             --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--agent|--output)
                 require_value "$1" "${2-}"
                 case $1 in

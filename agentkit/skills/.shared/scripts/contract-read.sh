@@ -46,6 +46,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; break ;;
         --repo-root)
             (($# >= 2)) || usage
             [[ -z $repo_root ]] || usage
