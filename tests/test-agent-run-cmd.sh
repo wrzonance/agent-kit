@@ -365,6 +365,7 @@ out=$(cd "$repo" && "$real_run_sh" --cmd ok 2>&1)
 log=$(cat "$repo"/.agent/logs/*-ok.log)
 assert_contains "$log" '=== agent-run echo hello' 'the log names the command it is running'
 assert_contains "$log" '=== started' 'and when it started'
+assert_contains "$log" 'concurrent-suites=1' 'the log records the active full-suite count'
 assert_contains "$log" '=== agent-run exited rc=0' 'and terminates with the verdict'
 assert_contains "$out" 'has NOT finished' 'and the caller is told what an unterminated log means'
 
@@ -374,5 +375,45 @@ assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bo
 (cd "$repo" && "$real_run_sh" --cmd bad > /dev/null 2>&1) || true
 log=$(cat "$repo"/.agent/logs/*-bad.log)
 assert_contains "$log" '=== agent-run exited rc=1' 'a failing command records its exit code too'
+
+# --- load-flake retry acceptance -------------------------------------------
+# An explicit scale is the deterministic seam for the live concurrent-suite
+# marker count. The fixture makes the first probe invocation fail and the
+# second succeed, then keeps both invocations failing to pin the red outcome.
+retry_repo=$(make_repo)
+mkdir -p "$retry_repo/tools"
+cat >"$retry_repo/tools/probe-result" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+count=0
+[[ -f ${COUNT_FILE:?} ]] && count=$(<"$COUNT_FILE")
+count=$((count + 1))
+printf '%s' "$count" >"$COUNT_FILE"
+if [[ ${MODE:-} == always || $count == 1 ]]; then
+    printf 'FAIL: probe did not finish within 10s\n' >&2
+    exit 1
+fi
+printf 'probe recovered\n'
+EOF
+chmod +x -- "$retry_repo/tools/probe-result"
+printf 'AGENT_CMD_TEST=tools/probe-result\n' >"$retry_repo/.agent/config.env"
+retry_count=$tmp/retry-count
+retry_out=''
+retry_rc=0
+retry_out=$(cd "$retry_repo" && MODE=flaky COUNT_FILE="$retry_count" AGENT_TEST_TIMEOUT_SCALE=2 \
+    "$real_run_sh" --force --cmd test 2>&1) || retry_rc=$?
+assert_eq '0' "$retry_rc" 'a timeout under concurrent load retries and turns green'
+assert_contains "$retry_out" 'load-flake' 'a recovered timeout is classified as load-flake'
+assert_contains "$retry_out" 'retried 1/1' 'the recovered timeout uses exactly one retry'
+
+: >"$retry_count"
+genuine_out=''
+genuine_rc=0
+genuine_out=$(cd "$retry_repo" && MODE=always COUNT_FILE="$retry_count" AGENT_TEST_TIMEOUT_SCALE=2 \
+    "$real_run_sh" --force --cmd test 2>&1) || genuine_rc=$?
+assert_eq '1' "$genuine_rc" 'a genuine probe timeout remains red after one retry'
+assert_contains "$genuine_out" 'load-flake' 'the persistent timeout retains load-flake classification'
+assert_contains "$genuine_out" 'one retry was exhausted' 'the persistent timeout reports exhaustion'
+assert_eq '2' "$(<"$retry_count")" 'the persistent timeout is attempted exactly twice'
 
 finish

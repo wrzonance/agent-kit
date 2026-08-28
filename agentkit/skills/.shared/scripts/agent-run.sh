@@ -650,6 +650,7 @@ declare -a relevant_config_keys=()
 declare -A resolved_config_values=() resolved_config_present=()
 declare -a resolved_command_argv=() resolved_focus_argv=()
 resolved_command_key=''
+command_kind=generic
 
 relevant_config_add() {
     local key=$1 existing
@@ -798,7 +799,7 @@ resolve_runner() {
 #
 # Order: AGENT_CMD_<NAME> -> the declared runner as `runner <name>` -> usage error.
 resolve_named_command() {
-    local name=$1 key declared
+    local name=$1 key declared kind_key declared_kind
     # The declaration reads AGENT_CMD_CHECK_NODE_PIN; the invocation is
     # --cmd check-node-pin. Reading the contract and typing its key back is the
     # obvious move, and it used to fail.
@@ -820,9 +821,10 @@ resolve_named_command() {
     local upper rundir
     upper=$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')
     key="AGENT_CMD_$upper"
+    kind_key="${key}_KIND"
     resolved_command_key=$key
     relevant_config_add "$key"
-    local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper")
+    local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper" "$kind_key")
     ((focus_requested)) && resolve_keys+=(AGENT_CMD_TEST_FOCUS)
     [[ -z ${AGENT_REPO_RUNNER:-} ]] && resolve_keys+=(AGENT_REPO_RUNNER)
     repo_config_resolve_keys "${resolve_keys[@]}" || die "cannot resolve repository declarations for $key"
@@ -836,6 +838,21 @@ resolve_named_command() {
         ((${#cmd[@]})) || die "invalid argv for $key"
         cmd_declared=yes
         resolution_kind=declared
+
+        # Formatter diagnostics commonly contain volatile order, colour, and
+        # timing text. Optional kind metadata selects path-set comparison while
+        # the command-name fallback preserves existing formatter declarations.
+        command_kind=generic
+        declared_kind=${resolved_config_values[$kind_key]:-}
+        case $declared_kind in
+            format) command_kind=format ;;
+            generic|'') ;;
+        esac
+        if [[ -z $declared_kind ]]; then
+            case $name in
+                format|formatter|*-format|format-*) command_kind=format ;;
+            esac
+        fi
 
         # A monorepo command usually has to run IN its component. Without this
         # the only root-runnable form of a dashboard test invocation globbed
@@ -857,6 +874,10 @@ resolve_named_command() {
     if resolve_runner; then
         cmd=("$name")
         resolution_kind=runner
+        command_kind=generic
+        case $name in
+            format|formatter|*-format|format-*) command_kind=format ;;
+        esac
         return 0
     fi
 
@@ -921,11 +942,84 @@ choose_log() {
     printf '%s' "$log"
 }
 
+# Full-suite runs share a host, so a probe that is healthy in isolation can
+# cross its fixed startup bound while sibling suites consume the same cores.
+# Keep short-lived, owner-only markers in /tmp to derive a conservative load
+# count without relying on process-name matching (which is ambiguous in nested
+# shells and across worktrees).
+suite_marker=''
+concurrent_suites=1
+timeout_scale=1
+suite_marker_dir=${TMPDIR:-/tmp}/agent-run-suites-$(id -u)
+
+current_process_start() {
+    local pid=$1
+    if [[ -r /proc/$pid/stat ]]; then
+        awk '{print $22}' "/proc/$pid/stat" 2> /dev/null
+    else
+        # macOS has no /proc; kill -0 is the portable liveness fallback. The
+        # marker is still short-lived and is removed by the EXIT trap.
+        kill -0 "$pid" 2> /dev/null || return 1
+        printf 'alive'
+    fi
+}
+
+suite_marker_live() {
+    local marker=$1 pid start current
+    read -r pid start < "$marker" 2> /dev/null || return 1
+    [[ $pid =~ ^[0-9]+$ && ($start =~ ^[0-9]+$ || $start == alive) ]] || return 1
+    current=$(current_process_start "$pid")
+    [[ -n $current && $current == "$start" ]]
+}
+
+register_suite_run() {
+    local marker existing pid start
+    [[ ${cmd_name:-} == test && -z ${focus_opt:-} ]] || return 0
+    assert_private_dir "$suite_marker_dir"
+    shopt -s nullglob
+    for existing in "$suite_marker_dir"/*.run; do
+        suite_marker_live "$existing" || rm -f -- "$existing"
+    done
+    shopt -u nullglob
+    marker=$(mktemp "$suite_marker_dir/agent-run.XXXXXX.run") ||
+        die "cannot create active-suite marker in $suite_marker_dir"
+    pid=$$
+    start=$(current_process_start "$pid")
+    [[ $start =~ ^[0-9]+$ ]] || {
+        rm -f -- "$marker"
+        die "cannot identify active-suite process $pid"
+    }
+    printf '%s %s\n' "$pid" "$start" > "$marker" || {
+        rm -f -- "$marker"
+        die "cannot write active-suite marker $marker"
+    }
+    suite_marker=$marker
+    concurrent_suites=$(find "$suite_marker_dir" -maxdepth 1 -type f -name '*.run' -print 2> /dev/null |
+        wc -l | tr -d '[:space:]')
+    [[ $concurrent_suites =~ ^[1-9][0-9]*$ ]] || concurrent_suites=1
+    local timeout_scale_key=AGENT_TEST_TIMEOUT_SCALE
+    if [[ -z ${!timeout_scale_key:-} ]]; then
+        export "$timeout_scale_key=$concurrent_suites"
+    fi
+    timeout_scale=$concurrent_suites
+    local requested_scale=${!timeout_scale_key:-}
+    if [[ $requested_scale =~ ^[1-9][0-9]*$ ]]; then
+        timeout_scale=$requested_scale
+    fi
+}
+
+# shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below.
+cleanup_suite_run() {
+    [[ -n $suite_marker ]] || return 0
+    rm -f -- "$suite_marker" 2> /dev/null || true
+    suite_marker=''
+}
+
 # A worker may ask for one failed verification to be checked against the chain
-# base.  The test source must be the same blob at both commits, and the base
-# checkout must produce the same failure signature.  This is deliberately
-# opt-in: ordinary failures remain failures when a worker cannot identify a
-# test or cannot obtain a trustworthy base run.
+# base. The source path must be the same blob at both commits, and the base
+# checkout must produce matching failure evidence. This is deliberately opt-in:
+# ordinary failures remain failures when a worker cannot identify a test or
+# cannot obtain a trustworthy base run.
 failure_signature() {
     local file=$1
     sed -E \
@@ -934,6 +1028,30 @@ failure_signature() {
         -e '/^=== finding /d' \
         -e '/^=== agent-run exited /d' \
         "$file" | sha256sum | awk '{print $1}'
+}
+
+# Formatter diagnostics are intentionally compared as a normalized set of
+# repository-relative paths. Prettier's output can vary in order, colour, and
+# timing while still identifying exactly the same drift. Only its stable
+# `[warn] path` records are accepted; arbitrary diagnostic text is never a
+# candidate path.
+format_failure_paths() {
+    local file=$1 line path
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=$(printf '%s\n' "$line" | sed $'s/\033\\[[0-9;]*m//g;s/\r$//')
+        [[ $line =~ ^[[:space:]]*\[warn\][[:space:]]+(.+)$ ]] || continue
+        path=${BASH_REMATCH[1]}
+        path=${path#./}
+        case $path in
+            ''|/*|../*|*/../*|*/..|*'\n'*) continue ;;
+        esac
+        printf '%s\n' "$path"
+    done <"$file" | sort -u
+}
+
+format_paths_csv() {
+    local paths=$1
+    printf '%s\n' "$paths" | paste -sd, - | sed 's/,/, /g'
 }
 
 baseline_exclusion_message=''
@@ -985,6 +1103,7 @@ try_baseline_exclusion() {
     local base_sha head_sha base_blob current_blob current_file resolved_file
     local baseline_dir baseline_output baseline_work_dir rel base_rc baseline_path_env baseline_project
     local current_signature baseline_signature exclusion_file exclusion_tmp
+    local current_failure_paths baseline_failure_paths exclusion_paths path
     [[ -n $baseline_ref ]] || return 1
     [[ -n $git_top && -d $git_top/.agent/logs ]] || return 1
 
@@ -1043,12 +1162,37 @@ try_baseline_exclusion() {
             -u GIT_DIR -u GIT_WORK_TREE PATH="$baseline_path_env" \
             COMPOSE_PROJECT_NAME="$baseline_project" "${cmd[@]}") \
         >"$baseline_output" 2>&1 || base_rc=$?
-    current_signature=$(failure_signature "$log_file") || current_signature=''
-    baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
+    current_failure_paths=''
+    baseline_failure_paths=''
+    if [[ $command_kind == format ]]; then
+        current_failure_paths=$(format_failure_paths "$log_file") || current_failure_paths=''
+        baseline_failure_paths=$(format_failure_paths "$baseline_output") || baseline_failure_paths=''
+    else
+        current_signature=$(failure_signature "$log_file") || current_signature=''
+        baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
+    fi
     rm -f -- "$baseline_output"
     rm -rf -- "$baseline_dir"
     ((base_rc != 0)) || return 1
-    [[ -n $current_signature && $current_signature == "$baseline_signature" ]] || return 1
+    if [[ $command_kind == format ]]; then
+        [[ -n $current_failure_paths && $current_failure_paths == "$baseline_failure_paths" ]] || return 1
+        while IFS= read -r path || [[ -n $path ]]; do
+            [[ -n $path ]] || continue
+            [[ $(git -C "$git_top" cat-file -t "$base_sha:$path" 2>/dev/null || true) == blob ]] || return 1
+            current_file=$git_top/$path
+            resolved_file=$(readlink -f -- "$current_file" 2>/dev/null || true)
+            [[ -n $resolved_file && $resolved_file == "$git_top"/* && -f $resolved_file ]] || return 1
+            base_blob=$(git -C "$git_top" rev-parse "$base_sha:$path" 2>/dev/null) || return 1
+            current_blob=$(git -C "$git_top" hash-object -- "$resolved_file" 2>/dev/null) || return 1
+            [[ $base_blob == "$current_blob" ]] || return 1
+            git -C "$git_top" diff --quiet "$base_sha...$head_sha" -- "$path" || return 1
+            git -C "$git_top" diff --quiet HEAD -- "$path" || return 1
+        done <<<"$current_failure_paths"
+        exclusion_paths=$(format_paths_csv "$current_failure_paths") || return 1
+    else
+        [[ -n $current_signature && $current_signature == "$baseline_signature" ]] || return 1
+        exclusion_paths=$baseline_path
+    fi
 
     exclusion_file=$git_top/.agent/baseline-exclusion.md
     [[ ! -L $exclusion_file && (! -e $exclusion_file || -f $exclusion_file) ]] || return 1
@@ -1064,8 +1208,8 @@ try_baseline_exclusion() {
         }
     fi
     # shellcheck disable=SC2016  # backticks are literal Markdown delimiters.
-    printf -- '- [ ] Baseline exclusion: `%s` (`%s`) is unchanged and red on chain base `%s` (evidence: `%s`)\n' \
-        "$baseline_id" "$baseline_path" "$base_sha" "$log_file" >>"$exclusion_tmp" || {
+    printf -- '- [ ] Baseline exclusion: `%s` (`%s`) is unchanged and red on chain base `%s` (failing paths: %s; evidence: `%s`)\n' \
+        "$baseline_id" "$baseline_path" "$base_sha" "$exclusion_paths" "$log_file" >>"$exclusion_tmp" || {
         rm -f -- "$exclusion_tmp"
         return 1
     }
@@ -1074,7 +1218,7 @@ try_baseline_exclusion() {
         return 1
     }
     baseline_exclusion_base_sha=$base_sha
-    baseline_exclusion_message="baseline-excluded test=$baseline_id base=$base_sha log=$log_file"
+    baseline_exclusion_message="baseline-excluded test=$baseline_id base=$base_sha paths=$exclusion_paths log=$log_file"
     return 0
 }
 
@@ -1084,6 +1228,13 @@ print_notes() {
     for n in "${notes[@]}"; do
         printf '%snote: %s\n' "$prefix" "$n"
     done
+}
+
+probe_timeout_load_flake() {
+    ((concurrent_suites > 1 || timeout_scale > 1)) || return 1
+    grep -Eiq \
+        '=== finding load-flake:|probe[^[:cntrl:]]*(did not finish|timed out|timeout)|probe timeout' \
+        "$1" 2> /dev/null
 }
 
 # Compose's dependency-start messages are often the only durable signal that
@@ -1112,6 +1263,11 @@ report_failure() {
     if compose_dependency_start_collision "$log"; then
         printf '  classification: environment-retry-eligible — Compose dependency-start collision; not a code regression.\n'
         printf '  retry guidance: rerun the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
+    fi
+    if probe_timeout_load_flake "$log"; then
+        printf '  classification: load-flake — probe timeout while concurrent-suites=%s; one retry was exhausted.\n' \
+            "$concurrent_suites"
+        printf '  retry guidance: the runner already retried this timeout once; inspect the probe failure if it persists.\n'
     fi
     if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
         printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around the resolved execution base.\n' \
@@ -1203,7 +1359,7 @@ compute_tree_hash() {
     if ! : >"$hash_input" ||
         ! git -C "$git_top" rev-parse HEAD >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
-        ! printf 'command\0%s\0focus\0%s\0' "$cmd_name" "$focus_opt" >>"$hash_input" ||
+        ! printf 'command\0%s\0kind\0%s\0focus\0%s\0' "$cmd_name" "$command_kind" "$focus_opt" >>"$hash_input" ||
         ! printf 'resolved\0' >>"$hash_input" ||
         ! printf '%s\0' "${cmd[@]}" >>"$hash_input" ||
         ! git -C "$git_top" diff HEAD >>"$hash_input" ||
@@ -1342,6 +1498,8 @@ if [[ $cmd_declared == no ]] && resolve_runner; then
 fi
 
 log_file=$(choose_log)
+register_suite_run
+trap cleanup_suite_run EXIT
 
 # Announced BEFORE the run, not only after it. Output is captured, so a long
 # command looks identical to a hung one until it exits -- and an agent watching
@@ -1365,8 +1523,9 @@ printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 readonly LOG_HEADER_LINES=2
 {
     printf '=== agent-run %s\n' "$cmd_str"
-    printf '=== started %s  pid=%s  cwd=%s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir"
+    printf '=== started %s  pid=%s  cwd=%s  concurrent-suites=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir" \
+        "$concurrent_suites"
 } > "$log_file"
 
 # A killed run cannot write its own terminator on SIGKILL, which is correct:
@@ -1385,6 +1544,14 @@ trap 'log_interrupted SIGTERM' TERM
 started_at=$SECONDS
 rc=0
 (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+load_flake_retry=0
+if ((rc != 0)) && probe_timeout_load_flake "$log_file"; then
+    load_flake_retry=1
+    printf '=== finding load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
+        "$concurrent_suites" >> "$log_file"
+    rc=0
+    (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+fi
 trap - INT TERM
 elapsed=$((SECONDS - started_at))
 lines=$(($(wc -l < "$log_file" | tr -d '[:space:]') - LOG_HEADER_LINES))
@@ -1412,6 +1579,10 @@ if ((rc == 0)); then
     if [[ $baseline_excluded == yes ]]; then
         printf 'BASELINE-EXCLUDED: %s\n' "$baseline_exclusion_message"
     else
+        if ((load_flake_retry)); then
+            printf 'load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
+                "$concurrent_suites"
+        fi
         [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
         printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
     fi
