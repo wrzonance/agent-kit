@@ -961,7 +961,7 @@ alert_count() {
 # --- wait --------------------------------------------------------------------
 
 wait_for_ci() {
-    local round total pass pending fail pending_nb
+    local round total pass pending fail pending_nb _failing_checks
     local zero_rounds=0
     for ((round = 1; round <= ROUNDS; round++)); do
         if ((round == 1)); then
@@ -970,7 +970,7 @@ wait_for_ci() {
         else
             fetch_ci_only
         fi
-        IFS=$'\t' read -r total pass pending fail pending_nb < <(ci_counts)
+        IFS=$'\t' read -r total pass pending fail pending_nb _failing_checks < <(ci_counts)
         if ((total == 0)); then
             ((++zero_rounds))
             if ((zero_rounds >= CI_ZERO_CHECKS_GRACE_ROUNDS || round >= ROUNDS)); then
