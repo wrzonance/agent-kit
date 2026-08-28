@@ -545,7 +545,7 @@ setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns the mutating branch/exclude operations. Before preflight it excludes `.agent/*` and securely carries a root-local, ignored `.agent/config.env` into a new worktree when present; symlinked or non-regular state fails closed, while an existing regular target is preserved. It also performs the per-worktree preflight and runs the repository-declared `AGENT_CMD_SETUP` through `agent-run.sh` when present. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
+The helper owns branch/exclude operations, config propagation, preflight, and declared setup. It prints `resumable: yes|no untracked=N modified=M`; an existing path or branch still refuses duplicate creation, so use the summary to resume. Its final `worktree=` line identifies the checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -692,19 +692,22 @@ else
 fi
 [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file"
 
+# Re-running the script for an existing complete set is churn; use --resume.
 case "$fetch_rc" in
     0)  : ;; # published fetched-issue.json, fenced-spec.txt, fenced-prior-art.txt, fenced-ready
-    12) printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing' >&2; exit 1 ;;
+    12) printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing; use the printed exact --resume command to archive and regenerate them' >&2; exit 1 ;;
     *)  exit 1 ;; # bad args, missing evidence, or any staging/fence/publish failure
 esac
 ```
 
-The root is the sole issue-artifact producer; the script fetches, validates, and atomically
-publishes both fenced files plus the raw payload and ready marker into the worktree's excluded
-`.agent/` state before any prompt is constructed. The worker prompt below embeds those
-persisted bytes verbatim. Re-running the script for an existing complete set is churn (exit
-`12`); delete the affected file deliberately before re-fencing. The selected mode is
-disclosed immediately above those persisted bytes.
+The root is the sole artifact producer; the script fetches, validates, and atomically
+publishes both fenced files plus raw payload and ready marker into excluded `.agent/` state.
+The prompt embeds those bytes verbatim. Re-running the script for an existing
+complete set is churn (exit `12`): it refuses `fence artifacts already exist; delete the affected
+file deliberately before re-fencing` and prints an exact command. `--resume` archives the set
+under `.agent/evidence/fence-history/<timestamp>/`, reports `untracked=N modified=M`, and
+regenerates artifacts without touching implementation files. The selected mode is disclosed
+above.
 
 ### Root-checkout cross-write fence
 
