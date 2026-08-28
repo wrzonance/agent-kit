@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Suite: prepare-issue-artifacts.sh -- the fetch/validate/fence/publish helper
 # behind the "Root canonical issue fetch and fence preparation" recipe.
+# shellcheck disable=SC2016  # assertions intentionally match literal recipe variables
 set -uo pipefail
 
 TEST_NAME='prepare-issue-artifacts'
@@ -10,6 +11,7 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
+skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 stub_gh="$here/stub/gh"
 fixture="$here/fixtures/issue-fetch.json"
 # Invoked by absolute path so a curated, jq-less PATH (used below to simulate
@@ -35,6 +37,18 @@ run_prepare() {
     [[ $resume == --resume ]] && args+=(--resume)
     PATH="$stub_path:$PATH" "$bash_bin" "$script" "${args[@]}"
 }
+
+# A refusal's printed resume command may reference the prior-art staging file.
+# The canonical recipe must therefore defer cleanup until after it handles the
+# result, retaining the private digest long enough to run that command.
+recipe_fetch="$tmp_dir/fetch-recipe.txt"
+sed -n '/^fetch_rc=0$/,/^esac$/p' "$skill" >"$recipe_fetch"
+recipe_before_case=$(sed -n '/^fetch_rc=0$/,/^case "\$fetch_rc"/p' "$recipe_fetch")
+recipe_case=$(sed -n '/^case "\$fetch_rc"/,/^esac$/p' "$recipe_fetch")
+assert_not_contains "$recipe_before_case" 'rm -f -- "$prior_art_file"' \
+    'the canonical recipe retains prior-art input until the result is classified'
+assert_contains "$recipe_case" 'rm -f -- "$prior_art_file"' \
+    'the canonical recipe cleans up prior-art input after a successful or failed result'
 
 expected_spec_text() {
     jq -r '
