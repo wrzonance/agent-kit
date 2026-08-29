@@ -394,6 +394,26 @@ assert_eq $'cq-repo: 3\ncq-open: 1 source=pr_9_code_quality_comments.json' "$out
     'three repository-global findings are separated from one changed-line PR finding'
 assert_eq '0' "$rc" 'PR attribution exits successfully when findings are present'
 
+# Regression: the persisted comments artifact can exceed execve's argument
+# size boundary. It must stay file-backed all the way into jq rather than being
+# copied into --argjson and rejected with "argument list too long".
+large_comments="$tmp/pr_9_large_code_quality_comments.json"
+{
+    printf '[{"path":"tracked.txt","line":2,"commit_id":"%s","body":"' "$attribution_head"
+    awk 'BEGIN { for (i = 0; i < 3000000; i++) printf "x" }'
+    printf '"}]\n'
+} >"$large_comments"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"location":{"path":"repo-a.py","start_line":10}},{"location":{"path":"repo-b.py","start_line":20}},{"location":{"path":"repo-c.py","start_line":30}}]' \
+    ok '[]'
+out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
+    --comments-file "$large_comments" --diff-base "$attribution_base" --repo-root "$attribution_repo")
+rc=$?
+assert_eq $'cq-repo: 3\ncq-open: 1 source=pr_9_large_code_quality_comments.json' "$out" \
+    'an oversized comments artifact is attributed without crossing the process argument-size boundary'
+assert_eq '0' "$rc" 'oversized comments attribution exits successfully'
+
 # A PR comment on an unchanged line is still repository-global for setup
 # purposes: it must not gate the loop, while the global count remains visible.
 printf '%s\n' "[{\"path\":\"tracked.txt\",\"line\":1,\"commit_id\":\"$attribution_head\"}]" >"$attribution_comments"
