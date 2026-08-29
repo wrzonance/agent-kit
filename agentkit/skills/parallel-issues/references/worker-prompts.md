@@ -121,10 +121,13 @@ __DECLARED_COMMANDS__
 When a declared verification command fails, the worker may retry that same command with
 `--baseline-ref <chain-base> --baseline-path <failing-test-file> --baseline-id <test-id>`.
 `agent-run.sh` runs the command from the chain base in an isolated checkout and only changes the
-failure into `BASELINE-EXCLUDED` when the failing test is the identical blob and its normalized
-failure signature is identical. That outcome exits 0 and writes `.agent/baseline-exclusion.md` with
-the test id, resolved base SHA, and evidence log path; it is unchecked publication evidence, never
-a green verification result or cache entry. Missing or changed evidence stays an ordinary failure.
+failure into `BASELINE-EXCLUDED` when the command identity and failure evidence match. Ordinary
+commands require an identical normalized failure signature. A command declared with
+`AGENT_CMD_<NAME>_KIND=format` compares the normalized, order-independent set of `[warn] path`
+records instead, and refuses the exclusion if the branch diff touches any reported path. That
+outcome exits 0 and writes `.agent/baseline-exclusion.md` with the test id, resolved base SHA,
+complete failing path set, and evidence log path; it is unchecked publication evidence, never a
+green verification result or cache entry. Missing or changed evidence stays an ordinary failure.
 
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
