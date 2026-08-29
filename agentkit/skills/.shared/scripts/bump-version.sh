@@ -12,7 +12,7 @@ usage() {
 
 (( $# == 1 )) || usage
 version=$1
-[[ $version =~ ^[0-9]+(\.[0-9]+){2}([.-][0-9A-Za-z.-]+)?$ ]] || {
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] || {
     printf '%s: VERSION must be a dotted release version (for example 0.7.3): %s\n' \
         "$PROGRAM" "$version" >&2
     exit 2
@@ -85,10 +85,34 @@ for name in "${manifest_names[@]}"; do
         printf '%s: could not render manifest: %s\n' "$PROGRAM" "$name" >&2
         exit 1
     }
+    cp -- "$manifest" "$tmp_dir/original_${name//\//__}" || {
+        printf '%s: could not stage manifest backup: %s\n' "$PROGRAM" "$name" >&2
+        exit 1
+    }
 done
 
+completed=()
+replacement_failed=0
 for name in "${manifest_names[@]}"; do
-    mv -- "$tmp_dir/${name//\//__}" "$repo_root/$name"
+    if ! mv -- "$tmp_dir/${name//\//__}" "$repo_root/$name"; then
+        replacement_failed=1
+        printf '%s: could not replace manifest: %s\n' "$PROGRAM" "$name" >&2
+        break
+    fi
+    completed+=("$name")
 done
+
+if (( replacement_failed )); then
+    rollback_failed=0
+    for (( i=${#completed[@]}-1; i>=0; i-- )); do
+        name=${completed[i]}
+        if ! mv -- "$tmp_dir/original_${name//\//__}" "$repo_root/$name"; then
+            rollback_failed=1
+            printf '%s: could not roll back manifest: %s\n' "$PROGRAM" "$name" >&2
+        fi
+    done
+    (( rollback_failed == 0 )) || exit 1
+    exit 1
+fi
 
 printf 'bumped version to %s (%d files)\n' "$version" "${#manifest_names[@]}"
