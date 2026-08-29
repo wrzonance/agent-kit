@@ -27,7 +27,7 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-assert_eq 64 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+assert_eq 65 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)
