@@ -31,6 +31,17 @@ Before committing worker changes, `worktree-commit.sh` rejects staged tracked fi
 declared issue operands unless each exception is named with `--allow-outside PATH`. Refreshing
 onboarding also reports such worktree drift and prunes dangling Git worktree registrations.
 
+Before the release commit, run these commands in this exact order:
+
+```bash
+agentkit/skills/.shared/scripts/bump-version.sh "$VERSION"
+tests/build-plugin.sh
+tests/check-release-version.sh
+```
+
+The bump must precede the build so the generated plugin carries the new version; the release
+version check is the final gate before committing.
+
 ## Step 0: does the installed tree match `main`? (#453)
 
 Two trees can answer to the same version string: `main` with a fix, and an already-installed

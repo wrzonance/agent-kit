@@ -132,6 +132,53 @@ assert_eq '0.7.3' "$(jq -r '.version' "$bump_fixture/agentkit/.codex-plugin/plug
 assert_eq '0.7.3' "$(jq -r '.version' "$bump_fixture/opencode/package.json")" \
     'the bump helper updates the OpenCode manifest'
 
+# Release, prerelease, and build identifiers must be non-empty. Valid
+# semver-style prerelease/build identifiers remain accepted.
+for valid_version in 0.7.3-rc.1 0.7.3-rc-1 0.7.3+build.2 0.7.3+build-2 0.7.3-rc.1+build.2; do
+    valid_rc=0
+    (cd "$bump_fixture" && "$bump" "$valid_version" >/dev/null 2>&1) || valid_rc=$?
+    assert_eq '0' "$valid_rc" "the version bump helper accepts $valid_version"
+done
+for invalid_version in 0.7.3. 0.7.3-rc..1 0.7.3+build..2; do
+    invalid_rc=0
+    invalid_out=$(cd "$bump_fixture" && "$bump" "$invalid_version" 2>&1) || invalid_rc=$?
+    assert_eq '2' "$invalid_rc" "the version bump helper rejects $invalid_version"
+    assert_contains "$invalid_out" 'VERSION must be a dotted release version' \
+        "the invalid version error identifies $invalid_version"
+done
+
+# Replacements are transactional: a failure after earlier moves must restore
+# every manifest byte-for-byte.
+failure_bin="$tmp/failure-bin"
+mkdir -p "$failure_bin"
+real_mv=$(command -v mv)
+cat > "$failure_bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+    if [[ $arg == */opencode/package.json ]]; then
+        printf 'mv: injected failure\n' >&2
+        exit 1
+    fi
+done
+exec "$BUMP_TEST_REAL_MV" "$@"
+EOF
+chmod +x "$failure_bin/mv"
+before_failure=$(sha256sum \
+    "$bump_fixture/agentkit/.claude-plugin/plugin.json" \
+    "$bump_fixture/agentkit/.codex-plugin/plugin.json" \
+    "$bump_fixture/opencode/package.json")
+failure_rc=0
+(cd "$bump_fixture" && PATH="$failure_bin:$PATH" BUMP_TEST_REAL_MV="$real_mv" \
+    "$bump" 0.8.0 >/dev/null 2>&1) || failure_rc=$?
+assert_eq '1' "$failure_rc" 'a later manifest replacement failure is reported'
+after_failure=$(sha256sum \
+    "$bump_fixture/agentkit/.claude-plugin/plugin.json" \
+    "$bump_fixture/agentkit/.codex-plugin/plugin.json" \
+    "$bump_fixture/opencode/package.json")
+assert_eq "$before_failure" "$after_failure" \
+    'a replacement failure restores every manifest byte-for-byte'
+
 mkdir -p "$bump_fixture/.worktrees/child"
 worktree_bump_rc=0
 worktree_bump_out=$(cd "$bump_fixture/.worktrees/child" && "$bump" 0.7.4 2>&1) || worktree_bump_rc=$?
