@@ -12,7 +12,7 @@ usage() {
 
 (( $# == 1 )) || usage
 version=$1
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] || {
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || {
     printf '%s: VERSION must be a dotted release version (for example 0.7.3): %s\n' \
         "$PROGRAM" "$version" >&2
     exit 2

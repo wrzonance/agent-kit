@@ -134,7 +134,7 @@ assert_eq '0.7.3' "$(jq -r '.version' "$bump_fixture/opencode/package.json")" \
 
 # Release, prerelease, and build identifiers must be non-empty. Valid
 # semver-style prerelease/build identifiers remain accepted.
-for valid_version in 0.7.3-rc.1 0.7.3+build.2 0.7.3-rc.1+build.2; do
+for valid_version in 0.7.3-rc.1 0.7.3-rc-1 0.7.3+build.2 0.7.3+build-2 0.7.3-rc.1+build.2; do
     valid_rc=0
     (cd "$bump_fixture" && "$bump" "$valid_version" >/dev/null 2>&1) || valid_rc=$?
     assert_eq '0' "$valid_rc" "the version bump helper accepts $valid_version"
