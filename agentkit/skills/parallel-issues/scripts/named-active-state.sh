@@ -53,6 +53,11 @@ while (($#)); do
             now_epoch=$2
             shift 2
             ;;
+        --)
+            shift
+            (($# == 0)) || die 'unexpected positional arguments after --'
+            break
+            ;;
         -h | --help) usage 0 ;;
         *) die "unknown argument: $1" ;;
     esac

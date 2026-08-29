@@ -23,12 +23,16 @@ git -C "$repo" add README.md
 git -C "$repo" commit -qm base
 
 run_state() {
+    local pr=${1:-none}
+    shift || true
     "$helper" --repo-root "$repo" --ledger "$ledger" --issue 511 \
-        --open-pr "${1:-none}" --fresh-hours 2 --now-epoch 2000000000
+        --open-pr "$pr" --fresh-hours 2 --now-epoch 2000000000 "$@"
 }
 
 assert_eq 'stale-active=1[#511]' "$(run_state none)" \
     'missing local evidence dispatches a named stale-active issue'
+assert_eq 'stale-active=1[#511]' "$(run_state none --)" \
+    'a trailing end-of-options marker preserves named-active adjudication'
 assert_eq 'held-active:#511 reason=pr pr=#535' "$(run_state 535)" \
     'open PR evidence is the first terminal hold'
 
