@@ -650,6 +650,7 @@ declare -a relevant_config_keys=()
 declare -A resolved_config_values=() resolved_config_present=()
 declare -a resolved_command_argv=() resolved_focus_argv=()
 resolved_command_key=''
+command_kind=generic
 
 relevant_config_add() {
     local key=$1 existing
@@ -798,7 +799,7 @@ resolve_runner() {
 #
 # Order: AGENT_CMD_<NAME> -> the declared runner as `runner <name>` -> usage error.
 resolve_named_command() {
-    local name=$1 key declared
+    local name=$1 key declared kind_key declared_kind
     # The declaration reads AGENT_CMD_CHECK_NODE_PIN; the invocation is
     # --cmd check-node-pin. Reading the contract and typing its key back is the
     # obvious move, and it used to fail.
@@ -820,9 +821,10 @@ resolve_named_command() {
     local upper rundir
     upper=$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')
     key="AGENT_CMD_$upper"
+    kind_key="${key}_KIND"
     resolved_command_key=$key
     relevant_config_add "$key"
-    local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper")
+    local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper" "$kind_key")
     ((focus_requested)) && resolve_keys+=(AGENT_CMD_TEST_FOCUS)
     [[ -z ${AGENT_REPO_RUNNER:-} ]] && resolve_keys+=(AGENT_REPO_RUNNER)
     repo_config_resolve_keys "${resolve_keys[@]}" || die "cannot resolve repository declarations for $key"
@@ -836,6 +838,16 @@ resolve_named_command() {
         ((${#cmd[@]})) || die "invalid argv for $key"
         cmd_declared=yes
         resolution_kind=declared
+
+        # Formatter diagnostics commonly contain volatile order, colour, and
+        # timing text. Only explicit kind metadata selects path-set comparison;
+        # Command-name heuristics would misclassify tools with similar names.
+        command_kind=generic
+        declared_kind=${resolved_config_values[$kind_key]:-}
+        case $declared_kind in
+            format) command_kind=format ;;
+            generic|'') ;;
+        esac
 
         # A monorepo command usually has to run IN its component. Without this
         # the only root-runnable form of a dashboard test invocation globbed
@@ -857,6 +869,7 @@ resolve_named_command() {
     if resolve_runner; then
         cmd=("$name")
         resolution_kind=runner
+        command_kind=generic
         return 0
     fi
 
@@ -922,10 +935,10 @@ choose_log() {
 }
 
 # A worker may ask for one failed verification to be checked against the chain
-# base.  The test source must be the same blob at both commits, and the base
-# checkout must produce the same failure signature.  This is deliberately
-# opt-in: ordinary failures remain failures when a worker cannot identify a
-# test or cannot obtain a trustworthy base run.
+# base. The source path must be the same blob at both commits, and the base
+# checkout must produce matching failure evidence. This is deliberately opt-in:
+# ordinary failures remain failures when a worker cannot identify a test or
+# cannot obtain a trustworthy base run.
 failure_signature() {
     local file=$1
     sed -E \
@@ -934,6 +947,53 @@ failure_signature() {
         -e '/^=== finding /d' \
         -e '/^=== agent-run exited /d' \
         "$file" | sha256sum | awk '{print $1}'
+}
+
+# Formatter diagnostics are intentionally compared as a normalized set of
+# repository-relative paths. Prettier's output can vary in order, colour, and
+# timing while still identifying exactly the same drift. Only stable
+# `[warn] path` records naming files under the command cwd are accepted;
+# summaries and arbitrary diagnostic text are never candidate paths.
+format_failure_paths() {
+    local file=$1 cwd=$2 repo_root=$3 line path marker candidate rel paths_tmp rc
+    paths_tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-format-paths.XXXXXX") || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=$(printf '%s\n' "$line" | sed $'s/\033\\[[0-9;]*m//g;s/\r$//')
+        if [[ $line =~ ^[[:space:]]*\[([^]]+)\] ]]; then
+            marker=${BASH_REMATCH[1]}
+            [[ $marker == warn ]] || {
+                rm -f -- "$paths_tmp"
+                return 1
+            }
+        elif [[ ${line,,} =~ ^[[:space:]]*(error|fatal|panic)(:|[[:space:]]) ]]; then
+            rm -f -- "$paths_tmp"
+            return 1
+        else
+            continue
+        fi
+        [[ $line =~ ^[[:space:]]*\[warn\][[:space:]]+(.+)$ ]] || continue
+        path=${BASH_REMATCH[1]}
+        path=${path#./}
+        case $path in
+            ''|/*|../*|*/../*|*/..|*'\n'*) continue ;;
+        esac
+        candidate=$(readlink -f -- "$cwd/$path" 2>/dev/null || true)
+        [[ -n $candidate && $candidate == "$repo_root"/* && -f $candidate ]] || continue
+        rel=${candidate#"$repo_root"/}
+        printf '%s\n' "$rel" >>"$paths_tmp" || {
+            rm -f -- "$paths_tmp"
+            return 1
+        }
+    done <"$file"
+    sort -u -- "$paths_tmp"
+    rc=$?
+    rm -f -- "$paths_tmp"
+    return "$rc"
+}
+
+format_paths_csv() {
+    local paths=$1
+    printf '%s\n' "$paths" | paste -sd, - | sed 's/,/, /g'
 }
 
 baseline_exclusion_message=''
@@ -985,6 +1045,7 @@ try_baseline_exclusion() {
     local base_sha head_sha base_blob current_blob current_file resolved_file
     local baseline_dir baseline_output baseline_work_dir rel base_rc baseline_path_env baseline_project
     local current_signature baseline_signature exclusion_file exclusion_tmp
+    local current_failure_paths baseline_failure_paths exclusion_paths path
     [[ -n $baseline_ref ]] || return 1
     [[ -n $git_top && -d $git_top/.agent/logs ]] || return 1
 
@@ -1043,12 +1104,37 @@ try_baseline_exclusion() {
             -u GIT_DIR -u GIT_WORK_TREE PATH="$baseline_path_env" \
             COMPOSE_PROJECT_NAME="$baseline_project" "${cmd[@]}") \
         >"$baseline_output" 2>&1 || base_rc=$?
-    current_signature=$(failure_signature "$log_file") || current_signature=''
-    baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
+    current_failure_paths=''
+    baseline_failure_paths=''
+    if [[ $command_kind == format ]]; then
+        current_failure_paths=$(format_failure_paths "$log_file" "$work_dir" "$git_top") || current_failure_paths=''
+        baseline_failure_paths=$(format_failure_paths "$baseline_output" "$baseline_work_dir" "$baseline_dir") || baseline_failure_paths=''
+    else
+        current_signature=$(failure_signature "$log_file") || current_signature=''
+        baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
+    fi
     rm -f -- "$baseline_output"
     rm -rf -- "$baseline_dir"
     ((base_rc != 0)) || return 1
-    [[ -n $current_signature && $current_signature == "$baseline_signature" ]] || return 1
+    if [[ $command_kind == format ]]; then
+        [[ -n $current_failure_paths && $current_failure_paths == "$baseline_failure_paths" ]] || return 1
+        while IFS= read -r path || [[ -n $path ]]; do
+            [[ -n $path ]] || continue
+            [[ $(git -C "$git_top" cat-file -t "$base_sha:$path" 2>/dev/null || true) == blob ]] || return 1
+            current_file=$git_top/$path
+            resolved_file=$(readlink -f -- "$current_file" 2>/dev/null || true)
+            [[ -n $resolved_file && $resolved_file == "$git_top"/* && -f $resolved_file ]] || return 1
+            base_blob=$(git -C "$git_top" rev-parse "$base_sha:$path" 2>/dev/null) || return 1
+            current_blob=$(git -C "$git_top" hash-object -- "$resolved_file" 2>/dev/null) || return 1
+            [[ $base_blob == "$current_blob" ]] || return 1
+            git -C "$git_top" diff --quiet "$base_sha...$head_sha" -- "$path" || return 1
+            git -C "$git_top" diff --quiet HEAD -- "$path" || return 1
+        done <<<"$current_failure_paths"
+        exclusion_paths=$(format_paths_csv "$current_failure_paths") || return 1
+    else
+        [[ -n $current_signature && $current_signature == "$baseline_signature" ]] || return 1
+        exclusion_paths=$baseline_path
+    fi
 
     exclusion_file=$git_top/.agent/baseline-exclusion.md
     [[ ! -L $exclusion_file && (! -e $exclusion_file || -f $exclusion_file) ]] || return 1
@@ -1064,8 +1150,8 @@ try_baseline_exclusion() {
         }
     fi
     # shellcheck disable=SC2016  # backticks are literal Markdown delimiters.
-    printf -- '- [ ] Baseline exclusion: `%s` (`%s`) is unchanged and red on chain base `%s` (evidence: `%s`)\n' \
-        "$baseline_id" "$baseline_path" "$base_sha" "$log_file" >>"$exclusion_tmp" || {
+    printf -- '- [ ] Baseline exclusion: `%s` (`%s`) is unchanged and red on chain base `%s` (failing paths: %s; evidence: `%s`)\n' \
+        "$baseline_id" "$baseline_path" "$base_sha" "$exclusion_paths" "$log_file" >>"$exclusion_tmp" || {
         rm -f -- "$exclusion_tmp"
         return 1
     }
@@ -1074,7 +1160,7 @@ try_baseline_exclusion() {
         return 1
     }
     baseline_exclusion_base_sha=$base_sha
-    baseline_exclusion_message="baseline-excluded test=$baseline_id base=$base_sha log=$log_file"
+    baseline_exclusion_message="baseline-excluded test=$baseline_id base=$base_sha paths=$exclusion_paths log=$log_file"
     return 0
 }
 
@@ -1105,7 +1191,7 @@ compose_dependency_start_collision() {
 }
 
 report_failure() {
-    local rc=$1 log=$2 excerpt
+    local rc=$1 log=$2 excerpt formatter_paths
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
     printf '  cwd=%s runner=none\n' "$work_dir"
     print_notes '  '
@@ -1116,6 +1202,12 @@ report_failure() {
     if ((rc == 127)) && [[ $literal_root_fallback == yes ]]; then
         printf '  note: rc=127 indicates argv[0] %s was found from repository root %s but not from execution cwd %s; fix the declaration to use the execution base, and do not add a literal twin to route around the resolved execution base.\n' \
             "$literal_token" "$literal_repository_base" "$literal_execution_base"
+    fi
+    if [[ $command_kind == format ]]; then
+        formatter_paths=$(format_failure_paths "$log" "$work_dir" "$git_top" 2>/dev/null || true)
+        if [[ -n $formatter_paths ]]; then
+            printf '  formatter failing paths: %s\n' "$(format_paths_csv "$formatter_paths")"
+        fi
     fi
     excerpt=$(grep -iE 'error|fail|traceback|assert|refused|denied' "$log" 2>/dev/null | head -n 20 || true)
     [[ -n $excerpt ]] || excerpt=$(tail -n 20 "$log" 2>/dev/null || true)
@@ -1203,7 +1295,7 @@ compute_tree_hash() {
     if ! : >"$hash_input" ||
         ! git -C "$git_top" rev-parse HEAD >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
-        ! printf 'command\0%s\0focus\0%s\0' "$cmd_name" "$focus_opt" >>"$hash_input" ||
+        ! printf 'command\0%s\0kind\0%s\0focus\0%s\0' "$cmd_name" "$command_kind" "$focus_opt" >>"$hash_input" ||
         ! printf 'resolved\0' >>"$hash_input" ||
         ! printf '%s\0' "${cmd[@]}" >>"$hash_input" ||
         ! git -C "$git_top" diff HEAD >>"$hash_input" ||

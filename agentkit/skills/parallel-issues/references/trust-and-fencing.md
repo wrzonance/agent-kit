@@ -29,11 +29,16 @@ than a new run.
 
 Workers may opt into a baseline comparison for a failed check by supplying the chain-base ref,
 failing test path, and stable test id to `agent-run.sh`. The helper runs the same command from an
-isolated base checkout and appends to `.agent/baseline-exclusion.md` only when the test blob and
-normalized failure signature match, deduplicating the test-id/base pair. `BASELINE-EXCLUDED` means
-publication may continue; it is not green evidence and must not unblock ready or merge. A later
-ordinary green verification clears stale exclusions; the file is rendered as unchecked `Testing`
-boxes carrying each resolved base SHA and evidence-log path.
+isolated base checkout and appends to `.agent/baseline-exclusion.md` only when the command
+identity and failure evidence match, deduplicating the test-id/base pair. Ordinary checks retain
+their normalized failure signature comparison. A formatter can opt into path-set comparison by
+declaring `AGENT_CMD_<NAME>_KIND=format` alongside `AGENT_CMD_<NAME>`; its `[warn] path` records
+are normalized, sorted, and compared without volatile order, colour, or timing text. Every
+reported path must be unchanged in the worktree and outside the branch diff, and the exclusion
+records the complete failing path set. `BASELINE-EXCLUDED` means publication may continue; it is
+not green evidence and must not unblock ready or merge. A later ordinary green verification
+clears stale exclusions; the file is rendered as unchecked `Testing` boxes carrying each
+resolved base SHA, failing path set, and evidence-log path.
 
 During the root's final sweep, coalesce exclusions by test id and base SHA and propose one Backlog
 candidate per distinct trunk failure. Candidates are observations only: never promote them to
