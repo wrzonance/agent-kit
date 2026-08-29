@@ -16,6 +16,7 @@ comment_composer="$root/agentkit/skills/review-remote-pr/scripts/compose-comment
 worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
 fast_reference="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
 triage_reference="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
+named_active_helper="$root/agentkit/skills/parallel-issues/scripts/named-active-state.sh"
 
 parallel_text=$(<"$parallel")
 review_text=$(<"$review")
@@ -23,6 +24,7 @@ policy_text=$(<"$body_policy")
 worker_text=$(<"$worker_prompts")
 fast_text=$(<"$fast_reference")
 triage_text=$(<"$triage_reference")
+named_active_text=$(<"$named_active_helper")
 
 # Fast mode must make one pushed diff and one combined finding batch observable.
 assert_contains "$parallel_text$review_text$fast_text" 'same first pushed diff' \
@@ -120,6 +122,16 @@ assert_contains "$parallel_text$fast_text$triage_text" 'stale-active=1[#' \
     'fast mode example prints stale-active issue identity'
 assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
     'fast mode example prints held-active issue identity'
+assert_contains "$triage_text" '.agent/runs/active-workers.ndjson' \
+    'named active adjudication names one repository-wide durable ledger'
+assert_contains "$triage_text" 'state=terminal' \
+    'named active ledger releases completed, interrupted, and parked workers'
+assert_contains "$triage_text" 'named-active-state.sh' \
+    'named active adjudication invokes the executable boundary helper'
+assert_contains "$named_active_text" 'git -C "$repo_root" worktree list --porcelain' \
+    'worktree liveness is proven from exact Git registration'
+assert_not_contains "$named_active_text" 'pgrep' \
+    'named active adjudication does not infer liveness from process archaeology'
 
 # Parse every currently emitted canonical example and verify the accounting
 # invariant, including exclusion groups. Compatibility-only legacy strings do

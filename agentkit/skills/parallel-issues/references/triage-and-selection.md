@@ -229,12 +229,42 @@ after its immediate predecessor's commit is pushed. A fast-mode disclosure there
 
 An explicit issue number is a request to account for that number, not permission to lose it in the
 active filter. The triage digest keeps the winning open-PR evidence even when the board Status is
-`In progress` or `In review`; use it as the first liveness check. Then consult only the current
-run's root-owned dispatch ledger for a live worktree lock and the assigned worker's heartbeat
-evidence for freshness. A live worktree lock means an active ledger entry for that issue whose
-worktree remains registered; merely finding a directory, branch, or process is not a lock. A
-heartbeat is fresh when it is inside the invocation's declared `N`-hour window; use the same
-declared window for every candidate in the run.
+`In progress` or `In review`; use it as the first liveness check. Then use the repository-wide,
+root-owned worker ledger at `$repository_root/.agent/runs/active-workers.ndjson`. This path is
+shared across resumptions and invocation IDs so a new run cannot overlook a worker dispatched by
+an earlier run.
+
+The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Each row has
+exactly this durable evidence shape:
+
+```json
+{"version":1,"issue":511,"worktree":"/absolute/repo/.worktrees/feat/issue-511","branch":"feat/issue-511","state":"active","heartbeatEpoch":1787932800}
+```
+
+The latest valid row for an issue wins. Root appends `state=active` immediately after the worker is
+spawned into its registered worktree, appends another active row with a current
+`heartbeatEpoch` whenever the runtime reports worker progress, and appends `state=terminal` when
+the worker completes, is interrupted, or is parked. Only root writes this file; create its parent
+with mode `0700` and the ledger with mode `0600`. A malformed, symlinked, non-owned, or
+group/world-writable ledger is blocked evidence, never permission to dispatch.
+
+Run the boundary helper for every operator-named triage record whose verdict is `active`:
+
+```bash
+active_workers="$repository_root/.agent/runs/active-workers.ndjson"
+open_pr=${triage_pr:-none}
+"$agentkit/parallel-issues/scripts/named-active-state.sh" \
+    --repo-root "$repository_root" --ledger "$active_workers" \
+    --issue "$issue_number" --open-pr "$open_pr" \
+    --fresh-hours "${AGENT_ACTIVE_FRESH_HOURS:-2}"
+```
+
+A live worktree lock requires the latest row to be active and its exact canonical worktree/branch
+pair to remain in `git worktree list --porcelain`; merely finding a directory, branch, or process
+is not a lock. If that exact registration is absent, the same active row is a heartbeat hold only
+when its timestamp is not in the future and is inside the invocation's declared `N`-hour window.
+Use the same declared window for every candidate in the run. An absent ledger or terminal/latest
+stale row is no local liveness evidence.
 
 Classify the named issue in this order:
 
