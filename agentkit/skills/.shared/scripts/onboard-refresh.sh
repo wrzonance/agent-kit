@@ -49,6 +49,10 @@ declare -A current_components=() old_components=()
 declare -A current_binary=() current_state=() current_rundir=()
 declare -A old_binary=() old_state=() old_rundir=()
 old_component_inventory=0
+worktree_drift_lines=''
+worktree_pruned_lines=''
+worktree_drift_count=0
+worktree_pruned_count=0
 
 component_record() {
     local line=$1 payload path rest lang marker
@@ -209,6 +213,93 @@ collect_ci() {
     ci_gates=$(sed -n '/^NOT covered by any declared command/,/^$/ { /^  /s/^  /ci-gap-gate= /p; }' <<< "$ci_output")
 }
 
+# A lead's prompt is the durable local declaration of its active write set.
+# Keep the audit read-only with respect to checkout content: only the Git
+# worktree registration prune below changes metadata, and only for paths Git
+# proves are missing.
+write_set_patterns() {
+    local worktree=$1 prompt line pattern active=0
+    local write_set_file="$worktree/.agent/write-set"
+    if [[ -f $write_set_file && ! -L $write_set_file ]]; then
+        while IFS= read -r line; do
+            line=${line%$'\r'}
+            [[ -n $line ]] || continue
+            [[ $line == -* ]] && line=${line#-}
+            line=${line# }
+            printf '%s\n' "$line"
+        done < "$write_set_file"
+        return 0
+    fi
+
+    shopt -s nullglob
+    for prompt in "$worktree"/.agent/prompts/issue-*-lead.md; do
+        [[ -f $prompt && ! -L $prompt ]] || continue
+        while IFS= read -r line; do
+            line=${line%$'\r'}
+            if [[ $line == '## Declared write set'* ]]; then
+                active=1
+                continue
+            fi
+            [[ $line == '## '* ]] && active=0
+            ((active)) || continue
+            [[ $line == '- '* ]] || continue
+            pattern=${line#- }
+            [[ -n $pattern ]] && printf '%s\n' "$pattern"
+        done < "$prompt"
+    done
+    shopt -u nullglob
+}
+
+path_in_write_set() {
+    local worktree=$1 path=$2 pattern candidate
+    while IFS= read -r pattern; do
+        [[ -n $pattern && $pattern != /* && $pattern != *..* ]] || continue
+        while IFS= read -r candidate; do
+            [[ $candidate == "$path" ]] && return 0
+        done < <(git -C "$worktree" diff HEAD --name-only --no-renames -- "$pattern" 2>/dev/null || true)
+    done < <(write_set_patterns "$worktree")
+    return 1
+}
+
+collect_worktree_audit() {
+    local worktree line path
+    local -a registered=() missing=() changed=()
+    while IFS= read -r line; do
+        case $line in
+            'worktree '*)
+                worktree=${line#worktree }
+                registered+=("$worktree")
+                [[ -d $worktree ]] || missing+=("$worktree")
+                ;;
+        esac
+    done < <(git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
+
+    for worktree in "${registered[@]}"; do
+        [[ $worktree == "$repo_root" ]] && continue
+        [[ -d $worktree ]] || continue
+        changed=()
+        while IFS= read -r -d '' path; do
+            changed+=("$path")
+        done < <(git -C "$worktree" diff HEAD --name-only --no-renames -z 2>/dev/null || true)
+        for path in "${changed[@]}"; do
+            path_in_write_set "$worktree" "$path" && continue
+            worktree_drift_count=$((worktree_drift_count + 1))
+            worktree_drift_lines+="worktree= path=$worktree outside-write-set=$path"$'\n'
+        done
+    done
+
+    if ((${#missing[@]} > 0)); then
+        git -C "$repo_root" worktree prune --verbose >/dev/null 2>&1 || true
+        local remaining
+        remaining=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
+        for worktree in "${missing[@]}"; do
+            grep -F -qx "worktree $worktree" <<< "$remaining" && continue
+            worktree_pruned_count=$((worktree_pruned_count + 1))
+            worktree_pruned_lines+="worktree= pruned path=$worktree"$'\n'
+        done
+    fi
+}
+
 print_inventory() {
     local record key rundir_key
     for record in "${!current_components[@]}"; do
@@ -229,8 +320,17 @@ if [[ $mode == inventory ]]; then
     exit 0
 fi
 
+collect_worktree_audit
+
 if [[ ! -r $config ]]; then
-    printf 'drift= none\n'
+    if ((worktree_drift_count || worktree_pruned_count)); then
+        printf 'drift= worktrees=drift\n'
+        if [[ $mode != summary ]]; then
+            printf '%s%s' "$worktree_drift_lines" "$worktree_pruned_lines"
+        fi
+    else
+        printf 'drift= none\n'
+    fi
     exit 0
 fi
 
@@ -372,6 +472,9 @@ fi
 [[ -n $path_drift ]] && parts+=("paths=drift")
 [[ -n $roster_hint_lines ]] && parts+=("model-roster=hint")
 [[ -n $base_trusted_drift_lines ]] && parts+=("config=base-drift")
+if ((worktree_drift_count || worktree_pruned_count)); then
+    parts+=("worktrees=drift")
+fi
 
 if ((${#parts[@]} == 0)) && [[ -z $path_drift ]]; then
     summary='drift= none'
@@ -385,6 +488,7 @@ if [[ $mode == summary ]]; then
 fi
 
 printf '%s\n' "$summary"
+printf '%s%s' "$worktree_drift_lines" "$worktree_pruned_lines"
 printf '%s' "$added_lines$removed_lines$tool_lines"
 if ((generator_stale)); then
     printf 'generator= stale recorded=%s installed=%s\n' \

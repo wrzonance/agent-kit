@@ -168,4 +168,70 @@ assert_contains "$out" 'source=base:' \
 assert_contains "$out" 'working-tree=codex (not in effect until on main)' \
     'report warns that the working-tree reviewer is not in effect yet'
 
+# The refresh report audits linked worktrees against the active write set in
+# their lead prompt and prunes registrations whose checkout disappeared.
+fleet_repo="$tmp/fleet-repo"
+mkdir -p "$fleet_repo/.agent"
+git -C "$fleet_repo" init -q -b main
+git -C "$fleet_repo" config user.email test@example.com
+git -C "$fleet_repo" config user.name test
+printf '%s\n' tracked > "$fleet_repo/tracked.txt"
+git -C "$fleet_repo" add -- tracked.txt
+git -C "$fleet_repo" commit -qm init
+fleet_worktree="$tmp/fleet-worktree"
+git -C "$fleet_repo" worktree add -q -b feat/fleet "$fleet_worktree"
+mkdir -p "$fleet_worktree/.agent/prompts"
+cat > "$fleet_worktree/.agent/prompts/issue-9-lead.md" <<'EOF'
+## Declared write set (the files this dispatch owns)
+
+- allowed.txt
+EOF
+printf '%s\n' changed > "$fleet_worktree/foreign.txt"
+printf '%s\n' allowed > "$fleet_worktree/allowed.txt"
+git -C "$fleet_worktree" add -- allowed.txt foreign.txt
+printf '%s\n' root-dirty > "$fleet_repo/tracked.txt"
+fleet_out=$(bash "$refresh_sh" --repo-root "$fleet_repo" --report 2>&1)
+assert_contains "$fleet_out" 'worktree= path=' \
+    'refresh reports a linked worktree with tracked drift'
+assert_contains "$fleet_out" 'outside-write-set=foreign.txt' \
+    'refresh names tracked modifications outside the active write set'
+assert_not_contains "$fleet_out" 'outside-write-set=allowed.txt' \
+    'refresh accepts tracked modifications inside the active write set'
+assert_not_contains "$fleet_out" "path=$fleet_repo outside-write-set=tracked.txt" \
+    'refresh excludes the primary checkout from linked-worktree drift auditing'
+missing_registration="$tmp/missing-worktree"
+git -C "$fleet_repo" worktree add -q -b feat/missing "$missing_registration"
+rm -rf -- "$missing_registration"
+locked_registration="$tmp/locked-worktree"
+git -C "$fleet_repo" worktree add -q -b feat/locked "$locked_registration"
+git -C "$fleet_repo" worktree lock "$locked_registration"
+rm -rf -- "$locked_registration"
+prune_out=$(bash "$refresh_sh" --repo-root "$fleet_repo" --report 2>&1)
+assert_contains "$prune_out" 'worktree= pruned path=' \
+    'refresh reports pruning a dangling worktree registration'
+assert_contains "$prune_out" "worktree= pruned path=$missing_registration" \
+    'refresh reports the registration actually removed by prune'
+assert_not_contains "$prune_out" "worktree= pruned path=$locked_registration" \
+    'refresh does not claim a locked registration was pruned'
+assert_eq '3' "$(git -C "$fleet_repo" worktree list --porcelain | grep -c '^worktree ' | tr -d ' ')" \
+    'refresh prunes only the unlocked registration while retaining the live and locked worktrees'
+
+# A no-config repository still gets the worktree audit, but --summary remains
+# a single machine-readable line even when details are present in report mode.
+no_config_repo="$tmp/no-config-repo"
+git init -q -b main "$no_config_repo"
+git -C "$no_config_repo" config user.email test@example.com
+git -C "$no_config_repo" config user.name test
+printf '%s\n' clean > "$no_config_repo/tracked.txt"
+git -C "$no_config_repo" add -- tracked.txt
+git -C "$no_config_repo" commit -qm init
+no_config_worktree="$tmp/no-config-worktree"
+git -C "$no_config_repo" worktree add -q -b feat/no-config "$no_config_worktree"
+printf '%s\n' drift > "$no_config_worktree/tracked.txt"
+no_config_summary=$(bash "$refresh_sh" --repo-root "$no_config_repo" --summary 2>&1)
+assert_eq '1' "$(printf '%s\n' "$no_config_summary" | wc -l | tr -d ' ')" \
+    'no-config summary output stays on one line'
+assert_contains "$no_config_summary" 'worktrees=drift' \
+    'no-config summary still reports linked-worktree drift'
+
 finish
