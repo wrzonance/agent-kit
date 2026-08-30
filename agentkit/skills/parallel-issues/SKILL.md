@@ -117,11 +117,11 @@ After any compaction/resume, before taking another action, run `"$agentkit/.shar
 
 **Authorization is checked once per run, not per command.** Record each grant with a stable
 decision token (e.g. `authorize:workflow-mutations`). Before a bounded workflow mutation of a
-granted class — worktree branch pushes, draft PR creation, board moves — the check is one
-ledger query, `"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
+granted class — worktree branch pushes, draft PR creation, board moves, commits staging a
+protected path the grant names — the check is one ledger query,
+`"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
 passing the same scope the grant was recorded with — a decision token alone must never
-widen a narrower grant. Exit 0 means proceed with no fresh approval round trip:
-re-litigating a recorded grant per command is exactly the overhead this rule removes. A
+widen a narrower grant. Exit 0 means proceed, no fresh approval round trip. A
 mutation no recorded decision covers still stops — scope stays; permission ceremony goes.
 
 ### Diff-size facts
@@ -628,7 +628,7 @@ fi
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repository "$repository"
+    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
 ```
 
 **The printed line is the evidence.** `move-github-project-item.sh` emits exactly one terminal
@@ -915,7 +915,7 @@ fi
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-number "$issue_number" --status 'In review' --repository "$repository"
+    --issue-number "$issue_number" --status 'In review' --repo "$repository"
 ```
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 

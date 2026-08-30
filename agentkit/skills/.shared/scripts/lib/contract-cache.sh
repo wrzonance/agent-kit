@@ -5,6 +5,70 @@
 # This library never sources a snapshot: cache records are parsed as data and
 # only accepted when the caller's current input digest matches exactly.
 
+# Harness-aware contract resolution (issue #551).
+#
+# The environment contract used to be one untracked file per checkout,
+# .agent/env-contract.txt, shared by every CLI that opens it -- but it carries
+# harness-specific facts (skills= path=, harness= name=). A second harness
+# opening the same checkout rewrote it at SessionStart, silently changing the
+# skills tree, helper paths, and hook verdicts of a run already in flight
+# (observed live: a root running parallel-issues under one CLI had its
+# contract clobbered mid-wave by a second CLI's session, opened "to
+# observe"). Every writer now targets its own .agent/env-contract.<harness>.txt,
+# so one harness never even has an occasion to touch another's file. The
+# bare, un-suffixed name is kept as a READ-ONLY legacy fallback for one
+# release -- nothing added by this fix writes it -- so a checkout whose
+# contract predates this change, or a worktree whose contract came from a
+# caller that still targets the bare name, keeps resolving exactly as before.
+contract_cache_harness_name() {
+    if [[ -n ${CONTRACT_CACHE_HARNESS_NAME_MEMO:-} ]]; then
+        printf '%s' "$CONTRACT_CACHE_HARNESS_NAME_MEMO"
+        return 0
+    fi
+    local self_dir=${BASH_SOURCE[0]%/*} helper name
+    [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+    helper="$self_dir/../harness-id.sh"
+    [[ -x $helper ]] || return 1
+    name=$("$helper" --name 2> /dev/null) || return 1
+    # A safe single-token filename component: harness-id.sh's own vocabulary
+    # (claude, codex, opencode, unknown) always matches this, but a broken or
+    # tampered helper must never hand back something that could escape the
+    # .agent/ directory or collide with an unrelated file.
+    [[ $name =~ ^[a-z][a-z0-9]*$ ]] || return 1
+    CONTRACT_CACHE_HARNESS_NAME_MEMO=$name
+    printf '%s' "$name"
+}
+
+# The contract path a READER should consult for repo_root: the running
+# harness's own file when one has ever been written there, otherwise the
+# legacy bare name. $2 lets a caller that already resolved a harness (e.g.
+# one checking a DIFFERENT harness's liveness) skip the redundant lookup.
+contract_cache_contract_file() {
+    local repo_root=$1 harness=${2:-} keyed legacy
+    legacy="$repo_root/.agent/env-contract.txt"
+    [[ -n $harness ]] || harness=$(contract_cache_harness_name 2> /dev/null) || harness=''
+    [[ -n $harness ]] || { printf '%s' "$legacy"; return 0; }
+    keyed="$repo_root/.agent/env-contract.$harness.txt"
+    if [[ -e $keyed || -L $keyed ]]; then
+        printf '%s' "$keyed"
+    else
+        printf '%s' "$legacy"
+    fi
+}
+
+# The path a WRITER should target for repo_root: always the harness-keyed
+# name, whether or not it exists yet -- a writer creates it, a reader merely
+# prefers it. Falls back to the legacy bare name only when the harness itself
+# cannot be determined (a broken install, never normal operation), which is
+# the same fail-open reasoning contract_cache_contract_file above already
+# uses for "no harness signal at all".
+contract_cache_contract_write_target() {
+    local repo_root=$1 harness=${2:-}
+    [[ -n $harness ]] || harness=$(contract_cache_harness_name 2> /dev/null) || harness=''
+    [[ -n $harness ]] || { printf '%s' "$repo_root/.agent/env-contract.txt"; return 0; }
+    printf '%s' "$repo_root/.agent/env-contract.$harness.txt"
+}
+
 contract_cache_hash_stream() {
     if command -v sha256sum > /dev/null 2>&1; then
         sha256sum | awk '{print $1}'
@@ -225,7 +289,7 @@ contract_cache_session_context_read() {
     [[ ${values[contract_root]} == "$repo_root" ]] || return 1
     [[ ${values[agentkit]} == /* && ${values[shared]} == /* ]] || return 1
 
-    contract="$repo_root/.agent/env-contract.txt"
+    contract=$(contract_cache_contract_file "$repo_root")
     contract_cache_contract_is_ours "$contract" "$repo_root" || return 1
     skills_path=$(sed -n 's/^skills= path=//p' "$contract" | sed -n '1p')
     [[ -n $skills_path && ${values[agentkit]} == "$skills_path" ]] || return 1
