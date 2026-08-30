@@ -95,9 +95,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 - Provider rules, author classification, fix batches, reply settlement,
   bounded waits, exact readback, worktree mechanics, and the six-step worker
   gate stay in their existing authoritative files.
-- `--auto-merge` authorizes this skill to perform the confirmed queue's
-  merges itself; without it every PR still stops at evidence-green and the
-  merge stays a human action. It implies strict serial merge ordering — see
+- `--auto-merge` implies strict serial merge ordering — see
   ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 - **GitHub API budget.** `pr-queue.sh --write-confirmed-queue` prints a
   `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
@@ -281,7 +279,9 @@ replies enter `AWAITING_BOT_RESPONSE`; refresh evidence before calling
 fix round; unanswered replies stay awaiting. Code Quality keeps its
 auto-clear/reasoned-dismiss lifecycle; unexpected authoritative bots use the
 generic automated lane and are never triggered. Human items retain
-per-item confirmation; human threads stay unresolved.
+per-item confirmation; human threads stay unresolved. Record a verified fix
+commit with `review-ledger.sh cover`; never re-review — see
+["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ### 4. Prove evidence-green
 

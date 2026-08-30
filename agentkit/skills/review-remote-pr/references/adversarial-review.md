@@ -345,7 +345,11 @@ input, so the renderer owns every layout byte and retains declined findings tran
 one durable receipt and retain the result artifact with the review record. If publication is
 nonzero, post-receipt.sh re-fetches live comments after the failed transport; inspect that fresh
 marker evidence before any retry and never retry from the cached comments artifact. Do not rerun
-the adversarial review after fixes.
+the adversarial review after fixes — including a fix, merge-down, or retarget that lands AFTER
+this receipt publishes (Phase C, or a later `pr-to-green` round): `review-ledger.sh cover` records
+that later commit onto the published entry's lineage instead, so `merge-gate.sh` reads it as
+covered rather than `stale` with zero additional review spends — see
+["$agentkit/pr-to-green/references/auto-merge.md"](../../pr-to-green/references/auto-merge.md#recording-a-merge-down-or-retarget-transition-issue-567).
 
 ## Pitfalls
 
