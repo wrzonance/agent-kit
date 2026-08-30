@@ -69,6 +69,8 @@ repos/owner/repo/issues/14/comments*)
         printf '%s\n' '[{"user":{"login":"workflow-account","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review"}]'
     elif [[ ${REVIEW_ACTIVITY:-none} == spent-forged ]]; then
         printf '%s\n' '[{"user":{"login":"mallory","type":"User"},"body":"<!-- pr-to-green:provider-request provider=coderabbit -->\n@coderabbitai full review"}]'
+    elif [[ ${REVIEW_ACTIVITY:-none} == chat-reply ]]; then
+        printf '%s\n' "${OBSERVE_ISSUE_COMMENTS_JSON:-[]}"
     else
         printf '%s\n' '[]'
     fi
@@ -145,6 +147,16 @@ assert_contains "$(cat "$tmp/trigger.md")" '<!-- pr-to-green:provider-request pr
     'trigger request carries the lifetime idempotency marker'
 assert_contains "$(cat "$tmp/trigger.md")" '@coderabbitai full review' \
     'trigger request uses the one catalogued full-review command'
+# issue #565: CodeRabbit parses the trigger's FIRST line as a command only
+# when it is the bare command -- a leading attribution banner (agent-kit#552)
+# makes it parse as chat instead. The marker still follows, invisible to the
+# parser as an HTML comment.
+assert_eq '@coderabbitai full review' "$(sed -n '1p' "$tmp/trigger.md")" \
+    'the trigger body first line is the bare CodeRabbit command, with no attribution banner (issue #565)'
+assert_eq '<!-- pr-to-green:provider-request provider=coderabbit -->' "$(sed -n '2p' "$tmp/trigger.md")" \
+    'the idempotency marker follows the bare command as an HTML comment'
+assert_not_contains "$(cat "$tmp/trigger.md")" 'This was written agentically' \
+    'the trigger comment carries no attribution banner (issue #565)'
 
 : >"$tmp/transition.log"
 out=$(REVIEW_ACTIVITY=current run_transition)
@@ -447,6 +459,35 @@ assert_contains "$out" 'provider=coderabbit result=STALE_HEAD state=APPROVED com
     'a terminal review of a stale (non-current) head reports STALE_HEAD, never LANDED'
 assert_not_contains "$out" 'result=LANDED' \
     'a stale-head review is never mistaken for landed evidence on the current head'
+
+# issue #565 (agent-kit#552): CodeRabbit parses an unbannered trigger comment
+# but can still reply as CHAT (an issue comment mentioning the triggering
+# account) instead of filing a review. Report that shape distinctly from
+# PENDING so the one-ping spend is never silently mistaken for pending
+# activity with nothing to show for it.
+out=$(REVIEW_ACTIVITY=chat-reply \
+    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-28T23:32:52Z","body":"For best results, initiate chat on the files or code changes.\n\n@workflow-account I found one blocking issue. P1 - Define and implement the local liveness evidence."}]' \
+    run_observe '2026-08-28T23:32:00Z')
+assert_contains "$out" 'provider=coderabbit result=TRIGGER_MISPARSED' \
+    'a CodeRabbit chat reply with no review classifies as TRIGGER_MISPARSED, not PENDING (agent-kit#552 shape)'
+assert_not_contains "$out" 'result=PENDING' \
+    'a misparsed trigger is never reported as plain PENDING'
+
+# A CodeRabbit issue comment that predates the trigger boundary is not this
+# run's misparse -- it must still read as PENDING.
+out=$(REVIEW_ACTIVITY=chat-reply \
+    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-20T00:00:00Z","body":"@workflow-account old chat noise"}]' \
+    run_observe '2026-08-22T06:30:00Z')
+assert_contains "$out" 'provider=coderabbit result=PENDING' \
+    "a chat reply that predates the since= boundary is not this run's misparse"
+
+# A human comment mentioning the workflow account (not authored by
+# coderabbitai) must never be mistaken for a misparsed trigger reply.
+out=$(REVIEW_ACTIVITY=chat-reply \
+    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"someone-else","type":"User"},"created_at":"2026-08-28T23:32:52Z","body":"@workflow-account looks good"}]' \
+    run_observe '2026-08-28T23:32:00Z')
+assert_contains "$out" 'provider=coderabbit result=PENDING' \
+    'a non-CodeRabbit comment mentioning the workflow account is never classified as TRIGGER_MISPARSED'
 
 set +e
 out=$(REVIEW_TRANSITION_GH="$tmp/gh" bash "$transition" --observe --repo owner/repo --pr 14 2>"$tmp/observe-no-since.err")

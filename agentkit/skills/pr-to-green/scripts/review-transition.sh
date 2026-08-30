@@ -80,9 +80,13 @@ ready-transition and provider-spend flow. Prints "provider=coderabbit
 result=LANDED state=STATE threads=N since=TIMESTAMP", or
 "provider=coderabbit result=STALE_HEAD state=STATE commit=SHA" for a
 terminal review that postdates TIMESTAMP but targets a head the PR has since
-moved past, or "provider=coderabbit result=PENDING" otherwise. Always exits
-0 -- neither PENDING nor STALE_HEAD is a failure, only "not landed for this
-head yet". A LANDED result additionally appends kind=bot evidence
+moved past, or "provider=coderabbit result=TRIGGER_MISPARSED" when CodeRabbit
+replied to the trigger as chat (an issue comment mentioning the triggering
+account, postdating TIMESTAMP) instead of filing a review -- that spend
+produced nothing and is reported distinctly from "provider=coderabbit
+result=PENDING" (no activity at all) otherwise. Always exits 0 -- none of
+PENDING, STALE_HEAD, or TRIGGER_MISPARSED is a failure, only "not landed for
+this head yet". A LANDED result additionally appends kind=bot evidence
 (review_id/state/submitted_at) back to the review ledger through
 --ledger-comments (also required with --repo-root for this write-back) --
 best-effort, never blocking the printed result. When --ledger-comments/
@@ -232,6 +236,30 @@ if ((observe)); then
         printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s\n' \
             "$state_or_commit" "${info_b:-unknown}"
         exit 0
+    fi
+
+    # issue #565: no terminal review exists yet, but CodeRabbit may have
+    # already replied to the trigger as CHAT (an issue comment mentioning the
+    # triggering account, agent-kit#552's shape) instead of running a review.
+    # That spend produced nothing, so report it distinctly from "no activity
+    # at all" -- best-effort: a failed `gh api user` degrades to PENDING
+    # rather than breaking --observe's documented always-exits-0 contract.
+    observe_login=''
+    if "$GH_BIN" api user >"$work_dir/observe-user.json" 2>/dev/null; then
+        observe_login=$(jq -r '.login // empty' "$work_dir/observe-user.json" 2>/dev/null) ||
+            observe_login=''
+    fi
+    if [[ -n $observe_login ]]; then
+        fetch_slurped "repos/$repo/issues/$pr/comments?per_page=100" \
+            "$work_dir/issue-comments.json" issue-comments
+        if jq -e --arg since "$since" --arg login "$observe_login" "$PROVIDER_IDENTITY_JQ"'
+            any(.[]; (((.user.login // "") | ascii_downcase) | is_coderabbit_login) and
+                     ((.created_at // "") > $since) and
+                     ((.body // "") | test("@" + $login; "i")))
+        ' "$work_dir/issue-comments.json" >/dev/null 2>&1; then
+            printf 'provider=coderabbit result=TRIGGER_MISPARSED\n'
+            exit 0
+        fi
     fi
     printf 'provider=coderabbit result=PENDING\n'
     exit 0
@@ -527,11 +555,20 @@ for provider in "${providers[@]}"; do
                         printf 'provider=%s result=AUTO_REVIEW\n' "$provider"
                         continue
                     fi
+                    # issue #565: CodeRabbit parses the trigger comment's FIRST
+                    # line as a slash-style command only when it IS the bare
+                    # command -- a leading attribution banner makes it parse as
+                    # chat instead (agent-kit#552: CodeRabbit replied with its
+                    # chat template and never filed a review, wasting the one
+                    # permitted spend). The banner is for authored content; a
+                    # bot command is not authored content, so the trigger
+                    # carries no banner. The idempotency marker still follows,
+                    # as an HTML comment invisible to CodeRabbit's parser but
+                    # still readable by provider_spent's substring search.
                     body_file=$work_dir/provider-request.md
                     {
-                        printf '%s\n' 'This was written agentically; verify its assertions:'
-                        printf '%s\n' "$request_marker"
                         printf '%s\n' "$request_body"
+                        printf '%s\n' "$request_marker"
                     } >"$body_file"
                     post_output=$(bash "$COMMENT_HELPER" --pr "$pr" --repo "$repo" \
                         --body-file "$body_file") || die 'provider request posting failed'
