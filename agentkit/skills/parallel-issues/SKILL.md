@@ -117,11 +117,11 @@ After any compaction/resume, before taking another action, run `"$agentkit/.shar
 
 **Authorization is checked once per run, not per command.** Record each grant with a stable
 decision token (e.g. `authorize:workflow-mutations`). Before a bounded workflow mutation of a
-granted class — worktree branch pushes, draft PR creation, board moves — the check is one
-ledger query, `"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
+granted class — worktree branch pushes, draft PR creation, board moves, commits staging a
+protected path the grant names — the check is one ledger query,
+`"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
 passing the same scope the grant was recorded with — a decision token alone must never
-widen a narrower grant. Exit 0 means proceed with no fresh approval round trip:
-re-litigating a recorded grant per command is exactly the overhead this rule removes. A
+widen a narrower grant. Exit 0 means proceed, no fresh approval round trip. A
 mutation no recorded decision covers still stops — scope stays; permission ceremony goes.
 
 ### Diff-size facts

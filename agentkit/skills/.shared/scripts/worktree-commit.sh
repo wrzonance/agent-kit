@@ -28,6 +28,10 @@
 #   3  an active merge carries protected paths that attended work must park
 #   1  usage error, not a repository, trunk branch, or any git failure
 #
+# A merge-inherited protected path may also be authorized by a recorded
+# session-ledger grant (--ledger/--run-id/--ledger-scope) instead of a named
+# base: see guard_staged_protected_paths and issue #563.
+#
 set -euo pipefail
 
 readonly PROGNAME="${0##*/}"
@@ -46,6 +50,9 @@ SCOPE_MODE=""
 ALLOW_BASE_INHERITED=0
 BASE_INHERITED_REF=""
 YOLO=0
+LEDGER_FILE=""
+LEDGER_RUN_ID=""
+LEDGER_SCOPE=""
 TRAILERS=()
 FILES=()
 ALLOW_OUTSIDE=()
@@ -87,6 +94,20 @@ Options:
   --yolo              In unattended mode, authorize --allow-base-inherited BASE
                       when the named commit is the active merge head. Attended
                       runs park inherited paths and preserve them in the index.
+  --ledger FILE --run-id ID --ledger-scope SCOPE
+                      Given together (all three, or none): when every merge-
+                      inherited protected path staged is a CI-workflow file
+                      (.github/workflows/, .gitlab-ci.yml, .circleci/,
+                      azure-pipelines.yml, Jenkinsfile), ask session-ledger.sh
+                      whether RUN ID's ledger at FILE records a covering
+                      'authorize:workflow-mutations' grant for SCOPE. A
+                      covering grant commits with an Authorized-By-Ledger
+                      trailer instead of parking. Harness/hook configuration
+                      (.githooks/, .git/hooks/, .git/config,
+                      .pre-commit-config.yaml, .codex/config.toml,
+                      .claude/settings*.json) is never ledger-authorizable and
+                      still parks the whole staged set; no covering record
+                      also leaves the park behaviour unchanged.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
 
@@ -179,6 +200,24 @@ parse_args() {
                 shift 2
                 ;;
             --yolo) YOLO=1; shift ;;
+            --ledger)
+                need_value "$@"
+                [[ -z $LEDGER_FILE ]] || die 1 "--ledger given more than once"
+                LEDGER_FILE="$2"
+                shift 2
+                ;;
+            --run-id)
+                need_value "$@"
+                [[ -z $LEDGER_RUN_ID ]] || die 1 "--run-id given more than once"
+                LEDGER_RUN_ID="$2"
+                shift 2
+                ;;
+            --ledger-scope)
+                need_value "$@"
+                [[ -z $LEDGER_SCOPE ]] || die 1 "--ledger-scope given more than once"
+                LEDGER_SCOPE="$2"
+                shift 2
+                ;;
             --) shift; FILES+=("$@"); break ;;
             -*) die 1 "unknown option: $opt (try --help)" ;;
             *) FILES+=("$1"); shift ;;
@@ -265,6 +304,46 @@ config_merge_authorized() {
     verify_base_inherited '.agent/config.env'
 }
 
+# The one decision token this guard ever checks. Fixed, never caller-chosen:
+# only SCOPE (validate_ledger_args) varies per invocation, so a worker cannot
+# widen its own authorization by naming a different decision (issue #563).
+readonly LEDGER_WORKFLOW_DECISION='authorize:workflow-mutations'
+
+# 0 when a recorded session-ledger grant covers this run's protected-path
+# commit. Fails closed on any missing input or non-zero session-ledger.sh
+# exit -- an unreadable or absent ledger is exactly as authorized as no
+# ledger at all.
+ledger_authorizes_workflow_mutations() {
+    [[ -n $LEDGER_FILE ]] || return 1
+    [[ -x $SCRIPT_DIR/session-ledger.sh ]] || return 1
+    "$SCRIPT_DIR/session-ledger.sh" covers --ledger "$LEDGER_FILE" --run-id "$LEDGER_RUN_ID" \
+        --decision "$LEDGER_WORKFLOW_DECISION" --scope "$LEDGER_SCOPE" >/dev/null 2>&1
+}
+
+# 0 when PATH is one of the fixed CI-workflow patterns a session-ledger
+# authorize:workflow-mutations grant may authorize; 1 for every other
+# protected path -- harness/hook configuration (.githooks/, .git/hooks/,
+# .git/config, .pre-commit-config.yaml, .codex/config.toml,
+# .claude/settings*.json) keeps parking even under a covering grant, and this
+# is never widened by a repository's own AGENT_PROTECTED_PATHS declaration
+# (issue #563 F1 adversarial-review fix).
+ledger_authorizable_protected_path() {
+    local candidate=$1 root
+    candidate=${candidate#./}
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    shared_ci_workflow_pattern "$candidate" "$root" 0 >/dev/null
+}
+
+# Prints, one per line, every entry of PATHS that ledger_authorizable_protected_path
+# refuses: the paths a covering ledger grant must never carry.
+non_ledger_authorizable_paths() {
+    local paths=$1 path
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        ledger_authorizable_protected_path "$path" || printf '%s\n' "$path"
+    done <<< "$paths"
+}
+
 guard_staged_protected_paths() {
     local paths
     active_merge || return 0
@@ -276,6 +355,20 @@ guard_staged_protected_paths() {
             "$PROGNAME" "${paths//$'\n'/, }" >&2
         return 0
     fi
+    if ledger_authorizes_workflow_mutations; then
+        local non_ci_paths
+        non_ci_paths=$(non_ledger_authorizable_paths "$paths")
+        if [[ -z $non_ci_paths ]]; then
+            local ledger_trailer="Authorized-By-Ledger: $LEDGER_RUN_ID $LEDGER_WORKFLOW_DECISION"
+            validate_trailer_line "$ledger_trailer"
+            TRAILERS+=("$ledger_trailer")
+            printf '%s: staged protected paths authorized by session ledger (run %s, decision %s): %s\n' \
+                "$PROGNAME" "$LEDGER_RUN_ID" "$LEDGER_WORKFLOW_DECISION" "${paths//$'\n'/, }" >&2
+            return 0
+        fi
+        printf '%s: session ledger grant does not authorize non-CI-workflow protected paths: %s\n' \
+            "$PROGNAME" "${non_ci_paths//$'\n'/, }" >&2
+    fi
     park_inherited_paths "$paths"
 }
 
@@ -285,6 +378,20 @@ validate_args() {
     if (( ${#FILES[@]} == 0 && ALLOW_EMPTY == 0 )); then
         die 1 "no FILE operands given; pass at least one file or --allow-empty"
     fi
+    validate_ledger_args
+}
+
+# --ledger/--run-id/--ledger-scope form one coherent authorization query: a
+# caller that supplies one or two of the three has an incomplete query, never
+# a partial authorization, so this refuses rather than silently ignoring the
+# fragment.
+validate_ledger_args() {
+    local supplied=0
+    [[ -z $LEDGER_FILE ]] || supplied=$((supplied + 1))
+    [[ -z $LEDGER_RUN_ID ]] || supplied=$((supplied + 1))
+    [[ -z $LEDGER_SCOPE ]] || supplied=$((supplied + 1))
+    (( supplied == 0 || supplied == 3 )) || die 1 \
+        '--ledger, --run-id, and --ledger-scope must be given together or not at all'
 }
 
 # Exact mode is the safe default for root corrections: a pre-existing staged
