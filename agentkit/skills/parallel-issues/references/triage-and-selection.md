@@ -86,8 +86,20 @@ while :; do
     mapfile -t chunk <<<"$(printf '%s\n' "$pending_ids" | head -n 20)"
     [[ ${chunk[0]:-} ]] || break
     for planning_id in "${chunk[@]}"; do
-        # perform exactly one REST mutation for this ID and parse its number/URL
-        if ! mutation_json=$(perform_rest_mutation "$planning_id"); then
+        # perform_rest_mutation is a `gh-body pr|issue create --body-file ...
+        # --json [--expect-closing-issue N]` call (the shared body-verifying
+        # transport's machine-readable mode): its stdout is the one JSON
+        # object `{number, html_url, closing_issue}` that mode emits, so
+        # `.number`/`.html_url` are read verbatim below -- never root-authored
+        # parsing of its human-readable text lines.
+        mutation_rc=0
+        mutation_json=$(perform_rest_mutation "$planning_id") || mutation_rc=$?
+        # A non-empty JSON object is meaningful even when the call above
+        # exited non-zero: --json mode still emits {number, html_url} when
+        # only the closing-issue verification failed after the
+        # create/edit itself succeeded and was body-verified. Only an empty
+        # result means the mutation never produced a usable object at all.
+        if [[ -z $mutation_json ]]; then
             report_batch_failure "mutation failed for $planning_id"
         fi
         if ! created_number=$(jq -er '.number' <<<"$mutation_json"); then
@@ -96,9 +108,17 @@ while :; do
         if ! created_url=$(jq -er '.html_url' <<<"$mutation_json"); then
             report_batch_failure "mutation response omitted URL for $planning_id"
         fi
+        # Record-before-verify: the object already exists on the forge, so it
+        # is recorded before this loop can possibly stop the batch below --
+        # otherwise a resumed run would recreate a PR/issue whose only fault
+        # was an unconfirmed closing-issue reference.
         if ! "$apply_ledger" record --ledger "$ledger" --id "$planning_id" \
             --number "$created_number" --url "$created_url"; then
             report_batch_failure "ledger record failed for $planning_id"
+        fi
+        if ((mutation_rc != 0)); then
+            closing_state=$(jq -r '.closing_issue.state // "unknown"' <<<"$mutation_json")
+            report_batch_failure "recorded #$created_number for $planning_id, but its closing-issue verification did not pass (state=$closing_state); resolve the linkage manually, then resume -- the ledger already excludes it from a retry"
         fi
     done
     # The next iteration's budget check is the inspection point between chunks.
