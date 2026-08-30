@@ -211,6 +211,16 @@ scripts/adversarial-run.sh --worktree "$WORKTREE" --pr "$PR" --repo "$REPO" \
     --run-dir "$RUN_DIR"
 ```
 
+For a chained PR, pass the recorded `chain_base_sha` via `--base-sha` instead of `--base-ref`:
+`consent-record.sh payload --base-ref` takes a branch name only (diffed against its freshly
+fetched `origin/<name>`); `--base-sha` takes a full 40-character SHA that already resolves
+locally in `--worktree` (diffed directly, no fetch and no `origin/` prefix) -- a frozen
+chain-base commit is often unreachable from any branch tip by the time a later PR's review
+runs, and a legitimately 40-hex-named branch must still be treated as a branch, never
+misread as a SHA. The two flags are mutually exclusive; pass exactly one -- for the chained
+case, substitute `--base-sha "$chain_base_sha"` for `--base-ref main` in the `payload` call
+above.
+
 ### Provider tokens
 
 `adversarial-run.sh` checks the consent record against the model-provider token the *resolved*
