@@ -103,15 +103,56 @@ if ((validate_only)) && [[ -n $chain_base ]]; then
     # directory-name heuristic over the chain-base tree previously stood in
     # here too and misclassified any incidental test/spec-named directory
     # (docs/superpowers/specs/**, bench/gold/**/test/**) as a required root;
-    # it is gone. The roots below are suggestions, never shell input.
+    # it is gone. Detection is declaration-driven only -- there is no
+    # unconditional docs/** or bench/gold/** filter here, so a repository that
+    # genuinely declares a test root under one of those paths is honored too.
+    # The roots below are suggestions, never shell input.
     normalize_test_root() {
         local candidate=$1
         while [[ $candidate == */ ]]; do candidate=${candidate%/}; done
         while [[ $candidate == ./* ]]; do candidate=${candidate#./}; done
         printf '%s' "$candidate"
     }
+    # An argv[0]-derived root is trustworthy only when it is repository-
+    # relative (no leading "/", no ".." segment) AND its directory actually
+    # exists in the chain-base tree; an absolute or parent-traversing argv[0]
+    # (/usr/bin/pytest, ../x/run) must never mint a bogus required root that
+    # the write set can never satisfy.
+    test_root_dir_exists() {
+        local candidate=$1 path
+        for path in "${chain_tree_paths[@]}"; do
+            [[ $path == "$candidate"/* || $path == "$candidate" ]] && return 0
+        done
+        return 1
+    }
+    # Resolve which .agent/config.env to read. A worktree chain base's
+    # checked-out tree already matches the live filesystem, so the live
+    # checkout is authoritative. A ref/SHA chain base may not match the live
+    # checkout at all (a different commit is on disk), so read the config
+    # tracked AT THAT REF instead, staged into a private owner-only directory
+    # so repo-config.sh never touches the operator's real config file. Fall
+    # back to the live checkout only when the ref carries no tracked
+    # .agent/config.env (untracked or absent there).
+    config_root=$chain_root
+    config_source='live checkout'
+    if [[ $chain_ref != HEAD ]]; then
+        config_bytes=''
+        if config_bytes=$(git -C "$chain_root" show "$chain_ref:.agent/config.env" 2>/dev/null); then
+            config_stage=$(mktemp -d) || die 'could not stage chain-base config for reading'
+            chmod 700 -- "$config_stage" || die 'could not secure chain-base config staging dir'
+            trap 'rm -rf -- "$config_stage"' EXIT HUP INT TERM
+            mkdir -p -- "$config_stage/.agent" || die 'could not stage chain-base config for reading'
+            printf '%s\n' "$config_bytes" >"$config_stage/.agent/config.env" ||
+                die 'could not write staged chain-base config'
+            config_root=$config_stage
+            config_source="chain-base ref $chain_ref"
+        else
+            config_source="live checkout (no .agent/config.env tracked at $chain_ref)"
+        fi
+    fi
     config_reader=$script_dir/../../.shared/scripts/repo-config.sh
     if [[ -x $config_reader ]]; then
+        printf '%s: test-root config source: %s\n' "$PROGRAM" "$config_source" >&2
         declare -a cmd_test_keys=()
         while IFS='=' read -r config_key config_value; do
             if [[ $config_key == AGENT_RUNDIR_* && $config_key == *_TEST* && -n $config_value ]]; then
@@ -121,29 +162,22 @@ if ((validate_only)) && [[ -n $chain_base ]]; then
             elif [[ $config_key == AGENT_CMD_* && $config_key == *_TEST* ]]; then
                 cmd_test_keys+=("$config_key")
             fi
-        done < <("$config_reader" --repo-root "$chain_root" --list 2>/dev/null || true)
+        done < <("$config_reader" --repo-root "$config_root" --list 2>/dev/null || true)
         for cmd_key in "${cmd_test_keys[@]}"; do
             argv0=''
             while IFS= read -r -d '' argv_token; do
                 [[ -n $argv0 ]] || argv0=$argv_token
-            done < <("$config_reader" --repo-root "$chain_root" --get-argv "$cmd_key" 2>/dev/null || true)
+            done < <("$config_reader" --repo-root "$config_root" --get-argv "$cmd_key" 2>/dev/null || true)
             [[ $argv0 == */* ]] || continue
+            [[ $argv0 != /* ]] || continue
+            case $argv0 in
+                ../*|*/../*|*/..) continue ;;
+            esac
             test_root=$(normalize_test_root "${argv0%/*}")
-            [[ -n $test_root && $test_root != . ]] || continue
+            [[ -n $test_root && $test_root != . && $test_root != ..* ]] || continue
+            test_root_dir_exists "$test_root" || continue
             chain_test_roots+=("$test_root")
         done
-    fi
-    # docs/** and bench/gold/** fixtures are never project test roots, even if
-    # a declaration somehow pointed there.
-    if ((${#chain_test_roots[@]})); then
-        declare -a filtered_test_roots=()
-        for test_root in "${chain_test_roots[@]}"; do
-            case $test_root in
-                docs|docs/*|bench/gold|bench/gold/*) continue ;;
-            esac
-            filtered_test_roots+=("$test_root")
-        done
-        chain_test_roots=("${filtered_test_roots[@]}")
     fi
     if ((${#chain_test_roots[@]})); then
         mapfile -t chain_test_roots < <(printf '%s\n' "${chain_test_roots[@]}" | awk 'NF && !seen[$0]++')
@@ -412,16 +446,41 @@ if ((validate_only)); then
                     jq "$fix_filter" "$dispatch_plan" >"$fixed" || die 'could not apply --fix patch'
                     chmod --reference="$dispatch_plan" "$fixed" 2>/dev/null || chmod 600 "$fixed"
                     mv -- "$fixed" "$dispatch_plan"
-                    printf 'dispatch-plan=%s fix=applied issues=%s\n' \
-                        "$dispatch_plan" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")"
-                    exit 0
+                    # --fix only ever patches missing-test-root violations; an
+                    # unmatched-glob violation (or anything else) collected in
+                    # violation_lines is not fixable by this patch, so the
+                    # updated plan must be revalidated before claiming success
+                    # -- exiting 0 unconditionally previously let a remaining,
+                    # non-fixable violation through silently.
+                    recheck_rc=0
+                    recheck_err=$("${BASH_SOURCE[0]}" --dispatch-plan "$dispatch_plan" \
+                        --chain-base "$chain_base" --validate-only 2>&1 >/dev/null) || recheck_rc=$?
+                    if ((recheck_rc == 0)); then
+                        printf 'dispatch-plan=%s fix=applied issues=%s\n' \
+                            "$dispatch_plan" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")"
+                        exit 0
+                    fi
+                    printf '%s: fix=applied issues=%s but violations remain:\n' \
+                        "$PROGRAM" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")" >&2
+                    printf '%s\n' "$recheck_err" >&2
+                    exit 1
                 fi
+                # The remedy is built as data and printed shell-escaped
+                # (printf %q per argument): a repository-derived test-root
+                # value must never be interpolated inside a literal
+                # single-quoted jq argument, where an embedded quote would
+                # escape the operator's copy-pasted shell command.
+                # $issue and $roots below are jq --argjson variables, not
+                # shell variables -- the single quotes are load-bearing.
+                # shellcheck disable=SC2016
+                remedy_filter='(.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $roots | unique)'
                 printf '%s: remedy -- apply each entry testRootExclusions patch below, then re-run:\n' "$PROGRAM" >&2
                 for issue in "${missing_issue_order[@]}"; do
                     IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
                     missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
-                    printf "  jq '(.entries[] | select(.issue == %s) | .testRootExclusions) |= ((. // []) + %s | unique)' %q >%q.tmp && mv %q.tmp %q\n" \
-                        "$issue" "$missing_globs_json" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
+                    printf '  jq --argjson issue %q --argjson roots %q %q %q >%q.tmp && mv %q.tmp %q\n' \
+                        "$issue" "$missing_globs_json" "$remedy_filter" \
+                        "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
                 done
                 printf '%s: or re-run with --fix to apply the same patches automatically\n' "$PROGRAM" >&2
             fi

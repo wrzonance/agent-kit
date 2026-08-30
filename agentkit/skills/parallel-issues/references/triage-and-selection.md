@@ -324,7 +324,15 @@ that matches nothing fails closed and reports the nearest existing sibling. A
 derived from the chain-base tree's `AGENT_RUNDIR_*_TEST*` and
 `AGENT_CMD_*_TEST*` declarations, never from a directory merely named
 `test`/`spec`, so an incidental fixture or docs directory (`docs/**`,
-`bench/gold/**`) is never proposed as a required root. The entry must include
+`bench/gold/**`) is never proposed as a required root unless a verify command
+is actually declared there -- detection is declaration-driven only, with no
+unconditional filter over those paths, so a repository that genuinely
+declares a test root under `docs/` or `bench/gold/` is honored like any
+other declared root. When `--chain-base` names a ref/SHA rather than a
+worktree, the config is read from that ref's tracked `.agent/config.env`
+(falling back to the live checkout only when the ref carries no tracked
+file), so a chain successor's declared test root is honored even when the
+live checkout is on a different commit. The entry must include
 each proposed root in `predictedWriteSet` or explicitly list it in
 `testRootExclusions`; an exclusion is an auditable decision, not implicit
 permission to omit tests. A top-level `testRootExclusions` on the dispatch
