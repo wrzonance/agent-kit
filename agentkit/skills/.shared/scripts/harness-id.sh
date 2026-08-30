@@ -76,6 +76,9 @@ elif [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then
     other=claude
 fi
 
+if [[ ${1:-} == -- ]]; then
+    shift
+fi
 case ${1:-line} in
     --name) printf '%s\n' "$name" ;;
     --other) printf '%s\n' "$other" ;;

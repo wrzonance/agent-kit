@@ -29,6 +29,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --config)
             (($# >= 2)) || die '--config requires a file path'
             config_file=$2

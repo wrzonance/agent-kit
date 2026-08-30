@@ -18,6 +18,7 @@ die() {
 
 case ${1-} in
     '') ;;
+    --) shift; [[ $# -eq 0 ]] || die "unexpected argument: $1" ;;
     -h|--help)
         usage
         exit 0

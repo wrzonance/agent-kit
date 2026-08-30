@@ -441,6 +441,7 @@ snapshot_cmd() {
     while (($#)); do
         arg=$1
         case $arg in
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --root | --worktree) (($# >= 2)) || die "$arg requires a value"; root=$2; shift 2;;
             --output) (($# >= 2)) || die '--output requires a value'; output=$2; shift 2;;
             --write-set) (($# >= 2)) || die '--write-set requires a value'; write_sets+=("$2"); shift 2;;
@@ -505,6 +506,7 @@ collect_cmd() {
     while (($#)); do
         arg=$1
         case $arg in
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --root) (($# >= 2)) || die '--root requires a value'; root=$2; shift 2;;
             --snapshot) (($# >= 2)) || die '--snapshot requires a value'; snapshot=$2; shift 2;;
             --worker-worktree | --worktree) (($# >= 2)) || die "$arg requires a value"; worker=$2; shift 2;;
@@ -749,6 +751,7 @@ dispose_cmd() {
     while (($#)); do
         arg=$1
         case $arg in
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --root) (($# >= 2)) || die '--root requires a value'; root=$2; shift 2;;
             --worker-worktree | --worktree) (($# >= 2)) || die "$arg requires a value"; worker=$2; shift 2;;
             --path) (($# >= 2)) || die '--path requires a value'; path=$2; shift 2;;

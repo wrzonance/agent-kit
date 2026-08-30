@@ -71,6 +71,7 @@ parse_options() {
     shift
     while (($#)); do
         case $1 in
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --worktree) require_value "$1" "${2:-}"; WORKTREE=$2; shift 2 ;;
         --worktree=*) WORKTREE=${1#*=}; shift ;;
         --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;

@@ -52,6 +52,7 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --run-dir) require_value "$1" "${2:-}"; run_dir=$2; shift 2 ;;
             --run-dir=*) run_dir=${1#*=}; shift ;;
             --transcript) require_value "$1" "${2:-}"; transcript=$2; shift 2 ;;

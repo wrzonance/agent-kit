@@ -78,6 +78,22 @@ parse_args() {
 
     while (($#)); do
         case $1 in
+            --)
+                shift
+                while (($#)); do
+                    case $1 in
+                        --body|-b|--body=*|-b?*|--body-file|--body-file=*|\
+                            --expect-closing-issue|--expect-closing-issue=*)
+                            die 'body options must precede --; use --body-file FILE'
+                            ;;
+                        *)
+                            GH_ARGS+=("$1")
+                            shift
+                            ;;
+                    esac
+                done
+                break
+                ;;
             --body-file)
                 require_value "$1" "${2-}"
                 BODY_FILE=$2

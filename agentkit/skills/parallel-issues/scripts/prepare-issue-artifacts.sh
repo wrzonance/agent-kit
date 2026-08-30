@@ -77,6 +77,7 @@ resume=0
 
 while (($#)); do
     case $1 in
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --worktree)
             (($# >= 2)) || die "Missing value for $1."
             worktree=$2

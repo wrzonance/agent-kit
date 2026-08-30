@@ -7,6 +7,7 @@ die() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; exit 1; }
 repo_root=''; mode=''
 while (($#)); do
     case $1 in
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
         --report) mode=report; shift ;;
         --next) mode=next; shift ;;

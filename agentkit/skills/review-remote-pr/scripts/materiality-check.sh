@@ -25,6 +25,7 @@ die() {
 
 while (($#)); do
     case $1 in
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --worktree|--repo-root)
             [[ -n ${2:-} ]] || die "$1 requires a value"
             worktree=$2

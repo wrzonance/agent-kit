@@ -280,7 +280,7 @@ parse_args() {
         --wait-ci) WANT_WAIT=1; shift ;;
         --no-cache) NO_CACHE=1; shift ;;
         -h | --help) usage; exit 0 ;;
-        --) shift; break ;;
+        --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         *)
             if [[ -z $PR && $1 =~ ^[1-9][0-9]*$ ]]; then
                 PR=$1
