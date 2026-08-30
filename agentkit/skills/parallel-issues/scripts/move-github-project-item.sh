@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Pure bash-builtin path resolution (no `dirname`, no `readlink`): this
+# script's only external-tool dependencies are jq and gh, checked explicitly
+# below, and a caller with a deliberately minimal PATH (this file's own
+# missing-jq test) must hit that check, not an unrelated "command not found"
+# for a coreutil this script never used to need.
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+readonly SCRIPT_DIR
+# shellcheck source=../../.shared/scripts/lib/argv.sh
+source "$SCRIPT_DIR/../../.shared/scripts/lib/argv.sh"
+
 # gh paginates these listings at 30 by default. Every lookup below must be able to
 # see the whole board, or a card past the default page is indistinguishable from a
 # card that is not on the board at all -- a silent no-op that still exits 0.
@@ -9,8 +20,8 @@ readonly FIELD_LIMIT=100
 readonly PROJECT_LIMIT=100
 
 usage() {
-    printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
-    printf '       %s --issue-numbers N,N,... --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
+    printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repo OWNER/REPO [--all-boards]\n' "${0##*/}"
+    printf '       %s --issue-numbers N,N,... --status STATUS --repo OWNER/REPO [--all-boards]\n' "${0##*/}"
     cat <<'EOF'
 
 Sets the Status field of an issue's card on the GitHub Project board(s) that
@@ -22,9 +33,11 @@ Options:
   --status STATUS           One of the canonical board columns:
                             'Backlog', 'Ready', 'In progress', 'In review', 'Done'.
                             Matched against the board's own options case-insensitively.
-  --repository OWNER/REPO   Repository holding the issue (e.g. OWNER/REPO). Also
+  --repo OWNER/REPO         Repository holding the issue (e.g. OWNER/REPO). Also
                             selects the card: boards shared across an org can hold
                             several issues numbered #N, one per repository.
+                            --repository is a silent alias, accepted for
+                            compatibility; new callers should use --repo.
   --repo-root DIR           Repository root holding .agent/ (default: git toplevel
                             of the cwd). A warm .agent/board.json plus
                             .agent/cache/board-items.json performs the mutation
@@ -119,6 +132,13 @@ add_issue_numbers() {
     done
 }
 
+# --repository is the older spelling of --repo (issue #556); the shared lib
+# rewrites it to the canonical flag before this loop ever sees it, so only
+# --repo needs a case branch below.
+mapfile -d '' -t _argv < <(argv_rewrite_flag --repository --repo "$@")
+set -- "${_argv[@]}"
+unset _argv
+
 while (($#)); do
     case $1 in
         --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
@@ -137,7 +157,7 @@ while (($#)); do
             status=$2
             shift 2
             ;;
-        --repository)
+        --repo)
             (($# >= 2)) || die "Missing value for $1."
             repository=$2
             shift 2

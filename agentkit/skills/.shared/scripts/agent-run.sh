@@ -40,6 +40,8 @@ Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--on
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
+                 --repo-root PATH is a silent alias, accepted for
+                 compatibility with the kit's other checkout-path helpers.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
@@ -115,6 +117,23 @@ literal_repository_base=''
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
 if_declared=0
+
+# --repo-root is the canonical checkout-path flag across the kit (every other
+# helper that takes one uses it); --dir is this script's own long-standing
+# name and stays primary, with --repo-root accepted as a silent alias so a
+# caller who just used --repo-root on another helper is not punished here
+# (issue #556). Rewritten before the option loop via the shared lib so no
+# extra case-statement branch is needed below. Pure bash-builtin path
+# resolution (no `dirname`, no `readlink`) so this still works before the
+# bash-version guard above is the only hard dependency an early --help hits.
+_argv_lib_dir=${BASH_SOURCE[0]%/*}
+[[ $_argv_lib_dir != "${BASH_SOURCE[0]}" ]] || _argv_lib_dir=.
+# shellcheck source=lib/argv.sh
+source "$_argv_lib_dir/lib/argv.sh"
+unset _argv_lib_dir
+mapfile -d '' -t _argv < <(argv_rewrite_flag --repo-root --dir "$@")
+set -- "${_argv[@]}"
+unset _argv
 
 while (($#)); do
     case $1 in
