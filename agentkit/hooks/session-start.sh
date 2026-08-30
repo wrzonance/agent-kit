@@ -149,26 +149,52 @@ contract_try_reuse() {
     printf '%s' "$candidate"
 }
 
-# True when another harness's OWN keyed contract in this checkout is fresh
-# enough to treat as a run still in flight (issue #551 items 2/3). Read-only:
-# this never touches that file, only its mtime and its own harness= claim. A
-# false positive here only costs a session an unnecessary mode=observer -- a
-# courtesy, not a security boundary, so this stays deliberately simple rather
-# than inventing a separate heartbeat/lock mechanism.
+# True when another harness's contract in this checkout is fresh enough to
+# treat as a run still in flight (issue #551 items 2/3): read-only, this
+# never touches the other harness's file, only its mtime and its own
+# harness= claim. A false positive here only costs a session an unnecessary
+# mode=observer -- a courtesy, not a security boundary, so this stays
+# deliberately simple rather than inventing a separate heartbeat/lock
+# mechanism.
+#
+# Every candidate is validated before its filename or content is trusted:
+# guard_contract_is_ours (untracked, regular, not a symlink, owned by this
+# user) before it is even read, and the harness suffix -- parsed from the
+# FILENAME for a keyed candidate, from the contract's own harness= line for
+# the legacy one -- against the same safe single-token vocabulary
+# contract_cache_harness_name itself requires. A repository-tracked or
+# hostile file (a crafted filename, or a harness= value carrying control
+# characters) can therefore never inject extra bytes into this session's own
+# mode=observer line (adversarial review, issue #551 finding F1).
 contract_other_harness_active() {
     local me=$1 entry base other
     [[ -n $me && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 1
     for entry in "$root/.agent"/env-contract.*.txt; do
-        [[ -f $entry && ! -L $entry && -r $entry ]] || continue
+        [[ -f $entry && ! -L $entry ]] || continue
         base=${entry##*/}
         other=${base#env-contract.}
         other=${other%.txt}
-        [[ -n $other && $other != "$me" ]] || continue
+        [[ $other =~ ^[a-z][a-z0-9]*$ && $other != "$me" ]] || continue
+        guard_contract_is_ours "$entry" "$root" || continue
         [[ -n $(find "$entry" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]] || continue
-        grep -q "^harness= name=$other" -- "$entry" 2> /dev/null || continue
+        grep -qE "^harness= name=${other}([[:space:]]|\$)" -- "$entry" 2> /dev/null || continue
         printf '%s' "$other"
         return 0
     done
+    # Legacy fallback (issue #551 finding F2): an older run of the OTHER
+    # harness may still be active with only a fresh, untracked bare contract
+    # -- the keyed-file loop above never looks at it. Validated the same way:
+    # trusted provenance first, then the harness= value it claims is
+    # constrained to the same safe vocabulary before it is ever used.
+    if guard_contract_is_ours "$legacy_contract_file" "$root" &&
+        [[ -n $(find "$legacy_contract_file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]]; then
+        other=$(sed -n 's/^harness= name=\([^[:space:]]*\).*/\1/p' -- "$legacy_contract_file" 2> /dev/null |
+            head -n 1)
+        if [[ $other =~ ^[a-z][a-z0-9]*$ && $other != "$me" ]]; then
+            printf '%s' "$other"
+            return 0
+        fi
+    fi
     return 1
 }
 

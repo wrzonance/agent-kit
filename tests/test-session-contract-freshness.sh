@@ -170,6 +170,58 @@ assert_eq no "$([[ -e "$order1/.agent/env-contract.txt" ]] && printf yes || prin
 assert_eq no "$([[ -e "$order2/.agent/env-contract.txt" ]] && printf yes || printf no)" \
     'neither harness ever writes the legacy bare contract (order: codex, claude)'
 
+# --- issue #551 finding F1 (adversarial review): a hostile env-contract.*.txt
+# candidate must never be trusted for the observer-mode liveness signal -----
+# Neither an untrusted (tracked) file nor one whose harness suffix does not
+# match the safe single-token vocabulary can hand this session a value that
+# ends up interpolated into its own mode=observer line.
+hostile_repo=$(make_repo)
+
+hostile_tracked="$hostile_repo/.agent/env-contract.codex.txt"
+printf 'harness= name=codex trailer="Codex <x@example.invalid>" other=claude\n' > "$hostile_tracked"
+git -C "$hostile_repo" add -f .agent/env-contract.codex.txt
+git -C "$hostile_repo" -c user.name=t -c user.email=t@example.invalid commit -qm 'plant a tracked contract'
+hostile_claude_out=$(session_input "$hostile_repo" | "${claude_env[@]}" "$hooks/session-start.sh" 2> /dev/null)
+assert_hook_output "$hostile_claude_out" session-start \
+    'SessionStart still emits schema-valid JSON with a tracked hostile candidate present'
+assert_not_contains "$(cat -- "$hostile_repo/.agent/env-contract.claude.txt" 2> /dev/null)" 'mode=observer' \
+    'a TRACKED env-contract.codex.txt is never trusted as evidence of a live codex run (issue #551 F1)'
+
+hostile_repo2=$(make_repo)
+# A malformed suffix (fails contract_cache_harness_name's own
+# ^[a-z][a-z0-9]*$ vocabulary) is the same class of hazard a filename
+# carrying control characters (e.g. an embedded newline) would be: both are
+# rejected by the identical regex guard before the value is ever read into a
+# grep pattern or a contract line.
+printf 'harness= name=co!dex trailer="Codex <x@example.invalid>" other=claude\n' \
+    > "$hostile_repo2/.agent/env-contract.co!dex.txt"
+hostile2_claude_out=$(session_input "$hostile_repo2" | "${claude_env[@]}" "$hooks/session-start.sh" 2> /dev/null)
+assert_hook_output "$hostile2_claude_out" session-start \
+    'SessionStart still emits schema-valid JSON with a malformed-suffix candidate present'
+assert_not_contains "$(cat -- "$hostile_repo2/.agent/env-contract.claude.txt" 2> /dev/null)" 'mode=observer' \
+    'a keyed file whose suffix is not a safe harness token is never trusted (issue #551 F1)'
+
+# --- issue #551 finding F2: the legacy bare contract is still a valid
+# liveness signal, not just the keyed files --------------------------------
+# An older run of the other harness may still be active with ONLY a fresh
+# bare contract on disk (it started before this fix's keying, or its own
+# writer still targets the bare name); a session starting now must still
+# recognize that and mark itself an observer rather than racing it.
+legacy_live_repo=$(make_repo)
+printf 'repo=legacy-live/repo\n%s\n' \
+    "harness= name=codex trailer=\"Codex <x@example.invalid>\" other=claude" \
+    > "$legacy_live_repo/.agent/env-contract.txt"
+legacy_live_before=$(cat -- "$legacy_live_repo/.agent/env-contract.txt")
+legacy_live_out=$(session_input "$legacy_live_repo" | "${claude_env[@]}" "$hooks/session-start.sh" 2> /dev/null)
+assert_hook_output "$legacy_live_out" session-start \
+    'SessionStart emits schema-valid JSON when only a fresh legacy contract from the other harness exists'
+assert_contains "$(cat -- "$legacy_live_repo/.agent/env-contract.claude.txt" 2> /dev/null)" 'mode=observer' \
+    'a fresh LEGACY bare contract from the other harness still marks a new session an observer (issue #551 F2)'
+assert_contains "$(cat -- "$legacy_live_repo/.agent/env-contract.claude.txt" 2> /dev/null)" 'other-harness=codex' \
+    'and names the harness read from the legacy file'
+assert_eq "$legacy_live_before" "$(cat -- "$legacy_live_repo/.agent/env-contract.txt" 2> /dev/null)" \
+    'the legacy bare contract itself is left byte-identical, never written'
+
 # --- issue #551: contract-read.sh resolves the CALLING harness's own tree --
 # Directly wired, independent of SessionStart, since this is the surface
 # every worktree-commit/board-list/triage-issues helper actually reads
