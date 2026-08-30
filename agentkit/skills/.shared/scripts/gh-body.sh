@@ -29,6 +29,8 @@ MUTATION_URL=''
 MUTATION_COMPLETED=0
 EXPECT_CLOSING_ISSUE=''
 CLOSING_REFERENCE_STATUS=''
+CLOSING_REFERENCE_REASON=''
+JSON_MODE=0
 
 usage() {
     cat <<EOF
@@ -43,6 +45,16 @@ also proves the closing issue reference, base-aware:
     Fixes/Resolves #N" keyword is still required, but forge-side registration
     cannot happen until the PR is retargeted, so it is reported as a distinct
     non-error "closing-issue #N: deferred (...)" outcome and exits 0.
+
+--json emits exactly one machine-readable JSON object on stdout instead of the
+human-readable lines above (which move to stderr in this mode):
+  {"number":N,"html_url":"...","closing_issue":{"issue":N,"state":"confirmed|deferred|failed","reason":"..."}}
+closing_issue is null when --expect-closing-issue was not given. The object is
+still emitted -- with closing_issue.state "failed" -- when closing-issue
+verification exhausts its retries, so a caller (such as a bulk-apply ledger)
+can record the created number/html_url before deciding how to handle a
+verification-stage failure; the exit status still reports failure (1) in that
+case. Default text-mode output and exit codes are unchanged by this flag.
 EOF
 }
 
@@ -128,6 +140,10 @@ parse_args() {
                 EXPECT_CLOSING_ISSUE=${1#*=}
                 shift
                 ;;
+            --json)
+                JSON_MODE=1
+                shift
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -195,7 +211,13 @@ validate_expected_closing_issue() {
 
 cleanup() {
     local exit_status=$?
-    if ((exit_status != 0)) && [[ $ACTION == create && $MUTATION_COMPLETED == 1 &&
+    # --json mode already surfaced the created number/html_url on stdout via
+    # emit_json_result before exiting (see main()); replaying raw gh stdout
+    # here too would print a second, non-JSON line and break the "exactly one
+    # JSON object" contract. Text mode still relies on this replay: it is the
+    # only way a create's URL reaches stdout when die() unwinds before main()
+    # ever reaches its own `cat mutation.out`.
+    if ((exit_status != 0)) && ((!JSON_MODE)) && [[ $ACTION == create && $MUTATION_COMPLETED == 1 &&
         -s $WORK_DIR/mutation.out ]]; then
         cat "$WORK_DIR/mutation.out"
     fi
@@ -335,6 +357,7 @@ verify_closing_reference() {
         # is where the real registration is required. Reported as a distinct,
         # non-error outcome -- not silently dropped and not a failure.
         CLOSING_REFERENCE_STATUS='deferred'
+        CLOSING_REFERENCE_REASON='base is not the default branch; registration is proven at retarget'
         return 0
     fi
     # shellcheck disable=SC2016  # GraphQL variable names must remain literal.
@@ -374,6 +397,7 @@ verify_closing_reference() {
                 | any($references[]?; ((.number // "") | tostring) == $expected)
             ' "$WORK_DIR/closing.json" >/dev/null; then
                 CLOSING_REFERENCE_STATUS='confirmed'
+                CLOSING_REFERENCE_REASON="GitHub registered the closing reference for #$EXPECT_CLOSING_ISSUE"
                 return 0
             fi
             has_next=$(jq -r '
@@ -392,10 +416,46 @@ verify_closing_reference() {
         fi
     done
 
+    # A genuinely exhausted verification is reported as a distinct "failed"
+    # outcome rather than dying here: the create/edit itself already
+    # succeeded and was body-verified, so the caller (JSON-mode's
+    # emit_json_result, or main()'s text-mode die below) still needs the
+    # created number/html_url to avoid re-creating this object on retry.
+    CLOSING_REFERENCE_STATUS='failed'
     if [[ $ACTION == create && -n $MUTATION_URL ]]; then
-        die "PR was created at $MUTATION_URL; body-side Closes #$EXPECT_CLOSING_ISSUE verification passed, but GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE after $CLOSING_REFERENCE_ATTEMPTS attempts"
+        CLOSING_REFERENCE_REASON="PR was created at $MUTATION_URL; body-side Closes #$EXPECT_CLOSING_ISSUE verification passed, but GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE after $CLOSING_REFERENCE_ATTEMPTS attempts"
+    else
+        CLOSING_REFERENCE_REASON="GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE after $CLOSING_REFERENCE_ATTEMPTS attempts"
     fi
-    die "GitHub response closingIssuesReferences does not contain #$EXPECT_CLOSING_ISSUE after $CLOSING_REFERENCE_ATTEMPTS attempts"
+    return 0
+}
+
+# Reads the already-fetched, byte-verified stored.json for the number/html_url
+# GitHub itself assigned (rather than re-deriving them from create's raw gh
+# stdout or the edit target), so create and edit share one code path and the
+# JSON output can never disagree with what was actually verified.
+emit_json_result() {
+    local number html_url closing_issue_json='null'
+    # Checked as a type predicate, not just non-empty output: jq -e on a
+    # string-typed .number would still succeed and hand --argjson a quoted
+    # string, silently emitting {"number":"41",...} instead of a JSON number.
+    jq -e '(.number | type) == "number"' "$WORK_DIR/stored.json" >/dev/null ||
+        die 'GitHub response has no usable number; --json output is unavailable'
+    number=$(jq -e '.number' "$WORK_DIR/stored.json") ||
+        die 'GitHub response has no usable number; --json output is unavailable'
+    jq -e '(.html_url | type) == "string" and (.html_url | length > 0)' \
+        "$WORK_DIR/stored.json" >/dev/null ||
+        die 'GitHub response has no usable html_url; --json output is unavailable'
+    html_url=$(jq -er '.html_url' "$WORK_DIR/stored.json") ||
+        die 'GitHub response has no usable html_url; --json output is unavailable'
+    if [[ -n $EXPECT_CLOSING_ISSUE ]]; then
+        closing_issue_json=$(jq -nc --argjson issue "$EXPECT_CLOSING_ISSUE" \
+            --arg state "$CLOSING_REFERENCE_STATUS" --arg reason "$CLOSING_REFERENCE_REASON" \
+            '{issue: $issue, state: $state, reason: $reason}')
+    fi
+    jq -nc --argjson number "$number" --arg html_url "$html_url" \
+        --argjson closing_issue "$closing_issue_json" \
+        '{number: $number, html_url: $html_url, closing_issue: $closing_issue}'
 }
 
 main() {
@@ -413,6 +473,34 @@ main() {
     fetch_stored_body
     compare_body || exit 1
     verify_closing_reference
+
+    if ((JSON_MODE)); then
+        # Human-readable lines move to stderr in --json mode; the JSON object
+        # is the only thing written to stdout, and it is written even when
+        # closing-issue verification failed (see verify_closing_reference).
+        if [[ $ACTION == create ]]; then
+            cat "$WORK_DIR/mutation.out" >&2
+        else
+            printf 'updated %s #%s verified=exact\n' "$RESOURCE" "$TARGET_NUMBER" >&2
+        fi
+        case $CLOSING_REFERENCE_STATUS in
+            confirmed)
+                printf 'closing-issue #%s: confirmed\n' "$EXPECT_CLOSING_ISSUE" >&2
+                ;;
+            deferred)
+                printf 'closing-issue #%s: deferred (base is not the default branch; registration is proven at retarget)\n' \
+                    "$EXPECT_CLOSING_ISSUE" >&2
+                ;;
+            failed)
+                printf '%s: %s\n' "$PROGNAME" "$CLOSING_REFERENCE_REASON" >&2
+                ;;
+        esac
+        emit_json_result
+        [[ $CLOSING_REFERENCE_STATUS != failed ]] || exit 1
+        return 0
+    fi
+
+    [[ $CLOSING_REFERENCE_STATUS != failed ]] || die "$CLOSING_REFERENCE_REASON"
 
     if [[ $ACTION == create ]]; then
         cat "$WORK_DIR/mutation.out"

@@ -390,10 +390,26 @@ assert_contains "$prepare_script_text" 'target="$agent_dir/fenced-spec.txt"' \
 assert_contains "$prepare_script_text" 'prior_target="$agent_dir/fenced-prior-art.txt"' \
     'issue preparation persists prior-art fence bytes'
 bulk_section=$(sed -n '/^## Bulk mutation discipline:/,/^## Prior-art adjudication/p' "$triage_and_selection")
-assert_contains "$bulk_section" 'if ! mutation_json=$(perform_rest_mutation "$planning_id"); then' \
-    'bulk recipe stops on a mutation failure'
+assert_contains "$bulk_section" '--json' \
+    'bulk recipe names gh-body.sh --json as the documented mutation adapter'
+assert_contains "$bulk_section" 'mutation_json=$(perform_rest_mutation "$planning_id") || mutation_rc=$?' \
+    'bulk recipe captures the mutation call whether it exits zero or non-zero'
+assert_contains "$bulk_section" 'if [[ -z $mutation_json ]]; then' \
+    'bulk recipe stops when the mutation produced no usable object at all'
+assert_contains "$bulk_section" 'report_batch_failure "mutation failed for $planning_id"' \
+    'bulk recipe reports a mutation failure for the correct planning id'
 assert_contains "$bulk_section" 'if ! "$apply_ledger" record --ledger "$ledger"' \
     'bulk recipe stops on a record failure'
+assert_contains "$bulk_section" 'closing-issue verification did not pass' \
+    'bulk recipe reports a closing-issue verification failure distinctly from a hard mutation failure'
+record_line=$(grep -n -- '--number "\$created_number" --url "\$created_url"; then' <<<"$bulk_section" | head -n1 | cut -d: -f1)
+closing_check_line=$(grep -n 'closing-issue verification did not pass' <<<"$bulk_section" | head -n1 | cut -d: -f1)
+if [[ -n $record_line && -n $closing_check_line ]] && ((closing_check_line > record_line)); then
+    _pass 'bulk recipe records the ledger before reporting a closing-issue verification failure'
+else
+    _fail 'bulk recipe records the ledger before reporting a closing-issue verification failure' \
+        "record=$record_line closing-check=$closing_check_line"
+fi
 assert_contains "$bulk_section" 'applied/remaining' \
     'bulk recipe reports applied and remaining ledger evidence on failure'
 assert_contains "$bulk_section" 'if grep -Eq' \

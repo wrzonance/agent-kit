@@ -74,13 +74,31 @@ validate_section() {
         die "$label is empty or whitespace-only: $path"
 }
 
-validate_testing() {
-    local line
+readonly TESTING_CHECKBOX_RE='^-[[:space:]]\[[xX[:space:]]\][[:space:]].+'
+readonly TESTING_BULLET_RE='^-[[:space:]]+(.+)$'
+
+# Prints TESTING_FILE's content with every plain "- item" bullet rewritten to
+# an unchecked "- [ ] item" checkbox; an existing checkbox line and blank
+# lines pass through unchanged. Dies (naming the offending file) on a line
+# that is neither form -- normalization only widens accepted *input*, it
+# never silently drops or waves through a genuinely invalid line.
+normalize_testing_file() {
+    local label=$1 path=$2 line
     while IFS= read -r line || [[ -n $line ]]; do
-        [[ -z $line ]] && continue
-        [[ $line =~ ^-[[:space:]]\[[xX[:space:]]\][[:space:]].+ ]] ||
-            die 'Testing section must contain only markdown checkbox lines'
-    done <"$TESTING_FILE"
+        if [[ -z $line || $line =~ $TESTING_CHECKBOX_RE ]]; then
+            printf '%s\n' "$line"
+        elif [[ $line =~ ^-[[:space:]]+\[ ]]; then
+            # A dash-space-bracket line that failed the strict checkbox regex
+            # above is a malformed checkbox attempt, not a plain bullet --
+            # normalizing it would silently double-bracket it into something
+            # like "- [ ] [z] weird" instead of naming the actual mistake.
+            die "$label must contain only markdown checkbox lines"
+        elif [[ $line =~ $TESTING_BULLET_RE ]]; then
+            printf -- '- [ ] %s\n' "${BASH_REMATCH[1]}"
+        else
+            die "$label must contain only markdown checkbox lines"
+        fi
+    done <"$path"
 }
 
 validate_testing_file() {
@@ -101,7 +119,7 @@ validate_args() {
     validate_section '--what-file' "$WHAT_FILE"
     validate_section '--decisions-file' "$DECISIONS_FILE"
     validate_section '--testing-file' "$TESTING_FILE"
-    validate_testing
+    normalize_testing_file '--testing-file' "$TESTING_FILE" >/dev/null
     [[ -z $BASELINE_FILE ]] || validate_section '--baseline-file' "$BASELINE_FILE"
     [[ -z $BASELINE_EXCLUSION_FILE ]] || validate_testing_file '--baseline-exclusion-file' "$BASELINE_EXCLUSION_FILE"
     [[ $OUTPUT != *$'\n'* && $OUTPUT != *$'\r'* ]] || die '--output must be a single-line path'
@@ -128,7 +146,7 @@ emit_body() {
     emit_section '## Why' "$WHY_FILE"
     emit_section '## What' "$WHAT_FILE"
     emit_section '## Decisions' "$DECISIONS_FILE"
-    testing_contents=$(<"$TESTING_FILE")
+    testing_contents=$(normalize_testing_file '--testing-file' "$TESTING_FILE")
     printf '## Testing\n\n%s' "$testing_contents"
     if [[ -n $BASELINE_EXCLUSION_FILE ]]; then
         printf '\n%s' "$(<"$BASELINE_EXCLUSION_FILE")"

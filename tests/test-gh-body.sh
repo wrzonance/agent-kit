@@ -99,6 +99,16 @@ if [[ ${1-} == api ]]; then
         printf 'verification unavailable\n' >&2
         exit 24
     fi
+    # A real GitHub issue/PR response always carries its own number and
+    # html_url; derive them from the requested endpoint so --json callers can
+    # exercise the same fetch this stub already answers for text-mode callers.
+    stub_number='' stub_html_url=''
+    if [[ $1 =~ ^repos/([^/]+)/([^/]+)/(pulls|issues)/([0-9]+)$ ]]; then
+        stub_kind=pull
+        [[ ${BASH_REMATCH[3]} == pulls ]] || stub_kind=issues
+        stub_number=${BASH_REMATCH[4]}
+        stub_html_url="https://${api_host:-github.com}/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/$stub_kind/$stub_number"
+    fi
     if [[ ${GH_MISMATCH:-0} == 1 ]]; then
         jq -n '{body: "tampered"}'
     elif [[ $1 == repos/*/pulls/* ]]; then
@@ -106,10 +116,12 @@ if [[ ${1-} == api ]]; then
         # from this same pull-request fetch; default both to "main" so existing
         # scenarios keep exercising the default-branch (registration-required) path.
         jq -Rs --arg base "${GH_PR_BASE:-main}" --arg default_branch "${GH_PR_DEFAULT_BRANCH:-main}" \
-            '{body: ., base: {ref: $base, repo: {default_branch: $default_branch}}}' \
+            --argjson number "$stub_number" --arg html_url "$stub_html_url" \
+            '{body: ., base: {ref: $base, repo: {default_branch: $default_branch}}, number: $number, html_url: $html_url}' \
             <"$GH_STORED_BODY"
     else
-        jq -Rs '{body: .}' <"$GH_STORED_BODY"
+        jq -Rs --argjson number "$stub_number" --arg html_url "$stub_html_url" \
+            '{body: ., number: $number, html_url: $html_url}' <"$GH_STORED_BODY"
     fi
     exit 0
 fi
@@ -439,5 +451,107 @@ assert_contains "$usage_output" 'default branch' \
     'usage documents the default-branch closing-issue requirement'
 assert_contains "$usage_output" 'deferred' \
     'usage documents the stacked-PR deferred closing-issue outcome'
+assert_contains "$usage_output" '--json' \
+    'usage documents the --json machine-readable mode'
+
+# --- --json: one machine-readable object, human lines move to stderr -------
+: >"$tmp/api.log"
+json_err="$tmp/json-create.err"
+json_output=$(run_body pr create --repo owner/repo --body-file "$body" --json \
+    --draft --title 'A `title`' 2>"$json_err")
+assert_eq '1' "$(printf '%s\n' "$json_output" | wc -l | tr -d '[:space:]')" \
+    '--json create writes exactly one line to stdout'
+if jq -e . <<<"$json_output" >/dev/null 2>&1; then
+    _pass '--json create stdout is valid JSON'
+else
+    _fail '--json create stdout is valid JSON' "got: $json_output"
+fi
+assert_eq '41' "$(jq -r '.number' <<<"$json_output")" \
+    '--json create reports the created number'
+assert_eq 'https://github.com/owner/repo/pull/41' "$(jq -r '.html_url' <<<"$json_output")" \
+    '--json create reports the created html_url'
+assert_eq 'null' "$(jq -c '.closing_issue' <<<"$json_output")" \
+    '--json create with no --expect-closing-issue reports a null closing_issue'
+assert_contains "$(cat "$json_err")" 'https://github.com/owner/repo/pull/41' \
+    '--json moves the human create line to stderr'
+
+json_edit_output=$(run_body pr edit 41 --repo owner/repo --body-file "$body" --json)
+assert_eq '41' "$(jq -r '.number' <<<"$json_edit_output")" \
+    '--json edit reports the edited number'
+assert_eq 'https://github.com/owner/repo/pull/41' "$(jq -r '.html_url' <<<"$json_edit_output")" \
+    '--json edit reports the edited html_url'
+
+export GH_INCLUDE_CLOSING=1
+json_confirmed_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --json --expect-closing-issue 42)
+unset GH_INCLUDE_CLOSING
+assert_eq 'confirmed' "$(jq -r '.closing_issue.state' <<<"$json_confirmed_output")" \
+    '--json reports a confirmed closing_issue state'
+assert_eq '42' "$(jq -r '.closing_issue.issue' <<<"$json_confirmed_output")" \
+    '--json confirmed closing_issue names the expected issue'
+assert_contains "$(jq -r '.closing_issue.reason' <<<"$json_confirmed_output")" 'registered' \
+    '--json confirmed closing_issue carries a human-readable reason'
+
+export GH_PR_BASE=feat/issue-299 GH_PR_DEFAULT_BRANCH=main
+json_deferred_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
+    --json --expect-closing-issue 42)
+unset GH_PR_BASE GH_PR_DEFAULT_BRANCH
+assert_eq 'deferred' "$(jq -r '.closing_issue.state' <<<"$json_deferred_output")" \
+    '--json reports a deferred closing_issue state for a stacked base'
+
+# --- record-before-verify: the created number/url survive a closing-issue
+# verification failure, so the ledger can still record the object and a
+# retry never re-creates it (this is the #554 record-before-verify fix).
+set +e
+json_failed_err="$tmp/json-failed.err"
+json_failed_output=$(run_body pr create --repo owner/repo --body-file "$canonical" \
+    --json --expect-closing-issue 42 2>"$json_failed_err")
+json_failed_rc=$?
+set -e
+assert_eq '1' "$json_failed_rc" \
+    '--json exits 1 when closing-issue verification genuinely fails'
+assert_eq '41' "$(jq -r '.number' <<<"$json_failed_output")" \
+    '--json still reports the created number when closing-issue verification fails'
+assert_eq 'https://github.com/owner/repo/pull/41' "$(jq -r '.html_url' <<<"$json_failed_output")" \
+    '--json still reports the created html_url when closing-issue verification fails'
+assert_eq 'failed' "$(jq -r '.closing_issue.state' <<<"$json_failed_output")" \
+    '--json reports a failed closing_issue state after exhausted retries'
+assert_contains "$(jq -r '.closing_issue.reason' <<<"$json_failed_output")" 'closingIssuesReferences' \
+    '--json failed closing_issue carries the machine evidence in its reason'
+assert_contains "$(cat "$json_failed_err")" 'closingIssuesReferences' \
+    '--json still logs the failure diagnosis to stderr'
+
+# --- record success from --json output with no root-authored parsing -------
+apply_ledger="$root/agentkit/skills/.shared/scripts/apply-ledger.sh"
+ledger_plan="$tmp/ledger-plan.json"
+ledger_file="$tmp/ledger.json"
+jq -n '{planId: "gh-body-json-fixture", entries: [{id: "issue-544"}]}' >"$ledger_plan"
+"$apply_ledger" init --ledger "$ledger_file" --plan "$ledger_plan" >/dev/null
+ledger_number=$(jq -er '.number' <<<"$json_output")
+ledger_url=$(jq -er '.html_url' <<<"$json_output")
+assert_rc 0 'apply-ledger.sh record consumes --json output verbatim, no parsing' -- \
+    "$apply_ledger" record --ledger "$ledger_file" --id issue-544 \
+    --number "$ledger_number" --url "$ledger_url"
+assert_eq "$ledger_number" "$(jq -r '.idMap["issue-544"].number' <"$ledger_file")" \
+    'ledger holds the exact number recorded from --json output'
+assert_eq "$ledger_url" "$(jq -r '.idMap["issue-544"].url' <"$ledger_file")" \
+    'ledger holds the exact url recorded from --json output'
+
+# A created-but-unverified PR (closing_issue.state=failed above) still carries
+# a usable number/html_url, so the bulk recipe can record it before reporting
+# the closing-issue failure -- a retry never re-creates a duplicate PR.
+failed_ledger_plan="$tmp/failed-ledger-plan.json"
+failed_ledger_file="$tmp/failed-ledger.json"
+jq -n '{planId: "gh-body-json-failed-fixture", entries: [{id: "issue-545"}]}' >"$failed_ledger_plan"
+"$apply_ledger" init --ledger "$failed_ledger_file" --plan "$failed_ledger_plan" >/dev/null
+failed_number=$(jq -er '.number' <<<"$json_failed_output")
+failed_url=$(jq -er '.html_url' <<<"$json_failed_output")
+assert_rc 0 'a created-but-unverified PR still records into the ledger' -- \
+    "$apply_ledger" record --ledger "$failed_ledger_file" --id issue-545 \
+    --number "$failed_number" --url "$failed_url"
+assert_eq '0' "$(jq '.remaining | length' <"$failed_ledger_file")" \
+    'the created-but-unverified PR is present in the ledger applied set'
+assert_eq "$failed_number" "$(jq -r '.idMap["issue-545"].number' <"$failed_ledger_file")" \
+    'the ledger holds the created-but-unverified PR number'
 
 finish

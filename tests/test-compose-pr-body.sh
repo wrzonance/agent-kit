@@ -82,6 +82,50 @@ assert_rc 1 'composer rejects an empty agent identity' -- bash "$compose" \
     --decisions-file "$decisions" --testing-file "$testing" \
     --agent '' --output "$output"
 
+# --- plain "- item" Testing bullets normalize to unchecked checkboxes ------
+plain_testing="$tmp/plain-testing.md"
+printf '%s\n' '- [x] already a checkbox' '- plain bullet one' '' '- plain bullet two' \
+    >"$plain_testing"
+normalized_output="$tmp/normalized-body.md"
+assert_rc 0 'composer accepts plain "- item" Testing bullets' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$plain_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$normalized_output"
+normalized_text=$(<"$normalized_output")
+assert_contains "$normalized_text" '- [x] already a checkbox' \
+    'an existing checkbox line is passed through unchanged'
+assert_contains "$normalized_text" '- [ ] plain bullet one' \
+    'a plain bullet normalizes to an unchecked checkbox'
+assert_contains "$normalized_text" '- [ ] plain bullet two' \
+    'every plain bullet line normalizes independently'
+assert_not_contains "$normalized_text" '- plain bullet one' \
+    'the normalized line replaces the original plain bullet text'
+
+# A genuinely non-list line mixed in with valid bullets still fails the whole
+# composition -- normalization never silently drops or ignores an invalid line.
+mixed_invalid_testing="$tmp/mixed-invalid-testing.md"
+printf '%s\n' '- [ ] a real checkbox' 'prose that is not a list item at all' \
+    >"$mixed_invalid_testing"
+assert_rc 1 'a genuinely non-list line still fails composition' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$mixed_invalid_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$output"
+
+# A malformed checkbox attempt (dash, space, bracket -- but not the strict
+# "- [ ]"/"- [x]" form) must fail, not be silently normalized into a
+# double-bracketed bullet like "- [ ] [z] weird".
+malformed_checkbox_testing="$tmp/malformed-checkbox-testing.md"
+printf '%s\n' '- [z] weird' >"$malformed_checkbox_testing"
+malformed_checkbox_err=$(bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$malformed_checkbox_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$output" 2>&1)
+malformed_checkbox_rc=$?
+assert_eq '1' "$malformed_checkbox_rc" \
+    'a malformed checkbox-like bullet fails composition rather than being normalized'
+assert_contains "$malformed_checkbox_err" 'markdown checkbox lines' \
+    'the malformed-checkbox refusal names the checkbox requirement'
+
 
 
 # --- a section file named like an option is a file, not a flag -------------

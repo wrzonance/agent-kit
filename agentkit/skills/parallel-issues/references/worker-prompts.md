@@ -534,7 +534,9 @@ agent/service/model identity are the only generated footer values. Never pass a 
 body through inline `--body`: shell and orchestration layers can preserve escape sequences
 literally and collapse the rendered body to one line. The composer emits the fixed order:
 agentic disclosure, `Why`, `What`, `Decisions`, checkbox-formatted `Testing`, a signature line,
-and a separate closing-keyword line.
+and a separate closing-keyword line. A `--testing-file` line may be an existing `- [ ]`/`- [x]`
+checkbox (passed through unchanged) or a plain `- item` bullet, which the composer normalizes
+to an unchecked `- [ ] item` box; any other line still fails composition.
 Every composed body starts with the literal line `This was written agentically; verify its assertions:`.
 Never pass a multiline PR body through inline `--body`; the composer writes a private file for
 the byte-verifying transport.
