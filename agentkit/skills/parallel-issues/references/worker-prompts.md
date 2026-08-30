@@ -114,7 +114,10 @@ line stating the commands below carry no unattended trust flags. There is no
 command-approval gate left to skip: a declared command runs directly through
 `agent-run.sh --cmd NAME`. Never dispatch with the placeholder itself still in the
 prompt — it must never reach a worker; that is what the composer's substitution
-guards against, not something a template author writes by hand. It has nothing to
+guards against, not something a template author writes by hand. When the dispatch
+also carries a session-ledger handle (--ledger/--run-id/--ledger-scope, issue
+#563), the same substitution appends the ledger path, run ID, and scope FINISH
+needs to authorize a parked protected-path commit; otherwise it has nothing to
 say about a trust record.>
 __DECLARED_COMMANDS__
 
