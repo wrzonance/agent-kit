@@ -1,6 +1,6 @@
 {
   "name": "@wrzonance/agentkit-opencode",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Agent Kit plugin for OpenCode CLI: injects the environment contract into the model's system prompt at session start.",
   "type": "module",
   "main": "./index.js",
