@@ -140,7 +140,17 @@ exactly one of:
   trusted in place of the live ancestry read — both must independently agree.
   Perform the merge-down and `chain-advance.sh --retarget` call itself exactly
   as Step 5 and `chains.md` already describe; this flag only lets the
-  resulting refresh skip redisplay.
+  resulting refresh skip redisplay. The proof line may also carry
+  `behind=`/`generated-only=` and `provider-check=` tokens ahead of
+  `closing-issues=` (issue #577: a `behind_by` gap confined to declared
+  `AGENT_GENERATED_PATHS`, or a stale check whose own authenticated
+  `check-runs` `.app.slug` belongs to a declared review provider — never a
+  display-name match alone, and never granted at all when that read is
+  unreadable or when this checkout's own repository does not match `--repo`
+  — is tolerated rather than chased with an unnecessary rerun or ping) —
+  `--retarget-proof`'s own match is unaffected by their presence, since it
+  only requires the tokens named above and the trailing `closing-issues=`
+  anchor, never an exact line.
 - **a verified merge** — a confirmed PR absent from the live queue, independently
   confirmed `merged:true` from a fresh read of that PR (a PR that vanished for
   any other reason — closed unmerged, deleted, access lost — is never assumed

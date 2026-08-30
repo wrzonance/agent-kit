@@ -163,6 +163,48 @@ is missing or stale, including when that provenance cannot be read at all. A bas
 not re-run the workflow (`pull_request` fires on opened/synchronize/reopened, not `edited`), so
 this refusal is expected until CI is genuinely re-run against the new base.
 
+Two of these proofs tolerate evidence a retarget can never make current, because no agent action
+would ever clear it — a retarget proof that is unsatisfiable by construction is a stall, not a
+gate (issue #577):
+
+- **`behind_by` confined to `AGENT_GENERATED_PATHS`.** This repository's own post-merge
+  `chore(bench): record tier0 ...` commit puts every stacked successor at `behind_by=1` the
+  moment its predecessor lands, even though the successor already merged that predecessor down.
+  When the *entire* gap between the current base and the head's merge-base is confined to the
+  same declared `AGENT_GENERATED_PATHS` prefixes `gh-pr-state.sh` already treats as `stale=no`,
+  the ancestry proof reports it rather than refusing — the proof line carries
+  `behind=N generated-only=yes` (or `generated-only=no` when nothing was declared, or the gap
+  reaches an undeclared path — the same fail-closed `behind_by=N` refusal as before). A gap that
+  mixes a declared and an undeclared path is never exempted; the whole file list gained since
+  divergence must match, exactly like `gh-pr-state.sh`'s own confinement check.
+- **A stale check from a declared review provider.** A base edit does not trigger a provider
+  re-scan any more than it triggers CI, and an `observe`/`disabled` per-run provider action never
+  re-pings it either — requiring that check to postdate the boundary made the proof unsatisfiable
+  without an unauthorized ping (agent-kit#572, three wasted CI rounds chasing `stale: CodeRabbit`
+  through `gh run rerun`). A `statusCheckRollup` entry is excused from the postdate requirement
+  only when a dedicated `commits/<head>/check-runs` read finds a check-run of that exact name
+  whose own authenticated `.app.slug` belongs to a provider declared in `AGENT_REVIEW_PROVIDERS`
+  — never a display-name substring match, so a required job merely *named* like a provider (e.g.
+  "CodeRabbit compatibility tests" run by some other app) is never excused. The proof line carries
+  `provider-check=` naming the excused check(s), sanitized and comma-joined, or
+  `provider-check=none` when nothing was excused; when the check-runs read itself is unreadable,
+  the exemption grants nothing (fail closed) and the refusal reports `provider-check=unreadable`
+  instead. Any other stale check still refuses exactly as before; declaring a provider never
+  widens the exemption past checks whose own app identity confirms it.
+
+Both tokens sit ahead of the trailing `closing-issues=` token so `authorize-queue.sh
+--allow-mechanical-advance`'s anchored parse of that proof line is unaffected.
+
+Both exemptions read `AGENT_GENERATED_PATHS`/`AGENT_REVIEW_PROVIDERS` from *this checkout's own*
+`.agent/config.env`, never from whatever repository `--repo` names. Before applying either one,
+`chain-advance.sh` resolves this checkout's own canonical `OWNER/REPO` (its declared
+`AGENT_REPO_SLUG`, else a live `gh repo view`, else the `origin` remote URL) and requires it to
+equal `--repo`; a resolvable mismatch disables both exemptions outright and prints
+`exemptions=disabled reason=repo-mismatch` — running this helper against a different repository's
+PR can never borrow this checkout's declarations to excuse *that* repository's gap or stale
+checks. An unresolvable local slug leaves the exemptions untouched (fails open), matching the
+advisory, fail-open contract of the resolvers themselves.
+
 Formal approval is provider policy, not mechanical base safety (issue #455), so it never blocks
 the retarget proof. The proof line instead reports an `approval=` token —
 `current:post-retarget` (an APPROVED review on the current head, submitted after the retarget
