@@ -431,10 +431,14 @@ fi
 
 Classify issue-comment findings once (agent-kit#566): a CodeRabbit/Code-Quality finding posted as
 a plain issue comment carries no review thread, so it never surfaces through the `threads:`/
-`cq-open:` evidence above — see review-remote-pr's provider-rules.md for the classification detail:
+`cq-open:` evidence above — see review-remote-pr's provider-rules.md for the classification detail.
+`icf_answered` is the ONE durable per-PR answered-finding ledger (agent-kit#566 review finding F1):
+every `count`/`list`/`mark-answered` call for this PR uses this exact path, or a finding a prior
+cycle already answered reads open forever:
 
+icf_answered="$state_dir/pr_NNN_issue_comment_answered.ndjson"
 if ! icf_state=$("$agentkit/review-remote-pr/scripts/classify-issue-comment-findings.sh" count \
-  --comments "$state_dir/pr_NNN_issue_comments.json"); then
+  --comments "$state_dir/pr_NNN_issue_comments.json" --answered "$icf_answered"); then
   printf 'icf-open: unavailable source=pr_NNN_issue_comments.json\n'
   setup_terminal='icf-open: unavailable source=pr_NNN_issue_comments.json'
 else

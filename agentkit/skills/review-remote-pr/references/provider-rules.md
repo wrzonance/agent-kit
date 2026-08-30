@@ -310,18 +310,32 @@ A Code Quality finding is complete only when GitHub reports it auto-cleared afte
 
 ### Issue-comment finding handling (agent-kit#566)
 
+`icf_answered="$RUN_DIR/state/pr_${PR}_issue_comment_answered.ndjson"` is the **one** durable
+per-PR answered-finding ledger — pass it as `--answered "$icf_answered"` to every `list`/`count`
+call for this PR (review finding F1: a `count` without `--answered` reports an already-answered
+finding as open forever, since "open" is every finding's default with no ledger to check against).
+
 For each `coderabbitai[bot]`/`github-code-quality[bot]` issue comment classified by
 `scripts/classify-issue-comment-findings.sh list --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json"
-[--answered FILE]` (each finding: `surface`, `id` (`comment_id#index`), `comment_id`, `anchor`,
-`author`, `priority`, `kind`, `header`, `state`):
+--answered "$icf_answered"` (each finding: `surface`, `id` (`comment_id#index`), `comment_id`,
+`anchor`, `author`, `priority`, `kind`, `header`, `fingerprint`, `state`):
 
 ```text
 VALID   → fix the code, commit; reply in the conversation (gh-comment.sh, banner on — no --anchor,
           since a plain issue comment has no thread to anchor into) quoting the finding's `header`,
-          with the commit SHA; then mark-answered
+          with the commit SHA; then mark-answered --answered "$icf_answered" --id "$id" \
+          --sha "$sha" --fingerprint "$fingerprint"
 INVALID → write a decline rationale (Decline Rationale Templates below); reply quoting the header
-          with the rationale; then mark-answered
+          with the rationale; then mark-answered the same way
 ```
+
+`fingerprint` (review finding F4) is a sha256 digest of the finding's own kind/priority/header,
+carried straight through from `list`'s output into the `mark-answered --fingerprint` call above —
+never hand-computed or reused across findings. `list`/`count` report a finding as `answered` only
+when the ledger has an entry whose `id` **and** `fingerprint` both match; an id match alone is not
+enough, so a bot editing a comment's text (which changes its findings' fingerprints even though the
+`comment_id#index` identity stays the same) correctly reads open again rather than inheriting stale
+answered state.
 
 There is **no review thread** for a plain issue comment, so there is nothing to resolve — the
 finding is complete once its reply is posted (integrity-verified, same as any other reply) and

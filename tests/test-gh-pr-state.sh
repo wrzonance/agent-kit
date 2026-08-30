@@ -1324,8 +1324,19 @@ assert_contains "$icf_output" 'issue-comment-findings: 1 open' \
 assert_contains "$icf_output" 'next: issue-comment-findings=1 -> reply quoting the finding header + fix SHA, then mark-answered (Step 5)' \
     'the non-zero issue-comment-findings lane prints its next hint'
 
+# The answered ledger keys on (id, fingerprint), not id alone (agent-kit#566
+# review finding F4) -- derive the real fingerprint from the classifier
+# itself rather than hand-computing a sha256 digest that would silently go
+# stale the moment the fixture's wording changes.
+icf_comments_fixture="$tmp/icf-comments-fixture.json"
+printf '%s\n' '[{"id":5001,"user":{"login":"coderabbitai[bot]"},"body":"@thewrz I found one blocking issue. **P1 — Define and implement the local liveness evidence.**"}]' \
+    >"$icf_comments_fixture"
+icf_fingerprint=$(jq -r '.fingerprint' < <(
+    "$root/agentkit/skills/review-remote-pr/scripts/classify-issue-comment-findings.sh" list \
+        --comments "$icf_comments_fixture"))
 icf_answered="$tmp/icf-answered.ndjson"
-printf '{"id":"5001#0","sha":"abc1234","answered_at":"2026-08-29T00:00:00Z"}\n' >"$icf_answered"
+printf '{"id":"5001#0","sha":"abc1234","fingerprint":"%s","answered_at":"2026-08-29T00:00:00Z"}\n' \
+    "$icf_fingerprint" >"$icf_answered"
 chmod 600 -- "$icf_answered"
 icf_answered_output=$(PATH="$tmp/case-issue-comment-findings:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 777 --repo owner/repo --issue-comment-answered "$icf_answered")
