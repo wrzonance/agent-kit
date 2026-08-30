@@ -206,10 +206,16 @@ if [[ -n $matched_path ]]; then
     # directory IS the executable remedy. Trust bar matches RESOLVE_HINT's
     # own: untracked regular file, not a symlink, owned by this user.
     resolved_skills=''
-    contract_file="$state_root/.agent/env-contract.txt"
-    if [[ -n $state_root && -r $contract_file && -f $contract_file &&
+    contract_file=''
+    # Harness-keyed first, legacy bare name as a read-only fallback (issue
+    # #551) -- resolving the BARE, shared file here is exactly the bug this
+    # lesson used to trip on: a second harness's SessionStart could rewrite
+    # it with a DIFFERENT skills tree, and this check would then flag the
+    # calling harness's own correct path as "wrong".
+    [[ -z $state_root ]] || contract_file=$(contract_cache_contract_file "$state_root")
+    if [[ -n $state_root && -n $contract_file && -r $contract_file && -f $contract_file &&
         ! -L $contract_file && -O $contract_file ]] &&
-        ! git -C "$state_root" ls-files --error-unmatch -- .agent/env-contract.txt \
+        ! git -C "$state_root" ls-files --error-unmatch -- "${contract_file#"$state_root"/}" \
             > /dev/null 2>&1; then
         resolved_skills=$(sed -n 's/^skills= path=//p' "$contract_file" 2> /dev/null | head -n 1)
         # The value is rendered into agent-facing text as a copyable shell

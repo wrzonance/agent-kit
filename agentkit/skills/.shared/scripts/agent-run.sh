@@ -40,6 +40,8 @@ Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--on
 
 Runs one command with a sandbox-safe environment and a compact result summary.
   --dir PATH     Working directory for the command (default: current directory).
+                 --repo-root PATH is a silent alias, accepted for
+                 compatibility with the kit's other checkout-path helpers.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Execute a named command even when green evidence is current.
   --only NAME[,NAME...]  For --cmd test, use the repository's
@@ -129,13 +131,24 @@ while (($#)); do
             focus_opt=$2
             shift 2
             ;;
-        --baseline-ref|--baseline-path|--baseline-id|--dir|--label|--cmd|--resolve)
+        # --repo-root is the canonical checkout-path flag across the kit
+        # (every other helper that takes one uses it); --dir is this script's
+        # own long-standing name and stays primary, with --repo-root accepted
+        # as a sibling spelling of the identical option so a caller who just
+        # used --repo-root on another helper is not punished here (issue
+        # #556). A prior version pre-rewrote argv to alias this flag before
+        # the option loop ran, but that rewrite could not tell an option
+        # token from a wrapped command's own arguments in agent-run.sh's
+        # bare-command invocation form (no `--`) -- reverted in favor of this
+        # ordinary case-statement branch, which only ever consumes tokens the
+        # loop itself is walking.
+        --baseline-ref|--baseline-path|--baseline-id|--dir|--repo-root|--label|--cmd|--resolve)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
                 --baseline-ref) baseline_ref=$2 ;;
                 --baseline-path) baseline_path=$2 ;;
                 --baseline-id) baseline_id=$2 ;;
-                --dir) dir_opt=$2 ;;
+                --dir|--repo-root) dir_opt=$2 ;;
                 --label) label=$2 ;;
                 --cmd) cmd_name=$2 ;;
                 --resolve) resolve_name=$2 ;;
