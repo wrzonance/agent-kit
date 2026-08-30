@@ -529,4 +529,137 @@ assert_eq '1' "$unset_rc" \
 assert_contains "$(cat "$tmp/no-author.err")" 'no trusted ledger author identity could be resolved' \
     'the fail-closed error names the missing trust boundary'
 
+# -- cover: append-only lineage extension (issue #567) -----------------------
+# A receipt is written ONCE at publish time, but a later fix commit or
+# merge-down must still be provably the same reviewed tree plus a recorded,
+# ancestry-proven transition -- never a second review spend. Reuses the
+# lineage_repo/lineage_a/lineage_b/lineage_c fixture (A -> B fix -> C
+# merge-down) built above for the lineage/force-push status tests.
+
+cover_base_reviews=$(jq -cn --arg a "$lineage_a" \
+    '[{kind:"adversarial",provider:"anthropic",head_sha:$a}]')
+cover_base_comments="$tmp/cover-base.json"
+make_comments "$cover_base_comments" "$(ledger_body "$cover_base_reviews")" 80
+
+out=$(GH_COMMENT_STUB_OUT="$tmp/cover-fix-body.txt" "$script" cover --repo owner/repo --pr 1 \
+    --comments "$cover_base_comments" --head "$lineage_b" --reason 'fix:F1' \
+    --agent-identity 'Claude Opus 5' --repo-root "$lineage_repo" \
+    --gh-comment-script "$gh_comment_stub")
+rc=$?
+assert_eq '0' "$rc" 'cover exits 0 when extending coverage onto a proven descendant commit'
+assert_contains "$out" 'updated id=80' 'cover updates the existing ledger comment in place'
+cover_fix_body=$(cat "$tmp/cover-fix-body.txt")
+assert_contains "$cover_fix_body" "$lineage_b" \
+    'the extended ledger carries the newly covered SHA'
+assert_contains "$cover_fix_body" '"reason": "fix:F1"' \
+    'the extended ledger records the cover reason verbatim'
+
+# The extended ledger now unblocks status for the covered commit -- the
+# north star (one adversarial spend, satisfiable by a recorded lineage
+# transition, never a second review) with zero additional review spends.
+cover_after_fix_comments="$tmp/cover-after-fix.json"
+make_comments "$cover_after_fix_comments" "$cover_fix_body" 80
+out=$("$script" status --repo owner/repo --pr 1 --comments "$cover_after_fix_comments" \
+    --head "$lineage_b" --repo-root "$lineage_repo")
+rc=$?
+assert_eq '0' "$rc" 'status resolves a covered (non-stale) verdict for a head cover just recorded'
+assert_contains "$out" 'covered-' \
+    'the resolved verdict is one of the covered-* family status/merge-gate.sh treat as passing'
+
+# A second cover call (merge-down) extends the SAME entry further, matching
+# the #552 acceptance shape: receipt -> fix -> merge-down, TWO cover calls,
+# zero additional review spends.
+out=$(GH_COMMENT_STUB_OUT="$tmp/cover-mergedown-body.txt" "$script" cover --repo owner/repo --pr 1 \
+    --comments "$cover_after_fix_comments" --head "$lineage_c" --reason 'merge-down:main' \
+    --agent-identity 'Claude Opus 5' --repo-root "$lineage_repo" \
+    --gh-comment-script "$gh_comment_stub")
+rc=$?
+assert_eq '0' "$rc" 'a second cover call extends the same entry for a subsequent merge-down'
+cover_mergedown_body=$(cat "$tmp/cover-mergedown-body.txt")
+assert_contains "$cover_mergedown_body" "$lineage_c" \
+    'the twice-extended ledger carries the merge-down SHA too'
+assert_contains "$cover_mergedown_body" "$lineage_b" \
+    'the twice-extended ledger still carries the earlier fix SHA (append-only)'
+
+cover_after_mergedown_comments="$tmp/cover-after-mergedown.json"
+make_comments "$cover_after_mergedown_comments" "$cover_mergedown_body" 80
+out=$("$script" status --repo owner/repo --pr 1 --comments "$cover_after_mergedown_comments" \
+    --head "$lineage_c" --repo-root "$lineage_repo")
+rc=$?
+assert_eq '0' "$rc" 'the #552 shape (receipt -> fix -> merge-down) reaches a covered verdict after two cover calls'
+
+# -- cover: the coverage array round-trips through the rendered comment,
+#    byte-for-byte on its sha/reason provenance fields -----------------------
+
+read_out=$("$script" read --repo owner/repo --pr 1 --comments "$cover_after_mergedown_comments")
+read_json=$(tail -n +2 <<<"$read_out")
+coverage_roundtrip=$(jq -c '.reviews[0].coverage | map({sha, reason})' <<<"$read_json")
+expected_coverage=$(jq -cn --arg b "$lineage_b" --arg c "$lineage_c" \
+    '[{sha:$b, reason:"fix:F1"}, {sha:$c, reason:"merge-down:main"}]')
+assert_eq "$expected_coverage" "$coverage_roundtrip" \
+    'the coverage array round-trips through the rendered comment byte-for-byte (sha+reason provenance)'
+covered_at_count=$(jq -r '[.reviews[0].coverage[].covered_at | select(length > 0)] | length' <<<"$read_json")
+assert_eq '2' "$covered_at_count" 'every coverage record carries a non-empty covered_at timestamp'
+
+# -- cover: idempotent no-op when --head is already covered ------------------
+
+idempotent_rc=0
+out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_after_fix_comments" \
+    --head "$lineage_b" --reason 'fix:F1' --repo-root "$lineage_repo" 2>&1) || idempotent_rc=$?
+assert_eq '0' "$idempotent_rc" 'cover on an already-covered head is a silent idempotent no-op'
+assert_eq 'already-covered' "$out" 'cover prints already-covered rather than re-posting'
+
+# -- cover: refuses a SHA that is not a proven descendant (fail-closed) ------
+# Root review finding F1's fail-closed rule 5, reused here: only reach=yes
+# (a POSITIVELY PROVEN descendant) may extend coverage. A sibling commit
+# sharing no ancestry with the reviewed head -- the same shape as a
+# force-push/history-rewrite -- must never silently become "covered".
+
+orig_branch=$(git -C "$lineage_repo" symbolic-ref --short HEAD)
+git -C "$lineage_repo" checkout -q --orphan cover-sibling
+printf 'sibling\n' >"$lineage_repo/file"
+git -C "$lineage_repo" add file
+git -C "$lineage_repo" commit -q -m sibling
+sibling_sha=$(git -C "$lineage_repo" rev-parse HEAD)
+git -C "$lineage_repo" checkout -q "$orig_branch"
+
+refused_rc=0
+out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_base_comments" \
+    --head "$sibling_sha" --reason 'fix:F3' --repo-root "$lineage_repo" \
+    --gh-comment-script "$fake_gh_dir/gh" 2>"$tmp/cover-refused.err") || refused_rc=$?
+assert_eq '12' "$refused_rc" 'cover refuses a SHA with no proven ancestry to the covered entry'
+assert_eq '' "$out" 'a refused cover prints nothing on stdout'
+assert_contains "$(cat "$tmp/cover-refused.err")" 'not a proven descendant' \
+    'the refusal names why the SHA was rejected'
+
+out=$("$script" status --repo owner/repo --pr 1 --comments "$cover_base_comments" \
+    --head "$sibling_sha" --repo-root "$lineage_repo")
+rc=$?
+assert_eq '10' "$rc" 'status still reports stale for a SHA cover refused to record'
+assert_eq 'stale' "$out" 'a refused cover leaves the queried head stale, never covered'
+
+# -- cover: refuses/reports absent when there is no matching entry to extend -
+
+no_entry_rc=0
+out=$("$script" cover --repo owner/repo --pr 1 --comments "$empty_comments" \
+    --head "$lineage_b" --reason 'fix:F1' --repo-root "$lineage_repo" \
+    --gh-comment-script "$fake_gh_dir/gh" 2>"$tmp/cover-absent.err") || no_entry_rc=$?
+assert_eq '11' "$no_entry_rc" 'cover reports absent (11) when there is no ledger to extend'
+assert_eq '' "$out" 'cover prints nothing on stdout when absent'
+
+no_kind_rc=0
+out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_base_comments" \
+    --head "$lineage_b" --reason 'fix:F1' --kind bot --repo-root "$lineage_repo" \
+    --gh-comment-script "$fake_gh_dir/gh" 2>"$tmp/cover-absent-kind.err") || no_kind_rc=$?
+assert_eq '11' "$no_kind_rc" \
+    'cover reports absent (11) when the --kind/--provider filter matches no entry'
+
+# -- cover: rejects a malformed --reason -------------------------------------
+
+bad_reason_rc=0
+out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_base_comments" \
+    --head "$lineage_b" --reason 'bogus:F1' --repo-root "$lineage_repo" \
+    --gh-comment-script "$fake_gh_dir/gh" 2>&1) || bad_reason_rc=$?
+assert_eq '2' "$bad_reason_rc" 'cover rejects a --reason outside fix:/merge-down:/retarget:'
+
 finish

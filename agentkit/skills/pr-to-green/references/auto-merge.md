@@ -195,21 +195,24 @@ and additionally consumes:
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.
-- `--adversarial-review-status covered-head|covered-diff|stale|absent|blocked|not-required`
-  (issue #477) — the verdict word `review-ledger.sh status` prints for this
-  PR's current head, read from the already-fetched issue-comments artifact
-  (no extra API call). `covered-head` and `covered-diff` both pass, exactly
-  like an `AUTO_REVIEW`/`LANDED` CodeRabbit result — `covered-diff` means the
-  head moved by a base-merge-only advance since the recorded review, not a
-  source change, so the reviewed tree is still byte-identical. `stale` (the
-  ledger has an entry, but for different code) and `absent` (no ledger entry
-  at all) each block exactly like an unreviewed head. `blocked` (the ledger
-  comment is present but its fence/JSON is unparseable) blocks too — corrupt
-  evidence is never treated as missing evidence, let alone as satisfied.
-  `not-required` is the one value that opts a repository's adversarial-review
-  requirement out of this gate entirely; it is never derived here, only
-  passed through from whatever documented materiality skip decided it
-  upstream.
+- `--adversarial-review-status covered-head|covered-diff|covered-lineage|stale|absent|blocked|not-required`
+  (issue #477; `covered-lineage` added by issue #567) — the verdict word
+  `review-ledger.sh status` prints for this PR's current head, read from the
+  already-fetched issue-comments artifact (no extra API call). `covered-head`,
+  `covered-diff`, and `covered-lineage` all pass, exactly like an
+  `AUTO_REVIEW`/`LANDED` CodeRabbit result — `covered-diff` means the head
+  moved by a base-merge-only advance since the recorded review, not a source
+  change, so the reviewed tree is still byte-identical; `covered-lineage`
+  means a later fix/merge-down/retarget commit was explicitly recorded onto
+  the entry via `review-ledger.sh cover` (see below) rather than re-reviewed.
+  `stale` (the ledger has an entry, but for different, unrecorded code) and
+  `absent` (no ledger entry at all) each block exactly like an unreviewed
+  head. `blocked` (the ledger comment is present but its fence/JSON is
+  unparseable) blocks too — corrupt evidence is never treated as missing
+  evidence, let alone as satisfied. `not-required` is the one value that opts
+  a repository's adversarial-review requirement out of this gate entirely; it
+  is never derived here, only passed through from whatever documented
+  materiality skip decided it upstream.
 - `--code-quality-scan-state complete|pending|not-enabled` and/or
   `--code-quality-state-file FILE` — whether the `github-code-quality` scan
   for the current head has finished. `pending` blocks (a finding merely
@@ -266,6 +269,31 @@ adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" statu
 `review-ledger.sh status` exits non-zero for `stale`/`absent`/blocked outcomes
 while still printing the verdict word on stdout — capture it with `|| true`
 rather than treating a non-zero exit as evidence-unavailable.
+
+### Recording a merge-down or retarget transition (issue #567)
+
+The one-shot receipt's review head predates any post-receipt merge-down or
+retarget by construction — `review-ledger.sh status` correctly reads that gap
+as `stale`, and the one-spend rule forbids re-reviewing just to clear it.
+Before re-running the gate against an advanced head, extend the covered
+entry's lineage instead of falsifying or parking:
+
+```bash
+"$agentkit/review-remote-pr/scripts/review-ledger.sh" cover \
+  --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
+  --reason "merge-down:$base_sha" --repo-root "$repo_root" || true
+```
+
+Use `retarget:$old_base` for a stacked-successor retarget — the "a stacked
+retarget" bucket above already runs `chain-advance.sh --retarget`, whose own
+best-effort hook calls this after a successful edit — and `fix:$finding_id`
+for a fix-batch commit (SKILL.md Step 3). `cover` refuses (exit 12) a `--head`
+that is not a proven git descendant of the entry's own head, the same
+fail-closed ancestry proof `status` already applies, so a genuine history
+rewrite still cannot be waved through. Deliberately best-effort and
+non-fatal, like the call above: a failed `cover` never blocks the merge-down
+or retarget itself, it only leaves the next `--adversarial-review-status`
+read at `stale` until retried.
 
 Code-scanning completion is proven from `GET code-scanning/analyses` — the
 surface that actually records a completed analysis — not from a check-run's
