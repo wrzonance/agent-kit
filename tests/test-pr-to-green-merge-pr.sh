@@ -405,8 +405,11 @@ assert_eq 'allow' \
 
 # --- issue #564: dependents check before --delete-branch --------------------
 # merge-pr.sh must never delete a branch that an open PR still targets as its
-# base without first accounting for it -- retargeting it (default) or
-# refusing the delete (--no-retarget).
+# base without first accounting for it. F1 (fix batch, issue #564): refusing
+# is the DEFAULT -- a raw base PATCH does not merge the predecessor's content
+# into the dependent or re-run its CI, so retargeting it here is opt-in only,
+# behind --retarget-dependents, for a caller that has already done that
+# properly.
 
 cat >"$tmp/gh-deps" <<EOF
 #!/usr/bin/env bash
@@ -475,34 +478,47 @@ run_deps_merge() {
 }
 
 : >"$tmp/merge.log"
-out=$(run_deps_merge)
-assert_contains "$out" 'merged=true' 'the merge still succeeds with an open dependent present'
+set +e
+out=$(run_deps_merge 2>&1)
+rc=$?
+set -e
+assert_eq '3' "$rc" 'the default (no --retarget-dependents) refuses the delete with a distinct exit code'
+assert_contains "$out" 'merged=true' 'the merge still succeeds even though the delete is refused'
+assert_contains "$out" 'branch_delete=refused ref=feat/demo reason=dependents-open dependents=10' \
+    'the default refusal names the open dependents'
+deps_log=$(<"$tmp/merge.log")
+assert_eq '0' "$(grep -c -- '-X DELETE' <<<"$deps_log" || true)" \
+    'the default never deletes the branch'
+assert_not_contains "$deps_log" '--method PATCH repos/owner/repo/pulls/10' \
+    'the default never retargets the dependent either -- that is opt-in only'
+
+: >"$tmp/merge.log"
+out=$(run_deps_merge --retarget-dependents)
 assert_contains "$out" 'branch_delete=ok ref=feat/demo' \
-    'the default path retargets the dependent then deletes the merged branch'
+    '--retarget-dependents retargets the dependent then deletes the merged branch'
 assert_contains "$out" 'dependent-ok pr=10 state=open' \
     'the post-delete safety net confirms the retargeted dependent is still open'
 deps_log=$(<"$tmp/merge.log")
 assert_contains "$deps_log" '--method PATCH repos/owner/repo/pulls/10 -f base=main' \
-    'the dependent is retargeted to the merge target before the branch is deleted'
+    '--retarget-dependents retargets the dependent to the merge target before the branch is deleted'
 
 : >"$tmp/merge.log"
+write_auth true
+write_gate "$HEAD_SHA"
 set +e
-out=$(run_deps_merge --no-retarget 2>&1)
+out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh-deps" bash "$merge_pr" \
+    --repo owner/repo --pr 9 --head-sha "$HEAD_SHA" --base main --merge-method squash \
+    --authorization-file "$tmp/auth.json" --gate-result "$tmp/gate.txt" --retarget-dependents 2>&1)
 rc=$?
 set -e
-assert_eq '3' "$rc" '--no-retarget refuses the delete with a distinct exit code'
-assert_contains "$out" 'branch_delete=refused ref=feat/demo reason=dependents-open dependents=10' \
-    '--no-retarget names the open dependents in the refusal'
-deps_log=$(<"$tmp/merge.log")
-assert_eq '0' "$(grep -c -- '-X DELETE' <<<"$deps_log" || true)" \
-    '--no-retarget never deletes the branch'
-assert_not_contains "$deps_log" '--method PATCH repos/owner/repo/pulls/10' \
-    '--no-retarget never retargets the dependent either'
+assert_eq '1' "$rc" '--retarget-dependents without --delete-branch is refused'
+assert_contains "$out" '--retarget-dependents requires --delete-branch' \
+    'the refusal names the missing --delete-branch flag'
 
 : >"$tmp/merge.log"
-out=$(DEP10_RETARGET_FAIL=1 run_deps_merge)
+out=$(DEP10_RETARGET_FAIL=1 run_deps_merge --retarget-dependents)
 assert_contains "$out" 'branch_delete=skipped ref=feat/demo reason=dependent-retarget-failed' \
-    'a failed dependent retarget leaves the branch undeleted'
+    'a failed dependent retarget (with --retarget-dependents) leaves the branch undeleted'
 assert_eq '0' "$(grep -c -- '-X DELETE' "$tmp/merge.log" || true)" \
     'a failed dependent retarget never reaches the delete call'
 
@@ -550,7 +566,7 @@ chmod +x "$tmp/chain-advance-stub"
 : >"$tmp/merge.log"
 : >"$tmp/recover.log"
 out=$(DEP10_STATE=closed DEP10_MERGED=false RECOVER_LOG="$tmp/recover.log" \
-    MERGE_PR_CHAIN_ADVANCE="$tmp/chain-advance-stub" run_deps_merge)
+    MERGE_PR_CHAIN_ADVANCE="$tmp/chain-advance-stub" run_deps_merge --retarget-dependents)
 assert_contains "$out" 'dependent-recovered pr=10 recovered pr #10 base=main head=feat/dep' \
     'a dependent closed despite retargeting is recovered via chain-advance.sh'
 assert_contains "$(cat "$tmp/recover.log")" '--recover-closed --pr 10 --base main --repo owner/repo' \
@@ -559,7 +575,7 @@ assert_contains "$(cat "$tmp/recover.log")" '--recover-closed --pr 10 --base mai
 : >"$tmp/merge.log"
 : >"$tmp/recover.log"
 out=$(DEP10_STATE=closed DEP10_MERGED=false RECOVER_FAIL=1 RECOVER_LOG="$tmp/recover.log" \
-    MERGE_PR_CHAIN_ADVANCE="$tmp/chain-advance-stub" run_deps_merge)
+    MERGE_PR_CHAIN_ADVANCE="$tmp/chain-advance-stub" run_deps_merge --retarget-dependents)
 assert_contains "$out" 'dependent-recovery-failed pr=10 reason=' \
     'a failed recovery is reported, never silently dropped'
 assert_contains "$out" 'branch_delete=ok ref=feat/demo' \
