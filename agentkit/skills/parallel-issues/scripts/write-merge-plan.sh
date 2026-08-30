@@ -8,6 +8,7 @@ dispatch_plan=''
 merge_plan=''
 validate_only=0
 chain_base=''
+fix=0
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -15,7 +16,7 @@ die() {
 }
 
 usage() {
-    printf 'usage: %s --dispatch-plan FILE [--chain-base PATH|REF] (--validate-only | --merge-plan FILE)\n' "$PROGRAM" >&2
+    printf 'usage: %s --dispatch-plan FILE [--chain-base PATH|REF] [--fix] (--validate-only | --merge-plan FILE)\n' "$PROGRAM" >&2
     exit "${1:-2}"
 }
 
@@ -41,6 +42,10 @@ while (($#)); do
             validate_only=1
             shift
             ;;
+        --fix)
+            fix=1
+            shift
+            ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -49,8 +54,13 @@ done
 [[ -n $dispatch_plan ]] || usage
 if ((validate_only)); then
     [[ -z $merge_plan ]] || usage
+    # --fix mutates dispatch-plan test-root-exclusion decisions computed from
+    # the chain-base tree; with no chain base there is nothing to compute a
+    # remedy from.
+    ((! fix)) || [[ -n $chain_base ]] || usage
 else
     [[ -n $merge_plan ]] || usage
+    ((! fix)) || usage
 fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; merge-plan evidence unavailable'
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
@@ -85,30 +95,56 @@ if ((validate_only)) && [[ -n $chain_base ]]; then
     mapfile -t chain_tree_paths < <(git -C "$chain_root" ls-tree -r --name-only "$chain_ref^{tree}")
     ((${#chain_tree_paths[@]})) || die "chain base tree is empty: $chain_base"
 
-    # Test roots are declared beside test commands, or discovered from the
-    # conventional test-directory names present in the chain-base tree. The
-    # roots are suggestions, never shell input.
+    # A "project test root" is a directory a declared verify command actually
+    # runs -- never any directory whose name merely looks like "test"/"spec".
+    # Two declaration shapes name one: AGENT_RUNDIR_<NAME> (the working
+    # directory a named command runs in) and the directory component of
+    # AGENT_CMD_<NAME>'s argv[0], for any NAME containing "_TEST". A
+    # directory-name heuristic over the chain-base tree previously stood in
+    # here too and misclassified any incidental test/spec-named directory
+    # (docs/superpowers/specs/**, bench/gold/**/test/**) as a required root;
+    # it is gone. The roots below are suggestions, never shell input.
+    normalize_test_root() {
+        local candidate=$1
+        while [[ $candidate == */ ]]; do candidate=${candidate%/}; done
+        while [[ $candidate == ./* ]]; do candidate=${candidate#./}; done
+        printf '%s' "$candidate"
+    }
     config_reader=$script_dir/../../.shared/scripts/repo-config.sh
     if [[ -x $config_reader ]]; then
+        declare -a cmd_test_keys=()
         while IFS='=' read -r config_key config_value; do
             if [[ $config_key == AGENT_RUNDIR_* && $config_key == *_TEST* && -n $config_value ]]; then
-                test_root=$config_value
-                while [[ $test_root == */ ]]; do test_root=${test_root%/}; done
-                while [[ $test_root == ./* ]]; do test_root=${test_root#./}; done
+                test_root=$(normalize_test_root "$config_value")
                 [[ -n $test_root && $test_root != . ]] || continue
                 chain_test_roots+=("$test_root")
+            elif [[ $config_key == AGENT_CMD_* && $config_key == *_TEST* ]]; then
+                cmd_test_keys+=("$config_key")
             fi
         done < <("$config_reader" --repo-root "$chain_root" --list 2>/dev/null || true)
-    fi
-    for tree_path in "${chain_tree_paths[@]}"; do
-        tree_dir=$tree_path
-        while [[ $tree_dir == */* ]]; do
-            tree_dir=${tree_dir%/*}
-            case ${tree_dir##*/} in
-                test|tests|spec|specs) chain_test_roots+=("$tree_dir") ;;
-            esac
+        for cmd_key in "${cmd_test_keys[@]}"; do
+            argv0=''
+            while IFS= read -r -d '' argv_token; do
+                [[ -n $argv0 ]] || argv0=$argv_token
+            done < <("$config_reader" --repo-root "$chain_root" --get-argv "$cmd_key" 2>/dev/null || true)
+            [[ $argv0 == */* ]] || continue
+            test_root=$(normalize_test_root "${argv0%/*}")
+            [[ -n $test_root && $test_root != . ]] || continue
+            chain_test_roots+=("$test_root")
         done
-    done
+    fi
+    # docs/** and bench/gold/** fixtures are never project test roots, even if
+    # a declaration somehow pointed there.
+    if ((${#chain_test_roots[@]})); then
+        declare -a filtered_test_roots=()
+        for test_root in "${chain_test_roots[@]}"; do
+            case $test_root in
+                docs|docs/*|bench/gold|bench/gold/*) continue ;;
+            esac
+            filtered_test_roots+=("$test_root")
+        done
+        chain_test_roots=("${filtered_test_roots[@]}")
+    fi
     if ((${#chain_test_roots[@]})); then
         mapfile -t chain_test_roots < <(printf '%s\n' "${chain_test_roots[@]}" | awk 'NF && !seen[$0]++')
     fi
@@ -271,7 +307,7 @@ if ((validate_only)); then
           (disjoint_lists($s.queued; $s.tracker)) and
           ($s.dispatched + ($s.queued | issue_count) <= $s.eligible)
         end;
-      type == "object" and .schemaVersion == 1 and
+      type == "object" and .schemaVersion == 1 and test_root_exclusions and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
         (type == "object") and (.issue | uint) and
@@ -289,13 +325,19 @@ if ((validate_only)); then
     ' "$dispatch_plan" >/dev/null 2>&1 ||
         die 'dispatch plan is invalid: expected schemaVersion 1 with entries and conflictMap'
     if [[ -n $chain_base ]]; then
+        # Every entry is checked and every finding is collected before any
+        # exit, so one invocation reports everything a second invocation
+        # could otherwise only discover one fix-and-retry turn at a time.
+        declare -a violation_lines=()
+        declare -A missing_roots_by_issue=()
+        declare -a missing_issue_order=()
         while IFS=$'\t' read -r issue patterns exclusions; do
             IFS=',' read -ra prediction_patterns <<< "$patterns"
             for pattern in "${prediction_patterns[@]}"; do
                 tree_glob_matches "$pattern" || tree_literal_parent_exists "$pattern" || {
                     sibling=$(nearest_tree_sibling "$pattern")
                     if [[ $sibling != none && $pattern == */** ]]; then sibling+="/**"; fi
-                    die "issue #$issue predictedWriteSet glob matches no paths in chain-base tree: $pattern; nearest existing sibling: $sibling"
+                    violation_lines+=("issue #$issue predictedWriteSet glob matches no paths in chain-base tree: $pattern; nearest existing sibling: $sibling")
                 }
             done
             ((${#chain_test_roots[@]})) || continue
@@ -336,9 +378,55 @@ if ((validate_only)); then
                     done
                 done
                 ((excluded)) && continue
-                die "issue #$issue write set names source but omits project test root: $test_root/**; include it in predictedWriteSet or explicitly list it in testRootExclusions"
+                violation_lines+=("issue #$issue write set names source but omits project test root: $test_root/**; include it in predictedWriteSet or explicitly list it in testRootExclusions")
+                if [[ -z ${missing_roots_by_issue[$issue]+yes} ]]; then
+                    missing_roots_by_issue[$issue]=$test_root
+                    missing_issue_order+=("$issue")
+                else
+                    missing_roots_by_issue[$issue]+=",$test_root"
+                fi
             done
-        done < <(jq -r '.entries[] | [.issue, (.predictedWriteSet | join(",")), (.testRootExclusions // [] | join(","))] | @tsv' "$dispatch_plan")
+        done < <(jq -r '
+          (.testRootExclusions // []) as $planExclusions |
+          .entries[] | [
+            .issue,
+            (.predictedWriteSet | join(",")),
+            (((.testRootExclusions // []) + $planExclusions) | join(","))
+          ] | @tsv
+        ' "$dispatch_plan")
+
+        if ((${#violation_lines[@]})); then
+            for violation in "${violation_lines[@]}"; do
+                printf '%s: %s\n' "$PROGRAM" "$violation" >&2
+            done
+            if ((${#missing_issue_order[@]})); then
+                if ((fix)); then
+                    fix_filter='.'
+                    for issue in "${missing_issue_order[@]}"; do
+                        IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
+                        missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
+                        fix_filter+=" | (.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $missing_globs_json | unique)"
+                    done
+                    target_dir=$(dirname -- "$dispatch_plan")
+                    fixed=$(mktemp "$target_dir/.dispatch-plan.XXXXXX") || die 'could not stage --fix patch'
+                    jq "$fix_filter" "$dispatch_plan" >"$fixed" || die 'could not apply --fix patch'
+                    chmod --reference="$dispatch_plan" "$fixed" 2>/dev/null || chmod 600 "$fixed"
+                    mv -- "$fixed" "$dispatch_plan"
+                    printf 'dispatch-plan=%s fix=applied issues=%s\n' \
+                        "$dispatch_plan" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")"
+                    exit 0
+                fi
+                printf '%s: remedy -- apply each entry testRootExclusions patch below, then re-run:\n' "$PROGRAM" >&2
+                for issue in "${missing_issue_order[@]}"; do
+                    IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
+                    missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
+                    printf "  jq '(.entries[] | select(.issue == %s) | .testRootExclusions) |= ((. // []) + %s | unique)' %q >%q.tmp && mv %q.tmp %q\n" \
+                        "$issue" "$missing_globs_json" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
+                done
+                printf '%s: or re-run with --fix to apply the same patches automatically\n' "$PROGRAM" >&2
+            fi
+            exit 1
+        fi
     fi
     printf 'dispatch-plan=%s schemaVersion=1 valid\n' "$dispatch_plan"
     exit 0
