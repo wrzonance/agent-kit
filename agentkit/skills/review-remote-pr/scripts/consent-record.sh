@@ -29,6 +29,7 @@ REPO=''
 PR_NUMBER=''
 DIFF_PATH=''
 BASE_REF=''
+BASE_SHA=''
 DESTINATION=''
 PURPOSE=''
 # Global, not local to payload_command: an EXIT trap fires after the function
@@ -39,7 +40,7 @@ CANONICAL_DIFF_TMP=''
 usage() {
     cat <<EOF
 Usage:
-  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH|SHA] [--diff PATH]
+  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH | --base-sha SHA] [--diff PATH]
   $PROGNAME disclose --worktree DIR --run-dir DIR --payload ID --destination TEXT --purpose TEXT
   $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag
   $PROGNAME check --worktree DIR --run-dir DIR --provider NAME --payload ID
@@ -48,10 +49,12 @@ Usage:
 token (openai, anthropic); grant and check both normalize the CLI name to its
 token, so a grant recorded under either spelling satisfies the same check.
 
---base-ref accepts either a branch name (diffed against its freshly fetched
-origin/<name>) or a full 40-character lowercase SHA that already resolves
-locally in --worktree (diffed directly, with no fetch and no origin/ prefix --
-for a frozen chain-base commit that may no longer be any branch's tip).
+--base-ref takes a branch name only, diffed against its freshly fetched
+origin/<name>. --base-sha takes a full 40-character lowercase commit SHA that
+already resolves locally in --worktree, diffed directly with no fetch and no
+origin/ prefix -- for a frozen chain-base commit that may no longer be any
+branch's tip. --base-ref and --base-sha are mutually exclusive; payload
+requires exactly one of --base-ref, --base-sha, or --diff.
 
 check exits 0 only for an exact granted provider/payload record, and 10 otherwise.
 EOF
@@ -97,6 +100,8 @@ parse_options() {
         --diff=*) DIFF_PATH=${1#*=}; shift ;;
         --base-ref) require_value "$1" "${2:-}"; BASE_REF=$2; shift 2 ;;
         --base-ref=*) BASE_REF=${1#*=}; shift ;;
+        --base-sha) require_value "$1" "${2:-}"; BASE_SHA=$2; shift 2 ;;
+        --base-sha=*) BASE_SHA=${1#*=}; shift ;;
         --destination) require_value "$1" "${2:-}"; DESTINATION=$2; shift 2 ;;
         --destination=*) DESTINATION=${1#*=}; shift ;;
         --purpose) require_value "$1" "${2:-}"; PURPOSE=$2; shift 2 ;;
@@ -115,7 +120,7 @@ validate_context() {
         # Canonical rendering needs a concrete checkout. Supplied diff bytes do
         # not, which keeps provider-helper compatibility without ever deriving
         # a worktree from the caller's current directory for the canonical path.
-        if [[ -z $WORKTREE && -n $BASE_REF && -n ${CONSENT_WORKTREE:-} ]]; then
+        if [[ -z $WORKTREE && -n ${CONSENT_WORKTREE:-} && ( -n $BASE_REF || -n $BASE_SHA ) ]]; then
             WORKTREE=$CONSENT_WORKTREE
         fi
         if [[ -n $WORKTREE ]]; then
@@ -123,7 +128,7 @@ validate_context() {
                 die "worktree must be an owned regular directory, not a symlink: $WORKTREE" 2
             WORKTREE=$(cd -- "$WORKTREE" && pwd -P) ||
                 die "could not resolve worktree: $WORKTREE" 2
-        elif [[ -n $BASE_REF ]]; then
+        elif [[ -n $BASE_REF || -n $BASE_SHA ]]; then
             die_usage '--worktree is required when rendering a canonical diff'
         fi
         ;;
@@ -159,23 +164,22 @@ normalize_provider() {
     esac
 }
 
-# is_full_sha -- true when a --base-ref candidate has the shape of a full
+# is_full_sha -- true when a --base-sha candidate has the shape of a full
 # commit SHA (40 lowercase hex characters), before any local-resolution
 # attempt. Kept separate from resolution so a 40-hex value that fails to
 # resolve locally is named as "a SHA, but one this worktree cannot resolve"
-# rather than silently falling through to the branch-name validator.
+# rather than silently accepted.
 is_full_sha() {
     [[ $1 =~ ^[0-9a-f]{40}$ ]]
 }
 
-# resolve_local_base_sha -- print the resolved commit SHA for a full-SHA
-# base-ref candidate, only when it already resolves locally; never fetches
-# to make it resolve. A frozen chain-base commit is often unreachable from
-# any branch tip by the time a later PR's review runs (the predecessor
-# branch moved on, or was deleted after merge) -- requiring local
-# resolution, and never attempting `git fetch <sha>`, is what makes it
-# usable at all: many Git servers refuse to serve an arbitrary commit by
-# SHA regardless.
+# resolve_local_base_sha -- print the resolved commit SHA for a --base-sha
+# candidate, only when it already resolves locally; never fetches to make it
+# resolve. A frozen chain-base commit is often unreachable from any branch
+# tip by the time a later PR's review runs (the predecessor branch moved on,
+# or was deleted after merge) -- requiring local resolution, and never
+# attempting `git fetch <sha>`, is what makes it usable at all: many Git
+# servers refuse to serve an arbitrary commit by SHA regardless.
 resolve_local_base_sha() {
     local candidate=$1
     git -C "$WORKTREE" rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null
@@ -198,19 +202,24 @@ validate_payload_inputs() {
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die_usage '--repo must be OWNER/NAME using [A-Za-z0-9._-]'
     [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die_usage '--pr must be a positive integer'
+    [[ -z $BASE_REF || -z $BASE_SHA ]] ||
+        die_usage '--base-ref and --base-sha are mutually exclusive; pass exactly one'
     if [[ -n $DIFF_PATH ]]; then
         [[ -f $DIFF_PATH && ! -L $DIFF_PATH && -O $DIFF_PATH ]] ||
             die "diff must be an owned regular file, not a symlink: $DIFF_PATH" 2
-    elif [[ -z $BASE_REF ]]; then
-        die_usage 'payload requires --base-ref or --diff'
+    elif [[ -z $BASE_REF && -z $BASE_SHA ]]; then
+        die_usage 'payload requires --base-ref, --base-sha, or --diff'
     fi
     if [[ -n $BASE_REF ]]; then
-        if is_full_sha "$BASE_REF"; then
-            resolve_local_base_sha "$BASE_REF" >/dev/null ||
-                die_usage '--base-ref must be a branch name or a full SHA that already resolves locally in --worktree'
+        git -C "$WORKTREE" check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+            die_usage '--base-ref must be a branch name'
+    fi
+    if [[ -n $BASE_SHA ]]; then
+        if is_full_sha "$BASE_SHA"; then
+            resolve_local_base_sha "$BASE_SHA" >/dev/null ||
+                die_usage '--base-sha must be a full 40-character lowercase SHA that already resolves locally in --worktree'
         else
-            git -C "$WORKTREE" check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
-                die_usage '--base-ref must be a branch name or a full SHA that already resolves locally in --worktree'
+            die_usage '--base-sha must be a full 40-character lowercase SHA that already resolves locally in --worktree'
         fi
     fi
 }
@@ -236,8 +245,8 @@ new_canonical_diff_tmp() {
 payload_command() {
     validate_payload_inputs
     local digest canonical_digest supplied_digest base_display resolved_sha
-    if [[ -n $BASE_REF ]]; then
-        if is_full_sha "$BASE_REF"; then
+    if [[ -n $BASE_SHA || -n $BASE_REF ]]; then
+        if [[ -n $BASE_SHA ]]; then
             # A frozen chain-base SHA is diffed directly, never via
             # canonical_diff()'s "origin/<ref>" form: that form requires a
             # branch name (check-ref-format rejects a bare SHA), and
@@ -245,9 +254,9 @@ payload_command() {
             # already local by definition (see resolve_local_base_sha). The
             # flags below mirror canonical_diff() exactly so a SHA-based
             # render and an equivalent branch-based render hash identically.
-            resolved_sha=$(resolve_local_base_sha "$BASE_REF") ||
-                die "--base-ref SHA no longer resolves locally: $BASE_REF"
-            base_display=$BASE_REF
+            resolved_sha=$(resolve_local_base_sha "$BASE_SHA") ||
+                die "--base-sha no longer resolves locally: $BASE_SHA"
+            base_display=$BASE_SHA
             new_canonical_diff_tmp
             (cd -- "$WORKTREE" && git --no-pager diff --find-renames --unified=25 "$resolved_sha...HEAD") \
                 >"$CANONICAL_DIFF_TMP" ||

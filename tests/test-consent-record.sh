@@ -406,12 +406,12 @@ done
 assert_eq no "$( [[ ! -e $counter ]] && printf no || printf yes )" \
     'a refused launch never invokes the provider'
 
-# --- issue #579: --base-ref accepts a full SHA that resolves locally, not --
-# just a branch name -- a chain-base commit (parallel-issues' recorded
-# `chain_base_sha`) is frequently unreachable from any branch tip by the time
-# a later PR's review runs, and the old branch-only validator rejected it
-# with "ambiguous argument 'origin/<sha>...HEAD'" once canonical_diff()
-# prepended "origin/" to it.
+# --- issue #579: --base-sha accepts a full SHA that resolves locally -- a
+# chain-base commit (parallel-issues' recorded `chain_base_sha`) is
+# frequently unreachable from any branch tip by the time a later PR's review
+# runs, and the old branch-only validator rejected it with "ambiguous
+# argument 'origin/<sha>...HEAD'" once canonical_diff() prepended "origin/"
+# to it.
 sha_origin="$tmp/sha-origin.git"
 sha_repo="$tmp/sha-repo"
 git init --bare --quiet "$sha_origin"
@@ -430,37 +430,87 @@ git -C "$sha_repo" commit --quiet -am change
 
 sha_payload=$(
     cd -- "$sha_repo" || exit
-    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-ref "$chain_base_sha"
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-sha "$chain_base_sha"
 )
 sha_expected_digest=$(git -C "$sha_repo" --no-pager diff --find-renames --unified=25 \
     "$chain_base_sha...HEAD" | sha256sum | awk '{print $1}')
 assert_eq "acme/widget:24:$sha_expected_digest" "$sha_payload" \
     'a resolvable chain-base SHA renders the same diff a branch-based base-ref would'
 
-# A SHA base-ref must never attempt to fetch -- the whole point is that it is
+# --base-sha must never attempt to fetch -- the whole point is that it is
 # already local; proven by breaking origin and confirming the payload is
 # unaffected.
 git -C "$sha_repo" remote set-url origin "$tmp/nonexistent-origin.git"
 sha_payload_no_origin=$(
     cd -- "$sha_repo" || exit
-    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-ref "$chain_base_sha"
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-sha "$chain_base_sha"
 )
 assert_eq "$sha_payload" "$sha_payload_no_origin" \
-    'a SHA base-ref never fetches, so an unreachable origin does not affect it'
+    '--base-sha never fetches, so an unreachable origin does not affect it'
 
 # A SHA-shaped value that does NOT resolve locally is rejected, and the error
-# names both accepted forms (branch name and full SHA).
+# names the accepted --base-sha form.
 unresolvable_sha=$(printf '%040d' 1)
 unresolvable_error=''
 unresolvable_rc=0
 unresolvable_error=$(
     cd -- "$sha_repo" || exit
-    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-ref "$unresolvable_sha" 2>&1
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-sha "$unresolvable_sha" 2>&1
 ) || unresolvable_rc=$?
-assert_eq 2 "$unresolvable_rc" 'a SHA-shaped --base-ref that does not resolve locally is a usage error'
-assert_contains "$unresolvable_error" 'branch name' \
-    'the rejection names the branch-name form'
+assert_eq 2 "$unresolvable_rc" 'a --base-sha that does not resolve locally is a usage error'
 assert_contains "$unresolvable_error" 'SHA' \
-    'the rejection also names the SHA form'
+    'the rejection names the SHA form'
+assert_contains "$unresolvable_error" 'resolves locally' \
+    'the rejection explains the local-resolution requirement'
+
+# --- F1 (2026-08-30 adversarial review of #579's fix): --base-ref is
+# branch-only again. A remote branch legitimately named with 40 lowercase
+# hex characters must still be diffed as origin/<branch> -- never
+# lexically misread as a SHA and silently resolved against a same-named
+# local ref instead. Prove it by shadowing: a LOCAL branch carries the hex
+# name and points at the pre-change base commit, while origin never learns
+# of that name at all. The old lexical-SHA overload would resolve the local
+# branch and succeed silently with the wrong (locally shadowed) diff; the
+# fixed branch-only path always fetches origin/<name> first and must fail
+# closed here, because origin has no such ref -- not resolve locally.
+hex_origin="$tmp/hex-origin.git"
+hex_repo="$tmp/hex-repo"
+git init --bare --quiet "$hex_origin"
+git init --quiet --initial-branch=main "$hex_repo"
+git -C "$hex_repo" config user.email test@example.invalid
+git -C "$hex_repo" config user.name test
+git -C "$hex_repo" remote add origin "$hex_origin"
+printf '%s\n' hex-base >"$hex_repo/example.txt"
+git -C "$hex_repo" add example.txt
+git -C "$hex_repo" commit --quiet -m base
+git -C "$hex_repo" push --quiet -u origin main
+hex_branch_name=$(printf '%040d' 2)
+git -C "$hex_repo" branch "$hex_branch_name" main
+git -C "$hex_repo" switch --quiet -c feature
+printf '%s\n' hex-head >"$hex_repo/example.txt"
+git -C "$hex_repo" commit --quiet -am change
+
+hex_branch_error=''
+hex_branch_rc=0
+hex_branch_error=$(
+    cd -- "$hex_repo" || exit
+    /bin/bash "$script" payload --worktree "$hex_repo" --repo acme/widget --pr 24 --base-ref "$hex_branch_name" 2>&1
+) || hex_branch_rc=$?
+assert_eq 1 "$hex_branch_rc" \
+    'a 40-hex-character --base-ref that origin does not have fails closed instead of silently resolving a same-named local branch'
+assert_contains "$hex_branch_error" "could not refresh origin/$hex_branch_name" \
+    'the failure names the attempted origin fetch, proving branch (not SHA) handling'
+
+# --base-ref and --base-sha are mutually exclusive.
+both_flags_error=''
+both_flags_rc=0
+both_flags_error=$(
+    cd -- "$sha_repo" || exit
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 \
+        --base-ref main --base-sha "$chain_base_sha" 2>&1
+) || both_flags_rc=$?
+assert_eq 2 "$both_flags_rc" 'passing both --base-ref and --base-sha is a usage error'
+assert_contains "$both_flags_error" 'mutually exclusive' \
+    'the rejection names the flags as mutually exclusive'
 
 finish
