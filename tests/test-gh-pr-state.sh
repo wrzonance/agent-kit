@@ -80,6 +80,10 @@ assert_not_contains "$output" 'next: nitpicks' \
     'a zero nitpicks lane prints no next hint'
 assert_not_contains "$output" 'next: agent-docs' \
     'a zero agent-docs lane prints no next hint'
+assert_contains "$output" 'issue-comment-findings: 0 open' \
+    'no CodeRabbit/Code-Quality issue comments reports zero issue-comment findings'
+assert_not_contains "$output" 'next: issue-comment-findings' \
+    'a zero issue-comment-findings lane prints no next hint'
 
 # A repository with Code Security disabled still queries live alerts. A
 # readable empty response must remain open=0, not be hidden as not-enabled.
@@ -858,6 +862,9 @@ case " $* " in
         printf '%s\n' 'API rate limit exceeded: graphql remaining=0' >&2
         exit 1
         ;;
+    *" api repos/owner/repo/issues/404/comments "*)
+        printf '%s\n' '[{"id":9001,"user":{"login":"coderabbitai[bot]"},"body":"**P1 — Fix the race in the dispatch loop.**"}]'
+        ;;
     *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
     *) printf '%s\n' '[]' ;;
 esac
@@ -880,6 +887,10 @@ assert_contains "$graphql_dead_output" 'nitpicks: unavailable' \
     'unavailable thread data makes nitpick de-duplication explicitly unavailable'
 assert_not_contains "$graphql_dead_output" 'next: nitpicks' \
     'unavailable thread data never emits an actionable nitpick hint'
+assert_contains "$graphql_dead_output" 'issue-comment-findings: 1 open' \
+    'issue-comment findings are classified from REST evidence even when GraphQL review-thread data is unavailable'
+assert_contains "$graphql_dead_output" 'next: issue-comment-findings=1 -> reply quoting the finding header + fix SHA, then mark-answered (Step 5)' \
+    'a non-zero issue-comment-findings lane prints its next hint even when threads are unavailable'
 
 # Durable --full artifacts must fail closed when the GraphQL capability is
 # unavailable; a synthetic empty threads artifact would be ambiguous downstream.
@@ -1280,5 +1291,58 @@ for artifact in reviews comments issue_comments threads code_quality_comments; d
     assert_eq '600' "$(stat -c %a -- "$full_output_dir/pr_14_${artifact}.json" 2>/dev/null || stat -f %Lp -- "$full_output_dir/pr_14_${artifact}.json")" \
         "--full $artifact artifact is owner-private"
 done
+
+# agent-kit#566: --issue-comment-answered excludes an already-answered
+# issue-comment finding from the open count and its next: hint.
+mkdir -p "$tmp/case-issue-comment-findings"
+cat >"$tmp/case-issue-comment-findings/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/777 "*)
+        printf '%s\n' '{"number":777,"draft":true,"mergeable":true,"head":{"ref":"feat/icf","sha":"3333333333"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/3333333333/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api repos/owner/repo/issues/777/comments "*)
+        printf '%s\n' '[{"id":5001,"user":{"login":"coderabbitai[bot]"},"body":"@thewrz I found one blocking issue. **P1 — Define and implement the local liveness evidence.**"}]'
+        ;;
+    *" api graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-issue-comment-findings/gh"
+
+icf_output=$(PATH="$tmp/case-issue-comment-findings:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 777 --repo owner/repo)
+assert_contains "$icf_output" 'issue-comment-findings: 1 open' \
+    'a CodeRabbit P1 issue comment is classified as one open issue-comment finding'
+assert_contains "$icf_output" 'next: issue-comment-findings=1 -> reply quoting the finding header + fix SHA, then mark-answered (Step 5)' \
+    'the non-zero issue-comment-findings lane prints its next hint'
+
+# The answered ledger keys on (id, fingerprint), not id alone (agent-kit#566
+# review finding F4) -- derive the real fingerprint from the classifier
+# itself rather than hand-computing a sha256 digest that would silently go
+# stale the moment the fixture's wording changes.
+icf_comments_fixture="$tmp/icf-comments-fixture.json"
+printf '%s\n' '[{"id":5001,"user":{"login":"coderabbitai[bot]"},"body":"@thewrz I found one blocking issue. **P1 — Define and implement the local liveness evidence.**"}]' \
+    >"$icf_comments_fixture"
+icf_fingerprint=$(jq -r '.fingerprint' < <(
+    "$root/agentkit/skills/review-remote-pr/scripts/classify-issue-comment-findings.sh" list \
+        --comments "$icf_comments_fixture"))
+icf_answered="$tmp/icf-answered.ndjson"
+printf '{"id":"5001#0","sha":"abc1234","fingerprint":"%s","answered_at":"2026-08-29T00:00:00Z"}\n' \
+    "$icf_fingerprint" >"$icf_answered"
+chmod 600 -- "$icf_answered"
+icf_answered_output=$(PATH="$tmp/case-issue-comment-findings:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 777 --repo owner/repo --issue-comment-answered "$icf_answered")
+assert_contains "$icf_answered_output" 'issue-comment-findings: 0 open' \
+    '--issue-comment-answered excludes a finding already recorded in the local answered ledger'
+assert_not_contains "$icf_answered_output" 'next: issue-comment-findings' \
+    'a fully-answered issue-comment-findings lane prints no next hint'
 
 finish
