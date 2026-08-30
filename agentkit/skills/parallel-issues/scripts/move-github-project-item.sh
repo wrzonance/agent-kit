@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pure bash-builtin path resolution (no `dirname`, no `readlink`): this
-# script's only external-tool dependencies are jq and gh, checked explicitly
-# below, and a caller with a deliberately minimal PATH (this file's own
-# missing-jq test) must hit that check, not an unrelated "command not found"
-# for a coreutil this script never used to need.
-SCRIPT_DIR=${BASH_SOURCE[0]%/*}
-[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
-readonly SCRIPT_DIR
-# shellcheck source=../../.shared/scripts/lib/argv.sh
-source "$SCRIPT_DIR/../../.shared/scripts/lib/argv.sh"
-
 # gh paginates these listings at 30 by default. Every lookup below must be able to
 # see the whole board, or a card past the default page is indistinguishable from a
 # card that is not on the board at all -- a silent no-op that still exits 0.
@@ -132,13 +121,6 @@ add_issue_numbers() {
     done
 }
 
-# --repository is the older spelling of --repo (issue #556); the shared lib
-# rewrites it to the canonical flag before this loop ever sees it, so only
-# --repo needs a case branch below.
-mapfile -d '' -t _argv < <(argv_rewrite_flag --repository --repo "$@")
-set -- "${_argv[@]}"
-unset _argv
-
 while (($#)); do
     case $1 in
         --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
@@ -157,7 +139,13 @@ while (($#)); do
             status=$2
             shift 2
             ;;
-        --repo)
+        # --repository is the older spelling of --repo (issue #556), kept as
+        # a sibling of the identical option rather than a pre-loop argv
+        # rewrite: a whole-argv rewrite could not tell an option token from
+        # another option's VALUE (e.g. --status --repository would have
+        # corrupted the status value), so it was reverted in favor of this
+        # ordinary case-statement branch.
+        --repo|--repository)
             (($# >= 2)) || die "Missing value for $1."
             repository=$2
             shift 2

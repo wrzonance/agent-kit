@@ -118,23 +118,6 @@ literal_repository_base=''
 cmd_declared=no
 if_declared=0
 
-# --repo-root is the canonical checkout-path flag across the kit (every other
-# helper that takes one uses it); --dir is this script's own long-standing
-# name and stays primary, with --repo-root accepted as a silent alias so a
-# caller who just used --repo-root on another helper is not punished here
-# (issue #556). Rewritten before the option loop via the shared lib so no
-# extra case-statement branch is needed below. Pure bash-builtin path
-# resolution (no `dirname`, no `readlink`) so this still works before the
-# bash-version guard above is the only hard dependency an early --help hits.
-_argv_lib_dir=${BASH_SOURCE[0]%/*}
-[[ $_argv_lib_dir != "${BASH_SOURCE[0]}" ]] || _argv_lib_dir=.
-# shellcheck source=lib/argv.sh
-source "$_argv_lib_dir/lib/argv.sh"
-unset _argv_lib_dir
-mapfile -d '' -t _argv < <(argv_rewrite_flag --repo-root --dir "$@")
-set -- "${_argv[@]}"
-unset _argv
-
 while (($#)); do
     case $1 in
         --if-declared) if_declared=1; shift ;;
@@ -148,13 +131,24 @@ while (($#)); do
             focus_opt=$2
             shift 2
             ;;
-        --baseline-ref|--baseline-path|--baseline-id|--dir|--label|--cmd|--resolve)
+        # --repo-root is the canonical checkout-path flag across the kit
+        # (every other helper that takes one uses it); --dir is this script's
+        # own long-standing name and stays primary, with --repo-root accepted
+        # as a sibling spelling of the identical option so a caller who just
+        # used --repo-root on another helper is not punished here (issue
+        # #556). A prior version pre-rewrote argv to alias this flag before
+        # the option loop ran, but that rewrite could not tell an option
+        # token from a wrapped command's own arguments in agent-run.sh's
+        # bare-command invocation form (no `--`) -- reverted in favor of this
+        # ordinary case-statement branch, which only ever consumes tokens the
+        # loop itself is walking.
+        --baseline-ref|--baseline-path|--baseline-id|--dir|--repo-root|--label|--cmd|--resolve)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
                 --baseline-ref) baseline_ref=$2 ;;
                 --baseline-path) baseline_path=$2 ;;
                 --baseline-id) baseline_id=$2 ;;
-                --dir) dir_opt=$2 ;;
+                --dir|--repo-root) dir_opt=$2 ;;
                 --label) label=$2 ;;
                 --cmd) cmd_name=$2 ;;
                 --resolve) resolve_name=$2 ;;

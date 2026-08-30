@@ -51,15 +51,28 @@ assert_contains "$out" 'Working directory does not exist' \
     '--repo-root with a missing directory reports the --dir error text verbatim'
 unset rc
 
-# --repo-root is only rewritten before agent-run's own option loop: once a
-# literal "--" hands off to the wrapped command, a --repo-root token there
-# belongs to that command and must reach it untouched, never rewritten to
-# --dir.
+# --repo-root is parsed by agent-run's own option loop, exactly like --dir --
+# there is no whole-argv rewrite pass, so once a literal "--" hands off to
+# the wrapped command, a --repo-root token there belongs to that command and
+# must reach it untouched.
 repo=$(make_repo)
 out=$("$run_sh" --dir "$repo" -- printf '%s\n' --repo-root passthrough-value 2>&1)
 log=$(find "$repo/.agent/logs" -name '*-printf.log' -type f -print -quit)
 assert_contains "$(cat "$log")" '--repo-root
 passthrough-value' \
     'a --repo-root token after -- reaches the wrapped command literally, unrewritten'
+
+# agent-run.sh also accepts a BARE literal command with no leading "--" (its
+# own usage: `(--cmd NAME | [--] <command> ...)`, the "--" is optional): the
+# first token the option loop does not recognize starts the command, and
+# every token after it belongs to that command. A prior whole-argv rewrite
+# pass could not tell this form apart from its own --repo-root option and
+# corrupted the wrapped command's own --repo-root argument -- pin the fix.
+repo=$(make_repo)
+out=$("$run_sh" --dir "$repo" printf '%s\n' --repo-root bare-passthrough-value 2>&1)
+log=$(find "$repo/.agent/logs" -name '*-printf.log' -type f -print -quit)
+assert_contains "$(cat "$log")" '--repo-root
+bare-passthrough-value' \
+    'a --repo-root token in a bare (no --) literal command reaches it literally, unrewritten'
 
 finish
