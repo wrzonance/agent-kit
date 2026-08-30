@@ -134,6 +134,70 @@ record_checkout_identity() {
     write_cached_contract "$contract"
 }
 
+# The exact reuse predicate the original single-file design applied, made
+# reusable (issue #551) so it can be tried against this harness's own keyed
+# contract first and the legacy bare one second, without duplicating the
+# freshness/ownership/identity checks for each.
+contract_try_reuse() {
+    local file=$1 candidate
+    [[ $source_kind != compact && -r $file ]] &&
+        guard_contract_is_ours "$file" "$root" &&
+        [[ -n $(find "$file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]] || return 1
+    candidate=$(cat -- "$file" 2> /dev/null || true)
+    [[ -n $candidate ]] || return 1
+    harness_matches "$candidate" && cache_matches_checkout "$candidate" || return 1
+    printf '%s' "$candidate"
+}
+
+# True when another harness's contract in this checkout is fresh enough to
+# treat as a run still in flight (issue #551 items 2/3): read-only, this
+# never touches the other harness's file, only its mtime and its own
+# harness= claim. A false positive here only costs a session an unnecessary
+# mode=observer -- a courtesy, not a security boundary, so this stays
+# deliberately simple rather than inventing a separate heartbeat/lock
+# mechanism.
+#
+# Every candidate is validated before its filename or content is trusted:
+# guard_contract_is_ours (untracked, regular, not a symlink, owned by this
+# user) before it is even read, and the harness suffix -- parsed from the
+# FILENAME for a keyed candidate, from the contract's own harness= line for
+# the legacy one -- against the same safe single-token vocabulary
+# contract_cache_harness_name itself requires. A repository-tracked or
+# hostile file (a crafted filename, or a harness= value carrying control
+# characters) can therefore never inject extra bytes into this session's own
+# mode=observer line (adversarial review, issue #551 finding F1).
+contract_other_harness_active() {
+    local me=$1 entry base other
+    [[ -n $me && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 1
+    for entry in "$root/.agent"/env-contract.*.txt; do
+        [[ -f $entry && ! -L $entry ]] || continue
+        base=${entry##*/}
+        other=${base#env-contract.}
+        other=${other%.txt}
+        [[ $other =~ ^[a-z][a-z0-9]*$ && $other != "$me" ]] || continue
+        guard_contract_is_ours "$entry" "$root" || continue
+        [[ -n $(find "$entry" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]] || continue
+        grep -qE "^harness= name=${other}([[:space:]]|\$)" -- "$entry" 2> /dev/null || continue
+        printf '%s' "$other"
+        return 0
+    done
+    # Legacy fallback (issue #551 finding F2): an older run of the OTHER
+    # harness may still be active with only a fresh, untracked bare contract
+    # -- the keyed-file loop above never looks at it. Validated the same way:
+    # trusted provenance first, then the harness= value it claims is
+    # constrained to the same safe vocabulary before it is ever used.
+    if guard_contract_is_ours "$legacy_contract_file" "$root" &&
+        [[ -n $(find "$legacy_contract_file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]]; then
+        other=$(sed -n 's/^harness= name=\([^[:space:]]*\).*/\1/p' -- "$legacy_contract_file" 2> /dev/null |
+            head -n 1)
+        if [[ $other =~ ^[a-z][a-z0-9]*$ && $other != "$me" ]]; then
+            printf '%s' "$other"
+            return 0
+        fi
+    fi
+    return 1
+}
+
 input=$(cat 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 source_kind=$(jq -r '.source // "startup"' <<< "$input" 2> /dev/null || true)
@@ -145,26 +209,41 @@ session_id=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 # not a thing that can succeed.
 in_repo=1
 root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null) || { in_repo=0; root=$cwd; }
-contract_file="$root/.agent/env-contract.txt"
+
+# The contract is keyed by harness (issue #551): a second harness opening the
+# same checkout must never silently overwrite -- or even reuse -- the file a
+# live run of the FIRST harness is relying on. Each harness gets its own
+# .agent/env-contract.<harness>.txt; the un-suffixed .agent/env-contract.txt
+# is a legacy, READ-ONLY fallback kept for one release so an un-migrated
+# checkout, or a caller that still targets the bare name, keeps resolving --
+# nothing below writes it again.
+current_harness=$("$self_dir/../skills/.shared/scripts/harness-id.sh" --name 2> /dev/null || true)
+legacy_contract_file="$root/.agent/env-contract.txt"
+if [[ -n $current_harness ]]; then
+    contract_file="$root/.agent/env-contract.$current_harness.txt"
+else
+    contract_file=$legacy_contract_file
+fi
 contract=''
 
 # Reuse a recent contract: the preflight probes gh, and this fires every session.
 # Compaction is the exception -- it is precisely when this context was lost.
-if [[ $source_kind != compact && -r $contract_file ]] &&
-    guard_contract_is_ours "$contract_file" "$root" &&
-    [[ -n $(find "$contract_file" -mmin "-$CONTRACT_MAX_AGE_MINUTES" 2> /dev/null) ]]; then
-    candidate=$(cat -- "$contract_file" 2> /dev/null || true)
-    if harness_matches "$candidate" && cache_matches_checkout "$candidate"; then
-        contract=$candidate
+if ! contract=$(contract_try_reuse "$contract_file"); then
+    contract=''
+    if [[ $contract_file != "$legacy_contract_file" ]] &&
+        contract=$(contract_try_reuse "$legacy_contract_file"); then
+        # Reused from the legacy bare file: never write that path again, but
+        # forward this session's own copy into its keyed file right away, so
+        # later sessions stop paying the legacy lookup.
+        write_cached_contract "$contract"
     fi
 fi
 
 # Age is not the only way a contract goes stale. Its branch= and head= lines are
-# checkout identity, while harness= is session identity, and the file is shared
-# between every CLI that opens this repository,
-# so a contract written by one and served to the other credits every commit to
-# the wrong agent. Seen live: a contract written at 13:26 by one CLI was reused
-# two minutes later by the other, which then reported itself as its peer.
+# checkout identity, while harness= is session identity, so a contract read
+# back for the wrong harness credits every commit to the wrong agent. Seen
+# live: a contract written at 13:26 by one CLI was reused two minutes later
+# by the other, which then reported itself as its peer.
 if [[ -n $contract ]] && ! harness_matches "$contract"; then
     contract=''
 fi
@@ -177,8 +256,27 @@ if [[ -z $contract ]]; then
         # CODEX_* sandbox variables describe the hook and not the shell that
         # will run the commands. Without the flag the block asserts
         # writable=yes and active=no to an agent that is about to be denied.
-        contract=$("$preflight" --worktree "$root" --measured-from hook 2> /dev/null || true)
-        [[ -n $contract ]] && record_checkout_identity
+        # --write targets this harness's own keyed file explicitly (issue
+        # #551): agent-preflight.sh's bare-named default would write a file
+        # this hook never reads back, and could still race another harness's
+        # own preflight for that same shared name.
+        contract=$("$preflight" --worktree "$root" --write "$contract_file" --measured-from hook 2> /dev/null || true)
+        if [[ -n $contract ]]; then
+            # Observer mode (issue #551 items 2/3): this session started
+            # while another harness's own contract in this checkout was
+            # still fresh, meaning a run under that harness may still be in
+            # flight. Say so in the contract itself, so the write-guards
+            # (pre-tool-use.sh's guard_observer_write_reason) and any later
+            # reader treat a write into this checkout's root as foreign
+            # rather than silently racing it.
+            if [[ -n $current_harness ]] &&
+                other_harness=$(contract_other_harness_active "$current_harness"); then
+                contract+=$'\nmode=observer other-harness='"$other_harness"
+            else
+                contract+=$'\nmode=owner'
+            fi
+            record_checkout_identity
+        fi
     fi
 fi
 # An un-onboarded repository still gets a session context, even when the probe

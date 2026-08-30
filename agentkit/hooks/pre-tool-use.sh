@@ -94,6 +94,11 @@ for target in "${write_targets[@]}"; do
             deny "$boundary_reason"
         fi
     fi
+    if observer_reason=$(guard_observer_write_reason "$target" "$cwd" "$command_line"); then
+        if guard_should_deny "$protect_root" "$session" "observer-mode-write"; then
+            deny "$observer_reason"
+        fi
+    fi
     classification_result=$(guard_classify_target_result "$target" "$cwd" "$command_line")
     target_classification=${classification_result%%$'\n'*}
     target_root=${classification_result#*$'\n'}
