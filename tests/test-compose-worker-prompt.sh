@@ -482,6 +482,66 @@ assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acce
     'pr-loop setup forwards each persisted acceptance command to PR-state checks'
 assert_contains "$setup_prompt" '--acceptance-file ' \
     'pr-loop setup forwards acceptance declarations to materiality'
+assert_contains "$setup_prompt" 'run-dir.sh" --pr 136 --repo-root' \
+    'pr-loop setup resolves one canonical PR run directory'
+for artifact_suffix in reviews comments issue_comments threads code_quality_comments; do
+    assert_contains "$setup_prompt" "state/pr_136_${artifact_suffix}.json" \
+        "pr-loop setup persists the ${artifact_suffix} state artifact"
+done
+assert_contains "$setup_prompt" 'setup.result' \
+    'pr-loop setup persists a terminal setup result line'
+assert_contains "$setup_prompt" 'BLOCKED: artifacts-missing' \
+    'pr-loop setup rejects completion when persisted artifacts are missing'
+assert_contains "$setup_prompt" 'setup-artifacts-missing' \
+    'pr-loop setup root gate records regenerated-artifact evidence'
+assert_contains "$setup_prompt" 'completion line names the run-dir' \
+    'pr-loop setup requires the canonical run directory in completion output'
+assert_contains "$setup_prompt" "ci_digest=\$(" \
+    'pr-loop setup captures the bounded CI digest'
+assert_contains "$setup_prompt" "ci_line=\$(sed -n" \
+    'pr-loop setup parses the captured CI digest'
+assert_contains "$setup_prompt" 'ci_failing=' \
+    'pr-loop setup retains the failing CI count'
+assert_contains "$setup_prompt" 'failing-checks=' \
+    'pr-loop setup receives stable failing-check names'
+assert_contains "$setup_prompt" "ci_failing_checks=\$(sed -n" \
+    'pr-loop setup parses stable failing-check names'
+assert_contains "$setup_prompt" "setup_terminal=\"ci-red: \$ci_failing_checks\"" \
+    'pr-loop setup names the failing check in its terminal marker'
+assert_contains "$setup_prompt" 'ci-red:' \
+    'pr-loop setup preserves a failing CI terminal result'
+assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
+    'pr-loop setup appends the run-dir to every terminal line'
+assert_contains "$setup_prompt" "Rebuild \`acceptance_args\` inside this root block" \
+    'pr-loop setup rebuilds acceptance arguments during root recovery'
+
+# Execute the rendered CI parser with a helper-shaped failing digest. This
+# crosses the prompt boundary and proves the named check reaches both durable
+# setup.result text and the completion line the root consumes.
+ci_parser=$(printf '%s\n' "$setup_prompt" | awk '
+    /^ci_line=\$\(sed -n/ { capture=1 }
+    capture { print }
+    capture && /^fi$/ { exit }
+')
+ci_parser_script="$tmp/ci-parser.sh"
+{
+    printf '%s\n' 'set -euo pipefail'
+    printf '%s\n' "ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint'"
+    printf '%s\n' "setup_terminal='launch-ready'" 'ci_red=0'
+    printf '%s\n' "$ci_parser"
+    printf '%s\n' "setup_result=\$(printf 'setup.result status=complete result=%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
+        "completion=\$(printf '%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
+        "printf '%s\\n%s\\n' \"\$setup_result\" \"\$completion\""
+} > "$ci_parser_script"
+ci_e2e_output=$(bash "$ci_parser_script")
+assert_contains "$ci_e2e_output" 'result=ci-red: lint run-dir=/tmp/run' \
+    'named failing CI survives into setup.result'
+assert_contains "$ci_e2e_output" 'ci-red: lint run-dir=/tmp/run' \
+    'named failing CI survives into completion output'
+assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
+    'pr-loop setup does not discard state from a temporary evidence directory'
+assert_not_contains "$setup_prompt" 'cq_evidence_dir' \
+    'pr-loop setup does not clean up the canonical evidence directory'
 
 empty_findings="$tmp/empty-findings.ndjson"
 : > "$empty_findings"

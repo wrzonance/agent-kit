@@ -57,6 +57,8 @@ assert_not_contains "$output" $'sha=abcdef0\n' \
     'the digest never truncates the head SHA to a 7-character prefix'
 assert_contains "$output" 'ci=1/3 failing pending=1 failing=1' \
     'digest reports check counts'
+assert_contains "$output" 'failing-checks=lint' \
+    'digest names failing checks in stable order'
 assert_contains "$output" 'threads: coderabbit=1 unresolved  code-quality=0 open  human=2  generic=2' \
     'known and generic bot lanes stay separate from human threads'
 assert_contains "$output" 'classification: known-provider=1 type=Bot=1 login-suffix=1 human=2' \
@@ -1180,6 +1182,39 @@ assert_eq 1 "${compare_calls:-0}" \
 check_run_calls=$(grep -c 'commits/waitsha1/check-runs' "$wait_call_log" || true)
 assert_eq 3 "${check_run_calls:-0}" \
     'wait_for_ci re-fetches check-runs every round, including after round 1'
+
+# The wait loop must consume the digest's sixth TSV field even when a failing
+# check name contains spaces; otherwise arithmetic evaluation treats the name
+# as an unset variable and aborts before printing the failing digest.
+mkdir -p "$tmp/case-wait-failing-name"
+cat >"$tmp/case-wait-failing-name/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/903 "*)
+        printf '%s\n' '{"number":903,"draft":true,"mergeable":true,"head":{"ref":"feat/wait-failing","sha":"waitfailsha"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/waitfailsha/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"gates and suites","status":"completed","conclusion":"failure"},{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api repos/owner/repo/commits/waitfailsha/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *"compare/main...feat/wait-failing"*)
+        printf '%s\n' '{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0,"commits":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-failing-name/gh"
+wait_failing_name_output=$(PATH="$tmp/case-wait-failing-name:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 903 --repo owner/repo --wait-ci --rounds 1 --interval 1)
+assert_contains "$wait_failing_name_output" 'ci=1/2 failing pending=0 failing=1 failing-checks=gates and suites' \
+    'wait_for_ci consumes named failing checks with spaces without arithmetic failure'
 
 # A head that advances mid-wait (agent-kit#475 review finding F2) must never
 # settle on the stale round-1 commit: the round-2 pulls/N read detects the
