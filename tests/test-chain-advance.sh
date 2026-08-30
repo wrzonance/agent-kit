@@ -855,4 +855,140 @@ assert_contains "$refresh_stderr" 'analysis-refresh=rerun workflow=' \
 assert_not_contains "$refresh_stderr" $'\033' \
     'workflow names are sanitized before diagnostic output'
 
+# --- issue #564: --recover-closed repairs a base_ref_deleted-then-closed PR -
+
+RECOVER_BASE_SHA='deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+RECOVER_HEAD_SHA='cafebabecafebabecafebabecafebabecafebabe'
+
+cat >"$tmp/gh-recover" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+read_state() { grep '^state=' "$RECOVER_STATE_FILE" | cut -d= -f2; }
+read_base()  { grep '^base='  "$RECOVER_STATE_FILE" | cut -d= -f2; }
+write_state() { sed -i "s/^state=.*/state=$1/" "$RECOVER_STATE_FILE"; }
+write_base()  { sed -i "s/^base=.*/base=$1/" "$RECOVER_STATE_FILE"; }
+case " $* " in
+*" api repos/owner/repo/pulls/20 "*)
+    printf '{"number":20,"merged":%s,"state":"%s","head":{"sha":"%s","ref":"feat/issue-548"},"base":{"ref":"%s","sha":"%s"}}\n' \
+        "${RECOVER_MERGED:-false}" "$(read_state)" "$RECOVER_HEAD_SHA" \
+        "$(read_base)" "$RECOVER_BASE_SHA"
+    ;;
+*" api --method POST repos/owner/repo/git/refs "*)
+    if [[ " $* " == *' -f ref=refs/heads/feat/issue-546 '* &&
+          " $* " == *" -f sha=$RECOVER_BASE_SHA "* ]]; then
+        if [[ ${RECOVER_REF_EXISTS:-0} == 1 ]]; then
+            printf 'Reference already exists\n' >&2
+            exit 1
+        fi
+        printf '{"ref":"refs/heads/feat/issue-546"}\n'
+    else
+        printf 'unexpected ref create args: %s\n' "$*" >&2
+        exit 1
+    fi
+    ;;
+*" api repos/owner/repo/git/ref/heads/feat/issue-546 "*)
+    printf '{"object":{"sha":"%s"}}\n' "$RECOVER_BASE_SHA"
+    ;;
+*" api --method PATCH repos/owner/repo/pulls/20 -f state=open "*)
+    write_state open
+    printf '{}\n'
+    ;;
+*" api --method PATCH repos/owner/repo/pulls/20 -f base=main "*)
+    write_base main
+    printf '{}\n'
+    ;;
+*" api --method DELETE repos/owner/repo/git/refs/heads/feat/issue-546 "*)
+    printf '{}\n'
+    ;;
+*)
+    printf 'unexpected gh call: %s\n' "$*" >&2
+    exit 23
+    ;;
+esac
+EOF
+chmod +x "$tmp/gh-recover"
+
+printf 'state=closed\nbase=feat/issue-546\n' >"$tmp/recover-state"
+recover_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" GH_LOG="$tmp/gh-recover.log" \
+    CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main)
+assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA" "$recover_out" \
+    'recover-closed reports the recovered PR, base, head, and SHA'
+recover_log=$(<"$tmp/gh-recover.log")
+assert_contains "$recover_log" 'git/refs -f ref=refs/heads/feat/issue-546' \
+    'recover-closed recreates the deleted base ref at its recorded name'
+assert_contains "$recover_log" '--method PATCH repos/owner/repo/pulls/20 -f state=open' \
+    'recover-closed reopens the PR against the recreated base'
+assert_contains "$recover_log" '--method PATCH repos/owner/repo/pulls/20 -f base=main' \
+    'recover-closed retargets the reopened PR to the merge target'
+assert_contains "$recover_log" '--method DELETE repos/owner/repo/git/refs/heads/feat/issue-546' \
+    'recover-closed deletes the temporary ref once retargeted'
+assert_eq 'open' "$(grep '^state=' "$tmp/recover-state" | cut -d= -f2)" \
+    'the recovered PR ends up open'
+assert_eq 'main' "$(grep '^base=' "$tmp/recover-state" | cut -d= -f2)" \
+    'the recovered PR ends up based on the merge target'
+
+# Idempotent: already open on the target base is a no-op success, never a
+# second round of ref-recreate/reopen/retarget/delete calls.
+printf 'state=open\nbase=main\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+already_open_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" GH_LOG="$tmp/gh-recover.log" \
+    CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main)
+assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA already-open" \
+    "$already_open_out" 'an already-recovered PR reports a no-op success'
+assert_eq '0' "$(grep -c 'git/refs' "$tmp/gh-recover.log" || true)" \
+    'an already-open PR on the target base makes no mutating calls'
+
+# An open PR based on something other than the requested target is not a
+# recover-closed case at all (it may be mid-flight for an unrelated reason);
+# refuse rather than guess at a destructive retarget/delete.
+printf 'state=open\nbase=feat/issue-546\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+set +e
+open_wrong_base_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" GH_LOG="$tmp/gh-recover.log" \
+    CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main 2>&1)
+open_wrong_base_rc=$?
+set -e
+assert_eq '1' "$open_wrong_base_rc" \
+    'an open PR based on something other than the target refuses'
+assert_contains "$open_wrong_base_out" 'is open but based on feat/issue-546, not main' \
+    'the refusal names the unexpected live base'
+assert_eq '0' "$(grep -c 'git/refs' "$tmp/gh-recover.log" || true)" \
+    'an open-but-wrong-base PR makes no mutating calls'
+
+# A merged PR is never a recover-closed candidate.
+printf 'state=closed\nbase=feat/issue-546\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+set +e
+merged_recover_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" RECOVER_MERGED=true \
+    GH_LOG="$tmp/gh-recover.log" CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main 2>&1)
+merged_recover_rc=$?
+set -e
+assert_eq '1' "$merged_recover_rc" 'recovery refuses an already-merged PR'
+assert_contains "$merged_recover_out" 'already merged' \
+    'the merged refusal names the reason'
+assert_eq '0' "$(grep -c 'git/refs' "$tmp/gh-recover.log" || true)" \
+    'an already-merged PR makes no mutating calls'
+
+# A retried recreate that hits an existing ref reuses it only when the
+# existing ref already points at the recorded SHA -- never a naming collision
+# silently overwritten.
+printf 'state=closed\nbase=feat/issue-546\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+retry_create_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" RECOVER_REF_EXISTS=1 \
+    GH_LOG="$tmp/gh-recover.log" CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main)
+assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA" "$retry_create_out" \
+    'recreating an already-existing ref at the same recorded SHA still succeeds'
+
 finish

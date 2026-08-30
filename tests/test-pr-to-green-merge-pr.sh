@@ -69,6 +69,12 @@ repos/owner/repo/git/ref/heads/feat/demo)
     fi
     printf '{"object":{"sha":"%s"}}\n' "\${REF_CHECK_SHA:-$HEAD_SHA}"
     ;;
+repos/owner/repo/pulls\?state=open\&base=*)
+    # issue #564: the dependents-check read before any delete. Every test
+    # above this point never declares an open successor, so the default is
+    # the empty set -- preserving the pre-#564 branch_delete behavior.
+    printf '%s\n' "\${DEPENDENTS_JSON:-[]}"
+    ;;
 *) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
 esac
 EOF
@@ -338,6 +344,9 @@ repos/owner/repo/git/refs/heads/feat/issue-3)
 repos/owner/repo/git/ref/heads/feat/issue-3)
     printf '{"object":{"sha":"$HEAD_SHA"}}\n'
     ;;
+repos/owner/repo/pulls\?state=open\&base=*)
+    printf '[]\n'
+    ;;
 *) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
 esac
 EOF
@@ -393,5 +402,167 @@ assert_eq 'deny' "$(guard_decision 'gh pr merge 9 --squash')" \
 assert_eq 'allow' \
     "$(guard_decision "$merge_pr --repo owner/repo --pr 9 --head-sha $HEAD_SHA --base main --merge-method squash --authorization-file /tmp/auth.json --gate-result /tmp/gate.txt")" \
     'invoking this script itself -- the sanctioned entry point -- is never denied (issue #404)'
+
+# --- issue #564: dependents check before --delete-branch --------------------
+# merge-pr.sh must never delete a branch that an open PR still targets as its
+# base without first accounting for it -- retargeting it (default) or
+# refusing the delete (--no-retarget).
+
+cat >"$tmp/gh-deps" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+endpoint=''
+for arg in "\$@"; do [[ \$arg == repos/* ]] && endpoint=\$arg; done
+printf 'gh %s\n' "\$*" >>"\$MERGE_LOG"
+is_delete=0
+[[ " \$* " == *' -X DELETE '* ]] && is_delete=1
+is_patch=0
+[[ " \$* " == *' --method PATCH '* ]] && is_patch=1
+case \$endpoint in
+repos/owner/repo/pulls/9)
+    printf '{"number":9,"state":"open","draft":false,"head":{"sha":"$HEAD_SHA","ref":"feat/demo","repo":{"full_name":"owner/repo"}},"base":{"ref":"main"},"mergeable":true}\n'
+    ;;
+repos/owner/repo)
+    printf '{"allow_squash_merge":true,"allow_merge_commit":true,"allow_rebase_merge":true}\n'
+    ;;
+repos/owner/repo/pulls/9/merge)
+    printf '{"merged":true,"sha":"$MERGE_SHA","message":"ok"}\n'
+    ;;
+repos/owner/repo/pulls\?state=open\&base=feat/demo*)
+    if [[ \${DEPS_CHECK_FAIL:-0} == 1 ]]; then
+        printf 'rate limited\n' >&2
+        exit 1
+    fi
+    if [[ -n \${DEPS_LIST_JSON:-} ]]; then
+        printf '%s\n' "\$DEPS_LIST_JSON"
+    else
+        printf '[{"number":10}]\n'
+    fi
+    ;;
+repos/owner/repo/git/ref/heads/feat/demo)
+    printf '{"object":{"sha":"$HEAD_SHA"}}\n'
+    ;;
+repos/owner/repo/git/refs/heads/feat/demo)
+    if ((is_delete)); then
+        printf '{}\n'
+    else
+        printf 'unexpected: plural route used for the GET ref-check\n' >&2
+        exit 1
+    fi
+    ;;
+repos/owner/repo/pulls/10)
+    if ((is_patch)); then
+        if [[ \${DEP10_RETARGET_FAIL:-0} == 1 ]]; then
+            printf 'refused: dependent retarget blocked\n' >&2
+            exit 1
+        fi
+        printf '{"number":10,"base":{"ref":"main"}}\n'
+    else
+        printf '{"number":10,"state":"%s","merged":%s}\n' "\${DEP10_STATE:-open}" "\${DEP10_MERGED:-false}"
+    fi
+    ;;
+*) printf 'unexpected endpoint %s\n' "\$endpoint" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$tmp/gh-deps"
+
+run_deps_merge() {
+    write_auth true
+    write_gate "$HEAD_SHA"
+    MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh-deps" bash "$merge_pr" \
+        --repo owner/repo --pr 9 --head-sha "$HEAD_SHA" --base main --merge-method squash \
+        --authorization-file "$tmp/auth.json" --gate-result "$tmp/gate.txt" --delete-branch "$@"
+}
+
+: >"$tmp/merge.log"
+out=$(run_deps_merge)
+assert_contains "$out" 'merged=true' 'the merge still succeeds with an open dependent present'
+assert_contains "$out" 'branch_delete=ok ref=feat/demo' \
+    'the default path retargets the dependent then deletes the merged branch'
+assert_contains "$out" 'dependent-ok pr=10 state=open' \
+    'the post-delete safety net confirms the retargeted dependent is still open'
+deps_log=$(<"$tmp/merge.log")
+assert_contains "$deps_log" '--method PATCH repos/owner/repo/pulls/10 -f base=main' \
+    'the dependent is retargeted to the merge target before the branch is deleted'
+
+: >"$tmp/merge.log"
+set +e
+out=$(run_deps_merge --no-retarget 2>&1)
+rc=$?
+set -e
+assert_eq '3' "$rc" '--no-retarget refuses the delete with a distinct exit code'
+assert_contains "$out" 'branch_delete=refused ref=feat/demo reason=dependents-open dependents=10' \
+    '--no-retarget names the open dependents in the refusal'
+deps_log=$(<"$tmp/merge.log")
+assert_eq '0' "$(grep -c -- '-X DELETE' <<<"$deps_log" || true)" \
+    '--no-retarget never deletes the branch'
+assert_not_contains "$deps_log" '--method PATCH repos/owner/repo/pulls/10' \
+    '--no-retarget never retargets the dependent either'
+
+: >"$tmp/merge.log"
+out=$(DEP10_RETARGET_FAIL=1 run_deps_merge)
+assert_contains "$out" 'branch_delete=skipped ref=feat/demo reason=dependent-retarget-failed' \
+    'a failed dependent retarget leaves the branch undeleted'
+assert_eq '0' "$(grep -c -- '-X DELETE' "$tmp/merge.log" || true)" \
+    'a failed dependent retarget never reaches the delete call'
+
+: >"$tmp/merge.log"
+out=$(DEPS_CHECK_FAIL=1 run_deps_merge)
+assert_contains "$out" 'branch_delete=skipped ref=feat/demo reason=dependents-check-failed' \
+    'an unreadable dependents check fails closed rather than deleting blind'
+
+# The confirmed authorization can already record this predecessor's delete as
+# deferred (a same-queue open successor at authorization time) -- refuse
+# before any live dependents call at all.
+jq -n --arg sha "$HEAD_SHA" '{
+  repository:"owner/repo", autoMerge:true, mergeMethod:"squash", deleteBranch:true,
+  queue:[{pr:9,state:"RUNNABLE",headSha:$sha,base:"main",deleteBranch:"deferred"}]
+}' >"$tmp/auth-deferred.json"
+write_gate "$HEAD_SHA"
+: >"$tmp/merge.log"
+set +e
+out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh-deps" bash "$merge_pr" \
+    --repo owner/repo --pr 9 --head-sha "$HEAD_SHA" --base main --merge-method squash \
+    --authorization-file "$tmp/auth-deferred.json" --gate-result "$tmp/gate.txt" --delete-branch 2>&1)
+rc=$?
+set -e
+assert_eq '3' "$rc" 'a deferred authorization refuses the delete before any live call'
+assert_contains "$out" 'branch_delete=refused ref=feat/demo reason=authorization-deferred' \
+    'the deferred refusal names the authorization as the source'
+assert_eq '0' "$(grep -c 'pulls?state=open' "$tmp/merge.log" || true)" \
+    'a deferred authorization never even runs the live dependents check'
+
+# Post-delete safety net: even after a verified retarget, the forge can still
+# close a dependent outright (draft or dirty-mergeable). Recover it via the
+# configurable chain-advance helper rather than leaving it silently closed.
+cat >"$tmp/chain-advance-stub" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$RECOVER_LOG"
+if [[ ${RECOVER_FAIL:-0} == 1 ]]; then
+    printf 'recovery refused: pr already merged\n' >&2
+    exit 1
+fi
+printf 'recovered pr #10 base=main head=feat/dep sha=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n'
+EOF
+chmod +x "$tmp/chain-advance-stub"
+
+: >"$tmp/merge.log"
+: >"$tmp/recover.log"
+out=$(DEP10_STATE=closed DEP10_MERGED=false RECOVER_LOG="$tmp/recover.log" \
+    MERGE_PR_CHAIN_ADVANCE="$tmp/chain-advance-stub" run_deps_merge)
+assert_contains "$out" 'dependent-recovered pr=10 recovered pr #10 base=main head=feat/dep' \
+    'a dependent closed despite retargeting is recovered via chain-advance.sh'
+assert_contains "$(cat "$tmp/recover.log")" '--recover-closed --pr 10 --base main --repo owner/repo' \
+    'the recovery call names the exact dependent, target base, and repository'
+
+: >"$tmp/merge.log"
+: >"$tmp/recover.log"
+out=$(DEP10_STATE=closed DEP10_MERGED=false RECOVER_FAIL=1 RECOVER_LOG="$tmp/recover.log" \
+    MERGE_PR_CHAIN_ADVANCE="$tmp/chain-advance-stub" run_deps_merge)
+assert_contains "$out" 'dependent-recovery-failed pr=10 reason=' \
+    'a failed recovery is reported, never silently dropped'
+assert_contains "$out" 'branch_delete=ok ref=feat/demo' \
+    'a failed post-delete recovery never undoes the already-completed merge and delete'
 
 finish

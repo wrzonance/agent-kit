@@ -15,6 +15,7 @@ whenever more than one independent root is being driven at once.
 - The pre-merge review-completion gate
 - Serialization protocol
 - Merge method and branch deletion
+  - Dependents check before delete (issue #564)
 - Board move
 - PreToolUse guard alignment
 - Still forbidden
@@ -413,6 +414,49 @@ repository — a fork PR's `feat/x` lives in the fork, and deleting
 the target repository instead — and it re-reads the branch ref immediately
 before deleting, skipping if the tip no longer matches the merged head (new
 work may have landed on it since the merge completed).
+
+### Dependents check before delete (issue #564)
+
+GitHub does not reliably retarget an open PR whose base branch is deleted —
+it closes it instead when that PR is a draft or not cleanly mergeable onto
+the new base (`base_ref_deleted` then `closed` in the same second, confirmed
+for #484 and #561). `--delete-branch` therefore never deletes blind: it reads
+`pulls?state=open&base=<head-branch>` once before the delete.
+
+- **No open dependents** — the delete proceeds exactly as before.
+- **Dependents found, default** — each is retargeted to `--base` with a
+  verified `PATCH` (the live response's own `base.ref` is checked, never
+  assumed from a 2xx status) before the branch is deleted. Any dependent
+  retarget failure — even for just one of several — leaves the branch
+  undeleted; `merge-pr.sh` never deletes a base some dependent still needs.
+- **`--no-retarget`** — refuses the delete outright, naming the open
+  dependents, and exits 3 (the merge itself has already succeeded and is
+  reported regardless).
+- **An unreadable dependents check** fails closed exactly like an unreadable
+  ref-check: the branch is left in place, never deleted on a guess.
+
+Even a successful pre-delete retarget is not a guarantee: the same draft/
+dirty-mergeable condition that makes GitHub close instead of retarget on
+deletion can still close a dependent immediately afterward. So after a
+successful delete, `merge-pr.sh` re-reads every dependent it retargeted; any
+that ended up `closed` (and not merged) is recovered via
+`../../parallel-issues/scripts/chain-advance.sh --recover-closed` (path
+overridable with `MERGE_PR_CHAIN_ADVANCE`, for testing). This is a best-effort
+safety net, exactly like `cover_retarget_lineage` — never fatal, and a failed
+recovery never undoes the already-completed merge or delete; it is reported
+as `dependent-recovery-failed` for a human to act on.
+
+**Queue ordering.** `authorize-queue.sh` records a confirmed predecessor's own
+`queue[].deleteBranch` as `"deferred"`, instead of the run's `true`/`false`
+choice, whenever `pr-queue.sh`'s live `hasOpenSuccessor` is true for that PR
+— i.e. an open successor is already in the same confirmed queue.
+`merge-pr.sh` refuses that PR's delete on this record alone, before even
+running the live dependents check above: cheaper, and independent of it.
+This is authorization-time bookkeeping, not a schema requirement on the
+displayed/confirmed-queue snapshot — `hasOpenSuccessor` never enters that
+narrower, already-pinned schema (see "Mechanical queue advance without
+redisplay" above); it is read fresh from `pr-queue.sh`'s live JSON at the
+point `authorize-queue.sh` composes the authorization record.
 
 ## Board move
 

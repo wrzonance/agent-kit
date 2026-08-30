@@ -23,12 +23,18 @@ usage() {
 Usage:
   $PROGNAME --resolve-base REF
   $PROGNAME --retarget --pr N --base B [--repo OWNER/REPO]
+  $PROGNAME --recover-closed --pr N --base B [--repo OWNER/REPO]
 
 --resolve-base is read-only and prints the full commit SHA Git resolves for REF.
 --retarget first proves the intended base is not ahead of the current head. It
 then edits the PR base and proves the new base, ancestry, CI, approval, and
 closing-issue linkage before reporting success. Exit 1 means no base edit was
 confirmed; exit 2 means the edit succeeded but a later proof failed.
+--recover-closed repairs a PR GitHub closed instead of retargeting when its
+base branch was deleted (issue #564): it recreates the deleted base ref at
+the PR's own recorded base SHA, reopens the PR, retargets it to B, then
+deletes the temporary ref. Idempotent -- safe to re-run after a partial
+failure, and a no-op success when the PR is already open on B.
 EOF
 }
 
@@ -66,6 +72,11 @@ parse_args() {
                 MODE=retarget
                 shift
                 ;;
+            --recover-closed)
+                [[ -z $MODE ]] || die '--recover-closed cannot be combined with another mode'
+                MODE=recover-closed
+                shift
+                ;;
             --pr)
                 require_value "$1" "${2-}"
                 PR=$2
@@ -98,8 +109,8 @@ parse_args() {
 }
 
 validate_args() {
-    [[ $MODE == resolve || $MODE == retarget ]] ||
-        die 'choose exactly one mode: --resolve-base REF or --retarget'
+    [[ $MODE == resolve || $MODE == retarget || $MODE == recover-closed ]] ||
+        die 'choose exactly one mode: --resolve-base REF, --retarget, or --recover-closed'
     if [[ $MODE == resolve ]]; then
         [[ -n $REF && $REF != -* && $REF != *$'\n'* && $REF != *$'\r'* ]] ||
             die '--resolve-base requires a safe single-line ref'
@@ -136,6 +147,14 @@ resolve_repo() {
 fetch_pr() {
     "$GH_BIN" pr view "$PR" --repo "$REPO" \
         --json number,baseRefName,headRefName,headRefOid,statusCheckRollup,reviewDecision,reviews,closingIssuesReferences
+}
+
+# --recover-closed needs the REST shape, not the porcelain --json projection:
+# `gh pr view --json` has no field for the base ref's own recorded SHA
+# (only `headRefOid`), and that recorded `base.sha` is exactly the evidence
+# a recover-closed run needs to recreate a deleted base branch.
+fetch_pr_rest() {
+    "$GH_BIN" api "repos/$REPO/pulls/$PR"
 }
 
 iso_to_epoch() {
@@ -565,14 +584,96 @@ retarget() {
     return 0
 }
 
+# Repairs a PR GitHub closed instead of retargeting when its base branch was
+# deleted (issue #564 -- `base_ref_deleted` followed by `closed` in the same
+# second, observed for #484 and #561). GitHub does not expose the deleted
+# branch's tip SHA directly, but the closed PR's own `base.sha` is frozen at
+# whatever the base last recorded before deletion -- exactly the evidence
+# needed to recreate it. Mechanical state repair only: this never re-runs the
+# ancestry/CI/approval/closing-issue proof `retarget` performs -- run
+# `--retarget` afterward for that.
+recover_closed() {
+    local pr_json merged head_sha head_ref state live_base base_sha
+    local create_out existing_ref_json existing_sha reopen_out retarget_out delete_out
+    resolve_repo
+    pr_json=$(fetch_pr_rest) || die "could not read PR #$PR before recovery"
+    jq -e 'type == "object"' <<<"$pr_json" >/dev/null 2>&1 ||
+        die 'pull request metadata was malformed before recovery'
+    merged=$(jq -r '.merged // false' <<<"$pr_json")
+    [[ $merged != true ]] || die "pr #$PR is already merged; recovery does not apply"
+    head_sha=$(jq -r '.head.sha // empty' <<<"$pr_json")
+    head_ref=$(jq -r '.head.ref // empty' <<<"$pr_json")
+    [[ $head_sha =~ $SHA_RE ]] || die 'head SHA evidence was missing before recovery'
+    state=$(jq -r '.state // empty' <<<"$pr_json")
+    live_base=$(jq -r '.base.ref // empty' <<<"$pr_json")
+
+    if [[ $state == open ]]; then
+        [[ $live_base == "$BASE" ]] ||
+            die "pr #$PR is open but based on ${live_base:-missing}, not $BASE; this is not a recover-closed case"
+        printf 'recovered pr #%s base=%s head=%s sha=%s already-open\n' \
+            "$PR" "$BASE" "$head_ref" "$head_sha"
+        return 0
+    fi
+    [[ $state == closed ]] ||
+        die "pr #$PR is neither open nor closed (state=${state:-missing}); recovery does not apply"
+
+    base_sha=$(jq -r '.base.sha // empty' <<<"$pr_json")
+    [[ -n $live_base ]] ||
+        die 'the closed pull request recorded no base ref name; recovery evidence is unavailable'
+    [[ $base_sha =~ $SHA_RE ]] ||
+        die 'the closed pull request recorded no base SHA; recovery evidence is unavailable'
+    [[ $live_base != "$BASE" ]] ||
+        die 'the recorded base already equals the requested target; nothing to recover'
+
+    if ! create_out=$("$GH_BIN" api --method POST "repos/$REPO/git/refs" \
+        -f "ref=refs/heads/$live_base" -f "sha=$base_sha" 2>&1); then
+        existing_ref_json=$("$GH_BIN" api "repos/$REPO/git/ref/heads/$live_base" 2>/dev/null) || existing_ref_json=''
+        existing_sha=$(jq -r '.object.sha // empty' <<<"$existing_ref_json" 2>/dev/null) || existing_sha=''
+        [[ $existing_sha == "$base_sha" ]] ||
+            die "could not recreate the deleted base ref $live_base at $base_sha: $create_out"
+    fi
+
+    if ! reopen_out=$("$GH_BIN" api --method PATCH "repos/$REPO/pulls/$PR" \
+        -f state=open 2>&1); then
+        die "could not reopen pr #$PR against recreated base $live_base: $reopen_out"
+    fi
+    pr_json=$(fetch_pr_rest) || die "could not re-read pr #$PR after reopening"
+    [[ $(jq -r '.state // empty' <<<"$pr_json") == open ]] ||
+        die "pr #$PR did not report open after the reopen call"
+    [[ $(jq -r '.head.sha // empty' <<<"$pr_json") == "$head_sha" ]] ||
+        die "pr #$PR head changed during recovery; evidence is stale"
+
+    if ! retarget_out=$("$GH_BIN" api --method PATCH "repos/$REPO/pulls/$PR" \
+        -f "base=$BASE" 2>&1); then
+        die "could not retarget pr #$PR to $BASE after reopening: $retarget_out"
+    fi
+    pr_json=$(fetch_pr_rest) || die "could not re-read pr #$PR after retarget"
+    [[ $(jq -r '.base.ref // empty' <<<"$pr_json") == "$BASE" ]] ||
+        die "pr #$PR base did not report $BASE after the retarget call"
+    [[ $(jq -r '.head.sha // empty' <<<"$pr_json") == "$head_sha" ]] ||
+        die "pr #$PR head changed during the retarget call; evidence is stale"
+
+    # The recreated ref is disposable either way -- whether this invocation
+    # created it fresh or reused one an earlier partial run already left in
+    # place -- now that the PR no longer targets it. A failed cleanup is
+    # reported but never fails an already-completed recovery.
+    if ! delete_out=$("$GH_BIN" api --method DELETE \
+        "repos/$REPO/git/refs/heads/$live_base" 2>&1); then
+        printf '%s: could not delete the temporary recovery ref %s (non-fatal): %s\n' \
+            "$PROGNAME" "$live_base" "$delete_out" >&2
+    fi
+
+    printf 'recovered pr #%s base=%s head=%s sha=%s\n' "$PR" "$BASE" "$head_ref" "$head_sha"
+}
+
 main() {
     parse_args "$@"
     validate_args
-    if [[ $MODE == resolve ]]; then
-        resolve_base
-    else
-        retarget
-    fi
+    case $MODE in
+        resolve) resolve_base ;;
+        retarget) retarget ;;
+        recover-closed) recover_closed ;;
+    esac
 }
 
 main "$@"
