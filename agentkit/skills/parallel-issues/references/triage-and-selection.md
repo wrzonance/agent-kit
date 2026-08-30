@@ -319,13 +319,31 @@ pushed heads do not exist. Immediately after atomically persisting it, run
 `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`;
 the dispatch must not begin unless the helper prints `schemaVersion=1 valid`.
 The validator resolves every prediction against the chain-base tree; a glob
-that matches nothing fails closed and reports the nearest existing sibling. It
-also uses configured test-command run directories and conventional test roots
-found by tree detection to propose the project's tests. The entry must include
+that matches nothing fails closed and reports the nearest existing sibling. A
+"project test root" is a directory a declared verify command actually runs --
+derived from the chain-base tree's `AGENT_RUNDIR_*_TEST*` and
+`AGENT_CMD_*_TEST*` declarations, never from a directory merely named
+`test`/`spec`, so an incidental fixture or docs directory (`docs/**`,
+`bench/gold/**`) is never proposed as a required root unless a verify command
+is actually declared there -- detection is declaration-driven only, with no
+unconditional filter over those paths, so a repository that genuinely
+declares a test root under `docs/` or `bench/gold/` is honored like any
+other declared root. When `--chain-base` names a ref/SHA rather than a
+worktree, the config is read from that ref's tracked `.agent/config.env`
+(falling back to the live checkout only when the ref carries no tracked
+file), so a chain successor's declared test root is honored even when the
+live checkout is on a different commit. The entry must include
 each proposed root in `predictedWriteSet` or explicitly list it in
 `testRootExclusions`; an exclusion is an auditable decision, not implicit
-permission to omit tests. This catches a missing or malformed schema or path at
-the write boundary instead of in the downstream queue consumer.
+permission to omit tests. A top-level `testRootExclusions` on the dispatch
+plan applies to every entry, so a repo-wide decision is one line instead of
+one copy per entry; a per-entry list still adds to it. One invocation reports
+every glob and test-root violation across every entry before exiting, never
+just the first, and each missing-test-root finding comes with a
+copy-pasteable `jq` patch that satisfies it -- or re-run the same invocation
+with `--fix` to apply those patches automatically. This catches a missing or
+malformed schema or path at the write boundary instead of in the downstream
+queue consumer, in one round trip instead of one violation per retry.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with
