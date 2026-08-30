@@ -538,6 +538,21 @@ jq --slurpfile fp "$work_dir/fingerprints.json" '
     die 'could not attach diff fingerprints to the live queue'
 mv -f -- "$work_dir/queue-with-fingerprint.json" "$work_dir/queue.json"
 
+# hasOpenSuccessor (issue #564): true when another entry in this same settled
+# queue is based on this entry's own head -- i.e. this PR has a chain
+# successor still open in the queue. Purely a fact about this queue's own
+# base/head adjacency, computed once here so every consumer (merge-pr.sh's
+# --delete-branch deferral via authorize-queue.sh) reads the same value
+# instead of re-deriving it. Never persisted to the owner-only confirmed-queue
+# snapshot -- see authorize-queue.sh's queue-ordering docs for why that stays
+# out of its already-pinned schema.
+jq '
+  . as $all |
+  map(. as $item | $item + {hasOpenSuccessor: (any($all[]; .base == $item.head))})
+' "$work_dir/queue.json" >"$work_dir/queue-with-successor.json" ||
+    die 'could not derive successor state for the live queue'
+mv -f -- "$work_dir/queue-with-successor.json" "$work_dir/queue.json"
+
 # GitHub API budget preflight (agent-kit#475): every gh-authenticated tool on
 # this account shares the same hourly REST/GraphQL pools, and a queue this
 # large can plausibly exhaust one mid-run with no warning. Read-only,
