@@ -11,7 +11,7 @@ Draft loop. **Phase A:** root owns CI/conflicts, materiality, fix delegation, ad
 
 **References are read once, batched, and never sized first.** Reference paths resolve: open
 `"$agentkit/<path>"`, and read `"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference
-file, read it in full at that step — one batched read covering several files is ideal — and do
+file, read it in full at that step — one batched read covering several files — and do
 not re-read it later in the same uninterrupted context. Read each reference once per
 uninterrupted context. If compaction/resume occurs since Step 1a and the loaded provider-rules
 content is not preserved in the resumable artifact/context, re-read provider-rules.md exactly
@@ -320,7 +320,7 @@ the Step 1 PR-conversation artifact:
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$PR_WORKTREE" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH") || exit 1
 precheck_rc=0
-"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
+"$agentkit/review-remote-pr/scripts/post-receipt.sh" precheck --issue-comments "$receipt_comments" --diff-payload "$current_diff_payload" || precheck_rc=$?
 case "$precheck_rc" in
     0)  printf '%s\n' 'adversarial review budget spent; do not rerun reviewer'; exit 0 ;;
     10) printf '%s\n' 'not spent — proceed to the adversarial review gate below' ;;
@@ -395,7 +395,7 @@ rh=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" -
 rdp=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH" --diff "$RUN_DIR/adversarial.diff" 2>/dev/null) || rdp=''
 rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs"); [[ -z $rdp ]] || rla+=(--diff-payload "$rdp"); [[ -z $rh ]] || rla+=(--harness "$rh")
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --comments "$receipt_comments" --require-pushed \
+    --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" "${rla[@]}" || publish_rc=$?

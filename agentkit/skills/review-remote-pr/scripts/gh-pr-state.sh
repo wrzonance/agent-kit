@@ -1151,6 +1151,7 @@ print_digest() {
     ((WANT_FULL)) || return 0
     printf 'saved: %s/pr_%s_{reviews,comments,issue_comments,threads,code_quality_comments}.json\n' \
         "$OUT_DIR" "$PR"
+    printf 'receipts: pr_%s_issue_comments.json\n' "$PR"
     if ((FULL_CACHE_HIT)); then
         printf 'cache: full=hit\n'
     elif [[ -n $CACHE_MISS_REASON ]]; then

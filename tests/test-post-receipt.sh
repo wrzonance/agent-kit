@@ -55,6 +55,10 @@ chmod 600 -- "$tmp/adversarial.result.json"
 empty_comments="$tmp/empty.json"
 printf '%s\n' '[]' >"$empty_comments"
 
+review_comments="$tmp/review-comments.json"
+printf '%s\n' '[{"id":9,"body":"inline review","pull_request_review_id":8,"path":"README.md"}]' \
+    >"$review_comments"
+
 bad_json="$tmp/bad.json"
 printf '%s\n' 'this is not json' >"$bad_json"
 
@@ -121,6 +125,36 @@ printf '%s\n' '[{"id":1,"body":"'"$marker$marker"'"}]' >"$duplicate_marker_comme
 out=$("$script" status --comments "$duplicate_marker_comments" 2>"$tmp/status-marker.err")
 rc=$?
 assert_eq '1' "$rc" 'status rejects a receipt comment containing duplicate markers'
+
+# -- surface validation ------------------------------------------------------
+# The receipt lives on the issue-comments endpoint. Inline review comments
+# carry pull_request_review_id/path fields and must never be mistaken for a
+# marker-free issue-comment snapshot.
+out=$("$script" status --issue-comments "$review_comments" 2>"$tmp/status-wrong-surface.err")
+rc=$?
+assert_eq '1' "$rc" 'status rejects a review-comments artifact on the issue-comments input'
+assert_eq '' "$out" 'wrong-surface status emits no classification'
+assert_contains "$(cat "$tmp/status-wrong-surface.err")" \
+    'wrong surface: expected pr_N_issue_comments.json' \
+    'wrong-surface status names the expected issue-comments artifact'
+
+out=$("$script" precheck --issue-comments "$review_comments" 2>"$tmp/precheck-wrong-surface.err")
+rc=$?
+assert_eq '1' "$rc" 'precheck rejects a review-comments artifact on the issue-comments input'
+assert_contains "$(cat "$tmp/precheck-wrong-surface.err")" \
+    'wrong surface: expected pr_N_issue_comments.json' \
+    'wrong-surface precheck names the expected issue-comments artifact'
+
+out=$("$script" status --issue-comments "$regular_receipt_comments")
+rc=$?
+assert_eq '0' "$rc" 'status accepts the canonical issue-comments option'
+assert_eq 'receipt=adversarial' "$out" 'canonical issue-comments status classifies a receipt'
+
+alias_err="$tmp/comments-alias.err"
+out=$("$script" status --comments "$regular_receipt_comments" 2>"$alias_err")
+assert_contains "$(cat "$alias_err")" \
+    '--comments is deprecated; reading issue-comments surface' \
+    'deprecated comments alias reports the issue-comments surface it reads'
 
 # -- precheck: fail-closed, missing file -----------------------------------
 
@@ -211,7 +245,7 @@ jq -cn '{title:"Debatable naming",severity:"P2",verdict:"declined",rationale:"st
     >>"$findings_file"
 jq -cn '{title:"Unrelated cleanup",severity:"P2",verdict:"declined",rationale:"not required for this change"}' \
     >>"$findings_file"
-out=$(run_publish --pr 14 --repo owner/repo --comments "$not_spent_comments" \
+out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason 'peer CLI available' \
     --p1 1 --p2 2 \
