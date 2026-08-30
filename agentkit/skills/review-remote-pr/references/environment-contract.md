@@ -34,6 +34,16 @@ may need `gh auth refresh -s project`, while an unattended fleet session must ve
 entirely, go straight to the blind same-harness fallback; `config= present=no` → facts come from
 discovery instead of `.agent/config.env`.
 
+The contract file is keyed by harness (issue #551): `.agent/env-contract.<harness>.txt`, never the
+bare `.agent/env-contract.txt` -- a second harness opening the same checkout (e.g. a session started
+"to observe" a run already in flight under the other harness) must never overwrite the file the
+first harness's run is relying on. `contract-read.sh` and every guard resolve the file matching the
+*running* harness automatically; nothing above changes. The bare, un-suffixed name is a read-only
+legacy fallback kept for one release. If this session's own contract carries `mode=observer`, another
+harness's run was
+still active in this checkout when this session started: treat the checkout root as read-only and do
+your work from a linked worktree instead of racing that run.
+
 A repo opts into its own command runner via exactly two mechanisms, in order: `AGENT_REPO_RUNNER`
 env var, then a committed `.agent/runner`. `.agent/` is untracked; Step 0a adds it to local
 excludes; `worktree-commit.sh` stages only the FILE arguments given to it, so a careless

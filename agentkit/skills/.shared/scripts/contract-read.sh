@@ -85,7 +85,9 @@ done
 
 repo_root=$(cd -- "$repo_root" && pwd -P) ||
     die 2 'could not resolve --repo-root'
-contract="$repo_root/.agent/env-contract.txt"
+# Harness-keyed first, legacy bare name as a read-only fallback (issue #551):
+# see contract_cache_contract_file's own comment for why.
+contract=$(contract_cache_contract_file "$repo_root")
 
 case $mode in
     get)

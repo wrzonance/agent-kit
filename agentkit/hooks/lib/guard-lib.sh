@@ -51,6 +51,8 @@ SHARED_SCRIPT_LIB=$(cd -- "$GUARD_LIB_DIR/../../skills/.shared/scripts/lib" 2>/d
 }
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SHARED_SCRIPT_LIB/protected-paths.sh"
+# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+source "$SHARED_SCRIPT_LIB/contract-cache.sh"
 
 # Populated by guard_resolve_roots.
 roots=()
@@ -369,7 +371,7 @@ guard_scope_allowed_roots() {
 
     for r in ${scope_roots[@]+"${scope_roots[@]}"}; do
         printf '%s\n' "$r"
-        contract="$r/.agent/env-contract.txt"
+        contract=$(contract_cache_contract_file "$r")
         guard_contract_is_ours "$contract" "$r" || continue
         skills=$(sed -n 's/^skills= path=//p' "$contract" 2>/dev/null | head -n 1)
         [[ -n $skills ]] && printf '%s\n' "$skills"
@@ -625,10 +627,23 @@ guard_home_sweep_target() {
 guard_contract_is_ours() {
     local file=$1 root=${2:-}
     local reader="$GUARD_LIB_DIR/../../skills/.shared/scripts/contract-read.sh"
-    if [[ -n $root && $file == "$root/.agent/env-contract.txt" ]]; then
-        [[ -x $reader ]] || return 1
-        "$reader" --repo-root "$root" --check > /dev/null 2>&1
-        return
+    if [[ -n $root ]]; then
+        local write_target
+        write_target=$(contract_cache_contract_write_target "$root" 2> /dev/null)
+        if [[ -n $write_target && $file == "$write_target" ]]; then
+            if [[ ! -e $file && ! -L $file ]]; then
+                # Nothing exists at this harness's own canonical path yet
+                # (issue #551): there is nothing another writer could have
+                # planted there to have an opinion about, so a WRITER asking
+                # "is it safe to create this" gets a plain yes. An EXISTING
+                # file at this path still goes through the full provenance
+                # check below.
+                return 0
+            fi
+            [[ -x $reader ]] || return 1
+            "$reader" --repo-root "$root" --check > /dev/null 2>&1
+            return
+        fi
     fi
     [[ -n $file && -r $file && -f $file && ! -L $file && -O $file ]] || return 1
     [[ -n $root ]] || return 0
@@ -646,7 +661,7 @@ guard_contract_is_ours() {
 guard_unresolved_instruction_line() {
     local root=$1 contract line unresolved
     [[ -n $root ]] || return 1
-    contract="$root/.agent/env-contract.txt"
+    contract=$(contract_cache_contract_file "$root")
     guard_contract_is_ours "$contract" "$root" || return 1
     line=$(grep -m1 '^instructions=.* unresolved=' -- "$contract" 2> /dev/null) || return 1
     unresolved=${line##* unresolved=}
@@ -794,10 +809,10 @@ guard_worktree_contract() {
     GUARD_WORKTREE_CONTRACT_WORKTREE=''
     GUARD_WORKTREE_CONTRACT_REPO=''
     [[ -n $root && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 1
-    contract="$root/.agent/env-contract.txt"
+    contract=$(contract_cache_contract_file "$root")
     [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] || return 1
     rc=0
-    git -C "$root" ls-files --error-unmatch -- .agent/env-contract.txt >/dev/null 2>&1 || rc=$?
+    git -C "$root" ls-files --error-unmatch -- "${contract#"$root"/}" >/dev/null 2>&1 || rc=$?
     ((rc == 1)) || return 1
     worktree=$(sed -n 's/^worktree=//p' "$contract" 2> /dev/null | head -n 1)
     [[ -n $worktree && $worktree == /*/.worktrees/* ]] || return 1
@@ -889,6 +904,44 @@ guard_worktree_boundary_reason() {
     printf 'Refused once -- write target %s resolves inside the repository root %s but outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
         "$source" "$GUARD_WORKTREE_CONTRACT_REPO" \
         "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
+}
+
+# This harness's own mode= claim (issue #551): "observer" when SessionStart
+# found another harness's contract fresh in this checkout and declined to
+# compete with it, "owner" (the default, including when the line or the
+# contract itself is absent -- every pre-#551 contract) otherwise. Reads only
+# the CURRENT harness's own contract, never a foreign one -- an observer
+# cannot be talked into believing it owns a checkout by a stale or hostile
+# neighboring file.
+guard_contract_mode() {
+    local root=$1 contract mode
+    [[ -n $root ]] || return 1
+    contract=$(contract_cache_contract_file "$root")
+    guard_contract_is_ours "$contract" "$root" || return 1
+    mode=$(sed -n 's/^mode=\([^[:space:]]*\).*/\1/p' -- "$contract" 2> /dev/null | head -n 1)
+    printf '%s' "${mode:-owner}"
+}
+
+# An observer session exists to watch a run already active under another
+# harness, not to compete with it for the same files (issue #551 north star:
+# "two harnesses on one machine must not fight"). A write that resolves into
+# the checkout root this session started in is exactly that collision; a
+# write into a linked worktree, /tmp, or any other repository remains
+# ordinary and is never touched by this guard.
+guard_observer_write_reason() {
+    local target=$1 cwd=$2 command_line=${3:-} classification
+    [[ -n ${workspace_root:-} ]] || return 1
+    [[ $(guard_contract_mode "$workspace_root") == observer ]] || return 1
+    classification=$(guard_classify_target "$target" "$cwd" "$command_line")
+    [[ $classification == workspace ]] || return 1
+    printf 'Refused once -- this session started as an OBSERVER: another harness already held
+an active run in %s (this session'"'"'s own environment contract records
+mode=observer). Writing here would race that run instead of watching it.
+
+If that run has since ended and this really is the session to make changes,
+remove %s/.agent/env-contract.*.txt and start a fresh session so it can claim
+ownership -- or run the same call again now, it will be allowed once.' \
+        "$workspace_root" "$workspace_root"
 }
 
 # Persist one JSONL record for each content-bearing tool call that exposes a

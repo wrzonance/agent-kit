@@ -2597,6 +2597,53 @@ assert_eq 'allow' "$(decision "$evidence_symlink_out")" \
 assert_eq yes "$( [[ ! -e $evidence_outside/paths-touched.ndjson ]] && printf yes || printf no )" \
     'a symlinked evidence parent receives no paths-touched record'
 
+# --- issue #551: an OBSERVER session's write into the checkout root it
+# started in is denied once (retry allowed, like every other deny-once guard
+# here); a write elsewhere, or from an owner (the default) session, is
+# ordinary. mode=observer is what SessionStart records when another
+# harness's own contract was still fresh at start -- see
+# test-session-contract-freshness.sh for how that line gets there.
+observer_repo="$tmp/observer-repo"
+mkdir -p "$observer_repo/.agent"
+git -C "$observer_repo" init -q -b main
+printf 'base\n' > "$observer_repo/file.txt"
+git -C "$observer_repo" add file.txt
+git -C "$observer_repo" -c user.name=t -c user.email=t@example.invalid commit -qm base
+printf 'repo=observer-example/repo\n%s\nmode=observer other-harness=peer\n' "$HARNESS_LINE" \
+    > "$observer_repo/.agent/env-contract.$ME.txt"
+
+observer_sid='observer-mode-once'
+observer_out=$(edit_input "$observer_repo" "$observer_repo/file.txt" "$observer_sid" |
+    "$hooks/pre-tool-use.sh" 2> /dev/null)
+assert_eq 'deny' "$(decision "$observer_out")" \
+    'an observer-mode session denies a write into the checkout root it started in'
+assert_contains "$observer_out" 'OBSERVER' 'and explains why'
+
+observer_retry=$(edit_input "$observer_repo" "$observer_repo/file.txt" "$observer_sid" |
+    "$hooks/pre-tool-use.sh" 2> /dev/null)
+assert_eq 'allow' "$(decision "$observer_retry")" \
+    'the observer-mode denial lifts on retry, like every other deny-once guard here'
+
+observer_elsewhere="$tmp/observer-elsewhere"
+mkdir -p "$observer_elsewhere"
+git -C "$observer_elsewhere" init -q -b main
+observer_elsewhere_out=$(edit_input "$observer_repo" "$observer_elsewhere/other.txt" \
+    'observer-mode-elsewhere' | "$hooks/pre-tool-use.sh" 2> /dev/null)
+assert_eq 'allow' "$(decision "$observer_elsewhere_out")" \
+    'an observer-mode session may still write into an unrelated repository'
+
+owner_repo="$tmp/owner-repo"
+mkdir -p "$owner_repo/.agent"
+git -C "$owner_repo" init -q -b main
+printf 'base\n' > "$owner_repo/file.txt"
+git -C "$owner_repo" add file.txt
+git -C "$owner_repo" -c user.name=t -c user.email=t@example.invalid commit -qm base
+printf 'repo=owner-example/repo\n%s\n' "$HARNESS_LINE" > "$owner_repo/.agent/env-contract.$ME.txt"
+owner_out=$(edit_input "$owner_repo" "$owner_repo/file.txt" 'owner-mode-default' |
+    "$hooks/pre-tool-use.sh" 2> /dev/null)
+assert_eq 'allow' "$(decision "$owner_out")" \
+    'an owner-mode (the default: no mode= line) session writes into its own checkout root freely'
+
 # --- regression: guard_resolve_roots must not fail the hook open when a
 # parsed cd/-C candidate directory does not exist (issue #369). Its last
 # statement used to be a bare `[[ -d $candidate ]] && guard_add_root
