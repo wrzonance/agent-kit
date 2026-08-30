@@ -95,16 +95,14 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 - Provider rules, author classification, fix batches, reply settlement,
   bounded waits, exact readback, worktree mechanics, and the six-step worker
   gate stay in their existing authoritative files.
-- `--auto-merge` authorizes this skill to perform the confirmed queue's
-  merges itself; without it every PR still stops at evidence-green and the
-  merge stays a human action. It implies strict serial merge ordering — see
+- `--auto-merge` implies strict serial merge ordering — see
   ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 - **GitHub API budget.** `pr-queue.sh --write-confirmed-queue` prints a
   `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
   (never blocks) when REST cost exceeds the remaining budget — read it
   first; another session may run concurrently. A `gh-pr-state.sh`/
   `pr-queue.sh` exit `3` hits rate-limit: stop, record completed vs.
-  outstanding, report the reset verbatim, never retry an empty pool. See
+  outstanding, report the reset, never retry an empty pool. See
   ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry).
 
 ## Resident call-site map
@@ -145,7 +143,7 @@ The displayed rows, provider decisions, and the owner-only
 `.agent/pr-to-green-confirmed-queue.json` snapshot come from that one queue
 derivation. Its `--dispatch-plan` and `--merge-plan`
 options are aliases for that same owner-only file before and after the
-ready-flip upgrade; this consumer requires the schema-2 stage. Without one, use forge derivation. Automatic
+ready-flip upgrade; this consumer requires schema-2. Without one, use forge derivation. Automatic
 discovery selects drafts. An explicitly named ready PR may resume an interrupted
 run. The queue helper reports `RUNNABLE`, `WAITING_FOR_MERGE`,
 `RETARGET_REQUIRED`, or `BLOCKED` and fails closed on ambiguous topology.
@@ -226,22 +224,21 @@ establish/reuse its isolated worktree through review-remote-pr. Complete
 Phase A against the current base: no
 conflicts, declared verification passing, CI settled green, mandatory
 adversarial receipt settled (including its same-harness blind fallback), and
-every observed human item explicitly decided. Consolidate accepted changes into
+every observed human item decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
 A declared-verification failure whose failing paths are all provably unchanged
 from base and outside this PR's diff is `baseline-red` — classified by
 review-remote-pr Step 2's `verification-baseline.sh`, never re-derived here.
 Record it as evidence and proceed through commit, push, adversarial review,
-and receipt; it is never grounds to park, and reformatting the unrelated
-paths to force a clean run is the violation, not the fix. Any other declared-
-verification failure is `change-caused-red`: fix it as today. Ready-flip and
-merge stay blocked on it exactly as on any other red — see Step 4; this
-changes only what unblocks Phase A publication. `compose-pr-body.sh`'s
-optional `--baseline-file` appends the generated evidence block to the PR
-body, which must list every gate that passed by name, mark every skipped or
-conditional check SKIPPED (never passed), and never claim the PR is fully
-green.
+and receipt; never park on it, and never reformat unrelated paths just to
+force a clean run. Any other declared-verification failure is
+`change-caused-red`: fix it as today. Ready-flip and merge stay blocked on it
+exactly as on any other red — see Step 4; this changes only what unblocks
+Phase A publication. `compose-pr-body.sh`'s optional `--baseline-file` appends
+the generated evidence block, listing every passing gate by name, marking
+every skipped or conditional check SKIPPED (never passed), and never claiming
+the PR fully green.
 
 If Phase A changes the head, re-run the same displayed queue command with
 `pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
@@ -263,23 +260,28 @@ Treat its provider result as follows:
   review observed yet — poll `gh-pr-state.sh`'s `provider:` digest line, or
   `review-transition.sh --observe --pr N --since TIMESTAMP` in bounded rounds,
   until it reports a landed review (or `LANDED`); never re-run the full
-  ready-transition flow just to re-derive the same fact.
-- `STALE_HEAD`: a terminal review exists but targets a head the PR has since
-  moved past (it postdates the trigger, but its own head SHA does not match
-  the PR's current head) — never evidence-green; keep polling `--observe`, do
-  not re-trigger, and never treat it like `LANDED`.
+  ready-transition flow to re-derive the same fact.
+- `STALE_HEAD`: a terminal review targets a head the PR has since moved past
+  (postdates the trigger; its own head SHA differs) — never evidence-green;
+  keep polling `--observe`; never re-trigger or treat it as `LANDED`.
+- `TRIGGER_MISPARSED`: CodeRabbit answered as chat, filing no review. Its
+  `<!-- pr-to-green:provider-request provider=coderabbit -->` marker still
+  counts the spend — never re-post by hand; stop this PR `BLOCKED` pending
+  an operator-authorized retrigger.
 - `OBSERVE_ONLY`: consume findings and wait for provider-owned rescans; never
   manufacture a request.
 - `DISABLED`: add no provider wait or approval requirement.
 - `BLOCKED`: stop this PR on the named evidence; do not advance its descendants.
 
-Phase C uses one consolidated fix/push batch per bounded round. Canonical replies
-enter `AWAITING_BOT_RESPONSE`; refresh evidence before calling
-`thread-action.sh --settle`. Acknowledgement settles, pushback joins the next
-bounded fix round, and unanswered replies remain awaiting. Code Quality keeps
-its auto-clear/reasoned-dismiss lifecycle. Unexpected authoritative bots use
-the generic automated lane and are never triggered. Human items retain
-per-item confirmation and human threads remain unresolved.
+Phase C uses one consolidated fix/push batch per bounded round. Canonical
+replies enter `AWAITING_BOT_RESPONSE`; refresh evidence before calling
+`thread-action.sh --settle`. Acknowledgement settles; pushback joins the next
+fix round; unanswered replies stay awaiting. Code Quality keeps its
+auto-clear/reasoned-dismiss lifecycle; unexpected authoritative bots use the
+generic automated lane and are never triggered. Human items retain
+per-item confirmation; human threads stay unresolved. Record a verified fix
+commit with `review-ledger.sh cover`; never re-review — see
+["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ### 4. Prove evidence-green
 
@@ -315,9 +317,8 @@ With `--auto-merge`, an evidence-green item merges only after
 (["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) has the recipe —
 a formal provider approval requirement stays repository policy: a
 branch-protection refusal is a named stop, never a bypass). On `gate=PASS`,
-invoke `scripts/merge-pr.sh`
-with the Step 1 authorization file and the saved `gate=PASS` output — it
-refuses, sending no merge request, unless both bind to this exact repository/
+invoke `scripts/merge-pr.sh` with the Step 1 authorization file and the saved
+`gate=PASS` output — it refuses unless both bind to this exact repository/
 PR/head/base/method/delete-branch as a confirmed `RUNNABLE` queue member; the
 guard lives at that point of mutation, not just in the calling order. On its
 success, move that issue's board item to `Done`. No merge starts while a
@@ -327,14 +328,14 @@ After predecessor merge, make the direct successor `RETARGET_REQUIRED`; run
 `chain-advance.sh` against the default branch and refresh its diff, ancestry,
 conflicts, checks, head/base evidence, and closing linkage. Approval remains
 residue (`current:post-retarget|residue:stale|none|unknown`) until transition;
-disabled providers may never produce one. Unexpected expansion, stale proof,
+disabled providers never produce one. Unexpected expansion, stale proof,
 failed retarget, or required rewrite blocks the successor for human or
 automated merges.
 
-After retarget, `chain-advance.sh` reruns a head scan run or requests
+After retarget, `chain-advance.sh` reruns a head scan or requests
 `workflow_dispatch`; otherwise it reports `cannot-trigger: <workflow> has no
-dispatch` and the action. Agents never close/reopen PRs to synthesize
-events; that mutation requires an operator instruction naming the PR/action.
+dispatch`. Agents never close/reopen PRs to synthesize events; that requires
+an operator instruction naming the PR/action.
 
 Regenerate the queue before the successor becomes `RUNNABLE` or spends provider
 authority. A merge-down/retarget is deterministic maintenance under Step 1;
