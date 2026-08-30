@@ -820,6 +820,143 @@ assert_contains "$(cat "$wait_onebyone_err")" 'settled checks=4 stable-rounds=2'
 assert_eq '5' "$(cat "$tmp/wait-onebyone-count")" \
     '--wait-ci settles the round after the check count stops growing, not the round it first reaches full'
 
+# --- --wait-ci: --expect-checks keeps polling past the zero-check grace
+# window instead of reporting none-configured (agent-kit#578 F1) -------------
+
+# A stub that reports zero checks for the first three rounds (matching/
+# exceeding CI_ZERO_CHECKS_GRACE_ROUNDS=3, which used to force a
+# none-configured report regardless of any floor), then registers the full
+# 4-check matrix on round 4 and holds there. With --expect-checks 4 set,
+# --wait-ci must keep polling through the grace window and settle once the
+# floor is met and stable, never short-circuiting to none-configured.
+mkdir -p "$tmp/case-wait-floor-holds"
+cat >"$tmp/case-wait-floor-holds/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/605 "*)
+        printf '%s\n' '{"number":605,"draft":true,"mergeable":true,"head":{"ref":"feat/floor","sha":"floorholdssha"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/floorholdssha/check-runs"*)
+        n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "$n" >"$COUNT_FILE"
+        case $n in
+            1|2|3) printf '%s\n' '{"check_runs":[]}' ;;
+            *)     printf '%s\n' '{"check_runs":[{"name":"check1","status":"completed","conclusion":"success"},{"name":"check2","status":"completed","conclusion":"success"},{"name":"check3","status":"completed","conclusion":"success"},{"name":"check4","status":"completed","conclusion":"success"}]}' ;;
+        esac
+        ;;
+    *" api repos/owner/repo/commits/floorholdssha/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-floor-holds/gh"
+cp "$tmp/case-wait-grace/sleep" "$tmp/case-wait-floor-holds/sleep"
+wait_floor_holds_err="$tmp/wait-floor-holds.err"
+wait_floor_holds_output=$(COUNT_FILE="$tmp/wait-floor-holds-count" PATH="$tmp/case-wait-floor-holds:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 605 --repo owner/repo --wait-ci --rounds 6 --interval 1 --expect-checks 4 2>"$wait_floor_holds_err")
+assert_contains "$wait_floor_holds_output" 'ci=4/4 green pending=0 failing=0' \
+    'a floor keeps polling past the zero-check grace window until the expected checks register'
+assert_not_contains "$(cat "$wait_floor_holds_err")" 'none-configured' \
+    '--wait-ci never reports none-configured while an --expect-checks floor is still unmet'
+assert_contains "$(cat "$wait_floor_holds_err")" 'settled checks=4 stable-rounds=2 expected=4' \
+    '--wait-ci settles once the floor is met and stable'
+assert_eq '5' "$(cat "$tmp/wait-floor-holds-count")" \
+    '--wait-ci polls through the grace window (3 zero rounds) plus one more before settling'
+
+# A stub that never reaches the --expect-checks floor within the --rounds
+# budget: two checks register and stay stable, but the floor of 4 is never
+# met. --wait-ci must exhaust the round budget and report the shortfall
+# rather than settling early on stability alone.
+mkdir -p "$tmp/case-wait-floor-unmet"
+cat >"$tmp/case-wait-floor-unmet/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/606 "*)
+        printf '%s\n' '{"number":606,"draft":true,"mergeable":true,"head":{"ref":"feat/floor-unmet","sha":"floorunmetsha"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/floorunmetsha/check-runs"*)
+        n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "$n" >"$COUNT_FILE"
+        printf '%s\n' '{"check_runs":[{"name":"check1","status":"completed","conclusion":"success"},{"name":"check2","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api repos/owner/repo/commits/floorunmetsha/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-floor-unmet/gh"
+cp "$tmp/case-wait-grace/sleep" "$tmp/case-wait-floor-unmet/sleep"
+wait_floor_unmet_err="$tmp/wait-floor-unmet.err"
+COUNT_FILE="$tmp/wait-floor-unmet-count" PATH="$tmp/case-wait-floor-unmet:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 606 --repo owner/repo --wait-ci --rounds 4 --interval 1 --expect-checks 4 \
+    >/dev/null 2>"$wait_floor_unmet_err"
+assert_not_contains "$(cat "$wait_floor_unmet_err")" 'settled checks=' \
+    '--wait-ci never reports settled while an --expect-checks floor stays unmet'
+assert_contains "$(cat "$wait_floor_unmet_err")" 'checks still pending after 4 rounds' \
+    '--wait-ci reports the shortfall once the round budget is exhausted instead of settling'
+assert_eq '4' "$(cat "$tmp/wait-floor-unmet-count")" \
+    '--wait-ci spends the full round budget when the floor is never met'
+
+# --- --wait-ci: no default --expect-checks floor is inferred (agent-kit#578
+# F2) -- a PR with one stable check settles quickly even when the base
+# branch's own head reports a much larger completed check-run count that the
+# old resolve_expect_checks would have adopted as a blocking floor. ---------
+mkdir -p "$tmp/case-wait-no-default-floor"
+cat >"$tmp/case-wait-no-default-floor/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/607 "*)
+        printf '%s\n' '{"number":607,"draft":true,"mergeable":true,"head":{"ref":"feat/no-default","sha":"nodefaultsha"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/nodefaultsha/check-runs"*)
+        n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "$n" >"$COUNT_FILE"
+        printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" api repos/owner/repo/commits/nodefaultsha/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *" api repos/owner/repo/commits/main "*)
+        printf '%s\n' '{"sha":"basemainsha"}'
+        ;;
+    *" api repos/owner/repo/commits/basemainsha/check-runs"*)
+        printf '%s\n' '{"check_runs":[{"name":"a","status":"completed","conclusion":"success"},{"name":"b","status":"completed","conclusion":"success"},{"name":"c","status":"completed","conclusion":"success"},{"name":"d","status":"completed","conclusion":"success"},{"name":"deploy","status":"completed","conclusion":"success"}]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-no-default-floor/gh"
+cp "$tmp/case-wait-grace/sleep" "$tmp/case-wait-no-default-floor/sleep"
+wait_no_default_err="$tmp/wait-no-default.err"
+wait_no_default_output=$(COUNT_FILE="$tmp/wait-no-default-count" PATH="$tmp/case-wait-no-default-floor:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 607 --repo owner/repo --wait-ci --rounds 5 --interval 1 2>"$wait_no_default_err")
+assert_contains "$wait_no_default_output" 'ci=1/1 green pending=0 failing=0' \
+    'a single stable check settles on its own with no inferred floor'
+assert_contains "$(cat "$wait_no_default_err")" 'settled checks=1 stable-rounds=2 expected=none' \
+    'the settle line reports expected=none absent --expect-checks, never a base-inferred count'
+assert_eq '2' "$(cat "$tmp/wait-no-default-count")" \
+    'settling in 2 rounds proves the base branch check-run count was never adopted as a blocking floor'
+
 # Acceptance state is reported independently from the repository verify
 # rollup. A repo-verify check can be green while the issue's browser command
 # is absent, which is not ready-eligible for a stacked PR.
