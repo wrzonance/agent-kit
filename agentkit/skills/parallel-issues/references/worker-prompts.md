@@ -372,18 +372,44 @@ if [[ -f FULL_PATH/.agent/acceptance.txt && ! -L FULL_PATH/.agent/acceptance.txt
     [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
   done < FULL_PATH/.agent/acceptance.txt
 fi
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full "${acceptance_args[@]}"
+cq_evidence_dir=$(mktemp -d "${TMPDIR:-/tmp}/pr-loop-cq.XXXXXXXXXX")
+trap 'rm -rf -- "$cq_evidence_dir"' EXIT
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
+  --tmpdir "$cq_evidence_dir" "${acceptance_args[@]}"
 
 Wait for CI with the bounded helper, then inspect the resulting digest. A failing check is a
 terminal setup result, not a fix batch:
 
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --wait-ci --rounds 60 --interval 10 "${acceptance_args[@]}"
 
-Probe and triage Code Quality once. `state=not-enabled` is clean evidence; an open finding is
-reported, never silently treated as zero:
+Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
+second call attributes only persisted PR comments whose path+line is inside the PR diff; the
+repository-wide remainder is informational and never gates the loop:
 
-"$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --probe
-"$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --summary
+cq_probe=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --probe)
+printf '%s\n' "$cq_probe"
+if [[ $cq_probe == state=enabled ]]; then
+  if ! cq_state=$("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo OWNER/REPO --pr NNN \
+    --comments-file "$cq_evidence_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__" \
+    --repo-root FULL_PATH); then
+    printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
+  else
+    printf '%s\n' "$cq_state"
+    cq_open=$(sed -n 's/^cq-open: \([0-9][0-9]*\) source=.*/\1/p' <<<"$cq_state")
+    if [[ $cq_open =~ ^[1-9][0-9]*$ ]]; then
+      : # cq-open is the terminal gate line, including its source artifact.
+    else
+      printf 'launch-ready\n'
+    fi
+  fi
+elif [[ $cq_probe == state=not-enabled ]]; then
+  printf 'cq-repo: 0\n'
+  printf 'cq-open: 0 source=pr_NNN_code_quality_comments.json\n'
+  printf 'launch-ready\n'
+else
+  printf 'Code Quality findings unavailable; setup cannot classify findings.\n'
+  printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
+fi
 
 Run the materiality precheck against the PR's current head before any review spend:
 
@@ -392,10 +418,12 @@ materiality_acceptance_args=()
 [[ -f FULL_PATH/.agent/acceptance-status.txt && ! -L FULL_PATH/.agent/acceptance-status.txt ]] && materiality_acceptance_args+=(--acceptance-status-file FULL_PATH/.agent/acceptance-status.txt)
 "$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree FULL_PATH --base "__MATERIALITY_BASE__" "${materiality_acceptance_args[@]}"
 
-If CI is red, return exactly `ci-red: <check>` naming the failing check. If Code Quality has open
-findings, return exactly `cq-open: N` with the count. Otherwise return exactly `launch-ready`.
+If CI is red, return exactly `ci-red: <check>` naming the failing check. If the attribution report
+has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_comments.json` line;
+`cq-repo: M` is reported separately and never gates. Otherwise return exactly `launch-ready`.
 The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
-findings ledger contains at least one finding. Zero findings are a successful setup outcome.
+findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
+setup outcome, even when `cq-repo: M` is non-zero.
 Return the terminal line plus a compact evidence summary; never return BLOCKED merely because
 there is nothing to fix.
 ```

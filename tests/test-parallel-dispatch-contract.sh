@@ -643,11 +643,27 @@ assert_contains "$setup_prompt" 'gh-pr-state.sh' 'setup prompt fetches PR state'
 assert_contains "$setup_prompt" '--wait-ci' 'setup prompt waits for CI'
 assert_contains "$setup_prompt" 'code-quality-state.sh' 'setup prompt triages Code Quality'
 assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs materiality precheck'
-assert_contains "$setup_prompt" 'Zero findings are a successful setup outcome' \
+assert_contains "$setup_prompt" 'Zero in-diff findings are a successful' \
     'setup prompt treats a zero-finding loop as success'
 assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
 assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
 assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'source=pr_NNN_code_quality_comments.json' \
+    'setup prompt names the PR-scoped Code Quality source artifact'
+assert_contains "$setup_prompt" 'cq-repo: M' \
+    'setup prompt reports repository-global Code Quality findings separately'
+assert_contains "$setup_prompt" '--comments-file' \
+    'setup prompt attributes findings from the persisted PR artifact'
+assert_contains "$setup_prompt" '--diff-base' \
+    'setup prompt attributes findings against the PR diff base'
+assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
+    'setup prompt passes the checkout root for Code Quality attribution'
+assert_contains "$setup_prompt" 'if ! cq_state=' \
+    'setup prompt fails closed when Code Quality attribution fails'
+assert_contains "$setup_prompt" 'cq-open: unavailable' \
+    'setup prompt names the unavailable Code Quality terminal marker'
+assert_contains "$setup_prompt" 'in-diff findings' \
+    'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
     'setup prompt does not encode a zero-finding BLOCKED result'
 
