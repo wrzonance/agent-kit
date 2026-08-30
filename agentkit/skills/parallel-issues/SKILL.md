@@ -628,7 +628,7 @@ fi
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repository "$repository"
+    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
 ```
 
 **The printed line is the evidence.** `move-github-project-item.sh` emits exactly one terminal
@@ -915,7 +915,7 @@ fi
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-number "$issue_number" --status 'In review' --repository "$repository"
+    --issue-number "$issue_number" --status 'In review' --repo "$repository"
 ```
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
