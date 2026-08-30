@@ -95,13 +95,19 @@ Options:
                       when the named commit is the active merge head. Attended
                       runs park inherited paths and preserve them in the index.
   --ledger FILE --run-id ID --ledger-scope SCOPE
-                      Given together (all three, or none): when a merge-
-                      inherited protected path would otherwise park, ask
-                      session-ledger.sh whether RUN ID's ledger at FILE
-                      records a covering 'authorize:workflow-mutations' grant
-                      for SCOPE. A covering grant commits with an
-                      Authorized-By-Ledger trailer instead of parking; no
-                      covering record leaves the park behaviour unchanged.
+                      Given together (all three, or none): when every merge-
+                      inherited protected path staged is a CI-workflow file
+                      (.github/workflows/, .gitlab-ci.yml, .circleci/,
+                      azure-pipelines.yml, Jenkinsfile), ask session-ledger.sh
+                      whether RUN ID's ledger at FILE records a covering
+                      'authorize:workflow-mutations' grant for SCOPE. A
+                      covering grant commits with an Authorized-By-Ledger
+                      trailer instead of parking. Harness/hook configuration
+                      (.githooks/, .git/hooks/, .git/config,
+                      .pre-commit-config.yaml, .codex/config.toml,
+                      .claude/settings*.json) is never ledger-authorizable and
+                      still parks the whole staged set; no covering record
+                      also leaves the park behaviour unchanged.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
 
@@ -314,6 +320,30 @@ ledger_authorizes_workflow_mutations() {
         --decision "$LEDGER_WORKFLOW_DECISION" --scope "$LEDGER_SCOPE" >/dev/null 2>&1
 }
 
+# 0 when PATH is one of the fixed CI-workflow patterns a session-ledger
+# authorize:workflow-mutations grant may authorize; 1 for every other
+# protected path -- harness/hook configuration (.githooks/, .git/hooks/,
+# .git/config, .pre-commit-config.yaml, .codex/config.toml,
+# .claude/settings*.json) keeps parking even under a covering grant, and this
+# is never widened by a repository's own AGENT_PROTECTED_PATHS declaration
+# (issue #563 F1 adversarial-review fix).
+ledger_authorizable_protected_path() {
+    local candidate=$1 root
+    candidate=${candidate#./}
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    shared_ci_workflow_pattern "$candidate" "$root" 0 >/dev/null
+}
+
+# Prints, one per line, every entry of PATHS that ledger_authorizable_protected_path
+# refuses: the paths a covering ledger grant must never carry.
+non_ledger_authorizable_paths() {
+    local paths=$1 path
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        ledger_authorizable_protected_path "$path" || printf '%s\n' "$path"
+    done <<< "$paths"
+}
+
 guard_staged_protected_paths() {
     local paths
     active_merge || return 0
@@ -326,12 +356,18 @@ guard_staged_protected_paths() {
         return 0
     fi
     if ledger_authorizes_workflow_mutations; then
-        local ledger_trailer="Authorized-By-Ledger: $LEDGER_RUN_ID $LEDGER_WORKFLOW_DECISION"
-        validate_trailer_line "$ledger_trailer"
-        TRAILERS+=("$ledger_trailer")
-        printf '%s: staged protected paths authorized by session ledger (run %s, decision %s): %s\n' \
-            "$PROGNAME" "$LEDGER_RUN_ID" "$LEDGER_WORKFLOW_DECISION" "${paths//$'\n'/, }" >&2
-        return 0
+        local non_ci_paths
+        non_ci_paths=$(non_ledger_authorizable_paths "$paths")
+        if [[ -z $non_ci_paths ]]; then
+            local ledger_trailer="Authorized-By-Ledger: $LEDGER_RUN_ID $LEDGER_WORKFLOW_DECISION"
+            validate_trailer_line "$ledger_trailer"
+            TRAILERS+=("$ledger_trailer")
+            printf '%s: staged protected paths authorized by session ledger (run %s, decision %s): %s\n' \
+                "$PROGNAME" "$LEDGER_RUN_ID" "$LEDGER_WORKFLOW_DECISION" "${paths//$'\n'/, }" >&2
+            return 0
+        fi
+        printf '%s: session ledger grant does not authorize non-CI-workflow protected paths: %s\n' \
+            "$PROGNAME" "${non_ci_paths//$'\n'/, }" >&2
     fi
     park_inherited_paths "$paths"
 }
