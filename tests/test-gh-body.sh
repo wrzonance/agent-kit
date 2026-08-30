@@ -33,6 +33,10 @@ done
 if [[ ${1-} == pr || ${1-} == issue ]]; then
     [[ -n $body_file && -f $body_file ]] || exit 21
     cp -- "$body_file" "$GH_STORED_BODY"
+    if [[ ${GH_MUTATION_FAILURE:-0} == 1 ]]; then
+        printf 'gh mutation failed midstream\n'
+        exit 1
+    fi
     if [[ ${2-} == create ]]; then
         host=${GH_CREATE_HOST:-github.com}
         if [[ ${1-} == pr ]]; then
@@ -143,6 +147,7 @@ run_body() {
         GH_STORED_BODY="$tmp/stored.md" \
         GH_MISMATCH="${GH_MISMATCH:-0}" \
         GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
+        GH_MUTATION_FAILURE="${GH_MUTATION_FAILURE:-0}" \
         GH_INCLUDE_CLOSING="${GH_INCLUDE_CLOSING:-0}" \
         GH_CLOSING_PAGE2="${GH_CLOSING_PAGE2:-0}" \
         GH_CLOSING_LATE="${GH_CLOSING_LATE:-0}" \
@@ -474,6 +479,41 @@ assert_eq 'null' "$(jq -c '.closing_issue' <<<"$json_output")" \
     '--json create with no --expect-closing-issue reports a null closing_issue'
 assert_contains "$(cat "$json_err")" 'https://github.com/owner/repo/pull/41' \
     '--json moves the human create line to stderr'
+
+# --- run_mutation failure: --json mode must never leak gh's raw stdout -----
+# (#554 F2) A gh mutation that fails outright never reaches emit_json_result,
+# so its own stdout is diagnostic only, not the JSON contract -- it must move
+# to stderr and leave stdout empty, the same way mutation.err already does.
+export GH_MUTATION_FAILURE=1
+mutation_failure_err="$tmp/mutation-failure.err"
+set +e
+mutation_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" --json \
+    2>"$mutation_failure_err")
+mutation_failure_rc=$?
+set -e
+unset GH_MUTATION_FAILURE
+assert_eq '1' "$mutation_failure_rc" \
+    '--json exits 1 when the gh mutation itself fails'
+assert_eq '' "$mutation_failure_output" \
+    '--json emits nothing on stdout when the gh mutation itself fails'
+assert_contains "$(cat "$mutation_failure_err")" 'gh mutation failed midstream' \
+    '--json routes the raw gh mutation output to stderr instead of stdout'
+assert_contains "$(cat "$mutation_failure_err")" 'body was not verified' \
+    '--json mutation failure still reports the die diagnosis on stderr'
+
+# Text mode is unaffected: gh's raw stdout still reaches stdout on failure --
+# main()'s only path to surface a create's partial output before dying.
+export GH_MUTATION_FAILURE=1
+set +e
+text_mutation_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" \
+    2>/dev/null)
+text_mutation_failure_rc=$?
+set -e
+unset GH_MUTATION_FAILURE
+assert_eq '1' "$text_mutation_failure_rc" \
+    'text-mode mutation failure still exits 1'
+assert_contains "$text_mutation_failure_output" 'gh mutation failed midstream' \
+    'text-mode mutation failure still forwards raw gh stdout to stdout'
 
 json_edit_output=$(run_body pr edit 41 --repo owner/repo --body-file "$body" --json)
 assert_eq '41' "$(jq -r '.number' <<<"$json_edit_output")" \

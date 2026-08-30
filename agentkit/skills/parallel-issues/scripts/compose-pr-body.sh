@@ -76,6 +76,13 @@ validate_section() {
 
 readonly TESTING_CHECKBOX_RE='^-[[:space:]]\[[xX[:space:]]\][[:space:]].+'
 readonly TESTING_BULLET_RE='^-[[:space:]]+(.+)$'
+# A malformed checkbox *attempt* is narrowly "- [<one char>]" where that char
+# is not space/x/X (those already matched TESTING_CHECKBOX_RE above), followed
+# by whitespace or end of line -- e.g. "- [z] weird". A plain bullet whose text
+# happens to start with a markdown link, "- [CI run](url)", has more than one
+# character between the brackets and must fall through to TESTING_BULLET_RE
+# like any other plain bullet, not trip this guard (#554 F3).
+readonly TESTING_MALFORMED_CHECKBOX_RE='^-[[:space:]]+\[[^]xX[:space:]]\]([[:space:]]|$)'
 
 # Prints TESTING_FILE's content with every plain "- item" bullet rewritten to
 # an unchecked "- [ ] item" checkbox; an existing checkbox line and blank
@@ -87,8 +94,8 @@ normalize_testing_file() {
     while IFS= read -r line || [[ -n $line ]]; do
         if [[ -z $line || $line =~ $TESTING_CHECKBOX_RE ]]; then
             printf '%s\n' "$line"
-        elif [[ $line =~ ^-[[:space:]]+\[ ]]; then
-            # A dash-space-bracket line that failed the strict checkbox regex
+        elif [[ $line =~ $TESTING_MALFORMED_CHECKBOX_RE ]]; then
+            # A single-char bracket that failed the strict checkbox regex
             # above is a malformed checkbox attempt, not a plain bullet --
             # normalizing it would silently double-bracket it into something
             # like "- [ ] [z] weird" instead of naming the actual mistake.

@@ -126,7 +126,28 @@ assert_eq '1' "$malformed_checkbox_rc" \
 assert_contains "$malformed_checkbox_err" 'markdown checkbox lines' \
     'the malformed-checkbox refusal names the checkbox requirement'
 
+# A plain bullet whose text happens to start with a markdown link -- "- [text]
+# (url)" -- must normalize like any other plain bullet, not trip the malformed-
+# checkbox guard above: the bracket in "[CI run]" is link syntax, not a
+# checkbox attempt, because it holds more than one character (#554 F3).
+link_bullet_testing="$tmp/link-bullet-testing.md"
+printf '%s\n' '- [CI run](https://example.test)' >"$link_bullet_testing"
+link_bullet_output="$tmp/link-bullet-body.md"
+assert_rc 0 'composer accepts a plain bullet starting with a markdown link' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$link_bullet_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$link_bullet_output"
+assert_contains "$(<"$link_bullet_output")" '- [ ] [CI run](https://example.test)' \
+    'a link-prefixed bullet normalizes to an unchecked checkbox, link intact'
 
+# A single-character bracket -- the actual malformed-checkbox shape -- still
+# fails even when a second bracket pair follows on the same line.
+malformed_checkbox_with_link="$tmp/malformed-checkbox-with-link-testing.md"
+printf '%s\n' '- [z] [CI run](https://example.test)' >"$malformed_checkbox_with_link"
+assert_rc 1 'a single-char malformed checkbox still fails, even followed by a link' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$malformed_checkbox_with_link" \
+    --agent 'Codex gpt-5.6-luna' --output "$output"
 
 # --- a section file named like an option is a file, not a flag -------------
 # The validator hands the path straight to grep. Under GNU grep an unguarded

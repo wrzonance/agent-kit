@@ -54,7 +54,12 @@ still emitted -- with closing_issue.state "failed" -- when closing-issue
 verification exhausts its retries, so a caller (such as a bulk-apply ledger)
 can record the created number/html_url before deciding how to handle a
 verification-stage failure; the exit status still reports failure (1) in that
-case. Default text-mode output and exit codes are unchanged by this flag.
+case. The one-object guarantee covers exactly those two outcomes: a
+successful mutation, and a successful mutation whose closing-issue
+verification later failed. When the gh mutation itself fails (nothing was
+created or edited), no JSON object is emitted at all: stdout stays empty and
+gh's raw output moves to stderr alongside the failure diagnosis. Default
+text-mode output and exit codes are unchanged by this flag.
 EOF
 }
 
@@ -229,7 +234,16 @@ run_mutation() {
     "$GH_BIN" "$RESOURCE" "$ACTION" "${GH_ARGS[@]}" \
         >"$WORK_DIR/mutation.out" 2>"$WORK_DIR/mutation.err" || rc=$?
     if ((rc != 0)); then
-        [[ ! -s $WORK_DIR/mutation.out ]] || cat "$WORK_DIR/mutation.out"
+        # --json mode's one-JSON-object stdout contract (see emit_json_result)
+        # only ever holds for a mutation that itself succeeded -- one that
+        # fails outright never reaches that code, so its raw stdout is
+        # diagnostic only here and moves to stderr, leaving stdout empty
+        # rather than polluting it with a non-JSON line (#554 F2).
+        if ((JSON_MODE)); then
+            [[ ! -s $WORK_DIR/mutation.out ]] || cat "$WORK_DIR/mutation.out" >&2
+        else
+            [[ ! -s $WORK_DIR/mutation.out ]] || cat "$WORK_DIR/mutation.out"
+        fi
         [[ ! -s $WORK_DIR/mutation.err ]] || cat "$WORK_DIR/mutation.err" >&2
         die "gh $RESOURCE $ACTION failed (rc=$rc); body was not verified"
     fi
