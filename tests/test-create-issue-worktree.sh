@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # assertions intentionally match literal recipe variables
 # Suite: create-issue-worktree.sh carries session-scoped facts into new worktrees.
 #
 # sandbox=, caches=, and tls= describe the SESSION (which process is running
@@ -43,6 +44,13 @@ assert_exec() {
 }
 assert_exec "$create_sh" 'create-issue-worktree.sh is executable'
 
+# Fetch must complete before resumability is calculated, so a newly discovered
+# remote branch cannot contradict the summary printed to the caller.
+fetch_line=$(grep -n 'git -C "$root" fetch origin' "$create_sh" | head -n1 | cut -d: -f1)
+resumable_line=$(grep -n "printf 'resumable:" "$create_sh" | head -n1 | cut -d: -f1)
+assert_eq yes "$([[ -n $fetch_line && -n $resumable_line && $fetch_line -lt $resumable_line ]] && printf yes || printf no)" \
+    'resumability is calculated after the origin fetch'
+
 make_repo() {
     local repo=$1 origin
     origin="$tmp/$(basename "$1")-origin"
@@ -77,6 +85,8 @@ assert_eq 'yes' "$([[ -f $root_contract ]] && printf yes || printf no)" \
 out=$(umask 022; "$create_sh" --repo-root "$repo" --issue 41 --base main 2>&1)
 rc=$?
 assert_eq '0' "$rc" 'issue setup completes'
+assert_contains "$out" 'resumable: no untracked=0 modified=0' \
+    'new issue setup reports that no resumable state exists'
 assert_not_contains "$out" 'setup failed' 'issue setup does not report a setup failure'
 worktree="$repo/.fleet/feat/issue-41"
 assert_eq 'yes' "$([[ -d $worktree ]] && printf yes || printf no)" \
@@ -98,6 +108,19 @@ for key in sandbox= tls= caches=; do
     assert_eq "$root_line" "$worktree_line" \
         "the worktree contract's $key line is byte-identical to the root's"
 done
+
+# An existing worktree is resumable even when its branch is already upstream;
+# report its preserved implementation state before the normal refusal.
+printf 'keep implementation\n' >"$worktree/untracked.bicep"
+printf 'modified seed\n' >"$worktree/seed.txt"
+resume_out=''
+resume_rc=0
+resume_out=$("$create_sh" --repo-root "$repo" --issue 41 --base main 2>&1) || resume_rc=$?
+assert_eq '1' "$resume_rc" 'rerunning an existing issue setup keeps the refusal status'
+assert_contains "$resume_out" 'resumable: yes untracked=1 modified=1' \
+    'existing worktree reports resumable state and preserved counts'
+assert_eq 'keep implementation' "$(<"$worktree/untracked.bicep")" \
+    'existing worktree contents survive the detection path'
 
 # Genuinely per-worktree facts are still freshly measured, not copied --
 # only sandbox=/tls=/caches= are session-scoped. worktree= must name the NEW
