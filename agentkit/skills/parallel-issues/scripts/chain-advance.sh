@@ -488,10 +488,25 @@ cover_retarget_lineage() {
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
     comments_file=$(mktemp "${TMPDIR:-/tmp}/chain-advance-cover.XXXXXXXXXX") || return 0
     chmod 600 -- "$comments_file" 2>/dev/null || true
-    if "$GH_BIN" api "repos/$repo/issues/$pr/comments" --paginate \
+    # --paginate alone concatenates one bare JSON array PER PAGE -- valid for
+    # a caller that reads it with `jq -s`, but review-ledger.sh's cover/read
+    # require the file to contain exactly ONE JSON array (`jq -e 'type ==
+    # "array"'`). Fix batch #2 F4: `--slurp` wraps every page into one outer
+    # array (of arrays, even for a single page); `--jq 'add'` (gh's own -q)
+    # concatenates that wrapper into the single flat array review-ledger.sh
+    # expects, so a PR with more than one page of comments is not silently
+    # truncated to its first page.
+    if "$GH_BIN" api "repos/$repo/issues/$pr/comments" --paginate --slurp --jq 'add' \
         -H 'Accept: application/vnd.github+json' >"$comments_file" 2>/dev/null; then
+        # --kind adversarial (fix batch #2 F3): an unfiltered call extends
+        # whichever review entry is LAST in the ledger, which may be a bot
+        # entry (e.g. a CodeRabbit record appended after the adversarial
+        # receipt) -- leaving the adversarial receipt itself stale for
+        # merge-gate.sh. A retarget's lineage belongs on the adversarial
+        # entry specifically.
         "$script" cover --repo "$repo" --pr "$pr" --comments "$comments_file" \
-            --head "$head_sha" --reason "retarget:$old_base" --repo-root "$repo_root" \
+            --head "$head_sha" --reason "retarget:$old_base" --kind adversarial \
+            --repo-root "$repo_root" \
             >&2 || printf '%s: review-ledger cover not recorded for pr #%s (best-effort, non-fatal)\n' \
                 "$PROGNAME" "$pr" >&2
     fi

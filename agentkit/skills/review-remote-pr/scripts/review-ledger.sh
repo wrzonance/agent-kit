@@ -789,7 +789,8 @@ cmd_cover() {
       [range(0; (.reviews | length)) as $i | .reviews[$i] |
         select(($kind == "") or (.kind == $kind)) |
         select(($provider == "") or (.provider == $provider)) |
-        {index: $i, head_sha, covered_heads: (.covered_heads // [])}]
+        {index: $i, head_sha, covered_heads: (.covered_heads // []),
+         coverage: (.coverage // [])}]
     ' <<<"$ledger_json") || evidence_unavailable 'could not filter ledger entries'
     candidate_count=$(jq 'length' <<<"$candidates") || candidate_count=0
     if [[ $candidate_count == 0 ]]; then
@@ -803,24 +804,52 @@ cmd_cover() {
     target_index=$(jq -r '.index' <<<"$target")
     target_head=$(jq -r '.head_sha' <<<"$target")
 
-    # Idempotent: a SHA already recorded (as the review head itself, or
-    # already in covered_heads) never needs a second cover -- no-op, no post.
+    # Idempotence keys on the (sha, reason) PAIR, not the sha alone (fix
+    # batch #2 F2): the ordinary retarget case covers an UNCHANGED head under
+    # a NEW base, so keying on sha alone would silently drop that retarget's
+    # own coverage/audit record as a same-sha no-op. A sha already recorded
+    # (as the review head itself, or already in covered_heads) with this
+    # exact reason already logged is a true no-op; a sha already recorded
+    # but under a reason not yet logged still needs its coverage event
+    # appended (covered_heads itself stays a no-op there via `unique` below).
+    local sha_covered=0 reason_recorded=0
     if [[ $target_head == "$head" ]] ||
         jq -e --arg head "$head" '(.covered_heads // []) | index($head) != null' <<<"$target" >/dev/null 2>&1; then
+        sha_covered=1
+    fi
+    if jq -e --arg head "$head" --arg reason "$reason" \
+        'any((.coverage // [])[]; .sha == $head and .reason == $reason)' \
+        <<<"$target" >/dev/null 2>&1; then
+        reason_recorded=1
+    fi
+    if ((sha_covered)) && ((reason_recorded)); then
         printf 'already-covered\n'
         exit 0
     fi
 
-    # Fail-closed exactly like cmd_status's force-push demotion: only a
-    # POSITIVELY PROVEN descendant may extend coverage. "unknown" (no
-    # --repo-root, git absent, or the object simply not present locally) is
-    # never good enough to record a lineage claim.
-    local reach
-    reach=$(git_ancestor "$target_head" "$head" "$repo_root")
-    if [[ $reach != yes ]]; then
-        printf '%s: refused: %s is not a proven descendant of %s (reachability=%s); pass --repo-root to prove ancestry\n' \
-            "$PROGNAME" "$head" "$target_head" "$reach" >&2
-        exit 12
+    if ((sha_covered == 0)); then
+        # Fail-closed exactly like cmd_status's force-push demotion, but
+        # extended per fix batch #2 F1: ancestry must be proven against the
+        # ENTIRE covered frontier -- the entry's original head_sha AND every
+        # SHA already recorded in its covered_heads -- not head_sha alone.
+        # Otherwise a force-push to C, a SIBLING child of head_sha that
+        # drops an already-covered fix commit B, would still pass purely
+        # because C descends from head_sha, even though C's history silently
+        # discards B's reviewed lineage. Only reach=yes may pass for every
+        # frontier SHA; "unknown" (no --repo-root, git absent, or the object
+        # simply not present locally) never counts as proof.
+        local frontier frontier_count i sha reach
+        frontier=$(jq -c '([.head_sha] + (.covered_heads // [])) | unique' <<<"$target")
+        frontier_count=$(jq 'length' <<<"$frontier") || frontier_count=0
+        for ((i = 0; i < frontier_count; i++)); do
+            sha=$(jq -r ".[$i]" <<<"$frontier")
+            reach=$(git_ancestor "$sha" "$head" "$repo_root")
+            if [[ $reach != yes ]]; then
+                printf '%s: refused: %s is not a proven descendant of %s (reachability=%s); pass --repo-root to prove ancestry\n' \
+                    "$PROGNAME" "$head" "$sha" "$reach" >&2
+                exit 12
+            fi
+        done
     fi
 
     local covered_at
