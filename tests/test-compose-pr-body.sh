@@ -82,7 +82,72 @@ assert_rc 1 'composer rejects an empty agent identity' -- bash "$compose" \
     --decisions-file "$decisions" --testing-file "$testing" \
     --agent '' --output "$output"
 
+# --- plain "- item" Testing bullets normalize to unchecked checkboxes ------
+plain_testing="$tmp/plain-testing.md"
+printf '%s\n' '- [x] already a checkbox' '- plain bullet one' '' '- plain bullet two' \
+    >"$plain_testing"
+normalized_output="$tmp/normalized-body.md"
+assert_rc 0 'composer accepts plain "- item" Testing bullets' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$plain_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$normalized_output"
+normalized_text=$(<"$normalized_output")
+assert_contains "$normalized_text" '- [x] already a checkbox' \
+    'an existing checkbox line is passed through unchanged'
+assert_contains "$normalized_text" '- [ ] plain bullet one' \
+    'a plain bullet normalizes to an unchecked checkbox'
+assert_contains "$normalized_text" '- [ ] plain bullet two' \
+    'every plain bullet line normalizes independently'
+assert_not_contains "$normalized_text" '- plain bullet one' \
+    'the normalized line replaces the original plain bullet text'
 
+# A genuinely non-list line mixed in with valid bullets still fails the whole
+# composition -- normalization never silently drops or ignores an invalid line.
+mixed_invalid_testing="$tmp/mixed-invalid-testing.md"
+printf '%s\n' '- [ ] a real checkbox' 'prose that is not a list item at all' \
+    >"$mixed_invalid_testing"
+assert_rc 1 'a genuinely non-list line still fails composition' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$mixed_invalid_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$output"
+
+# A malformed checkbox attempt (dash, space, bracket -- but not the strict
+# "- [ ]"/"- [x]" form) must fail, not be silently normalized into a
+# double-bracketed bullet like "- [ ] [z] weird".
+malformed_checkbox_testing="$tmp/malformed-checkbox-testing.md"
+printf '%s\n' '- [z] weird' >"$malformed_checkbox_testing"
+malformed_checkbox_err=$(bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$malformed_checkbox_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$output" 2>&1)
+malformed_checkbox_rc=$?
+assert_eq '1' "$malformed_checkbox_rc" \
+    'a malformed checkbox-like bullet fails composition rather than being normalized'
+assert_contains "$malformed_checkbox_err" 'markdown checkbox lines' \
+    'the malformed-checkbox refusal names the checkbox requirement'
+
+# A plain bullet whose text happens to start with a markdown link -- "- [text]
+# (url)" -- must normalize like any other plain bullet, not trip the malformed-
+# checkbox guard above: the bracket in "[CI run]" is link syntax, not a
+# checkbox attempt, because it holds more than one character (#554 F3).
+link_bullet_testing="$tmp/link-bullet-testing.md"
+printf '%s\n' '- [CI run](https://example.test)' >"$link_bullet_testing"
+link_bullet_output="$tmp/link-bullet-body.md"
+assert_rc 0 'composer accepts a plain bullet starting with a markdown link' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$link_bullet_testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$link_bullet_output"
+assert_contains "$(<"$link_bullet_output")" '- [ ] [CI run](https://example.test)' \
+    'a link-prefixed bullet normalizes to an unchecked checkbox, link intact'
+
+# A single-character bracket -- the actual malformed-checkbox shape -- still
+# fails even when a second bracket pair follows on the same line.
+malformed_checkbox_with_link="$tmp/malformed-checkbox-with-link-testing.md"
+printf '%s\n' '- [z] [CI run](https://example.test)' >"$malformed_checkbox_with_link"
+assert_rc 1 'a single-char malformed checkbox still fails, even followed by a link' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$malformed_checkbox_with_link" \
+    --agent 'Codex gpt-5.6-luna' --output "$output"
 
 # --- a section file named like an option is a file, not a flag -------------
 # The validator hands the path straight to grep. Under GNU grep an unguarded
