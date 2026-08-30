@@ -991,4 +991,24 @@ retry_create_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RE
 assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA" "$retry_create_out" \
     'recreating an already-existing ref at the same recorded SHA still succeeds'
 
+# -- issue #567 fix batch #2: the retarget lineage hook's review-ledger.sh
+#    cover call site -- F3 (restrict coverage to the adversarial entry) and
+#    F4 (flatten multi-page gh api output into one JSON array). The hook's
+#    own gh/script resolution makes a full functional stub impractical here
+#    (its sibling-script path is hardcoded, not overridable), so this pins
+#    the exact recipe shape the way this suite's other cross-file contracts
+#    already do.
+# shellcheck disable=SC2016  # single-quoted on purpose: these are literal
+# sed patterns matching the shell metacharacters in the source text itself,
+# never meant to expand here.
+cover_call_block=$(sed -n '/"\$script" cover/,/repo-root "\$repo_root"/p' "$advance" | tr '\n' ' ')
+assert_contains "$cover_call_block" '--kind adversarial' \
+    'F3: the cover_retarget_lineage cover call restricts coverage to the adversarial-kind entry'
+# shellcheck disable=SC2016
+gh_comments_call_block=$(sed -n '/"\$GH_BIN" api "repos\/\$repo\/issues\/\$pr\/comments"/,/Accept: application\/vnd.github+json/p' "$advance" | tr '\n' ' ')
+assert_contains "$gh_comments_call_block" '--slurp' \
+    'F4: the retarget lineage hook slurps every gh api page into one wrapper array'
+assert_contains "$gh_comments_call_block" "--jq 'add'" \
+    "F4: the retarget lineage hook flattens the slurped pages with gh's own jq add"
+
 finish

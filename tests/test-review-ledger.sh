@@ -609,6 +609,64 @@ out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_after_fix_comm
 assert_eq '0' "$idempotent_rc" 'cover on an already-covered head is a silent idempotent no-op'
 assert_eq 'already-covered' "$out" 'cover prints already-covered rather than re-posting'
 
+# -- fix batch #2 F2: idempotence keys on (sha, reason), not sha alone -------
+# The ordinary retarget case covers an UNCHANGED head under a NEW base --
+# keying on sha alone would silently drop that retarget's own coverage
+# event as a same-sha no-op. A sha already covered under a DIFFERENT reason
+# must still record the new reason (and must not duplicate covered_heads).
+
+out=$(GH_COMMENT_STUB_OUT="$tmp/cover-newreason-body.txt" "$script" cover --repo owner/repo --pr 1 \
+    --comments "$cover_after_fix_comments" --head "$lineage_b" --reason 'retarget:main' \
+    --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub")
+rc=$?
+assert_eq '0' "$rc" \
+    'F2: cover on an already-covered sha with a NEW reason is not treated as idempotent'
+assert_contains "$out" 'updated id=80' 'F2: the same-sha/new-reason cover still posts an update'
+newreason_body=$(cat "$tmp/cover-newreason-body.txt")
+assert_contains "$newreason_body" '"reason": "retarget:main"' \
+    'F2: the new reason is recorded for the already-covered sha'
+cover_newreason_comments="$tmp/cover-newreason.json"
+make_comments "$cover_newreason_comments" "$newreason_body" 80
+newreason_json=$(tail -n +2 <<<"$("$script" read --repo owner/repo --pr 1 --comments "$cover_newreason_comments")")
+covered_heads_b_count=$(jq -r --arg b "$lineage_b" \
+    '[.reviews[0].covered_heads[] | select(. == $b)] | length' <<<"$newreason_json")
+assert_eq '1' "$covered_heads_b_count" \
+    'F2: covered_heads is not duplicated when only a new reason is recorded for an already-covered sha'
+coverage_b_count=$(jq -r --arg b "$lineage_b" \
+    '[.reviews[0].coverage[] | select(.sha == $b)] | length' <<<"$newreason_json")
+assert_eq '2' "$coverage_b_count" \
+    'F2: two distinct coverage events (fix and retarget) are both recorded for the same already-covered sha'
+
+# -- fix batch #2 F1: ancestry must be proven against the ENTIRE covered
+#    frontier, not just the entry's original head_sha -----------------------
+# After A -> B is covered (cover_after_fix_comments: head_sha=A,
+# covered_heads=[B]), a force-push to C -- a SIBLING child of A that drops B
+# -- must never pass just because C descends from A. C must be proven a
+# descendant of EVERY already-covered sha, B included.
+
+f1_orig_branch=$(git -C "$lineage_repo" symbolic-ref --short HEAD)
+git -C "$lineage_repo" checkout -q "$lineage_a"
+printf 'sibling-of-b\n' >"$lineage_repo/file"
+git -C "$lineage_repo" commit -q -am sibling-of-b
+sibling_of_b=$(git -C "$lineage_repo" rev-parse HEAD)
+git -C "$lineage_repo" checkout -q "$f1_orig_branch"
+
+f1_refused_rc=0
+out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_after_fix_comments" \
+    --head "$sibling_of_b" --reason 'fix:F4' --repo-root "$lineage_repo" \
+    --gh-comment-script "$fake_gh_dir/gh" 2>"$tmp/cover-frontier-refused.err") || f1_refused_rc=$?
+assert_eq '12' "$f1_refused_rc" \
+    'F1: cover refuses a sibling of an already-covered sha even though it descends from head_sha'
+assert_eq '' "$out" 'F1: a frontier-refused cover prints nothing on stdout'
+assert_contains "$(cat "$tmp/cover-frontier-refused.err")" "$lineage_b" \
+    'F1: the refusal names the already-covered sha the new head fails to descend from'
+
+out=$("$script" status --repo owner/repo --pr 1 --comments "$cover_after_fix_comments" \
+    --head "$sibling_of_b" --repo-root "$lineage_repo")
+rc=$?
+assert_eq '10' "$rc" 'F1: status still reports stale for a sibling cover refused to record'
+assert_eq 'stale' "$out" 'F1: a frontier-refused cover leaves the rewritten head stale, never covered'
+
 # -- cover: refuses a SHA that is not a proven descendant (fail-closed) ------
 # Root review finding F1's fail-closed rule 5, reused here: only reach=yes
 # (a POSITIVELY PROVEN descendant) may extend coverage. A sibling commit

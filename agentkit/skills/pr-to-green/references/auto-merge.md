@@ -282,18 +282,24 @@ entry's lineage instead of falsifying or parking:
 ```bash
 "$agentkit/review-remote-pr/scripts/review-ledger.sh" cover \
   --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
-  --reason "merge-down:$base_sha" --repo-root "$repo_root" || true
+  --reason "merge-down:$base_sha" --kind adversarial --repo-root "$repo_root" || true
 ```
 
-Use `retarget:$old_base` for a stacked-successor retarget — the "a stacked
-retarget" bucket above already runs `chain-advance.sh --retarget`, whose own
-best-effort hook calls this after a successful edit — and `fix:$finding_id`
-for a fix-batch commit (SKILL.md Step 3). `cover` refuses (exit 12) a `--head`
-that is not a proven git descendant of the entry's own head, the same
-fail-closed ancestry proof `status` already applies, so a genuine history
-rewrite still cannot be waved through. Deliberately best-effort and
-non-fatal, like the call above: a failed `cover` never blocks the merge-down
-or retarget itself, it only leaves the next `--adversarial-review-status`
+Always pass `--kind adversarial`: an unfiltered call extends whichever entry
+is LAST in the ledger, which may be a bot entry (e.g. a CodeRabbit record
+appended after the adversarial receipt) — leaving the receipt merge-gate.sh
+actually reads stale. Use `retarget:$old_base` for a stacked-successor
+retarget — the "a stacked retarget" bucket above already runs
+`chain-advance.sh --retarget`, whose own best-effort hook calls this (with
+`--kind adversarial`) after a successful edit — and `fix:$finding_id` for a
+fix-batch commit (SKILL.md Step 3). `cover` refuses (exit 12) a `--head` that
+is not a proven git descendant of every SHA already recorded on the entry —
+its original head plus every previously covered SHA, not only the original
+head — the same fail-closed ancestry proof `status` already applies, so a
+force-push that drops an already-covered commit still cannot be waved
+through. Deliberately best-effort and non-fatal, like the call above: a
+failed `cover` never blocks the merge-down or retarget itself, it only
+leaves the next `--adversarial-review-status`
 read at `stale` until retried.
 
 Code-scanning completion is proven from `GET code-scanning/analyses` — the
