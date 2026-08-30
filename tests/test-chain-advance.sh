@@ -95,6 +95,148 @@ assert_contains "$behind_output" 'behind_by=3' 'behind refusal reports the faile
 behind_log=$(<"$tmp/gh-behind.log")
 assert_not_contains "$behind_log" 'pr edit' 'behind retarget never edits the PR base'
 
+# --- issue #577: a behind_by gap confined to declared AGENT_GENERATED_PATHS --
+# is not a real divergence, and a stale check from a declared review provider
+# is not evidence a retarget failed to trigger a re-run it never could.
+repo577="$tmp/repo-577"
+mkdir -p "$repo577/.agent"
+git -C "$repo577" init -q
+git -C "$repo577" config user.name test
+git -C "$repo577" config user.email test@example.invalid
+printf '%s\n' seed >"$repo577/file"
+git -C "$repo577" add file
+git -C "$repo577" commit -qm seed
+cat >"$repo577/.agent/config.env" <<'EOF'
+AGENT_GENERATED_PATHS=bench/results/
+AGENT_REVIEW_PROVIDERS=coderabbit
+EOF
+
+# A stacked successor whose predecessor just merged (the post-merge
+# `chore(bench): record tier0 ...` commit landed on the default branch)
+# retargets with one merge-down and no rerun: the behind_by=1 gap is confined
+# entirely to the declared bench/results/ prefix.
+cat >"$tmp/gh-bench-only" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":501,"baseRefName":"main","headRefName":"feat/child-501","headRefOid":"222222222222222222222222222222222222222a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:10:00Z"}],"closingIssuesReferences":[{"number":501}]}'
+        ;;
+    *"compare/main...222222222222222222222222222222222222222a"*)
+        printf '%s\n' '{"status":"diverged","behind_by":1,"ahead_by":2}'
+        ;;
+    *"compare/222222222222222222222222222222222222222a...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run for an already-correct base\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-bench-only"
+: >"$tmp/gh-bench-only.log"
+bench_only_output=$(cd -- "$repo577" && GH_LOG="$tmp/gh-bench-only.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-bench-only" bash "$advance" \
+    --retarget --repo owner/repo --pr 501 --base main)
+assert_contains "$bench_only_output" 'retargeted pr #501' \
+    'a bench-commit-only behind gap still completes the retarget'
+assert_contains "$bench_only_output" 'behind=1 generated-only=yes' \
+    'the proof line names the tolerated behind gap and its generated-only exemption'
+assert_contains "$bench_only_output" 'ancestry=verified' \
+    'the tolerated behind gap still reports verified ancestry'
+bench_only_log=$(<"$tmp/gh-bench-only.log")
+assert_eq '0' "$(grep -c 'actions/runs' <<<"$bench_only_log" || true)" \
+    'a bench-commit-only retarget triggers no CI rerun'
+
+# The same behind_by=1 gap refuses when the diff also touches an undeclared
+# path -- the generated-only exemption never widens past what was proven.
+cat >"$tmp/gh-bench-mixed" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":502,"baseRefName":"main","headRefName":"feat/child-502","headRefOid":"333333333333333333333333333333333333333a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:10:00Z"}],"closingIssuesReferences":[{"number":502}]}'
+        ;;
+    *"compare/main...333333333333333333333333333333333333333a"*)
+        printf '%s\n' '{"status":"diverged","behind_by":1,"ahead_by":2}'
+        ;;
+    *"compare/333333333333333333333333333333333333333a...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"},{"filename":"src/app.py"}]}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-bench-mixed"
+set +e
+bench_mixed_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-bench-mixed" \
+    bash "$advance" --retarget --repo owner/repo --pr 502 --base main 2>&1)
+bench_mixed_rc=$?
+set -e
+assert_eq '1' "$bench_mixed_rc" \
+    'a behind gap mixing a declared and an undeclared path still refuses'
+assert_contains "$bench_mixed_output" 'behind_by=1' \
+    'the mixed-path refusal still reports the failed precondition'
+
+# With `coderabbit` declared and its check run in observe mode (never
+# pinged), a stale CodeRabbit check is reported as provider-check residue and
+# does not block the proof; a genuinely stale, non-provider check still does.
+cat >"$tmp/gh-provider-residue" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":503,"baseRefName":"main","headRefName":"feat/child-503","headRefOid":"444444444444444444444444444444444444444a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:10:00Z"},{"name":"CodeRabbit","status":"COMPLETED","conclusion":"NEUTRAL","createdAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":503}]}'
+        ;;
+    *"compare/main...444444444444444444444444444444444444444a"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":2}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-provider-residue"
+provider_residue_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-provider-residue" \
+    bash "$advance" --retarget --repo owner/repo --pr 503 --base main)
+assert_contains "$provider_residue_output" 'retargeted pr #503' \
+    'a stale CodeRabbit check under a declared coderabbit provider does not block the proof'
+assert_contains "$provider_residue_output" 'provider-check=CodeRabbit' \
+    'the proof line names the excused provider check'
+assert_contains "$provider_residue_output" 'closing-issues=1' \
+    'the provider-check token never displaces the trailing closing-issues token'
+
+cat >"$tmp/gh-nonprovider-stale" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":504,"baseRefName":"main","headRefName":"feat/child-504","headRefOid":"555555555555555555555555555555555555555a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2023-12-31T23:00:00Z"},{"name":"CodeRabbit","status":"COMPLETED","conclusion":"NEUTRAL","createdAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":504}]}'
+        ;;
+    *"compare/main...555555555555555555555555555555555555555a"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":2}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-nonprovider-stale"
+set +e
+nonprovider_stale_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-nonprovider-stale" \
+    bash "$advance" --retarget --repo owner/repo --pr 504 --base main 2>&1)
+nonprovider_stale_rc=$?
+set -e
+assert_eq '1' "$nonprovider_stale_rc" \
+    'a genuinely stale non-provider check still refuses even with a provider declared'
+assert_contains "$nonprovider_stale_output" 'predates the retarget' \
+    'the non-provider staleness refusal still reports its cause'
+assert_contains "$nonprovider_stale_output" 'tests' \
+    'the non-provider staleness refusal names the stale check'
+
 cat >"$tmp/gh-sha" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
