@@ -217,12 +217,69 @@ hold it silently and allow its selected children to proceed. Record the structur
 hold is auditable.
 
 With `--fast-mode`, every other `active` candidate is dropped with a one-line `active` reason;
-there is no hold/skip question. Tracker holds are counted separately from the refill queue. The
-queue contains the first-N pickup-order overflow implementation candidates and is refilled as
-slots free. Under `--auto-serialize`, a chain-depth overflow enters this same queue rather than
-becoming an exclusion; the successor is refilled only after its immediate predecessor's commit
-is pushed. A fast-mode disclosure therefore includes `queued=` and `tracker=` even when either is
-zero.
+there is no hold/skip question. That rule applies to automatic candidates; an explicitly
+operator-named active issue gets one additional liveness adjudication. Tracker holds are counted
+separately from the refill queue. The queue contains the first-N pickup-order overflow
+implementation candidates and is refilled as slots free. Under `--auto-serialize`, a chain-depth
+overflow enters this same queue rather than becoming an exclusion; the successor is refilled only
+after its immediate predecessor's commit is pushed. A fast-mode disclosure therefore includes
+`queued=` and `tracker=` even when either is zero.
+
+### Named active issue adjudication
+
+An explicit issue number is a request to account for that number, not permission to lose it in the
+active filter. The triage digest keeps the winning open-PR evidence even when the board Status is
+`In progress` or `In review`; use it as the first liveness check. Then use the repository-wide,
+root-owned worker ledger at `$repository_root/.agent/runs/active-workers.ndjson`. This path is
+shared across resumptions and invocation IDs so a new run cannot overlook a worker dispatched by
+an earlier run.
+
+The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Each row has
+exactly this durable evidence shape:
+
+```json
+{"version":1,"issue":511,"worktree":"/absolute/repo/.worktrees/feat/issue-511","branch":"feat/issue-511","state":"active","heartbeatEpoch":1787932800}
+```
+
+The latest valid row for an issue wins. Root appends `state=active` immediately after the worker is
+spawned into its registered worktree, appends another active row with a current
+`heartbeatEpoch` whenever the runtime reports worker progress, and appends `state=terminal` when
+the worker completes, is interrupted, or is parked. Only root writes this file; create its parent
+with mode `0700` and the ledger with mode `0600`. A malformed, symlinked, non-owned, or
+group/world-writable ledger is blocked evidence, never permission to dispatch.
+
+Run the boundary helper for every operator-named triage record whose verdict is `active`:
+
+```bash
+active_workers="$repository_root/.agent/runs/active-workers.ndjson"
+open_pr=${triage_pr:-none}
+"$agentkit/parallel-issues/scripts/named-active-state.sh" \
+    --repo-root "$repository_root" --ledger "$active_workers" \
+    --issue "$issue_number" --open-pr "$open_pr" \
+    --fresh-hours "${AGENT_ACTIVE_FRESH_HOURS:-2}"
+```
+
+A live worktree lock requires the latest row to be active and its exact canonical worktree/branch
+pair to remain in `git worktree list --porcelain`; merely finding a directory, branch, or process
+is not a lock. If that exact registration is absent, the same active row is a heartbeat hold only
+when its timestamp is not in the future and is inside the invocation's declared `N`-hour window.
+Use the same declared window for every candidate in the run. An absent ledger or terminal/latest
+stale row is no local liveness evidence.
+
+Classify the named issue in this order:
+
+```text
+held-active:#N reason=pr pr=#M
+held-active:#N reason=worktree
+held-active:#N reason=heartbeat
+stale-active=1[#N]
+```
+
+The first three lines are terminal holds. If an open PR, live worktree lock, and fresh heartbeat
+are all absent, `stale-active` is eligible and proceeds through the normal named-issue selection.
+Do not re-fetch board state to second-guess the digest, and do not infer a heartbeat from a stale
+directory or an unbounded process probe. Automatic (unnamed) active candidates retain the existing
+tracker/drop behavior.
 
 ## Conflict analysis and dispatch-plan write sets
 
@@ -559,7 +616,7 @@ After conflict analysis and the slot cap have fixed the dispatch set, print exac
 single-line reconciliation in this shape:
 
 ```text
-Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count>[#<issue>,...] tracker=<tracker-count> exclusions=<reason>:<count>[#<issue>,...]|none
+Selection funnel: requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count>[#<issue>,...] tracker=<tracker-count> duplicate=<duplicate-count> held-active=<held-count> stale-active=<stale-count>[#<issue>,...] exclusions=<reason>:<count>[#<issue>,...]|none
 ```
 
 For automatic selection with no supplied count, `requested` is the effective Limits-section slot cap.
@@ -568,11 +625,18 @@ mechanical eligibility before conflict/serialization and the slot cap, so it may
 `requested`. `dispatched` is the number actually launched in this wave and must not exceed
 `requested`; `queued` is the number retained for refill after the wave cap or
 chain-depth cap, followed by its issue IDs in pickup order as `queued=N[#...]` (use `queued=0`
-when empty); `tracker` is the number of active parent/epic records held without a prompt. Group all
-other candidates not dispatched under stable categorical reasons such as
+when empty); `tracker` is the number of active parent/epic records held without a prompt;
+`duplicate` is the number of repeated operator-supplied numbers; and `held-active` is the number
+of named active issues held by a PR, live worktree lock, or fresh heartbeat. stale-active is a disclosure sub-count of dispatched or queued work: it names active issues promoted after all three
+liveness checks were absent, using `stale-active=N[#...]` (use `stale-active=0` when empty), but is
+not a separate accounting bucket. The accounting invariant is:
+`requested = dispatched + queued + tracker + duplicate + held-active + sum(exclusions)`.
+Group candidates not dispatched under stable categorical reasons such as
 `blocked-by`, `tier`, `already-implemented`, `conflict-serialized`, or `slot-cap`; use the
 specific existing verdict instead of a catch-all when one applies. Each considered candidate
-appears exactly once: in the dispatched set, queue, tracker holds, or exactly one exclusion group.
+appears exactly once: in the dispatched set, queue, tracker holds, duplicate, held-active, or
+exactly one exclusion group; `stale-active` may annotate dispatched or queued issues and is never
+counted twice.
 When more than one exclusion could describe it, use the earliest terminal decision made by the existing
 selection procedure, so the groups are mutually exclusive and their counts match their issue
 lists. This is reporting only; never change eligibility to make the arithmetic look fuller.
@@ -581,18 +645,25 @@ A [work-shape verdict](#work-shape-verdict) of `no-code` reports under `no-code-
 Examples cover all queue shapes:
 
 ```text
-Selection funnel: requested=3 eligible=3 dispatched=3 queued=0 tracker=0 exclusions=none
-Selection funnel: requested=3 eligible=2 dispatched=1 queued=0 tracker=0 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
-Selection funnel: requested=11 eligible=11 dispatched=10 queued=1[#12] tracker=1 exclusions=none
-Selection funnel: requested=6 eligible=6 dispatched=5 queued=1[#6] tracker=0 exclusions=none
-Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]
-Selection funnel: requested=12 eligible=11 dispatched=10 queued=1 tracker=1 exclusions=none
+Selection funnel: requested=3 eligible=3 dispatched=3 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=none
+Selection funnel: requested=3 eligible=2 dispatched=1 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]
+Selection funnel: requested=12 eligible=11 dispatched=10 queued=1[#12] tracker=1 duplicate=0 held-active=0 stale-active=0 exclusions=none
+Selection funnel: requested=6 eligible=6 dispatched=5 queued=1[#6] tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=none
+Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]
+Selection funnel: requested=12 eligible=11 dispatched=10 queued=1 tracker=1 duplicate=0 held-active=0 stale-active=0 exclusions=none
+Selection funnel: requested=1 eligible=1 dispatched=1 queued=0 tracker=0 duplicate=0 held-active=0 stale-active=1[#511] exclusions=none
+Selection funnel: requested=1 eligible=1 dispatched=0 queued=0 tracker=0 duplicate=0 held-active=1 stale-active=0 exclusions=none
 ```
 
-For compatibility with pre-queue attended logs, these legacy examples remain recognizable:
+The first named-active example demonstrates a stale `In progress` issue being dispatched; the
+second demonstrates an open-PR hold (`held-active:#513 reason=pr pr=#535`).
+
+Legacy forms are compatibility-only and are not emitted by current fast-mode runs; they remain
+recognizable for pre-queue attended logs:
 `Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none`,
 `Selection funnel: requested=3 eligible=2 dispatched=1 exclusions=blocked-by:1[#11],conflict-serialized:1[#12]`,
-and `Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]`.
+`Selection funnel: requested=3 eligible=0 dispatched=0 exclusions=tier:1[#20],already-implemented:1[#21]`,
+and the pre-queue fast-mode shape `Selection funnel: requested=3 eligible=0 dispatched=0 queued=0 tracker=0 exclusions=tier:1[#20],already-implemented:1[#21],no-code-hold:1[#22]`.
 
 The full-request example says every requested issue was dispatched. The thin-dispatch example
 makes blocked and serialized candidates legible without widening the wave. The fast-mode example

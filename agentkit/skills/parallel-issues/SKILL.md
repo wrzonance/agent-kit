@@ -388,7 +388,7 @@ issue needs none of it.
 | `merged-ref` | a merged PR references it | read **that PR only**, then apply the prior-art table |
 | `in-flight` | an open PR references it | flag and ask — already being worked; do not double-dispatch |
 | `attempted` | a closed-unmerged PR references it | read that PR's review threads; they usually say why it died |
-| `active` | Status is In progress or In review | **active tracker**: hold; fast-mode drops active; attended asks |
+| `active` | Status is In progress or In review | active tracker holds; named fast-mode candidates are re-adjudicated as held-active or stale-active |
 | `unknown` | the query returned nothing usable | re-run; if it persists, fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` |
 
 An `adr=` path is a **candidate located by token overlap**, not a verdict. Read

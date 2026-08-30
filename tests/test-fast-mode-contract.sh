@@ -15,12 +15,16 @@ body_policy="$root/agentkit/skills/.shared/github-body-policy.md"
 comment_composer="$root/agentkit/skills/review-remote-pr/scripts/compose-comment-body.sh"
 worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
 fast_reference="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+triage_reference="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
+named_active_helper="$root/agentkit/skills/parallel-issues/scripts/named-active-state.sh"
 
 parallel_text=$(<"$parallel")
 review_text=$(<"$review")
 policy_text=$(<"$body_policy")
 worker_text=$(<"$worker_prompts")
 fast_text=$(<"$fast_reference")
+triage_text=$(<"$triage_reference")
+named_active_text=$(<"$named_active_helper")
 
 # Fast mode must make one pushed diff and one combined finding batch observable.
 assert_contains "$parallel_text$review_text$fast_text" 'same first pushed diff' \
@@ -91,5 +95,73 @@ assert_eq '600' "$(stat -c '%a' "$agent")" 'composed comment is private on disk'
 # not leave it to a worker to infer from the invocation name.
 assert_contains "$worker_text" 'fast-mode' \
     'worker prompt reference carries fast-mode context'
+
+# Named active issues are re-adjudicated with local liveness evidence rather
+# than silently dropped by the fast-mode selection funnel.
+assert_contains "$parallel_text$fast_text$triage_text" 'stale-active' \
+    'fast mode names stale active candidates'
+assert_contains "$parallel_text$fast_text$triage_text" 'held-active' \
+    'fast mode names genuinely active candidates'
+assert_contains "$parallel_text$fast_text$triage_text" 'reason=pr' \
+    'held active output identifies an open PR'
+assert_contains "$parallel_text$fast_text$triage_text" 'reason=worktree' \
+    'held active output identifies a live worktree'
+assert_contains "$parallel_text$fast_text$triage_text" 'reason=heartbeat' \
+    'held active output identifies a fresh worker heartbeat'
+assert_contains "$parallel_text$fast_text$triage_text" \
+    'requested = dispatched + queued + tracker + duplicate + held-active + sum(exclusions)' \
+    'fast mode funnel accounts for every named issue and exclusions'
+assert_contains "$triage_text" 'stale-active is a disclosure sub-count' \
+    'stale-active is not double-counted in the funnel invariant'
+assert_contains "$triage_text" \
+    'requested=<requested-count> eligible=<eligible-count> dispatched=<dispatch-count> queued=<queue-count>' \
+    'funnel declares one canonical field order'
+assert_contains "$triage_text" 'Legacy forms are compatibility-only and are not emitted' \
+    'legacy funnel forms are explicitly demoted'
+assert_contains "$parallel_text$fast_text$triage_text" 'stale-active=1[#' \
+    'fast mode example prints stale-active issue identity'
+assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
+    'fast mode example prints held-active issue identity'
+assert_contains "$triage_text" '.agent/runs/active-workers.ndjson' \
+    'named active adjudication names one repository-wide durable ledger'
+assert_contains "$triage_text" 'state=terminal' \
+    'named active ledger releases completed, interrupted, and parked workers'
+assert_contains "$triage_text" 'named-active-state.sh' \
+    'named active adjudication invokes the executable boundary helper'
+assert_contains "$named_active_text" 'git -C "$repo_root" worktree list --porcelain' \
+    'worktree liveness is proven from exact Git registration'
+assert_not_contains "$named_active_text" 'pgrep' \
+    'named active adjudication does not infer liveness from process archaeology'
+
+# Parse every currently emitted canonical example and verify the accounting
+# invariant, including exclusion groups. Compatibility-only legacy strings do
+# not match this shape and are intentionally excluded from the parse.
+canonical_funnels=$(printf '%s\n' "$triage_text" | grep -E \
+    '^Selection funnel: requested=[0-9]+ eligible=[0-9]+ dispatched=[0-9]+ queued=[0-9]+(\[[^]]*\])?[[:space:]]tracker=[0-9]+ duplicate=[0-9]+ held-active=[0-9]+ stale-active=[0-9]+(\[[^]]*\])?[[:space:]]exclusions=')
+canonical_count=$(printf '%s\n' "$canonical_funnels" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+assert_eq '8' "$canonical_count" 'all canonical funnel examples are discoverable'
+canonical_mismatches=0
+while IFS= read -r funnel; do
+    [[ -n $funnel ]] || continue
+    requested=$(grep -oE 'requested=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    dispatched=$(grep -oE 'dispatched=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    queued=$(grep -oE 'queued=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    tracker=$(grep -oE 'tracker=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    duplicate=$(grep -oE 'duplicate=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    held=$(grep -oE 'held-active=[0-9]+' <<< "$funnel" | cut -d= -f2)
+    exclusions=${funnel#* exclusions=}
+    exclusion_total=0
+    if [[ $exclusions != none ]]; then
+        while IFS= read -r group; do
+            count=${group#*:}
+            count=${count%%\[*}
+            exclusion_total=$((exclusion_total + count))
+        done < <(tr ',' '\n' <<< "$exclusions")
+    fi
+    expected=$((dispatched + queued + tracker + duplicate + held + exclusion_total))
+    [[ $requested == "$expected" ]] || canonical_mismatches=$((canonical_mismatches + 1))
+done <<< "$canonical_funnels"
+assert_eq '0' "$canonical_mismatches" \
+    'every canonical funnel example satisfies the accounting invariant'
 
 finish
