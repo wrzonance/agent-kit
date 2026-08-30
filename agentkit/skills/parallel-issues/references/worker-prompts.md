@@ -428,6 +428,22 @@ else
   printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
   setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
 fi
+
+Classify issue-comment findings once (agent-kit#566): a CodeRabbit/Code-Quality finding posted as
+a plain issue comment carries no review thread, so it never surfaces through the `threads:`/
+`cq-open:` evidence above — see review-remote-pr's provider-rules.md for the classification detail:
+
+if ! icf_state=$("$agentkit/review-remote-pr/scripts/classify-issue-comment-findings.sh" count \
+  --comments "$state_dir/pr_NNN_issue_comments.json"); then
+  printf 'icf-open: unavailable source=pr_NNN_issue_comments.json\n'
+  setup_terminal='icf-open: unavailable source=pr_NNN_issue_comments.json'
+else
+  icf_open=$(sed -n 's/^open=\([0-9][0-9]*\) .*/\1/p' <<<"$icf_state")
+  printf 'icf-open: %s source=pr_NNN_issue_comments.json\n' "${icf_open:-0}"
+  if [[ $icf_open =~ ^[1-9][0-9]*$ ]]; then
+    setup_terminal="icf-open: $icf_open source=pr_NNN_issue_comments.json"
+  fi
+fi
 if ((ci_red)); then
   if [[ -n $ci_failing_checks ]]; then
     setup_terminal="ci-red: $ci_failing_checks"
@@ -514,10 +530,16 @@ non-empty threads artifact is present after the retry. `setup-artifacts-missing`
 
 If CI is red, set the terminal marker to exactly `ci-red: <check>` naming the failing check. If the attribution report
 has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_comments.json` line;
-`cq-repo: M` is reported separately and never gates. Otherwise return exactly `launch-ready`.
+`cq-repo: M` is reported separately and never gates. If any classified issue-comment finding
+(agent-kit#566) is still open, return `icf-open: N source=pr_NNN_issue_comments.json` — there is no
+review thread behind it, so it never shows up as a `threads:`/`cq-open:` count. Otherwise return
+exactly `launch-ready`. `ci-red` always wins the terminal slot over `cq-open`/`icf-open` when more
+than one signal is non-zero; every printed evidence line still reaches the root regardless of which
+one is chosen as the terminal marker.
 The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
 `ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,
-or `launch-ready run-dir=$RUN_DIR`). The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
+`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
+The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
 findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
 setup outcome, even when `cq-repo: M` is non-zero.
 Return the terminal line plus a compact evidence summary; never return BLOCKED merely because

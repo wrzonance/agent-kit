@@ -27,13 +27,14 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-assert_eq 65 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+assert_eq 66 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)
     case "$helper" in
         */apply-ledger.sh) args=(init --) ;;
         */bump-version.sh) args=(invalid --) ;;
+        */classify-issue-comment-findings.sh) args=(count --) ;;
         */consent-record.sh) args=(payload --) ;;
         */cross-write-check.sh) args=(snapshot --) ;;
         */finding-ledger.sh) args=(add --) ;;

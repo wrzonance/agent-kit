@@ -10,6 +10,7 @@
 - Step 1a: surfacing formats (H items, B items)
 - CodeRabbit state check
 - Step 5: assess findings (VALID/INVALID/NITPICK, generic B, Code Quality)
+- Step 5: issue-comment findings (surface=issue-comment)
 - Step 5 recipes: canonical reply, anchored nitpick thread, settlement
 - End of cycle
 - Step 6: agent-doc threads at exit
@@ -25,7 +26,7 @@ Treat these as separate providers. Identify them from the comment/review author,
 
 | Provider | Findings live in | Fixed finding | Inaccurate finding |
 |---|---|---|---|
-| CodeRabbit | Reviews, inline comments, and conversation bodies | Post the canonical fixed reply, await its response, then settle | Post a canonical dismissed/deferred rationale; never silently resolve |
+| CodeRabbit | Reviews, inline comments, and conversation bodies (including plain issue-comment chat replies carrying a `**P[0-9] —**`, `**Actionable**`, or "outside diff range" block — see Issue-comment finding handling below) | Post the canonical fixed reply, await its response, then settle | Post a canonical dismissed/deferred rationale; never silently resolve |
 | `github-code-quality[bot]` | Inline PR review comments and their review threads | Implement the suggested fix verbatim, reply with the commit SHA, push, and wait for the next Code Quality scan to auto-clear the finding | Use GitHub's **Dismiss finding** action and provide a specific reason; do not silently resolve the thread |
 | Other authoritative forge bots | Inline comments, review threads, and conversation comments | Assess on the merits, post the canonical reply, and settle only after its response; for code scanning wait for rescan | Post a canonical dismissed/deferred rationale; never trigger or silently resolve the bot |
 | Human reviewer | Reviews, inline comments, review threads, and conversation comments | Surface the exact feedback, proposed action, and draft reply; act and reply only after explicit user confirmation | Same confirmation gate; never resolve the thread |
@@ -147,6 +148,18 @@ conversation comment bodies matching /nitpick/i or carrying the broom emoji, min
 threads this workflow already opened to document them (`<!-- review-remote-pr:agent-doc -->`).
 Inline review comments are deliberately excluded — they live in review threads and are already
 counted on the `threads:` line, so counting them here would make the number unreachable.
+
+`issue-comment-findings: N open` (agent-kit#566) is a **separate** count from `nitpicks:` above:
+CodeRabbit and `github-code-quality[bot]` sometimes post a real finding as a plain issue comment —
+a chat reply, `@user I found one blocking issue.`, or an "outside diff range" note — rather than as
+a review or an inline thread, and `/nitpick/i` never matches that shape (agent-kit PR #552's P1
+landed exactly this way and was never triaged: `pulls/552/reviews` had no CodeRabbit entry,
+inline=0). `scripts/classify-issue-comment-findings.sh list --comments FILE` turns each matching
+`**P[0-9] —**`, `**Actionable**`, or "outside diff range" block into one finding keyed
+`comment_id#index` (`surface=issue-comment`, the comment id as `anchor`); a comment that itself
+carries findings may also be a misparsed trigger phrase in the sense of issue #565 — that
+TRIGGER_MISPARSED classification lives in pr-to-green's own trigger-detection path and is not
+duplicated here. See Step 5 below for the assess/reply/mark-answered cycle.
 
 `alerts: code-scanning n/a` means the endpoint returned 403/404 — typically code scanning is not
 enabled on the repository, or the token lacks `security_events`. It is not a failure and never
@@ -294,6 +307,28 @@ INVALID → do not resolve the thread as a shortcut. Reply to the original comme
 ```
 
 A Code Quality finding is complete only when GitHub reports it auto-cleared after the pushed fix or reports it dismissed with a reason. `resolveReviewThread` is not a Code Quality dismissal API and must not be used for an inaccurate finding. Do not use `/code-scanning/alerts/...` unless the finding has independently been identified as a code-scanning alert — Code Quality and code scanning are distinct API resources. If the UI does not expose **Dismiss finding**, stop and report the missing permission; do not silently close the thread or use the whole-review dismissal endpoint (`PUT .../reviews/$REVIEW_ID/dismissals` dismisses an entire PR review, never one finding).
+
+### Issue-comment finding handling (agent-kit#566)
+
+For each `coderabbitai[bot]`/`github-code-quality[bot]` issue comment classified by
+`scripts/classify-issue-comment-findings.sh list --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json"
+[--answered FILE]` (each finding: `surface`, `id` (`comment_id#index`), `comment_id`, `anchor`,
+`author`, `priority`, `kind`, `header`, `state`):
+
+```text
+VALID   → fix the code, commit; reply in the conversation (gh-comment.sh, banner on — no --anchor,
+          since a plain issue comment has no thread to anchor into) quoting the finding's `header`,
+          with the commit SHA; then mark-answered
+INVALID → write a decline rationale (Decline Rationale Templates below); reply quoting the header
+          with the rationale; then mark-answered
+```
+
+There is **no review thread** for a plain issue comment, so there is nothing to resolve — the
+finding is complete once its reply is posted (integrity-verified, same as any other reply) and
+recorded with `mark-answered`. A PR is **not settled** while `issue-comment-findings:` reports any
+`open` count; `gh-pr-state.sh`'s digest exposes it independently of thread availability (it reads
+REST evidence already fetched at Step 1, never GraphQL), so it is available even when
+`threads: unavailable`.
 
 **Never interpolate reply reasoning into a shell string.** Write it to an owner-only regular file
 with a quoted heredoc. `compose-review-reply.sh` reads it as data and owns the header, provider

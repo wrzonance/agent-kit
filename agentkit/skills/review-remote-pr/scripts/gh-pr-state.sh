@@ -38,6 +38,7 @@
 #   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
 #   nitpicks: 0 unhandled
 #   agent-docs: 0 eligible
+#   issue-comment-findings: 0 open
 #   next: human=2 -> per-item confirmation gate (Step 1a)
 #   alerts: code-scanning open=0
 #   saved: DIR/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
@@ -137,6 +138,13 @@ AUTOMATION_PATHS=""
 # --wait-ci rounds of ci=0/0 (no registered checks at all) tolerated as
 # "pending" before reporting none-configured; see the header comment.
 readonly CI_ZERO_CHECKS_GRACE_ROUNDS=3
+# Sibling classifier (agent-kit#566): issue-comment findings are REST
+# evidence, independent of the GraphQL review-thread capability, so this is
+# invoked unconditionally -- never gated on THREADS_AVAILABLE.
+readonly ISSUE_COMMENT_CLASSIFIER="$SCRIPT_DIR/classify-issue-comment-findings.sh"
+# Optional local answered-finding ledger; empty means every classified
+# finding reports open (see --issue-comment-answered in usage()).
+ISSUE_COMMENT_ANSWERED=""
 
 usage() {
     cat <<EOF
@@ -172,6 +180,11 @@ Options:
   --interval SECONDS     --wait-ci seconds between rounds, 1-3600 (default: $INTERVAL).
   --acceptance-command C  issue-declared acceptance command; repeatable. Its
                           matching check is reported separately from repo CI.
+  --issue-comment-answered FILE
+                         Local answered-finding ledger (classify-issue-comment-
+                         findings.sh's ndjson) so 'issue-comment-findings:'
+                         excludes findings already replied to. Omitted: every
+                         classified finding reports open.
   -h, --help             Show this help.
 
 Counting rules:
@@ -188,6 +201,16 @@ Counting rules:
               /nitpick|broom-emoji/i (the body-only surfaces, which have no review
               thread), minus the threads this workflow already opened to document
               them ('$AGENT_DOC_MARKER').
+  issue-comment-findings
+              CodeRabbit/Code-Quality issue comments carrying a '**P[0-9] —**'
+              priority call-out, a '**Actionable**' block, or an 'outside diff
+              range' note (agent-kit#566) -- distinct from 'nitpicks' above,
+              which only matches /nitpick/i or the broom emoji. Classified by
+              the sibling classify-issue-comment-findings.sh; 'open' excludes
+              any finding recorded in --issue-comment-answered. There is no
+              review thread for a plain issue comment, so a PR is not settled
+              while this count is non-zero -- reply in the conversation
+              quoting the finding header, mark it answered, and re-check.
   provider    the most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED)
               CodeRabbit review on the reviews endpoint whose OWN commit_id
               matches the current head: 'reviewed state=STATE threads=N
@@ -275,6 +298,8 @@ parse_args() {
         --interval=*) INTERVAL=${1#*=}; shift ;;
         --acceptance-command) require_value "$1" "${2:-}"; ACCEPTANCE_COMMANDS+=("$2"); shift 2 ;;
         --acceptance-command=*) ACCEPTANCE_COMMANDS+=("${1#*=}"); shift ;;
+        --issue-comment-answered) require_value "$1" "${2:-}"; ISSUE_COMMENT_ANSWERED=$2; shift 2 ;;
+        --issue-comment-answered=*) ISSUE_COMMENT_ANSWERED=${1#*=}; shift ;;
         --digest) SAW_DIGEST=1; shift ;;
         --full) WANT_FULL=1; shift ;;
         --wait-ci) WANT_WAIT=1; shift ;;
@@ -313,6 +338,8 @@ validate_args() {
     fi
     command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
     command -v jq >/dev/null 2>&1 || die "jq not found on PATH; evidence unavailable"
+    [[ -x $ISSUE_COMMENT_CLASSIFIER ]] ||
+        die "sibling classify-issue-comment-findings.sh not found or not executable: $ISSUE_COMMENT_CLASSIFIER"
     return 0
 }
 
@@ -1118,6 +1145,27 @@ print_next_lines() {
     return 0
 }
 
+# print_issue_comment_findings_line -- agent-kit#566. Independent of
+# THREADS_AVAILABLE: issue comments are REST evidence (already fetched into
+# $WORK_DIR/issue_comments.json by fetch_all/full_cache_load), never GraphQL,
+# so this always runs, even when the review-thread capability itself is
+# unavailable. A classifier failure fails the whole digest closed (matching
+# every other missing-tool check in validate_args) rather than silently
+# reporting zero findings for evidence that could not actually be read.
+print_issue_comment_findings_line() {
+    local -a answered_args=()
+    [[ -z $ISSUE_COMMENT_ANSWERED ]] || answered_args=(--answered "$ISSUE_COMMENT_ANSWERED")
+    local counts open
+    counts=$("$ISSUE_COMMENT_CLASSIFIER" count \
+        --comments "$WORK_DIR/issue_comments.json" "${answered_args[@]}") ||
+        die 'issue-comment finding classification failed'
+    open=$(sed -nE 's/^open=([0-9]+) .*$/\1/p' <<<"$counts")
+    [[ $open =~ ^[0-9]+$ ]] || die "issue-comment finding classifier returned an unparseable count: $counts"
+    printf 'issue-comment-findings: %s open\n' "$open"
+    ((open)) && printf 'next: issue-comment-findings=%s -> reply quoting the finding header + fix SHA, then mark-answered (Step 5)\n' "$open"
+    return 0
+}
+
 print_digest() {
     local alerts provider
     # The full head SHA, never a 7-character abbreviation: pr-to-green's
@@ -1140,6 +1188,7 @@ print_digest() {
     provider=$(provider_state)
     printf 'provider: coderabbit=%s\n' "$provider"
     print_thread_lines
+    print_issue_comment_findings_line
     alerts=$ALERTS_VALUE
     if [[ $alerts == "not-enabled" ]]; then
         printf 'alerts: code-scanning not-enabled\n'
