@@ -28,6 +28,7 @@ base14=${QUEUE_BASE_14:-main}
 state14=${QUEUE_STATE_14:-RUNNABLE}
 fp14=${QUEUE_FP_14:-10633847aa4a03af3ace3e56e24dfff1db569b771793fe2152ef9ceb34f17eee}
 omit14=${QUEUE_OMIT_14:-0}
+hasSucc14=${QUEUE_HAS_SUCCESSOR_14:-false}
 base15=${QUEUE_BASE_15:-feat/demo}
 sha15=${QUEUE_SHA_15:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}
 state15=${QUEUE_STATE_15:-WAITING_FOR_MERGE}
@@ -38,9 +39,9 @@ fp16=${QUEUE_FP_16:-7a926b1b60d7bec13dd83edefa996ebb00047a95fa5f59bdfc52edc7fa05
 entries='[]'
 if [[ $omit14 == 0 ]]; then
     entries=$(jq -cn --argjson e "$entries" --arg sha "$sha" --arg base14 "$base14" \
-        --arg state14 "$state14" --arg fp14 "$fp14" '
+        --arg state14 "$state14" --arg fp14 "$fp14" --argjson hasSucc14 "$hasSucc14" '
       $e + [{pr:14,issue:14,state:$state14,source:"plan",base:$base14,head:"feat/demo",sha:$sha,
-       diffFingerprint:$fp14}]')
+       diffFingerprint:$fp14,hasOpenSuccessor:$hasSucc14}]')
 fi
 entries=$(jq -cn --argjson e "$entries" --arg sha15 "$sha15" --arg base15 "$base15" \
     --arg state15 "$state15" --arg fp15 "$fp15" '
@@ -353,6 +354,39 @@ assert_eq '["autoMerge","deleteBranch","mergeMethod","providers","queue","readyT
 assert_eq 'true:squash:true' \
     "$(jq -r '[.autoMerge,.mergeMethod,.deleteBranch] | join(":")' "$auth")" \
     'explicit auto-merge choices are recorded unchanged'
+assert_eq 'true' "$(jq -r '.queue[0].deleteBranch' "$auth")" \
+    'a predecessor with no recorded open successor carries the runs own delete-branch choice'
+
+# --- issue #564: queue ordering -- a confirmed predecessor with an open
+# successor in the live queue gets its own delete deferred, independent of
+# the run's own true/false --delete-branch choice.
+deferred_auto_out=$(QUEUE_HAS_SUCCESSOR_14=true \
+    AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --ready-transition --auto-merge --merge-method squash --delete-branch \
+    --confirmed-queue-file "$confirmed" --merge-plan "$tmp/merge-plan.json" \
+    --provider coderabbit:trigger:capability-default)
+assert_eq "authorization=$auth queue=2" "$deferred_auto_out" \
+    'a queue-ordering deferred delete still writes a normal authorization record'
+assert_eq 'deferred' "$(jq -r '.queue[0].deleteBranch' "$auth")" \
+    'a predecessor with a recorded open successor gets its own delete deferred'
+assert_eq 'true' "$(jq -r '.queue[1].deleteBranch' "$auth")" \
+    'a successor with no open successor of its own keeps the runs delete-branch choice'
+assert_eq 'true' "$(jq -r '.deleteBranch' "$auth")" \
+    'the top-level delete-branch choice is untouched by the per-entry deferral'
+
+keep_branch_out=$(QUEUE_HAS_SUCCESSOR_14=true \
+    AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
+    AUTHORIZE_QUEUE_PROVIDER_CONFIG="$tmp/provider-config" \
+    bash "$authorize" --repo owner/repo --repo-root "$repo_root" \
+    --ready-transition --auto-merge --merge-method squash --keep-branch \
+    --confirmed-queue-file "$confirmed" --merge-plan "$tmp/merge-plan.json" \
+    --provider coderabbit:trigger:capability-default)
+assert_eq "authorization=$auth queue=2" "$keep_branch_out" \
+    'a --keep-branch run still writes a normal authorization record'
+assert_eq 'false' "$(jq -r '.queue[0].deleteBranch' "$auth")" \
+    'a --keep-branch run never reports a per-entry deferral, even with an open successor'
 
 # --- Issue #509: authorization must reject a trigger for an observe-only
 # provider before writing a replacement artifact, and name both sets. ---

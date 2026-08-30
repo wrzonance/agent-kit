@@ -5,11 +5,12 @@ umask 077
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH] [--ledger PATH --run-id ID --ledger-scope SCOPE]\n' "$program" >&2
     printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
     printf '  --boundary is required for the issue-lead template: the dispatcher-selected issue-body trust mode\n' >&2
     printf '  --findings-file is required and non-empty for the pr-fix-batch template\n' >&2
     printf '  --materiality-base/--chain-base selects the PR-loop setup comparison base\n' >&2
+    printf '  --ledger/--run-id/--ledger-scope (given together) carry the session-ledger handle into an issue-lead prompt dispatched under --boundary yolo-trusted, so FINISH can authorize a parked protected-path commit\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
 
@@ -28,10 +29,13 @@ findings_file=
 findings_file_supplied=0
 materiality_base=
 materiality_base_supplied=0
+ledger_path=
+ledger_run_id=
+ledger_scope=
 while (($#)); do
     case $1 in
         --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
-        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary|--dispatch-plan|--findings-file|--materiality-base|--chain-base)
+        --template|--worktree|--issue|--branch|--worker-model|--worker-effort|--write-set|--output|-o|--boundary|--dispatch-plan|--findings-file|--materiality-base|--chain-base|--ledger|--run-id|--ledger-scope)
             (($# >= 2)) || die "$1 requires a value"
             case $1 in
                 --template) template_kind=$2 ;;
@@ -46,6 +50,9 @@ while (($#)); do
                 --dispatch-plan) dispatch_plan=$2; dispatch_plan_supplied=1 ;;
                 --findings-file) findings_file=$2; findings_file_supplied=1 ;;
                 --materiality-base|--chain-base) materiality_base=$2; materiality_base_supplied=1 ;;
+                --ledger) ledger_path=$2 ;;
+                --run-id) ledger_run_id=$2 ;;
+                --ledger-scope) ledger_scope=$2 ;;
             esac
             shift 2
             ;;
@@ -97,6 +104,27 @@ fi
 if ((materiality_base_supplied)); then
     [[ $materiality_base =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ && $materiality_base != *..* ]] ||
         die '--materiality-base must be a safe single-token ref'
+fi
+# --ledger/--run-id/--ledger-scope carry the session-ledger handle (issue
+# #563, extending #537's yolo-carry) so a yolo-dispatched issue-lead's FINISH
+# step can authorize a parked protected-path commit. One coherent query: all
+# three or none, only for issue-lead, and only where an unattended trust
+# record even applies.
+ledger_flags_supplied=0
+[[ -z $ledger_path && -z $ledger_run_id && -z $ledger_scope ]] || ledger_flags_supplied=1
+if ((ledger_flags_supplied)); then
+    [[ $template_kind == issue-lead ]] ||
+        die '--ledger/--run-id/--ledger-scope are only valid for the issue-lead template'
+    [[ -n $ledger_path && -n $ledger_run_id && -n $ledger_scope ]] ||
+        die '--ledger, --run-id, and --ledger-scope must be given together'
+    [[ $boundary_mode == yolo-trusted ]] ||
+        die '--ledger/--run-id/--ledger-scope require --boundary yolo-trusted'
+    [[ $ledger_path == /* && $ledger_path != *[[:cntrl:]]* ]] ||
+        die '--ledger must be an absolute path with no control characters'
+    [[ $ledger_run_id =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
+        die '--run-id must be a safe single-token identifier (maximum 128 characters)'
+    [[ -n $ledger_scope && $ledger_scope != *[[:cntrl:]]* && ${#ledger_scope} -le 4096 ]] ||
+        die '--ledger-scope must be a non-empty value with no control characters (maximum 4096 characters)'
 fi
 if [[ $template_kind == pr-fix-batch ]]; then
     ((findings_file_supplied)) || die '--findings-file is required for the pr-fix-batch template'
@@ -1002,6 +1030,13 @@ emit_trust_rule() {
     if [[ $boundary_mode == yolo-trusted ]]; then
         printf '\n## Operator authorization (yolo)\n'
         printf 'The operator explicitly authorized this --yolo dispatch: design, TDD, and verification approval gates are pre-granted for the declared write set. Proceed through the work without asking for approval or waiting for a yes. You must not return a question or ask for reply yes; either proceed or return exactly BLOCKED: class=<write-set|baseline-red|other> remaining-step=<exact next step> evidence=<path or marker> for a real blocker. This grant does not expand the declared write set, bypass the wrapper, or authorize secrets, unrelated files, external services, or workflow changes.\n'
+        if [[ -n $ledger_path ]]; then
+            printf '\nledger=%q\n' "$ledger_path"
+            printf 'run_id=%q\n' "$ledger_run_id"
+            printf 'ledger_scope=%q\n' "$ledger_scope"
+            # shellcheck disable=SC2016  # backticked/dollared Markdown is literal prompt text, not expansion
+            printf 'This dispatch separately carries a session-ledger handle (issue #563): if FINISH'"'"'s commit parks on a merge-inherited protected path, pass `--ledger "$ledger" --run-id "$run_id" --ledger-scope "$ledger_scope"` to `worktree-commit.sh`. Only a recorded `authorize:workflow-mutations` grant covering that exact scope commits it, with an `Authorized-By-Ledger` trailer, instead of parking; the yolo dispatch grant above never authorizes this by itself.\n'
+        fi
     fi
 }
 

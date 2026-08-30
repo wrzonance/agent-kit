@@ -57,6 +57,24 @@
 #       head_sha, provider are always required; the remaining fields are
 #       carried through verbatim).
 #
+#   cover --repo OWNER/REPO --pr N --comments FILE --head SHA
+#          --reason (fix:ID|merge-down:SHA|retarget:REF)
+#          [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME]
+#          [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
+#       Append-only lineage extension (issue #567): a receipt is written ONCE
+#       at publish time (post-receipt.sh), but a later fix commit, merge-down,
+#       or retarget still needs to be provably the SAME reviewed tree plus a
+#       recorded, ancestry-proven transition -- never a second review spend.
+#       Finds the LATEST review entry matching --kind/--provider (unfiltered
+#       when omitted) in the TRUSTED ledger, requires --head to be a PROVEN
+#       git descendant of that entry's head_sha (via --repo-root; "unknown"
+#       reachability, like every other read in this script, never counts),
+#       then extends its covered_heads with --head and appends
+#       {sha, reason, covered_at} to a sibling "coverage" array on that same
+#       entry, so provenance stays auditable. --head already covered is a
+#       silent no-op (prints "already-covered", exit 0, no post). Posts/
+#       updates the ledger comment exactly like append.
+#
 # status verdicts:
 #   covered-head   an entry's head_sha or covered_heads includes --head exit 0
 #   covered-lineage review head is an ancestor and every intervening commit
@@ -77,14 +95,17 @@
 #                  never read as absent                                    exit 1
 #
 # Exit status (all subcommands):
-#   0   success (read: ledger found & valid; status: covered-*; append: posted)
+#   0   success (read: ledger found & valid; status: covered-*; append: posted;
+#       cover: extended, or --head already covered)
 #   1   evidence unavailable / present-but-unparseable ledger (fails closed)
 #   2   usage error
 #   10  status only: stale
-#   11  read/status only: absent (no ledger, or no matching entry)
+#   11  read/status/cover: absent (no ledger, or no matching entry)
+#   12  cover only: refused -- --head is not a PROVEN descendant of the
+#       matching entry's head_sha
 #
-# Requires: bash >= 4.2, jq >= 1.6. append additionally requires the sibling
-# gh-comment.sh and everything it requires (gh, diff, cmp).
+# Requires: bash >= 4.2, jq >= 1.6. append/cover additionally require the
+# sibling gh-comment.sh and everything it requires (gh, diff, cmp).
 set -euo pipefail
 umask 077
 
@@ -112,6 +133,10 @@ Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
                  [--trusted-author LOGIN] [--repo-root DIR]
        $PROGNAME append --repo OWNER/REPO --pr N --comments FILE \\
                  --entry-file FILE --agent-identity NAME \\
+                 [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
+       $PROGNAME cover  --repo OWNER/REPO --pr N --comments FILE --head SHA \\
+                 --reason (fix:ID|merge-down:SHA|retarget:REF) \\
+                 [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME] \\
                  [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
 
 See the script header comment for the full contract, trust-boundary
@@ -180,7 +205,10 @@ resolve_trusted_author() {
 
 # jq filter validating one complete ledger document. kind/head_sha/provider
 # are the only fields every consumer relies on; everything else is carried
-# through verbatim (per-kind fields differ -- adversarial vs bot).
+# through verbatim (per-kind fields differ -- adversarial vs bot). The
+# optional "coverage" array (issue #567's cover subcommand) is the auditable
+# {sha, reason, covered_at} provenance for each covered_heads extension --
+# kept in lockstep with the identical block in ENTRY_SCHEMA_JQ below.
 readonly LEDGER_SCHEMA_JQ='
   type == "object" and
   .version == 1 and
@@ -195,7 +223,15 @@ readonly LEDGER_SCHEMA_JQ='
     ((has("diff_payload") | not) or (.diff_payload | type) == "string") and
     ((has("covered_heads") | not) or
       ((.covered_heads | type) == "array") and
-      all(.covered_heads[]; type == "string" and test("^[0-9a-f]{7,40}$"))))
+      all(.covered_heads[]; type == "string" and test("^[0-9a-f]{7,40}$"))) and
+    ((has("coverage") | not) or
+      ((.coverage | type) == "array") and
+      all(.coverage[];
+        type == "object" and
+        (.sha | type) == "string" and (.sha | test("^[0-9a-f]{7,40}$")) and
+        (.reason | type) == "string" and
+        (.reason | test("^(fix|merge-down|retarget):[A-Za-z0-9._/-]+$")) and
+        (.covered_at | type) == "string" and (.covered_at | length) > 0)))
 '
 
 # jq filter validating one NEW entry (a single object, same per-entry shape
@@ -209,7 +245,15 @@ readonly ENTRY_SCHEMA_JQ='
   ((has("diff_payload") | not) or (.diff_payload | type) == "string") and
   ((has("covered_heads") | not) or
     ((.covered_heads | type) == "array") and
-    all(.covered_heads[]; type == "string" and test("^[0-9a-f]{7,40}$")))
+    all(.covered_heads[]; type == "string" and test("^[0-9a-f]{7,40}$"))) and
+  ((has("coverage") | not) or
+    ((.coverage | type) == "array") and
+    all(.coverage[];
+      type == "object" and
+      (.sha | type) == "string" and (.sha | test("^[0-9a-f]{7,40}$")) and
+      (.reason | type) == "string" and
+      (.reason | test("^(fix|merge-down|retarget):[A-Za-z0-9._/-]+$")) and
+      (.covered_at | type) == "string" and (.covered_at | length) > 0))
 '
 
 # ledger_fence_regex -- the oniguruma regex (jq's capture/test flavor) that
@@ -673,16 +717,175 @@ cmd_append() {
     fi
 }
 
+# cmd_cover -- issue #567: append-only extension of the latest matching
+# review entry's covered_heads, proving --head is a git descendant of that
+# entry's head_sha before recording it. See the script header comment for
+# the full contract.
+readonly REASON_RE='^(fix|merge-down|retarget):[A-Za-z0-9._/-]+$'
+
+cmd_cover() {
+    # body_file is deliberately NOT local -- see the identical note on
+    # cmd_append's own body_file: the EXIT trap fires after this function
+    # returns and needs the variable to still be in scope then.
+    body_file=''
+    local repo='' pr='' comments='' head='' reason='' kind='' provider='' \
+        agent_identity='' repo_root='' trusted_author_flag='' gh_comment_override=''
+    while (($#)); do
+        case $1 in
+            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
+            --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; repo=$2; shift 2 ;;
+            --pr) [[ ${2-} ]] || die_usage '--pr requires a value'; pr=$2; shift 2 ;;
+            --comments) [[ ${2-} ]] || die_usage '--comments requires a path'; comments=$2; shift 2 ;;
+            --head) [[ ${2-} ]] || die_usage '--head requires a value'; head=$2; shift 2 ;;
+            --reason) [[ ${2-} ]] || die_usage '--reason requires a value'; reason=$2; shift 2 ;;
+            --kind) [[ ${2-} ]] || die_usage '--kind requires a value'; kind=$2; shift 2 ;;
+            --provider) [[ ${2-} ]] || die_usage '--provider requires a value'; provider=$2; shift 2 ;;
+            --agent-identity) [[ ${2-} ]] || die_usage '--agent-identity requires a value'; agent_identity=$2; shift 2 ;;
+            --repo-root) [[ ${2-} ]] || die_usage '--repo-root requires a path'; repo_root=$2; shift 2 ;;
+            --trusted-author) [[ ${2-} ]] || die_usage '--trusted-author requires a value'; trusted_author_flag=$2; shift 2 ;;
+            --gh-comment-script) [[ ${2-} ]] || die_usage '--gh-comment-script requires a path'; gh_comment_override=$2; shift 2 ;;
+            -h|--help) usage; exit 0 ;;
+            *) die_usage "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n $repo ]] || die_usage '--repo is required'
+    [[ $repo =~ $SLUG_RE ]] || die_usage "--repo must look like OWNER/REPO, got: $repo"
+    [[ -n $pr ]] || die_usage '--pr is required'
+    require_uint '--pr' "$pr"
+    [[ -n $comments ]] || die_usage '--comments is required'
+    [[ -n $head ]] || die_usage '--head is required'
+    [[ $head =~ $SHA_RE ]] || die_usage "--head must look like a git SHA, got: $head"
+    [[ -n $reason ]] || die_usage '--reason is required'
+    [[ $reason =~ $REASON_RE ]] ||
+        die_usage "--reason must look like fix:<finding-id>, merge-down:<base-sha>, or retarget:<old-base>, got: $reason"
+    [[ -z $kind || $kind == adversarial || $kind == bot ]] ||
+        die_usage "--kind must be adversarial or bot, got: $kind"
+    [[ -n $agent_identity ]] || agent_identity='agentkit review-ledger cover'
+    require_tools
+
+    local author
+    author=$(resolve_trusted_author "$trusted_author_flag" "$repo_root") ||
+        evidence_unavailable 'no trusted ledger author identity could be resolved (--trusted-author, AGENT_LEDGER_AUTHOR, or an authenticated gh login)'
+
+    local rc=0 out
+    out=$(read_ledger "$comments" "$author") || rc=$?
+    if ((rc == 11)); then
+        printf '%s: no review-ledger comment found for PR #%s from trusted author %s; nothing to cover\n' \
+            "$PROGNAME" "$pr" "$author" >&2
+        exit 11
+    elif ((rc != 0)); then
+        exit 1
+    fi
+    local comment_id ledger_json
+    IFS=$'\t' read -r comment_id ledger_json <<<"$out"
+    [[ $(jq -r '.repo' <<<"$ledger_json") == "$repo" && $(jq -r '.pr' <<<"$ledger_json") == "$pr" ]] ||
+        evidence_unavailable 'existing ledger repo/pr does not match this call'
+
+    # The LATEST entry (last in append-only array order) matching the
+    # optional kind/provider filter is the one this SHA extends -- mirrors
+    # cmd_status's own candidate filtering.
+    local candidates candidate_count
+    candidates=$(jq -c --arg kind "$kind" --arg provider "$provider" '
+      [range(0; (.reviews | length)) as $i | .reviews[$i] |
+        select(($kind == "") or (.kind == $kind)) |
+        select(($provider == "") or (.provider == $provider)) |
+        {index: $i, head_sha, covered_heads: (.covered_heads // []),
+         coverage: (.coverage // [])}]
+    ' <<<"$ledger_json") || evidence_unavailable 'could not filter ledger entries'
+    candidate_count=$(jq 'length' <<<"$candidates") || candidate_count=0
+    if [[ $candidate_count == 0 ]]; then
+        printf '%s: no review entry matches this cover call for PR #%s; nothing to extend\n' \
+            "$PROGNAME" "$pr" >&2
+        exit 11
+    fi
+
+    local target target_index target_head
+    target=$(jq -c '.[-1]' <<<"$candidates")
+    target_index=$(jq -r '.index' <<<"$target")
+    target_head=$(jq -r '.head_sha' <<<"$target")
+
+    # Idempotence keys on the (sha, reason) PAIR, not the sha alone (fix
+    # batch #2 F2): the ordinary retarget case covers an UNCHANGED head under
+    # a NEW base, so keying on sha alone would silently drop that retarget's
+    # own coverage/audit record as a same-sha no-op. A sha already recorded
+    # (as the review head itself, or already in covered_heads) with this
+    # exact reason already logged is a true no-op; a sha already recorded
+    # but under a reason not yet logged still needs its coverage event
+    # appended (covered_heads itself stays a no-op there via `unique` below).
+    local sha_covered=0 reason_recorded=0
+    if [[ $target_head == "$head" ]] ||
+        jq -e --arg head "$head" '(.covered_heads // []) | index($head) != null' <<<"$target" >/dev/null 2>&1; then
+        sha_covered=1
+    fi
+    if jq -e --arg head "$head" --arg reason "$reason" \
+        'any((.coverage // [])[]; .sha == $head and .reason == $reason)' \
+        <<<"$target" >/dev/null 2>&1; then
+        reason_recorded=1
+    fi
+    if ((sha_covered)) && ((reason_recorded)); then
+        printf 'already-covered\n'
+        exit 0
+    fi
+
+    if ((sha_covered == 0)); then
+        # Fail-closed exactly like cmd_status's force-push demotion, but
+        # extended per fix batch #2 F1: ancestry must be proven against the
+        # ENTIRE covered frontier -- the entry's original head_sha AND every
+        # SHA already recorded in its covered_heads -- not head_sha alone.
+        # Otherwise a force-push to C, a SIBLING child of head_sha that
+        # drops an already-covered fix commit B, would still pass purely
+        # because C descends from head_sha, even though C's history silently
+        # discards B's reviewed lineage. Only reach=yes may pass for every
+        # frontier SHA; "unknown" (no --repo-root, git absent, or the object
+        # simply not present locally) never counts as proof.
+        local frontier frontier_count i sha reach
+        frontier=$(jq -c '([.head_sha] + (.covered_heads // [])) | unique' <<<"$target")
+        frontier_count=$(jq 'length' <<<"$frontier") || frontier_count=0
+        for ((i = 0; i < frontier_count; i++)); do
+            sha=$(jq -r ".[$i]" <<<"$frontier")
+            reach=$(git_ancestor "$sha" "$head" "$repo_root")
+            if [[ $reach != yes ]]; then
+                printf '%s: refused: %s is not a proven descendant of %s (reachability=%s); pass --repo-root to prove ancestry\n' \
+                    "$PROGNAME" "$head" "$sha" "$reach" >&2
+                exit 12
+            fi
+        done
+    fi
+
+    local covered_at
+    covered_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local updated_json
+    updated_json=$(jq -c --argjson idx "$target_index" --arg head "$head" \
+        --arg reason "$reason" --arg at "$covered_at" '
+      .reviews[$idx].covered_heads =
+        (((.reviews[$idx].covered_heads // []) + [$head]) | unique) |
+      .reviews[$idx].coverage =
+        ((.reviews[$idx].coverage // []) + [{sha: $head, reason: $reason, covered_at: $at}])
+    ' <<<"$ledger_json") || evidence_unavailable 'could not encode the extended ledger entry'
+    jq -e "$LEDGER_SCHEMA_JQ" <<<"$updated_json" >/dev/null 2>&1 ||
+        evidence_unavailable 'extended ledger does not match the ledger schema'
+
+    local gh_comment_script
+    gh_comment_script=$(resolve_gh_comment_script "$gh_comment_override")
+
+    body_file=$(mktemp "${TMPDIR:-/tmp}/review-ledger.XXXXXXXXXX")
+    chmod 600 -- "$body_file"
+    trap 'rm -f -- "$body_file"' EXIT
+    render_ledger_body "$updated_json" "$agent_identity" >"$body_file"
+    "$gh_comment_script" --pr "$pr" --repo "$repo" --update "$comment_id" --body-file "$body_file"
+}
+
 main() {
-    (($#)) || die_usage 'a subcommand is required: read, status, or append'
+    (($#)) || die_usage 'a subcommand is required: read, status, append, or cover'
     local sub=$1
     shift
     case $sub in
         read) cmd_read "$@" ;;
         status) cmd_status "$@" ;;
         append) cmd_append "$@" ;;
+        cover) cmd_cover "$@" ;;
         -h|--help) usage; exit 0 ;;
-        *) die_usage "unknown subcommand: $sub (expected read, status, or append)" ;;
+        *) die_usage "unknown subcommand: $sub (expected read, status, append, or cover)" ;;
     esac
 }
 

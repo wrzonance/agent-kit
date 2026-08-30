@@ -219,6 +219,16 @@ fp11_default=$(jq -r '.[0].diffFingerprint' <<<"$json")
 assert_matches "$fp11_default" '^[0-9a-f]{64}$' \
     'JSON output carries a content-sensitive diff fingerprint sourced from the live per-file read'
 
+# issue #564: hasOpenSuccessor is a pure fact about this queue's own base/head
+# adjacency -- PR 11 (base main) has PR 12 stacked on its head, PR 12 and 13
+# have no successor of their own in this queue.
+assert_eq 'true' "$(jq -r '.[0].hasOpenSuccessor' <<<"$json")" \
+    'a predecessor with a chain successor in the same queue reports hasOpenSuccessor'
+assert_eq 'false' "$(jq -r '.[1].hasOpenSuccessor' <<<"$json")" \
+    'a chain successor with no further descendant reports no open successor'
+assert_eq 'false' "$(jq -r '.[2].hasOpenSuccessor' <<<"$json")" \
+    'an independent PR with no descendant reports no open successor'
+
 # issue #450 review finding F2: an aggregate additions/deletions/changed-files
 # count is not a content identity -- a descendant commit can swap reviewed
 # content while preserving those counts. The fingerprint must be sensitive to

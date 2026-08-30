@@ -80,9 +80,18 @@ ready-transition and provider-spend flow. Prints "provider=coderabbit
 result=LANDED state=STATE threads=N since=TIMESTAMP", or
 "provider=coderabbit result=STALE_HEAD state=STATE commit=SHA" for a
 terminal review that postdates TIMESTAMP but targets a head the PR has since
-moved past, or "provider=coderabbit result=PENDING" otherwise. Always exits
-0 -- neither PENDING nor STALE_HEAD is a failure, only "not landed for this
-head yet". A LANDED result additionally appends kind=bot evidence
+moved past, or "provider=coderabbit result=RATE_LIMITED" when a CodeRabbit
+issue comment postdating TIMESTAMP carries a throttling phrase (review limit
+reached / rate limit -- the same signature gh-pr-state.sh's provider_state
+already treats as authoritative), or "provider=coderabbit
+result=TRIGGER_MISPARSED" when CodeRabbit instead replied to the trigger as
+chat (an issue comment postdating TIMESTAMP carrying its chat-tip/analysis-
+chain signature AND mentioning the account that posted the marked trigger
+comment -- never this call's own identity) instead of filing a review -- that
+spend produced nothing and is reported distinctly from "provider=coderabbit
+result=PENDING" (no activity at all) otherwise. Always exits 0 -- none of
+PENDING, STALE_HEAD, RATE_LIMITED, or TRIGGER_MISPARSED is a failure, only
+"not landed for this head yet". A LANDED result additionally appends kind=bot evidence
 (review_id/state/submitted_at) back to the review ledger through
 --ledger-comments (also required with --repo-root for this write-back) --
 best-effort, never blocking the printed result. When --ledger-comments/
@@ -231,6 +240,60 @@ if ((observe)); then
         fi
         printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s\n' \
             "$state_or_commit" "${info_b:-unknown}"
+        exit 0
+    fi
+
+    # issue #565 fix batch (F1): no terminal review exists yet, but a
+    # CodeRabbit issue comment postdating the trigger may carry a throttling
+    # notice (which can ALSO tag the triggering account, so it used to
+    # satisfy the misparse predicate below even though nothing was
+    # misparsed -- just rationed). Classify the known throttle signature
+    # first -- the same phrase gh-pr-state.sh's provider_state already
+    # treats as authoritative for "rate-limited" -- so a throttled trigger
+    # is reported distinctly rather than swept into TRIGGER_MISPARSED or
+    # PENDING.
+    fetch_slurped "repos/$repo/issues/$pr/comments?per_page=100" \
+        "$work_dir/issue-comments.json" issue-comments
+    if jq -e --arg since "$since" "$PROVIDER_IDENTITY_JQ"'
+        any(.[]; (((.user.login // "") | ascii_downcase) | is_coderabbit_login) and
+                 ((.created_at // "") > $since) and
+                 ((.body // "") | test("review limit reached|rate limit"; "i")))
+    ' "$work_dir/issue-comments.json" >/dev/null 2>&1; then
+        printf 'provider=coderabbit result=RATE_LIMITED\n'
+        exit 0
+    fi
+
+    # (F2) The mention test below must match the account that actually
+    # POSTED the trigger, never this --observe call's own `gh api user`
+    # identity -- a resumed or independent observer can be authenticated as
+    # someone else entirely. Derive it from the marked trigger comment's own
+    # author in the same evidence; fall back to `gh api user` only when no
+    # marked trigger comment is present at all (best-effort -- a failed
+    # lookup degrades to PENDING rather than breaking --observe's
+    # documented always-exits-0 contract).
+    trigger_login=$(jq -r --arg marker "$(review_provider_request_marker coderabbit)" '
+        [ .[] | select((.body // "") | contains($marker)) ]
+        | sort_by(.created_at // "") | last | (.user.login // empty)
+    ' "$work_dir/issue-comments.json" 2>/dev/null) || trigger_login=''
+    if [[ -z $trigger_login ]] &&
+        "$GH_BIN" api user >"$work_dir/observe-user.json" 2>/dev/null; then
+        trigger_login=$(jq -r '.login // empty' "$work_dir/observe-user.json" 2>/dev/null) ||
+            trigger_login=''
+    fi
+
+    # A CodeRabbit chat-style reply (agent-kit#552's shape: the "For best
+    # results, initiate chat" tip and an ad-hoc analysis chain, never a
+    # review) that ALSO mentions the account which posted the trigger is the
+    # misparse signature; a bare mention of the account is never enough on
+    # its own (F1 above -- a throttle notice can mention it too).
+    if [[ -n $trigger_login ]] && jq -e --arg since "$since" --arg login "$trigger_login" \
+        "$PROVIDER_IDENTITY_JQ"'
+        any(.[]; (((.user.login // "") | ascii_downcase) | is_coderabbit_login) and
+                 ((.created_at // "") > $since) and
+                 ((.body // "") | test("for best results, initiate chat|analysis chain"; "i")) and
+                 ((.body // "") | test("@" + $login; "i")))
+    ' "$work_dir/issue-comments.json" >/dev/null 2>&1; then
+        printf 'provider=coderabbit result=TRIGGER_MISPARSED\n'
         exit 0
     fi
     printf 'provider=coderabbit result=PENDING\n'
@@ -527,11 +590,20 @@ for provider in "${providers[@]}"; do
                         printf 'provider=%s result=AUTO_REVIEW\n' "$provider"
                         continue
                     fi
+                    # issue #565: CodeRabbit parses the trigger comment's FIRST
+                    # line as a slash-style command only when it IS the bare
+                    # command -- a leading attribution banner makes it parse as
+                    # chat instead (agent-kit#552: CodeRabbit replied with its
+                    # chat template and never filed a review, wasting the one
+                    # permitted spend). The banner is for authored content; a
+                    # bot command is not authored content, so the trigger
+                    # carries no banner. The idempotency marker still follows,
+                    # as an HTML comment invisible to CodeRabbit's parser but
+                    # still readable by provider_spent's substring search.
                     body_file=$work_dir/provider-request.md
                     {
-                        printf '%s\n' 'This was written agentically; verify its assertions:'
-                        printf '%s\n' "$request_marker"
                         printf '%s\n' "$request_body"
+                        printf '%s\n' "$request_marker"
                     } >"$body_file"
                     post_output=$(bash "$COMMENT_HELPER" --pr "$pr" --repo "$repo" \
                         --body-file "$body_file") || die 'provider request posting failed'

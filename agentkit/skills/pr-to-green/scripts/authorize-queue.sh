@@ -588,6 +588,12 @@ fi
 
 delete_branch=false
 [[ $branch_choice != delete ]] || delete_branch=true
+# Queue ordering (issue #564): a confirmed predecessor with an open successor
+# still in this same live queue (pr-queue.sh's hasOpenSuccessor) gets its own
+# per-entry deleteBranch recorded as "deferred" rather than the run's true/
+# false choice -- merge-pr.sh refuses that PR's delete outright on this
+# record alone, before any live dependents call. A predecessor with no open
+# successor still carries the run's own boolean, unchanged.
 jq -n --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" \
     --slurpfile queue "$work_dir/queue.json" --arg auto "$auto_merge_choice" \
     --arg method "$merge_method" --argjson deleteBranch "$delete_branch" '
@@ -595,7 +601,14 @@ jq -n --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" \
     repository:$repo,
     readyTransition:true,
     providers:$providers[0],
-    queue:($queue[0] | map({pr,state,headSha:.sha,base}))
+    queue:($queue[0] | map(
+      {pr,state,headSha:.sha,base} +
+      (if $auto == "yes" then
+         {deleteBranch: (if $deleteBranch == false then false
+                          elif (.hasOpenSuccessor // false) then "deferred"
+                          else true end)}
+       else {} end)
+    ))
   } |
   if $auto == "yes" then
     . + {autoMerge:true,mergeMethod:$method,deleteBranch:$deleteBranch}

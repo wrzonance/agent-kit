@@ -17,6 +17,14 @@ GH_BIN=${MERGE_PR_GH:-gh}
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
 readonly BRANCH_RE='^[A-Za-z0-9._/-]+$'
+# A deleted base with an open dependent still stacked on it is refused or
+# recovered, never silently closed (issue #564) -- exit 3 distinguishes that
+# refusal from an ordinary usage error (2) or hard failure (1); the merge
+# itself has already succeeded by the time this can fire.
+readonly EXIT_DEPENDENTS_REFUSED=3
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+CHAIN_ADVANCE_HELPER=${MERGE_PR_CHAIN_ADVANCE:-$SCRIPT_DIR/../../parallel-issues/scripts/chain-advance.sh}
 
 repo=''
 pr=''
@@ -24,6 +32,7 @@ head_sha=''
 base=''
 method=''
 delete_branch=0
+retarget_dependents_opt_in=0
 authorization_file=''
 gate_result_file=''
 work_dir=''
@@ -55,11 +64,98 @@ reject_writable_by_others() {
     (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
 }
 
+# --- Dependents check before --delete-branch (issue #564) -------------------
+# GitHub closes, rather than retargets, an open PR whose base branch is
+# deleted when that PR is a draft or not cleanly mergeable onto the new base
+# (observed for #484 and #561: `base_ref_deleted` then `closed` in the same
+# second). Never delete a just-merged head without first accounting for every
+# open PR still stacked on it.
+
+find_open_dependents() {
+    local branch=$1 out=$2
+    "$GH_BIN" api "repos/$repo/pulls?state=open&base=$branch&per_page=100" \
+        --paginate --slurp >"$work_dir/dependents-raw.json" 2>"$work_dir/dependents.err" || return 1
+    jq 'if type == "array" and length > 0 and all(.[]; type == "array") then add else . end' \
+        "$work_dir/dependents-raw.json" >"$work_dir/dependents-flat.json" 2>/dev/null || return 1
+    jq -e 'type == "array" and all(.[]; (.number | type) == "number")' \
+        "$work_dir/dependents-flat.json" >/dev/null 2>&1 || return 1
+    jq '[.[].number] | unique' "$work_dir/dependents-flat.json" >"$out" 2>/dev/null || return 1
+}
+
+# Retargets every dependent PR to the merge target BEFORE the base branch is
+# deleted -- opt-in only, behind --retarget-dependents (issue #564 fix batch
+# F1): a raw base PATCH repoints a dependent without merging the
+# predecessor's content into it or re-running its CI, so this is safe only
+# once the caller has already done that merge-down and completed
+# chain-advance.sh --retarget's own proof for the dependent. Each PATCH here
+# is still verified against the live response, never assumed from a 2xx
+# status alone. Returns nonzero (never dies) so the caller can leave the
+# branch undeleted rather than abort the whole script -- the merge itself
+# already succeeded.
+retarget_dependents() {
+    local deps_file=$1 target=$2 number patch_out failed=0
+    while IFS= read -r number; do
+        if ! patch_out=$("$GH_BIN" api --method PATCH "repos/$repo/pulls/$number" \
+            -f "base=$target" 2>"$work_dir/retarget-$number.err"); then
+            failed=1
+            continue
+        fi
+        [[ $(jq -r '.base.ref // empty' <<<"$patch_out" 2>/dev/null) == "$target" ]] || failed=1
+    done < <(jq -r '.[]' "$deps_file")
+    return "$failed"
+}
+
+# Best-effort safety net (operator clarification on issue #564): GitHub's own
+# retarget-on-delete does not always succeed even when this script retargets
+# first (a draft or dirty-mergeable dependent can still be closed by the
+# forge). Re-check each dependent after the delete and, for any closed
+# non-merged one, recover it. Never fatal -- a failed check or recovery here
+# never undoes the already-completed merge.
+verify_dependents_after_delete() {
+    local deps_file=$1 number pr_json dep_state dep_merged
+    while IFS= read -r number; do
+        if ! pr_json=$("$GH_BIN" api "repos/$repo/pulls/$number" 2>/dev/null); then
+            printf 'dependent-check-failed pr=%s\n' "$number"
+            continue
+        fi
+        dep_state=$(jq -r '.state // empty' <<<"$pr_json" 2>/dev/null)
+        dep_merged=$(jq -r '.merged // false' <<<"$pr_json" 2>/dev/null)
+        if [[ $dep_state == closed && $dep_merged != true ]]; then
+            recover_closed_dependent "$number"
+        else
+            printf 'dependent-ok pr=%s state=%s\n' "$number" "${dep_state:-unknown}"
+        fi
+    done < <(jq -r '.[]' "$deps_file")
+}
+
+recover_closed_dependent() {
+    local number=$1
+    if [[ -x $CHAIN_ADVANCE_HELPER ]] &&
+        "$CHAIN_ADVANCE_HELPER" --recover-closed --pr "$number" --base "$base" --repo "$repo" \
+            >"$work_dir/recover-$number.out" 2>"$work_dir/recover-$number.err"; then
+        printf 'dependent-recovered pr=%s %s\n' "$number" "$(cat -- "$work_dir/recover-$number.out")"
+    else
+        printf 'dependent-recovery-failed pr=%s reason=%s\n' "$number" \
+            "$(head -n1 "$work_dir/recover-$number.err" 2>/dev/null || printf 'recovery helper unavailable')"
+    fi
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --merge-method squash|merge|rebase --authorization-file FILE
-       --gate-result FILE [--delete-branch]
+       --gate-result FILE [--delete-branch [--retarget-dependents]]
+
+--delete-branch first checks for any open PR still based on the merged head
+branch (issue #564). By default, any open dependent refuses the delete (exit
+$EXIT_DEPENDENTS_REFUSED, naming the dependents) and leaves the branch in place --
+the merge itself has already succeeded regardless. --retarget-dependents
+raw-PATCHes each dependent's base to --base before deleting instead; pass it
+ONLY after the caller has already merged the updated default branch down into
+each dependent and completed ../../parallel-issues/scripts/chain-advance.sh
+--retarget's full proof for it (ancestry, fresh CI, closing-issue linkage) --
+a raw base PATCH alone reintroduces the predecessor's diff into an
+unrebuilt dependent and leaves its prior CI evidence stale.
 EOF
     exit "${1:-2}"
 }
@@ -75,6 +171,7 @@ while (($#)); do
         --authorization-file) (($# >= 2)) || usage; authorization_file=$2; shift 2 ;;
         --gate-result) (($# >= 2)) || usage; gate_result_file=$2; shift 2 ;;
         --delete-branch) delete_branch=1; shift ;;
+        --retarget-dependents) retarget_dependents_opt_in=1; shift ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -87,6 +184,8 @@ done
 case $method in squash|merge|rebase) ;; *) die '--merge-method must be squash, merge, or rebase' ;; esac
 [[ -n $authorization_file ]] || die '--authorization-file is required'
 [[ -n $gate_result_file ]] || die '--gate-result is required'
+[[ $retarget_dependents_opt_in == 0 || $delete_branch == 1 ]] ||
+    die '--retarget-dependents requires --delete-branch'
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; merge evidence unavailable'
 
@@ -110,6 +209,19 @@ jq -e --arg repo "$repo" --argjson pr "$pr" --arg sha "$head_sha" --arg base "$b
     .headSha == $sha and .base == $base)] | length) == 1
 ' "$authorization_file" >/dev/null 2>&1 ||
     die 'authorization does not confirm this repository, PR, head, base, merge method, and delete-branch setting as a --auto-merge confirmed RUNNABLE queue member'
+
+# --- Queue ordering (issue #564): a confirmed predecessor with an open
+# successor in the same queue carries a per-entry deleteBranch of "deferred"
+# (authorize-queue.sh) rather than the run's own true/false choice. Refuse
+# the delete outright on that record alone, before any live API call --
+# cheaper than, and independent of, the live dependents check below.
+authorized_delete_branch=''
+if ((delete_branch)); then
+    authorized_delete_branch=$(jq -r --argjson pr "$pr" --arg sha "$head_sha" --arg base "$base" '
+      [.queue[] | select(.pr == $pr and .headSha == $sha and .base == $base) | (.deleteBranch // empty)] |
+      first // empty
+    ' "$authorization_file" 2>/dev/null) || authorized_delete_branch=''
+fi
 
 # --- Gate: a fresh merge-gate.sh PASS bound to this same PR and head ---
 [[ -f $gate_result_file && ! -L $gate_result_file && -O $gate_result_file ]] ||
@@ -161,6 +273,12 @@ merge_sha=$(jq -r '.sha // empty' "$work_dir/merge.json")
 printf 'pr=%s merged=true method=%s merge_sha=%s\n' "$pr" "$method" "${merge_sha:-unknown}"
 
 if ((delete_branch)); then
+    if [[ $authorized_delete_branch == deferred ]]; then
+        # The confirmed queue already recorded an open successor for this
+        # predecessor at authorization time -- refuse before any live call.
+        printf 'branch_delete=refused ref=%s reason=authorization-deferred\n' "$head_ref"
+        exit "$EXIT_DEPENDENTS_REFUSED"
+    fi
     if [[ ! $head_ref =~ $BRANCH_RE ]]; then
         printf 'branch_delete=failed reason=unsafe-branch-name\n'
     elif [[ $head_repo_full != "$repo" ]]; then
@@ -168,6 +286,25 @@ if ((delete_branch)); then
         # deleting "$repo/heads/$head_ref" by name would risk deleting an
         # unrelated same-named branch in the target repository instead.
         printf 'branch_delete=skipped ref=%s reason=head-repository-is-not-the-target-repository\n' "$head_ref"
+    elif ! find_open_dependents "$head_ref" "$work_dir/dependents.json"; then
+        # A failed dependents read is fail-closed, exactly like an unreadable
+        # ref-check below: never delete a branch we could not just prove has
+        # no open successor still stacked on it.
+        printf 'branch_delete=skipped ref=%s reason=dependents-check-failed\n' "$head_ref"
+    elif dependents_count=$(jq 'length' "$work_dir/dependents.json") &&
+        ((dependents_count > 0)) && ((retarget_dependents_opt_in == 0)); then
+        # F1 (issue #564 fix batch): refusing is the default. A raw base
+        # PATCH does not merge the predecessor's content into the dependent
+        # or re-run its CI -- only --retarget-dependents, an explicit
+        # attestation that the caller already did that properly, opts in.
+        dependents_list=$(jq -r 'map(tostring) | join(",")' "$work_dir/dependents.json")
+        printf 'branch_delete=refused ref=%s reason=dependents-open dependents=%s\n' \
+            "$head_ref" "$dependents_list"
+        exit "$EXIT_DEPENDENTS_REFUSED"
+    elif ((dependents_count > 0)) && ! retarget_dependents "$work_dir/dependents.json" "$base"; then
+        # A partial or total retarget failure never deletes the branch: some
+        # dependents may still be stacked on the head about to disappear.
+        printf 'branch_delete=skipped ref=%s reason=dependent-retarget-failed\n' "$head_ref"
     elif ! "$GH_BIN" api "repos/$repo/git/ref/heads/$head_ref" \
         >"$work_dir/ref-check.json" 2>"$work_dir/ref-check.err"; then
         # The singular "ref" route (not "refs") is required for this read: it
@@ -188,6 +325,7 @@ if ((delete_branch)); then
     elif "$GH_BIN" api -X DELETE "repos/$repo/git/refs/heads/$head_ref" \
         >"$work_dir/delete.out" 2>"$work_dir/delete.err"; then
         printf 'branch_delete=ok ref=%s\n' "$head_ref"
+        ((dependents_count == 0)) || verify_dependents_after_delete "$work_dir/dependents.json"
     else
         printf 'branch_delete=failed reason=%s\n' "$(head -n 1 "$work_dir/delete.err")"
     fi

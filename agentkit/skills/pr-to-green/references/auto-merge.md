@@ -15,6 +15,7 @@ whenever more than one independent root is being driven at once.
 - The pre-merge review-completion gate
 - Serialization protocol
 - Merge method and branch deletion
+  - Dependents check before delete (issue #564)
 - Board move
 - PreToolUse guard alignment
 - Still forbidden
@@ -195,21 +196,24 @@ and additionally consumes:
 - `--human-items-decided yes|no` — whether every human item Phase A/C
   observed for this PR has an explicit per-item decision (the existing
   evidence-green requirement). `no` blocks.
-- `--adversarial-review-status covered-head|covered-diff|stale|absent|blocked|not-required`
-  (issue #477) — the verdict word `review-ledger.sh status` prints for this
-  PR's current head, read from the already-fetched issue-comments artifact
-  (no extra API call). `covered-head` and `covered-diff` both pass, exactly
-  like an `AUTO_REVIEW`/`LANDED` CodeRabbit result — `covered-diff` means the
-  head moved by a base-merge-only advance since the recorded review, not a
-  source change, so the reviewed tree is still byte-identical. `stale` (the
-  ledger has an entry, but for different code) and `absent` (no ledger entry
-  at all) each block exactly like an unreviewed head. `blocked` (the ledger
-  comment is present but its fence/JSON is unparseable) blocks too — corrupt
-  evidence is never treated as missing evidence, let alone as satisfied.
-  `not-required` is the one value that opts a repository's adversarial-review
-  requirement out of this gate entirely; it is never derived here, only
-  passed through from whatever documented materiality skip decided it
-  upstream.
+- `--adversarial-review-status covered-head|covered-diff|covered-lineage|stale|absent|blocked|not-required`
+  (issue #477; `covered-lineage` added by issue #567) — the verdict word
+  `review-ledger.sh status` prints for this PR's current head, read from the
+  already-fetched issue-comments artifact (no extra API call). `covered-head`,
+  `covered-diff`, and `covered-lineage` all pass, exactly like an
+  `AUTO_REVIEW`/`LANDED` CodeRabbit result — `covered-diff` means the head
+  moved by a base-merge-only advance since the recorded review, not a source
+  change, so the reviewed tree is still byte-identical; `covered-lineage`
+  means a later fix/merge-down/retarget commit was explicitly recorded onto
+  the entry via `review-ledger.sh cover` (see below) rather than re-reviewed.
+  `stale` (the ledger has an entry, but for different, unrecorded code) and
+  `absent` (no ledger entry at all) each block exactly like an unreviewed
+  head. `blocked` (the ledger comment is present but its fence/JSON is
+  unparseable) blocks too — corrupt evidence is never treated as missing
+  evidence, let alone as satisfied. `not-required` is the one value that opts
+  a repository's adversarial-review requirement out of this gate entirely; it
+  is never derived here, only passed through from whatever documented
+  materiality skip decided it upstream.
 - `--code-quality-scan-state complete|pending|not-enabled` and/or
   `--code-quality-state-file FILE` — whether the `github-code-quality` scan
   for the current head has finished. `pending` blocks (a finding merely
@@ -266,6 +270,37 @@ adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" statu
 `review-ledger.sh status` exits non-zero for `stale`/`absent`/blocked outcomes
 while still printing the verdict word on stdout — capture it with `|| true`
 rather than treating a non-zero exit as evidence-unavailable.
+
+### Recording a merge-down or retarget transition (issue #567)
+
+The one-shot receipt's review head predates any post-receipt merge-down or
+retarget by construction — `review-ledger.sh status` correctly reads that gap
+as `stale`, and the one-spend rule forbids re-reviewing just to clear it.
+Before re-running the gate against an advanced head, extend the covered
+entry's lineage instead of falsifying or parking:
+
+```bash
+"$agentkit/review-remote-pr/scripts/review-ledger.sh" cover \
+  --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
+  --reason "merge-down:$base_sha" --kind adversarial --repo-root "$repo_root" || true
+```
+
+Always pass `--kind adversarial`: an unfiltered call extends whichever entry
+is LAST in the ledger, which may be a bot entry (e.g. a CodeRabbit record
+appended after the adversarial receipt) — leaving the receipt merge-gate.sh
+actually reads stale. Use `retarget:$old_base` for a stacked-successor
+retarget — the "a stacked retarget" bucket above already runs
+`chain-advance.sh --retarget`, whose own best-effort hook calls this (with
+`--kind adversarial`) after a successful edit — and `fix:$finding_id` for a
+fix-batch commit (SKILL.md Step 3). `cover` refuses (exit 12) a `--head` that
+is not a proven git descendant of every SHA already recorded on the entry —
+its original head plus every previously covered SHA, not only the original
+head — the same fail-closed ancestry proof `status` already applies, so a
+force-push that drops an already-covered commit still cannot be waved
+through. Deliberately best-effort and non-fatal, like the call above: a
+failed `cover` never blocks the merge-down or retarget itself, it only
+leaves the next `--adversarial-review-status`
+read at `stale` until retried.
 
 Code-scanning completion is proven from `GET code-scanning/analyses` — the
 surface that actually records a completed analysis — not from a check-run's
@@ -385,6 +420,57 @@ repository — a fork PR's `feat/x` lives in the fork, and deleting
 the target repository instead — and it re-reads the branch ref immediately
 before deleting, skipping if the tip no longer matches the merged head (new
 work may have landed on it since the merge completed).
+
+### Dependents check before delete (issue #564)
+
+GitHub does not reliably retarget an open PR whose base branch is deleted —
+it closes it instead when that PR is a draft or not cleanly mergeable onto
+the new base (`base_ref_deleted` then `closed` in the same second, confirmed
+for #484 and #561). `--delete-branch` therefore never deletes blind: it reads
+`pulls?state=open&base=<head-branch>` once before the delete.
+
+- **No open dependents** — the delete proceeds exactly as before.
+- **Dependents found, default** — refuses the delete outright, naming the
+  open dependents, and exits 3 (the merge itself has already succeeded and
+  is reported regardless). This is the safe default: a raw base `PATCH`
+  alone does not merge the predecessor's content into a dependent or
+  re-run its CI, so leaving the branch in place is the only choice that
+  never risks a stale-evidence dependent (fix batch F1, issue #564).
+- **`--retarget-dependents`** — opt-in only. Each dependent is retargeted to
+  `--base` with a verified `PATCH` (the live response's own `base.ref` is
+  checked, never assumed from a 2xx status) before the branch is deleted.
+  Any dependent retarget failure — even for just one of several — still
+  leaves the branch undeleted. Pass this **only** after the caller has
+  already merged the updated default branch down into each dependent and
+  completed `chain-advance.sh --retarget`'s full proof for it (ancestry,
+  fresh CI, closing-issue linkage, per "Merge order and the stacked-PR
+  retarget" in `parallel-issues/references/chains.md`) — this flag performs
+  no such proof itself, it only repoints the base pointer.
+- **An unreadable dependents check** fails closed exactly like an unreadable
+  ref-check: the branch is left in place, never deleted on a guess.
+
+Even a successful `--retarget-dependents` PATCH is not a guarantee: the same
+draft/dirty-mergeable condition that makes GitHub close instead of retarget
+on deletion can still close a dependent immediately afterward. So after a
+successful delete under `--retarget-dependents`, `merge-pr.sh` re-reads every
+dependent it retargeted; any that ended up `closed` (and not merged) is
+recovered via `../../parallel-issues/scripts/chain-advance.sh --recover-closed`
+(path overridable with `MERGE_PR_CHAIN_ADVANCE`, for testing). This is a
+best-effort safety net, exactly like `cover_retarget_lineage` — never fatal,
+and a failed recovery never undoes the already-completed merge or delete; it
+is reported as `dependent-recovery-failed` for a human to act on.
+
+**Queue ordering.** `authorize-queue.sh` records a confirmed predecessor's own
+`queue[].deleteBranch` as `"deferred"`, instead of the run's `true`/`false`
+choice, whenever `pr-queue.sh`'s live `hasOpenSuccessor` is true for that PR
+— i.e. an open successor is already in the same confirmed queue.
+`merge-pr.sh` refuses that PR's delete on this record alone, before even
+running the live dependents check above: cheaper, and independent of it.
+This is authorization-time bookkeeping, not a schema requirement on the
+displayed/confirmed-queue snapshot — `hasOpenSuccessor` never enters that
+narrower, already-pinned schema (see "Mechanical queue advance without
+redisplay" above); it is read fresh from `pr-queue.sh`'s live JSON at the
+point `authorize-queue.sh` composes the authorization record.
 
 ## Board move
 

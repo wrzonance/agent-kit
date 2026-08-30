@@ -9,8 +9,8 @@ readonly FIELD_LIMIT=100
 readonly PROJECT_LIMIT=100
 
 usage() {
-    printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
-    printf '       %s --issue-numbers N,N,... --status STATUS --repository OWNER/REPO [--all-boards]\n' "${0##*/}"
+    printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repo OWNER/REPO [--all-boards]\n' "${0##*/}"
+    printf '       %s --issue-numbers N,N,... --status STATUS --repo OWNER/REPO [--all-boards]\n' "${0##*/}"
     cat <<'EOF'
 
 Sets the Status field of an issue's card on the GitHub Project board(s) that
@@ -22,9 +22,11 @@ Options:
   --status STATUS           One of the canonical board columns:
                             'Backlog', 'Ready', 'In progress', 'In review', 'Done'.
                             Matched against the board's own options case-insensitively.
-  --repository OWNER/REPO   Repository holding the issue (e.g. OWNER/REPO). Also
+  --repo OWNER/REPO         Repository holding the issue (e.g. OWNER/REPO). Also
                             selects the card: boards shared across an org can hold
                             several issues numbered #N, one per repository.
+                            --repository is a silent alias, accepted for
+                            compatibility; new callers should use --repo.
   --repo-root DIR           Repository root holding .agent/ (default: git toplevel
                             of the cwd). A warm .agent/board.json plus
                             .agent/cache/board-items.json performs the mutation
@@ -137,7 +139,13 @@ while (($#)); do
             status=$2
             shift 2
             ;;
-        --repository)
+        # --repository is the older spelling of --repo (issue #556), kept as
+        # a sibling of the identical option rather than a pre-loop argv
+        # rewrite: a whole-argv rewrite could not tell an option token from
+        # another option's VALUE (e.g. --status --repository would have
+        # corrupted the status value), so it was reverted in favor of this
+        # ordinary case-statement branch.
+        --repo|--repository)
             (($# >= 2)) || die "Missing value for $1."
             repository=$2
             shift 2
