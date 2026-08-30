@@ -104,7 +104,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   (never blocks) when REST cost exceeds the remaining budget — read it
   first; another session may run concurrently. A `gh-pr-state.sh`/
   `pr-queue.sh` exit `3` hits rate-limit: stop, record completed vs.
-  outstanding, report the reset verbatim, never retry an empty pool. See
+  outstanding, report the reset, never retry an empty pool. See
   ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry).
 
 ## Resident call-site map
@@ -262,14 +262,14 @@ Treat its provider result as follows:
   review observed yet — poll `gh-pr-state.sh`'s `provider:` digest line, or
   `review-transition.sh --observe --pr N --since TIMESTAMP` in bounded rounds,
   until it reports a landed review (or `LANDED`); never re-run the full
-  ready-transition flow just to re-derive the same fact.
-- `STALE_HEAD`: a terminal review exists but targets a head the PR has since
-  moved past (it postdates the trigger, but its own head SHA does not match
-  the PR's current head) — never evidence-green; keep polling `--observe`, do
-  not re-trigger, and never treat it like `LANDED`.
-- `TRIGGER_MISPARSED`: CodeRabbit answered the trigger as chat, filing no
-  review — the spend bought nothing; retrigger with the bare command rather
-  than treating it like `PENDING`.
+  ready-transition flow to re-derive the same fact.
+- `STALE_HEAD`: a terminal review targets a head the PR has since moved past
+  (postdates the trigger; its own head SHA differs) — never evidence-green;
+  keep polling `--observe`; never re-trigger or treat it as `LANDED`.
+- `TRIGGER_MISPARSED`: CodeRabbit answered as chat, filing no review. Its
+  `<!-- pr-to-green:provider-request provider=coderabbit -->` marker still
+  counts the spend — never re-post by hand; stop this PR `BLOCKED` pending
+  an operator-authorized retrigger.
 - `OBSERVE_ONLY`: consume findings and wait for provider-owned rescans; never
   manufacture a request.
 - `DISABLED`: add no provider wait or approval requirement.

@@ -474,9 +474,10 @@ assert_not_contains "$out" 'result=PENDING' \
     'a misparsed trigger is never reported as plain PENDING'
 
 # A CodeRabbit issue comment that predates the trigger boundary is not this
-# run's misparse -- it must still read as PENDING.
+# run's misparse -- it must still read as PENDING, even carrying the same
+# chat-reply signature and mention as the positive case above.
 out=$(REVIEW_ACTIVITY=chat-reply \
-    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-20T00:00:00Z","body":"@workflow-account old chat noise"}]' \
+    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-20T00:00:00Z","body":"For best results, initiate chat on the files or code changes.\n\n@workflow-account old chat noise"}]' \
     run_observe '2026-08-22T06:30:00Z')
 assert_contains "$out" 'provider=coderabbit result=PENDING' \
     "a chat reply that predates the since= boundary is not this run's misparse"
@@ -488,6 +489,42 @@ out=$(REVIEW_ACTIVITY=chat-reply \
     run_observe '2026-08-28T23:32:00Z')
 assert_contains "$out" 'provider=coderabbit result=PENDING' \
     'a non-CodeRabbit comment mentioning the workflow account is never classified as TRIGGER_MISPARSED'
+
+# issue #565 fix batch F1: a CodeRabbit throttle notice can ALSO tag the
+# triggering account, but must classify as RATE_LIMITED, never
+# TRIGGER_MISPARSED or plain PENDING -- it lacks the chat-reply signature
+# and is a distinct, more useful signal than "nothing happened".
+out=$(REVIEW_ACTIVITY=chat-reply \
+    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-28T23:32:52Z","body":"Review limit reached; upgrade for more. @workflow-account"}]' \
+    run_observe '2026-08-28T23:32:00Z')
+assert_contains "$out" 'provider=coderabbit result=RATE_LIMITED' \
+    'a CodeRabbit throttle notice classifies as RATE_LIMITED even when it also mentions the triggering account (F1)'
+assert_not_contains "$out" 'result=TRIGGER_MISPARSED' \
+    'a throttle notice is never misclassified as TRIGGER_MISPARSED'
+assert_not_contains "$out" 'result=PENDING' \
+    'a throttle notice is never reported as plain PENDING either'
+
+# F1 (continued): a mention of the account alone, with no chat-reply
+# signature at all, is not enough to classify as TRIGGER_MISPARSED.
+out=$(REVIEW_ACTIVITY=chat-reply \
+    OBSERVE_ISSUE_COMMENTS_JSON='[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-28T23:32:52Z","body":"@workflow-account thanks for the ping"}]' \
+    run_observe '2026-08-28T23:32:00Z')
+assert_contains "$out" 'provider=coderabbit result=PENDING' \
+    'a bare account mention with no chat-reply signature is not TRIGGER_MISPARSED (F1)'
+
+# issue #565 fix batch F2: the misparse mention test must match the account
+# that actually POSTED the marked trigger comment, never this --observe
+# call's own `gh api user` identity (the gh stub below resolves that to
+# "workflow-account", which never appears in either comment here) --
+# regression coverage for using the wrong login source.
+out=$(REVIEW_ACTIVITY=chat-reply \
+    OBSERVE_ISSUE_COMMENTS_JSON='[
+      {"user":{"login":"other-triggering-account","type":"User"},"created_at":"2026-08-28T23:31:00Z","body":"@coderabbitai full review\n<!-- pr-to-green:provider-request provider=coderabbit -->"},
+      {"user":{"login":"coderabbitai[bot]","type":"Bot"},"created_at":"2026-08-28T23:32:52Z","body":"For best results, initiate chat on the files or code changes.\n\n@other-triggering-account I found one blocking issue."}
+    ]' \
+    run_observe '2026-08-28T23:32:00Z')
+assert_contains "$out" 'provider=coderabbit result=TRIGGER_MISPARSED' \
+    "the mention test uses the marked trigger comment's own author, not the observer's identity (F2)"
 
 set +e
 out=$(REVIEW_TRANSITION_GH="$tmp/gh" bash "$transition" --observe --repo owner/repo --pr 14 2>"$tmp/observe-no-since.err")
