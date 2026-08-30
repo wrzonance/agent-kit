@@ -194,6 +194,9 @@ case " $* " in
     *"compare/main...444444444444444444444444444444444444444a"*)
         printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":2}'
         ;;
+    *"check-runs"*)
+        printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit","app":{"slug":"coderabbitai"}}]}'
+        ;;
     *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
@@ -203,7 +206,7 @@ chmod +x "$tmp/gh-provider-residue"
 provider_residue_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-provider-residue" \
     bash "$advance" --retarget --repo owner/repo --pr 503 --base main)
 assert_contains "$provider_residue_output" 'retargeted pr #503' \
-    'a stale CodeRabbit check under a declared coderabbit provider does not block the proof'
+    'a stale CodeRabbit check whose check-run app.slug is coderabbitai does not block the proof'
 assert_contains "$provider_residue_output" 'provider-check=CodeRabbit' \
     'the proof line names the excused provider check'
 assert_contains "$provider_residue_output" 'closing-issues=1' \
@@ -218,6 +221,9 @@ case " $* " in
         ;;
     *"compare/main...555555555555555555555555555555555555555a"*)
         printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":2}'
+        ;;
+    *"check-runs"*)
+        printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit","app":{"slug":"coderabbitai"}}]}'
         ;;
     *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
@@ -236,6 +242,137 @@ assert_contains "$nonprovider_stale_output" 'predates the retarget' \
     'the non-provider staleness refusal still reports its cause'
 assert_contains "$nonprovider_stale_output" 'tests' \
     'the non-provider staleness refusal names the stale check'
+assert_not_contains "$nonprovider_stale_output" 'CodeRabbit' \
+    'the genuinely-provider CodeRabbit check is still excused by its own app.slug'
+
+# F1 (fix batch): a required job merely NAMED like a provider must never be
+# excused -- only an authenticated check-run app.slug in the provider catalog
+# earns the exemption, never a display-name substring match alone.
+cat >"$tmp/gh-lookalike-stale" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":505,"baseRefName":"main","headRefName":"feat/child-505","headRefOid":"666666666666666666666666666666666666666a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"CodeRabbit compatibility tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":505}]}'
+        ;;
+    *"compare/main...666666666666666666666666666666666666666a"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":2}'
+        ;;
+    *"check-runs"*)
+        printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit compatibility tests","app":{"slug":"internal-ci"}}]}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-lookalike-stale"
+set +e
+lookalike_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-lookalike-stale" \
+    bash "$advance" --retarget --repo owner/repo --pr 505 --base main 2>&1)
+lookalike_rc=$?
+set -e
+assert_eq '1' "$lookalike_rc" \
+    'a required job merely named like a provider (non-provider app.slug) still refuses'
+assert_contains "$lookalike_output" 'predates the retarget' \
+    'the look-alike refusal still reports its cause'
+assert_contains "$lookalike_output" 'CodeRabbit compatibility tests' \
+    'the look-alike refusal names the unexcused check by its real label'
+
+# F1 (fix batch): when the check-runs read itself is unreadable, grant NO
+# exemption (fail closed) and say so on the refusal.
+cat >"$tmp/gh-checkruns-unreadable" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":506,"baseRefName":"main","headRefName":"feat/child-506","headRefOid":"777777777777777777777777777777777777777a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"CodeRabbit","status":"COMPLETED","conclusion":"NEUTRAL","createdAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":506}]}'
+        ;;
+    *"compare/main...777777777777777777777777777777777777777a"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":2}'
+        ;;
+    *"check-runs"*)
+        printf 'boom: check-runs unavailable\n' >&2
+        exit 1
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-checkruns-unreadable"
+set +e
+checkruns_unreadable_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-checkruns-unreadable" \
+    bash "$advance" --retarget --repo owner/repo --pr 506 --base main 2>&1)
+checkruns_unreadable_rc=$?
+set -e
+assert_eq '1' "$checkruns_unreadable_rc" \
+    'an unreadable check-runs response grants no exemption and refuses'
+assert_contains "$checkruns_unreadable_output" 'provider-check=unreadable' \
+    'the refusal names the unreadable check-runs read'
+
+# F2 (fix batch): both exemptions are scoped to the local checkout's own
+# declared repository -- a mismatched --repo disables them outright, even
+# though the same bench-commit-only gap would otherwise be tolerated.
+printf 'AGENT_REPO_SLUG=owner/repo\n' >>"$repo577/.agent/config.env"
+cat >"$tmp/gh-repo-mismatch" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":507,"baseRefName":"main","headRefName":"feat/child-507","headRefOid":"888888888888888888888888888888888888888a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:10:00Z"}],"closingIssuesReferences":[{"number":507}]}'
+        ;;
+    *"compare/main...888888888888888888888888888888888888888a"*)
+        printf '%s\n' '{"status":"diverged","behind_by":1,"ahead_by":2}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-repo-mismatch"
+set +e
+repo_mismatch_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-repo-mismatch" \
+    bash "$advance" --retarget --repo other-owner/other-repo --pr 507 --base main 2>&1)
+repo_mismatch_rc=$?
+set -e
+assert_eq '1' "$repo_mismatch_rc" \
+    'a --repo naming a different repository than AGENT_REPO_SLUG disables the generated-only exemption'
+assert_contains "$repo_mismatch_output" 'exemptions=disabled reason=repo-mismatch' \
+    'the refusal explains that the exemptions were disabled for a repo mismatch'
+assert_contains "$repo_mismatch_output" 'behind_by=1' \
+    'the disabled exemption falls back to the strict pre-#577 behind_by refusal'
+
+# F2 (fix batch): a --repo that MATCHES the now-declared AGENT_REPO_SLUG keeps
+# the generated-only exemption working exactly as before -- the guard only
+# ever disables on a proven mismatch, never on the mere presence of the slug.
+cat >"$tmp/gh-repo-match" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":508,"baseRefName":"main","headRefName":"feat/child-508","headRefOid":"999999999999999999999999999999999999999a","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:10:00Z"}],"closingIssuesReferences":[{"number":508}]}'
+        ;;
+    *"compare/main...999999999999999999999999999999999999999a"*)
+        printf '%s\n' '{"status":"diverged","behind_by":1,"ahead_by":2}'
+        ;;
+    *"compare/999999999999999999999999999999999999999a...main"*)
+        printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
+        ;;
+    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *" pr edit "*) printf 'edit must not run for an already-correct base\n' >&2; exit 24 ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-repo-match"
+repo_match_output=$(cd -- "$repo577" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-repo-match" \
+    bash "$advance" --retarget --repo owner/repo --pr 508 --base main)
+assert_contains "$repo_match_output" 'retargeted pr #508' \
+    'a --repo matching the declared AGENT_REPO_SLUG still completes the retarget'
+assert_contains "$repo_match_output" 'behind=1 generated-only=yes' \
+    'the generated-only exemption still applies once the slug is declared and matches'
+assert_not_contains "$repo_match_output" 'exemptions=disabled' \
+    'a matching repo never disables the exemptions'
 
 cat >"$tmp/gh-sha" <<'EOF'
 #!/usr/bin/env bash

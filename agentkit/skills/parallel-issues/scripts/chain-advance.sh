@@ -35,6 +35,24 @@ GENERATED_PATHS=''
 GENERATED_PATHS_RESOLVED=''
 REVIEW_PROVIDER_NAMES_RESOLVED=''
 declare -a REVIEW_PROVIDER_NAMES_DECLARED=()
+# Populated by resolve_exemptions_scope (fix batch, issue #577 F2): whether
+# the generated-path and provider-check exemptions below are authorized for
+# this run. Both exemptions read repository-declared config from the LOCAL
+# checkout's .agent/config.env; when --repo names a different repository than
+# this checkout, that config describes a stranger repository and must never
+# be trusted to excuse ITS behind_by gap or ITS stale checks. "yes" disables
+# both exemptions outright; the strict pre-#577 behavior (behind_by must be
+# exactly 0, every check must postdate the boundary) still applies.
+EXEMPTIONS_DISABLED=no
+LOCAL_REPO_SLUG=''
+LOCAL_REPO_SLUG_RESOLVED=''
+# Populated by resolve_check_run_slugs (fix batch, issue #577 F1): whether the
+# per-head check-runs read that identifies provider checks by authenticated
+# `.app.slug` (never by display-name substring alone) succeeded, and the
+# lowercase check-run name -> space-joined app.slug list it produced.
+CHECK_RUN_FETCH_ATTEMPTED=no
+CHECK_RUN_FETCH_OK=no
+declare -A CHECK_RUN_SLUGS_BY_LOWER_NAME=()
 
 usage() {
     cat <<EOF
@@ -282,22 +300,78 @@ boundary_for() {
     fi
 }
 
-# Recognizable check-label text for each catalog provider identity, mirroring
-# code_scanning_refresh_needed's own `is_scan` label-text convention just
-# below (`test("codeql|code[ -]?scanning")`): the statusCheckRollup shape this
-# script already fetches carries only name/context text, never a check-run's
-# own `.app.slug` -- that requires a separate per-check-run REST read (the
-# narrower cost code-quality-state.sh already pays for its own purpose).
-# Matching the same recognizable display text this repository already keys
-# provider-request detection off (review-provider-catalog.sh's marker/request
-# strings) is far cheaper than a second API round trip per check, and this is
-# only ever an ADVISORY exemption, never a correctness gate: a false-positive
-# label match still requires the run's own operator to have declared that
-# exact provider in AGENT_REVIEW_PROVIDERS.
-provider_residue_label_re() {
+# Repository slug this checkout itself belongs to (fix batch, issue #577 F2):
+# AGENT_REPO_SLUG when declared, else a live `gh repo view`, else the `origin`
+# remote URL. Resolved once per process; an unresolvable slug leaves
+# LOCAL_REPO_SLUG empty and resolve_exemptions_scope fails OPEN (matching this
+# script's other advisory resolvers) rather than blocking a repository that
+# never declared enough to check. This is a courtesy fallback only: a properly
+# onboarded repository always has AGENT_REPO_SLUG, which is what actually
+# closes the cross-repo hole below.
+resolve_local_repo_slug() {
+    [[ -z $LOCAL_REPO_SLUG_RESOLVED ]] || return 0
+    LOCAL_REPO_SLUG_RESOLVED=1
+    local repo_root resolver slug='' origin_url
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+    [[ -n $repo_root ]] || return 0
+    resolver="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
+    if [[ -x $resolver ]]; then
+        slug=$("$resolver" --repo-root "$repo_root" --get AGENT_REPO_SLUG 2>/dev/null) || slug=''
+    fi
+    if [[ -z $slug ]]; then
+        slug=$("$GH_BIN" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || slug=''
+    fi
+    if [[ -z $slug ]]; then
+        origin_url=$(git -C "$repo_root" remote get-url origin 2>/dev/null) || origin_url=''
+        slug=$(parse_origin_slug "$origin_url") || slug=''
+    fi
+    [[ $slug =~ $SLUG_RE ]] || return 0
+    LOCAL_REPO_SLUG=${slug,,}
+}
+
+# Extracts OWNER/REPO from a `git@host:owner/repo(.git)`, `ssh://host/owner/repo`,
+# or `https://host/owner/repo(.git)` remote URL. Prints nothing and fails on
+# any other shape rather than guessing.
+parse_origin_slug() {
+    local url=${1:-}
+    [[ -n $url ]] || return 1
+    if [[ $url =~ ^git@[^/:]+:([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(\.git)?/?$ ]] ||
+        [[ $url =~ ^ssh://[^/]+/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(\.git)?/?$ ]] ||
+        [[ $url =~ ^https?://[^/]+/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(\.git)?/?$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+# Gates both #577 exemptions (generated-path behind_by tolerance and
+# provider-check residue) to the repository this checkout actually declares
+# them for (fix batch, F2). AGENT_GENERATED_PATHS/AGENT_REVIEW_PROVIDERS are
+# read from THIS checkout's .agent/config.env regardless of which repository
+# --repo names; without this gate, running chain-advance.sh --repo
+# OTHER/REPO from a checkout of THIS repo would excuse OTHER/REPO's behind_by
+# gap and stale checks using rules it never declared. Only a resolvable,
+# mismatching local slug disables the exemptions -- an unresolvable one fails
+# open, consistent with resolve_review_provider_names/resolve_generated_paths.
+resolve_exemptions_scope() {
+    resolve_local_repo_slug
+    if [[ -n $LOCAL_REPO_SLUG && $LOCAL_REPO_SLUG != "${REPO,,}" ]]; then
+        EXEMPTIONS_DISABLED=yes
+        printf 'exemptions=disabled reason=repo-mismatch\n' >&2
+    fi
+}
+
+# The declared-provider identity's accepted GitHub App slug(s) -- the same
+# catalog review-provider-catalog.sh's review_provider_login() encodes,
+# widened to accept both the app's actual slug ("coderabbitai") and the
+# repository-declared name itself ("coderabbit") since a check-run's own
+# `.app.slug` is authenticated forge data this repository does not control
+# the exact spelling of. Kept in this one function so the catalog is never
+# duplicated across callers.
+provider_app_slugs() {
     case $1 in
-        coderabbit) printf '%s\n' 'coderabbit' ;;
-        github-code-quality) printf '%s\n' 'github[ _-]?code[ _-]?quality' ;;
+        coderabbit) printf '%s\n' 'coderabbitai coderabbit' ;;
+        github-code-quality) printf '%s\n' 'github-code-quality' ;;
         *) return 1 ;;
     esac
 }
@@ -328,16 +402,64 @@ resolve_review_provider_names() {
     done
 }
 
-# True when LABEL (a statusCheckRollup name/context) matches a declared
-# provider's recognizable text.
+# Reads the head commit's own check-runs (fix batch, issue #577 F1) so
+# is_provider_residue_check can match a stale rollup entry to its
+# authenticated `.app.slug`, never to display-name text alone -- a required
+# job merely NAMED like a provider (e.g. "CodeRabbit compatibility tests")
+# must never be excused. `--paginate` emits one JSON object per page; `jq -s`
+# slurps every page before flattening `.check_runs[]`, exactly like
+# code-quality-state.sh's own check-runs read. Resolved once per process;
+# CHECK_RUN_FETCH_OK stays "no" on any read or parse failure so callers fail
+# CLOSED (no exemption) rather than trust a partial or unreadable response.
+resolve_check_run_slugs() {
+    local head_sha=$1 check_runs_json tsv name slug lower
+    [[ $CHECK_RUN_FETCH_ATTEMPTED == no ]] || return 0
+    CHECK_RUN_FETCH_ATTEMPTED=yes
+    if ! check_runs_json=$("$GH_BIN" api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" \
+        --paginate -H 'X-GitHub-Api-Version: 2026-03-10' 2>/dev/null); then
+        return 1
+    fi
+    tsv=$(jq -r -s '
+        [.[]? | select(type == "object") | .check_runs[]? | select(type == "object")]
+        | .[] | [(.name // ""), (.app.slug // "")] | @tsv
+    ' <<<"$check_runs_json" 2>/dev/null) || return 1
+    CHECK_RUN_FETCH_OK=yes
+    while IFS=$'\t' read -r name slug; do
+        [[ -n $name ]] || continue
+        lower=${name,,}
+        if [[ -n ${CHECK_RUN_SLUGS_BY_LOWER_NAME[$lower]+yes} ]]; then
+            CHECK_RUN_SLUGS_BY_LOWER_NAME[$lower]+=" $slug"
+        else
+            CHECK_RUN_SLUGS_BY_LOWER_NAME[$lower]=$slug
+        fi
+    done <<<"$tsv"
+    return 0
+}
+
+# True when LABEL (a statusCheckRollup name/context) names a check-run whose
+# OWN `.app.slug` belongs to a declared review provider's catalog entry (fix
+# batch, issue #577 F1). Never matches on label text alone: a check-run must
+# exist with that exact name (case-insensitive), and its slug must be in the
+# catalog for one of the names AGENT_REVIEW_PROVIDERS declared. Fails closed
+# (returns 1, no exemption) whenever the repo-scope guard disabled
+# exemptions, no provider is declared, or the check-runs read itself was
+# unreadable -- resolve_check_run_slugs is expected to have already been
+# attempted by the caller for the current head.
 is_provider_residue_check() {
-    local label=$1 lower name re
+    local label=$1 lower name slugs slug check_slug
+    [[ $EXEMPTIONS_DISABLED != yes ]] || return 1
     resolve_review_provider_names
     ((${#REVIEW_PROVIDER_NAMES_DECLARED[@]})) || return 1
+    [[ $CHECK_RUN_FETCH_OK == yes ]] || return 1
     lower=${label,,}
+    [[ -n ${CHECK_RUN_SLUGS_BY_LOWER_NAME[$lower]+yes} ]] || return 1
     for name in "${REVIEW_PROVIDER_NAMES_DECLARED[@]}"; do
-        re=$(provider_residue_label_re "$name") || continue
-        [[ $lower =~ $re ]] && return 0
+        slugs=$(provider_app_slugs "$name") || continue
+        for slug in $slugs; do
+            for check_slug in ${CHECK_RUN_SLUGS_BY_LOWER_NAME[$lower]}; do
+                [[ $slug == "$check_slug" ]] && return 0
+            done
+        done
     done
     return 1
 }
@@ -359,8 +481,17 @@ is_provider_residue_check() {
 # regardless of the provider's per-run action: an undeclared provider still
 # faces the full requirement, and a provider that WAS pinged after the
 # boundary already reports fresh on its own post-boundary timestamp.
+#
+# is_provider_residue_check identifies that app by its own authenticated
+# `.app.slug` from a dedicated check-runs read (resolve_check_run_slugs), never
+# by display-name substring alone -- a required job merely NAMED like a
+# provider is never excused (fix batch, F1). Both this exemption and the
+# generated-path one are disabled outright when this checkout's own
+# repository does not match `--repo` (resolve_exemptions_scope, fix batch
+# F2), and this one additionally fails closed when the check-runs read itself
+# is unreadable -- the refusal then reports `provider-check=unreadable`.
 check_ci_fresh() {
-    local pr_json=$1 boundary=$2 stale_raw label
+    local pr_json=$1 boundary=$2 head_sha=$3 stale_raw label
     local -a stale_labels=() residue_labels=()
     stale_raw=$(jq -r --argjson boundary "$boundary" '
         def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
@@ -376,6 +507,11 @@ check_ci_fresh() {
         ] | join("\n")
     ' <<<"$pr_json") ||
         die 'check rollup timestamps were unreadable; CI provenance is unavailable'
+    resolve_review_provider_names
+    if [[ -n $stale_raw && $EXEMPTIONS_DISABLED != yes &&
+        ${#REVIEW_PROVIDER_NAMES_DECLARED[@]} -gt 0 ]]; then
+        resolve_check_run_slugs "$head_sha" || true
+    fi
     while IFS= read -r label; do
         [[ -n $label ]] || continue
         if is_provider_residue_check "$label"; then
@@ -387,11 +523,14 @@ check_ci_fresh() {
         fi
     done <<<"$stale_raw"
     if ((${#stale_labels[@]})); then
-        local joined=''
+        local joined='' unreadable_note=''
         for label in "${stale_labels[@]}"; do
             joined+="${joined:+, }$label"
         done
-        die "CI evidence predates the retarget (stale: $joined); re-run CI against the new base -- a stale digest is a stop signal, not a green result"
+        if [[ $CHECK_RUN_FETCH_ATTEMPTED == yes && $CHECK_RUN_FETCH_OK != yes ]]; then
+            unreadable_note=' provider-check=unreadable'
+        fi
+        die "CI evidence predates the retarget (stale: $joined)$unreadable_note; re-run CI against the new base -- a stale digest is a stop signal, not a green result"
     fi
     if ((${#residue_labels[@]})); then
         local residue_joined='' residue_item
@@ -482,6 +621,7 @@ matches_generated_path() {
 # that moves application code INTO a declared path still fails closed.
 base_advance_is_generated_only() {
     local head_sha=$1 compare_json file_count
+    [[ $EXEMPTIONS_DISABLED != yes ]] || return 1
     resolve_generated_paths
     [[ -n $GENERATED_PATHS ]] || return 1
     compare_json=$("$GH_BIN" api "repos/$REPO/compare/$head_sha...$BASE" 2>/dev/null) || return 1
@@ -742,6 +882,7 @@ cover_retarget_lineage() {
 retarget() {
     local pr_json actual_base old_base head_ref head_sha ci_counts total pass closing_count refreshed_head_sha
     resolve_repo
+    resolve_exemptions_scope
     pr_json=$(fetch_pr) || die "could not read PR #$PR before retarget"
     actual_base=$(jq -r '.baseRefName // empty' <<<"$pr_json") ||
         die 'baseRefName was unreadable before retarget'
@@ -792,7 +933,7 @@ retarget() {
         ci_counts=$(check_ci "$pr_json")
         IFS=$'\t' read -r total pass <<<"$ci_counts"
     fi
-    check_ci_fresh "$pr_json" "$BOUNDARY_EPOCH"
+    check_ci_fresh "$pr_json" "$BOUNDARY_EPOCH" "$head_sha"
     approval_token=$(describe_approval "$pr_json" "$head_sha" "$BOUNDARY_EPOCH")
     closing_count=$(closing_issue_count "$pr_json") ||
         die 'closingIssuesReferences was unreadable after retarget'

@@ -181,15 +181,29 @@ gate (issue #577):
   re-scan any more than it triggers CI, and an `observe`/`disabled` per-run provider action never
   re-pings it either — requiring that check to postdate the boundary made the proof unsatisfiable
   without an unauthorized ping (agent-kit#572, three wasted CI rounds chasing `stale: CodeRabbit`
-  through `gh run rerun`). A `statusCheckRollup` entry whose name/context text recognizably
-  belongs to a provider declared in `AGENT_REVIEW_PROVIDERS` is excused from the postdate
-  requirement and reported instead — the proof line carries `provider-check=` naming the excused
-  check(s), sanitized and comma-joined, or `provider-check=none` when nothing was excused. Any
-  other stale check still refuses exactly as before; declaring a provider never widens the
-  exemption past checks that plausibly belong to it.
+  through `gh run rerun`). A `statusCheckRollup` entry is excused from the postdate requirement
+  only when a dedicated `commits/<head>/check-runs` read finds a check-run of that exact name
+  whose own authenticated `.app.slug` belongs to a provider declared in `AGENT_REVIEW_PROVIDERS`
+  — never a display-name substring match, so a required job merely *named* like a provider (e.g.
+  "CodeRabbit compatibility tests" run by some other app) is never excused. The proof line carries
+  `provider-check=` naming the excused check(s), sanitized and comma-joined, or
+  `provider-check=none` when nothing was excused; when the check-runs read itself is unreadable,
+  the exemption grants nothing (fail closed) and the refusal reports `provider-check=unreadable`
+  instead. Any other stale check still refuses exactly as before; declaring a provider never
+  widens the exemption past checks whose own app identity confirms it.
 
 Both tokens sit ahead of the trailing `closing-issues=` token so `authorize-queue.sh
 --allow-mechanical-advance`'s anchored parse of that proof line is unaffected.
+
+Both exemptions read `AGENT_GENERATED_PATHS`/`AGENT_REVIEW_PROVIDERS` from *this checkout's own*
+`.agent/config.env`, never from whatever repository `--repo` names. Before applying either one,
+`chain-advance.sh` resolves this checkout's own canonical `OWNER/REPO` (its declared
+`AGENT_REPO_SLUG`, else a live `gh repo view`, else the `origin` remote URL) and requires it to
+equal `--repo`; a resolvable mismatch disables both exemptions outright and prints
+`exemptions=disabled reason=repo-mismatch` — running this helper against a different repository's
+PR can never borrow this checkout's declarations to excuse *that* repository's gap or stale
+checks. An unresolvable local slug leaves the exemptions untouched (fails open), matching the
+advisory, fail-open contract of the resolvers themselves.
 
 Formal approval is provider policy, not mechanical base safety (issue #455), so it never blocks
 the retarget proof. The proof line instead reports an `approval=` token —

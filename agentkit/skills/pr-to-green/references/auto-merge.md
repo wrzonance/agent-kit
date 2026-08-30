@@ -143,8 +143,11 @@ exactly one of:
   resulting refresh skip redisplay. The proof line may also carry
   `behind=`/`generated-only=` and `provider-check=` tokens ahead of
   `closing-issues=` (issue #577: a `behind_by` gap confined to declared
-  `AGENT_GENERATED_PATHS`, or a stale check from a declared review provider,
-  is tolerated rather than chased with an unnecessary rerun or ping) —
+  `AGENT_GENERATED_PATHS`, or a stale check whose own authenticated
+  `check-runs` `.app.slug` belongs to a declared review provider — never a
+  display-name match alone, and never granted at all when that read is
+  unreadable or when this checkout's own repository does not match `--repo`
+  — is tolerated rather than chased with an unnecessary rerun or ping) —
   `--retarget-proof`'s own match is unaffected by their presence, since it
   only requires the tokens named above and the trailing `closing-issues=`
   anchor, never an exact line.
