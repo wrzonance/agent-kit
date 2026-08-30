@@ -39,7 +39,7 @@ CANONICAL_DIFF_TMP=''
 usage() {
     cat <<EOF
 Usage:
-  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH] [--diff PATH]
+  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH|SHA] [--diff PATH]
   $PROGNAME disclose --worktree DIR --run-dir DIR --payload ID --destination TEXT --purpose TEXT
   $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag
   $PROGNAME check --worktree DIR --run-dir DIR --provider NAME --payload ID
@@ -47,6 +47,11 @@ Usage:
 --provider accepts either a peer CLI name (codex, claude) or its model-provider
 token (openai, anthropic); grant and check both normalize the CLI name to its
 token, so a grant recorded under either spelling satisfies the same check.
+
+--base-ref accepts either a branch name (diffed against its freshly fetched
+origin/<name>) or a full 40-character lowercase SHA that already resolves
+locally in --worktree (diffed directly, with no fetch and no origin/ prefix --
+for a frozen chain-base commit that may no longer be any branch's tip).
 
 check exits 0 only for an exact granted provider/payload record, and 10 otherwise.
 EOF
@@ -154,6 +159,28 @@ normalize_provider() {
     esac
 }
 
+# is_full_sha -- true when a --base-ref candidate has the shape of a full
+# commit SHA (40 lowercase hex characters), before any local-resolution
+# attempt. Kept separate from resolution so a 40-hex value that fails to
+# resolve locally is named as "a SHA, but one this worktree cannot resolve"
+# rather than silently falling through to the branch-name validator.
+is_full_sha() {
+    [[ $1 =~ ^[0-9a-f]{40}$ ]]
+}
+
+# resolve_local_base_sha -- print the resolved commit SHA for a full-SHA
+# base-ref candidate, only when it already resolves locally; never fetches
+# to make it resolve. A frozen chain-base commit is often unreachable from
+# any branch tip by the time a later PR's review runs (the predecessor
+# branch moved on, or was deleted after merge) -- requiring local
+# resolution, and never attempting `git fetch <sha>`, is what makes it
+# usable at all: many Git servers refuse to serve an arbitrary commit by
+# SHA regardless.
+resolve_local_base_sha() {
+    local candidate=$1
+    git -C "$WORKTREE" rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null
+}
+
 field_is_safe() {
     local value=$1
     [[ -n $value && $value != *';'* && $value != *'='* &&
@@ -178,8 +205,13 @@ validate_payload_inputs() {
         die_usage 'payload requires --base-ref or --diff'
     fi
     if [[ -n $BASE_REF ]]; then
-        git -C "$WORKTREE" check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
-            die_usage '--base-ref must be a valid branch name'
+        if is_full_sha "$BASE_REF"; then
+            resolve_local_base_sha "$BASE_REF" >/dev/null ||
+                die_usage '--base-ref must be a branch name or a full SHA that already resolves locally in --worktree'
+        else
+            git -C "$WORKTREE" check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+                die_usage '--base-ref must be a branch name or a full SHA that already resolves locally in --worktree'
+        fi
     fi
 }
 
@@ -196,21 +228,43 @@ diff_is_empty() {
     return 1
 }
 
+new_canonical_diff_tmp() {
+    CANONICAL_DIFF_TMP=$(mktemp) || die 'could not create a temporary file for the canonical diff'
+    trap cleanup_canonical_diff_tmp EXIT
+}
+
 payload_command() {
     validate_payload_inputs
-    local digest canonical_digest supplied_digest
+    local digest canonical_digest supplied_digest base_display resolved_sha
     if [[ -n $BASE_REF ]]; then
-        git -C "$WORKTREE" fetch --quiet origin "$BASE_REF" ||
-            die "could not refresh origin/$BASE_REF before rendering canonical diff"
-        CANONICAL_DIFF_TMP=$(mktemp) || die 'could not create a temporary file for the canonical diff'
-        trap cleanup_canonical_diff_tmp EXIT
-        (cd -- "$WORKTREE" && canonical_diff "$BASE_REF") >"$CANONICAL_DIFF_TMP" ||
-            die "could not render canonical diff from origin/$BASE_REF"
+        if is_full_sha "$BASE_REF"; then
+            # A frozen chain-base SHA is diffed directly, never via
+            # canonical_diff()'s "origin/<ref>" form: that form requires a
+            # branch name (check-ref-format rejects a bare SHA), and
+            # refreshing "origin/<sha>" is not meaningful -- the commit is
+            # already local by definition (see resolve_local_base_sha). The
+            # flags below mirror canonical_diff() exactly so a SHA-based
+            # render and an equivalent branch-based render hash identically.
+            resolved_sha=$(resolve_local_base_sha "$BASE_REF") ||
+                die "--base-ref SHA no longer resolves locally: $BASE_REF"
+            base_display=$BASE_REF
+            new_canonical_diff_tmp
+            (cd -- "$WORKTREE" && git --no-pager diff --find-renames --unified=25 "$resolved_sha...HEAD") \
+                >"$CANONICAL_DIFF_TMP" ||
+                die "could not render canonical diff from $base_display"
+        else
+            git -C "$WORKTREE" fetch --quiet origin "$BASE_REF" ||
+                die "could not refresh origin/$BASE_REF before rendering canonical diff"
+            base_display="origin/$BASE_REF"
+            new_canonical_diff_tmp
+            (cd -- "$WORKTREE" && canonical_diff "$BASE_REF") >"$CANONICAL_DIFF_TMP" ||
+                die "could not render canonical diff from origin/$BASE_REF"
+        fi
         chmod 600 -- "$CANONICAL_DIFF_TMP" || die "could not secure the canonical diff temp file"
         diff_is_empty "$CANONICAL_DIFF_TMP" &&
-            die "the canonical diff from origin/$BASE_REF for worktree $WORKTREE is empty; HEAD may already equal origin/$BASE_REF"
+            die "the canonical diff from $base_display for worktree $WORKTREE is empty; HEAD may already equal $base_display"
         canonical_digest=$(sha256sum -- "$CANONICAL_DIFF_TMP" | awk '{print $1}') ||
-            die "could not hash canonical diff from origin/$BASE_REF"
+            die "could not hash canonical diff from $base_display"
         [[ $canonical_digest =~ ^[[:xdigit:]]{64}$ ]] ||
             die 'canonical diff renderer returned an invalid digest'
         if [[ -n $DIFF_PATH ]]; then

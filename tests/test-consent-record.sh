@@ -406,4 +406,61 @@ done
 assert_eq no "$( [[ ! -e $counter ]] && printf no || printf yes )" \
     'a refused launch never invokes the provider'
 
+# --- issue #579: --base-ref accepts a full SHA that resolves locally, not --
+# just a branch name -- a chain-base commit (parallel-issues' recorded
+# `chain_base_sha`) is frequently unreachable from any branch tip by the time
+# a later PR's review runs, and the old branch-only validator rejected it
+# with "ambiguous argument 'origin/<sha>...HEAD'" once canonical_diff()
+# prepended "origin/" to it.
+sha_origin="$tmp/sha-origin.git"
+sha_repo="$tmp/sha-repo"
+git init --bare --quiet "$sha_origin"
+git init --quiet --initial-branch=main "$sha_repo"
+git -C "$sha_repo" config user.email test@example.invalid
+git -C "$sha_repo" config user.name test
+git -C "$sha_repo" remote add origin "$sha_origin"
+printf '%s\n' sha-base >"$sha_repo/example.txt"
+git -C "$sha_repo" add example.txt
+git -C "$sha_repo" commit --quiet -m base
+git -C "$sha_repo" push --quiet -u origin main
+chain_base_sha=$(git -C "$sha_repo" rev-parse HEAD)
+git -C "$sha_repo" switch --quiet -c feature
+printf '%s\n' sha-head >"$sha_repo/example.txt"
+git -C "$sha_repo" commit --quiet -am change
+
+sha_payload=$(
+    cd -- "$sha_repo" || exit
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-ref "$chain_base_sha"
+)
+sha_expected_digest=$(git -C "$sha_repo" --no-pager diff --find-renames --unified=25 \
+    "$chain_base_sha...HEAD" | sha256sum | awk '{print $1}')
+assert_eq "acme/widget:24:$sha_expected_digest" "$sha_payload" \
+    'a resolvable chain-base SHA renders the same diff a branch-based base-ref would'
+
+# A SHA base-ref must never attempt to fetch -- the whole point is that it is
+# already local; proven by breaking origin and confirming the payload is
+# unaffected.
+git -C "$sha_repo" remote set-url origin "$tmp/nonexistent-origin.git"
+sha_payload_no_origin=$(
+    cd -- "$sha_repo" || exit
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-ref "$chain_base_sha"
+)
+assert_eq "$sha_payload" "$sha_payload_no_origin" \
+    'a SHA base-ref never fetches, so an unreachable origin does not affect it'
+
+# A SHA-shaped value that does NOT resolve locally is rejected, and the error
+# names both accepted forms (branch name and full SHA).
+unresolvable_sha=$(printf '%040d' 1)
+unresolvable_error=''
+unresolvable_rc=0
+unresolvable_error=$(
+    cd -- "$sha_repo" || exit
+    /bin/bash "$script" payload --worktree "$sha_repo" --repo acme/widget --pr 24 --base-ref "$unresolvable_sha" 2>&1
+) || unresolvable_rc=$?
+assert_eq 2 "$unresolvable_rc" 'a SHA-shaped --base-ref that does not resolve locally is a usage error'
+assert_contains "$unresolvable_error" 'branch name' \
+    'the rejection names the branch-name form'
+assert_contains "$unresolvable_error" 'SHA' \
+    'the rejection also names the SHA form'
+
 finish
