@@ -188,6 +188,23 @@ assert_not_contains "$log" 'item-list' 'does not re-scan the board'
 assert_contains "$out" 'board.json, 1 call' 'terminal line reports the warm-cache cost'
 assert_contains "$out" 'moved #57' 'reports the move'
 
+# --- canonical --repo is a full substitute for --repository (issue #556) ---
+# Every other repo-slug-taking helper in the kit spells this flag --repo;
+# --repository was this helper's only holdout. Confirm the canonical spelling
+# reaches the identical warm-cache mutation, not merely that it parses.
+repo=$(seed_repo)
+: > "$tmp/gh.log"
+out=$(GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
+    "$mv_sh" --repo-root "$repo" --repo example-org/example-repo \
+    --issue-number 57 --status 'In progress' 2>&1)
+assert_eq '1' "$(wc -l < "$tmp/gh.log")" '--repo reaches the same one-call warm path as --repository'
+assert_contains "$out" 'moved #57' '--repo reports the same move as --repository'
+
+usage_out=$("$mv_sh" --help 2>&1)
+assert_contains "$usage_out" '--repo OWNER/REPO' 'usage advertises --repo as the canonical flag'
+assert_contains "$usage_out" '--repository is a silent alias' \
+    'usage documents --repository as a compatibility alias'
+
 # The warm path deliberately never reads the card's current status before
 # mutating it, so it reports "moved" even when the card is already at the
 # target status -- pin this documented tradeoff (see usage's Output section

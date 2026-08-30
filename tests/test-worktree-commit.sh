@@ -863,4 +863,157 @@ assert_eq $'manifest.txt\nrequested.txt' \
     "$(git -C "$outside_repo" diff-tree --no-commit-id --name-only -r HEAD | sort)" \
     'allow-outside commits only the requested and explicitly allowed paths'
 
+# A recorded session-ledger grant may also authorize a merge-inherited
+# protected path, without ever naming --allow-base-inherited (issue #563):
+# the operator's once-per-run authorization now covers a staged protected
+# path exactly like the worktree-branch-push/draft-PR/board-move classes
+# SKILL.md already documented.
+ledger_bin="$root/agentkit/skills/.shared/scripts/session-ledger.sh"
+ledger_repo="$tmp/ledger-merge-repo"
+git init -q -b main "$ledger_repo"
+git -C "$ledger_repo" config user.name test
+git -C "$ledger_repo" config user.email test@example.invalid
+mkdir -p "$ledger_repo/.agent" "$ledger_repo/.github/workflows"
+printf 'AGENT_BASE_BRANCH=main\nAGENT_PROTECTED_PATHS=.github/workflows/\n' > "$ledger_repo/.agent/config.env"
+printf 'workflow-base\n' > "$ledger_repo/.github/workflows/ci.yml"
+printf 'base\n' > "$ledger_repo/base.txt"
+git -C "$ledger_repo" add -- .
+git -C "$ledger_repo" commit -qm base
+git -C "$ledger_repo" checkout -qb feature
+printf 'feature\n' > "$ledger_repo/feature.txt"
+git -C "$ledger_repo" add -- feature.txt
+git -C "$ledger_repo" commit -qm feature
+git -C "$ledger_repo" checkout -q main
+printf 'workflow-base-v2\n' > "$ledger_repo/.github/workflows/ci.yml"
+git -C "$ledger_repo" add -- .github/workflows/ci.yml
+git -C "$ledger_repo" commit -qm 'base workflow update'
+git -C "$ledger_repo" checkout -q feature
+git -C "$ledger_repo" merge --no-commit --no-ff -q main
+printf 'change\n' > "$ledger_repo/change.txt"
+
+ledger_home="$tmp/ledger-home"
+mkdir -p "$ledger_home"
+chmod 700 "$ledger_home"
+ledger_file="$ledger_home/session-ledger.ndjson"
+
+# No --ledger at all: today's park behaviour, byte for byte.
+no_ledger_rc=0
+no_ledger_out=$(cd "$ledger_repo" && "$script" --include-staged --message 'fix: no ledger yet' \
+    --trailer "$TEST_TRAILER" -- change.txt 2>&1) || no_ledger_rc=$?
+assert_eq '3' "$no_ledger_rc" 'no --ledger given still parks a merge-inherited protected path'
+assert_contains "$no_ledger_out" '.github/workflows/ci.yml' \
+    'the no-ledger park output still names the inherited protected path'
+
+"$ledger_bin" append --ledger "$ledger_file" --run-id ledger-run-1 --skills-path "$root/agentkit/skills" \
+    --procedure-set parallel-issues --decision 'authorize:workflow-mutations' --scope auto \
+    --quote 'operator authorized all CI-altering workflows for this run' > /dev/null
+
+# A recorded grant under a DIFFERENT scope must not cover this one -- a
+# decision token alone must never widen a narrower grant.
+mismatched_rc=0
+mismatched_out=$(cd "$ledger_repo" && "$script" --include-staged --message 'fix: mismatched scope' \
+    --trailer "$TEST_TRAILER" --ledger "$ledger_file" --run-id ledger-run-1 --ledger-scope manual \
+    -- change.txt 2>&1) || mismatched_rc=$?
+assert_eq '3' "$mismatched_rc" 'a non-covering ledger scope still parks the protected path'
+assert_contains "$mismatched_out" '.github/workflows/ci.yml' \
+    'the non-covering park output still names the inherited protected path'
+
+# The covering grant authorizes the commit, and the commit carries the
+# ledger trailer.
+covering_rc=0
+covering_out=$(cd "$ledger_repo" && "$script" --include-staged --message 'fix: ledger-authorized workflow edit' \
+    --trailer "$TEST_TRAILER" --ledger "$ledger_file" --run-id ledger-run-1 --ledger-scope auto \
+    -- change.txt 2>&1) || covering_rc=$?
+assert_eq '0' "$covering_rc" 'a covering session-ledger grant commits the parked protected path'
+assert_contains "$covering_out" 'committed' 'the ledger-authorized commit reports success'
+assert_eq 'workflow-base-v2' "$(git -C "$ledger_repo" show HEAD:.github/workflows/ci.yml)" \
+    'the ledger-authorized commit carries the inherited protected bytes'
+assert_contains "$(git -C "$ledger_repo" log -1 --format=%B)" \
+    'Authorized-By-Ledger: ledger-run-1 authorize:workflow-mutations' \
+    'the ledger-authorized commit carries the Authorized-By-Ledger trailer'
+
+# A covering authorize:workflow-mutations grant never widens beyond CI
+# workflow files (issue #563 F1 adversarial-review fix): harness/hook
+# configuration keeps parking even when the grant covers this exact run and
+# scope, because the decision token never named that class of mutation.
+ledger_harness_repo="$tmp/ledger-harness-repo"
+git init -q -b main "$ledger_harness_repo"
+git -C "$ledger_harness_repo" config user.name test
+git -C "$ledger_harness_repo" config user.email test@example.invalid
+mkdir -p "$ledger_harness_repo/.agent" "$ledger_harness_repo/.claude"
+printf 'AGENT_BASE_BRANCH=main\n' > "$ledger_harness_repo/.agent/config.env"
+printf '{"settings":"base"}\n' > "$ledger_harness_repo/.claude/settings.json"
+printf 'base\n' > "$ledger_harness_repo/base.txt"
+git -C "$ledger_harness_repo" add -- .
+git -C "$ledger_harness_repo" commit -qm base
+git -C "$ledger_harness_repo" checkout -qb feature
+printf 'feature\n' > "$ledger_harness_repo/feature.txt"
+git -C "$ledger_harness_repo" add -- feature.txt
+git -C "$ledger_harness_repo" commit -qm feature
+git -C "$ledger_harness_repo" checkout -q main
+printf '{"settings":"base-v2"}\n' > "$ledger_harness_repo/.claude/settings.json"
+git -C "$ledger_harness_repo" add -- .claude/settings.json
+git -C "$ledger_harness_repo" commit -qm 'base settings update'
+git -C "$ledger_harness_repo" checkout -q feature
+git -C "$ledger_harness_repo" merge --no-commit --no-ff -q main
+printf 'change\n' > "$ledger_harness_repo/change.txt"
+harness_rc=0
+harness_out=$(cd "$ledger_harness_repo" && "$script" --include-staged --message 'fix: harness config parks' \
+    --trailer "$TEST_TRAILER" --ledger "$ledger_file" --run-id ledger-run-1 --ledger-scope auto \
+    -- change.txt 2>&1) || harness_rc=$?
+assert_eq '3' "$harness_rc" \
+    'a covering ledger grant still parks a merge-inherited .claude/settings.json'
+assert_contains "$harness_out" '.claude/settings.json' \
+    'the harness-config park output names the non-CI-workflow path'
+assert_contains "$harness_out" 'does not authorize non-CI-workflow protected paths' \
+    'the park output explains why the covering grant did not apply'
+
+# A mixed staged set -- one CI-workflow file the grant covers plus one
+# harness-config file it never covers -- parks the whole set (all-or-
+# nothing), naming the offending non-CI path.
+ledger_mixed_repo="$tmp/ledger-mixed-repo"
+git init -q -b main "$ledger_mixed_repo"
+git -C "$ledger_mixed_repo" config user.name test
+git -C "$ledger_mixed_repo" config user.email test@example.invalid
+mkdir -p "$ledger_mixed_repo/.agent" "$ledger_mixed_repo/.claude" "$ledger_mixed_repo/.github/workflows"
+printf 'AGENT_BASE_BRANCH=main\nAGENT_PROTECTED_PATHS=.github/workflows/\n' > "$ledger_mixed_repo/.agent/config.env"
+printf 'workflow-base\n' > "$ledger_mixed_repo/.github/workflows/ci.yml"
+printf '{"settings":"base"}\n' > "$ledger_mixed_repo/.claude/settings.json"
+printf 'base\n' > "$ledger_mixed_repo/base.txt"
+git -C "$ledger_mixed_repo" add -- .
+git -C "$ledger_mixed_repo" commit -qm base
+git -C "$ledger_mixed_repo" checkout -qb feature
+printf 'feature\n' > "$ledger_mixed_repo/feature.txt"
+git -C "$ledger_mixed_repo" add -- feature.txt
+git -C "$ledger_mixed_repo" commit -qm feature
+git -C "$ledger_mixed_repo" checkout -q main
+printf 'workflow-base-v2\n' > "$ledger_mixed_repo/.github/workflows/ci.yml"
+printf '{"settings":"base-v2"}\n' > "$ledger_mixed_repo/.claude/settings.json"
+git -C "$ledger_mixed_repo" add -- .github/workflows/ci.yml .claude/settings.json
+git -C "$ledger_mixed_repo" commit -qm 'base workflow and settings update'
+git -C "$ledger_mixed_repo" checkout -q feature
+git -C "$ledger_mixed_repo" merge --no-commit --no-ff -q main
+printf 'change\n' > "$ledger_mixed_repo/change.txt"
+mixed_rc=0
+mixed_out=$(cd "$ledger_mixed_repo" && "$script" --include-staged --message 'fix: mixed protected set parks' \
+    --trailer "$TEST_TRAILER" --ledger "$ledger_file" --run-id ledger-run-1 --ledger-scope auto \
+    -- change.txt 2>&1) || mixed_rc=$?
+assert_eq '3' "$mixed_rc" \
+    'a mixed CI-workflow and harness-config set parks even under a covering grant'
+assert_contains "$mixed_out" '.claude/settings.json' \
+    'the mixed-set park output names the offending non-CI-workflow path'
+assert_contains "$mixed_out" '.github/workflows/ci.yml' \
+    'the mixed-set park output still lists the CI-workflow path too'
+
+# --ledger/--run-id/--ledger-scope form one coherent query: a partial trio is
+# a usage error, never a silent no-op.
+partial_repo="$tmp/ledger-partial-repo"
+new_repo "$partial_repo"
+printf 'change\n' > "$partial_repo/change.txt"
+partial_rc=0
+partial_out=$(cd "$partial_repo" && "$script" --message 'fix: partial ledger flags' --trailer "$TEST_TRAILER" \
+    --ledger "$ledger_file" --run-id ledger-run-1 -- change.txt 2>&1) || partial_rc=$?
+assert_eq '1' "$partial_rc" 'a partial --ledger/--run-id/--ledger-scope trio is a usage error'
+assert_contains "$partial_out" 'given together' 'the partial-trio refusal names the requirement'
+
 finish
