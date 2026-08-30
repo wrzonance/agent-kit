@@ -198,13 +198,18 @@ branch is expected to let GitHub automatically retarget the successor — but Gi
 reliably do that: it closes the successor instead when it is a draft or not cleanly mergeable
 onto the new base (`base_ref_deleted` then `closed` in the same second, confirmed for #484
 and #561; issue #564). An agent-driven `merge-pr.sh --delete-branch` never relies on that
-forge behavior either way: it reads for open dependents before deleting and retargets each one
-itself (or, with `--no-retarget`, refuses the delete and names them), then still re-checks
-after the delete and recovers via `chain-advance.sh --recover-closed` (recreate the deleted
-base ref at its own recorded SHA, reopen, retarget, delete the temporary ref) if GitHub closed
-one anyway — see `pr-to-green/references/auto-merge.md`'s "Dependents check before delete" for
-the full contract. That recovery helper is also the fix for a successor an *older* kit version,
-or a human merge, already left closed this way — one call, base and head unchanged.
+forge behavior either way: it reads for open dependents before deleting and, by default,
+refuses the delete and names them — a raw base repoint does not merge the predecessor's
+content into a dependent or re-run its CI, so leaving the branch in place is the only safe
+default. Only after this file's own merge-down-then-`chain-advance.sh --retarget` procedure has
+already been completed for every dependent does `--retarget-dependents` become the right (and
+by then usually unnecessary — the dependent's base already moved) opt-in. Either way, once a
+delete does proceed, `merge-pr.sh` still re-checks afterward and recovers via `chain-advance.sh
+--recover-closed` (recreate the deleted base ref at its own recorded SHA, reopen, retarget,
+delete the temporary ref) if GitHub closed a dependent anyway — see
+`pr-to-green/references/auto-merge.md`'s "Dependents check before delete" for the full
+contract. That recovery helper is also the fix for a successor an *older* kit version, or a
+human merge, already left closed this way — one call, base and head unchanged.
 
 The retarget also invalidates the successor's evidence. GitHub can move the child to the
 default branch when the parent branch is deleted, while leaving successful checks and a

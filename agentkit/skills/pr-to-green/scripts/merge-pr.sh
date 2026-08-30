@@ -32,7 +32,7 @@ head_sha=''
 base=''
 method=''
 delete_branch=0
-no_retarget=0
+retarget_dependents_opt_in=0
 authorization_file=''
 gate_result_file=''
 work_dir=''
@@ -83,10 +83,15 @@ find_open_dependents() {
 }
 
 # Retargets every dependent PR to the merge target BEFORE the base branch is
-# deleted -- the deterministic option (spec item 1a): each PATCH is verified
-# against the live response, never assumed from a 2xx status alone. Returns
-# nonzero (never dies) so the caller can leave the branch undeleted rather
-# than abort the whole script -- the merge itself already succeeded.
+# deleted -- opt-in only, behind --retarget-dependents (issue #564 fix batch
+# F1): a raw base PATCH repoints a dependent without merging the
+# predecessor's content into it or re-running its CI, so this is safe only
+# once the caller has already done that merge-down and completed
+# chain-advance.sh --retarget's own proof for the dependent. Each PATCH here
+# is still verified against the live response, never assumed from a 2xx
+# status alone. Returns nonzero (never dies) so the caller can leave the
+# branch undeleted rather than abort the whole script -- the merge itself
+# already succeeded.
 retarget_dependents() {
     local deps_file=$1 target=$2 number patch_out failed=0
     while IFS= read -r number; do
@@ -139,13 +144,18 @@ usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --merge-method squash|merge|rebase --authorization-file FILE
-       --gate-result FILE [--delete-branch [--no-retarget]]
+       --gate-result FILE [--delete-branch [--retarget-dependents]]
 
 --delete-branch first checks for any open PR still based on the merged head
-branch (issue #564). By default each is retargeted to --base before the
-delete; --no-retarget instead refuses the delete (exit $EXIT_DEPENDENTS_REFUSED, naming
-the dependents) and leaves the branch in place. Either way the merge itself
-has already succeeded.
+branch (issue #564). By default, any open dependent refuses the delete (exit
+$EXIT_DEPENDENTS_REFUSED, naming the dependents) and leaves the branch in place --
+the merge itself has already succeeded regardless. --retarget-dependents
+raw-PATCHes each dependent's base to --base before deleting instead; pass it
+ONLY after the caller has already merged the updated default branch down into
+each dependent and completed ../../parallel-issues/scripts/chain-advance.sh
+--retarget's full proof for it (ancestry, fresh CI, closing-issue linkage) --
+a raw base PATCH alone reintroduces the predecessor's diff into an
+unrebuilt dependent and leaves its prior CI evidence stale.
 EOF
     exit "${1:-2}"
 }
@@ -161,7 +171,7 @@ while (($#)); do
         --authorization-file) (($# >= 2)) || usage; authorization_file=$2; shift 2 ;;
         --gate-result) (($# >= 2)) || usage; gate_result_file=$2; shift 2 ;;
         --delete-branch) delete_branch=1; shift ;;
-        --no-retarget) no_retarget=1; shift ;;
+        --retarget-dependents) retarget_dependents_opt_in=1; shift ;;
         -h|--help) usage 0 ;;
         *) usage ;;
     esac
@@ -174,7 +184,8 @@ done
 case $method in squash|merge|rebase) ;; *) die '--merge-method must be squash, merge, or rebase' ;; esac
 [[ -n $authorization_file ]] || die '--authorization-file is required'
 [[ -n $gate_result_file ]] || die '--gate-result is required'
-[[ $no_retarget == 0 || $delete_branch == 1 ]] || die '--no-retarget requires --delete-branch'
+[[ $retarget_dependents_opt_in == 0 || $delete_branch == 1 ]] ||
+    die '--retarget-dependents requires --delete-branch'
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 command -v jq >/dev/null 2>&1 || die 'jq is required; merge evidence unavailable'
 
@@ -281,7 +292,11 @@ if ((delete_branch)); then
         # no open successor still stacked on it.
         printf 'branch_delete=skipped ref=%s reason=dependents-check-failed\n' "$head_ref"
     elif dependents_count=$(jq 'length' "$work_dir/dependents.json") &&
-        ((dependents_count > 0)) && ((no_retarget)); then
+        ((dependents_count > 0)) && ((retarget_dependents_opt_in == 0)); then
+        # F1 (issue #564 fix batch): refusing is the default. A raw base
+        # PATCH does not merge the predecessor's content into the dependent
+        # or re-run its CI -- only --retarget-dependents, an explicit
+        # attestation that the caller already did that properly, opts in.
         dependents_list=$(jq -r 'map(tostring) | join(",")' "$work_dir/dependents.json")
         printf 'branch_delete=refused ref=%s reason=dependents-open dependents=%s\n' \
             "$head_ref" "$dependents_list"

@@ -889,7 +889,11 @@ case " $* " in
     fi
     ;;
 *" api repos/owner/repo/git/ref/heads/feat/issue-546 "*)
-    printf '{"object":{"sha":"%s"}}\n' "$RECOVER_BASE_SHA"
+    if [[ ${RECOVER_REF_MISSING:-0} == 1 ]]; then
+        printf 'not found\n' >&2
+        exit 1
+    fi
+    printf '{"object":{"sha":"%s"}}\n' "${RECOVER_REF_LIVE_SHA:-$RECOVER_BASE_SHA}"
     ;;
 *" api --method PATCH repos/owner/repo/pulls/20 -f state=open "*)
     write_state open
@@ -944,14 +948,17 @@ assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA 
 assert_eq '0' "$(grep -c 'git/refs' "$tmp/gh-recover.log" || true)" \
     'an already-open PR on the target base makes no mutating calls'
 
-# An open PR based on something other than the requested target is not a
-# recover-closed case at all (it may be mid-flight for an unrelated reason);
-# refuse rather than guess at a destructive retarget/delete.
+# An open PR based on something other than the requested target, with no live
+# evidence that its base is the ref recover-closed itself would have created
+# (the live ref has moved on, or is unreadable), is not a recover-closed case
+# at all -- it may be open for an unrelated reason; refuse rather than guess
+# at a destructive retarget.
 printf 'state=open\nbase=feat/issue-546\n' >"$tmp/recover-state"
 : >"$tmp/gh-recover.log"
 set +e
 open_wrong_base_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
-    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" GH_LOG="$tmp/gh-recover.log" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" RECOVER_REF_LIVE_SHA='0000000000000000000000000000000000000f' \
+    GH_LOG="$tmp/gh-recover.log" \
     CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
     --recover-closed --repo owner/repo --pr 20 --base main 2>&1)
 open_wrong_base_rc=$?
@@ -962,6 +969,47 @@ assert_contains "$open_wrong_base_out" 'is open but based on feat/issue-546, not
     'the refusal names the unexpected live base'
 assert_eq '0' "$(grep -c 'git/refs' "$tmp/gh-recover.log" || true)" \
     'an open-but-wrong-base PR makes no mutating calls'
+
+# An unreadable live ref (network failure, or the ref genuinely does not
+# exist) is exactly as unverified as a mismatched SHA -- still refused.
+printf 'state=open\nbase=feat/issue-546\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+set +e
+open_unreadable_ref_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" RECOVER_REF_MISSING=1 \
+    GH_LOG="$tmp/gh-recover.log" \
+    CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main 2>&1)
+open_unreadable_ref_rc=$?
+set -e
+assert_eq '1' "$open_unreadable_ref_rc" \
+    'an open PR whose current base ref is unreadable also refuses'
+assert_contains "$open_unreadable_ref_out" 'is open but based on feat/issue-546, not main' \
+    'the unreadable-ref refusal names the unexpected live base too'
+
+# F3 (issue #564 fix batch): a verified partial recovery -- an earlier
+# invocation recreated the base ref and reopened the PR but failed before
+# retargeting -- resumes directly at the retarget step instead of refusing.
+# The live ref still points at the PR's own recorded base.sha (nothing else
+# has touched it), which is exactly the evidence that distinguishes this from
+# the unrelated-open-PR case above.
+printf 'state=open\nbase=feat/issue-546\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+resume_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" GH_LOG="$tmp/gh-recover.log" \
+    CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main)
+assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA" "$resume_out" \
+    'a verified partial recovery resumes and completes the retarget'
+resume_log=$(<"$tmp/gh-recover.log")
+assert_not_contains "$resume_log" 'method POST repos/owner/repo/git/refs' \
+    'a resumed recovery never re-creates the already-verified base ref'
+assert_not_contains "$resume_log" 'state=open' \
+    'a resumed recovery never re-issues the reopen call (the PR is already open)'
+assert_contains "$resume_log" '--method PATCH repos/owner/repo/pulls/20 -f base=main' \
+    'a resumed recovery still performs the retarget'
+assert_not_contains "$resume_log" 'method DELETE' \
+    'a resumed recovery never deletes a ref this run did not itself create (F2)'
 
 # A merged PR is never a recover-closed candidate.
 printf 'state=closed\nbase=feat/issue-546\n' >"$tmp/recover-state"
@@ -990,6 +1038,25 @@ retry_create_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RE
     --recover-closed --repo owner/repo --pr 20 --base main)
 assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA" "$retry_create_out" \
     'recreating an already-existing ref at the same recorded SHA still succeeds'
+assert_not_contains "$(<"$tmp/gh-recover.log")" 'method DELETE' \
+    'F2: a reused pre-existing ref is never deleted by the run that did not create it'
+
+# F2 (issue #564 fix batch): if the recreated ref no longer points at the
+# exact SHA this run recreated it at by the time cleanup runs -- something
+# else moved or replaced it in the interim -- the delete is skipped rather
+# than blindly removing whatever is there now.
+printf 'state=closed\nbase=feat/issue-546\n' >"$tmp/recover-state"
+: >"$tmp/gh-recover.log"
+moved_ref_out=$(RECOVER_STATE_FILE="$tmp/recover-state" RECOVER_HEAD_SHA="$RECOVER_HEAD_SHA" \
+    RECOVER_BASE_SHA="$RECOVER_BASE_SHA" RECOVER_REF_LIVE_SHA='1111111111111111111111111111111111111e' \
+    GH_LOG="$tmp/gh-recover.log" CHAIN_ADVANCE_GH="$tmp/gh-recover" bash "$advance" \
+    --recover-closed --repo owner/repo --pr 20 --base main 2>"$tmp/moved-ref.stderr")
+assert_eq "recovered pr #20 base=main head=feat/issue-548 sha=$RECOVER_HEAD_SHA" "$moved_ref_out" \
+    'F2: a moved temp ref still reports the completed recovery (cleanup is non-fatal)'
+assert_not_contains "$(<"$tmp/gh-recover.log")" 'method DELETE' \
+    'F2: the delete is skipped once the ref no longer points at the recreated SHA'
+assert_contains "$(cat "$tmp/moved-ref.stderr")" 'no longer points at' \
+    'F2: the skipped cleanup is reported, not silently dropped'
 
 # -- issue #567 fix batch #2: the retarget lineage hook's review-ledger.sh
 #    cover call site -- F3 (restrict coverage to the adversarial entry) and

@@ -610,6 +610,7 @@ retarget() {
 recover_closed() {
     local pr_json merged head_sha head_ref state live_base base_sha
     local create_out existing_ref_json existing_sha reopen_out retarget_out delete_out
+    local temp_created=false ref_json ref_sha verify_ref_json verify_sha
     resolve_repo
     pr_json=$(fetch_pr_rest) || die "could not read PR #$PR before recovery"
     jq -e 'type == "object"' <<<"$pr_json" >/dev/null 2>&1 ||
@@ -621,42 +622,64 @@ recover_closed() {
     [[ $head_sha =~ $SHA_RE ]] || die 'head SHA evidence was missing before recovery'
     state=$(jq -r '.state // empty' <<<"$pr_json")
     live_base=$(jq -r '.base.ref // empty' <<<"$pr_json")
+    base_sha=$(jq -r '.base.sha // empty' <<<"$pr_json")
 
     if [[ $state == open ]]; then
-        [[ $live_base == "$BASE" ]] ||
+        if [[ $live_base == "$BASE" ]]; then
+            printf 'recovered pr #%s base=%s head=%s sha=%s already-open\n' \
+                "$PR" "$BASE" "$head_ref" "$head_sha"
+            return 0
+        fi
+        # F3 (issue #564 fix batch): an earlier invocation may have recreated
+        # the base ref and reopened the PR but failed before retargeting,
+        # leaving it open on the recreated ref forever after (a plain refusal
+        # here would never let a retry finish). Recognise that VERIFIED
+        # partial-recovery state -- the PR's own recorded base.sha still
+        # matches the live tip of its current (non-target) base ref, i.e.
+        # nothing has moved it since -- and resume at the shared retarget
+        # step below instead of refusing. Any other open-on-a-different-base
+        # PR (no matching live evidence) is still refused: it may be open for
+        # an unrelated reason, and guessing is never safe.
+        if [[ $base_sha =~ $SHA_RE ]]; then
+            ref_json=$("$GH_BIN" api "repos/$REPO/git/ref/heads/$live_base" 2>/dev/null) || ref_json=''
+            ref_sha=$(jq -r '.object.sha // empty' <<<"$ref_json" 2>/dev/null) || ref_sha=''
+        fi
+        [[ -n $ref_sha && $ref_sha == "$base_sha" ]] ||
             die "pr #$PR is open but based on ${live_base:-missing}, not $BASE; this is not a recover-closed case"
-        printf 'recovered pr #%s base=%s head=%s sha=%s already-open\n' \
-            "$PR" "$BASE" "$head_ref" "$head_sha"
-        return 0
-    fi
-    [[ $state == closed ]] ||
-        die "pr #$PR is neither open nor closed (state=${state:-missing}); recovery does not apply"
+        # Verified: fall through to the shared retarget step. temp_created
+        # stays false -- this run did not create $live_base, so per F2 it
+        # never deletes it; whichever run created it owns that cleanup.
+    else
+        [[ $state == closed ]] ||
+            die "pr #$PR is neither open nor closed (state=${state:-missing}); recovery does not apply"
 
-    base_sha=$(jq -r '.base.sha // empty' <<<"$pr_json")
-    [[ -n $live_base ]] ||
-        die 'the closed pull request recorded no base ref name; recovery evidence is unavailable'
-    [[ $base_sha =~ $SHA_RE ]] ||
-        die 'the closed pull request recorded no base SHA; recovery evidence is unavailable'
-    [[ $live_base != "$BASE" ]] ||
-        die 'the recorded base already equals the requested target; nothing to recover'
+        [[ -n $live_base ]] ||
+            die 'the closed pull request recorded no base ref name; recovery evidence is unavailable'
+        [[ $base_sha =~ $SHA_RE ]] ||
+            die 'the closed pull request recorded no base SHA; recovery evidence is unavailable'
+        [[ $live_base != "$BASE" ]] ||
+            die 'the recorded base already equals the requested target; nothing to recover'
 
-    if ! create_out=$("$GH_BIN" api --method POST "repos/$REPO/git/refs" \
-        -f "ref=refs/heads/$live_base" -f "sha=$base_sha" 2>&1); then
-        existing_ref_json=$("$GH_BIN" api "repos/$REPO/git/ref/heads/$live_base" 2>/dev/null) || existing_ref_json=''
-        existing_sha=$(jq -r '.object.sha // empty' <<<"$existing_ref_json" 2>/dev/null) || existing_sha=''
-        [[ $existing_sha == "$base_sha" ]] ||
-            die "could not recreate the deleted base ref $live_base at $base_sha: $create_out"
-    fi
+        if ! create_out=$("$GH_BIN" api --method POST "repos/$REPO/git/refs" \
+            -f "ref=refs/heads/$live_base" -f "sha=$base_sha" 2>&1); then
+            existing_ref_json=$("$GH_BIN" api "repos/$REPO/git/ref/heads/$live_base" 2>/dev/null) || existing_ref_json=''
+            existing_sha=$(jq -r '.object.sha // empty' <<<"$existing_ref_json" 2>/dev/null) || existing_sha=''
+            [[ $existing_sha == "$base_sha" ]] ||
+                die "could not recreate the deleted base ref $live_base at $base_sha: $create_out"
+        else
+            temp_created=true
+        fi
 
-    if ! reopen_out=$("$GH_BIN" api --method PATCH "repos/$REPO/pulls/$PR" \
-        -f state=open 2>&1); then
-        die "could not reopen pr #$PR against recreated base $live_base: $reopen_out"
+        if ! reopen_out=$("$GH_BIN" api --method PATCH "repos/$REPO/pulls/$PR" \
+            -f state=open 2>&1); then
+            die "could not reopen pr #$PR against recreated base $live_base: $reopen_out"
+        fi
+        pr_json=$(fetch_pr_rest) || die "could not re-read pr #$PR after reopening"
+        [[ $(jq -r '.state // empty' <<<"$pr_json") == open ]] ||
+            die "pr #$PR did not report open after the reopen call"
+        [[ $(jq -r '.head.sha // empty' <<<"$pr_json") == "$head_sha" ]] ||
+            die "pr #$PR head changed during recovery; evidence is stale"
     fi
-    pr_json=$(fetch_pr_rest) || die "could not re-read pr #$PR after reopening"
-    [[ $(jq -r '.state // empty' <<<"$pr_json") == open ]] ||
-        die "pr #$PR did not report open after the reopen call"
-    [[ $(jq -r '.head.sha // empty' <<<"$pr_json") == "$head_sha" ]] ||
-        die "pr #$PR head changed during recovery; evidence is stale"
 
     if ! retarget_out=$("$GH_BIN" api --method PATCH "repos/$REPO/pulls/$PR" \
         -f "base=$BASE" 2>&1); then
@@ -668,14 +691,25 @@ recover_closed() {
     [[ $(jq -r '.head.sha // empty' <<<"$pr_json") == "$head_sha" ]] ||
         die "pr #$PR head changed during the retarget call; evidence is stale"
 
-    # The recreated ref is disposable either way -- whether this invocation
-    # created it fresh or reused one an earlier partial run already left in
-    # place -- now that the PR no longer targets it. A failed cleanup is
-    # reported but never fails an already-completed recovery.
-    if ! delete_out=$("$GH_BIN" api --method DELETE \
-        "repos/$REPO/git/refs/heads/$live_base" 2>&1); then
-        printf '%s: could not delete the temporary recovery ref %s (non-fatal): %s\n' \
-            "$PROGNAME" "$live_base" "$delete_out" >&2
+    if [[ $temp_created == true ]]; then
+        # F2 (issue #564 fix batch): re-read the exact ref and delete only if
+        # it still points at the SHA this run recreated it at -- and only
+        # ever a ref this run itself created. A reused pre-existing ref (the
+        # "already exists" branch above) is never this run's to delete; it is
+        # left for whoever created it, exactly like the resumed-partial-
+        # recovery path above.
+        verify_ref_json=$("$GH_BIN" api "repos/$REPO/git/ref/heads/$live_base" 2>/dev/null) || verify_ref_json=''
+        verify_sha=$(jq -r '.object.sha // empty' <<<"$verify_ref_json" 2>/dev/null) || verify_sha=''
+        if [[ $verify_sha == "$base_sha" ]]; then
+            if ! delete_out=$("$GH_BIN" api --method DELETE \
+                "repos/$REPO/git/refs/heads/$live_base" 2>&1); then
+                printf '%s: could not delete the temporary recovery ref %s (non-fatal): %s\n' \
+                    "$PROGNAME" "$live_base" "$delete_out" >&2
+            fi
+        else
+            printf '%s: temporary recovery ref %s no longer points at %s (now %s); leaving it in place (non-fatal)\n' \
+                "$PROGNAME" "$live_base" "$base_sha" "${verify_sha:-missing}" >&2
+        fi
     fi
 
     printf 'recovered pr #%s base=%s head=%s sha=%s\n' "$PR" "$BASE" "$head_ref" "$head_sha"

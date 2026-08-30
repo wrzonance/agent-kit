@@ -430,27 +430,35 @@ for #484 and #561). `--delete-branch` therefore never deletes blind: it reads
 `pulls?state=open&base=<head-branch>` once before the delete.
 
 - **No open dependents** — the delete proceeds exactly as before.
-- **Dependents found, default** — each is retargeted to `--base` with a
-  verified `PATCH` (the live response's own `base.ref` is checked, never
-  assumed from a 2xx status) before the branch is deleted. Any dependent
-  retarget failure — even for just one of several — leaves the branch
-  undeleted; `merge-pr.sh` never deletes a base some dependent still needs.
-- **`--no-retarget`** — refuses the delete outright, naming the open
-  dependents, and exits 3 (the merge itself has already succeeded and is
-  reported regardless).
+- **Dependents found, default** — refuses the delete outright, naming the
+  open dependents, and exits 3 (the merge itself has already succeeded and
+  is reported regardless). This is the safe default: a raw base `PATCH`
+  alone does not merge the predecessor's content into a dependent or
+  re-run its CI, so leaving the branch in place is the only choice that
+  never risks a stale-evidence dependent (fix batch F1, issue #564).
+- **`--retarget-dependents`** — opt-in only. Each dependent is retargeted to
+  `--base` with a verified `PATCH` (the live response's own `base.ref` is
+  checked, never assumed from a 2xx status) before the branch is deleted.
+  Any dependent retarget failure — even for just one of several — still
+  leaves the branch undeleted. Pass this **only** after the caller has
+  already merged the updated default branch down into each dependent and
+  completed `chain-advance.sh --retarget`'s full proof for it (ancestry,
+  fresh CI, closing-issue linkage, per "Merge order and the stacked-PR
+  retarget" in `parallel-issues/references/chains.md`) — this flag performs
+  no such proof itself, it only repoints the base pointer.
 - **An unreadable dependents check** fails closed exactly like an unreadable
   ref-check: the branch is left in place, never deleted on a guess.
 
-Even a successful pre-delete retarget is not a guarantee: the same draft/
-dirty-mergeable condition that makes GitHub close instead of retarget on
-deletion can still close a dependent immediately afterward. So after a
-successful delete, `merge-pr.sh` re-reads every dependent it retargeted; any
-that ended up `closed` (and not merged) is recovered via
-`../../parallel-issues/scripts/chain-advance.sh --recover-closed` (path
-overridable with `MERGE_PR_CHAIN_ADVANCE`, for testing). This is a best-effort
-safety net, exactly like `cover_retarget_lineage` — never fatal, and a failed
-recovery never undoes the already-completed merge or delete; it is reported
-as `dependent-recovery-failed` for a human to act on.
+Even a successful `--retarget-dependents` PATCH is not a guarantee: the same
+draft/dirty-mergeable condition that makes GitHub close instead of retarget
+on deletion can still close a dependent immediately afterward. So after a
+successful delete under `--retarget-dependents`, `merge-pr.sh` re-reads every
+dependent it retargeted; any that ended up `closed` (and not merged) is
+recovered via `../../parallel-issues/scripts/chain-advance.sh --recover-closed`
+(path overridable with `MERGE_PR_CHAIN_ADVANCE`, for testing). This is a
+best-effort safety net, exactly like `cover_retarget_lineage` — never fatal,
+and a failed recovery never undoes the already-completed merge or delete; it
+is reported as `dependent-recovery-failed` for a human to act on.
 
 **Queue ordering.** `authorize-queue.sh` records a confirmed predecessor's own
 `queue[].deleteBranch` as `"deferred"`, instead of the run's `true`/`false`
