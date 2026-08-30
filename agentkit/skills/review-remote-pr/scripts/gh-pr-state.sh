@@ -17,6 +17,19 @@
 # ci=0/0 none-configured rather than silently reusing the "no CI here at all"
 # 'none' word.
 #
+# --wait-ci also refuses to settle on a check count that is still growing: a
+# repository whose checks register one push-triggered workflow at a time can
+# have its FIRST-registered check pass before the other three have even been
+# created, and a settle-the-instant-nothing-is-pending rule would report
+# ci=1/4 as done (agent-kit#578). Settling instead requires the registered
+# check count to be identical across two consecutive rounds AND the head's
+# check-runs to carry no queued/in_progress entry that round. An optional
+# --expect-checks N (default: the completed check-run count observed on the
+# base branch's own head, when that is readable) additionally refuses to
+# settle below N before the --rounds budget is exhausted, even once the count
+# has gone stable. Every settle prints 'settled checks=N stable-rounds=2
+# expected=N' so the caller can see why it stopped waiting.
+#
 # A base advance whose new commits touch ONLY the repository-declared
 # AGENT_GENERATED_PATHS prefixes (e.g. a post-merge results-recording workflow
 # like record-tier0.yml) is not reported stale: without this, every such
@@ -138,6 +151,14 @@ AUTOMATION_PATHS=""
 # --wait-ci rounds of ci=0/0 (no registered checks at all) tolerated as
 # "pending" before reporting none-configured; see the header comment.
 readonly CI_ZERO_CHECKS_GRACE_ROUNDS=3
+# --wait-ci consecutive qualifying rounds (identical total, nothing pending or
+# in flight) required before settling; see the header comment.
+readonly CI_STABLE_ROUNDS_REQUIRED=2
+# --expect-checks N, or (default) resolved once per --wait-ci run from the
+# base branch's own head check-run count; empty means the floor is inert and
+# settling depends only on stability. Never overwritten once resolved or
+# user-supplied.
+EXPECT_CHECKS=""
 # Sibling classifier (agent-kit#566): issue-comment findings are REST
 # evidence, independent of the GraphQL review-thread capability, so this is
 # invoked unconditionally -- never gated on THREADS_AVAILABLE.
@@ -178,6 +199,13 @@ Options:
                          A new directory is created when absent; shared /tmp is rejected.
   --rounds N             --wait-ci rounds, 1-60 (default: $ROUNDS).
   --interval SECONDS     --wait-ci seconds between rounds, 1-3600 (default: $INTERVAL).
+  --expect-checks N      --wait-ci never reports settled with fewer than N
+                          registered checks before --rounds is exhausted, even
+                          once the count has gone stable. Default: the
+                          completed check-run count observed on the base
+                          branch's own head, when readable; absent that, the
+                          floor is inert and settling depends on stability
+                          alone.
   --acceptance-command C  issue-declared acceptance command; repeatable. Its
                           matching check is reported separately from repo CI.
   --issue-comment-answered FILE
@@ -296,6 +324,8 @@ parse_args() {
         --rounds=*) ROUNDS=${1#*=}; shift ;;
         --interval) require_value "$1" "${2:-}"; INTERVAL=$2; shift 2 ;;
         --interval=*) INTERVAL=${1#*=}; shift ;;
+        --expect-checks) require_value "$1" "${2:-}"; EXPECT_CHECKS=$2; shift 2 ;;
+        --expect-checks=*) EXPECT_CHECKS=${1#*=}; shift ;;
         --acceptance-command) require_value "$1" "${2:-}"; ACCEPTANCE_COMMANDS+=("$2"); shift 2 ;;
         --acceptance-command=*) ACCEPTANCE_COMMANDS+=("${1#*=}"); shift ;;
         --issue-comment-answered) require_value "$1" "${2:-}"; ISSUE_COMMENT_ANSWERED=$2; shift 2 ;;
@@ -336,6 +366,8 @@ validate_args() {
     if [[ ! $INTERVAL =~ ^[1-9][0-9]*$ ]] || ((INTERVAL > 3600)); then
         die "--interval must be an integer 1-3600, got: $INTERVAL"
     fi
+    [[ -z $EXPECT_CHECKS || $EXPECT_CHECKS =~ ^[1-9][0-9]*$ ]] ||
+        die "--expect-checks must be a positive integer, got: $EXPECT_CHECKS"
     command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
     command -v jq >/dev/null 2>&1 || die "jq not found on PATH; evidence unavailable"
     [[ -x $ISSUE_COMMENT_CLASSIFIER ]] ||
@@ -987,19 +1019,63 @@ alert_count() {
 
 # --- wait --------------------------------------------------------------------
 
+# True (exit 0) when the head's check-runs list -- excluding the review bot's
+# own check, same exclusion ci_counts' pending_nb already applies -- carries
+# any entry still 'queued' or 'in_progress'. Status-context entries (no
+# 'status'/'conclusion' key) are covered by ci_counts' pending_nb bucket
+# instead and are excluded here on purpose, so this never double-counts.
+check_runs_in_flight() {
+    jq -e --arg re "$CR_RE" '
+        [ .statusCheckRollup[]?
+          | select(has("status") or has("conclusion"))
+          | select(((.name // "") | test($re; "i")) | not)
+          | select(((.status // "") | ascii_upcase) == "QUEUED"
+                   or ((.status // "") | ascii_upcase) == "IN_PROGRESS") ]
+        | length > 0' <"$WORK_DIR/pr.json" >/dev/null
+}
+
+# Resolves the default --expect-checks floor from the base branch's own head:
+# its completed check-run count is a reasonable proxy for "how many checks
+# this repository's CI matrix registers per push" (agent-kit#578). Best-effort
+# and fail-open like resolve_automation_paths -- an unreadable base, a base
+# with no completed checks, or any parse failure just leaves EXPECT_CHECKS
+# empty, which keeps the floor inert rather than blocking settlement on
+# guessed evidence. Never overwrites a user-supplied --expect-checks value.
+resolve_expect_checks() {
+    [[ -z $EXPECT_CHECKS ]] || return 0
+    [[ -n $BASE_REF ]] || return 0
+    local base_sha count
+    gh api "repos/$REPO/commits/$BASE_REF" >"$WORK_DIR/base-meta.json" 2>/dev/null || return 0
+    base_sha=$(jq -r '.sha // empty' <"$WORK_DIR/base-meta.json" 2>/dev/null) || return 0
+    [[ -n $base_sha ]] || return 0
+    gh api "repos/$REPO/commits/$base_sha/check-runs?per_page=100" --paginate \
+        >"$WORK_DIR/base-check-runs.raw" 2>/dev/null || return 0
+    count=$(jq -s '[ .[]? | select(type == "object") | .check_runs[]?
+                     | select(((.status // "") | ascii_upcase) == "COMPLETED") ] | length' \
+        <"$WORK_DIR/base-check-runs.raw" 2>/dev/null) || return 0
+    [[ $count =~ ^[1-9][0-9]*$ ]] || return 0
+    EXPECT_CHECKS=$count
+    note "expect-checks resolved from base $BASE_REF's own head: $EXPECT_CHECKS"
+    return 0
+}
+
 wait_for_ci() {
     local round total pass pending fail pending_nb _failing_checks
     local zero_rounds=0
+    local prev_total=-1 stable_rounds=0
     for ((round = 1; round <= ROUNDS; round++)); do
         if ((round == 1)); then
             fetch_meta
             fetch_base_state
+            resolve_expect_checks
         else
             fetch_ci_only
         fi
         IFS=$'\t' read -r total pass pending fail pending_nb _failing_checks < <(ci_counts)
         if ((total == 0)); then
             ((++zero_rounds))
+            prev_total=0
+            stable_rounds=0
             if ((zero_rounds >= CI_ZERO_CHECKS_GRACE_ROUNDS || round >= ROUNDS)); then
                 CI_NONE_CONFIGURED=1
                 note "round=$round/$ROUNDS no checks registered after $zero_rounds round(s) — reporting none-configured"
@@ -1010,11 +1086,22 @@ wait_for_ci() {
             continue
         fi
         zero_rounds=0
-        if ((pending_nb == 0)); then
-            note "round=$round/$ROUNDS settled checks=$total pass=$pass failing=$fail"
+        if ((pending_nb == 0)) && ! check_runs_in_flight; then
+            if ((total == prev_total)); then
+                ((++stable_rounds))
+            else
+                stable_rounds=1
+            fi
+        else
+            stable_rounds=0
+        fi
+        prev_total=$total
+        if ((stable_rounds >= CI_STABLE_ROUNDS_REQUIRED)) &&
+            { [[ -z $EXPECT_CHECKS ]] || ((total >= EXPECT_CHECKS)); }; then
+            note "round=$round/$ROUNDS settled checks=$total stable-rounds=$stable_rounds expected=${EXPECT_CHECKS:-unknown} pass=$pass failing=$fail"
             return 0
         fi
-        note "round=$round/$ROUNDS pending=$pending (excl. review bot: $pending_nb) failing=$fail checks=$total"
+        note "round=$round/$ROUNDS pending=$pending (excl. review bot: $pending_nb) failing=$fail checks=$total stable-rounds=$stable_rounds expected=${EXPECT_CHECKS:-unknown}"
         ((round < ROUNDS)) && sleep "$INTERVAL"
     done
     note "checks still pending after $ROUNDS rounds x ${INTERVAL}s — reporting current state"

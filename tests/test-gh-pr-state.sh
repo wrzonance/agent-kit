@@ -761,6 +761,65 @@ assert_contains "$(cat "$wait_none_err")" 'reporting none-configured' \
 assert_eq '3' "$(cat "$tmp/wait-none-count")" \
     '--wait-ci stops at the grace window instead of consuming the full --rounds budget'
 
+# --- --wait-ci: checks register one at a time across rounds (agent-kit#578) -
+
+# A stub whose check-runs list grows by one COMPLETED check per round (1, 2,
+# 3, then 4 checks), holding at 4 once the full matrix has registered. The
+# instant-settle-on-zero-pending rule used to report 'settled checks=1' the
+# moment the first-registered check passed, before the other three checks
+# even existed. --wait-ci must not settle until the registered count stops
+# growing for two consecutive rounds -- here, round 4 (first time at 4) and
+# round 5 (still at 4) -- so it settles once at 4/4, never at 1/4.
+mkdir -p "$tmp/case-wait-onebyone"
+cat >"$tmp/case-wait-onebyone/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/604 "*)
+        printf '%s\n' '{"number":604,"draft":true,"mergeable":true,"head":{"ref":"feat/onebyone","sha":"onebyonesha"},"base":{"ref":"main"}}'
+        ;;
+    *" api repos/owner/repo/commits/onebyonesha/check-runs"*)
+        n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
+        printf '%s' "$n" >"$COUNT_FILE"
+        case $n in
+            1) printf '%s\n' '{"check_runs":[{"name":"check1","status":"completed","conclusion":"success"}]}' ;;
+            2) printf '%s\n' '{"check_runs":[{"name":"check1","status":"completed","conclusion":"success"},{"name":"check2","status":"completed","conclusion":"success"}]}' ;;
+            3) printf '%s\n' '{"check_runs":[{"name":"check1","status":"completed","conclusion":"success"},{"name":"check2","status":"completed","conclusion":"success"},{"name":"check3","status":"completed","conclusion":"success"}]}' ;;
+            *) printf '%s\n' '{"check_runs":[{"name":"check1","status":"completed","conclusion":"success"},{"name":"check2","status":"completed","conclusion":"success"},{"name":"check3","status":"completed","conclusion":"success"},{"name":"check4","status":"completed","conclusion":"success"}]}' ;;
+        esac
+        ;;
+    *" api repos/owner/repo/commits/onebyonesha/status"*)
+        printf '%s\n' '{"statuses":[]}'
+        ;;
+    *"compare/main...feat/onebyone"*)
+        printf '%s\n' '{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0,"commits":[]}'
+        ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+        ;;
+    *"code-scanning/alerts"*) printf '%s\n' '[]' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-wait-onebyone/gh"
+cp "$tmp/case-wait-grace/sleep" "$tmp/case-wait-onebyone/sleep"
+wait_onebyone_err="$tmp/wait-onebyone.err"
+wait_onebyone_output=$(COUNT_FILE="$tmp/wait-onebyone-count" PATH="$tmp/case-wait-onebyone:$PATH" \
+    bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 604 --repo owner/repo --wait-ci --rounds 6 --interval 1 2>"$wait_onebyone_err")
+assert_contains "$wait_onebyone_output" 'ci=4/4 green pending=0 failing=0' \
+    'checks that register one at a time settle once the full matrix is registered'
+assert_not_contains "$(cat "$wait_onebyone_err")" 'settled checks=1 ' \
+    '--wait-ci never settles on the first-registered check before the rest exist'
+assert_not_contains "$(cat "$wait_onebyone_err")" 'settled checks=2 ' \
+    '--wait-ci never settles mid-registration either'
+assert_not_contains "$(cat "$wait_onebyone_err")" 'settled checks=3 ' \
+    '--wait-ci never settles one check short of the full matrix'
+assert_contains "$(cat "$wait_onebyone_err")" 'settled checks=4 stable-rounds=2' \
+    '--wait-ci names the stable-rounds evidence it settled on'
+assert_eq '5' "$(cat "$tmp/wait-onebyone-count")" \
+    '--wait-ci settles the round after the check count stops growing, not the round it first reaches full'
+
 # Acceptance state is reported independently from the repository verify
 # rollup. A repo-verify check can be green while the issue's browser command
 # is absent, which is not ready-eligible for a stacked PR.
