@@ -309,4 +309,74 @@ alias_out=$("$cross_write" collect --root "$alias_root" --snapshot "$alias_snaps
 assert_contains "$alias_out" 'cross-write=none' \
     '--worktree aliases --worker-worktree for Collect'
 
+# --- issue #579: --worker-start/--worker-end accept ISO-8601 UTC, not just --
+# epoch integers -- parallel-issues' Collect recipe never stated the accepted
+# format, so a root recording `date -u +%FT%TZ` was refused with "worker mtime
+# window must be integer epochs".
+iso_root="$tmp/iso-root"
+iso_worker="$tmp/iso-worker"
+make_repo "$iso_root"
+git -C "$iso_root" worktree add -q -b feat/iso "$iso_worker"
+iso_snap="$iso_root/.agent/cross-write.snapshot"
+snapshot_repo "$iso_root" "$iso_snap"
+now=$(date +%s)
+iso_start=$(date -u -d "@$((now - 5))" +%FT%TZ)
+iso_end=$(date -u -d "@$((now + 5))" +%FT%TZ)
+iso_out=$(
+    "$cross_write" collect --root "$iso_root" --snapshot "$iso_snap" \
+        --worker-worktree "$iso_worker" --issue 579 \
+        --worker-start "$iso_start" --worker-end "$iso_end" --write-set 'src/**'
+)
+iso_rc=$?
+assert_eq 0 "$iso_rc" 'Collect accepts ISO-8601 UTC for --worker-start/--worker-end'
+assert_contains "$iso_out" 'cross-write=none' \
+    'an ISO-8601 worker window still reports cross-write=none for an unchanged root'
+
+# The two accepted forms must actually agree: a file written inside an
+# ISO-8601-expressed window is attributed exactly like the equivalent epoch
+# window, not silently treated as outside-window because normalisation
+# dropped precision.
+mixed_root="$tmp/mixed-root"
+mixed_worker="$tmp/mixed-worker"
+make_repo "$mixed_root"
+git -C "$mixed_root" worktree add -q -b feat/mixed "$mixed_worker"
+mixed_snap="$mixed_root/.agent/cross-write.snapshot"
+mkdir -p "$mixed_root/.agent" "$mixed_root/src" "$mixed_worker/src"
+"$cross_write" snapshot --root "$mixed_root" --output "$mixed_snap" --write-set 'src/**' >/dev/null
+now=$(date +%s)
+printf 'dirt\n' >"$mixed_root/src/dirt.txt"
+printf 'dirt\n' >"$mixed_worker/src/dirt.txt"
+mixed_out=$(
+    "$cross_write" collect --root "$mixed_root" --snapshot "$mixed_snap" \
+        --worker-worktree "$mixed_worker" --issue 579 \
+        --worker-start "$(date -u -d "@$((now - 5))" +%FT%TZ)" --worker-end $((now + 5)) \
+        --write-set 'src/**'
+)
+mixed_rc=$?
+assert_eq 10 "$mixed_rc" 'a mixed ISO-8601 start / epoch end window still detects in-window dirt'
+assert_contains "$mixed_out" 'attribute=mtime-window' \
+    'the mixed-form window attributes the write inside the window, not outside it'
+
+# A value that is neither an integer epoch nor ISO-8601 UTC is still refused,
+# and the message names both accepted forms rather than the old bare
+# "integer epochs" wording.
+bad_root="$tmp/bad-root"
+bad_worker="$tmp/bad-worker"
+make_repo "$bad_root"
+git -C "$bad_root" worktree add -q -b feat/bad "$bad_worker"
+bad_snap="$bad_root/.agent/cross-write.snapshot"
+snapshot_repo "$bad_root" "$bad_snap"
+bad_error=''
+bad_rc=0
+bad_error=$(
+    "$cross_write" collect --root "$bad_root" --snapshot "$bad_snap" \
+        --worker-worktree "$bad_worker" --issue 579 \
+        --worker-start 'not-a-timestamp' --worker-end "$(date +%s)" --write-set 'src/**' 2>&1
+) || bad_rc=$?
+assert_eq 2 "$bad_rc" 'an unrecognised --worker-start value is a usage error'
+assert_contains "$bad_error" 'ISO-8601' \
+    'the rejection names ISO-8601 UTC as an accepted form'
+assert_contains "$bad_error" 'epoch' \
+    'the rejection also names the epoch-integer form'
+
 finish

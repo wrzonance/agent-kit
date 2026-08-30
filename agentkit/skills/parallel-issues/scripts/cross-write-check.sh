@@ -21,9 +21,14 @@ usage() {
 Usage:
   cross-write-check.sh snapshot --worktree PATH --output FILE --write-set GLOB [--write-set GLOB ...]
   cross-write-check.sh collect --root PATH --snapshot FILE --worktree PATH --issue N \
-      --write-set GLOB [--write-set GLOB ...] [--worker-start EPOCH --worker-end EPOCH] \
-      [--dispose-duplicates]
+      --write-set GLOB [--write-set GLOB ...] \
+      [--worker-start EPOCH|ISO8601 --worker-end EPOCH|ISO8601] [--dispose-duplicates]
   cross-write-check.sh dispose --root PATH --worktree PATH --path RELATIVE [--expected-hash HASH]
+
+--worker-start/--worker-end each accept a Unix epoch integer (e.g. 1735689600,
+what "$(date -u +%s)" prints) or an ISO-8601 UTC timestamp (e.g.
+2026-08-30T05:12:34Z, what "$(date -u +%FT%TZ)" prints). Either form may be used
+for either flag; both are normalised to epoch seconds before comparison.
 EOF
     exit 2
 }
@@ -333,6 +338,28 @@ reflog_activity() {
     printf 'yes\t%s\treflog-count-decreased\tunknown\n' "$current_count"
 }
 
+# normalise_epoch_timestamp -- accept either a Unix epoch integer or an
+# ISO-8601 UTC timestamp for a --worker-start/--worker-end value, and print
+# the resolved epoch. ISO-8601 is recognised structurally (a strict
+# YYYY-MM-DDTHH:MM:SS, optional fractional seconds, then Z or a numeric UTC
+# offset) before ever reaching `date -d`, so an accepted value can never fall
+# through to GNU date's much looser relative-date grammar ("yesterday",
+# "next friday") -- only the two forms named in usage() are ever normalised.
+normalise_epoch_timestamp() {
+    local flag=$1 value=$2 epoch
+    if [[ $value =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    if [[ $value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$ ]]; then
+        epoch=$(date -u -d "$value" +%s 2>/dev/null) ||
+            die "$flag is not a valid ISO-8601 UTC timestamp: $value"
+        printf '%s\n' "$epoch"
+        return 0
+    fi
+    die "$flag must be a Unix epoch integer or an ISO-8601 UTC timestamp (e.g. 2026-08-30T05:12:34Z): $value"
+}
+
 normalise_pattern() {
     local pattern=$1 root=$2
     case $pattern in
@@ -533,8 +560,8 @@ collect_cmd() {
     now=$(date +%s)
     [[ -n $worker_start ]] || worker_start=$captured
     [[ -n $worker_end ]] || worker_end=$now
-    [[ $worker_start =~ ^[0-9]+$ && $worker_end =~ ^[0-9]+$ ]] ||
-        die 'worker mtime window must be integer epochs'
+    worker_start=$(normalise_epoch_timestamp --worker-start "$worker_start")
+    worker_end=$(normalise_epoch_timestamp --worker-end "$worker_end")
 
     while IFS=$'\t' read -r path status mtime hash; do
         [[ $path == path || -z $path ]] && continue

@@ -726,7 +726,8 @@ done
 ```
 
 Re-run after each completion and at handoff. Preserve named `cross-write=`/`cross-ref=` incidents; `cross-write=none` is clean and `--dispose-duplicates` handles only exact in-window duplicates.
-Never fold dirt first observed inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs explicit disposition. Ref snapshots catch reflog-only moves.
+Never fold dirt first observed inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs explicit disposition.
+`worker_started_at`/`worker_finished_at`: `$(date -u +%s)` (ISO-8601 UTC also accepted).
 
 ```bash
 collect_rc=0
