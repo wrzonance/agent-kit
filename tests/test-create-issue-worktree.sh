@@ -170,4 +170,52 @@ fresh_worktree_contract="$fresh_repo/.fleet/feat/issue-43/.agent/env-contract.tx
 assert_contains "$(grep '^sandbox=' "$fresh_worktree_contract" 2>/dev/null || true)" 'measured-by=' \
     'without a root contract, the worktree still gets a freshly-measured sandbox= line'
 
+# --- the resumable refusal names the resume remedy, never a duplicate branch ---
+# `resume_out` above is the refusal captured from rerunning issue 41 without
+# --resume (a remote branch already exists for it, per the earlier push).
+assert_not_contains "$resume_out" 'choose a different issue branch' \
+    'the resumable refusal never tells the caller to pick a different issue branch'
+assert_contains "$resume_out" 'resume it with --resume' \
+    'the resumable refusal names --resume as the remedy'
+
+# --- --resume on an existing worktree refreshes the contract in place -------
+resume_repo="$tmp/resume-repo"
+mkdir -p "$resume_repo"
+make_repo "$resume_repo" >/dev/null
+"$preflight_sh" --worktree "$resume_repo" >/dev/null 2>&1
+resume_create_rc=0
+"$create_sh" --repo-root "$resume_repo" --issue 44 --base main >/dev/null 2>&1 || resume_create_rc=$?
+assert_eq '0' "$resume_create_rc" 'fixture setup: the resumable worktree was created cleanly'
+resume_worktree="$resume_repo/.fleet/feat/issue-44"
+resume_worktree_contract="$resume_worktree/.agent/env-contract.txt"
+
+# Simulate the field defect: a stale contract left behind by a hand resume
+# (issue #585) -- a bogus skills= path and an unauthenticated gh= line that a
+# real preflight run would never produce for this environment.
+printf '%s\n' \
+    'skills= path=/stale/agentkit/0.7.2/skills' \
+    'gh= authed=no scopes=none api=unreachable note="stale fixture contract"' \
+    >"$resume_worktree_contract"
+
+resume_flag_out=''
+resume_flag_rc=0
+resume_flag_out=$("$create_sh" --repo-root "$resume_repo" --issue 44 --base main --resume 2>&1) || resume_flag_rc=$?
+assert_eq '0' "$resume_flag_rc" '--resume on a registered worktree exits 0'
+assert_contains "$resume_flag_out" "worktree=$resume_worktree branch=feat/issue-44" \
+    '--resume prints the standard worktree= line'
+assert_not_contains "$(cat "$resume_worktree_contract")" '/stale/agentkit/0.7.2/skills' \
+    '--resume overwrites the stale skills= path with a freshly measured one'
+assert_not_contains "$(cat "$resume_worktree_contract")" 'stale fixture contract' \
+    '--resume overwrites the stale gh= line with a freshly measured one'
+
+# --- --resume on a nonexistent worktree fails with a clear message ----------
+noresume_out=''
+noresume_rc=0
+noresume_out=$("$create_sh" --repo-root "$resume_repo" --issue 45 --base main --resume 2>&1) || noresume_rc=$?
+assert_eq '1' "$noresume_rc" '--resume on a nonexistent worktree fails'
+assert_contains "$noresume_out" 'no worktree is registered' \
+    '--resume on a nonexistent worktree names the problem clearly'
+assert_eq 'no' "$([[ -e "$resume_repo/.fleet/feat/issue-45" ]] && printf yes || printf no)" \
+    '--resume on a nonexistent worktree creates nothing'
+
 finish

@@ -13,15 +13,22 @@ REPO_ROOT=''
 ISSUE=''
 BASE=''
 CHAIN_BASE=''
+RESUME=no
 
 usage() {
     cat <<'EOF'
 Usage: create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH [--chain-base SHA]
+       create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH --resume
 
 Create feat/issue-N below the configured AGENT_WORKTREE_ROOT (default
 .worktrees), starting at origin/BRANCH or the supplied full chain-base SHA.
 The branch is pushed upstream, preflighted, and receives the declared setup
 command through agent-run.sh when AGENT_CMD_SETUP is present.
+
+--resume skips branch/worktree creation for an already-registered worktree on
+feat/issue-N and re-runs exclude/config-propagation/preflight/declared-setup
+against it, refreshing its .agent/env-contract.txt in place. It fails if no
+such worktree is registered.
 EOF
 }
 
@@ -70,6 +77,10 @@ parse_args() {
             --chain-base=*)
                 [[ -z $CHAIN_BASE ]] || { worktree_setup_fail '--chain-base given more than once'; exit 1; }
                 CHAIN_BASE=${1#*=}
+                shift
+                ;;
+            --resume)
+                RESUME=yes
                 shift
                 ;;
             -h|--help)
@@ -135,42 +146,53 @@ main() {
         worktree_setup_fail 'could not fetch origin'
         exit 1
     }
-    local resumable=no untracked=0 modified=0 state_counts
+    local resumable=no untracked=0 modified=0 state_counts worktree_registered=no
+    if [[ -d $worktree && ! -L $worktree ]] &&
+        git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        worktree_registered=yes
+    fi
     if [[ -e $worktree || -L $worktree ]] ||
         git -C "$root" show-ref --verify --quiet "refs/heads/$branch" ||
         git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
         resumable=yes
-        if [[ -d $worktree && ! -L $worktree ]]; then
+        if [[ $worktree_registered == yes ]]; then
             state_counts=$(worktree_setup_state_counts "$worktree") || state_counts='0 0'
             read -r untracked modified <<<"$state_counts"
         fi
     fi
     printf 'resumable: %s untracked=%d modified=%d\n' "$resumable" "$untracked" "$modified"
 
-    if git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-        worktree_setup_fail "remote branch origin/$branch already exists; choose a different issue branch"
-        exit 1
-    fi
-    if [[ -e $worktree || -L $worktree ]]; then
-        worktree_setup_fail "worktree path exists: $worktree"
-        exit 1
-    fi
-    git -C "$root" worktree add "$worktree" -b "$branch" "$start" || {
-        worktree_setup_fail "could not create worktree $worktree"
-        exit 1
-    }
-    for private_dir in prompts evidence logs pr-body; do
-        # Scope the restrictive umask to private state creation; checkout and
-        # setup commands must retain the caller's ambient permissions.
-        (umask 077; mkdir -p -- "$worktree/.agent/$private_dir") || {
-            worktree_setup_fail "could not create private worktree state directory: $worktree/.agent/$private_dir"
+    if [[ $RESUME == yes ]]; then
+        [[ $worktree_registered == yes ]] || {
+            worktree_setup_fail "no worktree is registered for feat/issue-$ISSUE to resume: $worktree"
             exit 1
         }
-    done
-    git -C "$worktree" push --set-upstream origin "$branch" || {
-        worktree_setup_fail "could not create remote branch origin/$branch"
-        exit 1
-    }
+    else
+        if git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            worktree_setup_fail "resumable prior work exists for this issue (origin/$branch); resume it with --resume, never create a duplicate branch"
+            exit 1
+        fi
+        if [[ -e $worktree || -L $worktree ]]; then
+            worktree_setup_fail "resumable prior work exists for this issue (worktree at $worktree); resume it with --resume, never create a duplicate branch"
+            exit 1
+        fi
+        git -C "$root" worktree add "$worktree" -b "$branch" "$start" || {
+            worktree_setup_fail "could not create worktree $worktree"
+            exit 1
+        }
+        for private_dir in prompts evidence logs pr-body; do
+            # Scope the restrictive umask to private state creation; checkout and
+            # setup commands must retain the caller's ambient permissions.
+            (umask 077; mkdir -p -- "$worktree/.agent/$private_dir") || {
+                worktree_setup_fail "could not create private worktree state directory: $worktree/.agent/$private_dir"
+                exit 1
+            }
+        done
+        git -C "$worktree" push --set-upstream origin "$branch" || {
+            worktree_setup_fail "could not create remote branch origin/$branch"
+            exit 1
+        }
+    fi
     worktree_setup_ensure_exclude "$root" '.agent/*' || exit 1
     worktree_setup_propagate_config "$root" "$worktree" || exit 1
     # sandbox=, caches=, and tls= are session-scoped facts (which process is
