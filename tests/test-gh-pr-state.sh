@@ -1541,4 +1541,24 @@ assert_contains "$icf_answered_output" 'issue-comment-findings: 0 open' \
 assert_not_contains "$icf_answered_output" 'next: issue-comment-findings' \
     'a fully-answered issue-comment-findings lane prints no next hint'
 
+# --digest-out (issue #584): the printed digest must also land in an owned,
+# mode-600 file byte-for-byte -- this is the artifact merge-gate.sh's
+# --pr-state-digest expects, and a hand-rolled '>'/'tee' capture under a
+# permissive umask can leave it group- or world-writable, which
+# merge-gate.sh refuses outright.
+digest_out="$tmp/digest-out.txt"
+rm -f "$digest_out"
+digest_stdout=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out "$digest_out")
+assert_eq "$digest_stdout" "$(cat "$digest_out")" \
+    '--digest-out writes the exact same text printed on stdout'
+assert_contains "$(cat "$digest_out")" 'pr=14 draft=true mergeable=MERGEABLE head=feat/test sha=abcdef0123456789' \
+    'the captured digest file carries the pr= summary line'
+digest_out_mode=$(stat -c %a -- "$digest_out" 2>/dev/null || stat -f %Lp -- "$digest_out")
+assert_eq '600' "$digest_out_mode" '--digest-out artifact is written mode 600'
+
+assert_rc 1 '--digest-out requires a value' -- \
+    env PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out
+
 finish

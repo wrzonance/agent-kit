@@ -337,6 +337,65 @@ assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
 assert_eq '0' "$(jq -r '.repoWideOpen' "$baseline_zero")" \
     'a real single page of zero findings records repoWideOpen=0, distinct from an unreadable response'
 
+# --- --state-file (issue #584): a distinct evidence artifact from
+# --baseline-file, carrying the exact printed scan-state=... token
+# merge-gate.sh's --code-quality-state-file expects, never the baseline
+# JSON shape.
+
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"number":1},{"number":2},{"number":3}]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+state_file="$tmp/scan-state.txt"
+rm -f "$state_file"
+out=$(run_head --state-file "$state_file")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--state-file does not change the printed token'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$state_file")" \
+    '--state-file records the exact printed scan-state= token, byte-for-byte'
+state_mode=$(stat -c %a "$state_file" 2>/dev/null || stat -f %Lp "$state_file")
+assert_eq '600' "$state_mode" 'the state-file artifact is written mode 600'
+
+# --state-file records pending/not-enabled/unknown outcomes too -- every
+# terminal scan-state, not only complete.
+write_gh_head \
+    ok '{"check_runs":[{"app":{"slug":"github-code-quality"},"status":"in_progress"}]}' \
+    ok '[]' \
+    ok '[]'
+state_pending="$tmp/scan-state-pending.txt"
+rm -f "$state_pending"
+out=$(run_head --state-file "$state_pending")
+assert_eq "scan-state=pending head=$HEAD_SHA" "$(cat "$state_pending")" \
+    '--state-file records a pending scan-state too'
+
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    error 'gh: Code quality is not enabled for this repository (HTTP 403)' \
+    ok '[]'
+state_not_enabled="$tmp/scan-state-not-enabled.txt"
+rm -f "$state_not_enabled"
+out=$(run_head --state-file "$state_not_enabled")
+assert_eq 'scan-state=not-enabled' "$(cat "$state_not_enabled")" \
+    '--state-file records a not-enabled scan-state too'
+
+# --baseline-file and --state-file are independent artifacts and may be
+# requested together in the same run, each with its own shape.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"number":1}]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+combo_baseline="$tmp/combo-baseline.json"
+combo_state="$tmp/combo-state.txt"
+rm -f "$combo_baseline" "$combo_state"
+run_head --baseline-file "$combo_baseline" --state-file "$combo_state" >/dev/null
+assert_eq '1' "$(jq -r '.findingsOnHead' "$combo_baseline")" \
+    '--baseline-file still writes its JSON shape when --state-file is also given'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$combo_state")" \
+    '--state-file still writes its textual token when --baseline-file is also given'
+
+assert_rc 1 '--state-file is only meaningful with --head' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --probe --state-file "$tmp/x.txt"
+
 # Regression (issue #472 review): every filtered read (-f/-F present or not)
 # --head issues is forced to GET, never inferred as POST.
 write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'

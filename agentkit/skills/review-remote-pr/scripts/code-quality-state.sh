@@ -22,6 +22,7 @@ probe=no
 head_sha=''
 pr=''
 baseline_file=''
+state_file=''
 comments_file=''
 diff_base=''
 diff_head=HEAD
@@ -31,7 +32,7 @@ usage() {
     cat <<'EOF'
 Usage: code-quality-state.sh --repo OWNER/REPO [--state open|dismissed] [--per-page N] [--summary]
        code-quality-state.sh --repo OWNER/REPO --probe
-       code-quality-state.sh --repo OWNER/REPO --head SHA40 --pr N [--baseline-file FILE]
+       code-quality-state.sh --repo OWNER/REPO --head SHA40 --pr N [--baseline-file FILE] [--state-file FILE]
        code-quality-state.sh --repo OWNER/REPO --pr N --comments-file FILE --diff-base REF --repo-root DIR [--diff-head REF]
 
 Reads Code Quality findings through the public read-only API. The default
@@ -69,7 +70,12 @@ vs an unreadable repository (unknown). --head always queries its own pages;
 --state, --per-page, and --summary are ignored/rejected (--head cannot be
 combined with --probe or --summary). --baseline-file FILE additionally
 writes a mode-600 JSON evidence artifact
-{head, findingsOnHead, repoWideOpen, timestamp} for this run.
+{head, findingsOnHead, repoWideOpen, timestamp} for this run. --state-file
+FILE additionally writes the exact printed scan-state=... token (the same
+line printed on stdout, whichever of complete/pending/not-enabled/unknown it
+is) to FILE, mode 600 -- this is the file merge-gate.sh's
+--code-quality-state-file expects; --baseline-file's JSON artifact is a
+different, non-interchangeable shape and does not satisfy that flag.
 
 --pr N --comments-file FILE --diff-base REF reports the open findings attributed
 to a PR's persisted Code Quality comments artifact and the remaining
@@ -98,6 +104,20 @@ first_error_line() {
         return 0
     fi
     head -n 1 <<<"$raw"
+}
+
+# Prints the given scan-state=... line on stdout and, when --state-file is
+# set, additionally writes that exact same line (byte-for-byte) to the file,
+# mode 600 -- merge-gate.sh's --code-quality-state-file reads it back
+# verbatim, so the file must carry the printed token itself, never the
+# --baseline-file JSON artifact's shape.
+emit_scan_state() {
+    local line=$1
+    printf '%s\n' "$line"
+    if [[ -n $state_file ]]; then
+        printf '%s\n' "$line" >"$state_file" || die "could not write --state-file: $state_file"
+        chmod 600 "$state_file" || die "could not chmod 600 --state-file: $state_file"
+    fi
 }
 
 while (($#)); do
@@ -156,6 +176,11 @@ while (($#)); do
             baseline_file=$2
             shift 2
             ;;
+        --state-file)
+            (($# >= 2)) || die '--state-file requires a path'
+            state_file=$2
+            shift 2
+            ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -189,6 +214,7 @@ else
         [[ -z $comments_file && -z $diff_base ]] || die '--comments-file and --diff-base require --pr'
     fi
     [[ -z $baseline_file ]] || die '--baseline-file is only meaningful with --head'
+    [[ -z $state_file ]] || die '--state-file is only meaningful with --head'
 fi
 case $state in
     open|dismissed) ;;
@@ -207,7 +233,7 @@ if [[ $head_sha != '' ]]; then
     if ! check_runs_response=$(gh api -X GET \
         "repos/$repository/commits/$head_sha/check-runs?per_page=100" --paginate \
         -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
-        printf 'scan-state=unknown reason=%s\n' "$(first_error_line "$check_runs_response")"
+        emit_scan_state "scan-state=unknown reason=$(first_error_line "$check_runs_response")"
         exit 1
     fi
     cq_pending=$(jq -s '
@@ -217,13 +243,13 @@ if [[ $head_sha != '' ]]; then
     ' <<<"$check_runs_response" 2>/dev/null) || cq_pending=''
     case $cq_pending in
         true)
-            printf 'scan-state=pending head=%s\n' "$head_sha"
+            emit_scan_state "scan-state=pending head=$head_sha"
             exit 0
             ;;
         false) ;;
         *)
-            printf 'scan-state=unknown reason=%s\n' \
-                'check-runs response could not be read for this head'
+            emit_scan_state \
+                'scan-state=unknown reason=check-runs response could not be read for this head'
             exit 1
             ;;
     esac
@@ -237,10 +263,10 @@ if [[ $head_sha != '' ]]; then
         "repos/$repository/code-quality/findings?state=open&per_page=100" --paginate \
         -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
         if [[ $findings_response == *'HTTP 403'* ]] && grep -qi 'not enabled' <<<"$findings_response"; then
-            printf 'scan-state=not-enabled\n'
+            emit_scan_state 'scan-state=not-enabled'
             exit 0
         fi
-        printf 'scan-state=unknown reason=%s\n' "$(first_error_line "$findings_response")"
+        emit_scan_state "scan-state=unknown reason=$(first_error_line "$findings_response")"
         exit 1
     fi
     # --paginate concatenates one JSON value per page; slurp them, same as
@@ -254,8 +280,8 @@ if [[ $head_sha != '' ]]; then
         (length >= 1) and
         all(.[]; (type == "array") or ((.findings? | type) == "array"))
     ' <<<"$findings_response" >/dev/null 2>&1; then
-        printf 'scan-state=unknown reason=%s\n' \
-            'Code Quality findings response was not readable JSON'
+        emit_scan_state \
+            'scan-state=unknown reason=Code Quality findings response was not readable JSON'
         exit 1
     fi
     repo_wide_open=$(jq -s '
@@ -275,7 +301,7 @@ if [[ $head_sha != '' ]]; then
     if ! comments_response=$(gh api -X GET \
         "repos/$repository/pulls/$pr/comments?per_page=100" --paginate \
         -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
-        printf 'scan-state=unknown reason=%s\n' "$(first_error_line "$comments_response")"
+        emit_scan_state "scan-state=unknown reason=$(first_error_line "$comments_response")"
         exit 1
     fi
     findings_on_head=$(jq -s --arg sha "$head_sha" --arg re "$CQ_BOT_RE" '
@@ -285,8 +311,8 @@ if [[ $head_sha != '' ]]; then
         | length
     ' <<<"$comments_response" 2>/dev/null) || findings_on_head=''
     [[ $findings_on_head =~ ^[0-9]+$ ]] || {
-        printf 'scan-state=unknown reason=%s\n' \
-            'PR review comments response could not be read for this head'
+        emit_scan_state \
+            'scan-state=unknown reason=PR review comments response could not be read for this head'
         exit 1
     }
 
@@ -298,7 +324,7 @@ if [[ $head_sha != '' ]]; then
         chmod 600 "$baseline_file" || die "could not chmod 600 --baseline-file: $baseline_file"
     fi
 
-    printf 'scan-state=complete head=%s findings-on-head=%s\n' "$head_sha" "$findings_on_head"
+    emit_scan_state "scan-state=complete head=$head_sha findings-on-head=$findings_on_head"
     exit 0
 fi
 
