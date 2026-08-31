@@ -183,12 +183,23 @@ main() {
         }
     fi
     setup_declared=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || setup_declared=''
-    worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree" || {
+    local setup_status
+    if worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree"; then
+        if [[ -n $setup_declared ]]; then setup_status=declared; else setup_status=none; fi
+    elif ((created_worktree)); then
+        # A freshly created worktree that never finished its own setup genuinely
+        # isn't ready; that failure stays fatal.
         worktree_setup_fail "setup failed in $worktree"
         exit 1
-    }
+    else
+        # A reused worktree was already set up once; a convenience re-run of
+        # the declared setup command failing here must not block re-entry.
+        # worktree_setup_declared_setup's own agent-run.sh invocation already
+        # printed the failure detail and full log path above.
+        setup_status=failed
+    fi
     printf 'worktree=%s branch=%s setup=%s cross-repository=%s\n' "$worktree" "$branch" \
-        "$(if [[ -n $setup_declared ]]; then printf declared; else printf none; fi)" "$cross_repo"
+        "$setup_status" "$cross_repo"
 }
 
 main "$@"

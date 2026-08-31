@@ -358,6 +358,8 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '  *"pr view 11"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *"pr view 12"*headRefName*) printf "%s\\n" feat/pr-12-head ;;' \
     '  *"pr view 12"*isCrossRepository*) printf "%s\\n" false ;;' \
+    '  *"pr view 13"*headRefName*) printf "%s\\n" feat/pr-13-head ;;' \
+    '  *"pr view 13"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *) exit 1 ;;' \
     'esac' >"$fake_gh"
 fake_jq=$fake_bin/jq
@@ -429,6 +431,59 @@ if [[ -x $pr_sh ]]; then
         'cross-repository PR setup does not report a setup failure'
     assert_eq 'setup-ran' "$(<"$fork_repo/.fleet/pr-10/setup.marker")" \
         'cross-repository PR setup runs the declared setup command directly'
+
+    # A declared setup failure is fatal only on a freshly created worktree.
+    # Reusing an already-set-up worktree degrades the same failure to a
+    # reported warning: `setup=failed` in the final status line, the
+    # underlying command's failure detail and log path still printed, and
+    # the command itself exits 0 so the reused worktree stays usable.
+    git -C "$pr_repo" switch -q -c 'feat/pr-13-head'
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$pr_repo/tools/setup"
+    git -C "$pr_repo" add -- tools/setup
+    git -C "$pr_repo" commit -qm 'break declared setup'
+    git -C "$pr_repo" push -q origin 'feat/pr-13-head'
+    git -C "$pr_repo" switch -q main
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 13 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '1' "$rc" 'a freshly created worktree with a failing declared setup still fails'
+    assert_contains "$out" "setup failed in $pr_repo/.fleet/pr-13" \
+        'a freshly created worktree failure names the worktree that never finished setup'
+
+    git -C "$pr_repo" switch -q -c 'feat/pr-12-head'
+    git -C "$pr_repo" push -q origin 'feat/pr-12-head'
+    git -C "$pr_repo" switch -q main
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 12 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'a freshly created worktree with a passing declared setup completes'
+    assert_contains "$out" 'setup=declared' \
+        'a freshly created worktree with a passing declared setup reports setup=declared'
+
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 9 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'reusing a worktree with an unchanged passing declared setup completes'
+    assert_contains "$out" 'setup=declared' \
+        'reusing a worktree with a passing declared setup is unchanged (setup=declared)'
+
+    pr12_worktree=$pr_repo/.fleet/pr-12
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$pr12_worktree/tools/setup"
+    git -C "$pr12_worktree" add -- tools/setup
+    git -C "$pr12_worktree" commit -qm 'break declared setup'
+    git -C "$pr12_worktree" push -q origin 'feat/pr-12-head'
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 12 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'reusing a worktree with a newly failing declared setup still exits 0'
+    assert_contains "$out" 'setup=failed' \
+        'reusing a worktree with a failing declared setup reports setup=failed in the status line'
+    assert_contains "$out" 'full log:' \
+        'reusing a worktree with a failing declared setup still prints the failure log path'
 fi
 
 finish
