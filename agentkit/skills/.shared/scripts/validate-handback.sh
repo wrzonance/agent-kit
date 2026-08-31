@@ -7,6 +7,17 @@
 # reuse the repository's protected-path policy through the sibling library.
 set -euo pipefail
 
+readonly USAGE='usage: validate-handback.sh --worktree PATH --handback-file FILE --issue N --dispatch-plan FILE'
+
+for arg in "$@"; do
+    case "$arg" in
+        -h | --help)
+            printf '%s\n' "$USAGE"
+            exit 0
+            ;;
+    esac
+done
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly SCRIPT_DIR
 readonly PROTECTED_LIB="$SCRIPT_DIR/lib/protected-paths.sh"
