@@ -143,9 +143,20 @@ declared_err=$(cd "$declared_repo" && "$writer" --dispatch-plan "$declared_plan"
 assert_eq 1 "$declared_rc" 'a repo-declared AGENT_PROTECTED_PATHS pattern is honored'
 assert_contains "$declared_err" 'secrets/prod.env' 'the declared-pattern collision is named'
 
-# A repo with no such declaration never flags the same path.
-assert_rc 0 'the same path is not flagged outside the declaring repo' -- \
-    "$writer" --dispatch-plan "$declared_plan" --validate-only
+# A repo with no such declaration never flags the same path. Run this from a
+# neutral temporary repository -- never the host checkout -- so the negative
+# assertion never depends on what this repository's own .agent/config.env
+# happens to declare (it would silently break if AGENT_PROTECTED_PATHS ever
+# grew a pattern matching "secrets/prod.env" here).
+neutral_repo="$tmp/neutral-repo"
+mkdir -p "$neutral_repo/.agent"
+git init -q -b main "$neutral_repo"
+git -C "$neutral_repo" config user.email test@example.invalid
+git -C "$neutral_repo" config user.name test
+git -C "$neutral_repo" commit -q --allow-empty -m base
+neutral_rc=0
+(cd "$neutral_repo" && "$writer" --dispatch-plan "$declared_plan" --validate-only) >/dev/null 2>&1 || neutral_rc=$?
+assert_eq 0 "$neutral_rc" 'the same path is not flagged outside the declaring repo'
 
 # --- regression: a repo-declared protected pattern carrying a leading "./"
 # must still collide with a normal (unprefixed) write-set path -- without
