@@ -25,10 +25,13 @@ Create feat/issue-N below the configured AGENT_WORKTREE_ROOT (default
 The branch is pushed upstream, preflighted, and receives the declared setup
 command through agent-run.sh when AGENT_CMD_SETUP is present.
 
---resume skips branch/worktree creation for an already-registered worktree on
-feat/issue-N and re-runs exclude/config-propagation/preflight/declared-setup
-against it, refreshing its .agent/env-contract.txt in place. It fails if no
-such worktree is registered.
+--resume reuses the worktree already registered for feat/issue-N, or recreates
+it from the existing local branch or origin/feat/issue-N when no worktree
+currently owns that branch, ensures the branch has an origin upstream, and
+re-runs exclude/config-propagation/preflight/declared-setup against it,
+refreshing its .agent/env-contract.txt in place. It fails only when the path
+is occupied by something other than that worktree, or when neither a
+worktree nor a branch exists to resume.
 EOF
 }
 
@@ -125,6 +128,48 @@ worktree_setup_state_counts() {
     printf '%d %d\n' "$untracked" "$modified"
 }
 
+# worktree_branch_at_path ROOT WORKTREE -- prints the ref registered for
+# WORKTREE in ROOT's own `git worktree list`, or "detached" for a registered
+# worktree with no branch, and fails when WORKTREE is not a path any
+# worktree of ROOT actually owns. A worktree is identified by ROOT's
+# metadata, never by probing WORKTREE with `git rev-parse
+# --is-inside-work-tree`: that probe walks up into the *parent* repository
+# and reports success for a plain, unregistered directory nested under it
+# (issue #588 finding 1).
+worktree_branch_at_path() {
+    local root=$1 worktree=$2
+    local want_path entry_path='' entry_branch='' resolved line
+    want_path=$(readlink -f -- "$worktree" 2>/dev/null) || return 1
+    [[ -n $want_path ]] || return 1
+    while IFS= read -r line; do
+        if [[ $line == worktree\ * ]]; then
+            entry_path=${line#worktree }
+            entry_branch=''
+        elif [[ $line == branch\ * ]]; then
+            entry_branch=${line#branch }
+        elif [[ -z $line ]]; then
+            if [[ -n $entry_path ]]; then
+                resolved=$(readlink -f -- "$entry_path" 2>/dev/null) || resolved=''
+                if [[ -n $resolved && $resolved == "$want_path" ]]; then
+                    printf '%s\n' "${entry_branch:-detached}"
+                    return 0
+                fi
+            fi
+            entry_path=''
+            entry_branch=''
+        fi
+    done < <(git -C "$root" worktree list --porcelain 2>/dev/null; printf '\n')
+    return 1
+}
+
+# worktree_registered_for_branch ROOT WORKTREE BRANCH -- true only when ROOT's
+# worktree metadata has an entry at WORKTREE checked out on refs/heads/BRANCH.
+worktree_registered_for_branch() {
+    local root=$1 worktree=$2 branch=$3 found_branch
+    found_branch=$(worktree_branch_at_path "$root" "$worktree") || return 1
+    [[ $found_branch == "refs/heads/$branch" ]]
+}
+
 main() {
     parse_args "$@"
     validate_args
@@ -147,8 +192,7 @@ main() {
         exit 1
     }
     local resumable=no untracked=0 modified=0 state_counts worktree_registered=no
-    if [[ -d $worktree && ! -L $worktree ]] &&
-        git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if worktree_registered_for_branch "$root" "$worktree" "$branch"; then
         worktree_registered=yes
     fi
     if [[ -e $worktree || -L $worktree ]] ||
@@ -163,10 +207,63 @@ main() {
     printf 'resumable: %s untracked=%d modified=%d\n' "$resumable" "$untracked" "$modified"
 
     if [[ $RESUME == yes ]]; then
-        [[ $worktree_registered == yes ]] || {
-            worktree_setup_fail "no worktree is registered for feat/issue-$ISSUE to resume: $worktree"
-            exit 1
-        }
+        if [[ $worktree_registered != yes ]]; then
+            if [[ -e $worktree || -L $worktree ]]; then
+                local existing_branch=''
+                existing_branch=$(worktree_branch_at_path "$root" "$worktree" 2>/dev/null) || existing_branch=''
+                if [[ -n $existing_branch ]]; then
+                    worktree_setup_fail "cannot resume feat/issue-$ISSUE: $worktree is a registered worktree on $existing_branch, not refs/heads/$branch"
+                else
+                    worktree_setup_fail "cannot resume feat/issue-$ISSUE: $worktree exists but is not a registered git worktree"
+                fi
+                exit 1
+            fi
+            local recreate_from=''
+            if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
+                recreate_from=local
+            elif git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+                recreate_from=remote
+            else
+                worktree_setup_fail "no worktree is registered for feat/issue-$ISSUE to resume, and no local or remote branch exists to recreate it from: $worktree"
+                exit 1
+            fi
+            if [[ $recreate_from == local ]]; then
+                git -C "$root" worktree add "$worktree" "$branch" || {
+                    worktree_setup_fail "could not recreate worktree $worktree from local branch $branch"
+                    exit 1
+                }
+            else
+                git -C "$root" worktree add "$worktree" -b "$branch" "origin/$branch" || {
+                    worktree_setup_fail "could not recreate worktree $worktree from origin/$branch"
+                    exit 1
+                }
+            fi
+            for private_dir in prompts evidence logs pr-body; do
+                (umask 077; mkdir -p -- "$worktree/.agent/$private_dir") || {
+                    worktree_setup_fail "could not create private worktree state directory: $worktree/.agent/$private_dir"
+                    exit 1
+                }
+            done
+        fi
+        # A prior create that got as far as `git worktree add` but died before
+        # (or during) `git push --set-upstream` -- or a worktree just
+        # recreated above from a local-only branch -- must not report success
+        # without a pushed, tracked origin branch (issue #588 finding 2).
+        if git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            local upstream=''
+            upstream=$(git -C "$worktree" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || upstream=''
+            if [[ $upstream != "origin/$branch" ]]; then
+                git -C "$worktree" branch --set-upstream-to="origin/$branch" "$branch" || {
+                    worktree_setup_fail "could not set upstream origin/$branch during resume"
+                    exit 1
+                }
+            fi
+        else
+            git -C "$worktree" push --set-upstream origin "$branch" || {
+                worktree_setup_fail "could not push origin/$branch during resume"
+                exit 1
+            }
+        fi
     else
         if git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
             worktree_setup_fail "resumable prior work exists for this issue (origin/$branch); resume it with --resume, never create a duplicate branch"
