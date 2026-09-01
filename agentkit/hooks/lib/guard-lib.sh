@@ -19,11 +19,18 @@ readonly RESOLVE_HINT='  agentkit=
   if [[ -n "$contract_root" ]]; then
       contract="$contract_root/.agent/env-contract.txt"
   fi
+  pinned=
   if [[ -n "$contract_root" && -r "$contract" && -f "$contract" &&
         ! -L "$contract" && -O "$contract" ]] &&
       ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \
           >/dev/null 2>&1; then
-      agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+      pinned=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+  fi
+  # A pinned tree that is no longer installed -- a plugin upgrade retires the
+  # version directory the contract names -- is stale, not authoritative. Fall
+  # through to the bootstrap instead of resolving to a path that cannot answer.
+  if [[ -n "$pinned" && -d "$pinned" ]]; then
+      agentkit="$pinned"
   fi
   if [[ -z "$agentkit" ]]; then
       # Contract-absent bootstrap: discover the installed plugin tree.
@@ -33,6 +40,7 @@ readonly RESOLVE_HINT='  agentkit=
       [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
   fi
   if [[ -n "$contract_root" && -n "$agentkit" &&
+        ( -z "$pinned" || -d "$pinned" ) &&
         -x "$agentkit/.shared/scripts/contract-read.sh" ]]; then
       contract_skills=$("$agentkit/.shared/scripts/contract-read.sh" \
           --repo-root "$contract_root" --get skills.path 2>/dev/null)

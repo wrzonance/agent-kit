@@ -181,6 +181,53 @@ assert_eq "$malformed_plugin" "$resolved" \
 assert_eq yes "$(test -f "$malformed_repo/.agent/cache/contract-session.env" && printf yes || printf no)" \
     'contract-absent bootstrap warms the session context after preflight'
 
+# --- a contract pinned to a retired plugin version --------------------------
+# The shipped RESOLVE_HINT is what an agent retypes to find its helpers. It read
+# `skills= path=` from the contract and used it unconditionally, so a plugin
+# upgrade -- which retires the version directory the contract names -- resolved
+# every helper to a path that no longer exists. The recovery already existed;
+# it was gated on the value being EMPTY rather than on it being USABLE, and the
+# drift check below then blanked the discovered tree for disagreeing with the
+# dead pin. Field evidence: a worker declared an environment-level blocker and
+# stopped, with the plugin correctly installed the whole time.
+printf '%s\n' "$RESOLVE_HINT" > "$tmp/resolve-hint.sh"
+
+# Build a repo whose untracked, owned contract pins $1 and resolve from it.
+resolve_hint_with_pin() {
+    local name=$1 pin=$2 home=$3
+    local repo="$tmp/$name"
+    mkdir -p "$repo/.agent"
+    git -C "$repo" init -q 2>/dev/null || git init -q "$repo"
+    printf 'skills= path=%s\n' "$pin" > "$repo/.agent/env-contract.txt"
+    (cd "$repo" && CODEX_HOME="$home" CLAUDE_CONFIG_DIR="$tmp/$name-claude" \
+        bash -c "$(cat "$tmp/resolve-hint.sh"); printf '%s' \"\$agentkit\"")
+}
+
+# A live pin is still authoritative -- discovery must not hijack a healthy
+# contract just because a newer version also sits in the cache.
+live_home="$tmp/pin-live-home"
+live_pin=$(plugin_layout "$live_home" 0.7.3)
+mkdir -p "$live_pin/.shared/scripts" "$(plugin_layout "$live_home" 0.7.4)/.shared/scripts"
+assert_eq "$live_pin" "$(resolve_hint_with_pin pin-live "$live_pin" "$live_home")" \
+    'a contract pinning an installed tree still wins over discovery'
+
+# The retired pin: 0.7.3 is gone, 0.7.4 is installed. The resolver must recover.
+retired_home="$tmp/pin-retired-home"
+retired_pin=$(plugin_layout "$retired_home" 0.7.3)
+retired_live=$(plugin_layout "$retired_home" 0.7.4)
+mkdir -p "$retired_live/.shared/scripts/lib"
+# contract-read.sh is present so the drift check really runs: it reports the
+# contract's dead 0.7.3 pin, which disagrees with the discovered 0.7.4 tree.
+# That disagreement must not blank the resolution when the pin is unusable.
+cp "$skills/.shared/scripts/contract-read.sh" "$retired_live/.shared/scripts/contract-read.sh"
+cp "$skills/.shared/scripts/lib/contract-cache.sh" "$retired_live/.shared/scripts/lib/contract-cache.sh"
+retired_out=''
+retired_rc=0
+retired_out=$(resolve_hint_with_pin pin-retired "$retired_pin" "$retired_home") || retired_rc=$?
+assert_eq 0 "$retired_rc" 'a retired plugin pin resolves without failing'
+assert_eq "$retired_live" "$retired_out" \
+    'a retired plugin pin falls back to the installed tree'
+
 # --- zsh safety ------------------------------------------------------------
 # Codex runs shell commands through $SHELL -lc, which is zsh on the target
 # machine. An unmatched glob is a FATAL error in zsh, so a resolver written with
