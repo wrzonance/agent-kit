@@ -43,6 +43,11 @@ line only — nothing infers them from tone, urgency, or a previous run.
 
 `--trust-trunk` no longer exists; the ledger keeps the field name (always `false`) for run-ID hash stability.
 
+**Unknown-flag disposition.** A `--token` outside the table above and not documented elsewhere in
+this skill (`--no-followup`'s Phase 3 opt-out remains recognized) still gets named in the opening
+flag announcement, never silently dropped, e.g. `ignored: --auto-merge (owned by pr-to-green)`; a
+downstream-owned flag also carries into the handoff resume line below.
+
 **`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
 
 ```
@@ -545,7 +550,7 @@ setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns branch/exclude operations, config, preflight, and setup. It prints `resumable: yes|no untracked=N modified=M`; an existing path or branch still refuses duplicate creation, so use the summary to resume. Its final `worktree=` line identifies checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
+The helper owns branch/exclude, config, preflight, and setup; prints `resumable: yes|no untracked=N modified=M`. An existing branch/path refuses duplicate creation; `--resume` is the remedy, re-running those steps and refreshing `.agent/env-contract.txt`. Its `worktree=` line identifies checkout; the printed preflight output is the contract to paste, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -1090,6 +1095,11 @@ shopt -u nullglob
 Cleanup requires user request after merge.
 
 At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`. A nonzero queue is incomplete.
+
+A downstream-owned unknown flag (above) is not a queue entry, but its intent must not evaporate:
+print a second resume line naming the owner once PRs exist, e.g.
+`resume=/pr-to-green <PRs> --auto-merge` — same preserve-flags contract, for a later phase
+instead of a later run.
 ## Common Mistakes
 Gate-local failures are documented where they bind. Cross-cutting rules live in
 [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md),

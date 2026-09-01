@@ -190,7 +190,10 @@ and additionally consumes:
 - `--pr-state-digest FILE` — the verbatim `gh-pr-state.sh --full` (or
   `--digest`) output captured for this head, immediately before gating. A
   digest whose `sha=` prefix does not match the confirmed head is stale
-  evidence and blocks.
+  evidence and blocks. Capture it with `gh-pr-state.sh`'s own `--digest-out
+  FILE` (see the canonical call sites below) — never a hand-rolled `>`/`tee`
+  redirect: `merge-gate.sh` rejects a group- or world-writable file outright,
+  which a plain shell capture under a permissive umask silently produces.
 - `--provider-result RESULT` — the CodeRabbit result the confirmed
   ready/provider transition step (Section 3) printed for this head
   (`AUTO_REVIEW`, `TRIGGERED`, `ALREADY_SPENT`, `LANDED`, `STALE_HEAD`,
@@ -246,8 +249,11 @@ and additionally consumes:
   still consulted, but only to decide reachability (`not-enabled` vs an
   unreadable repository) and to populate `--baseline-file`'s
   `repoWideOpen` count, never to gate completion itself.
-  `--code-quality-state-file` names that helper's output file directly; when
-  both flags are given they must agree, byte-for-byte on the `scan-state=`
+  `--code-quality-state-file` names that helper's own `--state-file` output
+  (the exact printed `scan-state=...` token; the separate `--baseline-file`
+  JSON artifact is a different shape and does not satisfy this flag) — when
+  both `--code-quality-scan-state` and `--code-quality-state-file` are given
+  they must agree, byte-for-byte on the `scan-state=`
   token, or the gate refuses outright. `not-enabled` (issue #403) means Code
   Quality is disabled for the repository — a stable repository fact, not a
   scan in flight — and gates exactly like `complete`; only a confirmed "not
@@ -260,10 +266,20 @@ and additionally consumes:
 ### Canonical call sites for the two newest gate inputs
 
 ```bash
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$pr" --repo "$repo" \
+  --digest-out "$digest_file"
+# The pr= / sha= summary line above is read live from the file above; do not
+# re-derive it by hand. gh-pr-state.sh writes it itself, mode 600, so the
+# file is never rejected as group- or world-writable.
+
 "$agentkit/review-remote-pr/scripts/code-quality-state.sh" \
   --repo "$repo" --head "$head_sha" --pr "$pr" \
-  --baseline-file "$work_dir/code-quality-state.json"
-# scan-state=... is read live from the file above; do not re-derive it by hand.
+  --baseline-file "$work_dir/code-quality-state.json" \
+  --state-file "$work_dir/code-quality-scan-state.txt"
+# scan-state=... is read live from the --state-file above; do not re-derive
+# it by hand, and do not read it from --baseline-file's JSON artifact --
+# that file holds {head, findingsOnHead, repoWideOpen, timestamp}, not a
+# textual scan-state= line, and merge-gate.sh rejects it as malformed.
 
 adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" status \
   --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
@@ -274,7 +290,7 @@ adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" statu
   --pr-state-digest "$digest_file" --provider-result "$provider_result" \
   --human-items-decided yes \
   --adversarial-review-status "$adversarial_status" \
-  --code-quality-state-file "$work_dir/code-quality-state.json"
+  --code-quality-state-file "$work_dir/code-quality-scan-state.txt"
 ```
 
 `review-ledger.sh status` exits non-zero for `stale`/`absent`/blocked outcomes

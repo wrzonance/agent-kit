@@ -219,6 +219,26 @@ KNOWN_OVERSIZE[parallel-issues]="1133:19743:900"
 # chain, raising the measured body by two tokens. Keep the conscious ratchet
 # at the exact merged-tree measurement rather than weakening the gate.
 KNOWN_OVERSIZE[parallel-issues]="1133:19745:900"
+# Issue #588 adds two short paragraphs: an unknown-flag disposition rule in
+# the Flags section (a `--token` outside the table is always named in the
+# opening flag announcement with an explicit disposition, never dropped) and
+# a matching handoff extension (a downstream-owned unknown flag prints a
+# second resume line naming its owner, e.g. `resume=/pr-to-green <PRs>
+# --auto-merge`, per the same preserve-flags contract as the queued-issue
+# resume line). LINES drops 1133 -> 1104 because this PR's base (issue #585)
+# had already trimmed the body below the prior ceiling before these two
+# additions landed; TOKENS rises 19745 -> 19881, measured against this body
+# and set to the minimum that passes, never padded. Target unchanged.
+# test-skill-size.sh's pinned ratchet-message assertions move with it.
+KNOWN_OVERSIZE[parallel-issues]="1104:19881:900"
+# Issue #598 (adversarial-review fix on #588's PR): the unknown-flag
+# disposition rule wrongly read `--no-followup` as unknown/ignored, when its
+# Phase 3 opt-out is documented elsewhere in this same skill. One clause
+# exempts flags documented elsewhere in the skill. LINES rises 1104 -> 1105,
+# TOKENS rises 19881 -> 19905, measured against this body and set to the
+# minimum that passes, never padded. Target unchanged.
+# test-skill-size.sh's pinned ratchet-message assertions move with it.
+KNOWN_OVERSIZE[parallel-issues]="1105:19905:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
