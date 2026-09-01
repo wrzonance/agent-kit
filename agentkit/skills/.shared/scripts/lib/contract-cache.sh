@@ -249,54 +249,141 @@ contract_cache_write_session_context() {
 
 contract_cache_session_context_read() {
     local repo_root=$1 requested=${2:-} context contract current_digest skills_path
+    local root_agent cache_dir
     local line key value count=0
     local -A values=() seen=()
     local expected_keys='format agentkit shared agentkit_provenance contract_root contract_inputs_sha256'
 
+    # CLI reason classification (issue #587): every failing return below sets
+    # this global to one of absent|invalid|skills-path-mismatch|stale before
+    # returning, so the CLI entry point at the bottom of this file can name
+    # the failure on stderr without changing this function's own return
+    # value or a sourced caller's silent contract.
+    CONTRACT_CACHE_SESSION_CONTEXT_REASON=''
+
     # Callers derive this from `git rev-parse --show-toplevel`; reject a
     # relative, symlinked, or nested root so the cache path is never
     # cwd-relative or rooted at a repository-controlled subdirectory.
-    [[ $repo_root == /* && -d $repo_root && ! -L $repo_root ]] || return 1
-    repo_root=$(cd -P -- "$repo_root" && pwd -P) || return 1
-    [[ $repo_root == "$1" ]] || return 1
-    contract_cache_repo_root_is_canonical "$repo_root" || return 1
-    contract_cache_dir_is_ours "$repo_root" || return 1
+    if [[ $repo_root != /* || ! -d $repo_root || -L $repo_root ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
+    repo_root=$(cd -P -- "$repo_root" && pwd -P) || {
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    }
+    if [[ $repo_root != "$1" ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
+    contract_cache_repo_root_is_canonical "$repo_root" || {
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    }
+    # A cache directory that exists but fails provenance (foreign-owned,
+    # symlinked, or a dangling symlink) is corruption/tampering, not absence
+    # -- only "nothing at all is there" earns the absent class (issue #587
+    # follow-up finding). contract_cache_dir_is_ours checks .agent and
+    # .agent/cache internally; re-derive the same two paths here purely to
+    # classify, without duplicating its provenance logic.
+    root_agent="$repo_root/.agent"
+    cache_dir="$root_agent/cache"
+    contract_cache_dir_is_ours "$repo_root" || {
+        if [[ -e $root_agent || -L $root_agent || -e $cache_dir || -L $cache_dir ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        else
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=absent
+        fi
+        return 1
+    }
     context=$(contract_cache_session_path "$repo_root")
-    contract_cache_file_is_ours "$context" "$repo_root" || return 1
+    contract_cache_file_is_ours "$context" "$repo_root" || {
+        if [[ -e $context || -L $context ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        else
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=absent
+        fi
+        return 1
+    }
 
     while IFS= read -r line || [[ -n $line ]]; do
-        [[ $line == *=* ]] || return 1
+        if [[ $line != *=* ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+            return 1
+        fi
         key=${line%%=*}
         value=${line#*=}
         case " $expected_keys " in
             *" $key "*) ;;
-            *) return 1 ;;
+            *)
+                CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+                return 1
+                ;;
         esac
-        [[ -z ${seen[$key]+present} ]] || return 1
+        if [[ -n ${seen[$key]+present} ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+            return 1
+        fi
         # The record is transported as tab-delimited fields; no C0/DEL
         # separator may survive parsing into a later command block.
-        [[ $value != *[$'\001'-$'\037'$'\177']* ]] || return 1
+        if [[ $value == *[$'\001'-$'\037'$'\177']* ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+            return 1
+        fi
         seen[$key]=1
         values[$key]=$value
         ((count += 1))
     done < "$context"
-    ((count == 6)) || return 1
+    if ((count != 6)); then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
     for key in $expected_keys; do
-        [[ -n ${seen[$key]+present} ]] || return 1
+        if [[ -z ${seen[$key]+present} ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+            return 1
+        fi
     done
-    [[ ${values[format]} == 1 && ${values[agentkit_provenance]} == ok ]] || return 1
-    [[ ${values[contract_inputs_sha256]} =~ ^[[:xdigit:]]{64}$ ]] || return 1
-    [[ ${values[contract_root]} == "$repo_root" ]] || return 1
-    [[ ${values[agentkit]} == /* && ${values[shared]} == /* ]] || return 1
+    if [[ ${values[format]} != 1 || ${values[agentkit_provenance]} != ok ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
+    if [[ ! ${values[contract_inputs_sha256]} =~ ^[[:xdigit:]]{64}$ ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
+    if [[ ${values[contract_root]} != "$repo_root" ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
+    if [[ ${values[agentkit]} != /* || ${values[shared]} != /* ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    fi
 
     contract=$(contract_cache_contract_file "$repo_root")
-    contract_cache_contract_is_ours "$contract" "$repo_root" || return 1
+    contract_cache_contract_is_ours "$contract" "$repo_root" || {
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    }
     skills_path=$(sed -n 's/^skills= path=//p' "$contract" | sed -n '1p')
-    [[ -n $skills_path && ${values[agentkit]} == "$skills_path" ]] || return 1
-    [[ ${values[shared]} == "$skills_path/.shared/scripts" ]] || return 1
+    if [[ -z $skills_path || ${values[agentkit]} != "$skills_path" ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=skills-path-mismatch
+        return 1
+    fi
+    if [[ ${values[shared]} != "$skills_path/.shared/scripts" ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=skills-path-mismatch
+        return 1
+    fi
 
-    current_digest=$(contract_cache_input_digest "$contract" "$repo_root/.agent/config.env") || return 1
-    [[ $current_digest == "${values[contract_inputs_sha256]}" ]] || return 75
+    current_digest=$(contract_cache_input_digest "$contract" "$repo_root/.agent/config.env") || {
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        return 1
+    }
+    if [[ $current_digest != "${values[contract_inputs_sha256]}" ]]; then
+        CONTRACT_CACHE_SESSION_CONTEXT_REASON=stale
+        return 75
+    fi
 
     if [[ -n $requested ]]; then
         case $requested in
@@ -322,11 +409,30 @@ contract_cache_refresh_session_context() {
     contract_cache_write_session_context "$repo_root" "$digest" "skills.path=$skills_path"
 }
 
+# CLI entry (issue #587): a failed read prints exactly one machine-readable
+# stderr line naming the failure class, mapped from the reason the read
+# function recorded. Stdout and exit codes are unchanged from before this
+# fix; sourced (non-CLI) use of the library never reaches this block, so it
+# stays byte-silent.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     if [[ ${1:-} != --read-session-context || ${2:-} != --repo-root || -z ${3:-} ||
         ($# != 3 && ($# != 5 || ${4:-} != --get || -z ${5:-})) ]]; then
         printf 'usage: %s --read-session-context --repo-root DIR [--get KEY]\n' "$(basename -- "$0")" >&2
         exit 2
     fi
-    contract_cache_session_context_read "$3" "${5:-}"
+    contract_cache_cli_repo_root=$3
+    contract_cache_session_context_read "$contract_cache_cli_repo_root" "${5:-}"
+    contract_cache_cli_rc=$?
+    if ((contract_cache_cli_rc == 1 || contract_cache_cli_rc == 75)); then
+        contract_cache_cli_reason=${CONTRACT_CACHE_SESSION_CONTEXT_REASON:-invalid}
+        if [[ $contract_cache_cli_reason == skills-path-mismatch ]]; then
+            printf 'contract-cache: session-context %s (cache=%s contract=%s)\n' \
+                "$contract_cache_cli_reason" \
+                "$(contract_cache_session_path "$contract_cache_cli_repo_root")" \
+                "$(contract_cache_contract_file "$contract_cache_cli_repo_root")" >&2
+        else
+            printf 'contract-cache: session-context %s\n' "$contract_cache_cli_reason" >&2
+        fi
+    fi
+    exit "$contract_cache_cli_rc"
 fi
