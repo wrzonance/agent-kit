@@ -337,6 +337,122 @@ assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=0" "$out" \
 assert_eq '0' "$(jq -r '.repoWideOpen' "$baseline_zero")" \
     'a real single page of zero findings records repoWideOpen=0, distinct from an unreadable response'
 
+# --- --state-file (issue #584): a distinct evidence artifact from
+# --baseline-file, carrying the exact printed scan-state=... token
+# merge-gate.sh's --code-quality-state-file expects, never the baseline
+# JSON shape.
+
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"number":1},{"number":2},{"number":3}]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+state_file="$tmp/scan-state.txt"
+rm -f "$state_file"
+out=$(run_head --state-file "$state_file")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--state-file does not change the printed token'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$state_file")" \
+    '--state-file records the exact printed scan-state= token, byte-for-byte'
+state_mode=$(stat -c %a "$state_file" 2>/dev/null || stat -f %Lp "$state_file")
+assert_eq '600' "$state_mode" 'the state-file artifact is written mode 600'
+
+# --state-file records pending/not-enabled/unknown outcomes too -- every
+# terminal scan-state, not only complete.
+write_gh_head \
+    ok '{"check_runs":[{"app":{"slug":"github-code-quality"},"status":"in_progress"}]}' \
+    ok '[]' \
+    ok '[]'
+state_pending="$tmp/scan-state-pending.txt"
+rm -f "$state_pending"
+out=$(run_head --state-file "$state_pending")
+assert_eq "scan-state=pending head=$HEAD_SHA" "$(cat "$state_pending")" \
+    '--state-file records a pending scan-state too'
+
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    error 'gh: Code quality is not enabled for this repository (HTTP 403)' \
+    ok '[]'
+state_not_enabled="$tmp/scan-state-not-enabled.txt"
+rm -f "$state_not_enabled"
+out=$(run_head --state-file "$state_not_enabled")
+assert_eq 'scan-state=not-enabled' "$(cat "$state_not_enabled")" \
+    '--state-file records a not-enabled scan-state too'
+
+# --baseline-file and --state-file are independent artifacts and may be
+# requested together in the same run, each with its own shape.
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[{"number":1}]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+combo_baseline="$tmp/combo-baseline.json"
+combo_state="$tmp/combo-state.txt"
+rm -f "$combo_baseline" "$combo_state"
+run_head --baseline-file "$combo_baseline" --state-file "$combo_state" >/dev/null
+assert_eq '1' "$(jq -r '.findingsOnHead' "$combo_baseline")" \
+    '--baseline-file still writes its JSON shape when --state-file is also given'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$combo_state")" \
+    '--state-file still writes its textual token when --baseline-file is also given'
+
+assert_rc 1 '--state-file is only meaningful with --head' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --probe --state-file "$tmp/x.txt"
+
+# Regression (issue #594 review, P2): --state-file must never be opened
+# through a pre-existing symlink at that path -- a plain '>' redirect would
+# follow it and truncate whatever it points at. The write must replace the
+# symlink itself with a regular file, leaving the symlink's former target
+# byte-untouched.
+secret_target="$tmp/secret-target.txt"
+printf 'do-not-touch\n' >"$secret_target"
+symlinked_state="$tmp/symlinked-state.txt"
+ln -sf -- "$secret_target" "$symlinked_state"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+out=$(run_head --state-file "$symlinked_state")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--state-file behind a pre-existing symlink still prints the same token'
+assert_eq 'do-not-touch' "$(cat "$secret_target")" \
+    "--state-file never writes through a pre-existing symlink's target"
+assert_eq 'false' "$([[ -L $symlinked_state ]] && echo true || echo false)" \
+    '--state-file replaces a pre-existing symlink with a regular file'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$symlinked_state")" \
+    'the replaced --state-file itself carries the printed token'
+symlinked_state_mode=$(stat -c %a "$symlinked_state" 2>/dev/null || stat -f %Lp "$symlinked_state")
+assert_eq '600' "$symlinked_state_mode" \
+    'the file that replaces the symlink is written mode 600'
+
+# Regression (CodeRabbit finding on PR #594, Finding 1): a --state-file
+# destination that is a symlink TO A DIRECTORY must still be replaced with
+# a regular file -- a plain `mv src dest` treats such a dest as the
+# directory and moves src INSIDE it, leaving the symlink itself untouched
+# (which merge-gate.sh would then reject as an unchanged symlink).
+target_dir="$tmp/state-target-dir"
+mkdir -p "$target_dir"
+dir_symlinked_state="$tmp/dir-symlinked-state.txt"
+ln -sf -- "$target_dir" "$dir_symlinked_state"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+out=$(run_head --state-file "$dir_symlinked_state")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--state-file behind a symlink-to-directory still prints the same token'
+assert_eq 'false' "$([[ -L $dir_symlinked_state ]] && echo true || echo false)" \
+    '--state-file replaces a symlink-to-directory with a regular file, not a file inside it'
+assert_eq 'true' "$([[ -f $dir_symlinked_state ]] && echo true || echo false)" \
+    '--state-file path is a regular file after replacing a symlink-to-directory'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$dir_symlinked_state")" \
+    'the replaced --state-file (from a symlink-to-directory) carries the printed token'
+assert_eq '' "$(ls -A "$target_dir")" \
+    'nothing lands inside the formerly-linked-to directory'
+
+# Regression (CodeRabbit finding on PR #594, Finding 2): an empty
+# --state-file value must be rejected at parse time, never silently
+# accepted and treated as "no --state-file given".
+assert_rc 1 '--state-file "" is rejected, not silently accepted' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --pr "$PR" --state-file ''
+
 # Regression (issue #472 review): every filtered read (-f/-F present or not)
 # --head issues is forced to GET, never inferred as POST.
 write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'
