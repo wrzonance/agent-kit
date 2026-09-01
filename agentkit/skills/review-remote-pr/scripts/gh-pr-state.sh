@@ -346,7 +346,7 @@ parse_args() {
         --issue-comment-answered) require_value "$1" "${2:-}"; ISSUE_COMMENT_ANSWERED=$2; shift 2 ;;
         --issue-comment-answered=*) ISSUE_COMMENT_ANSWERED=${1#*=}; shift ;;
         --digest-out) require_value "$1" "${2:-}"; DIGEST_OUT=$2; shift 2 ;;
-        --digest-out=*) DIGEST_OUT=${1#*=}; shift ;;
+        --digest-out=*) DIGEST_OUT=${1#*=}; [[ -n $DIGEST_OUT ]] || die 'option --digest-out requires a value'; shift ;;
         --digest) SAW_DIGEST=1; shift ;;
         --full) WANT_FULL=1; shift ;;
         --wait-ci) WANT_WAIT=1; shift ;;
@@ -1327,10 +1327,15 @@ main() {
     if [[ -n $DIGEST_OUT ]]; then
         # Staged via mktemp (mode 600 from creation, never a plain '>' that is
         # briefly group/world-writable under a permissive umask) in the
-        # destination's own directory, then renamed into place: rename(2)
-        # replaces whatever is at --digest-out -- including a pre-existing
-        # symlink -- without ever following it, so a planted symlink's target
-        # is never opened, let alone truncated.
+        # destination's own directory, then renamed into place with `mv -fT`
+        # -- the -T (no-target-directory) form is required because a plain
+        # `mv src dest` treats a dest that is a symlink TO A DIRECTORY as
+        # that directory and moves src inside it, leaving the symlink itself
+        # untouched; -T forces dest to be treated as the file path itself,
+        # so rename(2) replaces whatever is at --digest-out -- a plain file,
+        # a dangling/file symlink, or a symlink-to-directory alike --
+        # without ever following it, and a planted symlink's target is
+        # never opened, let alone truncated.
         local digest_text digest_dir digest_staged
         digest_text=$(print_digest)
         printf '%s\n' "$digest_text"
@@ -1346,7 +1351,7 @@ main() {
             rm -f -- "$digest_staged"
             die "could not chmod 600 --digest-out: $DIGEST_OUT"
         }
-        mv -f -- "$digest_staged" "$DIGEST_OUT" || {
+        mv -fT -- "$digest_staged" "$DIGEST_OUT" || {
             rm -f -- "$digest_staged"
             die "could not install --digest-out: $DIGEST_OUT"
         }

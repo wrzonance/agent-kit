@@ -1582,4 +1582,31 @@ digest_symlinked_mode=$(stat -c %a -- "$digest_symlinked" 2>/dev/null || stat -f
 assert_eq '600' "$digest_symlinked_mode" \
     'the file that replaces the symlink is written mode 600'
 
+# Regression (CodeRabbit finding on PR #594, Finding 1): a --digest-out
+# destination that is a symlink TO A DIRECTORY must still be replaced with
+# a regular file -- a plain `mv src dest` treats such a dest as the
+# directory and moves src INSIDE it, leaving the symlink itself untouched
+# (which merge-gate.sh would then reject as an unchanged symlink).
+digest_target_dir="$tmp/digest-target-dir"
+mkdir -p "$digest_target_dir"
+digest_dir_symlinked="$tmp/digest-dir-symlinked.txt"
+ln -sf -- "$digest_target_dir" "$digest_dir_symlinked"
+digest_dir_symlinked_stdout=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out "$digest_dir_symlinked")
+assert_eq 'false' "$([[ -L $digest_dir_symlinked ]] && echo true || echo false)" \
+    '--digest-out replaces a symlink-to-directory with a regular file, not a file inside it'
+assert_eq 'true' "$([[ -f $digest_dir_symlinked ]] && echo true || echo false)" \
+    '--digest-out path is a regular file after replacing a symlink-to-directory'
+assert_eq "$digest_dir_symlinked_stdout" "$(cat "$digest_dir_symlinked")" \
+    'the replaced --digest-out (from a symlink-to-directory) carries the exact printed digest'
+assert_eq '' "$(ls -A "$digest_target_dir")" \
+    'nothing lands inside the formerly-linked-to directory'
+
+# Regression (CodeRabbit finding on PR #594, Finding 2): an empty
+# --digest-out= value must be rejected at parse time, never silently
+# accepted and treated as "no --digest-out given".
+assert_rc 1 '--digest-out= (empty) is rejected, not silently accepted' -- \
+    env PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out=
+
 finish

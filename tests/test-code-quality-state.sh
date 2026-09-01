@@ -422,6 +422,37 @@ symlinked_state_mode=$(stat -c %a "$symlinked_state" 2>/dev/null || stat -f %Lp 
 assert_eq '600' "$symlinked_state_mode" \
     'the file that replaces the symlink is written mode 600'
 
+# Regression (CodeRabbit finding on PR #594, Finding 1): a --state-file
+# destination that is a symlink TO A DIRECTORY must still be replaced with
+# a regular file -- a plain `mv src dest` treats such a dest as the
+# directory and moves src INSIDE it, leaving the symlink itself untouched
+# (which merge-gate.sh would then reject as an unchanged symlink).
+target_dir="$tmp/state-target-dir"
+mkdir -p "$target_dir"
+dir_symlinked_state="$tmp/dir-symlinked-state.txt"
+ln -sf -- "$target_dir" "$dir_symlinked_state"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+out=$(run_head --state-file "$dir_symlinked_state")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--state-file behind a symlink-to-directory still prints the same token'
+assert_eq 'false' "$([[ -L $dir_symlinked_state ]] && echo true || echo false)" \
+    '--state-file replaces a symlink-to-directory with a regular file, not a file inside it'
+assert_eq 'true' "$([[ -f $dir_symlinked_state ]] && echo true || echo false)" \
+    '--state-file path is a regular file after replacing a symlink-to-directory'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$dir_symlinked_state")" \
+    'the replaced --state-file (from a symlink-to-directory) carries the printed token'
+assert_eq '' "$(ls -A "$target_dir")" \
+    'nothing lands inside the formerly-linked-to directory'
+
+# Regression (CodeRabbit finding on PR #594, Finding 2): an empty
+# --state-file value must be rejected at parse time, never silently
+# accepted and treated as "no --state-file given".
+assert_rc 1 '--state-file "" is rejected, not silently accepted' -- \
+    env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --head "$HEAD_SHA" --pr "$PR" --state-file ''
+
 # Regression (issue #472 review): every filtered read (-f/-F present or not)
 # --head issues is forced to GET, never inferred as POST.
 write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'

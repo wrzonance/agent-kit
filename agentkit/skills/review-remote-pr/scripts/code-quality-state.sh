@@ -113,9 +113,14 @@ first_error_line() {
 # --baseline-file JSON artifact's shape. Staged via mktemp (mode 600 from
 # creation, never a plain '>' that is briefly group/world-writable under a
 # permissive umask) in the destination's own directory, then renamed into
-# place: rename(2) replaces whatever is at --state-file -- including a
-# pre-existing symlink -- without ever following it, so a planted symlink's
-# target is never opened, let alone truncated.
+# place with `mv -fT` -- the -T (no-target-directory) form is required
+# because a plain `mv src dest` treats a dest that is a symlink TO A
+# DIRECTORY as that directory and moves src inside it, leaving the symlink
+# itself untouched; -T forces dest to be treated as the file path itself, so
+# rename(2) replaces whatever is at --state-file -- a plain file, a
+# dangling/file symlink, or a symlink-to-directory alike -- without ever
+# following it, and a planted symlink's target is never opened, let alone
+# truncated.
 emit_scan_state() {
     local line=$1 state_dir staged
     printf '%s\n' "$line"
@@ -132,7 +137,7 @@ emit_scan_state() {
             rm -f -- "$staged"
             die "could not chmod 600 --state-file: $state_file"
         }
-        mv -f -- "$staged" "$state_file" || {
+        mv -fT -- "$staged" "$state_file" || {
             rm -f -- "$staged"
             die "could not install --state-file: $state_file"
         }
@@ -197,6 +202,7 @@ while (($#)); do
             ;;
         --state-file)
             (($# >= 2)) || die '--state-file requires a path'
+            [[ -n $2 ]] || die '--state-file requires a non-empty path'
             state_file=$2
             shift 2
             ;;
