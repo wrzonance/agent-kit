@@ -1541,4 +1541,72 @@ assert_contains "$icf_answered_output" 'issue-comment-findings: 0 open' \
 assert_not_contains "$icf_answered_output" 'next: issue-comment-findings' \
     'a fully-answered issue-comment-findings lane prints no next hint'
 
+# --digest-out (issue #584): the printed digest must also land in an owned,
+# mode-600 file byte-for-byte -- this is the artifact merge-gate.sh's
+# --pr-state-digest expects, and a hand-rolled '>'/'tee' capture under a
+# permissive umask can leave it group- or world-writable, which
+# merge-gate.sh refuses outright.
+digest_out="$tmp/digest-out.txt"
+rm -f "$digest_out"
+digest_stdout=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out "$digest_out")
+assert_eq "$digest_stdout" "$(cat "$digest_out")" \
+    '--digest-out writes the exact same text printed on stdout'
+assert_contains "$(cat "$digest_out")" 'pr=14 draft=true mergeable=MERGEABLE head=feat/test sha=abcdef0123456789' \
+    'the captured digest file carries the pr= summary line'
+digest_out_mode=$(stat -c %a -- "$digest_out" 2>/dev/null || stat -f %Lp -- "$digest_out")
+assert_eq '600' "$digest_out_mode" '--digest-out artifact is written mode 600'
+
+assert_rc 1 '--digest-out requires a value' -- \
+    env PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out
+
+# Regression (issue #594 review, P2): --digest-out must never be opened
+# through a pre-existing symlink at that path -- a plain '>' redirect would
+# follow it and truncate whatever it points at. The write must replace the
+# symlink itself with a regular file, leaving the symlink's former target
+# byte-untouched.
+digest_secret_target="$tmp/digest-secret-target.txt"
+printf 'do-not-touch\n' >"$digest_secret_target"
+digest_symlinked="$tmp/digest-symlinked.txt"
+ln -sf -- "$digest_secret_target" "$digest_symlinked"
+digest_symlinked_stdout=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out "$digest_symlinked")
+assert_eq 'do-not-touch' "$(cat "$digest_secret_target")" \
+    "--digest-out never writes through a pre-existing symlink's target"
+assert_eq 'false' "$([[ -L $digest_symlinked ]] && echo true || echo false)" \
+    '--digest-out replaces a pre-existing symlink with a regular file'
+assert_eq "$digest_symlinked_stdout" "$(cat "$digest_symlinked")" \
+    'the replaced --digest-out file still carries the exact printed digest'
+digest_symlinked_mode=$(stat -c %a -- "$digest_symlinked" 2>/dev/null || stat -f %Lp -- "$digest_symlinked")
+assert_eq '600' "$digest_symlinked_mode" \
+    'the file that replaces the symlink is written mode 600'
+
+# Regression (CodeRabbit finding on PR #594, Finding 1): a --digest-out
+# destination that is a symlink TO A DIRECTORY must still be replaced with
+# a regular file -- a plain `mv src dest` treats such a dest as the
+# directory and moves src INSIDE it, leaving the symlink itself untouched
+# (which merge-gate.sh would then reject as an unchanged symlink).
+digest_target_dir="$tmp/digest-target-dir"
+mkdir -p "$digest_target_dir"
+digest_dir_symlinked="$tmp/digest-dir-symlinked.txt"
+ln -sf -- "$digest_target_dir" "$digest_dir_symlinked"
+digest_dir_symlinked_stdout=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out "$digest_dir_symlinked")
+assert_eq 'false' "$([[ -L $digest_dir_symlinked ]] && echo true || echo false)" \
+    '--digest-out replaces a symlink-to-directory with a regular file, not a file inside it'
+assert_eq 'true' "$([[ -f $digest_dir_symlinked ]] && echo true || echo false)" \
+    '--digest-out path is a regular file after replacing a symlink-to-directory'
+assert_eq "$digest_dir_symlinked_stdout" "$(cat "$digest_dir_symlinked")" \
+    'the replaced --digest-out (from a symlink-to-directory) carries the exact printed digest'
+assert_eq '' "$(ls -A "$digest_target_dir")" \
+    'nothing lands inside the formerly-linked-to directory'
+
+# Regression (CodeRabbit finding on PR #594, Finding 2): an empty
+# --digest-out= value must be rejected at parse time, never silently
+# accepted and treated as "no --digest-out given".
+assert_rc 1 '--digest-out= (empty) is rejected, not silently accepted' -- \
+    env PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out=
+
 finish

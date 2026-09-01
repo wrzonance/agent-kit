@@ -170,6 +170,10 @@ readonly ISSUE_COMMENT_CLASSIFIER="$SCRIPT_DIR/classify-issue-comment-findings.s
 # Optional local answered-finding ledger; empty means every classified
 # finding reports open (see --issue-comment-answered in usage()).
 ISSUE_COMMENT_ANSWERED=""
+# Optional path to additionally capture the printed digest verbatim, mode
+# 600 -- this is the file merge-gate.sh's --pr-state-digest expects (see
+# --digest-out in usage()).
+DIGEST_OUT=""
 
 usage() {
     cat <<EOF
@@ -217,6 +221,13 @@ Options:
                          findings.sh's ndjson) so 'issue-comment-findings:'
                          excludes findings already replied to. Omitted: every
                          classified finding reports open.
+  --digest-out FILE      Additionally write the printed digest verbatim to
+                         FILE, mode 600. This is the file merge-gate.sh's
+                         --pr-state-digest expects; capture it with this
+                         flag rather than a hand-rolled shell redirect --
+                         under a permissive umask a plain '>'/'tee' capture
+                         can leave the file group- or world-writable, which
+                         merge-gate.sh refuses outright.
   -h, --help             Show this help.
 
 Counting rules:
@@ -334,6 +345,8 @@ parse_args() {
         --acceptance-command=*) ACCEPTANCE_COMMANDS+=("${1#*=}"); shift ;;
         --issue-comment-answered) require_value "$1" "${2:-}"; ISSUE_COMMENT_ANSWERED=$2; shift 2 ;;
         --issue-comment-answered=*) ISSUE_COMMENT_ANSWERED=${1#*=}; shift ;;
+        --digest-out) require_value "$1" "${2:-}"; DIGEST_OUT=$2; shift 2 ;;
+        --digest-out=*) DIGEST_OUT=${1#*=}; [[ -n $DIGEST_OUT ]] || die 'option --digest-out requires a value'; shift ;;
         --digest) SAW_DIGEST=1; shift ;;
         --full) WANT_FULL=1; shift ;;
         --wait-ci) WANT_WAIT=1; shift ;;
@@ -372,6 +385,8 @@ validate_args() {
     fi
     [[ -z $EXPECT_CHECKS || $EXPECT_CHECKS =~ ^[1-9][0-9]*$ ]] ||
         die "--expect-checks must be a positive integer, got: $EXPECT_CHECKS"
+    [[ -z $DIGEST_OUT || $DIGEST_OUT != *[[:cntrl:]]* ]] ||
+        die '--digest-out must contain no control characters'
     command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
     command -v jq >/dev/null 2>&1 || die "jq not found on PATH; evidence unavailable"
     [[ -x $ISSUE_COMMENT_CLASSIFIER ]] ||
@@ -1309,7 +1324,40 @@ main() {
         ((WANT_FULL)) && [[ -n $HEAD_SHA ]] && full_cache_save
     fi
     ((WANT_FULL)) && save_artifacts
-    print_digest
+    if [[ -n $DIGEST_OUT ]]; then
+        # Staged via mktemp (mode 600 from creation, never a plain '>' that is
+        # briefly group/world-writable under a permissive umask) in the
+        # destination's own directory, then renamed into place with `mv -fT`
+        # -- the -T (no-target-directory) form is required because a plain
+        # `mv src dest` treats a dest that is a symlink TO A DIRECTORY as
+        # that directory and moves src inside it, leaving the symlink itself
+        # untouched; -T forces dest to be treated as the file path itself,
+        # so rename(2) replaces whatever is at --digest-out -- a plain file,
+        # a dangling/file symlink, or a symlink-to-directory alike --
+        # without ever following it, and a planted symlink's target is
+        # never opened, let alone truncated.
+        local digest_text digest_dir digest_staged
+        digest_text=$(print_digest)
+        printf '%s\n' "$digest_text"
+        digest_dir=${DIGEST_OUT%/*}
+        [[ $digest_dir != "$DIGEST_OUT" ]] || digest_dir=.
+        digest_staged=$(mktemp -- "$digest_dir/.gh-pr-state-digest.XXXXXX") ||
+            die "could not create a staging file for --digest-out: $DIGEST_OUT"
+        printf '%s\n' "$digest_text" >"$digest_staged" || {
+            rm -f -- "$digest_staged"
+            die "could not write --digest-out: $DIGEST_OUT"
+        }
+        chmod 600 -- "$digest_staged" || {
+            rm -f -- "$digest_staged"
+            die "could not chmod 600 --digest-out: $DIGEST_OUT"
+        }
+        mv -fT -- "$digest_staged" "$DIGEST_OUT" || {
+            rm -f -- "$digest_staged"
+            die "could not install --digest-out: $DIGEST_OUT"
+        }
+    else
+        print_digest
+    fi
     return 0
 }
 
