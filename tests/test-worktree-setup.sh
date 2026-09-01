@@ -358,6 +358,10 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '  *"pr view 11"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *"pr view 12"*headRefName*) printf "%s\\n" feat/pr-12-head ;;' \
     '  *"pr view 12"*isCrossRepository*) printf "%s\\n" false ;;' \
+    '  *"pr view 13"*headRefName*) printf "%s\\n" feat/pr-13-head ;;' \
+    '  *"pr view 13"*isCrossRepository*) printf "%s\\n" false ;;' \
+    '  *"pr view 14"*headRefName*) printf "%s\\n" feat/pr-14-head ;;' \
+    '  *"pr view 14"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *) exit 1 ;;' \
     'esac' >"$fake_gh"
 fake_jq=$fake_bin/jq
@@ -429,6 +433,130 @@ if [[ -x $pr_sh ]]; then
         'cross-repository PR setup does not report a setup failure'
     assert_eq 'setup-ran' "$(<"$fork_repo/.fleet/pr-10/setup.marker")" \
         'cross-repository PR setup runs the declared setup command directly'
+
+    # A declared setup failure is fatal only on a freshly created worktree.
+    # Reusing an already-set-up worktree degrades the same failure to a
+    # reported warning: `setup=failed` in the final status line, the
+    # underlying command's failure detail and log path still printed, and
+    # the command itself exits 0 so the reused worktree stays usable.
+    git -C "$pr_repo" switch -q -c 'feat/pr-13-head'
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$pr_repo/tools/setup"
+    git -C "$pr_repo" add -- tools/setup
+    git -C "$pr_repo" commit -qm 'break declared setup'
+    git -C "$pr_repo" push -q origin 'feat/pr-13-head'
+    git -C "$pr_repo" switch -q main
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 13 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '1' "$rc" 'a freshly created worktree with a failing declared setup still fails'
+    assert_contains "$out" "setup failed in $pr_repo/.fleet/pr-13" \
+        'a freshly created worktree failure names the worktree that never finished setup'
+
+    # The worktree from the failed create above is left on disk (only its
+    # setup failed), so a second identical invocation reuses it. Without a
+    # recorded prior success, that reused worktree's never-succeeded setup
+    # must stay fatal too — it must not be mistaken for a worktree that once
+    # completed setup and merely failed a later convenience re-run.
+    assert_eq 'no' "$(test -f "$pr_repo/.fleet/pr-13/.agent/setup-succeeded" && printf yes || printf no)" \
+        'a failed setup on a freshly created worktree leaves no completion marker'
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 13 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '1' "$rc" \
+        're-running against the same never-succeeded worktree still fails, not just the first create'
+    assert_contains "$out" "setup failed in $pr_repo/.fleet/pr-13" \
+        're-running against the same never-succeeded worktree still names it in the failure'
+
+    git -C "$pr_repo" switch -q -c 'feat/pr-12-head'
+    git -C "$pr_repo" push -q origin 'feat/pr-12-head'
+    git -C "$pr_repo" switch -q main
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 12 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'a freshly created worktree with a passing declared setup completes'
+    assert_contains "$out" 'setup=declared' \
+        'a freshly created worktree with a passing declared setup reports setup=declared'
+    assert_eq 'yes' "$(test -f "$pr_repo/.fleet/pr-12/.agent/setup-succeeded" && printf yes || printf no)" \
+        'a passing declared setup records a completion marker'
+
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 9 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'reusing a worktree with an unchanged passing declared setup completes'
+    assert_contains "$out" 'setup=declared' \
+        'reusing a worktree with a passing declared setup is unchanged (setup=declared)'
+
+    pr12_worktree=$pr_repo/.fleet/pr-12
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$pr12_worktree/tools/setup"
+    git -C "$pr12_worktree" add -- tools/setup
+    git -C "$pr12_worktree" commit -qm 'break declared setup'
+    git -C "$pr12_worktree" push -q origin 'feat/pr-12-head'
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 12 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'reusing a worktree with a newly failing declared setup still exits 0'
+    assert_contains "$out" 'setup=failed' \
+        'reusing a worktree with a failing declared setup reports setup=failed in the status line'
+    assert_contains "$out" 'full log:' \
+        'reusing a worktree with a failing declared setup still prints the failure log path'
+
+    # A worktree created with no declared setup at all has nothing to record:
+    # the completion marker must stay unwritten. If a repository later adds a
+    # declared setup and it fails the first time it ever runs on that reused
+    # worktree, that failure must stay fatal — a stale marker from the earlier
+    # "no setup declared" success must never downgrade a setup that has never
+    # once actually succeeded.
+    no_setup_repo=$tmp/no-setup-repo
+    no_setup_origin=$tmp/no-setup-origin
+    mkdir -p "$no_setup_repo/.agent"
+    git init -q --bare "$no_setup_origin"
+    git init -q -b main "$no_setup_repo"
+    git -C "$no_setup_repo" config user.name test
+    git -C "$no_setup_repo" config user.email test@example.invalid
+    printf '%s\n' \
+        'AGENT_BASE_BRANCH=main' \
+        'AGENT_WORKTREE_ROOT=.fleet' \
+        >"$no_setup_repo/.agent/config.env"
+    printf '%s\n' seed >"$no_setup_repo/seed"
+    git -C "$no_setup_repo" add -- seed
+    git -C "$no_setup_repo" commit -qm base
+    git -C "$no_setup_repo" remote add origin "$no_setup_origin"
+    git -C "$no_setup_repo" push -q origin main
+    git -C "$no_setup_repo" fetch -q origin
+    printf '.agent/config.env\n' >>"$no_setup_repo/.git/info/exclude"
+    git -C "$no_setup_repo" switch -q -c 'feat/pr-14-head'
+    git -C "$no_setup_repo" push -q origin 'feat/pr-14-head'
+    git -C "$no_setup_repo" switch -q main
+    : >"$gh_log"
+    out=$(cd "$no_setup_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 14 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '0' "$rc" 'a freshly created worktree with no declared setup completes'
+    assert_contains "$out" 'setup=none' \
+        'a freshly created worktree with no declared setup reports setup=none'
+    pr14_worktree=$no_setup_repo/.fleet/pr-14
+    assert_eq 'no' "$(test -e "$pr14_worktree/.agent/setup-succeeded" && printf yes || printf no)" \
+        'a worktree with no declared setup records no completion marker'
+
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$pr14_worktree/tools/setup"
+    chmod +x "$pr14_worktree/tools/setup"
+    git -C "$pr14_worktree" add -- tools/setup
+    git -C "$pr14_worktree" commit -qm 'add a failing declared setup'
+    git -C "$pr14_worktree" push -q origin 'feat/pr-14-head'
+    printf 'AGENT_CMD_SETUP=tools/setup\n' >>"$pr14_worktree/.agent/config.env"
+    : >"$gh_log"
+    out=$(cd "$no_setup_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 14 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '1' "$rc" \
+        'a reused worktree whose declared setup fails for the first time ever still fails, despite a prior no-setup success'
+    assert_contains "$out" "setup failed in $pr14_worktree" \
+        'the first-ever declared-setup failure on a reused worktree is reported as fatal, not downgraded'
 fi
 
 finish
