@@ -317,8 +317,15 @@ protected_write_set_collision() {
     else
         return 1
     fi
+    # Normalize a leading "./" the same way worktree-commit.sh and
+    # shared_protected_pattern already do for both the file path being
+    # checked and every protected pattern -- without this, a "./"-prefixed
+    # value here could compare unequal to its own un-prefixed form there,
+    # passing plan validation only to be refused later at commit time.
+    candidate=${candidate#./}
     for pattern in "$@"; do
         base=${pattern%/}
+        base=${base#./}
         [[ -n $base ]] || continue
         if path_is_ancestor_or_equal "$base" "$candidate" || path_is_ancestor_or_equal "$candidate" "$base"; then
             printf '%s' "$pattern"

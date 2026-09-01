@@ -147,6 +147,35 @@ assert_contains "$declared_err" 'secrets/prod.env' 'the declared-pattern collisi
 assert_rc 0 'the same path is not flagged outside the declaring repo' -- \
     "$writer" --dispatch-plan "$declared_plan" --validate-only
 
+# --- regression: a repo-declared protected pattern carrying a leading "./"
+# must still collide with a normal (unprefixed) write-set path -- without
+# stripping "./" the same way worktree-commit.sh's shared_protected_pattern
+# already does, this validated "clean" here and was only refused later, at
+# commit time. -----------------------------------------------------------
+dotslash_repo="$tmp/dotslash-repo"
+mkdir -p "$dotslash_repo/.agent"
+cat >"$dotslash_repo/.agent/config.env" <<'EOF'
+AGENT_PROTECTED_PATHS=./secrets/
+EOF
+git init -q -b main "$dotslash_repo"
+git -C "$dotslash_repo" config user.email test@example.invalid
+git -C "$dotslash_repo" config user.name test
+git -C "$dotslash_repo" add -- .
+git -C "$dotslash_repo" commit -qm base
+
+dotslash_plan="$tmp/dotslash.json"
+cat >"$dotslash_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 594, "predictedWriteSet": ["secrets/x.env"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+dotslash_rc=0
+dotslash_err=$(cd "$dotslash_repo" && "$writer" --dispatch-plan "$dotslash_plan" --validate-only 2>&1 >/dev/null) || dotslash_rc=$?
+assert_eq 1 "$dotslash_rc" 'a ./-prefixed declared protected pattern still collides with a normal write-set path'
+assert_contains "$dotslash_err" 'secrets/x.env' 'the colliding path is named'
+
 # --- acceptance: an explicit protectedPathAcknowledgement (entry-level)
 # validates. -------------------------------------------------------------------
 acked_plan="$tmp/acked.json"
