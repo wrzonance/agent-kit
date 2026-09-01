@@ -60,6 +60,64 @@ EOF
 assert_rc 0 'a path that merely shares a prefix string with a protected pattern is not flagged' -- \
     "$writer" --dispatch-plan "$benign_plan" --validate-only
 
+# --- regression: a literal predictedWriteSet path containing a "/" must
+# never be misrouted into the dir-prefix-glob branch -- `[[ $x == */** ]]`
+# glob-matches ANY value containing a slash ("**" degrades to a plain "*"
+# inside [[ ]], it is not bash's globstar), so a literal sibling of a
+# protected literal file was wrongly flagged as colliding with its own
+# containing directory. A quoted literal '/**' suffix test is required. -----
+sibling_repo="$tmp/sibling-repo"
+mkdir -p "$sibling_repo/.agent"
+cat >"$sibling_repo/.agent/config.env" <<'EOF'
+AGENT_PROTECTED_PATHS=config/prod.yml
+EOF
+git init -q -b main "$sibling_repo"
+git -C "$sibling_repo" config user.email test@example.invalid
+git -C "$sibling_repo" config user.name test
+git -C "$sibling_repo" add -- .
+git -C "$sibling_repo" commit -qm base
+
+sibling_plan="$tmp/sibling.json"
+cat >"$sibling_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 591, "predictedWriteSet": ["config/dev.yml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+sibling_rc=0
+(cd "$sibling_repo" && "$writer" --dispatch-plan "$sibling_plan" --validate-only) >/dev/null 2>&1 || sibling_rc=$?
+assert_eq 0 "$sibling_rc" 'a literal path sibling of a protected literal file does not collide'
+
+# A dir/** glob genuinely covering the protected file's directory must still
+# collide -- the literal-suffix fix must not also disable the glob branch.
+sibling_glob_plan="$tmp/sibling-glob.json"
+cat >"$sibling_glob_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 592, "predictedWriteSet": ["config/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+sibling_glob_rc=0
+sibling_glob_err=$(cd "$sibling_repo" && "$writer" --dispatch-plan "$sibling_glob_plan" --validate-only 2>&1 >/dev/null) || sibling_glob_rc=$?
+assert_eq 1 "$sibling_glob_rc" 'a dir/** glob covering a protected file still collides'
+assert_contains "$sibling_glob_err" 'config/**' 'the colliding glob is named'
+
+# --- regression: a predictedWriteSet entry containing a literal comma must
+# never be split into phantom patterns by the comma-joined TSV transfer --
+# that previously could manufacture a bogus collision from one safe path. --
+comma_plan="$tmp/comma.json"
+cat >"$comma_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 593, "predictedWriteSet": ["notes,.github/workflows/ci.yml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a single path containing a literal comma is never split into a phantom colliding pattern' -- \
+    "$writer" --dispatch-plan "$comma_plan" --validate-only
+
 # --- acceptance: a repo-declared AGENT_PROTECTED_PATHS pattern is honored. --
 declared_repo="$tmp/declared-repo"
 mkdir -p "$declared_repo/.agent"

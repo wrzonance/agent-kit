@@ -310,8 +310,8 @@ path_is_ancestor_or_equal() {
 protected_write_set_collision() {
     local write_pattern=$1 candidate pattern base
     shift
-    if [[ $write_pattern == */** ]]; then
-        candidate=${write_pattern%/**}
+    if [[ $write_pattern == *'/**' ]]; then
+        candidate=${write_pattern%'/**'}
     elif [[ $write_pattern != *[\*\?\[]* ]]; then
         candidate=$write_pattern
     else
@@ -438,9 +438,26 @@ if ((validate_only)); then
         IFS=',' read -r -a protected_extra <<< "$protected_declared"
         protected_patterns+=("${protected_extra[@]}")
     fi
-    while IFS=$'\t' read -r issue patterns acknowledged; do
-        IFS=',' read -ra prediction_patterns <<< "$patterns"
-        IFS=',' read -ra acknowledged_patterns <<< "${acknowledged:-}"
+    # predictedWriteSet/protectedPathAcknowledgement entries are schema-valid
+    # repo-relative paths but may still contain a comma (the `path` predicate
+    # never forbids one). A plain comma-joined TSV field would silently split
+    # "safe,dir/x" into two phantom patterns, so each element travels
+    # base64-encoded (a comma cannot occur in base64 output) and is decoded
+    # per-element on the bash side -- a genuinely lossless transfer.
+    while IFS=$'\t' read -r issue patterns_b64 acknowledged_b64; do
+        declare -a prediction_patterns_b64=() acknowledged_patterns_b64=()
+        IFS=',' read -ra prediction_patterns_b64 <<< "$patterns_b64"
+        IFS=',' read -ra acknowledged_patterns_b64 <<< "${acknowledged_b64:-}"
+        declare -a prediction_patterns=()
+        for encoded in "${prediction_patterns_b64[@]}"; do
+            [[ -n $encoded ]] || continue
+            prediction_patterns+=("$(base64 -d <<< "$encoded")")
+        done
+        declare -a acknowledged_patterns=()
+        for encoded in "${acknowledged_patterns_b64[@]}"; do
+            [[ -n $encoded ]] || continue
+            acknowledged_patterns+=("$(base64 -d <<< "$encoded")")
+        done
         for pattern in "${prediction_patterns[@]}"; do
             collision=$(protected_write_set_collision "$pattern" "${protected_patterns[@]}") || continue
             is_acknowledged=0
@@ -456,8 +473,8 @@ if ((validate_only)); then
       (.protectedPathAcknowledgement // []) as $planAcknowledgement |
       .entries[] | [
         .issue,
-        (.predictedWriteSet | join(",")),
-        (((.protectedPathAcknowledgement // []) + $planAcknowledgement) | join(","))
+        (.predictedWriteSet | map(@base64) | join(",")),
+        (((.protectedPathAcknowledgement // []) + $planAcknowledgement) | map(@base64) | join(","))
       ] | @tsv
     ' "$dispatch_plan")
 
