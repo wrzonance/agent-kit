@@ -102,15 +102,25 @@ assert_contains "$(cat -- "$out")" \
     'empty version identifies the required relative path'
 
 # The bump helper edits only the three source manifests from the checkout root.
+# The fixture's starting version is seeded to a fixed value independent of the
+# live checkout's manifest version -- otherwise this section is a no-op (and
+# the "edits exactly the three source manifests" assertion below goes red) on
+# any checkout whose manifests already equal the bump target, e.g. right after
+# a release commit.
 bump="$root/agentkit/skills/.shared/scripts/bump-version.sh"
 bump_fixture="$tmp/bump-tree"
+seed_version='0.0.1'
 mkdir -p "$bump_fixture/agentkit/.claude-plugin" \
     "$bump_fixture/agentkit/.codex-plugin" "$bump_fixture/opencode"
-cp -- "$root/agentkit/.claude-plugin/plugin.json" \
-    "$bump_fixture/agentkit/.claude-plugin/plugin.json"
-cp -- "$root/agentkit/.codex-plugin/plugin.json" \
-    "$bump_fixture/agentkit/.codex-plugin/plugin.json"
-cp -- "$root/opencode/package.json" "$bump_fixture/opencode/package.json"
+jq --arg version "$seed_version" '.version = $version' \
+    "$root/agentkit/.claude-plugin/plugin.json" \
+    > "$bump_fixture/agentkit/.claude-plugin/plugin.json"
+jq --arg version "$seed_version" '.version = $version' \
+    "$root/agentkit/.codex-plugin/plugin.json" \
+    > "$bump_fixture/agentkit/.codex-plugin/plugin.json"
+jq --arg version "$seed_version" '.version = $version' \
+    "$root/opencode/package.json" \
+    > "$bump_fixture/opencode/package.json"
 git -C "$bump_fixture" init -q -b main
 git -C "$bump_fixture" config user.name test
 git -C "$bump_fixture" config user.email test@example.invalid
