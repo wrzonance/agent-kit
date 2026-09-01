@@ -9,14 +9,16 @@ set -euo pipefail
 
 readonly USAGE='usage: validate-handback.sh --worktree PATH --handback-file FILE --issue N --dispatch-plan FILE'
 
-for arg in "$@"; do
-    case "$arg" in
-        -h | --help)
-            printf '%s\n' "$USAGE"
-            exit 0
-            ;;
-    esac
-done
+# Help is recognized only as the sole argument. Matching -h/--help anywhere in
+# a longer argv would let a real validation invocation that merely contains a
+# help-shaped token (e.g. an option value of "--help", or a malformed
+# "--worktree --help") exit 0 without validating anything -- callers treat
+# exit 0 as a passed validation. Any other shape falls through to the Python
+# parser unchanged, so it is judged as an ordinary (valid or invalid) handback.
+if (($# == 1)) && [[ $1 == -h || $1 == --help ]]; then
+    printf '%s\n' "$USAGE"
+    exit 0
+fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly SCRIPT_DIR

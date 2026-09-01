@@ -416,4 +416,15 @@ assert_eq '1' "$unknown_rc" 'an unrelated unknown option is still rejected'
 assert_contains "$(cat -- "$tmp/unknown.err")" 'unknown option: --bogus' \
     'the unknown-option refusal is unchanged'
 
+# Help is recognized only as the SOLE argument. A help-shaped token mixed into
+# a longer argv (e.g. a malformed "--worktree --help", where --help is
+# consumed as --worktree's value) must never short-circuit to an exit-0
+# usage print -- a caller that treats exit 0 as "validation passed" would be
+# fooled into publishing without any real validation happening.
+mixed_rc=0
+"$script" --worktree --help >"$tmp/mixed-help.out" 2>"$tmp/mixed-help.err" || mixed_rc=$?
+assert_eq '1' "$mixed_rc" 'a help token mixed into a longer argv is not treated as a usage request'
+assert_not_contains "$(cat -- "$tmp/mixed-help.out")" "$usage_text" \
+    'the mixed invocation does not print the usage line as if it succeeded'
+
 finish
