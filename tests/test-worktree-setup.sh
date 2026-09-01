@@ -451,6 +451,22 @@ if [[ -x $pr_sh ]]; then
     assert_contains "$out" "setup failed in $pr_repo/.fleet/pr-13" \
         'a freshly created worktree failure names the worktree that never finished setup'
 
+    # The worktree from the failed create above is left on disk (only its
+    # setup failed), so a second identical invocation reuses it. Without a
+    # recorded prior success, that reused worktree's never-succeeded setup
+    # must stay fatal too — it must not be mistaken for a worktree that once
+    # completed setup and merely failed a later convenience re-run.
+    assert_eq 'no' "$(test -f "$pr_repo/.fleet/pr-13/.agent/setup-succeeded" && printf yes || printf no)" \
+        'a failed setup on a freshly created worktree leaves no completion marker'
+    : >"$gh_log"
+    out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 13 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq '1' "$rc" \
+        're-running against the same never-succeeded worktree still fails, not just the first create'
+    assert_contains "$out" "setup failed in $pr_repo/.fleet/pr-13" \
+        're-running against the same never-succeeded worktree still names it in the failure'
+
     git -C "$pr_repo" switch -q -c 'feat/pr-12-head'
     git -C "$pr_repo" push -q origin 'feat/pr-12-head'
     git -C "$pr_repo" switch -q main
@@ -461,6 +477,8 @@ if [[ -x $pr_sh ]]; then
     assert_eq '0' "$rc" 'a freshly created worktree with a passing declared setup completes'
     assert_contains "$out" 'setup=declared' \
         'a freshly created worktree with a passing declared setup reports setup=declared'
+    assert_eq 'yes' "$(test -f "$pr_repo/.fleet/pr-12/.agent/setup-succeeded" && printf yes || printf no)" \
+        'a passing declared setup records a completion marker'
 
     : >"$gh_log"
     out=$(cd "$pr_repo" && PATH="$fake_bin:$PATH" \

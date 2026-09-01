@@ -183,19 +183,35 @@ main() {
         }
     fi
     setup_declared=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || setup_declared=''
-    local setup_status
+    local setup_status setup_marker="$worktree/.agent/setup-succeeded"
+    if [[ -e $setup_marker && ! -f $setup_marker ]] || [[ -L $setup_marker ]]; then
+        worktree_setup_fail "setup completion marker is not a regular file: $setup_marker"
+        exit 1
+    fi
     if worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree"; then
         if [[ -n $setup_declared ]]; then setup_status=declared; else setup_status=none; fi
-    elif ((created_worktree)); then
-        # A freshly created worktree that never finished its own setup genuinely
-        # isn't ready; that failure stays fatal.
+        # Record that this worktree has completed its declared setup at least
+        # once, so a *future* run can tell an uninitialized worktree (never
+        # recorded) apart from one that merely failed a convenience re-run.
+        if ! mkdir -p -- "$worktree/.agent" || ! : > "$setup_marker"; then
+            worktree_setup_fail "could not record setup completion marker: $setup_marker"
+            exit 1
+        fi
+    elif ((created_worktree)) || [[ ! -f $setup_marker ]]; then
+        # A freshly created worktree that never finished its own setup, or a
+        # reused worktree that has never recorded a successful setup (e.g. its
+        # only prior attempt also failed), genuinely isn't ready; that failure
+        # stays fatal. Leaving the marker unwritten on failure is what makes a
+        # later re-run of this same never-succeeded worktree fatal too, rather
+        # than silently downgrading to a warning.
         worktree_setup_fail "setup failed in $worktree"
         exit 1
     else
-        # A reused worktree was already set up once; a convenience re-run of
-        # the declared setup command failing here must not block re-entry.
-        # worktree_setup_declared_setup's own agent-run.sh invocation already
-        # printed the failure detail and full log path above.
+        # A reused worktree previously completed its declared setup at least
+        # once (the marker proves it); a convenience re-run of that command
+        # failing now must not block re-entry. worktree_setup_declared_setup's
+        # own agent-run.sh invocation already printed the failure detail and
+        # full log path above.
         setup_status=failed
     fi
     printf 'worktree=%s branch=%s setup=%s cross-repository=%s\n' "$worktree" "$branch" \
