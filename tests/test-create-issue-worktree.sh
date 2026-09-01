@@ -218,4 +218,69 @@ assert_contains "$noresume_out" 'no worktree is registered' \
 assert_eq 'no' "$([[ -e "$resume_repo/.fleet/feat/issue-45" ]] && printf yes || printf no)" \
     '--resume on a nonexistent worktree creates nothing'
 
+# --- issue #588 finding 1: a plain directory at the path is never mistaken --
+# --- for a registered worktree (rev-parse --is-inside-work-tree walks up ----
+# --- into the parent repo and would wrongly say yes) ------------------------
+plain_dir="$resume_repo/.fleet/feat/issue-46"
+mkdir -p "$plain_dir"
+printf 'not a worktree\n' >"$plain_dir/decoy.txt"
+plaindir_out=''
+plaindir_rc=0
+plaindir_out=$("$create_sh" --repo-root "$resume_repo" --issue 46 --base main --resume 2>&1) || plaindir_rc=$?
+assert_eq '1' "$plaindir_rc" '--resume refuses a plain directory standing in for the worktree'
+assert_contains "$plaindir_out" 'is not a registered git worktree' \
+    'the plain-directory refusal names the actual problem'
+assert_eq 'not a worktree' "$(cat "$plain_dir/decoy.txt")" \
+    'the plain directory refusal never touches the occupying directory'
+
+# --- issue #588 finding 1: a worktree registered on a DIFFERENT branch is ---
+# --- refused, not silently adopted ------------------------------------------
+otherbranch_worktree="$resume_repo/.fleet/feat/issue-47"
+git -C "$resume_repo" worktree add "$otherbranch_worktree" -b not-issue-47 origin/main >/dev/null 2>&1
+otherbranch_out=''
+otherbranch_rc=0
+otherbranch_out=$("$create_sh" --repo-root "$resume_repo" --issue 47 --base main --resume 2>&1) || otherbranch_rc=$?
+assert_eq '1' "$otherbranch_rc" '--resume refuses a worktree registered on a different branch'
+assert_contains "$otherbranch_out" 'registered worktree on refs/heads/not-issue-47' \
+    'the different-branch refusal names the branch actually checked out there'
+
+# --- issue #588 finding 2: a worktree that exists locally but was never -----
+# --- pushed (a died-mid-creation simulation) gets pushed and tracked on -----
+# --- --resume, not silently reported as done ---------------------------------
+unpushed_branch=feat/issue-48
+unpushed_worktree="$resume_repo/.fleet/feat/issue-48"
+git -C "$resume_repo" worktree add "$unpushed_worktree" -b "$unpushed_branch" origin/main >/dev/null 2>&1
+for private_dir in prompts evidence logs pr-body; do
+    (umask 077; mkdir -p -- "$unpushed_worktree/.agent/$private_dir")
+done
+assert_eq 'no' "$(git -C "$resume_repo" show-ref --verify --quiet "refs/remotes/origin/$unpushed_branch" && printf yes || printf no)" \
+    'fixture setup: the simulated died-mid-creation branch was never pushed'
+unpushed_rc=0
+"$create_sh" --repo-root "$resume_repo" --issue 48 --base main --resume >/dev/null 2>&1 || unpushed_rc=$?
+assert_eq '0' "$unpushed_rc" '--resume on an unpushed worktree succeeds'
+assert_eq 'yes' "$(git -C "$resume_repo" show-ref --verify --quiet "refs/remotes/origin/$unpushed_branch" && printf yes || printf no)" \
+    '--resume pushes the branch that a died-mid-creation run left unpushed'
+assert_eq "origin/$unpushed_branch" "$(git -C "$unpushed_worktree" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" \
+    '--resume leaves the branch tracking its origin upstream'
+
+# --- issue #588 finding 3: a pushed branch whose local worktree was pruned --
+# --- is recreated by --resume, not left permanently unresumable -------------
+pruned_rc=0
+"$create_sh" --repo-root "$resume_repo" --issue 49 --base main >/dev/null 2>&1 || pruned_rc=$?
+assert_eq '0' "$pruned_rc" 'fixture setup: issue 49 was created and pushed cleanly'
+pruned_worktree="$resume_repo/.fleet/feat/issue-49"
+git -C "$resume_repo" worktree remove --force "$pruned_worktree" >/dev/null 2>&1
+assert_eq 'no' "$([[ -e $pruned_worktree ]] && printf yes || printf no)" \
+    'fixture setup: the issue 49 worktree was pruned from disk'
+assert_eq 'yes' "$(git -C "$resume_repo" show-ref --verify --quiet 'refs/remotes/origin/feat/issue-49' && printf yes || printf no)" \
+    'fixture setup: the pushed origin/feat/issue-49 branch survives the prune'
+recreate_out=''
+recreate_rc=0
+recreate_out=$("$create_sh" --repo-root "$resume_repo" --issue 49 --base main --resume 2>&1) || recreate_rc=$?
+assert_eq '0' "$recreate_rc" '--resume recreates a pruned worktree from its pushed branch'
+assert_contains "$recreate_out" "worktree=$pruned_worktree branch=feat/issue-49" \
+    'the recreated worktree prints the standard worktree= line'
+assert_eq 'yes' "$([[ -d $pruned_worktree ]] && printf yes || printf no)" \
+    '--resume recreates the worktree directory on disk'
+
 finish
