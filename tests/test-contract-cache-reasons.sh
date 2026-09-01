@@ -51,6 +51,52 @@ assert_eq '' "$out" 'an absent session-context record has no stdout (unchanged)'
 assert_eq 'contract-cache: session-context absent' "$err" \
     'an absent session-context record names its class on stderr'
 
+# --- invalid (not absent): a record file exists but fails provenance ------
+# (follow-up finding on #587): a tracked file or a symlink swap is
+# corruption/tampering, not "nothing there" -- absent must mean no
+# filesystem entry at all. A tracked record fails
+# contract_cache_file_is_ours's git-ownership check while still physically
+# present on disk, so it exercises the same existing-but-unsafe branch a
+# mode or ownership change would.
+tracked_repo="$tmp/tracked-record"
+make_valid_repo "$tracked_repo"
+git -C "$tracked_repo" add -f -- .agent/cache/contract-session.env
+rc=0
+out=$("$cache_reader" --read-session-context --repo-root "$tracked_repo" 2> "$tmp/tracked.err") || rc=$?
+err=$(cat -- "$tmp/tracked.err")
+assert_eq 1 "$rc" 'a tracked session-context record fails with rc 1 (unchanged)'
+assert_eq '' "$out" 'a tracked session-context record has no stdout (unchanged)'
+assert_eq 'contract-cache: session-context invalid' "$err" \
+    'a session-context record that exists but fails provenance (tracked) is invalid, not absent'
+git -C "$tracked_repo" rm --cached -q -- .agent/cache/contract-session.env
+
+symlink_repo="$tmp/symlink-swap"
+make_valid_repo "$symlink_repo"
+real_target="$tmp/symlink-swap-target.env"
+cp -- "$symlink_repo/.agent/cache/contract-session.env" "$real_target"
+rm -f -- "$symlink_repo/.agent/cache/contract-session.env"
+ln -s -- "$real_target" "$symlink_repo/.agent/cache/contract-session.env"
+rc=0
+out=$("$cache_reader" --read-session-context --repo-root "$symlink_repo" 2> "$tmp/symlink.err") || rc=$?
+err=$(cat -- "$tmp/symlink.err")
+assert_eq 1 "$rc" 'a symlinked session-context record fails with rc 1 (unchanged)'
+assert_eq '' "$out" 'a symlinked session-context record has no stdout (unchanged)'
+assert_eq 'contract-cache: session-context invalid' "$err" \
+    'a session-context record replaced by a symlink is invalid, not absent'
+
+cache_dir_repo="$tmp/cache-dir-symlink"
+make_valid_repo "$cache_dir_repo"
+cache_dir_target="$tmp/cache-dir-symlink-target"
+mv -- "$cache_dir_repo/.agent/cache" "$cache_dir_target"
+ln -s -- "$cache_dir_target" "$cache_dir_repo/.agent/cache"
+rc=0
+out=$("$cache_reader" --read-session-context --repo-root "$cache_dir_repo" 2> "$tmp/cache-dir.err") || rc=$?
+err=$(cat -- "$tmp/cache-dir.err")
+assert_eq 1 "$rc" 'a symlinked cache directory fails with rc 1 (unchanged)'
+assert_eq '' "$out" 'a symlinked cache directory has no stdout (unchanged)'
+assert_eq 'contract-cache: session-context invalid' "$err" \
+    'a cache directory replaced by a symlink is invalid, not absent'
+
 # --- invalid: malformed record content ------------------------------------
 invalid_repo="$tmp/invalid"
 make_valid_repo "$invalid_repo"

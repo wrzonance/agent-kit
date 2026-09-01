@@ -249,6 +249,7 @@ contract_cache_write_session_context() {
 
 contract_cache_session_context_read() {
     local repo_root=$1 requested=${2:-} context contract current_digest skills_path
+    local root_agent cache_dir
     local line key value count=0
     local -A values=() seen=()
     local expected_keys='format agentkit shared agentkit_provenance contract_root contract_inputs_sha256'
@@ -279,13 +280,29 @@ contract_cache_session_context_read() {
         CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
         return 1
     }
+    # A cache directory that exists but fails provenance (foreign-owned,
+    # symlinked, or a dangling symlink) is corruption/tampering, not absence
+    # -- only "nothing at all is there" earns the absent class (issue #587
+    # follow-up finding). contract_cache_dir_is_ours checks .agent and
+    # .agent/cache internally; re-derive the same two paths here purely to
+    # classify, without duplicating its provenance logic.
+    root_agent="$repo_root/.agent"
+    cache_dir="$root_agent/cache"
     contract_cache_dir_is_ours "$repo_root" || {
-        CONTRACT_CACHE_SESSION_CONTEXT_REASON=absent
+        if [[ -e $root_agent || -L $root_agent || -e $cache_dir || -L $cache_dir ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        else
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=absent
+        fi
         return 1
     }
     context=$(contract_cache_session_path "$repo_root")
     contract_cache_file_is_ours "$context" "$repo_root" || {
-        CONTRACT_CACHE_SESSION_CONTEXT_REASON=absent
+        if [[ -e $context || -L $context ]]; then
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=invalid
+        else
+            CONTRACT_CACHE_SESSION_CONTEXT_REASON=absent
+        fi
         return 1
     }
 
