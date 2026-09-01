@@ -43,7 +43,8 @@ line only — nothing infers them from tone, urgency, or a previous run.
 
 `--trust-trunk` no longer exists; the ledger keeps the field name (always `false`) for run-ID hash stability.
 
-**Unknown-flag disposition.** A `--token` outside the table above still gets named in the opening
+**Unknown-flag disposition.** A `--token` outside the table above and not documented elsewhere in
+this skill (`--no-followup`'s Phase 3 opt-out remains recognized) still gets named in the opening
 flag announcement, never silently dropped, e.g. `ignored: --auto-merge (owned by pr-to-green)`; a
 downstream-owned flag also carries into the handoff resume line below.
 

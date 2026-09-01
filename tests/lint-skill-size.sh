@@ -231,6 +231,14 @@ KNOWN_OVERSIZE[parallel-issues]="1133:19745:900"
 # and set to the minimum that passes, never padded. Target unchanged.
 # test-skill-size.sh's pinned ratchet-message assertions move with it.
 KNOWN_OVERSIZE[parallel-issues]="1104:19881:900"
+# Issue #598 (adversarial-review fix on #588's PR): the unknown-flag
+# disposition rule wrongly read `--no-followup` as unknown/ignored, when its
+# Phase 3 opt-out is documented elsewhere in this same skill. One clause
+# exempts flags documented elsewhere in the skill. LINES rises 1104 -> 1105,
+# TOKENS rises 19881 -> 19905, measured against this body and set to the
+# minimum that passes, never padded. Target unchanged.
+# test-skill-size.sh's pinned ratchet-message assertions move with it.
+KNOWN_OVERSIZE[parallel-issues]="1105:19905:900"
 
 readonly MAX_BODY_LINES=500
 readonly MAX_BODY_TOKENS=5000
