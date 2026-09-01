@@ -1561,4 +1561,25 @@ assert_rc 1 '--digest-out requires a value' -- \
     env PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 14 --repo owner/repo --digest-out
 
+# Regression (issue #594 review, P2): --digest-out must never be opened
+# through a pre-existing symlink at that path -- a plain '>' redirect would
+# follow it and truncate whatever it points at. The write must replace the
+# symlink itself with a regular file, leaving the symlink's former target
+# byte-untouched.
+digest_secret_target="$tmp/digest-secret-target.txt"
+printf 'do-not-touch\n' >"$digest_secret_target"
+digest_symlinked="$tmp/digest-symlinked.txt"
+ln -sf -- "$digest_secret_target" "$digest_symlinked"
+digest_symlinked_stdout=$(PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo --digest-out "$digest_symlinked")
+assert_eq 'do-not-touch' "$(cat "$digest_secret_target")" \
+    "--digest-out never writes through a pre-existing symlink's target"
+assert_eq 'false' "$([[ -L $digest_symlinked ]] && echo true || echo false)" \
+    '--digest-out replaces a pre-existing symlink with a regular file'
+assert_eq "$digest_symlinked_stdout" "$(cat "$digest_symlinked")" \
+    'the replaced --digest-out file still carries the exact printed digest'
+digest_symlinked_mode=$(stat -c %a -- "$digest_symlinked" 2>/dev/null || stat -f %Lp -- "$digest_symlinked")
+assert_eq '600' "$digest_symlinked_mode" \
+    'the file that replaces the symlink is written mode 600'
+
 finish

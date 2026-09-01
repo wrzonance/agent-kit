@@ -396,6 +396,32 @@ assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$combo
 assert_rc 1 '--state-file is only meaningful with --head' -- \
     env PATH="$tmp/bin:$PATH" "$quality" --repo o/r --probe --state-file "$tmp/x.txt"
 
+# Regression (issue #594 review, P2): --state-file must never be opened
+# through a pre-existing symlink at that path -- a plain '>' redirect would
+# follow it and truncate whatever it points at. The write must replace the
+# symlink itself with a regular file, leaving the symlink's former target
+# byte-untouched.
+secret_target="$tmp/secret-target.txt"
+printf 'do-not-touch\n' >"$secret_target"
+symlinked_state="$tmp/symlinked-state.txt"
+ln -sf -- "$secret_target" "$symlinked_state"
+write_gh_head \
+    ok '{"check_runs":[]}' \
+    ok '[]' \
+    ok "[{\"user\":{\"login\":\"github-code-quality[bot]\"},\"commit_id\":\"$HEAD_SHA\"}]"
+out=$(run_head --state-file "$symlinked_state")
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$out" \
+    '--state-file behind a pre-existing symlink still prints the same token'
+assert_eq 'do-not-touch' "$(cat "$secret_target")" \
+    "--state-file never writes through a pre-existing symlink's target"
+assert_eq 'false' "$([[ -L $symlinked_state ]] && echo true || echo false)" \
+    '--state-file replaces a pre-existing symlink with a regular file'
+assert_eq "scan-state=complete head=$HEAD_SHA findings-on-head=1" "$(cat "$symlinked_state")" \
+    'the replaced --state-file itself carries the printed token'
+symlinked_state_mode=$(stat -c %a "$symlinked_state" 2>/dev/null || stat -f %Lp "$symlinked_state")
+assert_eq '600' "$symlinked_state_mode" \
+    'the file that replaces the symlink is written mode 600'
+
 # Regression (issue #472 review): every filtered read (-f/-F present or not)
 # --head issues is forced to GET, never inferred as POST.
 write_gh_head ok '{"check_runs":[]}' ok '[]' ok '[]'

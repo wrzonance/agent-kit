@@ -1325,12 +1325,31 @@ main() {
     fi
     ((WANT_FULL)) && save_artifacts
     if [[ -n $DIGEST_OUT ]]; then
-        local digest_text
+        # Staged via mktemp (mode 600 from creation, never a plain '>' that is
+        # briefly group/world-writable under a permissive umask) in the
+        # destination's own directory, then renamed into place: rename(2)
+        # replaces whatever is at --digest-out -- including a pre-existing
+        # symlink -- without ever following it, so a planted symlink's target
+        # is never opened, let alone truncated.
+        local digest_text digest_dir digest_staged
         digest_text=$(print_digest)
         printf '%s\n' "$digest_text"
-        printf '%s\n' "$digest_text" >"$DIGEST_OUT" ||
+        digest_dir=${DIGEST_OUT%/*}
+        [[ $digest_dir != "$DIGEST_OUT" ]] || digest_dir=.
+        digest_staged=$(mktemp -- "$digest_dir/.gh-pr-state-digest.XXXXXX") ||
+            die "could not create a staging file for --digest-out: $DIGEST_OUT"
+        printf '%s\n' "$digest_text" >"$digest_staged" || {
+            rm -f -- "$digest_staged"
             die "could not write --digest-out: $DIGEST_OUT"
-        chmod 600 -- "$DIGEST_OUT" || die "could not chmod 600 --digest-out: $DIGEST_OUT"
+        }
+        chmod 600 -- "$digest_staged" || {
+            rm -f -- "$digest_staged"
+            die "could not chmod 600 --digest-out: $DIGEST_OUT"
+        }
+        mv -f -- "$digest_staged" "$DIGEST_OUT" || {
+            rm -f -- "$digest_staged"
+            die "could not install --digest-out: $DIGEST_OUT"
+        }
     else
         print_digest
     fi

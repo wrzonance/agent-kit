@@ -110,13 +110,32 @@ first_error_line() {
 # set, additionally writes that exact same line (byte-for-byte) to the file,
 # mode 600 -- merge-gate.sh's --code-quality-state-file reads it back
 # verbatim, so the file must carry the printed token itself, never the
-# --baseline-file JSON artifact's shape.
+# --baseline-file JSON artifact's shape. Staged via mktemp (mode 600 from
+# creation, never a plain '>' that is briefly group/world-writable under a
+# permissive umask) in the destination's own directory, then renamed into
+# place: rename(2) replaces whatever is at --state-file -- including a
+# pre-existing symlink -- without ever following it, so a planted symlink's
+# target is never opened, let alone truncated.
 emit_scan_state() {
-    local line=$1
+    local line=$1 state_dir staged
     printf '%s\n' "$line"
     if [[ -n $state_file ]]; then
-        printf '%s\n' "$line" >"$state_file" || die "could not write --state-file: $state_file"
-        chmod 600 "$state_file" || die "could not chmod 600 --state-file: $state_file"
+        state_dir=${state_file%/*}
+        [[ $state_dir != "$state_file" ]] || state_dir=.
+        staged=$(mktemp -- "$state_dir/.code-quality-state.XXXXXX") ||
+            die "could not create a staging file for --state-file: $state_file"
+        printf '%s\n' "$line" >"$staged" || {
+            rm -f -- "$staged"
+            die "could not write --state-file: $state_file"
+        }
+        chmod 600 -- "$staged" || {
+            rm -f -- "$staged"
+            die "could not chmod 600 --state-file: $state_file"
+        }
+        mv -f -- "$staged" "$state_file" || {
+            rm -f -- "$staged"
+            die "could not install --state-file: $state_file"
+        }
     fi
 }
 
