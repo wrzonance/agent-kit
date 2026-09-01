@@ -282,6 +282,59 @@ nearest_tree_sibling() {
     [[ -n ${best_candidate:-} ]] && printf '%s' "$best_candidate" || printf 'none'
 }
 
+# --- protected-path collision matching --------------------------------------
+# A predictedWriteSet entry that names, or globs over, a path this repository
+# (or the shared defaults) protects means the assigned worker structurally
+# cannot land its own commit -- worktree-commit.sh refuses the same paths at
+# publish time. Flag that at plan time instead of after a full worker run.
+protected_paths_lib=$script_dir/../../.shared/scripts/lib/protected-paths.sh
+[[ -f $protected_paths_lib ]] || die "protected-path policy library missing: $protected_paths_lib"
+# shellcheck source=../../.shared/scripts/lib/protected-paths.sh
+source "$protected_paths_lib"
+
+# True (rc 0) when $1 is path-component-equal to, or a component-wise
+# ancestor directory of, $2. Never a bare string-prefix test: that would
+# false-positive ".github/workflows-extra" against ".github/workflows".
+path_is_ancestor_or_equal() {
+    local a=${1%/} b=${2%/}
+    [[ $a == "$b" || $b == "$a"/* ]]
+}
+
+# Prints the first protected pattern predictedWriteSet entry $1 collides
+# with and returns 0; returns 1 when it collides with none of the remaining
+# arguments. $1 is either a literal repo-relative path or a "dir/**"
+# directory-prefix glob -- the two shapes a predictedWriteSet entry actually
+# takes (SKILL.md predicts literals and "**" directory globs); other glob
+# shapes (mid-path "*", "?", character classes) are not evaluated here, to
+# avoid false positives no dispatcher could safely act on.
+protected_write_set_collision() {
+    local write_pattern=$1 candidate pattern base
+    shift
+    if [[ $write_pattern == *'/**' ]]; then
+        candidate=${write_pattern%'/**'}
+    elif [[ $write_pattern != *[\*\?\[]* ]]; then
+        candidate=$write_pattern
+    else
+        return 1
+    fi
+    # Normalize a leading "./" the same way worktree-commit.sh and
+    # shared_protected_pattern already do for both the file path being
+    # checked and every protected pattern -- without this, a "./"-prefixed
+    # value here could compare unequal to its own un-prefixed form there,
+    # passing plan validation only to be refused later at commit time.
+    candidate=${candidate#./}
+    for pattern in "$@"; do
+        base=${pattern%/}
+        base=${base#./}
+        [[ -n $base ]] || continue
+        if path_is_ancestor_or_equal "$base" "$candidate" || path_is_ancestor_or_equal "$candidate" "$base"; then
+            printf '%s' "$pattern"
+            return 0
+        fi
+    done
+    return 1
+}
+
 if ((validate_only)); then
     jq -e '
       def uint: type == "number" and . > 0 and floor == .;
@@ -322,6 +375,11 @@ if ((validate_only)); then
         ((.testRootExclusions | type) == "array" and
           (.testRootExclusions | length) > 0 and
           all(.testRootExclusions[]; path));
+      def protected_path_acknowledgement:
+        (has("protectedPathAcknowledgement") | not) or
+        ((.protectedPathAcknowledgement | type) == "array" and
+          (.protectedPathAcknowledgement | length) > 0 and
+          all(.protectedPathAcknowledgement[]; path));
       def issue_set_or_count:
         (type == "number" and . >= 0 and floor == .) or
         (type == "array" and all(.[]; uint) and (map(.) | unique | length) == length);
@@ -341,14 +399,14 @@ if ((validate_only)); then
           (disjoint_lists($s.queued; $s.tracker)) and
           ($s.dispatched + ($s.queued | issue_count) <= $s.eligible)
         end;
-      type == "object" and .schemaVersion == 1 and test_root_exclusions and
+      type == "object" and .schemaVersion == 1 and test_root_exclusions and protected_path_acknowledgement and
       ((.entries | type) == "array" and (.entries | length) > 0) and
       all(.entries[];
         (type == "object") and (.issue | uint) and
         ((.predictedWriteSet | type) == "array" and
           (.predictedWriteSet | length) > 0) and
         all(.predictedWriteSet[]; path) and
-        work_shape and test_root_exclusions) and
+        work_shape and test_root_exclusions and protected_path_acknowledgement) and
       ((.entries | map(.issue) | unique | length) == (.entries | length)) and
       ((.conflictMap | type) == "object") and
       ((.conflictMap.pairs | type) == "array") and
@@ -358,13 +416,76 @@ if ((validate_only)); then
       selection
     ' "$dispatch_plan" >/dev/null 2>&1 ||
         die 'dispatch plan is invalid: expected schemaVersion 1 with entries and conflictMap'
+
+    # Every entry is checked and every finding is collected before any exit,
+    # so one invocation reports everything a second invocation could
+    # otherwise only discover one fix-and-retry turn at a time.
+    declare -a violation_lines=()
+    declare -A missing_roots_by_issue=()
+    declare -a missing_issue_order=()
+
+    # --- protected-path collision check: runs unconditionally, independent
+    # of --chain-base, because it is pure pattern matching over the plan's
+    # own declared write sets -- it needs no chain-base tree to resolve. The
+    # repo root used to read a repo-declared AGENT_PROTECTED_PATHS reuses
+    # chain_root when the earlier chain-base resolution already validated
+    # one (a worktree's checkout or a validated ref's repository) and
+    # otherwise falls back to the live checkout.
+    protected_root=${chain_root:-}
+    [[ -n $protected_root ]] || protected_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    protected_declared=''
+    protected_config_reader=$script_dir/../../.shared/scripts/repo-config.sh
+    if [[ -n $protected_root && -x $protected_config_reader ]]; then
+        protected_declared=$("$protected_config_reader" --repo-root "$protected_root" \
+            --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+    fi
+    declare -a protected_patterns=("${SHARED_PROTECTED_DEFAULTS[@]}")
+    if [[ -n $protected_declared ]]; then
+        declare -a protected_extra=()
+        IFS=',' read -r -a protected_extra <<< "$protected_declared"
+        protected_patterns+=("${protected_extra[@]}")
+    fi
+    # predictedWriteSet/protectedPathAcknowledgement entries are schema-valid
+    # repo-relative paths but may still contain a comma (the `path` predicate
+    # never forbids one). A plain comma-joined TSV field would silently split
+    # "safe,dir/x" into two phantom patterns, so each element travels
+    # base64-encoded (a comma cannot occur in base64 output) and is decoded
+    # per-element on the bash side -- a genuinely lossless transfer.
+    while IFS=$'\t' read -r issue patterns_b64 acknowledged_b64; do
+        declare -a prediction_patterns_b64=() acknowledged_patterns_b64=()
+        IFS=',' read -ra prediction_patterns_b64 <<< "$patterns_b64"
+        IFS=',' read -ra acknowledged_patterns_b64 <<< "${acknowledged_b64:-}"
+        declare -a prediction_patterns=()
+        for encoded in "${prediction_patterns_b64[@]}"; do
+            [[ -n $encoded ]] || continue
+            prediction_patterns+=("$(base64 -d <<< "$encoded")")
+        done
+        declare -a acknowledged_patterns=()
+        for encoded in "${acknowledged_patterns_b64[@]}"; do
+            [[ -n $encoded ]] || continue
+            acknowledged_patterns+=("$(base64 -d <<< "$encoded")")
+        done
+        for pattern in "${prediction_patterns[@]}"; do
+            collision=$(protected_write_set_collision "$pattern" "${protected_patterns[@]}") || continue
+            is_acknowledged=0
+            for acked in "${acknowledged_patterns[@]}"; do
+                [[ -n $acked && $acked == "$pattern" ]] || continue
+                is_acknowledged=1
+                break
+            done
+            ((is_acknowledged)) && continue
+            violation_lines+=("issue #$issue predictedWriteSet path collides with a protected pattern: $pattern (matches $collision); drop it from the write set, route it through an operator step, or add \"$pattern\" to protectedPathAcknowledgement to accept the collision explicitly")
+        done
+    done < <(jq -r '
+      (.protectedPathAcknowledgement // []) as $planAcknowledgement |
+      .entries[] | [
+        .issue,
+        (.predictedWriteSet | map(@base64) | join(",")),
+        (((.protectedPathAcknowledgement // []) + $planAcknowledgement) | map(@base64) | join(","))
+      ] | @tsv
+    ' "$dispatch_plan")
+
     if [[ -n $chain_base ]]; then
-        # Every entry is checked and every finding is collected before any
-        # exit, so one invocation reports everything a second invocation
-        # could otherwise only discover one fix-and-retry turn at a time.
-        declare -a violation_lines=()
-        declare -A missing_roots_by_issue=()
-        declare -a missing_issue_order=()
         while IFS=$'\t' read -r issue patterns exclusions; do
             IFS=',' read -ra prediction_patterns <<< "$patterns"
             for pattern in "${prediction_patterns[@]}"; do
@@ -428,64 +549,70 @@ if ((validate_only)); then
             (((.testRootExclusions // []) + $planExclusions) | join(","))
           ] | @tsv
         ' "$dispatch_plan")
+    fi
 
-        if ((${#violation_lines[@]})); then
-            for violation in "${violation_lines[@]}"; do
-                printf '%s: %s\n' "$PROGRAM" "$violation" >&2
-            done
-            if ((${#missing_issue_order[@]})); then
-                if ((fix)); then
-                    fix_filter='.'
-                    for issue in "${missing_issue_order[@]}"; do
-                        IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
-                        missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
-                        fix_filter+=" | (.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $missing_globs_json | unique)"
-                    done
-                    target_dir=$(dirname -- "$dispatch_plan")
-                    fixed=$(mktemp "$target_dir/.dispatch-plan.XXXXXX") || die 'could not stage --fix patch'
-                    jq "$fix_filter" "$dispatch_plan" >"$fixed" || die 'could not apply --fix patch'
-                    chmod --reference="$dispatch_plan" "$fixed" 2>/dev/null || chmod 600 "$fixed"
-                    mv -- "$fixed" "$dispatch_plan"
-                    # --fix only ever patches missing-test-root violations; an
-                    # unmatched-glob violation (or anything else) collected in
-                    # violation_lines is not fixable by this patch, so the
-                    # updated plan must be revalidated before claiming success
-                    # -- exiting 0 unconditionally previously let a remaining,
-                    # non-fixable violation through silently.
-                    recheck_rc=0
-                    recheck_err=$("${BASH_SOURCE[0]}" --dispatch-plan "$dispatch_plan" \
-                        --chain-base "$chain_base" --validate-only 2>&1 >/dev/null) || recheck_rc=$?
-                    if ((recheck_rc == 0)); then
-                        printf 'dispatch-plan=%s fix=applied issues=%s\n' \
-                            "$dispatch_plan" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")"
-                        exit 0
-                    fi
-                    printf '%s: fix=applied issues=%s but violations remain:\n' \
-                        "$PROGRAM" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")" >&2
-                    printf '%s\n' "$recheck_err" >&2
-                    exit 1
-                fi
-                # The remedy is built as data and printed shell-escaped
-                # (printf %q per argument): a repository-derived test-root
-                # value must never be interpolated inside a literal
-                # single-quoted jq argument, where an embedded quote would
-                # escape the operator's copy-pasted shell command.
-                # $issue and $roots below are jq --argjson variables, not
-                # shell variables -- the single quotes are load-bearing.
-                # shellcheck disable=SC2016
-                remedy_filter='(.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $roots | unique)'
-                printf '%s: remedy -- apply each entry testRootExclusions patch below, then re-run:\n' "$PROGRAM" >&2
+    # Protected-path collisions are never auto-fixable (dropping, splitting to
+    # an operator step, or acknowledging is a human decision), so they are
+    # reported alongside any test-root violations but excluded from the
+    # missing-test-root remedy/--fix machinery below, which only ever
+    # understands testRootExclusions patches.
+    if ((${#violation_lines[@]})); then
+        for violation in "${violation_lines[@]}"; do
+            printf '%s: %s\n' "$PROGRAM" "$violation" >&2
+        done
+        if ((${#missing_issue_order[@]})); then
+            if ((fix)); then
+                fix_filter='.'
                 for issue in "${missing_issue_order[@]}"; do
                     IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
                     missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
-                    printf '  jq --argjson issue %q --argjson roots %q %q %q >%q.tmp && mv %q.tmp %q\n' \
-                        "$issue" "$missing_globs_json" "$remedy_filter" \
-                        "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
+                    fix_filter+=" | (.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $missing_globs_json | unique)"
                 done
-                printf '%s: or re-run with --fix to apply the same patches automatically\n' "$PROGRAM" >&2
+                target_dir=$(dirname -- "$dispatch_plan")
+                fixed=$(mktemp "$target_dir/.dispatch-plan.XXXXXX") || die 'could not stage --fix patch'
+                jq "$fix_filter" "$dispatch_plan" >"$fixed" || die 'could not apply --fix patch'
+                chmod --reference="$dispatch_plan" "$fixed" 2>/dev/null || chmod 600 "$fixed"
+                mv -- "$fixed" "$dispatch_plan"
+                # --fix only ever patches missing-test-root violations; an
+                # unmatched-glob violation, a protected-path collision, or
+                # anything else collected in violation_lines is not fixable
+                # by this patch, so the updated plan must be revalidated
+                # before claiming success -- exiting 0 unconditionally
+                # previously let a remaining, non-fixable violation through
+                # silently.
+                recheck_rc=0
+                recheck_err=$("${BASH_SOURCE[0]}" --dispatch-plan "$dispatch_plan" \
+                    --chain-base "$chain_base" --validate-only 2>&1 >/dev/null) || recheck_rc=$?
+                if ((recheck_rc == 0)); then
+                    printf 'dispatch-plan=%s fix=applied issues=%s\n' \
+                        "$dispatch_plan" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")"
+                    exit 0
+                fi
+                printf '%s: fix=applied issues=%s but violations remain:\n' \
+                    "$PROGRAM" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")" >&2
+                printf '%s\n' "$recheck_err" >&2
+                exit 1
             fi
-            exit 1
+            # The remedy is built as data and printed shell-escaped
+            # (printf %q per argument): a repository-derived test-root
+            # value must never be interpolated inside a literal
+            # single-quoted jq argument, where an embedded quote would
+            # escape the operator's copy-pasted shell command.
+            # $issue and $roots below are jq --argjson variables, not
+            # shell variables -- the single quotes are load-bearing.
+            # shellcheck disable=SC2016
+            remedy_filter='(.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $roots | unique)'
+            printf '%s: remedy -- apply each entry testRootExclusions patch below, then re-run:\n' "$PROGRAM" >&2
+            for issue in "${missing_issue_order[@]}"; do
+                IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
+                missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
+                printf '  jq --argjson issue %q --argjson roots %q %q %q >%q.tmp && mv %q.tmp %q\n' \
+                    "$issue" "$missing_globs_json" "$remedy_filter" \
+                    "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
+            done
+            printf '%s: or re-run with --fix to apply the same patches automatically\n' "$PROGRAM" >&2
         fi
+        exit 1
     fi
     printf 'dispatch-plan=%s schemaVersion=1 valid\n' "$dispatch_plan"
     exit 0
