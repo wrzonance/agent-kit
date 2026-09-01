@@ -545,7 +545,7 @@ setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns branch/exclude operations, config, preflight, and setup. It prints `resumable: yes|no untracked=N modified=M`; an existing path or branch still refuses duplicate creation, so use the summary to resume. Its final `worktree=` line identifies checkout for the worker prompt; the preflight block immediately above it is the contract to paste, not Step 0's.
+The helper owns branch/exclude, config, preflight, and setup; prints `resumable: yes|no untracked=N modified=M`. An existing branch/path refuses duplicate creation; `--resume` is the remedy, re-running those steps and refreshing `.agent/env-contract.txt`. Its `worktree=` line identifies checkout; the printed preflight output is the contract to paste, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
