@@ -11,11 +11,24 @@ an agent most needs to enumerate is the one enumeration hides, so the index of
 it must not be hidden too.
 
 `$agentkit` is the resolved skills tree from the session contract's
-`skills= path=` line (`contract-read.sh --get skills.path` if you need it
+`skills= path=` line (`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get skills.path` if you need it
 again). Every entry below is therefore already an openable path — never
 reconstruct the prefix by hand, and never fall back to a filesystem search: a
 path here that does not resolve is a manifest mismatch, a clean and nameable
 condition, and `tests/lint-reference-manifest.sh` is the gate that says so.
+
+Shared executable helpers live in `$agentkit/.shared/scripts/`; skill-specific
+helpers live in `$agentkit/<skill>/scripts/`. Name each helper with its complete
+`$agentkit`-relative path at first mention in a SKILL.md; later shorthand refers
+back to that path, never to a command on `PATH`.
+
+`$agentkit/.shared/scripts/lib/` holds sourced libraries, not general-purpose
+helpers. Label library references as sourced-only and do not execute them merely
+because they have an executable bit. One current exception is dual-use:
+`$agentkit/.shared/scripts/lib/contract-cache.sh` has an explicit CLI:
+`--read-session-context --repo-root DIR [--get KEY]`. Use that exact path and
+interface; there is no sibling helper directly under `.shared/scripts/` with
+that basename. Other library functions are called by their sourcing helpers.
 
 The manifest is an index, not an instruction to preload every file. Read an
 entry only when its `Read when:` condition matches the path the run has reached;

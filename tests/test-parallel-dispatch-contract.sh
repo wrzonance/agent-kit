@@ -283,7 +283,7 @@ assert_contains "$text" 'Selection funnel:' \
 assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
     'selection reconciliation is emitted once at the dispatch boundary'
 assert_contains "$normalized_text" \
-    '`pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
+    '`$agentkit/.shared/scripts/pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
     'selection keeps judgment and board mutation root-owned'
 assert_contains "$triage_and_selection_text" \
     'Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none' \
@@ -1158,7 +1158,7 @@ assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the 
 # not the body, per the strong preference to land detail in references.
 assert_contains "$text" 'Size facts never park an unattended run' \
     'diff-size facts state the unattended default explicitly'
-assert_contains "$text" 'never authorize skipping' \
+assert_contains "$text" 'No facts waive review or chunking.' \
     'diff-size facts still forbid skipping review or chunking on facts alone'
 assert_contains "$text" 'references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure)' \
     'diff-size facts point at the worker-prompts disclosure recipe'
@@ -1308,34 +1308,34 @@ assert_contains "$normalized_text" 'A mutation no recorded decision covers still
 # habit, with ONE bounded exception for a large first read.
 assert_contains "$normalized_text" 'References are read once and batched' \
     'parallel skill still reads each reference once, in batches'
-assert_contains "$normalized_text" 'The manifest is not a preload list: match each condition against the actual execution path' \
+assert_contains "$normalized_text" 'Match conditions to the execution path' \
     'reference loading follows manifest conditions on the selected execution path'
-assert_contains "$normalized_text" 'When a step names a reference file, read it in full at that step' \
+assert_contains "$normalized_text" 'read each named reference fully at its step' \
     'named references are fully loaded at their binding step'
-assert_contains "$normalized_text" 'one batched read covering several files is ideal' \
+assert_contains "$normalized_text" 'batching reads' \
     'references reached together are batched'
-assert_contains "$normalized_text" 'do not re-read it later in the run' \
+assert_contains "$normalized_text" 'reads and retaining them for the run' \
     'a loaded reference is not read twice'
 assert_contains "$text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
 assert_contains "$text" '`wc -l`, `stat`, `head`' \
     'routine reference sizing forbids all named probes'
-assert_contains "$normalized_text" 'per-file sizing spends one root turn per file' \
+assert_contains "$normalized_text" 'each probe costs a turn' \
     'the no-sizing default names its cost'
-assert_contains "$normalized_text" 'may take one bounded size probe' \
+assert_contains "$normalized_text" 'permits one bounded size probe' \
     'a large first read may be sized once'
-assert_contains "$normalized_text" 'this SKILL.md included' \
+assert_contains "$normalized_text" 'including this SKILL.md' \
     'the size-probe exception admits this skill is over the threshold'
 assert_not_contains "$normalized_text" 'nothing in this skill consumes a line count' \
     'the skill no longer claims nothing consumes a line count while permitting a probe'
 
 # --- issue #427: reference reads follow the selected execution path ----------
-assert_contains "$normalized_text" 'Single issue, no chain: dispatch reference set' \
+assert_contains "$normalized_text" 'Single issue, no chain:' \
     'the common single-issue path names its dispatch reference set explicitly'
 single_issue_reference_set=$(awk '
-    /Single issue, no chain: dispatch reference set/ { capture=1 }
+    /Single issue, no chain:/ { capture=1 }
     capture { print }
-    capture && /Review-phase references/ { exit }
+    capture && /Defer chain\/review references/ { exit }
 ' "$skill")
 assert_not_contains "$single_issue_reference_set" 'references/chains.md' \
     'the single-issue no-chain dispatch set excludes chain material'
@@ -1351,7 +1351,7 @@ assert_contains "$single_issue_reference_set" '.shared/spawn-contract.md' \
     'the single-issue dispatch set retains the spawn contract'
 assert_contains "$single_issue_reference_set" '.shared/six-step-loop.md' \
     'the single-issue dispatch set retains the six-step loop'
-assert_contains "$normalized_text" 'Do not preload review-phase references during dispatch' \
+assert_contains "$normalized_text" 'never preload review material during dispatch/worker waits' \
     'review references remain gated until the review phase'
 assert_contains "$normalized_text" 'Read `references/chains.md` in full only when the selected set contains a chain' \
     'chain material is gated on an actual selected chain'

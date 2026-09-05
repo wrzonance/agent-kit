@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Suite: helper/reference paths are resolvable and placement policy is enforced.
+# shellcheck disable=SC2016  # markdown fixtures preserve literal helper roots
 set -uo pipefail
 
 TEST_NAME='helper-refs'
@@ -154,5 +155,31 @@ assert_contains "$(<"$root/agentkit/skills/.shared/six-step-loop.md")" \
 assert_contains "$(<"$root/agentkit/skills/review-remote-pr/references/grooming.md")" \
     'no helper script — this step is judgment' \
     'the prose-only grooming judgment carries an explicit no-script marker'
+
+# First mentions are checked against the shipped helper inventory, so unrelated
+# repository examples and external scripts do not accidentally become kit APIs.
+hfixture="$tmp/first/agentkit/skills"
+mkdir -p "$hfixture/demo" "$hfixture/.shared/scripts/lib"
+touch "$hfixture/.shared/scripts/pick-issues.sh" \
+    "$hfixture/.shared/scripts/lib/private-dir.sh" \
+    "$hfixture/.shared/scripts/lib/contract-cache.sh"
+printf '%s\n' 'Use `pick-issues.sh` first.' \
+    'Then `$agentkit/.shared/scripts/pick-issues.sh`.' > "$hfixture/demo/SKILL.md"
+first_output=$("$lint" "$hfixture" 2>&1)
+assert_eq 1 "$?" 'a later canonical path does not repair a bare first mention'
+assert_contains "$first_output" 'SKILL.md:1' 'first-mention diagnostic identifies the first line'
+printf '%s\n' 'Use `pick-issues.sh`; then `$agentkit/.shared/scripts/pick-issues.sh`.' \
+    > "$hfixture/demo/SKILL.md"
+assert_rc 1 'a later path on the same line does not repair the first mention' -- "$lint" "$hfixture"
+printf '%s\n' 'Examples: ./example.sh /opt/external/pick-issues.sh https://example.org/install.sh' \
+    'Use `$agentkit/.shared/scripts/pick-issues.sh`; later `pick-issues.sh`.' \
+    > "$hfixture/demo/SKILL.md"
+assert_rc 0 'canonical first mention allows shorthand and unrelated script paths' -- "$lint" "$hfixture"
+printf '%s\n' 'Run `$agentkit/.shared/scripts/lib/private-dir.sh`.' > "$hfixture/demo/SKILL.md"
+assert_rc 1 'a sourced-only library must not be presented as a helper' -- "$lint" "$hfixture"
+printf '%s\n' 'Source `$agentkit/.shared/scripts/lib/private-dir.sh` (sourced-only library).' \
+    'Run `$agentkit/.shared/scripts/lib/contract-cache.sh` --read-session-context --repo-root DIR.' \
+    > "$hfixture/demo/SKILL.md"
+assert_rc 0 'source instructions and the documented contract-cache CLI remain valid' -- "$lint" "$hfixture"
 
 finish
