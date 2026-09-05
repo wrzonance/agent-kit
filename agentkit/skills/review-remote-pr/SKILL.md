@@ -9,15 +9,12 @@ Draft loop. **Phase A:** root owns CI/conflicts, materiality, fix delegation, ad
 
 **Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.
 
-**References are read once, batched, and never sized first.** Reference paths resolve: open
-`"$agentkit/<path>"`, and read `"$agentkit/references.md"` — every reference and its purpose — instead of searching. When a step names a reference
-file, read it in full at that step — one batched read covering several files — and do
-not re-read it later in the same uninterrupted context. Read each reference once per
-uninterrupted context. If compaction/resume occurs since Step 1a and the loaded provider-rules
-content is not preserved in the resumable artifact/context, re-read provider-rules.md exactly
-once before Phase C; this is the sole exception to the ordinary no-re-read rule. Never probe a
-reference's size before reading it (`wc -l`, `stat`, `head`): nothing in this skill consumes a
-line count, and per-file sizing spends one root turn per file before any real work starts.
+**References are read once, batched, and never sized first.** Open `"$agentkit/<path>"`;
+read `"$agentkit/references.md"` for paths and purposes instead of searching.
+Read each named reference fully at its step, once per uninterrupted context, batching reads.
+Sole re-read exception: after compaction/resume since Step 1a, if provider-rules content
+was not preserved in the resumable artifact/context, re-read provider-rules.md exactly once
+before Phase C. Never probe reference sizes (`wc -l`, `stat`, `head`); no step needs them.
 
 Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) and execute each `bash` fence via its `bash -c` boundary.
 
@@ -26,7 +23,7 @@ Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](..
 - Never run `gh pr ready` — draft-to-ready is the user's call.
 - Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command), ever.
 - Never resolve a human-touched thread, including the account `gh api user` returns.
-- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`post-receipt.sh`) after the fix push, before handoff — incomplete without one.
+- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`$agentkit/review-remote-pr/scripts/post-receipt.sh`) after the fix push, before handoff — incomplete without one.
 - Never bypass a repository hook (no `--no-verify`, `core.hooksPath`, piped `y`).
 - Batch each cycle's fixes into ONE push; cap 3 cycles, then escalate.
 - Every wait is bounded (rounds/duration/marker); no model turns on `sleep` + re-check.
@@ -77,7 +74,7 @@ other forge bots and humans have their own lanes. Authoritative signals: GraphQL
 `author.__typename == "Bot"`, REST `author.type == "Bot"`, or an exact `[bot]` login suffix — a
 login merely containing `bot` is human. A generic automated finding is an automated B-item, never
 H; H labels are human-only. Every automated reply must pass the reply-body integrity gate
-(`gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
+(`$agentkit/review-remote-pr/scripts/gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
 human-touched thread.**
 
 Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) in full before Step 1a — the
@@ -107,7 +104,7 @@ if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O 
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run onboarding first' >&2
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
@@ -121,7 +118,7 @@ Shell state is not persistent; later standalone blocks rehydrate the validated d
 Replace `STEP_0_AGENTKIT` with Step 0's exact absolute `skills=` path; never read it from cache. The trusted reader rehydrates and validates current data.
 
 ```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$shared/lib/contract-cache.sh"
+agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
 [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
 contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
 ```
@@ -139,7 +136,7 @@ Repeat until exit condition met:
 ```
 PHASE A — DRAFT (all mechanical work; never initiate a provider review)
   0. SETUP   — enter/create the PR worktree, run agent-preflight ONCE, merge if conflicts
-  1. CHECK   — one gh-pr-state.sh --full call: CI status + review/comment surface + body nitpicks
+  1. CHECK   — one $agentkit/review-remote-pr/scripts/gh-pr-state.sh --full call: CI status + review/comment surface + body nitpicks
                + provider state, as one digest plus durable artifacts
   1a. HUMAN  — surface human-authored content; gate every action/reply on per-item confirmation
   2. FIX CI  — diagnose failures, dispatch the Luna ultracode worker (or the documented degraded
@@ -189,7 +186,7 @@ Never switch branches in a worktree that may belong to another issue/PR.
 ```bash
 # >>> prepend THE RESOLVER (initial warm-up only) <<<
 # At the TOP of the fence, not inside the create branch below: the reuse path
-# skips that branch and still runs agent-preflight.sh out of "$agentkit".
+# skips that branch and still runs "$agentkit/.shared/scripts/agent-preflight.sh".
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; fi
 if ! setup_output=$("$agentkit/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
@@ -203,7 +200,7 @@ PR_WORKTREE=$(sed -n 's/^worktree=//p' <<<"$setup_output" | tail -n 1 | sed 's/ 
 cd "$PR_WORKTREE" || { echo "STOP: worktree missing at $PR_WORKTREE"; exit 1; }
 contract_root="$(git rev-parse --show-toplevel)" || exit 1
 shared="$agentkit/.shared/scripts"
-[[ -x "$shared/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+[[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
 contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
 [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
 "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$contract_root" > /dev/null || exit 1
@@ -228,9 +225,9 @@ MERGEABLE=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable');
 If `CONFLICTING`, root merges the base into the PR branch — **never rebase** a published branch,
 never force-push it. Whole-file picks: `git checkout --ours|--theirs <path>`; mixed files, edit
 directly; strip markers with `sed`, never `python3 -c` (zsh quoting breaks it), and grep-verify no
-`<<<<<<<`/`=======`/`>>>>>>>` remain before staging. Commit via `worktree-commit.sh` (it probes
+`<<<<<<<`/`=======`/`>>>>>>>` remain before staging. Commit via `$agentkit/.shared/scripts/worktree-commit.sh` (it probes
 both git metadata dirs, so an unwritable shared `.git` surfaces as exit `2` with nothing staged)
-and verify via `agent-run.sh`:
+and verify via `$agentkit/.shared/scripts/agent-run.sh`:
 
 ```bash
 BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
@@ -375,7 +372,7 @@ Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) bef
 ### Adversarial-review receipt:
 
 After all confirmed adversarial findings are fixed or explicitly declined, push those fixes; the receipt publishes **after fixes are pushed** and **before draft-phase-complete handoff**, as one durable top-level PR comment — required for a material review or a verified trivial-diff skip. It records provider, model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`), or the `verified-skip rationale` + oracle.
-Order is executable: `adversarial-run.sh` must return `0` before `finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.
+Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` must return `0` before `$agentkit/review-remote-pr/scripts/finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.
 `post-receipt.sh publish` derives it from RUN_DIR like `finding-ledger.sh` does, refusing evidence-unavailable if RUN_DIR is bad. Run it (only after the finding-fix push — the final Phase A action):
 
 ```bash

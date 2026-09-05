@@ -61,9 +61,9 @@ for skill in "$onboard_skill" "$parallel_skill" "$green_skill" "$review_skill"; 
     assert_contains "$(cat "$skill")" '$agentkit/.shared/shell-portability.md' \
         "$(basename "$(dirname "$skill")") points runnable recipes at the shared shell policy"
 done
-assert_contains "$(cat "$onboard_skill")" 'Before running Step 0' \
+assert_contains "$(cat "$onboard_skill")" 'bootstrap fence through explicit `bash -c`' \
     'onboarding explicitly Bash-wraps the resolver needed to discover the policy'
-assert_contains "$(cat "$onboard_skill")" 'After Step 0 resolves `$agentkit`' \
+assert_contains "$(cat "$onboard_skill")" 'Once it resolves `$agentkit`, read' \
     'onboarding reads the shared policy only after its path is available'
 
 shell_policy_text=$(cat "$shell_policy" 2>/dev/null || true)

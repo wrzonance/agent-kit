@@ -11,6 +11,7 @@ repo_dir=$(cd -- "$plugin_dir/.." && pwd -P)
 
 violations=0
 declare -A seen=()
+declare -A helper_paths=()
 
 # A markdown-link bracket TEXT counts as a path claim only when it is an
 # unformatted token: the same character set every other extraction loop in
@@ -86,6 +87,46 @@ check_token() {
     [[ -f $candidate ]] || report "$source_file" "$line_no" "$token" "$candidate" "$kind"
 }
 
+# Only shipped helper basenames belong to this rule: external URLs, repository
+# scripts, and example commands are not kit interfaces. Keep occurrence order,
+# including within a line, so a later path cannot conceal an earlier bare name.
+scan_first_mentions() {
+    local source_file=$1 line_no content token name candidate
+    local -A mentioned=()
+    while IFS=: read -r line_no content; do
+        while IFS= read -r token; do
+            name=${token##*/}
+            [[ -n ${helper_paths[$name]:-} ]] || continue
+            case $token in
+                */*)
+                    case $token in
+                        "\$agentkit/"*|"\$shared/"*|agentkit/*|skills/*|.shared/*|scripts/*|../*|review-remote-pr/*|parallel-issues/*|onboard-repo/*|pr-to-green/*) ;;
+                        *) continue ;;
+                    esac
+                    candidate=$(resolve_token "$source_file" "$token")
+                    ;;
+                *) candidate=$skills_dir/${helper_paths[$name]} ;;
+            esac
+            if [[ -z ${mentioned[$name]:-} ]]; then
+                mentioned[$name]=1
+                if [[ $token != "\$agentkit/"* || ! -f $candidate ]]; then
+                    # shellcheck disable=SC2016  # diagnostic names the literal root
+                    report "$source_file" "$line_no" "$token" \
+                        "\$agentkit/${helper_paths[$name]}" 'first helper mention; use a $agentkit-relative path for'
+                fi
+            fi
+            # lib/ means source-only unless an explicitly documented CLI exists.
+            # contract-cache is currently the sole dual-use library; executable
+            # permission alone does not establish an invocation interface.
+            if [[ $candidate == "$skills_dir/.shared/scripts/lib/"* &&
+                $name != contract-cache.sh &&
+                ! $content =~ [Ss]ource(d|[[:space:]]) ]]; then
+                report "$source_file" "$line_no" "$token" 'source/sourced-only library label' 'library interface for'
+            fi
+        done < <(grep -oE '[[:alnum:]_.$/{}/:-]+\.sh' <<< "$content" || true)
+    done < <(grep -nE '\.sh' "$source_file" || true)
+}
+
 scan_file() {
     local source_file=$1 line_no content match token bracket_text dest_token
     while IFS=: read -r line_no content; do
@@ -118,8 +159,8 @@ scan_file() {
         done < <(grep -oE '\[[^]]*\]\([^)#[:space:]]+\.(sh|md)(#[^)]*)?' <<< "$content" || true)
 
         # Shell snippets and prose that name the installed tree use one of the
-        # explicit roots below. Bare helper basenames are intentionally ignored:
-        # they have no deterministic location to validate.
+        # explicit roots below. SKILL.md first mentions are separately checked
+        # against the shipped-helper inventory by scan_first_mentions.
         # shellcheck disable=SC2016  # the regex intentionally matches literal $ names
         while IFS= read -r token; do
             check_token "$source_file" "$line_no" "$token"
@@ -150,6 +191,12 @@ scan_file() {
 }
 
 shopt -s nullglob
+while IFS= read -r helper; do
+    helper_name=${helper##*/}
+    # Some skills have same-named wrappers. Any existing canonical path passes;
+    # this first inventory path is only a suggestion for unresolved bare names.
+    [[ -n ${helper_paths[$helper_name]:-} ]] || helper_paths[$helper_name]=${helper#"$skills_dir/"}
+done < <(find "$skills_dir" -type f -path '*/scripts/*.sh' | sort)
 for helper in "$skills_dir/.shared"/*.sh; do
     [[ -e $helper || -L $helper ]] || continue
     placement_report "$helper"
@@ -168,6 +215,7 @@ mapfile -t documents < <(
     \) -print | sort
 )
 for document in "${documents[@]}"; do
+    [[ ${document##*/} != SKILL.md ]] || scan_first_mentions "$document"
     scan_file "$document"
 done
 

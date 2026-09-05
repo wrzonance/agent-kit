@@ -10,7 +10,7 @@ description: >-
 
 # Onboard a repository
 
-`bootstrap-repo.sh` leaves uncertain commands and labels commented rather than guessing. This skill records the decisions.
+`$agentkit/.shared/scripts/bootstrap-repo.sh` leaves uncertain commands and labels commented rather than guessing. This skill records the decisions.
 
 ## Resumable stage contract
 
@@ -20,11 +20,11 @@ Carry any `agentkit drift advisory` into the handoff; refresh and `.agent/config
 
 Before `verified`, preflight and report its exact runtime/setup/toolchain findings. Read CI before proposing commands; when it differs, report both and make CI's proven entry point canonical `TEST`.
 
-Operator-facing recipes and reports use the resolved absolute helper path, never a guessed cache path; resolve first when the contract is absent.
+Recipes and reports use resolved absolute helper paths; resolve first if the contract is absent.
 
-Completion reports say whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7 decides), then run the resolved `agent-run.sh --cmd <declared name>`. A repo without a declared command has nothing for `agent-run.sh --cmd <name>` to run.
+Report whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7), then run `$agentkit/.shared/scripts/agent-run.sh --cmd <declared name>`. Undeclared commands cannot run.
 
-Before running Step 0, execute its fenced recipe through an explicit `bash -c` boundary; that bootstrap is what discovers the shared reference path. After Step 0 resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full before any later multi-line recipe and use its documented boundary.
+Run Step 0's bootstrap fence through explicit `bash -c`. Once it resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) fully before later multi-line recipes and use its boundary.
 
 ---
 
@@ -51,10 +51,10 @@ fi
 # shellcheck disable=SC2034  # later cache rehydration supplies this value.
 shared="$agentkit/.shared/scripts"
 [[ -n $contract_root ]] || { printf '%s\n' 'Run this skill from a Git repository.' >&2; exit 1; }
-preflight="$shared/agent-preflight.sh"
+preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 [[ -x $preflight ]] || { printf '%s\n' 'agentkit: preflight helper is missing' >&2; exit 1; }
 "$preflight" --ensure --worktree "$contract_root" 2>/dev/null
-[[ -x "$shared/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+[[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
 contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
 [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
 ```
@@ -64,7 +64,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get sk
 Substitute Step 0's remembered absolute `skills=` path; never trust a cache for it.
 
 ```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$shared/lib/contract-cache.sh"
+agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
 [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
 contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
 ```
@@ -74,7 +74,7 @@ With the tree resolved, report its onboarding stage:
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
+"$agentkit/.shared/scripts/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
 "$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --next-steps
 ```
 
@@ -105,7 +105,7 @@ guess — ask the user which they want, then:
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/board-setup.sh" --dry-run          # creates a board, canonical columns, links it
+"$agentkit/.shared/scripts/board-setup.sh" --dry-run          # creates a board, canonical columns, links it
 "$shared/board-setup.sh"                    # or --project N to re-column an existing one
 ```
 
@@ -138,9 +138,9 @@ This writes `.agent/config.env` and `.agent/board.json` and verifies `.agent/*` 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/repo-config.sh" --list
+"$agentkit/.shared/scripts/repo-config.sh" --list
 grep -n '^# AGENT_' .agent/config.env
-"$shared/detect-toolchains.sh" --format gaps
+"$agentkit/.shared/scripts/detect-toolchains.sh" --format gaps
 ```
 
 Run the detector even when config looks complete; report "nothing NEW was found" rather than treating quiet as proof.
@@ -222,7 +222,7 @@ Commented proposals are stale observations, not config, so nothing migrates; reg
 dispatcher with your reasoning — never a silently invented command. Once
 `tools/verify` exists, bootstrap detects it next time.
 
-**Compare declared commands against what CI enforces** — `"$shared/ci-gap.sh"` lists the pull-request gates
+**Compare declared commands against what CI enforces** — `"$agentkit/.shared/scripts/ci-gap.sh"` lists the pull-request gates
 nothing declared covers; a passing `VERIFY` isn't a passing CI, so read the CI definition and say plainly
 which gates remain uncovered, even when the gap can't close — that sentence is the deliverable. **Never
 declare a command you have not run**: one that fails on first use teaches the agent to distrust the
@@ -284,7 +284,7 @@ prints the diff, and refuses on trunk — commit/PR the result through this same
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/harness-advice.sh"
+"$agentkit/.shared/scripts/harness-advice.sh"
 ```
 
 Silent means nothing needs changing. Anything it prints is a setting **the operator must decide on** — never
@@ -311,7 +311,7 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_CMD_SETUP` | install before verify |
 | `AGENT_REPO_RUNNER` | command dispatcher |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
-| `AGENT_GENERATED_PATHS` | generated path prefixes; exempts a confined base advance from `gh-pr-state.sh`'s staleness check |
+| `AGENT_GENERATED_PATHS` | generated path prefixes; exempts a confined base advance from `$agentkit/review-remote-pr/scripts/gh-pr-state.sh`'s staleness check |
 | `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
 | `AGENT_WORKER_MODELS` / `AGENT_WORKER_MODELS_FALLBACK` | roster, self-detected; wins over `AGENT_WORKER_MODEL` |
 | `AGENT_ADVERSARIAL_REVIEWER` | `codex`/`claude`, or a roster `<model-id>-<effort>` |

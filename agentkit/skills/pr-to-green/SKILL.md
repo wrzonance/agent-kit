@@ -14,21 +14,19 @@ Coordinate existing Agent Kit review machinery: parallel reviews, serial
 merges. Owns queue authorization and the ready/provider transition boundary
 — not another review engine.
 
-Reference paths resolve: open `"$agentkit/<path>"`, and read `"$agentkit/references.md"` —
-every reference and its purpose — instead of searching.
+Open `"$agentkit/<path>"`; use `"$agentkit/references.md"` for paths and purposes instead of searching.
 
-Before running any multi-line recipe here or in a companion reference, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) in full. Every `bash` fence is a Bash recipe body; use that reference's explicit `bash -c` boundary rather than pasting the body into the harness shell.
+Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) fully; run all `bash` fences via its `bash -c` boundary.
 
 ## Flags
 
 | Flag | Effect |
 |---|---|
-| `--auto-merge` | Authorize this run to perform the confirmed queue's merges itself, serially, after each item's pre-merge review-completion gate passes. Without it, every item still stops at evidence-green and the merge stays a human action. See ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) for the full consent, gate, and serialization contract. |
+| `--auto-merge` | Authorize serial merges of the confirmed queue after each pre-merge review-completion gate passes. Otherwise stop at evidence-green; humans merge. See ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) for consent, gates, and serialization. |
 
 ## Environment warm-up
 
-Run the repository preflight once before queue discovery. The warm-up writes
-data-only `.agent/cache/contract-session.env`; it is never sourced.
+Preflight once before queue discovery; it writes data-only `.agent/cache/contract-session.env`, never sourced.
 
 ```bash
 agentkit=''
@@ -38,7 +36,7 @@ if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O 
     ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
-[[ -n $agentkit ]] || { printf '%s\n' 'agentkit: run agent-preflight.sh first' >&2; exit 1; }
+[[ -n $agentkit ]] || { printf '%s\n' 'agentkit: run onboarding first' >&2; exit 1; }
 [ -d "$agentkit/.shared/scripts" ] || { printf '%s\n' 'agentkit: invalid skills path' >&2; exit 1; }
 agentkit_provenance=ok; : "$agentkit_provenance"
 ```
@@ -50,7 +48,7 @@ trusted reader, never by sourcing it:
 
 ```bash
 agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || exit 1
-expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$shared/lib/contract-cache.sh"
+expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
 [[ -d $shared && ! -L $shared && -O $shared && -f $cache_reader && ! -L $cache_reader && -O $cache_reader && -x $cache_reader ]] || exit 1
 contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1
 IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root")
@@ -65,11 +63,11 @@ set -euo pipefail
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 repository_root=$(git rev-parse --show-toplevel) || exit 1
 shared="$agentkit/.shared/scripts"
-preflight="$shared/agent-preflight.sh"
+preflight="$agentkit/.shared/scripts/agent-preflight.sh"
 [[ -x $preflight ]] || exit 1
 environment_contract=$("$preflight" --worktree "$repository_root") || exit 1
 printf '%s\n' "$environment_contract"
-[[ -x "$shared/contract-read.sh" ]] || exit 1
+[[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || exit 1
 contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
 [[ $contract_path == "$agentkit" ]] || exit 1
 "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
@@ -79,7 +77,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 
 - Ready-transition, provider trigger, and Phase C settlement (Steps 2–4) may
   run in parallel across independent `RUNNABLE` roots, bounded by
-  `concurrency-cap.sh`'s cap (root counted) and the API budget below —
+  `$agentkit/parallel-issues/scripts/concurrency-cap.sh`'s cap (root counted) and the API budget below —
   admission/revalidation: ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
   Step 5's
   merges are serial.
@@ -97,12 +95,11 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   gate stay in their existing authoritative files.
 - `--auto-merge` implies strict serial merge ordering — see
   ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
-- **GitHub API budget.** `pr-queue.sh --write-confirmed-queue` prints a
-  `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight line and warns
-  (never blocks) when REST cost exceeds the remaining budget — read it
-  first; another session may run concurrently. A `gh-pr-state.sh`/
-  `pr-queue.sh` exit `3` hits rate-limit: stop, record completed vs.
-  outstanding, report the reset, never retry an empty pool. See
+- **GitHub API budget.** Read `$agentkit/pr-to-green/scripts/pr-queue.sh --write-confirmed-queue`'s
+  `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight first. REST-cost overruns
+  warn, never block; concurrent sessions may consume budget.
+  `$agentkit/review-remote-pr/scripts/gh-pr-state.sh`/`pr-queue.sh` exit `3` means rate-limit:
+  stop, record completed/outstanding work and reset time; never retry an empty pool. See
   ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry).
 
 ## Resident call-site map
@@ -110,16 +107,16 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | Boundary | Authority |
 |---|---|
 | Environment, isolated worktree, Phase A/C review loop, adversarial receipt, human gate | `../review-remote-pr/SKILL.md` and its lazy references |
-| Provider plan before mutation | `../.shared/scripts/review-provider-config.sh` |
+| Provider plan before mutation | `$agentkit/.shared/scripts/review-provider-config.sh --repo-root DIR` |
 | Draft discovery, explicit resumption, stack graph, stable queue | `scripts/pr-queue.sh` |
-| Owner-only authorization derived from the confirmed live queue | `scripts/authorize-queue.sh` |
-| Confirmed ready transition and provider capability action, and its `--observe` landed-review check | `scripts/review-transition.sh` |
+| Owner-only authorization derived from the confirmed live queue | `$agentkit/pr-to-green/scripts/authorize-queue.sh` |
+| Confirmed ready transition and provider capability action, and its `--observe` landed-review check | `$agentkit/pr-to-green/scripts/review-transition.sh` |
 | CI/provider/finding evidence | `../review-remote-pr/scripts/gh-pr-state.sh` |
-| Canonical replies and bot-response settlement | `../review-remote-pr/scripts/thread-action.sh` |
-| Post-merge retarget proof | `../parallel-issues/scripts/chain-advance.sh` |
-| `--auto-merge` pre-merge review-completion gate | `scripts/merge-gate.sh` |
-| `--auto-merge` verified serial merge | `scripts/merge-pr.sh` |
-| Board `Done` move after a merge | `../parallel-issues/scripts/move-github-project-item.sh` |
+| Canonical replies and bot-response settlement | `$agentkit/review-remote-pr/scripts/thread-action.sh` |
+| Post-merge retarget proof | `$agentkit/parallel-issues/scripts/chain-advance.sh` |
+| `--auto-merge` pre-merge review-completion gate | `$agentkit/pr-to-green/scripts/merge-gate.sh` |
+| `--auto-merge` verified serial merge | `$agentkit/pr-to-green/scripts/merge-pr.sh` |
+| Board `Done` move after a merge | `$agentkit/parallel-issues/scripts/move-github-project-item.sh` |
 
 Read `../review-remote-pr/SKILL.md` once when entering Phase A. Read its provider
 rules once only if findings exist, and reuse that content through Phase C.
@@ -229,13 +226,13 @@ the existing one-push fix batch. A blocked check is named evidence, never green.
 
 A declared-verification failure whose failing paths are all provably unchanged
 from base and outside this PR's diff is `baseline-red` — classified by
-review-remote-pr Step 2's `verification-baseline.sh`, never re-derived here.
+review-remote-pr Step 2's `$agentkit/review-remote-pr/scripts/verification-baseline.sh`, never re-derived here.
 Record it as evidence and proceed through commit, push, adversarial review,
 and receipt; never park on it, and never reformat unrelated paths just to
 force a clean run. Any other declared-verification failure is
 `change-caused-red`: fix it as today. Ready-flip and merge stay blocked on it
 exactly as on any other red — see Step 4; this changes only what unblocks
-Phase A publication. `compose-pr-body.sh`'s optional `--baseline-file` appends
+Phase A publication. `$agentkit/parallel-issues/scripts/compose-pr-body.sh`'s optional `--baseline-file` appends
 the generated evidence block, listing every passing gate by name, marking
 every skipped or conditional check SKIPPED (never passed), and never claiming
 the PR fully green.
@@ -280,7 +277,7 @@ fix round; unanswered replies stay awaiting. Code Quality keeps its
 auto-clear/reasoned-dismiss lifecycle; unexpected authoritative bots use the
 generic automated lane and are never triggered. Human items retain
 per-item confirmation; human threads stay unresolved. Record a verified fix
-commit with `review-ledger.sh cover`; never re-review — see
+commit with `$agentkit/review-remote-pr/scripts/review-ledger.sh cover`; never re-review — see
 ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ### 4. Prove evidence-green

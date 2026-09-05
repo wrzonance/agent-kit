@@ -18,16 +18,14 @@ Coordinate independent issues through Project validation, conflict analysis, use
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-**References are read once and batched.** Reference paths resolve: open `"$agentkit/<path>"`, and read
-`"$agentkit/references.md"` — every reference, its purpose, and its read-when condition — instead of searching. The manifest is not a preload list: match each condition against the actual execution path. When a step names a reference file, read it in full
-at that step — one batched read covering several files is ideal — and do not re-read it later
-in the run. Do not probe a reference's size before reading it (`wc -l`, `stat`, `head`):
-per-file sizing spends one root turn per file before any real work starts. One exception, and
-the only thing here that consumes a line count: a **first** read of a file over ~800 lines
-(this SKILL.md included) may take one bounded size probe, because that count decides whether a
-single-shot read is affordable at all.
+**References are read once and batched.** Open `"$agentkit/<path>"`; use
+`"$agentkit/references.md"` for paths, purposes, and read-when conditions; do not search.
+Match conditions to the execution path; read each named reference fully at its step, batching
+reads and retaining them for the run. Do not preload unmatched references or probe their size; each probe costs a turn
+(`wc -l`, `stat`, `head`). Exception: a **first** read of a file over ~800 lines
+(including this SKILL.md) permits one bounded size probe to plan split reads.
 
-**Single issue, no chain: dispatch reference set.** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full; exclude chain/review material. **Review-phase references:** Do not preload review-phase references during dispatch/worker waits; read on reaching their conditions.
+**Single issue, no chain:** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags
 
@@ -58,7 +56,7 @@ has not asked for unattended dispatch. Re-invoke with both, or with neither.
 
 Do not infer one from the other.
 
-**Declared commands run directly.** `agent-run.sh --cmd NAME` runs a repository's declared
+**Declared commands run directly.** `$agentkit/.shared/scripts/agent-run.sh --cmd NAME` runs a repository's declared
 command with no approval step and no trust record — `--yolo` only ever governed Step 4's
 issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
 commands run.
@@ -131,18 +129,15 @@ mutation no recorded decision covers still stops — scope stays; permission cer
 
 ### Diff-size facts
 
-Before any size judgment, use the shared `diff-facts.sh` helper with the relevant base ref.
-Its `operational.lines` fact reports the operational lines in the diff; generated, lockfile,
-fixture, and aggregate facts remain visible alongside it. These are facts only, not a
-triviality or size verdict, so they never authorize skipping review or chunking.
+For size judgments, run `$agentkit/.shared/scripts/diff-facts.sh` with the base ref.
+It reports operational lines (`operational.lines`), generated, lockfile, fixture, and aggregate facts.
+No facts waive review or chunking.
 
-**Size facts never park an unattended run:** an over-guideline packet still opens its draft
-PR with the facts disclosed in the body — trimming is an attended or explicit follow-up
-decision, never a default.
+**Size facts never park an unattended run:** open an over-guideline draft with facts in its
+body; trim only by attended or explicit follow-up decision.
 See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure) for the recipe.
 
-Announce which flags are active in the opening line, so the transcript records what was
-authorised rather than leaving it to be reconstructed later.
+Announce active flags in the opening line.
 
 ## Runtime and provider neutrality
 
@@ -165,7 +160,7 @@ ready transition to the user.
 ```dot
 digraph process {
     rankdir=LR;
-    "Environment preflight\n(agent-preflight.sh)" -> "Detect repo\n+ fetch issues";
+    "Environment preflight\n($agentkit/.shared/scripts/agent-preflight.sh)" -> "Detect repo\n+ fetch issues";
     "Detect repo\n+ fetch issues" -> "Project awareness\n(gh project)";
     "Project awareness\n(gh project)" -> "Prior-art check\n(ADRs + closed PRs)";
     "Prior-art check\n(ADRs + closed PRs)" -> "Conflict analysis\n(agent reasoning)";
@@ -221,7 +216,7 @@ Shell state is not persistent; later standalone blocks rehydrate the validated d
 Replace `STEP_0_AGENTKIT` with Step 0's exact absolute `skills=` path; never read it from cache. The trusted reader rehydrates and validates current data.
 
 ```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$shared/lib/contract-cache.sh"
+agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
 [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
 contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
 ```
@@ -266,7 +261,7 @@ if ! grep -Fxq '.agent/*' "$exclude_path" 2>/dev/null; then
 fi
 environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
 printf '%s\n' "$environment_contract"
-[[ -x "$shared/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+[[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
 contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
 [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
 "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
@@ -279,7 +274,7 @@ contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repos
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Answers Step 1's questions locally, with no forge round trip (`base=` carries a `source=` token — read the leading token). Reuse these values in your reasoning; the Bash blocks below re-derive them only because each block is self-contained. `repo=none` or `base=none` is the one case where Step 1 is doing real work. |
-| `protected= patterns=` | Check every planned write set, and every accepted review finding's target path, against this before dispatching a worker. A collision means that worker structurally cannot land its own fix — hand it to the operator instead of spending a verification pass and only then hitting `worktree-commit.sh`'s refusal. |
+| `protected= patterns=` | Check every planned write set, and every accepted review finding's target path, against this before dispatching a worker. A collision means that worker structurally cannot land its own fix — hand it to the operator instead of spending a verification pass and only then hitting `$agentkit/.shared/scripts/worktree-commit.sh`'s refusal. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
@@ -431,11 +426,14 @@ referencing it) is documented in
 Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
 **A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full. `pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking,
+in full. `$agentkit/.shared/scripts/pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking,
 Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
 exactly once after the final conflict and slot-cap decisions and before dispatch. Full, thin, and
-empty sets report requested/eligible/dispatched plus one reason per exclusion. An empty selection
-is an answer.
+empty sets report requested/eligible/dispatched plus one reason per exclusion.
+An empty selection is an answer only with evidence. If `pick-issues.sh` is missing, non-executable, or fails,
+report `Selection funnel: degraded=yes; eligible=unknown`, its exact path and failure reason.
+Stop automatic selection until it succeeds. A triage fallback cannot justify `eligible=0`
+or an empty Ready column; preserve partial evidence as degraded.
 
 ### Step 3: Conflict analysis (file-level)
 
@@ -459,7 +457,7 @@ Conflict:
   #56 + #54 both touch src/tools.ts ⚠️ — run #56 after #54 merges
 ```
 
-Before dispatch, write the root-owned dispatch plan; require `schemaVersion=1 valid` via `write-merge-plan.sh --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`. It resolves globs against the chain-base tree and checks test roots. Each entry gets a non-empty
+Before dispatch, write the root-owned dispatch plan; require `schemaVersion=1 valid` via `$agentkit/parallel-issues/scripts/write-merge-plan.sh --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`. It resolves globs against the chain-base tree and checks test roots. Each entry gets a non-empty
 repository-relative `predictedWriteSet` (paths/globs), the work-shape verdict, `conflictMap.pairs`, and reasoned
 revisions; successor swaps require a revision. Include shared build config, lockfiles, and generated contracts. See
 [references/triage-and-selection.md](references/triage-and-selection.md#conflict-analysis-and-dispatch-plan-write-sets)
@@ -894,7 +892,7 @@ Waiting is not work, and narrating a wait is not a status report. Read [.shared/
 
 Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration — it carried zero information and will again; escalate the bound or run the Collect section's stall check instead.
 
-After completion, inspect durable state (worktree `git status`/`log`, then `gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). Digest exits 0 for green, failing, or pending CI; read it and stop.
+After completion, inspect durable state (worktree `git status`/`log`, then `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). Digest exits 0 for green, failing, or pending CI; read it and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
@@ -972,7 +970,7 @@ Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults t
 
 ### Adversarial-review receipt:
 
-Every dispatched loop must run `post-receipt.sh precheck` before handing off to the consent-holder,
+Every dispatched loop must run `$agentkit/review-remote-pr/scripts/post-receipt.sh precheck` before handing off to the consent-holder,
 against `$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker means spent, do not rerun.
 A missing/unreadable artifact is evidence unavailable, not an empty set: a review or skip without
 the receipt is a **no-silent-skip** failure. Materiality, consent, and exit codes follow
@@ -1000,7 +998,7 @@ durable top-level PR comment — a review or skip without it is never complete. 
 model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
 `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
 or the `verified-skip rationale` + oracle. The order is executable: the successful
-`adversarial-run.sh` result must precede `finding-ledger.sh add`, and publication consumes only
+`$agentkit/review-remote-pr/scripts/adversarial-run.sh` result must precede `$agentkit/review-remote-pr/scripts/finding-ledger.sh add`, and publication consumes only
 that validated ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified
 skip. Run `post-receipt.sh publish` in a fresh shell — this publication block is separate from
 the pre-launch gate above, and the precheck must never fall through to a placeholder receipt:
@@ -1026,7 +1024,7 @@ case "$publish_rc" in
     11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
     12) printf '%s\n' 'receipt refused: fixes are dirty or not reachable from origin' >&2; exit 1 ;;
     13) printf '%s\n' 'receipt refused: finding pipeline is out of order' >&2; exit 1 ;;
-    *)  printf '%s\n' 'receipt publication failed (evidence unavailable, bad flags, or gh-comment.sh post/verify failed)' >&2; exit 1 ;;
+    *)  printf '%s\n' 'receipt publication failed (evidence unavailable, bad flags, or comment post/verify failed)' >&2; exit 1 ;;
 esac
 # A different nonzero already caused post-receipt.sh to fetch live comments.
 # Never retry against receipt_comments until the fresh live comments are reviewed.
@@ -1051,7 +1049,7 @@ I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 
 The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
 
-At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `$agentkit/parallel-issues/scripts/chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 

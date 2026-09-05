@@ -280,15 +280,15 @@ assert_contains "$review_reference_contract" 'stat' \
     'review skill no-sizing rule names stat explicitly'
 assert_contains "$review_reference_contract" 'head' \
     'review skill no-sizing rule names head explicitly'
-assert_contains "$review_reference_contract_normalized" 'do not re-read it later in the same uninterrupted context' \
+assert_contains "$review_reference_contract_normalized" 'Read each named reference fully at its step, once per uninterrupted context' \
     'review skill forbids duplicate reference reads'
-assert_contains "$review_reference_contract_normalized" 'Read each reference once per uninterrupted context' \
+assert_contains "$review_reference_contract_normalized" 'once per uninterrupted context' \
     'review skill scopes read-once behavior to an uninterrupted context'
-assert_contains "$review_reference_contract_normalized" 'If compaction/resume occurs since Step 1a and the loaded provider-rules content is not preserved in the resumable artifact/context' \
+assert_contains "$review_reference_contract_normalized" 'after compaction/resume since Step 1a, if provider-rules content was not preserved in the resumable artifact/context' \
     'review skill names the missing resumable-content condition'
 assert_contains "$review_reference_contract_normalized" 're-read provider-rules.md exactly once before Phase C' \
     'review skill permits one bounded post-compaction reread before Phase C'
-assert_contains "$review_reference_contract_normalized" 'sole exception to the ordinary no-re-read rule' \
+assert_contains "$review_reference_contract_normalized" 'Sole re-read exception:' \
     'review skill keeps the post-compaction reread as the sole exception'
 assert_contains "$review_skill_normalized" 'Reuse that loaded content in Step 5; do not re-read it' \
     'review skill reuses provider rules instead of reading them again'
@@ -501,5 +501,10 @@ for shared_name in "${!shared_canonical_phrase[@]}"; do
     assert_eq "$shared_dir/$shared_name" "$hits" \
         ".shared/$shared_name's canonical rationale lives only in its own file"
 done
+
+assert_contains "$(<"$skills/parallel-issues/SKILL.md")" \
+    'degraded=yes; eligible=unknown' 'unavailable selection reports degraded rather than clean zero'
+assert_contains "$(<"$skills/references.md")" \
+    'contract-cache.sh` has an explicit CLI' 'manifest preserves the real contract-cache CLI exception'
 
 finish
