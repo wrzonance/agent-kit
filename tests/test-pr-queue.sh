@@ -213,6 +213,11 @@ assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
     'a current merge plan performs verification reads for each recorded PR'
 
 json=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format json)
+assert_eq '[11,12,13]' "$(jq -c 'map(.issue)' <<<"$json")" \
+    'plan-derived issue numbers remain numeric and unchanged'
+plan_table=$(run_queue --merge-plan "$tmp/dispatch-plan.json" --format table)
+assert_matches "$plan_table" '#11[[:space:]]+#11[[:space:]]+RUNNABLE' \
+    'the plan table renders the real linked issue number'
 assert_eq 'RUNNABLE' "$(jq -r '.[0].state' <<<"$json")" \
     'JSON output preserves the confirmed queue for authorization evidence'
 fp11_default=$(jq -r '.[0].diffFingerprint' <<<"$json")
@@ -367,24 +372,24 @@ assert_contains "$retarget_settle_out" \
 : >"$tmp/gh.log"
 out=$(run_queue --format records)
 assert_not_contains "$out" 'pr=14' 'automatic discovery excludes already-ready PRs'
-assert_contains "$out" 'pr=12 issue=0 state=WAITING_FOR_MERGE source=forge' \
+assert_contains "$out" 'pr=12 issue=null state=WAITING_FOR_MERGE source=forge' \
     'automatic discovery derives the selected stack from live base refs'
 assert_eq '3' "$(grep -Ec 'pulls/(11|12|13)$' "$tmp/gh.log" || true)" \
     'discovery succeeds through per-PR fetches when the list omits merged/mergeable'
 
 out=$(run_queue --pr 14 --format records)
-assert_contains "$out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
+assert_contains "$out" 'pr=14 issue=null state=RUNNABLE source=forge' \
     'an explicitly named ready PR can resume'
 
 : >"$tmp/gh.log"
 multi_settle_out=$(run_queue --pr 14 --pr 15 --format records)
-assert_contains "$multi_settle_out" 'pr=14 issue=0 state=RUNNABLE source=forge' \
+assert_contains "$multi_settle_out" 'pr=14 issue=null state=RUNNABLE source=forge' \
     'settling one PR preserves unaffected queue rows'
-assert_contains "$multi_settle_out" 'pr=15 issue=0 state=SETTLING source=forge' \
+assert_contains "$multi_settle_out" 'pr=15 issue=null state=SETTLING source=forge' \
     'the settled row remains explicit when mergeability stays unknown'
 
 out=$(run_queue --pr 15 --format records)
-assert_contains "$out" 'pr=15 issue=0 state=SETTLING source=forge' \
+assert_contains "$out" 'pr=15 issue=null state=SETTLING source=forge' \
     'a PR with unresolved mergeability remains explicitly settling after bounded retries'
 assert_not_contains "$out" 'state=RUNNABLE' \
     'unknown mergeability fails closed rather than open'

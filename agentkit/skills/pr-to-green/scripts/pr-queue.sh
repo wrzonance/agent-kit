@@ -352,7 +352,7 @@ if ((plan_active == 0)); then
 
     jq --arg base "$default_branch" --arg source "$source" --argjson issues "$issue_map" '
       . as $prs |
-      def issue_for($number): ([ $issues[] | select(.pr == $number) | .issue ][0] // 0);
+      def issue_for($number): [ $issues[] | select(.pr == $number) | .issue ][0];
       def child($branch): [ $prs[] | select(.base.ref == $branch) ];
       def walk($pr):
         [$pr] + (child($pr.head.ref) as $children |
@@ -629,9 +629,9 @@ elif [[ $format == records ]]; then
         "$work_dir/queue.json"
 else
     printf '%-6s %-7s %-18s %-9s %-24s %s\n' PR ISSUE STATE SOURCE BASE HEAD
-    jq -r '.[] | [.pr,.issue,.state,.source,.base,.head] | @tsv' "$work_dir/queue.json" |
+    jq -r '.[] | [.pr,(if .issue == null then "-" else "#\(.issue)" end),.state,.source,.base,.head] | @tsv' "$work_dir/queue.json" |
         while IFS=$'\t' read -r pr issue state source base head; do
-            printf '#%-5s #%-6s %-18s %-9s %-24s %s\n' \
+            printf '#%-5s %-7s %-18s %-9s %-24s %s\n' \
                 "$pr" "$issue" "$state" "$source" "$base" "$head"
         done
 fi

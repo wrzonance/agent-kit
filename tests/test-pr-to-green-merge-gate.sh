@@ -49,7 +49,7 @@ default_check_runs='{"check_runs":[]}'
 default_timeline='[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]'
 case \$endpoint in
 repos/owner/repo)
-    printf '{"security_and_analysis":{"code_security":{"status":"%s"}}}\n' "\${REPO_CODE_SECURITY_STATUS:-enabled}"
+    printf '{"default_branch":"main","security_and_analysis":{"code_security":{"status":"%s"}}}\n' "\${REPO_CODE_SECURITY_STATUS:-enabled}"
     ;;
 repos/owner/repo/pulls/9)
     mergeable=\${PR_MERGEABLE:-true}
@@ -64,7 +64,7 @@ repos/owner/repo/pulls/9)
     else
         merge_sha_json=null
     fi
-    printf '{"number":9,"state":"%s","draft":%s,"head":{"sha":"%s","ref":"feat/demo"},"base":{"ref":"%s"},"mergeable":%s,"merge_commit_sha":%s,"requested_reviewers":%s,"requested_teams":%s}\n' \\
+    printf '{"number":9,"body":"Closes #601","merged":false,"created_at":"2026-08-01T00:00:00Z","state":"%s","draft":%s,"head":{"sha":"%s","ref":"feat/demo"},"base":{"ref":"%s"},"mergeable":%s,"merge_commit_sha":%s,"requested_reviewers":%s,"requested_teams":%s}\n' \\
         "\$state" "\$draft" "\$sha" "\$base" "\$mergeable" "\$merge_sha_json" "\$reviewers" "\$teams"
     ;;
 repos/owner/repo/pulls/9/reviews*)
@@ -212,6 +212,34 @@ write_cq_state_file() {
 good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
+
+# A forge queue cannot derive the closing issue even when the PR body links
+# one. Feed its actual PR/head/base evidence through the merge boundary.
+queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
+forge_queue=$(PR_QUEUE_GH="$tmp/gh" bash "$queue" --repo owner/repo --pr 9 --format json)
+assert_eq 'null' "$(jq -c '.[0].issue' <<<"$forge_queue")" \
+    'a forge PR with Closes #601 carries an underived issue, never zero'
+forge_table=$(PR_QUEUE_GH="$tmp/gh" bash "$queue" --repo owner/repo --pr 9 --format table)
+assert_eq '- RUNNABLE forge main feat/demo' "$(awk '$1 == "#9" {print $2, $3, $4, $5, $6}' <<<"$forge_table")" \
+    'the underived table marker preserves the remaining columns'
+assert_not_contains "$forge_table" '#0' 'a linked forge PR never renders ISSUE #0'
+run_queue_gate() {
+    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo \
+        --pr "$(jq -r '.[0].pr' <<<"$forge_queue")" \
+        --head-sha "$(jq -r '.[0].sha' <<<"$forge_queue")" \
+        --base "$(jq -r '.[0].base' <<<"$forge_queue")" \
+        --pr-state-digest "$tmp/digest.txt" --provider-result AUTO_REVIEW \
+        --human-items-decided yes --adversarial-review-status covered-head \
+        --code-quality-scan-state complete
+}
+out=$(run_queue_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'an underived queue issue does not block the merge gate'
+rc=0
+out=$(PR_BASE=release run_queue_gate) || rc=$?
+assert_eq '1' "$rc" 'an underived issue does not excuse a genuine queue/base mismatch'
+assert_contains "$out" 'pull request base changed since evidence was captured' \
+    'the merge gate still names a genuine mismatch'
 
 good_digest
 set +e
