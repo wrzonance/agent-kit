@@ -98,6 +98,8 @@ if [[ -x $create_sh ]]; then
     assert_not_contains "$out" 'setup failed' 'issue setup does not report a setup failure'
     assert_eq 'setup-ran' "$(<"$issue_worktree/setup.marker")" \
         'issue setup runs the declared setup command directly, with no approval step'
+    assert_eq yes "$(test -f "$issue_worktree/.agent/setup-succeeded" && printf yes || printf no)" \
+        'issue setup records successful declared setup for the review handoff'
 fi
 
 # The entry points pass a declared setup through the shared command runner
@@ -118,6 +120,22 @@ worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config
     "$fake_runner" "$dispatch_worktree"
 assert_eq "--dir $dispatch_worktree --cmd setup" "$(<"$WORKTREE_SETUP_TEST_ARGS")" \
     'shared setup dispatch uses agent-run with the named setup command'
+
+# Both callers must reject unsafe marker shapes before recording success.
+for marker_shape in symlink directory; do
+    rm -f -- "$dispatch_worktree/.agent/setup-succeeded"
+    if [[ $marker_shape == symlink ]]; then
+        printf preserved >"$dispatch_root/marker-target"
+        ln -s "$dispatch_root/marker-target" "$dispatch_worktree/.agent/setup-succeeded"
+    else
+        mkdir "$dispatch_worktree/.agent/setup-succeeded"
+    fi
+    assert_rc 1 "shared setup rejects a $marker_shape completion marker" -- \
+        worktree_setup_declared_setup "$root/agentkit/skills/.shared/scripts/repo-config.sh" \
+        "$fake_runner" "$dispatch_worktree"
+done
+assert_eq preserved "$(<"$dispatch_root/marker-target")" \
+    'shared setup never truncates a symlink target'
 
 # Root-local state is copied only into a safe, empty target. Existing regular
 # targets are preserved, while either side of a symlink boundary fails closed.
@@ -362,6 +380,8 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '  *"pr view 13"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *"pr view 14"*headRefName*) printf "%s\\n" feat/pr-14-head ;;' \
     '  *"pr view 14"*isCrossRepository*) printf "%s\\n" false ;;' \
+    '  *"pr view 15"*headRefName*) printf "%s\\n" feat/issue-15 ;;' \
+    '  *"pr view 15"*isCrossRepository*) printf "%s\\n" false ;;' \
     '  *) exit 1 ;;' \
     'esac' >"$fake_gh"
 fake_jq=$fake_bin/jq
@@ -369,6 +389,39 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$fake_jq"
 chmod +x "$fake_gh" "$fake_jq"
 
 if [[ -x $pr_sh ]]; then
+    handoff_repo=$tmp/handoff-repo
+    make_repo "$handoff_repo" >/dev/null
+    printf '%s\n' '#!/usr/bin/env bash' \
+        '[[ ! -e setup.marker ]] || exit 1' \
+        'printf setup-ran > setup.marker' >"$handoff_repo/tools/setup"
+    git -C "$handoff_repo" add -- tools/setup
+    git -C "$handoff_repo" commit -qm 'setup succeeds only once per worktree'
+    git -C "$handoff_repo" push -q origin main
+    assert_rc 0 'issue producer completes the first non-idempotent setup' -- \
+        "$create_sh" --repo-root "$handoff_repo" --issue 15 --base main
+    gh_log=$tmp/gh.log
+    out=$(cd "$handoff_repo" && PATH="$fake_bin:$PATH" \
+        WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 15 --repo example/repo 2>&1)
+    rc=$?
+    assert_eq 0 "$rc" 'review handoff tolerates a failed setup rerun after issue setup succeeded'
+    assert_contains "$out" 'setup=failed' 'review handoff reports the failed convenience rerun'
+    assert_contains "$out" "worktree=$handoff_repo/.fleet/feat/issue-15" \
+        'review handoff reuses the issue producer worktree'
+    for marker_shape in symlink directory; do
+        rm -f -- "$handoff_repo/.fleet/feat/issue-15/.agent/setup-succeeded"
+        if [[ $marker_shape == symlink ]]; then
+            ln -s "$tmp/missing-marker" "$handoff_repo/.fleet/feat/issue-15/.agent/setup-succeeded"
+        else
+            mkdir "$handoff_repo/.fleet/feat/issue-15/.agent/setup-succeeded"
+        fi
+        out=$(cd "$handoff_repo" && PATH="$fake_bin:$PATH" \
+            WORKTREE_SETUP_GH_LOG="$gh_log" "$pr_sh" --pr 15 --repo example/repo 2>&1)
+        rc=$?
+        assert_eq 1 "$rc" "PR setup rejects a $marker_shape completion marker"
+        assert_contains "$out" 'setup completion marker is not a regular file' \
+            "PR setup explains the unsafe $marker_shape marker"
+    done
+
     pr_repo=$tmp/pr-repo
     mkdir -p "$pr_repo"
     make_repo "$pr_repo" >/dev/null
@@ -543,6 +596,7 @@ if [[ -x $pr_sh ]]; then
     assert_eq 'no' "$(test -e "$pr14_worktree/.agent/setup-succeeded" && printf yes || printf no)" \
         'a worktree with no declared setup records no completion marker'
 
+    mkdir -p "$pr14_worktree/tools"
     printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$pr14_worktree/tools/setup"
     chmod +x "$pr14_worktree/tools/setup"
     git -C "$pr14_worktree" add -- tools/setup

@@ -269,7 +269,7 @@ worktree_setup_propagate_config() {
 }
 
 worktree_setup_declared_setup() {
-    local config=$1 agent_run=$2 worktree=$3 declaration
+    local config=$1 agent_run=$2 worktree=$3 declaration setup_marker="$3/.agent/setup-succeeded"
     [[ -x $config ]] || {
         worktree_setup_fail "repository config helper is missing or not executable: $config"
         return 1
@@ -280,5 +280,18 @@ worktree_setup_declared_setup() {
     }
     declaration=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || declaration=''
     [[ -n $declaration ]] || return 0
-    "$agent_run" --dir "$worktree" --cmd setup
+    "$agent_run" --dir "$worktree" --cmd setup || return $?
+    # Success belongs to the worktree, regardless of which producer ran setup.
+    # No declaration (above) or a failed command must never create this proof.
+    worktree_setup_prepare_agent_dir "$worktree" || return 1
+    if [[ -L $setup_marker || ( -e $setup_marker && ! -f $setup_marker ) ]]; then
+        worktree_setup_fail "setup completion marker is not a regular file: $setup_marker"
+        return 1
+    fi
+    [[ -f $setup_marker ]] && return 0
+    # Exclusive creation avoids following a symlink placed after validation.
+    if ! (set -C; : > "$setup_marker"); then
+        worktree_setup_fail "could not record setup completion marker: $setup_marker"
+        return 1
+    fi
 }

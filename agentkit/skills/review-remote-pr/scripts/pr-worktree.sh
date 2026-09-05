@@ -191,16 +191,6 @@ main() {
     if worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree"; then
         if [[ -n $setup_declared ]]; then
             setup_status=declared
-            # Record that this worktree has completed its DECLARED setup at
-            # least once, so a *future* run can tell an uninitialized worktree
-            # (never recorded) apart from one that merely failed a convenience
-            # re-run. A worktree with no declared setup has nothing to record:
-            # writing the marker anyway would wrongly downgrade a later
-            # newly-declared setup's first-ever failure to a warning.
-            if ! mkdir -p -- "$worktree/.agent" || ! : > "$setup_marker"; then
-                worktree_setup_fail "could not record setup completion marker: $setup_marker"
-                exit 1
-            fi
         else
             setup_status=none
         fi
