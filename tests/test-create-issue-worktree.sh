@@ -89,6 +89,8 @@ assert_contains "$out" 'resumable: no untracked=0 modified=0' \
     'new issue setup reports that no resumable state exists'
 assert_not_contains "$out" 'setup failed' 'issue setup does not report a setup failure'
 worktree="$repo/.fleet/feat/issue-41"
+assert_eq no "$(test -e "$worktree/.agent/setup-succeeded" && printf yes || printf no)" \
+    'issue setup without a declared command records no completion marker'
 assert_eq 'yes' "$([[ -d $worktree ]] && printf yes || printf no)" \
     'issue setup creates the worktree path'
 worktree_contract="$worktree/.agent/env-contract.txt"
