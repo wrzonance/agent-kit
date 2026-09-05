@@ -132,21 +132,21 @@ Establish the environment through review-remote-pr Step 0, then run
 `review-provider-config.sh` before any mutation. Retain its exact capability
 records; do not infer installed bots from checks or issue prose.
 
-Run `pr-queue.sh --write-confirmed-queue --format table` with the persisted
-schema-v2 dispatch/merge plan when one was handed off by `parallel-issues`, and
-pass every displayed provider decision in that invocation as
-`--provider NAME:ACTION:SOURCE` (or pass `--no-providers` explicitly when the
-displayed plan has none). The queue writer persists those decisions in the
-owner-only snapshot; a snapshot without `providers` is stale and cannot be
-authorized.
-The displayed rows, provider decisions, and the owner-only
-`.agent/pr-to-green-confirmed-queue.json` snapshot come from that one queue
-derivation. Its `--dispatch-plan` and `--merge-plan`
-options are aliases for that same owner-only file before and after the
-ready-flip upgrade; this consumer requires schema-2. Without one, use forge derivation. Automatic
-discovery selects drafts. An explicitly named ready PR may resume an interrupted
-run. The queue helper reports `RUNNABLE`, `WAITING_FOR_MERGE`,
-`RETARGET_REQUIRED`, or `BLOCKED` and fails closed on ambiguous topology.
+Run `pr-queue.sh --write-confirmed-queue --format table` with any handed-off
+schema-2 plan and each `--provider NAME:ACTION:SOURCE` (or `--no-providers`).
+One derivation supplies the display and owner-only
+`.agent/pr-to-green-confirmed-queue.json`; missing `providers` makes it stale.
+`--dispatch-plan` and `--merge-plan` alias the same file across ready-flip;
+this consumer requires schema-2. Without a plan, derive from the forge.
+Automatic discovery selects drafts; an explicitly named ready PR may resume.
+States are `RUNNABLE`,
+`WAITING_FOR_MERGE`, `RETARGET_REQUIRED`, or `BLOCKED`; ambiguous topology fails closed.
+
+`ISSUE` is the plan's issue number for `source=plan`. Forge rows do not derive
+issues, even with valid closing references: JSON `null`, records `issue=null`,
+table `-` mean unknown, never a broken link or merge blocker. Reserve numeric
+`0` for proven absence (not currently derived). PR/head/base/state checks still
+apply; resolve closing linkage separately for board moves.
 
 Show the human table and the exact provider records, and for every declared
 trigger-capable provider state the per-run action it will be authorized for:
