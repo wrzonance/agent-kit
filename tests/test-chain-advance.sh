@@ -1357,4 +1357,6 @@ assert_contains "$gh_comments_call_block" '--slurp' \
 assert_contains "$gh_comments_call_block" "--jq 'add'" \
     "F4: the retarget lineage hook flattens the slurped pages with gh's own jq add"
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 18000 ]] && printf yes || printf no)" 'chains reference stays at or under 18000 bytes'
+
 finish
