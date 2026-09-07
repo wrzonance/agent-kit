@@ -25,7 +25,7 @@ reads and retaining them for the run. Do not preload unmatched references or pro
 (`wc -l`, `stat`, `head`). Exception: a **first** read of a file over ~800 lines
 (including this SKILL.md) permits one bounded size probe to plan split reads.
 
-**Single issue, no chain:** Read `"$agentkit/references.md"`, `references/triage-and-selection.md`, `references/worker-prompts.md`, `.shared/spawn-contract.md`, and `.shared/six-step-loop.md` in full. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
+**Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Read `references/triage-and-selection.md` only for the sections Step 2's digest flags (prior-art, conflict analysis, dispatch-plan write sets) and `references/worker-prompts.md` only for the template being composed; the issue-lead template already carries the loop from `.shared/six-step-loop.md`, so the root reads that file only when validating a worker's six-step report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags
 
@@ -155,34 +155,11 @@ automatic, incremental, or manual-only unless the current provider state establi
 a provider trigger command from this skill; observe the review state and leave any manual trigger or
 ready transition to the user.
 
-## Process
-
-```dot
-digraph process {
-    rankdir=LR;
-    "Environment preflight\n($agentkit/.shared/scripts/agent-preflight.sh)" -> "Detect repo\n+ fetch issues";
-    "Detect repo\n+ fetch issues" -> "Project awareness\n(gh project)";
-    "Project awareness\n(gh project)" -> "Prior-art check\n(ADRs + closed PRs)";
-    "Prior-art check\n(ADRs + closed PRs)" -> "Conflict analysis\n(agent reasoning)";
-    "Conflict analysis\n(agent reasoning)" -> "User approves\nissue set";
-    "User approves\nissue set" -> "Sequential brainstorm\n(one issue at a time)";
-    "User approves\nissue set" -> "Create worktrees\n(sequential)" [label="--no-brainstorm"];
-    "Sequential brainstorm\n(one issue at a time)" -> "Create worktrees\n(sequential)";
-    "Create worktrees\n(sequential)" -> "Dispatch issue leads\n(up to available slots)";
-    "Dispatch issue leads\n(up to available slots)" -> "Collect results\n(PR URL or BLOCKED)";
-    "Collect results\n(PR URL or BLOCKED)" -> "Dispatch N draft-phase\nreview-remote-pr agents (parallel)";
-    "Dispatch N draft-phase\nreview-remote-pr agents (parallel)" -> "Report: drafts ready\nUSER decides ready transition";
-    "Report: drafts ready\nUSER decides ready transition" -> "Provider findings land\n-> continue fix/reply/settle";
-    "Provider findings land\n-> continue fix/reply/settle" -> "Surface human reviews\n-> user confirms each response";
-    "Surface human reviews\n-> user confirms each response" -> "Print PR table\n+ worktree handoff (no cleanup)";
-}
-```
-
 ## Phase 1: Sequential Setup (Orchestrator)
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing.
+Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing.
 
 #### The resolver (run once per session)
 
@@ -244,10 +221,7 @@ set -euo pipefail
 # >>> prepend THE RESOLVER (initial warm-up only) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
 
-if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
-    printf '%s\n' 'Run this skill from a Git repository.' >&2
-    exit 1
-fi
+repository_root=$contract_root
 shared="$agentkit/.shared/scripts"
 preflight="$shared/agent-preflight.sh"
 if [[ ! -x $preflight ]]; then
@@ -273,7 +247,7 @@ contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repos
 
 | Line | What to do with it |
 |---|---|
-| `repo=` / `base=` | Answers Step 1's questions locally, with no forge round trip (`base=` carries a `source=` token — read the leading token). Reuse these values in your reasoning; the Bash blocks below re-derive them only because each block is self-contained. `repo=none` or `base=none` is the one case where Step 1 is doing real work. |
+| `repo=` / `base=` | Step 1 reads `repo.slug`/`base.branch` from the contract and stops on `none`. |
 | `protected= patterns=` | Check every planned write set, and every accepted review finding's target path, against this before dispatching a worker. A collision means that worker structurally cannot land its own fix — hand it to the operator instead of spending a verification pass and only then hitting `$agentkit/.shared/scripts/worktree-commit.sh`'s refusal. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
@@ -288,47 +262,24 @@ contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repos
 ```bash
 set -euo pipefail
 
-if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
-    printf '%s\n' 'Run this skill from a Git repository.' >&2
-    exit 1
-fi
-
-# Declared config facts win; absent ones fall through to live discovery.
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+repository_root=$contract_root
+# Declared config facts win; absent ones come from the Step 0 contract, never from the network.
 resolver="$agentkit/.shared/scripts/repo-config.sh"
-if [[ -x $resolver ]]; then
-    eval "$("$resolver" --export)"
-else
-    printf 'repo-config.sh not found at %s; using live discovery\n' "$resolver" >&2
-fi
+[[ -x $resolver ]] && eval "$("$resolver" --export)"
 
 repository=${AGENT_REPO_SLUG:-}
-if [[ -z $repository ]]; then
-    if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" ||
-        [[ -z $repository ]]; then
-        printf '%s\n' 'A GitHub origin and authenticated gh session are required.' >&2
-        exit 1
-    fi
-fi
-
+[[ -n $repository ]] || repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get repo.slug) || exit 1
+[[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
 base=${AGENT_BASE_BRANCH:-}
-if [[ -z $base ]]; then
-    if ! base="$(git remote show origin | sed -n 's/^.*HEAD branch:[[:space:]]*//p' | head -n 1)" ||
-        [[ -z $base ]]; then
-        printf '%s\n' 'Could not determine the origin HEAD branch.' >&2
-        exit 1
-    fi
-fi
+[[ -n $base ]] || base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) || exit 1
+[[ $base != none ]] || { printf '%s\n' 'base=none in the environment contract; set origin/HEAD (git remote set-head origin -a) and re-run preflight' >&2; exit 1; }
 
 IFS=/ read -r owner repository_name <<< "$repository"
 printf 'repository_root=%s\nrepository=%s\nowner=%s\nrepository_name=%s\nbase=%s\n' \
     "$repository_root" "$repository" "$owner" "$repository_name" "$base"
 ```
-
-The Step 0 preflight already reported whether a config exists on its `config=`
-line. If it says `present=no`, everything below still works — the skill simply
-pays for discovery it could have read from a file.
 
 ### Step 2: Triage the candidate set (MANDATORY — one call, never a loop)
 
@@ -356,17 +307,6 @@ fi
 ```
 
 Each line reads `#N  <status>  <verdict>  adr=<paths|->  pr=<ref|->`:
-
-```
-triage= repo=OWNER/REPO issues=7 calls=1 items-cached=5
-
-#62    Backlog       in-flight   adr=-                     pr=#231 open
-#57    Ready         clean       adr=docs/adr/0012-....md  pr=-
-#54    Ready         merged-ref  adr=-                     pr=#212 merged 2026-07-30
-#48    In progress   active      adr=-                     pr=-
-#41    Ready         attempted   adr=-                     pr=#198 closed-unmerged
-#39    -             clean       adr=-                     pr=-
-```
 
 The digest is authoritative for each surviving issue's board Status, board membership, and
 prior-art references. After it completes, the only permitted reads are: the named PR for a
@@ -526,17 +466,11 @@ Before this block, resolve the documented locked bootstrap command from the cont
 ```bash
 set -euo pipefail
 
-if ! repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z $repository_root ]]; then
-    printf '%s\n' 'Run this step from the repository root.' >&2
-    exit 1
-fi
-if ! base="$(git remote show origin | sed -n 's/^.*HEAD branch:[[:space:]]*//p' | head -n 1)" || [[ -z $base ]]; then
-    printf '%s\n' 'Could not determine the origin HEAD branch.' >&2
-    exit 1
-fi
 issue_number=123 # Replace with the approved issue number.
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+repository_root=$contract_root
+base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) && [[ $base != none ]] || exit 1
 # For a chained issue, chain_base_sha is the predecessor's pushed commit --
 # the worker's completion report carries it (worktree-commit.sh printed it);
 # empty means an independent issue starting from trunk.
@@ -634,20 +568,11 @@ fi
     --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
 ```
 
-**The printed line is the evidence.** `move-github-project-item.sh` emits exactly one terminal
-stdout line per issue and board it touched; a `moved #N -> STATUS` line completes that issue's
-status/phase. Do not follow it with `gh issue view … --json projectItems`, re-invoke it, or interleave a second verification query. The shapes are:
-
-```text
-moved #123 -> "In progress" on project #3 "Example Board"
-no-op: issue #123 already "In progress"
-no-op: issue #123 is not on any project board
-no-op: project #3 "Example Board" has no Status field
-no-op: project #3 "Example Board" has no matching Status option "In progress"
-no-op: issue #123 project board membership could not be read; not moved
-```
-
-Every shape exits 0 — a board move must never fail real work — so exit 0 alone isn't proof; only a leading `moved #` or `no-op: issue #N already "STATUS"` completes the phase. Per-board warnings go to stderr. The helper accepts columns `Backlog`, `Ready`, `In progress`, `In review`, `Done`; without `--all-boards` it stops at the first board moved or no-op'd, and needs `gh` Project access (fleet App: `Projects: write`).
+**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
+per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
+leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase —
+never follow it with a verification query or a second invocation. It needs Projects access (fleet
+App: `Projects: write`).
 
 ### Root canonical issue fetch and fence preparation
 
@@ -702,14 +627,11 @@ case "$fetch_rc" in
 esac
 ```
 
-The root is the sole artifact producer; the script fetches, validates, and atomically
-publishes both fenced files plus raw payload and ready marker into excluded `.agent/` state.
-The prompt embeds those bytes verbatim. Re-running the script for an existing
-complete set is churn (exit `12`): it refuses `fence artifacts already exist; delete the affected
-file deliberately before re-fencing` and prints an exact command. `--resume` archives the set
-under `.agent/evidence/fence-history/<timestamp>/`, reports `untracked=N modified=M`, and
-regenerates artifacts without touching implementation files. The selected mode is disclosed
-above.
+The root is the sole artifact producer: the script fetches, validates, and atomically publishes the
+fenced files, raw payload, and ready marker into excluded `.agent/` state, and the prompt embeds
+those bytes verbatim. Re-running on an existing complete set is refused (exit `12`, with the exact
+remedy printed); `--resume` archives the set under `.agent/evidence/fence-history/<timestamp>/`
+and regenerates without touching implementation files.
 
 ### Root-checkout cross-write fence
 
@@ -855,17 +777,14 @@ Then root must open a DRAFT PR with the canonical body composer: Why, What, Deci
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
 feeds Collect and Step 3a.
 
-**Environment-refusal fallback only** — two shapes, split by where the refusal landed. A
-post-commit **push refusal** is the trivial one: the worker reports the commit SHA and the
-exact push command; root verifies that SHA exists in the worktree and pushes — there is no
-commit left to run. A **commit refusal** (`worktree-commit.sh` exit 2) returns the classic
-publication handback: root preserves the raw command
-text for audit. Validator: parse into validated arguments without eval; validate expected
-worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path
-inside the worktree and allowed, and every staged path declared and unprotected (the index
-ships too); emit NUL argv naming the canonical helper. Invoke returned argv once, then push
-the branch. Only after publication does the root inspect `base...HEAD`; never validate a base
-diff.
+**Environment-refusal fallback only** — two shapes. A post-commit **push refusal**: the worker
+reports the commit SHA and push command; root verifies the SHA exists in the worktree and pushes. A
+**commit refusal** (`worktree-commit.sh` exit 2): the worker returns the publication handback and
+root preserves the raw command text for audit. Validator: parse into validated arguments without eval;
+validate the expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every
+explicit path inside the worktree and allowed, and every staged path declared and unprotected; emit NUL
+argv naming the canonical helper. Invoke returned argv once, then push the branch. Only after
+publication does the root inspect `base...HEAD`; never validate a base diff.
 
 ```bash
 # >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
@@ -888,11 +807,16 @@ adversarial review, consent, replies, and publication.
 
 ### Polling discipline (applies to every wait in this skill)
 
-Waiting is not work, and narrating a wait is not a status report. Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before issuing any wait in this skill — it is the single detailed home for the no-model-turn wait rule, the one-wait-per-interval and completion-only-read bullets, the silent-until-terminal rule, and the durable-state recipe below. A bounded wait is silent until terminal: background output wakes the orchestrator for a turn, so emit only the one completion or expiry line and redirect any genuine heartbeat to a log.
+Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before the first wait; it
+owns the no-model-turn rule, one wait per interval, and the durable-state recipe. A bounded wait is
+silent until terminal: emit only the one completion or expiry line and redirect any heartbeat to a log.
 
-Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt (see "Compose the issue-lead prompt" above) — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration — it carried zero information and will again; escalate the bound or run the Collect section's stall check instead.
+Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration; escalate the bound or run the Collect section's stall check.
 
-After completion, inspect durable state (worktree `git status`/`log`, then `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args): [.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion). Digest exits 0 for green, failing, or pending CI; read it and stop.
+After completion, inspect durable state (worktree `git status`/`log`, then
+`$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args):
+[.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion).
+The digest exits 0 for green, failing, or pending CI — read it and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
@@ -1029,11 +953,7 @@ esac
 # A different nonzero already caused post-receipt.sh to fetch live comments.
 # Never retry against receipt_comments until the fresh live comments are reviewed.
 ```
-The ledger owns titles, dispositions, SHAs, and rationales; the script owns every receipt byte,
-deriving `findings.ndjson` from `RUN_DIR` (`--findings-file PATH` overrides it).
-Pass `--skip-rationale S --oracle S` for a verified trivial-diff skip. The receipt is the only
-durable evidence that spends the one-review budget; `post-receipt.sh publish` refuses (exit 11)
-rather than double-posting when the marker is already present.
+The ledger owns titles, dispositions, SHAs, and rationales; `post-receipt.sh publish` renders every receipt byte from `RUN_DIR`'s `findings.ndjson` (`--findings-file PATH` overrides it), takes `--skip-rationale S --oracle S` for a verified trivial-diff skip, and refuses (exit 11) rather than double-posting.
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
@@ -1064,13 +984,8 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt`, append them to every `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`, then run `post-receipt.sh" status`.
-After the resolver guard, refresh with those same acceptance args, then immediately run `post-receipt.sh" status` on its fresh `pr_<N>_issue_comments.json`. A
-successful adversarial/verified-skip result increments receipts; `10:receipt=none` may set
-`receipt_redrive_attempted[pr]` and re-enter the draft loop once. Any duplicate/invalid result parks
-the PR and increments `++parked_count`.
-
-Only `receipt=none` may re-enter the draft loop once per PR. Duplicate/invalid evidence is not recoverable: park the PR, increment `parked_count`, report it, and do not deadlock. A receipt=none miss re-enters the draft loop only once; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
+With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
+then run `post-receipt.sh" status` on the fresh `pr_<N>_issue_comments.json`. A successful adversarial/verified-skip result increments receipts; `10:receipt=none` re-enters the draft loop once per PR (`receipt_redrive_attempted[pr]`); duplicate/invalid evidence is not recoverable — park the PR, `++parked_count`, report it, and never deadlock; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
@@ -1098,12 +1013,6 @@ A downstream-owned unknown flag (above) is not a queue entry, but its intent mus
 print a second resume line naming the owner once PRs exist, e.g.
 `resume=/pr-to-green <PRs> --auto-merge` — same preserve-flags contract, for a later phase
 instead of a later run.
-## Common Mistakes
-Gate-local failures are documented where they bind. Cross-cutting rules live in
-[spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md),
-[wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md),
-[chains](references/chains.md), and [provider-rules](../review-remote-pr/references/provider-rules.md).
-
 ## Limits
 
 - Maximum 10 per wave; include root in cap; fast-mode queues overflow; attended asks.
@@ -1112,3 +1021,4 @@ Gate-local failures are documented where they bind. Cross-cutting rules live in
 - Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
 - Requires local instructions and a `main` or `master` branch.
 - Step 3d polls observe provider-configured review timing; silence is observed state, not a trigger.
+- Cross-cutting rules: [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md), [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md), [chains](references/chains.md), [provider-rules](../review-remote-pr/references/provider-rules.md).
