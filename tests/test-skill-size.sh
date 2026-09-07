@@ -239,7 +239,7 @@ with_entry() { # prints the path to a lint copy whose review-remote-pr entry is 
     # fails loudly if the entry is renamed or its shape changes.
     escaped=${replacement//\\/\\\\}
     escaped=${escaped//&/\\&}
-    sed -E "s|KNOWN_OVERSIZE\[review-remote-pr\]=\"[^\"]*\"|KNOWN_OVERSIZE[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
+    sed -E "s|\[review-remote-pr\]=\"[^\"]*\"|[review-remote-pr]=\"$escaped\"|" "$lint" > "$copy"
     chmod +x "$copy"
     # The copy sources the shared token estimator relative to its own
     # directory (lib/token-estimate.sh), matching how a real invocation of
