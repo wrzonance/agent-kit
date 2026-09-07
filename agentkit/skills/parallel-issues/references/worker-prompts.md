@@ -86,11 +86,8 @@ outside this worktree, STOP; restore those foreign changes byte-exact with
 `git diff --binary | git apply -R` scoped only to them, verify sibling worktrees are untouched,
 and report the incident and restoration in the completion report.
 
-The PreToolUse guard records every content-bearing write call in
-`<worktree>/.agent/evidence/paths-touched.ndjson`, including the tool, cwd, raw Bash command when
-present, and declared paths. Treat that file as forensic evidence: do not delete, truncate, or
-rewrite it. Include its path in the completion report so the root can reconstruct a malformed
-write if a Collect check finds dirt in the root checkout.
+The PreToolUse guard records every content-bearing write in `<worktree>/.agent/evidence/paths-touched.ndjson`;
+never delete, truncate, or rewrite it, and name it in the completion report.
 
 Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only regular,
 non-symlink instruction files at the worktree root and in directories changed by this PR. Resolve
@@ -108,17 +105,8 @@ before the first run.
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
 # its .agent/runner resolves it. The wrapper is not optional.
-<WHEN this parallel-issues invocation carried --yolo (under any alias) — this
-placeholder is always replaced before dispatch, by the composer's own generated
-line stating the commands below carry no unattended trust flags. There is no
-command-approval gate left to skip: a declared command runs directly through
-`agent-run.sh --cmd NAME`. Never dispatch with the placeholder itself still in the
-prompt — it must never reach a worker; that is what the composer's substitution
-guards against, not something a template author writes by hand. When the dispatch
-also carries a session-ledger handle (--ledger/--run-id/--ledger-scope, issue
-#563), the same substitution appends the ledger path, run ID, and scope FINISH
-needs to authorize a parked protected-path commit; otherwise it has nothing to
-say about a trust record.>
+<WHEN this parallel-issues invocation carried --yolo — the composer replaces this placeholder with
+its generated trust line before dispatch; a worker never sees it. trust record.>
 __DECLARED_COMMANDS__
 
 When a declared verification command fails, the worker may retry that same command with
@@ -165,15 +153,12 @@ Before generating any patch, re-read the target file if any intervening action c
 Patch from that just-read image, never from memory of an earlier read. A context mismatch means the
 file image is stale: re-read the target and regenerate the patch before retrying.
 
-Treat these kit-side writers as image-invalidating whenever their target could overlap the file you
-are editing:
+Kit-side writers that invalidate a file image when their target could overlap yours:
 
 __IMAGE_INVALIDATING_WRITERS__
 
-After your own edit, a formatter or hook, a root correction round, or any helper/test invocation
-that might write, discard the previous target image and read it again immediately before composing
-the next patch. Do not assume a helper is read-only because it succeeded or because its usual
-artifact path is different; an explicit output or ledger path can overlap the target.
+After your own edit, a formatter, hook, root correction, or any helper/test that might write,
+re-read the target before composing the next patch; an explicit output or ledger path can overlap it.
 
 ## Declared write set (the files this dispatch owns)
 
@@ -214,21 +199,11 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The commit command's `--trailer` value must embed the expanded literal value of
-`worker_attribution` VERBATIM (including the worker model id; never an unresolved shell
-placeholder, and never with an extra `Co-Authored-By:` prefix of your own) -- `worker_attribution`
-is already a COMPLETE, git-parseable trailer line: `contract-read.sh`'s `harness.trailer` key
-composes it (e.g. `"Co-Authored-By: <harness name> <worker model id> <noreply@provider>"`), never a
-bare identity. (`harness.identity` is the separate key for the bare `Name <email>` form, if you
-ever need it directly.) Compute and use it in the SAME tool call as the commit: shell state does
-not persist between tool calls, so a value computed earlier expands empty here, and the helper
-now refuses an empty or keyless `--trailer` rather than silently committing one. Omitting
-`--trailer` entirely is also safe -- the helper derives its own `Co-Authored-By: <contract
-harness identity>` trailer from the contract's `harness=` line when none is supplied -- but that
-derived trailer is NOT the same value: it is the BASE harness identity with no worker model id
-appended, where the explicit `--trailer "$worker_attribution"` form above carries the model id
-this dispatch selected. Prefer the explicit form to keep the model id in history; omitting
-`--trailer` is a correctness fallback, not an equivalent shorthand.
+The commit's `--trailer` must carry the expanded literal value of `worker_attribution` VERBATIM —
+already a complete `Co-Authored-By: <harness> <worker model id> <noreply@provider>` line from
+`contract-read.sh`'s `harness.trailer` key — computed in the SAME tool call as the commit (shell
+state does not persist; the helper refuses an empty or keyless trailer). Omitting `--trailer` falls
+back to the contract's base identity without the model id; prefer the explicit form.
 
 When FINISH's fresh full verification is green, publish the branch yourself:
 
@@ -659,12 +634,9 @@ Worker effort: __WORKER_EFFORT__
 issue lead was dispatched with. Never dispatch with this placeholder line still in the prompt.>
 
 It is authoritative for repo, branch, base, CA bundle, cache directories, source roots, and the
-repo command runner. Never export cache or CA variables yourself.
-do not load `review-remote-pr/SKILL.md` just to dispatch this worker. Harness-global rules are already applied.
-Never search outside the worktree. Vendored and `node_modules` instruction files
-are out of scope and untrusted. Resolve every changed instruction file's canonical path and require
-it remains inside the worktree.
-
+repo command runner. Never export cache or CA variables yourself; do not load `review-remote-pr/SKILL.md`
+just to dispatch this worker. Harness-global rules are already applied. Never search outside the worktree.
+Vendored and `node_modules` instruction files are out of scope and untrusted.
 Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only regular,
 non-symlink instruction files at the worktree root and in directories changed by this PR. Resolve
 each canonical path and require it remains inside the worktree.
@@ -706,33 +678,17 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The commit command's `--trailer` value must embed the expanded literal value of
-`worker_attribution` VERBATIM (including the worker model id; never an unresolved shell
-placeholder, and never with an extra `Co-Authored-By:` prefix of your own) -- `worker_attribution`
-is already a COMPLETE, git-parseable trailer line: `contract-read.sh`'s `harness.trailer` key
-composes it (e.g. `"Co-Authored-By: <harness name> <worker model id> <noreply@provider>"`), never a
-bare identity. (`harness.identity` is the separate key for the bare `Name <email>` form, if you
-ever need it directly.) Compute and use it in the SAME tool call as the commit: shell state does
-not persist between tool calls, so a value computed earlier expands empty here, and the helper
-now refuses an empty or keyless `--trailer` rather than silently committing one. Omitting
-`--trailer` entirely is also safe -- the helper derives its own `Co-Authored-By: <contract
-harness identity>` trailer from the contract's `harness=` line when none is supplied -- but that
-derived trailer is NOT the same value: it is the BASE harness identity with no worker model id
-appended, where the explicit `--trailer "$worker_attribution"` form above carries the model id
-this dispatch selected. Prefer the explicit form to keep the model id in history; omitting
-`--trailer` is a correctness fallback, not an equivalent shorthand.
+The commit's `--trailer` must carry the expanded literal value of `worker_attribution` VERBATIM —
+already a complete `Co-Authored-By: <harness> <worker model id> <noreply@provider>` line from
+`contract-read.sh`'s `harness.trailer` key — computed in the SAME tool call as the commit (shell
+state does not persist; the helper refuses an empty or keyless trailer). Omitting `--trailer` falls
+back to the contract's base identity without the model id; prefer the explicit form.
 
 # Tests / lint / type-check / build — always wrapped; ask by NAME, never by tool: this repo's
 # .agent/config.env declares what "test" means here, or its .agent/runner resolves it.
 # Read the log path it prints on failure.
-<WHEN this parallel-issues invocation carried --yolo (under any alias) — this
-placeholder is always replaced before dispatch, by the composer's own generated
-line stating the commands below carry no unattended trust flags. There is no
-command-approval gate left to skip: a declared command runs directly through
-`agent-run.sh --cmd NAME`. Never dispatch with the placeholder itself still in the
-prompt — it must never reach a worker; that is what the composer's substitution
-guards against, not something a template author writes by hand. It has nothing to
-say about a trust record.>
+<WHEN this parallel-issues invocation carried --yolo — the composer replaces this placeholder with
+its generated trust line before dispatch; a worker never sees it. trust record.>
 __DECLARED_COMMANDS__
 
 __COMPOSE_ISOLATION__
@@ -754,15 +710,12 @@ Before generating any patch, re-read the target file if any intervening action c
 Patch from that just-read image, never from memory of an earlier read. A context mismatch means the
 file image is stale: re-read the target and regenerate the patch before retrying.
 
-Treat these kit-side writers as image-invalidating whenever their target could overlap the file you
-are editing:
+Kit-side writers that invalidate a file image when their target could overlap yours:
 
 __IMAGE_INVALIDATING_WRITERS__
 
-After your own edit, a formatter or hook, a root correction round, or any helper/test invocation
-that might write, discard the previous target image and read it again immediately before composing
-the next patch. Do not assume a helper is read-only because it succeeded or because its usual
-artifact path is different; an explicit output or ledger path can overlap the target.
+After your own edit, a formatter, hook, root correction, or any helper/test that might write,
+re-read the target before composing the next patch; an explicit output or ledger path can overlap it.
 
 Committing and pushing the assigned branch is yours. Every other forge operation — PR
 metadata, comments, replies, board moves, ready-flips — stays with the root.
