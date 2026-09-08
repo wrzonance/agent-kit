@@ -72,7 +72,6 @@ contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$con
 With the tree resolved, report its onboarding stage:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
 "$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --next-steps
@@ -82,7 +81,6 @@ Perform only the reported `next` stage. Before the first verification, also run 
 environment preflight and include its component, package, runtime-pin, and setup lines in the handoff:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --preflight
 ```
@@ -90,7 +88,6 @@ environment preflight and include its component, package, runtime-pin, and setup
 ## Step 1 — look before writing
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$shared/bootstrap-repo.sh" --dry-run
 ```
@@ -103,7 +100,6 @@ Report repo, trunk, and Project board; stop for correction if any is wrong. Use 
 guess — ask the user which they want, then:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/board-setup.sh" --dry-run          # creates a board, canonical columns, links it
 "$shared/board-setup.sh"                    # or --project N to re-column an existing one
@@ -126,7 +122,6 @@ Output one proposed diff/report — conflicts first, duplicates second, repo-spe
 On a subsequent pass, after the user reviewed the instruction audit and approved the proposed onboarding additions, run:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$shared/bootstrap-repo.sh"
 ```
@@ -136,7 +131,6 @@ This writes `.agent/config.env` and `.agent/board.json` and verifies `.agent/*` 
 ## Step 3 — find what it left blank
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/repo-config.sh" --list
 grep -n '^# AGENT_' .agent/config.env
@@ -172,7 +166,6 @@ pre-commit hook, a `Makefile`, `package.json` scripts, a `tools/` directory, `CO
 the detector rather than hand-guessing:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$shared/detect-toolchains.sh" --format suggestions
 ```
@@ -203,7 +196,6 @@ exact `AGENT_CMD_<NAME>` value as soon as it is declared — review the declarat
 it, since nothing checks it again at run time:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/agent-run.sh" --cmd verify
 ```
@@ -244,7 +236,6 @@ reading it once is the actual review moment before this skill leaves the command
 every future session:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/repo-config.sh" --list
 # ...then, once per name you declared, hand this to the user to run themselves:
@@ -282,7 +273,6 @@ prints the diff, and refuses on trunk — commit/PR the result through this same
 ## Step 8 — check the harness itself
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/.shared/scripts/harness-advice.sh"
 ```
