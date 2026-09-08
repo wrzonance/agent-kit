@@ -102,6 +102,7 @@ assert_rendered_guard_passes() {
 prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high)
+assert_eq yes "$([[ ${#prompt} -le 20500 ]] && printf yes || printf no)" "issue-lead prompt stays at or under 20500 bytes (measured ${#prompt})"
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
