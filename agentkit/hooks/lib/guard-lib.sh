@@ -447,15 +447,10 @@ guard_scope_path_allowed() {
     return 1
 }
 
-# GNU grep bundles a value-taking short option with whatever follows it in
-# the same token (-reTODO == -r -e TODO); if the bundle ends exactly at the
-# flag, the value is the NEXT argv token instead (-re TODO == -r -e TODO).
-# Only -e/-f take a value for the home-sweep exemption below, and the FIRST
-# one found in a left-to-right scan claims the rest, mirroring GNU getopt
-# bundling. $1 is the bundle with its leading dash already stripped.
-# Returns 1 when the bundle carries no -e/-f at all; 0 when it does, with
-# GUARD_BUNDLE_NEXT_IS_VALUE set to 1 (value is the next argv token) or 0
-# (value is attached in this same token).
+# GNU grep bundles a value-taking short option with the rest of its token
+# (-reTODO == -r -e TODO) or, when the bundle ends at the flag, with the next
+# argv token (-re TODO). The first e/f in $1 (dash stripped) claims the value;
+# returns 1 with no e/f, else 0 with GUARD_BUNDLE_NEXT_IS_VALUE=1/0 (next/attached).
 guard_grep_bundle_pattern_flag() {
     local bundle=$1 before
     before=${bundle%%[ef]*}
@@ -553,10 +548,8 @@ guard_out_of_scope_target() {
             # (rg --files DIR) whose first operand IS the walk root. A two-word
             # value flag (-A 3, --include GLOB) hands its value to this rule and
             # the real pattern is path-checked as before -- never less strictly.
-            # A bundled short option carrying e/f counts too -- `-reTODO` and
-            # `-rfPATTERNS` are grep's own `-r -e TODO`/`-r -f PATTERNS`
-            # (2026-09-08 round 2: `grep -reTODO "$HOME"` bypassed the sweep
-            # denial because the pre-scan only looked for standalone -e/-f).
+            # A bundle carrying e/f counts too: -reTODO is grep's own -r -e TODO
+            # (round 2: `grep -reTODO "$HOME"` bypassed the sweep denial).
             pattern_pending=1
             for token in "${words[@]:1}"; do
                 case $token in
