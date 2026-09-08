@@ -50,7 +50,8 @@ membership no-op names its cause as exactly one of "auth/scope", "rate limit",
 "api error", or "other" (often GraphQL index lag right after issue creation -- retry
 later) -- never a raw error message, token, or response body.
 Exit status: 0 on a move or a no-op (an unreadable board membership included -- a
-board move must never fail the real work), 1 on bad arguments or an unrelated API error.
+board move must never fail the real work), 1 on bad arguments or an unrelated API error,
+2 on an unexpected argument after --.
 EOF
 }
 
