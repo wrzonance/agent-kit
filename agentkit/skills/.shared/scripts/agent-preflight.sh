@@ -51,12 +51,24 @@ SYSTEM_BUNDLES=(
 SYSTEM_CERT_DIRS=(/etc/ssl/certs /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem)
 CA_ENV_VARS=(SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS)
 
+# Canonical directory this script actually lives in, resolved ONCE through any
+# symlink entry point (this skill is invoked via a PATH symlink -- see
+# tests/test-agent-preflight.sh's symlink-bin case): BASH_SOURCE[0] names the
+# symlink, not this file, so a fresh, unresolved `dirname -- "${BASH_SOURCE[0]}"`
+# at any other call site would look for siblings beside the symlink, where
+# only the symlink itself lives. Every sibling-helper reference in this file
+# (the lib/ sources below, repo-config.sh, contract-read.sh, harness-id.sh,
+# gh-auth-state.sh, and skills_tree_root's walk-up) must resolve against this
+# variable, never recompute its own dirname.
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)"
+readonly SCRIPT_DIR
+
 # Sibling libraries, each guarded: this script reports missing facts rather than
 # blocking (see BEHAVIOUR), so a copy without its lib/ sibling still runs and the
 # consumer (probe_protected, apply_never_widen, probe_skills_content, the .agent
 # mkdir sites) discloses the gap via `declare -F`. Issues #332 F3, #453, #474.
 for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir; do
-    preflight_lib_path="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)/lib/$preflight_lib.sh"
+    preflight_lib_path="$SCRIPT_DIR/lib/$preflight_lib.sh"
     if [[ -r $preflight_lib_path ]]; then
         # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
         source "$preflight_lib_path"
@@ -118,9 +130,7 @@ emit() { OUT_LINES+=("$1"); }
 # grandparent directory IS the running skills tree, whether that is the
 # repository's own agentkit/skills checkout or an installed plugin copy.
 skills_tree_root() {
-    local self_dir
-    self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-    (cd -- "$self_dir/../.." && pwd -P)
+    (cd -- "$SCRIPT_DIR/../.." && pwd -P)
 }
 
 # Emits the record `skills= path=/abs/skills-tree`: "skills=" and "path=" are two
@@ -373,9 +383,8 @@ probe_identity() {
 # came from a committed file rather than from probing -- and, when a config exists but
 # supplies nothing, that its keys were rejected rather than absent.
 probe_config() {
-    local self_dir resolver listing count keys shown extra
-    self_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
-    resolver="$self_dir/repo-config.sh"
+    local resolver listing count keys shown extra
+    resolver="$SCRIPT_DIR/repo-config.sh"
     listing=""
 
     if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
@@ -407,9 +416,8 @@ probe_protected() {
         emit 'protected= patterns=unavailable repo-declared=unknown note="lib/protected-paths.sh missing alongside this script"'
         return 0
     fi
-    local self_dir resolver declared="" repo_declared="none"
-    self_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
-    resolver="$self_dir/repo-config.sh"
+    local resolver declared="" repo_declared="none"
+    resolver="$SCRIPT_DIR/repo-config.sh"
     if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
         declared="$("$resolver" --repo-root "$WORKTREE" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)"
     fi
@@ -640,7 +648,7 @@ probe_gh() {
         why+=" detail=\"$(printf '%s' "$status_out" | tr '\n' ';' | tr -d '"' | cut -c1-160)\""
         # The named cause and its fix, on their own line, so neither the agent
         # nor the operator has to infer which failure this is.
-        GH_AUTH_STATE=$("$(dirname -- "${BASH_SOURCE[0]}")/gh-auth-state.sh" 2>/dev/null || true)
+        GH_AUTH_STATE=$("$SCRIPT_DIR/gh-auth-state.sh" 2>/dev/null || true)
     fi
 
     emit "gh= authed=$authed scopes=$scopes api=$api${account:+ account=$account} project-scope=$project$why"
@@ -815,7 +823,7 @@ compute_inherit_session_state() {
         stale=1
     fi
     local src_harness current_harness harness_id_script
-    harness_id_script="$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh"
+    harness_id_script="$SCRIPT_DIR/harness-id.sh"
     src_harness="$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' "$ARG_INHERIT_SESSION" 2>/dev/null)"
     if [[ -x "$harness_id_script" ]]; then
         current_harness="$("$harness_id_script" --name 2>/dev/null || true)"
@@ -1134,7 +1142,7 @@ probe_runtime_pin() {
 
 probe_harness() {
     local line
-    line=$("$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh" 2>/dev/null || true)
+    line=$("$SCRIPT_DIR/harness-id.sh" 2>/dev/null || true)
     [[ -n $line ]] || line='name=unknown trailer="Agent <noreply@example.invalid>" other=none'
     HARNESS_OTHER=${line##*other=}
     emit "harness= $line"
@@ -1236,7 +1244,7 @@ main() {
             die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
         fi
         resolve_worktree
-        contract_reader="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/contract-read.sh"
+        contract_reader="$SCRIPT_DIR/contract-read.sh"
         if [[ -x $contract_reader ]] &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
             # A provenance-trusted contract can still predate protected= (issue #296
