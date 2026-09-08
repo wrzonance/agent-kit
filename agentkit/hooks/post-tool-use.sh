@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
-# PostToolUse -> teach after the fact. Structurally incapable of blocking.
-#
-# The command has already run and returned real data by the time this fires, so
-# the agent pays for the call it wanted once and knows the cheaper route before
-# the second. That is the whole design: no guard has to choose between teaching a
-# lesson and letting the work proceed.
-#
-# Rests on one MEASURED fact: PostToolUse additionalContext reaches the model.
-# Given a code word through this channel and then asked for it while forbidden
-# from using any tool, a live agent returned it exactly. The runtime keeps this
-# field distinct from systemMessage, which was not shown to reach the model and
-# is not used here.
-#
-# NEVER exits non-zero, and never emits a decision of any kind.
+# PostToolUse -> teach after the fact; structurally incapable of blocking. The
+# command has already run, so the agent pays for the call it wanted once and
+# knows the cheaper route before the second. Rests on a MEASURED fact:
+# additionalContext reaches the model (systemMessage was not shown to). NEVER
+# exits non-zero, never emits a decision.
 set -uo pipefail
 
 emit_empty() { printf '{}\n'; exit 0; }
@@ -33,20 +24,11 @@ teach() {
     exit 0
 }
 
-# A double-quoted value containing $( or a backtick is not provably inert --
-# bash executes a command substitution inside a double-quoted string, so
-# redacting it wholesale could hide a path the shell genuinely resolves
-# (adversarial review, issue #299). The bracket expressions below exclude $
-# and ` from what a redactable run of characters may contain, so a match
-# simply fails -- and the value passes through unredacted -- the moment either
-# appears; a single-quoted value is always inert regardless of content and
-# keeps no such exclusion.
-#
-# Blank the QUOTED value attached to a known body-bearing flag: --body/-b, or
-# the body= value handed to -f/-F/--field/--raw-field. An unquoted value or a
-# file-backed one (body=@file) is left alone -- this only covers what a
-# command carries as an inline quoted payload, such as an issue/PR body under
-# construction, never a path spelled without quotes.
+# Blank the QUOTED value of a body-bearing flag (--body/-b, or
+# -f/-F/--field/--raw-field body=): a single-quoted value is inert; a
+# double-quoted one is redacted only when it carries no $( or backtick, since
+# bash executes a substitution inside double quotes (issue #299 review).
+# Unquoted or file-backed (body=@file) values pass through.
 guard_strip_body_flag_values() {
     local text
     text=$(sed -E '
@@ -142,23 +124,11 @@ if [[ -z $issue_number ]] && guard_has_evidence .agent/config.env &&
     teach "$triage_lesson"
 fi
 
-# A hardcoded plugin path -- but ONLY a WRONG one. Observed live: the resolver
-# line came back empty, the call produced nothing, and the session recovered by
-# pasting the absolute path it had seen and then used that for every later call
-# in the session. That correction itself then went wrong the same way twice
-# over: (1) the lesson fired even when the pasted path was already the
-# CONTRACT-RESOLVED tree -- correct by definition -- telling a correct agent it
-# was wrong; and (2) the one observed improvisation swapped the marketplace
-# directory name (agent-kit) for the plugin directory name (agentkit),
-# producing a path that fails as a missing file with no clue why (issue #335
-# Case 1). Both are the actual failure modes; "the version bumped" never was.
-#
-# $command_line is the WHOLE command, so matching it directly cannot tell a
-# path being EXECUTED from one merely QUOTED as data -- a heredoc body writing
-# an issue description, or the value of a --body/-f body= flag, both of which
-# were observed tripping this on prose that documented the hazard rather than
-# committing it (issue #299). guard_pinned_path_probe_text narrows the match
-# text to what the command would actually resolve before this pattern runs.
+# A hardcoded plugin path -- only a WRONG one. Observed: an empty resolver line
+# made a session paste an absolute path and reuse it; the lesson then fired on a
+# correct contract-resolved path, and the one improvisation swapped agent-kit
+# (marketplace dir) for agentkit (plugin dir) -- issue #335 Case 1. Judged on
+# guard_pinned_path_probe_text, never the raw command (issue #299).
 probe_text=$(guard_pinned_path_probe_text "$command_line")
 mapfile -t pinned_raw_matches < <(grep -oE \
     '[^[:space:]"'"'"']*plugins/cache/[^[:space:]"'"'"']*agentkit/[0-9][^[:space:]"'"'"']*' \
@@ -169,14 +139,10 @@ mapfile -t pinned_raw_matches < <(grep -oE \
 pinned_syntax_re='^[^/]*[=(`]([/~].*)$'
 matched_path=''
 if ((${#pinned_raw_matches[@]})); then
-    # A lesson that only names the hazard leaves the model to improvise a
-    # remedy, and the one observed improvisation hand-deleted path segments
-    # into a path that does not exist -- tripping the scope guard on top. So
-    # when the repository's own contract already resolves the skills tree,
-    # hand back the RESOLVED VALUE itself. Expanding it here is deliberate,
-    # unlike the literal-$agentkit text elsewhere in this file: the resolved
-    # directory IS the executable remedy. Trust bar matches RESOLVE_HINT's
-    # own: untracked regular file, not a symlink, owned by this user.
+    # When the contract resolves the skills tree, hand back the RESOLVED VALUE
+    # itself (a hazard-only lesson made a model hand-delete path segments).
+    # Trust bar matches RESOLVE_HINT: untracked regular file, not a symlink,
+    # owned by this user.
     resolved_skills=''
     contract_file=''
     # Harness-keyed first, legacy bare name as a read-only fallback (issue
@@ -198,22 +164,15 @@ if ((${#pinned_raw_matches[@]})); then
         [[ $resolved_skills =~ ^/[A-Za-z0-9._/@+-]+$ && -d $resolved_skills ]] || resolved_skills=''
     fi
     # A command can carry more than one plugins/cache match -- e.g. a correct
-    # `agentkit=<tree>` assignment followed by a stale helper path read from an
+    # agentkit=<tree> assignment followed by a stale helper path read from an
     # old checkout. Taking only the FIRST match let the correct assignment hide
-    # a stale second one entirely (K1 review F1): normalise every match with
-    # the same syntax strip and teach on the first one that is NOT the
-    # contract-resolved tree; stay silent only when every match normalises to
-    # it.
-    #
-    # The containment check below is LEXICAL (guard_scope_canonical resolves
-    # `..` components without touching the filesystem, same as every other
-    # scope comparison in this tree), never a plain string-prefix compare: a
-    # textual compare passes a path that starts with the resolved tree as TEXT
-    # and then walks back out of it via `..` segments to a genuinely
-    # different, stale version tree while "looking like" the resolved one
-    # (adversarial review, issue #335 finding F2). guard_scope_canonical has
-    # no failure path today, but a failed canonicalization must still be
-    # treated as NOT correct -- fail closed, not fail silent.
+    # a stale second one entirely (K1 review F1): normalise every match the same
+    # way and teach on the first one that is NOT the contract-resolved tree,
+    # judged below. Containment is LEXICAL (guard_scope_canonical resolves ..
+    # components), never a string-prefix compare -- a textual compare would
+    # count a stale path merely starting with the resolved tree's text as
+    # correct (issue #335 review F2); a failed canonicalization counts as NOT
+    # correct.
     for raw_match in "${pinned_raw_matches[@]}"; do
         candidate=$raw_match
         [[ $candidate =~ $pinned_syntax_re ]] && candidate=${BASH_REMATCH[1]}
@@ -259,13 +218,10 @@ if [[ -n $matched_path ]]; then
     fi
 fi
 
-# An escaped resolver. `\$` inside double quotes is a literal dollar, so the
-# assignment stores the text `${CODEX_HOME:-$HOME/.codex}/skills` rather than a
-# path -- and the run fails later as `no such file or directory:
-# ${CODEX_HOME:-...}`, which names the symptom and not the cause. A live session
-# burned two retries on exactly this before it worked out what had happened.
-# The command has usually already failed by the time this fires; the point is to
-# make the next attempt the corrected one instead of another guess.
+# An escaped resolver: \$ inside double quotes is a literal dollar, so the
+# assignment stores the ${CODEX_HOME:-...}/skills text and the run fails later
+# naming the missing file, not the cause. Make the next attempt the corrected
+# one.
 # shellcheck disable=SC2016  # the pattern searches for a literal dollar
 if grep -qE '\\\$(\{)?(CODEX_HOME|CLAUDE_CONFIG_DIR|HOME|agentkit)' <<< "$probe_text" &&
     grep -q 'agentkit' <<< "$probe_text" &&

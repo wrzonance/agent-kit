@@ -143,23 +143,12 @@ contract_try_reuse() {
     printf '%s' "$candidate"
 }
 
-# True when another harness's contract in this checkout is fresh enough to
-# treat as a run still in flight (issue #551 items 2/3): read-only, this
-# never touches the other harness's file, only its mtime and its own
-# harness= claim. A false positive here only costs a session an unnecessary
-# mode=observer -- a courtesy, not a security boundary, so this stays
-# deliberately simple rather than inventing a separate heartbeat/lock
-# mechanism.
-#
-# Every candidate is validated before its filename or content is trusted:
-# guard_contract_is_ours (untracked, regular, not a symlink, owned by this
-# user) before it is even read, and the harness suffix -- parsed from the
-# FILENAME for a keyed candidate, from the contract's own harness= line for
-# the legacy one -- against the same safe single-token vocabulary
-# contract_cache_harness_name itself requires. A repository-tracked or
-# hostile file (a crafted filename, or a harness= value carrying control
-# characters) can therefore never inject extra bytes into this session's own
-# mode=observer line (adversarial review, issue #551 finding F1).
+# True when another harness's contract here is fresh enough to count as a run in
+# flight (issue #551 items 2/3): read-only, mtime + harness= claim only; a false
+# positive costs an unnecessary mode=observer. Every candidate is validated
+# first (guard_contract_is_ours; harness suffix from the FILENAME or the
+# harness= line, same vocabulary as contract_cache_harness_name) so a hostile
+# file cannot inject bytes into the mode=observer line (review finding F1).
 contract_other_harness_active() {
     local me=$1 entry base other
     [[ -n $me && -d "$root/.agent" && ! -L "$root/.agent" ]] || return 1
@@ -245,15 +234,10 @@ fi
 if [[ -z $contract ]]; then
     preflight="$self_dir/../skills/.shared/scripts/agent-preflight.sh"
     if [[ -x $preflight ]]; then
-        # --measured-from hook, because that is the truth: this process runs
-        # outside the agent's sandbox, so its writability probes and its
-        # CODEX_* sandbox variables describe the hook and not the shell that
-        # will run the commands. Without the flag the block asserts
-        # writable=yes and active=no to an agent that is about to be denied.
-        # --write targets this harness's own keyed file explicitly (issue
-        # #551): agent-preflight.sh's bare-named default would write a file
-        # this hook never reads back, and could still race another harness's
-        # own preflight for that same shared name.
+        # --measured-from hook: this process runs outside the agent's sandbox,
+        # and without the flag the block asserts writable=yes to an agent about
+        # to be denied. --write targets this harness's own keyed file (issue
+        # #551); the bare default would write a file this hook never reads back.
         contract=$("$preflight" --worktree "$root" --write "$contract_file" --measured-from hook 2> /dev/null || true)
         if [[ -n $contract ]]; then
             # Observer mode (issue #551 items 2/3): this session started

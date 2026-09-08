@@ -2858,4 +2858,11 @@ unresolved_370=$(make_repo)
 assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
     'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
 
+# 2026-09-08 size wave two: hold the hook sources at their measured line counts.
+for hook_ceiling in 'lib/guard-lib.sh:2400' 'pre-tool-use.sh:190' 'post-tool-use.sh:250' 'session-start.sh:348'; do
+    hook_file=${hook_ceiling%%:*}; hook_cap=${hook_ceiling##*:}
+    assert_eq yes "$([[ $(wc -l < "$hooks/$hook_file") -le $hook_cap ]] && printf yes || printf no)" \
+        "$hook_file stays at or under $hook_cap lines (measured $(wc -l < "$hooks/$hook_file"))"
+done
+
 finish
