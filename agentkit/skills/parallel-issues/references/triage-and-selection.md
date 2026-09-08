@@ -15,17 +15,10 @@ that flag is in play. A `clean` verdict needs none of this file.
 
 ## Bulk mutation discipline: ledger, chunks, and resource budget
 
-Any batch that creates or edits more than one forge object carries a resumable
-apply ledger. The planning ID is the stable key; a successful mutation is
-followed immediately by one `record` call containing the returned number and
-URL. This batch has no PR yet, so its ledger and plan are transient bulk
-artifacts: they belong in the private, mode-0700 run directory addressed by
-the invocation-level `RUN_ID` SKILL.md's Session decision ledger section
-establishes — never at a bare repository-relative path, which lands as an
-untracked addition mixed into the operator's own working tree. `run-dir.sh`
-is the same helper Step 3b's `RUN_DIR` uses for PR-keyed evidence;
-`--run-id` is its addressing mode for a run that has no PR to key on. The
-shared ledger helper itself is deliberately a ledger, not an orchestrator:
+Any batch that creates or edits more than one forge object carries a resumable apply ledger: the
+planning ID is the stable key, and every successful mutation is followed immediately by one `record` call
+with the returned number and URL. The ledger and plan live in the private run directory `run-dir.sh
+--run-id "$RUN_ID"` addresses (never a bare repository-relative path):
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
@@ -37,14 +30,9 @@ apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
 "$apply_ledger" init --ledger "$ledger" --plan "$plan"
 ```
 
-`record`'s `--number` is always the mutation's subject issue/PR number, not
-the ID of whatever the mutation created underneath it: the newly created
-number for a created issue/PR, or the existing issue/PR number a comment,
-close, reopen, or board-move mutation acted on. `--url` must embed that same
-number -- either the plain `.../issues/N` or `.../pull/N` form (created
-issue/PR, and reused as-is for a close, reopen, or board-move on an existing
-one), or, for a created comment, that same form with the `#issuecomment-<id>`
-fragment GitHub's response actually returns.
+`record`'s `--number` is the mutation's subject issue/PR number (the created number, or the existing
+number a comment/close/reopen/board move acted on); `--url` embeds that same number — `.../issues/N` or
+`.../pull/N`, plus the `#issuecomment-<id>` fragment for a created comment.
 
 Before every mutation, consume only the IDs from `pending --ids`; never retry
 an ID present in `applied`. Keep chunks bounded (the default recipe is 20
@@ -63,10 +51,7 @@ report_batch_failure() {
 }
 
 while :; do
-    # Budget FIRST, before any mutation: checking after the chunk lets an
-    # already-exhausted pool through for one whole chunk. An artifact that
-    # exists but cannot be read or parsed fails closed -- treating it as
-    # "absent, carry on" is how an exhausted budget reads as unlimited.
+    # Budget FIRST: an unreadable or exhausted artifact fails closed before any mutation.
     if [[ -e .resources.graphql ]]; then
         if [[ ! -r .resources.graphql ]]; then
             report_batch_failure 'budget artifact exists but is unreadable'
@@ -76,29 +61,17 @@ while :; do
             report_batch_failure 'GraphQL budget exhausted before this chunk'
         fi
     fi
-    # Status-checked, NOT a process substitution: `mapfile < <(cmd)` discards
-    # cmd's exit status, so a failed pending lookup yields an empty array and
-    # the emptiness test below reads it as "batch complete" -- retiring the run
-    # with unapplied IDs and no ledger report.
+    # Status-checked, not a process substitution: a failed pending lookup must never read as "batch complete".
     if ! pending_ids=$("$apply_ledger" pending --ledger "$ledger" --ids); then
         report_batch_failure 'pending lookup failed'
     fi
     mapfile -t chunk <<<"$(printf '%s\n' "$pending_ids" | head -n 20)"
     [[ ${chunk[0]:-} ]] || break
     for planning_id in "${chunk[@]}"; do
-        # perform_rest_mutation is a `gh-body pr|issue create --body-file ...
-        # --json [--expect-closing-issue N]` call (the shared body-verifying
-        # transport's machine-readable mode): its stdout is the one JSON
-        # object `{number, html_url, closing_issue}` that mode emits, so
-        # `.number`/`.html_url` are read verbatim below -- never root-authored
-        # parsing of its human-readable text lines.
+        # perform_rest_mutation is a `gh-body pr|issue create --body-file ... --json` call; read its one JSON object verbatim.
         mutation_rc=0
         mutation_json=$(perform_rest_mutation "$planning_id") || mutation_rc=$?
-        # A non-empty JSON object is meaningful even when the call above
-        # exited non-zero: --json mode still emits {number, html_url} when
-        # only the closing-issue verification failed after the
-        # create/edit itself succeeded and was body-verified. Only an empty
-        # result means the mutation never produced a usable object at all.
+        # A non-empty object is meaningful even on nonzero exit (only the closing-issue verification failed).
         if [[ -z $mutation_json ]]; then
             report_batch_failure "mutation failed for $planning_id"
         fi
@@ -108,10 +81,7 @@ while :; do
         if ! created_url=$(jq -er '.html_url' <<<"$mutation_json"); then
             report_batch_failure "mutation response omitted URL for $planning_id"
         fi
-        # Record-before-verify: the object already exists on the forge, so it
-        # is recorded before this loop can possibly stop the batch below --
-        # otherwise a resumed run would recreate a PR/issue whose only fault
-        # was an unconfirmed closing-issue reference.
+        # Record-before-verify: the object already exists on the forge.
         if ! "$apply_ledger" record --ledger "$ledger" --id "$planning_id" \
             --number "$created_number" --url "$created_url"; then
             report_batch_failure "ledger record failed for $planning_id"
@@ -125,13 +95,9 @@ while :; do
 done
 ```
 
-Between chunks, explicitly inspect the current `.resources.graphql` budget
-artifact (when present) and stop before starting a chunk that has no remaining
-GraphQL budget. On exhaustion, retain the ledger and report its machine-readable
-`applied`/`remaining` split; do not retry an empty pending pool or claim that
-unrecorded mutations succeeded. A rerun starts from the same ledger and thus
-creates zero duplicates. The ledger's `idMap` is the follow-on input for a
-dependent batch.
+On exhaustion, retain the ledger and report its `applied`/`remaining` split; never retry an empty pending
+pool or claim unrecorded mutations succeeded. A rerun starts from the same ledger (zero duplicates); its
+`idMap` feeds a dependent batch.
 
 REST routing is equally strict: issue/PR bodies, labels, state, comments,
 reviews, sub-issues, dependencies, and cross-references use
@@ -179,12 +145,9 @@ Only Clean, rescoped Partially-addressed, and ADR-cited issues continue.
 
 ## Work-shape verdict
 
-Step 3's body read for conflict analysis is also the cheapest place to catch a mismatch
-between what an issue asks for and what this skill knows how to run: the standard
-worktree → branch → commit → draft-PR machinery. An issue whose body forbids branches,
-worktrees, commits, or pull requests -- or otherwise states a research/analysis-only ask
--- is a different shape of work, and discovering that after Step 5 has already created a
-worktree is the expensive way to find out (see #444).
+Step 3's body read is also where a mismatch between the ask and this skill's one shape (worktree → branch →
+commit → draft PR) is cheapest to catch: a body that forbids branches, worktrees, commits, or pull requests, or
+states a research-only ask, is a different shape of work (#444).
 
 Classify every surviving candidate exactly once, from the same body text Step 3 already
 reads for file hints -- never a second fetch performed for this check alone:
@@ -209,12 +172,9 @@ work-shape=implementation signal=-
 | `implementation` | no forbidding language found | Proceed through the standard worktree → branch → PR path |
 | `no-code` | body explicitly forbids branches, worktrees, commits, or pull requests | **HOLD** — record the matched signal as the reason, drop from the dispatch set before Step 5, never create a worktree |
 
-The `no-code` disposition is HOLD, not an alternate dispatch path: this skill defines
-exactly one end-to-end shape (worktree → branch → commit → draft PR), and improvising a
-read-only/no-PR variant per run is the failure this axis exists to stop. A future skill
-revision may define a second shape end-to-end, including where its output goes; until
-then HOLD is the only sanctioned disposition for `no-code`, the same posture as an ADR
-conflict above.
+The `no-code` disposition is HOLD, not an alternate dispatch path: this skill defines exactly one end-to-end
+shape (worktree → branch → commit → draft PR), and improvising a no-PR variant per run is the failure this
+axis exists to stop.
 
 Record the verdict on the dispatch-plan entry (`workShape`, and `holdReason` when
 `no-code`) so a later step or a resumed session reads it back instead of re-classifying
@@ -223,10 +183,8 @@ Record the verdict on the dispatch-plan entry (`workShape`, and `holdReason` whe
 candidate counts toward the Selection funnel's `no-code-hold` exclusion category,
 printed and named exactly like any other exclusion -- never silently dropped.
 
-The classifier is deliberately crude, the same posture as the ADR token-matching above:
-a miss is silence (verdict `implementation`), never proof the issue is safe to
-implement, and a hit is a signal to read and confirm, not a final verdict on its own.
-Genuine ambiguity is a Step 3 conflict-analysis judgment call like any other.
+The classifier is deliberately crude: a miss (`implementation`) is never proof the issue is safe, and a hit
+is a signal to read and confirm; genuine ambiguity is a Step 3 judgment call.
 
 ## Tracker classification
 
@@ -261,12 +219,10 @@ exactly this durable evidence shape:
 {"version":1,"issue":511,"worktree":"/absolute/repo/.worktrees/feat/issue-511","branch":"feat/issue-511","state":"active","heartbeatEpoch":1787932800}
 ```
 
-The latest valid row for an issue wins. Root appends `state=active` immediately after the worker is
-spawned into its registered worktree, appends another active row with a current
-`heartbeatEpoch` whenever the runtime reports worker progress, and appends `state=terminal` when
-the worker completes, is interrupted, or is parked. Only root writes this file; create its parent
-with mode `0700` and the ledger with mode `0600`. A malformed, symlinked, non-owned, or
-group/world-writable ledger is blocked evidence, never permission to dispatch.
+The latest valid row wins. Only root writes it (parent `0700`, ledger `0600`): `state=active` at spawn, another active row with a fresh
+`heartbeatEpoch` on reported progress, and `state=terminal` on completion, interruption, or park.
+`named-active-state.sh` enforces the `0600`/owner/non-symlink requirements; a malformed ledger is blocked
+evidence, never permission to dispatch.
 
 Run the boundary helper for every operator-named triage record whose verdict is `active`:
 
@@ -337,33 +293,13 @@ conflict analysis. The plan uses this schema:
 The dispatch-time artifact stays at schema version 1 while PR numbers and
 pushed heads do not exist. Immediately after atomically persisting it, run
 `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`;
-the dispatch must not begin unless the helper prints `schemaVersion=1 valid`.
-The validator resolves every prediction against the chain-base tree; a glob
-that matches nothing fails closed and reports the nearest existing sibling. A
-"project test root" is a directory a declared verify command actually runs --
-derived from the chain-base tree's `AGENT_RUNDIR_*_TEST*` and
-`AGENT_CMD_*_TEST*` declarations, never from a directory merely named
-`test`/`spec`, so an incidental fixture or docs directory (`docs/**`,
-`bench/gold/**`) is never proposed as a required root unless a verify command
-is actually declared there -- detection is declaration-driven only, with no
-unconditional filter over those paths, so a repository that genuinely
-declares a test root under `docs/` or `bench/gold/` is honored like any
-other declared root. When `--chain-base` names a ref/SHA rather than a
-worktree, the config is read from that ref's tracked `.agent/config.env`
-(falling back to the live checkout only when the ref carries no tracked
-file), so a chain successor's declared test root is honored even when the
-live checkout is on a different commit. The entry must include
-each proposed root in `predictedWriteSet` or explicitly list it in
-`testRootExclusions`; an exclusion is an auditable decision, not implicit
-permission to omit tests. A top-level `testRootExclusions` on the dispatch
-plan applies to every entry, so a repo-wide decision is one line instead of
-one copy per entry; a per-entry list still adds to it. One invocation reports
-every glob and test-root violation across every entry before exiting, never
-just the first, and each missing-test-root finding comes with a
-copy-pasteable `jq` patch that satisfies it -- or re-run the same invocation
-with `--fix` to apply those patches automatically. This catches a missing or
-malformed schema or path at the write boundary instead of in the downstream
-queue consumer, in one round trip instead of one violation per retry.
+the dispatch must not begin unless the helper prints `schemaVersion=1 valid`. The validator resolves
+every glob against the chain-base tree (a glob matching nothing fails closed and names the nearest
+sibling) and derives each project test root from that tree's declared `AGENT_RUNDIR_*_TEST*`/
+`AGENT_CMD_*_TEST*` commands — declaration-driven only, never from a directory merely named
+`test`. Each proposed root must be inside `predictedWriteSet` or listed in `testRootExclusions` (per entry, or once at
+the top level for the whole plan). One invocation reports every violation with a copy-pasteable `jq`
+patch; `--fix` applies them.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with
@@ -422,11 +358,15 @@ owned by the dispatch plan and are never repeated here. Its required shape is:
   unique, there must be at least one record total, and the set of `issue`
   values must match the dispatch plan's `entries[].issue` set exactly.
 
-The helper validates that every selected issue appears exactly once, upgrades
-the dispatch plan atomically, and preserves the existing entries and conflict
-audit; on a rejected input it names the first field that failed validation
-(for example `generatedAt` missing, or an out-of-order chain). The resulting
-schema-2 dispatch-plan shape is:
+The helper validates that every selected issue appears exactly once, upgrades the dispatch plan atomically,
+preserves `entries` and `conflictMap`, and on a rejected input names the first failing field. The resulting
+schema-2 shape adds `generatedAt`, `independent`, and `chains` (same record shape) beside the preserved fields:
+
+```json
+{"schemaVersion": 2, "generatedAt": "...", "entries": [...], "conflictMap": {...}, "independent": [], "chains": [[...]]}
+```
+
+Each
 
 ```json
 {
@@ -455,18 +395,10 @@ but performs no discovery graph walk while the artifact is current. An absent
 artifact or recorded-head drift activates forge derivation; malformed records,
 duplicates, or an unsafe live base fail closed.
 
-`uncoveredVerification` records the verification steps this issue's spec
-enumerates that no declared command covers. `compose-worker-prompt.sh` reports
-them when it composes the issue-lead prompt -- before the worker is spawned --
-as `spec-verification= issue=N steps=K covered=C uncovered=U uncovered-steps=…`,
-where the values are 1-based step indices counted in order of appearance inside
-the composed `## Spec` block. A non-zero `uncovered` belongs on the entry, so the
-gap is a disclosed dispatch fact rather than something the worker discovers
-mid-implementation and reconciles alone; omit the key when the composer reports
-`uncovered=0`. It is a disclosure, never a gate: the composer's matching is
-textual and deliberately approximate (the same posture as `ci-gap.sh` for CI
-gates), so an uncovered step is a prompt to declare the missing command or to
-accept the gap in writing, not a reason to hold the dispatch.
+`uncoveredVerification` records the spec's verification steps no declared command covers, as
+`compose-worker-prompt.sh` reports them before spawn
+(`spec-verification= issue=N steps=K covered=C uncovered=U uncovered-steps=…`, 1-based indices inside
+the composed `## Spec` block); omit the key at `uncovered=0`. It is a disclosure, never a gate — the matching is approximate.
 
 `workerEffort` is the optional per-issue effort override — **effort follows the issue, not
 the run**. Omitted, the issue dispatches at the `AGENT_WORKER_EFFORT` default; present, it
@@ -486,14 +418,8 @@ The resulting paths belong in each affected `predictedWriteSet`; they are not
 optional cleanup. Record the conflict pairs and their overlap globs in
 `conflictMap.pairs` before selection is finalized.
 
-The same declared list (`AGENT_GENERATED_PATHS` in `.agent/config.env`) also
-tells `gh-pr-state.sh` which post-merge trunk-automation commits (a
-results-recording workflow, for example) must not stale a queued PR's base --
-a base advance confined entirely to those paths reports `stale=no`, so
-`merge-gate.sh` does not block `pr-to-green`'s merge gate on it. Declare
-generated/results paths there once and both the write-set check above and
-the staleness exemption pick it up; see `agentkit/skills/onboard-repo/SKILL.md`'s
-`AGENT_GENERATED_PATHS` reference entry.
+`AGENT_GENERATED_PATHS` (declared once in `.agent/config.env`) feeds both this write-set check and
+`gh-pr-state.sh`'s staleness exemption (a base advance confined to those paths reports `stale=no`).
 
 After selection, never silently revise a conflict edge, predecessor, or
 successor. Append a `conflictMap.revisions` object with a non-empty `reason`

@@ -164,4 +164,7 @@ done <<< "$canonical_funnels"
 assert_eq '0' "$canonical_mismatches" \
     'every canonical funnel example satisfies the accounting invariant'
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38400 ]] && printf yes || printf no)" \
+    'triage-and-selection reference stays at or under 38400 bytes'
+
 finish
