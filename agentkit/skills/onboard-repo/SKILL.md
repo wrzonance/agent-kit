@@ -14,7 +14,7 @@ description: >-
 
 ## Resumable stage contract
 
-Onboarding advances only the next incomplete stage: `not onboarded`, `discovered`, `declared`, `verified`, `committed`, then `armed`. Report it before acting; re-runs are refresh/no-op and `--reset` is explicit and reported. Carry any `agentkit drift advisory` into the handoff. Before `verified`, preflight and report its runtime/setup/toolchain findings; read CI before proposing commands and make CI's proven entry point canonical `TEST`. Recipes use resolved absolute helper paths; a declared command runs as `$agentkit/.shared/scripts/agent-run.sh --cmd <name>`, and undeclared commands cannot run.
+Onboarding advances only the next incomplete stage: `not onboarded`, `discovered`, `declared`, `verified`, `committed`, then `armed`. Report it before acting; re-runs are refresh/no-op and `--reset` is explicit and reported. Carry any `agentkit drift advisory` into the handoff. Before `verified`, preflight and report its runtime/setup/toolchain findings; read CI before proposing commands; when it differs, report both and make CI's proven entry point canonical `TEST`. Recipes use resolved absolute helper paths; a declared command runs as `$agentkit/.shared/scripts/agent-run.sh --cmd <name>`, and undeclared commands cannot run.
 
 Run Step 0's bootstrap fence through explicit `bash -c`. Once it resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) fully before later multi-line recipes and use its boundary.
 
@@ -144,8 +144,9 @@ Declare it in proposed/committed `.agent/config.env`; bootstrap comments it unti
 parsed line-by-line, never sourced.
 
 Protected paths are a handoff boundary, not a suggestion to disable a guard: a base merge carrying one uses the
-commit helper's named-base affordance and reports `merge-inherited paths parked/handed off` (exit `3`; exit `2` is
-unwritable git metadata). Never bypass hooks with `--no-verify`, `core.hooksPath`, aliases, or any equivalent — a refusal is one bounded named park.
+commit helper's named-base affordance and reports `merge-inherited paths parked/handed off` (exit `3`, attended
+parks/hands off, unattended proceeds after verification; exit `2` is unwritable git metadata, elevation handback).
+Never bypass hooks with `--no-verify`, `core.hooksPath`, aliases, or any equivalent — a refusal is one bounded named park.
 
 ## Step 4 — work out the commands
 
