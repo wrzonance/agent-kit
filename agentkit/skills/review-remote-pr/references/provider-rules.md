@@ -56,14 +56,11 @@ never an H-item; H labels are human-only. A generic bot-only thread may be resol
 attributed reply. Human content anywhere in the thread moves the whole thread to the human lane,
 which is never auto-resolved. Do not invoke or trigger any provider, including a generic bot.
 
-GitHub's public Code Quality REST API currently exposes finding retrieval, not a supported per-finding dismissal mutation. Use `gh` to inspect and reply, but do not invent an endpoint.
-
-A repository with GitHub Code Quality disabled 403s the findings endpoint every single time (issue #403: `AGENT_REVIEW_PROVIDERS=github-code-quality` used to be accepted at plan time regardless, and this step then died mid-gate). Probe reachability ONCE before fetching findings: a confirmed `state=not-enabled` is a stable repository fact, so skip with no findings to work rather than blocking. Any other probe outcome (a network failure, an auth/scope 403, a 5xx) is NOT proof of disablement and stays blocked, same as before:
+GitHub's public Code Quality REST API exposes finding retrieval only; do not invent a dismissal endpoint. A
+repository with Code Quality disabled 403s the findings endpoint every time (issue #403), so probe reachability
+ONCE: a confirmed `state=not-enabled` skips with no findings to work; any other outcome (network failure, auth/scope 403, 5xx) stays blocked:
 
 ```bash
-# Probe ONCE, then inspect Code Quality findings available through the
-# public API (read-only) only when the probe confirms the surface is
-# reachable.
 case $("$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --probe) in
     state=enabled)
         if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh" --repo "$REPO" --summary; then
@@ -276,13 +273,9 @@ INVALID → write a decline rationale (Decline Rationale Templates below); reply
           with the rationale; then mark-answered the same way
 ```
 
-`fingerprint` (review finding F4) is a sha256 digest of the finding's own kind/priority/header,
-carried straight through from `list`'s output into the `mark-answered --fingerprint` call above —
-never hand-computed or reused across findings. `list`/`count` report a finding as `answered` only
-when the ledger has an entry whose `id` **and** `fingerprint` both match; an id match alone is not
-enough, so a bot editing a comment's text (which changes its findings' fingerprints even though the
-`comment_id#index` identity stays the same) correctly reads open again rather than inheriting stale
-answered state.
+`fingerprint` (a sha256 of the finding's kind/priority/header) is carried straight from `list`'s output into
+`mark-answered`; a finding reads `answered` only when both `id` and `fingerprint` match, so an edited
+comment reads open again rather than inheriting stale answered state.
 
 There is **no review thread** for a plain issue comment, so there is nothing to resolve — the
 finding is complete once its reply is posted (integrity-verified, same as any other reply) and
@@ -364,12 +357,9 @@ have no review thread, so record each outcome in a PR comment.
 
 ## End of cycle: one push, zero review commands
 
-The cycle ends with its **single batched push**. Post **no** review command in any phase —
-a fresh CodeRabbit pass on the batch depends on provider configuration or a user decision; report that
-the fixes are pushed so they can decide. Why decline replies still matter: a later `full review` can
-re-evaluate the PR **from scratch, disregarding previous comments** — it can re-raise previously
-declined items. Decline replies store Learnings (see Decline Rationale Templates) that survive that;
-post them before the cycle's push.
+The cycle ends with its **single batched push**; post **no** review command in any phase. Post decline
+replies before that push — a later `full review` re-evaluates from scratch, and stored Learnings (Decline
+Rationale Templates) survive it.
 
 ## Step 6: agent-doc threads at exit
 
