@@ -70,10 +70,8 @@ Required:
   --model <model>            Model for the review (e.g. claude-opus-5). An id
                              starting with "claude-" is asserted against the
                              model the session actually initialized with.
-  --transcript <path>        Where to write the raw stream-json transcript.
-                             Must be a fresh path in a private directory;
-                             missing parent directories are created as 0700;
-                             created exclusively with mode 0600.
+  --transcript <path>        Fresh path in a private directory for the raw stream-json
+                             transcript (parents created 0700, file created 0600).
 
 Conditionally required:
   --diff <path>              Unified diff to review. Required in review mode.
@@ -93,34 +91,19 @@ Options:
   --max-budget-usd <amount>  Hard API spend cap, 0.01-1000 (default: $MAX_BUDGET_USD).
   --max-duration-seconds <1-86400>
                              Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
-  --output <path>            Additionally publish the single stdout JSON object to
-                             this path, atomically (temp sibling in the same
-                             directory, chmod 600, then rename). Written on exit 0
-                             (the completed verdict) and exit 3 (the blocked
-                             object); never created or left behind on exit 1. The
-                             path's directory must be owned by this
-                             user, non-symlink, and mode 0700; missing parent
-                             directories are created as 0700.
+  --output <path>            Also publish the single stdout JSON object here atomically
+                             (temp sibling, chmod 600, rename) on exit 0 and 3, never on
+                             exit 1; the directory must be owned, non-symlink, mode 0700.
   -h, --help                 Show this help.
 
-Output:
-  stdout                     exactly one JSON object: the final result object, or
-                             the blocked object described below. Unaffected by
-                             --output, which is additive.
-  stderr                     one compact JSON progress object per --poll-seconds,
-                             plus the human-readable failure reason.
-
-Exit status:
-  0                          review completed and every invariant held.
-  1                          usage error, or a real invariant/verdict failure.
-  3                          environment-blocked: Claude cannot run here. stdout
-                             carries {"status":"blocked","blockedReason":...,
-                             "detail":...,"transcript":...,
-                             "fallback":"blind-codex-agent"} and blockedReason is
-                             one of claude-missing, exec-denied,
-                             network-unreachable, unauthenticated,
-                             budget-exhausted, cli-contract-missing. Take the
-                             blind-Codex fallback; do not retry.
+Output: stdout carries exactly one JSON object (the result, or the blocked object);
+stderr one compact JSON progress object per --poll-seconds plus the failure reason.
+Exit status: 0 review completed and every invariant held; 1 usage error or a real
+invariant/verdict failure; 3 environment-blocked -- stdout carries
+{"status":"blocked","blockedReason":...,"detail":...,"transcript":...,"fallback":"blind-codex-agent"},
+blockedReason one of claude-missing, exec-denied, network-unreachable, unauthenticated,
+budget-exhausted, cli-contract-missing: take the blind-Codex fallback; do not retry.
+Requires: bash >= 4.2, claude >= 2.1, jq, GNU coreutils.
 EOF
 }
 

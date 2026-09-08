@@ -121,13 +121,10 @@ Required:
   --pr N                 Pull request number (e.g. 42). A bare N is also accepted.
 
 Options:
-  --repo OWNER/REPO      Repository. Default: derived from the current checkout
-                         from the current checkout's origin remote.
-  --repo-root DIR        Local checkout to resolve AGENT_GENERATED_PATHS from,
-                         for the base-staleness exemption below. Default: the
-                         current directory's git toplevel; absent either way,
-                         the exemption stays inert and every base advance
-                         stales exactly as before.
+  --repo OWNER/REPO      Repository. Default: the current checkout's origin remote.
+  --repo-root DIR        Checkout to resolve AGENT_GENERATED_PATHS from (base-staleness
+                         exemption). Default: the cwd's git toplevel; absent, every base
+                         advance stales as before.
   --digest               Print the digest only (default).
   --full                 Also write the durable artifacts later steps read, as
                          DIR/pr_N_{reviews,comments,issue_comments,threads,
@@ -140,76 +137,32 @@ Options:
                          A new directory is created when absent; shared /tmp is rejected.
   --rounds N             --wait-ci rounds, 1-60 (default: $ROUNDS).
   --interval SECONDS     --wait-ci seconds between rounds, 1-3600 (default: $INTERVAL).
-  --expect-checks N      --wait-ci never reports settled with fewer than N
-                          registered checks before --rounds is exhausted, even
-                          once the count has gone stable; while a floor is
-                          set, a zero-checks round keeps polling instead of
-                          reporting none-configured. Default: unset -- no
-                          floor is inferred, so settling depends on stability
-                          alone.
+  --expect-checks N      --wait-ci never settles below N registered checks before
+                         --rounds runs out, and a zero-checks round keeps polling.
+                         Default: unset (settling depends on stability alone).
   --acceptance-command C  issue-declared acceptance command; repeatable. Its
                           matching check is reported separately from repo CI.
   --issue-comment-answered FILE
-                         Local answered-finding ledger (classify-issue-comment-
-                         findings.sh's ndjson) so 'issue-comment-findings:'
-                         excludes findings already replied to. Omitted: every
-                         classified finding reports open.
-  --digest-out FILE      Additionally write the printed digest verbatim to
-                         FILE, mode 600. This is the file merge-gate.sh's
-                         --pr-state-digest expects; capture it with this
-                         flag rather than a hand-rolled shell redirect --
-                         under a permissive umask a plain '>'/'tee' capture
-                         can leave the file group- or world-writable, which
-                         merge-gate.sh refuses outright.
+                         Answered-finding ledger (classify-issue-comment-findings.sh
+                         ndjson) so 'issue-comment-findings:' excludes replied findings.
+  --digest-out FILE      Also write the digest verbatim to FILE, mode 600 -- the file
+                         merge-gate.sh --pr-state-digest expects (a shell redirect can
+                         leave it group/world-writable, which merge-gate.sh refuses).
   -h, --help             Show this help.
-
 Exit status: 0 digest printed; 1 usage error or API failure (a rate-limited read exits EXIT_RATE_LIMITED, see die_on_gh_failure).
 
-Counting rules:
-  base        behind>0 stales unless every file the base gained since divergence
-              falls under a declared AGENT_GENERATED_PATHS prefix (see --repo-root).
-  coderabbit/code-quality  unresolved threads owned by that known provider with no
-                           human comment.
-  generic     unresolved threads from other authoritative automated accounts with
-              no human comment.
-  human       unresolved threads carrying any comment that is neither a recognised
-              automated account nor marked '$AGENT_MARKER...'; the authenticated
-              gh login counts as human.
-  nitpicks    CodeRabbit review bodies and PR conversation comments matching
-              /nitpick|broom-emoji/i (the body-only surfaces, which have no review
-              thread), minus the threads this workflow already opened to document
-              them ('$AGENT_DOC_MARKER').
-  issue-comment-findings
-              CodeRabbit/Code-Quality issue comments carrying a '**P[0-9] —**'
-              priority call-out, a '**Actionable**' block, or an 'outside diff
-              range' note (agent-kit#566) -- distinct from 'nitpicks' above,
-              which only matches /nitpick/i or the broom emoji. Classified by
-              the sibling classify-issue-comment-findings.sh; 'open' excludes
-              any finding recorded in --issue-comment-answered. There is no
-              review thread for a plain issue comment, so a PR is not settled
-              while this count is non-zero -- reply in the conversation
-              quoting the finding header, mark it answered, and re-check.
-  provider    the most recent terminal (APPROVED/CHANGES_REQUESTED/COMMENTED)
-              CodeRabbit review on the reviews endpoint whose OWN commit_id
-              matches the current head: 'reviewed state=STATE threads=N
-              since=TIMESTAMP', where threads is that review's own
-              inline-comment count and since is its submission time. An
-              acknowledgement-only issue comment never satisfies this -- it
-              is not a review submission. A terminal review that exists but
-              targets an earlier head (the PR advanced after it was
-              requested) reports 'stale-head state=STATE commit=SHA' instead
-              -- never 'reviewed', which would misrepresent it as evidence
-              for the current head, and never 'none', which would hide that
-              a review exists at all. Absent any terminal review, falls back
-              to an issue-comment rate-limit phrase scan: /review limit
-              reached|rate limit/i means 'rate-limited', otherwise 'none'.
-              Informational only -- never a trigger decision.
-  agent-docs  unresolved threads whose FIRST comment is marked
-              '$AGENT_DOC_MARKER' and which carry no unmarked human-lane
-              comment; eligible for this workflow to resolve at exit (Step 6).
-  next        one fixed-vocabulary hint per lane above (coderabbit, code-quality,
-              human, generic, nitpicks, agent-docs) that is currently non-zero;
-              omitted entirely when every lane is zero.
+Counting rules (one line per digest lane):
+  base        behind>0 stales unless every gained file is under a declared AGENT_GENERATED_PATHS prefix.
+  coderabbit/code-quality/generic  unresolved threads owned by that provider / by other automated accounts, with no human comment.
+  human       unresolved threads carrying any comment neither automated nor marked '$AGENT_MARKER...'; the gh login counts as human.
+  nitpicks    /nitpick|broom-emoji/i in CodeRabbit review bodies and PR comments, minus threads this workflow opened ('$AGENT_DOC_MARKER').
+  issue-comment-findings  '**P[0-9] —**', '**Actionable**' or 'outside diff range' call-outs in provider issue comments
+              (classify-issue-comment-findings.sh); 'open' excludes --issue-comment-answered entries; non-zero means not
+              settled -- reply in the conversation quoting the finding header, mark it answered (mark-answered), re-check.
+  provider    latest terminal CodeRabbit review whose commit_id is the current head: 'reviewed state=S threads=N since=T';
+              an earlier head reports 'stale-head state=S commit=SHA'; none -> rate-limit phrase scan ('rate-limited') else 'none'. Informational only.
+  agent-docs  unresolved threads whose first comment is marked '$AGENT_DOC_MARKER' with no unmarked human comment; resolvable at exit (Step 6).
+  next        one fixed-vocabulary hint per non-zero lane; omitted when every lane is zero.
 Requires: bash >= 4.2, gh (authenticated), jq >= 1.6, GNU coreutils.
 EOF
 }
