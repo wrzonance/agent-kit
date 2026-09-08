@@ -107,6 +107,7 @@ parse_args() {
                     --pr) PR=$2 ;;
                     --base) BASE=$2 ;;
                     --repo) REPO=$2 ;;
+                    *) die "unexpected argument: $1" ;;
                 esac
                 shift 2
                 ;;
