@@ -441,7 +441,7 @@ resolve, or claim readiness.
 PR #N: [draft phase complete | all CI green] — CI green, conflicts none, N/N CodeRabbit threads handled, all body nitpicks handled,
 GitHub Code Quality: [no findings | auto-cleared | dismissed with reasons | blocked],
 CodeRabbit approval: [approved | changes requested | commented | not observable | no provider review observed],
-Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent) | verified skip (oracle: <oracle>) | already spent]: M findings, M handled.
+Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent) | verified skip (oracle: <oracle>) | already spent | none (reason)]: M findings, M handled.
 Implementation worker: [<model> <effort> | worker=self — reason: <why>], six-step gate complete.
 Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
 [Waiting for you to mark it ready — this skill will not trigger a review. | Ready to merge | Awaiting user confirmation; not claiming readiness]
@@ -450,5 +450,5 @@ Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
 `worker=self` reason, and each human-review item's decision and thread state.)
 
 Then run **Backlog grooming** — read ["$agentkit/review-remote-pr/references/grooming.md"](references/grooming.md) in full —
-before handing back. It proposes Ready candidates from the Backlog, never auto-promotes, and
+before handing back. It proposes Ready candidates, never auto-promotes, and
 no-ops silently with no board/scope, never failing the handoff.
