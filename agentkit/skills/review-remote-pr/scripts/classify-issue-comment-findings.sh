@@ -1,65 +1,10 @@
 #!/usr/bin/env bash
 #
-# classify-issue-comment-findings.sh — pull triage-grade findings out of
-# CodeRabbit/Code-Quality PLAIN ISSUE COMMENTS (agent-kit#566).
-#
-# gh-pr-state.sh's `nitpicks:` line already counts review bodies and PR
-# conversation comments matching /nitpick/i or the broom emoji. It never
-# catches a bot's chat-reply issue comment that carries a real
-# `**P1 — ...**` priority call-out, a `**Actionable**` block, or an
-# "outside diff range" note -- agent-kit PR #552's blocking P1 landed
-# exactly that way and was never triaged (issues/552 comments, no matching
-# reviews/552 entry, inline=0). This script is the missing classifier: it
-# reads an already-fetched `pr_N_issue_comments.json`-shaped artifact
-# (gh-pr-state.sh --full's own output; no network call here) and turns each
-# matching block into one finding, keyed `<comment_id>#<index>` so two
-# distinct call-outs in the same comment (e.g. "Actionable" AND "outside
-# diff range") never collide into a single open/answered state.
-#
-# There is no GitHub review thread for a plain issue comment, so "resolved"
-# is not a concept here. Instead, a lightweight append-only local ledger (an
-# ndjson file the caller names with --answered) records which finding ids
-# have already been answered -- by replying in the conversation
-# (`gh-comment.sh`, banner on) quoting the finding's header, with the fix
-# commit SHA. `mark-answered` appends to that ledger; `list`/`count` read it
-# back to report each finding's `state`.
-#
-# A comment carrying findings but posted as a plain chat reply (rather than
-# a formal review) MAY also be a misparsed trigger phrase in the sense of
-# issue #565 -- that classification (TRIGGER_MISPARSED) lives in pr-to-green's
-# own trigger-detection path on another branch and is not reimplemented here;
-# this script only ever answers "does this issue comment carry a
-# triage-worthy finding," never "was the trigger itself malformed."
-#
-# Subcommands:
-#   list  --comments FILE [--answered FILE]
-#       Prints one compact JSON object per finding (newline-delimited) to
-#       stdout: {surface, id, comment_id, anchor, author, priority, kind,
-#       header, fingerprint, state}. state is "answered" when --answered
-#       names a ledger carrying an entry whose id AND fingerprint both match
-#       this finding, else "open" (including when --answered is omitted
-#       entirely -- every finding is open by default, and including when the
-#       comment was edited since it was answered: an id match with a
-#       DIFFERENT fingerprint is still open, never answered). Read-only;
-#       never touches --answered.
-#
-#   count --comments FILE [--answered FILE]
-#       Prints exactly one line: "open=N answered=M total=T". Read-only.
-#
-#   mark-answered --answered FILE --id ID --sha SHA --fingerprint FP
-#       Appends {"id":ID,"sha":SHA,"fingerprint":FP,"answered_at":TIMESTAMP}
-#       to FILE (created 0600 if absent). Idempotent on the (id, fingerprint)
-#       PAIR, not id alone (mirrors review-ledger.sh cmd_cover's (sha, reason)
-#       keying, issue #567) -- an id already answered under a DIFFERENT
-#       fingerprint is a genuinely new record (the underlying comment
-#       changed), so it is appended, not skipped. An identical (id,
-#       fingerprint) pair already present prints "already-answered" and
-#       exits 0 without appending a duplicate.
-#
-# Exit status: 0 success; 1 evidence unavailable (missing tool, unreadable
-# or malformed --comments/--answered file); 2 usage error.
-#
-# Requires: bash >= 4.2, jq >= 1.6, sha256sum (or shasum -a 256).
+# classify-issue-comment-findings.sh -- pull triage-grade findings out of
+# CodeRabbit/Code-Quality PLAIN ISSUE COMMENTS (agent-kit#566): a `**P1 — ...**`
+# call-out, an `**Actionable**` block, or an "outside diff range" note, read from an
+# already-fetched pr_N_issue_comments.json; findings keyed <comment_id>#<index>;
+# answered state lives in a local append-only ndjson ledger (--answered). See --help.
 set -euo pipefail
 umask 077
 
@@ -94,7 +39,12 @@ Usage: $PROGNAME list  --comments FILE [--answered FILE]
        $PROGNAME count --comments FILE [--answered FILE]
        $PROGNAME mark-answered --answered FILE --id ID --sha SHA --fingerprint FP
 
-See the script header comment for the full contract.
+list           one JSON object per finding: {surface,id,comment_id,anchor,author,priority,kind,header,fingerprint,state};
+               state=answered only when --answered holds an entry matching id AND fingerprint, else open. Read-only.
+count          exactly one line: "open=N answered=M total=T". Read-only.
+mark-answered  appends {"id","sha","fingerprint","answered_at"} to --answered (created 0600); idempotent on the
+               (id, fingerprint) PAIR -- an already-present pair prints "already-answered" and exits 0.
+Exit status: 0 success; 1 evidence unavailable (missing tool, unreadable or malformed --comments/--answered); 2 usage error.
 EOF
 }
 
