@@ -47,6 +47,7 @@ unparseable ledger 1 (blocks, never read as absent).
 Exit status (all subcommands): 0 success; 1 evidence unavailable or unparseable
 ledger; 2 usage; 10 status: stale; 11 read/status/cover: absent; 12 cover: --head is
 not a PROVEN descendant of the matching entry's head_sha.
+Requires: bash >= 4.2, jq >= 1.6. append/cover additionally require the sibling gh-comment.sh and everything it requires (gh, diff, cmp).
 EOF
 }
 
@@ -175,22 +176,11 @@ ledger_fence_regex() {
 }
 
 # find_ledger_comments FILE AUTHOR -- prints "ID\tJSON_TEXT" for every
-# TRUSTED-AUTHOR comment body whose fence parses (json text possibly still
-# schema-invalid; that is checked by the caller). A body carrying the
-# markers but no parseable fenced json, or authored by anyone other than
-# AUTHOR, is silently skipped here -- the caller's zero-vs-one-vs-many
-# accounting over ALL trusted-author marker-carrying bodies
-# (count_marker_comments) is what actually distinguishes "absent" from
-# "malformed"; untrusted-author bodies are reported separately, as a
-# warning, by untrusted_marker_authors.
-# The captured json field is base64-encoded before joining into the @tsv row:
-# @tsv escapes embedded newlines/tabs as literal backslash-n/backslash-t
-# sequences rather than real control characters, and a pretty-printed JSON
-# document is full of structural newlines. Read back through `read` (which
-# does not un-escape @tsv's backslash sequences) those would land in the
-# "json" field as literal backslash-n text -- outside any JSON string, so
-# jq then refuses to parse it. Base64 has no embedded tabs/newlines at all,
-# so it round-trips through @tsv and `read` unchanged.
+# TRUSTED-AUTHOR body whose fence parses (schema validity is the caller's job);
+# other authors are skipped here and reported by untrusted_marker_authors;
+# count_marker_comments tells absent from malformed. The json field is base64 in
+# the @tsv row: @tsv escapes newlines as literal \n, which read does not undo,
+# and pretty-printed JSON is full of them.
 find_ledger_comments() {
     local file=$1 author=$2 regex
     regex=$(ledger_fence_regex)
@@ -582,14 +572,10 @@ cmd_append() {
         evidence_unavailable "entry file is not valid JSON: $entry_file"
     jq -e "$ENTRY_SCHEMA_JQ" <<<"$entry" >/dev/null 2>&1 ||
         evidence_unavailable "entry does not match the ledger entry schema: $entry_file"
-    # Defense in depth: a free-text field inside the entry (e.g. a bot's
-    # "state", or a copied-forward "reaffirmed_from" sub-object) carrying the
-    # literal fence markers would land inside the rendered ```json block and
-    # could confuse a LATER read_ledger's non-greedy extraction regex into
-    # stopping early. The rendered JSON is always machine-encoded (jq never
-    # lets a marker escape its string quoting), so this can only ever matter
-    # for the raw entry text before that encoding; reject it outright rather
-    # than accept it and hope it round-trips.
+    # Defense in depth: a free-text field carrying the literal fence markers
+    # could make a LATER read_ledger's non-greedy extraction stop early; jq
+    # encoding prevents it after rendering, so reject the raw entry outright
+    # rather than hope it round-trips.
     [[ $entry != *"$OPEN_MARKER"* && $entry != *"$CLOSE_MARKER"* ]] ||
         evidence_unavailable "entry must not contain a review-ledger fence marker: $entry_file"
 
@@ -710,14 +696,10 @@ cmd_cover() {
     target_index=$(jq -r '.index' <<<"$target")
     target_head=$(jq -r '.head_sha' <<<"$target")
 
-    # Idempotence keys on the (sha, reason) PAIR, not the sha alone (fix
-    # batch #2 F2): the ordinary retarget case covers an UNCHANGED head under
-    # a NEW base, so keying on sha alone would silently drop that retarget's
-    # own coverage/audit record as a same-sha no-op. A sha already recorded
-    # (as the review head itself, or already in covered_heads) with this
-    # exact reason already logged is a true no-op; a sha already recorded
-    # but under a reason not yet logged still needs its coverage event
-    # appended (covered_heads itself stays a no-op there via `unique` below).
+    # Idempotence keys on the (sha, reason) PAIR (fix batch #2 F2): a retarget
+    # covers an UNCHANGED head under a NEW base, so a sha already recorded under
+    # a reason not yet logged still gets its coverage event (covered_heads stays
+    # a no-op via unique).
     local sha_covered=0 reason_recorded=0
     if [[ $target_head == "$head" ]] ||
         jq -e --arg head "$head" '(.covered_heads // []) | index($head) != null' <<<"$target" >/dev/null 2>&1; then
@@ -734,16 +716,11 @@ cmd_cover() {
     fi
 
     if ((sha_covered == 0)); then
-        # Fail-closed exactly like cmd_status's force-push demotion, but
-        # extended per fix batch #2 F1: ancestry must be proven against the
-        # ENTIRE covered frontier -- the entry's original head_sha AND every
-        # SHA already recorded in its covered_heads -- not head_sha alone.
-        # Otherwise a force-push to C, a SIBLING child of head_sha that
-        # drops an already-covered fix commit B, would still pass purely
-        # because C descends from head_sha, even though C's history silently
-        # discards B's reviewed lineage. Only reach=yes may pass for every
-        # frontier SHA; "unknown" (no --repo-root, git absent, or the object
-        # simply not present locally) never counts as proof.
+        # Fail-closed like cmd_status's force-push demotion, extended per fix
+        # batch #2 F1: ancestry is proven against the ENTIRE covered frontier
+        # (head_sha AND every covered_heads entry), or a force-push to a sibling
+        # child that drops a covered fix commit would pass; "unknown"
+        # reachability never counts.
         local frontier frontier_count i sha reach
         frontier=$(jq -c '([.head_sha] + (.covered_heads // [])) | unique' <<<"$target")
         frontier_count=$(jq 'length' <<<"$frontier") || frontier_count=0

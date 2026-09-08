@@ -210,6 +210,7 @@ Counting rules:
   next        one fixed-vocabulary hint per lane above (coderabbit, code-quality,
               human, generic, nitpicks, agent-docs) that is currently non-zero;
               omitted entirely when every lane is zero.
+Requires: bash >= 4.2, gh (authenticated), jq >= 1.6, GNU coreutils.
 EOF
 }
 
@@ -636,33 +637,12 @@ fetch_all() {
     return 0
 }
 
-# --- full-evidence cache -----------------------------------------------------
-#
-# --full's expensive cluster -- reviews, inline comments, issue comments,
-# review threads (GraphQL), derived code-quality comments, and code-scanning
-# alerts -- is the cost the issue context calls out explicitly: several calls
-# each, invoked again at every phase (pre-review digest, post-push refresh,
-# pre-gate refresh) even when the head has not moved since the last --full
-# (agent-kit#475). Cheap per-call state (draft/mergeable/CI/base) is never
-# cached here and always re-fetched.
-#
-# A cache entry is namespaced by repository + PR + head SHA under --tmpdir
-# (which --full already requires to be a private owned 0700 directory), and
-# its content additionally records the exact repo/PR/head it was written for
-# -- full_cache_load rejects (never serves) an entry whose recorded identity
-# does not match the request, so two PRs whose heads happen to collide on the
-# same commit in one --tmpdir can never read each other's evidence even if a
-# path-namespacing bug ever reintroduced a collision (agent-kit#475 review
-# finding F1a).
-#
-# A head SHA alone is also not "nothing changed": GitHub bumps a PR's
-# updated_at on a new review, comment, label, or code-scanning result with no
-# push at all, so a same-head cache keyed only by SHA can serve stale
-# feedback forever. Every entry also records the PR's updated_at (already
-# read for free out of the pulls/N response fetch_meta always fetches), and
-# full_cache_load treats any mismatch against the live value as a miss --
-# zero extra API calls, and the cache can never outlive the evidence it
-# summarizes (finding F1b).
+# --- full-evidence cache: --full's expensive cluster (reviews, comments,
+# threads, code-quality, code-scanning) is cached under --tmpdir keyed by repo +
+# PR + head SHA; the entry also records the repo/PR/head it was written for and
+# the PR's updated_at, and full_cache_load rejects any mismatch (agent-kit#475,
+# review F1a/F1b), so colliding heads or a review/comment/label landing without
+# a push can never serve stale evidence. Cheap per-call state is never cached.
 full_cache_path() {
     local repo_slug=${REPO//\//_}
     printf '%s/pr-state-full.%s.%s.%s.json' "$OUT_DIR" "$repo_slug" "$PR" "$HEAD_SHA"
@@ -831,20 +811,11 @@ thread_counts() {
         def is_cr: (classification.provider == "coderabbit");
         def is_cq: (classification.provider == "github-code-quality");
         def has_signal($signal): [.comments.nodes[]? | select(classification.signal == $signal)] | length > 0;
-        # Anchored to the start of a LINE, not merely present somewhere. This
-        # marker decides whether a thread counts as human-touched, and therefore
-        # whether it reaches the operator for confirmation -- so a comment
-        # mentioning the marker anywhere became invisible. A reviewer quoting an
-        # agent reply inside their own actionable comment silently dropped their
-        # own feedback out of the queue.
-        #
-        # The agent emits the marker on its own line, under the attribution
-        # banner. Markdown quoting prefixes "> ", and indentation prefixes
-        # spaces, so neither survives the anchor. A human who begins a line with
-        # a raw HTML comment is opting out deliberately; one who quotes it is
-        # not, and that is the case that happens by accident. Uncertainty
-        # resolves toward "human": the cost is one extra item to confirm, versus
-        # one lost silently.
+        # Anchored to the start of a LINE: this marker decides whether a thread
+        # counts as human-touched, and a reviewer QUOTING an agent reply ("> "
+        # or indented) must not drop their own feedback from the queue.
+        # Uncertainty resolves toward human: one extra confirmation beats one
+        # lost silently.
         def is_agent: (.body // "") | test("(^|\r?\n)" + $mark);
         def human_touched: [.comments.nodes[] | select(((classification.lane == "human") and (is_agent | not)))] | length > 0;
         def has_human_signal: [.comments.nodes[] | select((classification.signal == "human") and (is_agent | not))] | length > 0;
@@ -882,31 +853,13 @@ nitpick_count() {
         | length' <"$file"
 }
 
-# CodeRabbit's own check can sit green on a bare "finished" ack or a rate-limit
-# warning, and a landed review can be APPROVED/CHANGES_REQUESTED with zero
-# actionable threads -- neither a check conclusion nor an issue-comment phrase
-# scan proves a review actually landed (agent-kit#395: PR #386 read
-# coderabbit=none for 15 one-minute rounds after an APPROVED, zero-thread
-# review). The real signal is CodeRabbit's own PullRequestReview object on the
-# reviews endpoint: the initial "Reviewing files that changed..."
-# acknowledgement is posted as a plain issue comment, never as a review
-# submission, so it can never satisfy this check -- only a genuine submitted
-# review (APPROVED, CHANGES_REQUESTED, or COMMENTED; PENDING and DISMISSED are
-# excluded as non-terminal) does. Ties on submitted_at break on the higher
-# review id (insertion order). 'threads' counts this review's own inline
-# comments via pull_request_review_id -- already-fetched evidence, no extra
-# API call. Falls back to the issue-comment rate-limit phrase scan only when
-# no terminal review exists at all; that fallback never reports 'reviewed' on
-# its own, since a phrase alone is not proof a review landed.
-#
-# A terminal review's OWN commit_id must match the current head (agent-kit#395
-# follow-up): the PR can advance to a new head while a review of the OLD head
-# is still in flight and lands afterward, with a submitted_at that looks
-# perfectly current. Reporting that as 'reviewed' would present a stale
-# review as evidence for code nobody has reviewed yet. Such a review is
-# reported as 'stale-head' -- distinct from 'reviewed' (never mistaken for
-# current-head evidence) and distinct from 'none' (a review exists; it is
-# simply not for this head, so the root should not re-trigger blindly).
+# A landed CodeRabbit review is proven only by its own PullRequestReview on the
+# reviews endpoint (APPROVED/CHANGES_REQUESTED/COMMENTED; the "Reviewing
+# files..." ack is a plain comment and never counts) whose commit_id matches the
+# current head (agent-kit#395 + follow-up): a review of an earlier head reports
+# 'stale-head', never 'reviewed' or 'none'. Ties break on the higher review id;
+# 'threads' counts its inline comments from already-fetched evidence. The
+# rate-limit phrase scan is only the fallback and never reports 'reviewed'.
 provider_state() {
     local info
     info=$(jq -r --arg head "$HEAD_SHA" "$PROVIDER_IDENTITY_JQ"'
@@ -1190,15 +1143,10 @@ print_issue_comment_findings_line() {
 
 print_digest() {
     local alerts provider
-    # The full head SHA, never a 7-character abbreviation: pr-to-green's
-    # merge-gate.sh consumes this field as merge authorization evidence,
-    # binding CI/thread/nitpick/code-scanning evidence to the head being
-    # merged. A short prefix can collide across commits (28 bits of entropy),
-    # so it cannot prove the evidence was captured for THIS commit -- only
-    # for some commit sharing those characters. Every other identity in that
-    # decision path (merge-gate.sh --head-sha, the auto-merge authorization
-    # record, merge-pr.sh's merge call) is already full-width; this is the
-    # one field that must match.
+    # The full head SHA, never a 7-char abbreviation: merge-gate.sh consumes
+    # this as merge-authorization evidence bound to the head being merged, and
+    # every other identity on that path (--head-sha, the authorization record,
+    # merge-pr.sh) is full-width.
     jq -r '"pr=" + (.number | tostring)
            + " draft=" + (.isDraft | tostring)
            + " mergeable=" + (.mergeable // "UNKNOWN")
@@ -1260,17 +1208,10 @@ main() {
     fi
     ((WANT_FULL)) && save_artifacts
     if [[ -n $DIGEST_OUT ]]; then
-        # Staged via mktemp (mode 600 from creation, never a plain '>' that is
-        # briefly group/world-writable under a permissive umask) in the
-        # destination's own directory, then renamed into place with `mv -fT`
-        # -- the -T (no-target-directory) form is required because a plain
-        # `mv src dest` treats a dest that is a symlink TO A DIRECTORY as
-        # that directory and moves src inside it, leaving the symlink itself
-        # untouched; -T forces dest to be treated as the file path itself,
-        # so rename(2) replaces whatever is at --digest-out -- a plain file,
-        # a dangling/file symlink, or a symlink-to-directory alike --
-        # without ever following it, and a planted symlink's target is
-        # never opened, let alone truncated.
+        # Staged via mktemp (mode 600 from creation) in the destination's
+        # directory, then mv -fT: -T makes a dest that is a symlink-to-directory
+        # be replaced as a path, never entered, so a planted symlink's target is
+        # never opened or truncated.
         local digest_text digest_dir digest_staged
         digest_text=$(print_digest)
         printf '%s\n' "$digest_text"

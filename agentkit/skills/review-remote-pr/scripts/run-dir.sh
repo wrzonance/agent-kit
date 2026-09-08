@@ -111,27 +111,15 @@ resolve_repo_root() {
         die 'could not resolve the repository root (pass --repo-root outside a Git worktree)'
 }
 
-# ensure_private_root DIR -- DIR must already be (or safely become) an owned,
-# non-symlink, mode-0700 directory. Unlike private_dir_ensure (private-dir.sh),
-# this never requires an ALREADY-private ancestor: it is the function that
-# establishes the very first private boundary under a shared, non-private
-# parent (.agent/ itself stays mode 0755; only .agent/evidence/ and below are
-# private). An existing DIR is validated and never widened or reused past a
-# mismatch; a missing DIR is created at exactly 0700 (mkdir -m bypasses
-# umask, so there is no window where it is briefly more permissive). Returns
-# 1 only for a plain creation failure (the fallback-eligible case); every
-# other problem is a hostile/corrupted pre-existing path and dies outright.
-#
-# The `-L` check runs UNCONDITIONALLY, before any `-e`-gated branch -- never
-# `if [[ -e $dir ]]; then ... -L check ...`. `-e` follows a symlink to its
-# target, so for a DANGLING symlink (target does not exist) `-e` is false and
-# an `-e`-gated `-L` check is skipped entirely; `mkdir` then fails with EEXIST
-# against the link itself, `return 1` reads as "not writable", and the run
-# silently falls back to /tmp instead of refusing -- the exact fail-open this
-# function exists to prevent (issue #405 review finding). `-L` alone is true
-# for a symlink whether or not its target exists, so checking it first and
-# unconditionally closes that gap; this mirrors private_dir_ensure's own
-# loop in private-dir.sh, which checks `-L` before ever branching on `-e`.
+# ensure_private_root DIR -- DIR must be (or safely become) an owned,
+# non-symlink, mode-0700 directory; unlike private_dir_ensure it establishes the
+# FIRST private boundary under a shared parent (.agent/ stays 0755). Missing
+# DIR: mkdir -m 0700 (no umask window); existing DIR is validated, never
+# widened. Returns 1 only for a plain creation failure (fallback-eligible); a
+# hostile pre-existing path dies. The -L check runs UNCONDITIONALLY before any
+# -e-gated branch: -e is false for a dangling symlink, and an -e-gated check let
+# mkdir's EEXIST read as "not writable" and fall back to /tmp (issue #405
+# review).
 ensure_private_root() {
     local dir=$1 mode
     [[ ! -L $dir ]] || die "must be an existing directory, not a symlink: $dir"

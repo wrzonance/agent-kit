@@ -87,6 +87,7 @@ Exit status:
   11  publish only: refused -- the receipt marker is already present
   12  publish only: --require-pushed refused a dirty or unpushed tree
   13  publish only: the findings pipeline is out of order
+Requires: bash >= 4.2, jq >= 1.6. publish additionally requires the sibling gh-comment.sh and everything it requires (gh, diff, cmp).
 EOF
 }
 
@@ -747,15 +748,11 @@ append_ledger_entry() {
         rm -f -- "$entry_file"
         return 0
     fi
-    # Best-effort: CodeRabbit review of PR #484 (issue #477 T1) -- without
-    # --repo-root, resolve_trusted_author inside review-ledger.sh can never
-    # see a repository-declared AGENT_LEDGER_AUTHOR and silently falls back
-    # to the authenticated gh login instead. When that differs from the
-    # configured author, a later run reads the ledger as covered by the
-    # WRONG identity (or absent), and this call creates a second ledger
-    # comment instead of updating the configured author's own. A failed
-    # `git rev-parse` here degrades to the pre-existing (gh-login) fallback,
-    # exactly as before this fix -- never fatal to the receipt itself.
+    # Best-effort (issue #477 T1, PR #484 review): without --repo-root,
+    # review-ledger.sh cannot see AGENT_LEDGER_AUTHOR and falls back to the gh
+    # login, which can create a second ledger comment under the wrong identity;
+    # a failed git rev-parse degrades to that pre-existing fallback and never
+    # fails the receipt.
     local ledger_repo_root=''
     ledger_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || ledger_repo_root=''
     local -a ledger_repo_root_args=()

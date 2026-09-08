@@ -156,22 +156,12 @@ resolve_base_sha() {
         die "--base is not a resolvable commit: $BASE"
 }
 
-# path_tracked_at_head PATH -- "yes" when PATH is a blob (a file) in the HEAD
-# tree, "dir" when it is a tree (a directory), else "no". `git diff
-# --exit-code` silently reports zero differences for a path that is not part
-# of the tree/index pathspec set at all -- an untracked new file (never
-# `git add`ed) or one HEAD never had is invisible to it, not merely
-# unchanged. Without this gate, a failing path this very change introduced
-# (untracked, so neither `git diff HEAD` nor `git diff BASE...HEAD` says
-# anything about it) reads as unchanged=yes outside-diff=yes: exactly the
-# false baseline-red this helper exists to prevent.
-#
-# A directory is deliberately never treated as "yes": `cat-file -e` alone
-# accepts a tree as tracked, so a `--paths src` covering an untracked failing
-# file somewhere under src/ would otherwise also read baseline-red. Rather
-# than recursing to classify every leaf under a directory argument, an
-# untracked leaf makes the whole directory argument change-caused -- the
-# caller passes leaf file paths, never a directory, to get past this gate.
+# path_tracked_at_head PATH -- "yes" for a blob in HEAD, "dir" for a tree, else
+# "no". git diff --exit-code reports zero differences for a path outside the
+# tree/index entirely (an untracked new file), so without this gate a failing
+# file this very change introduced reads as unchanged=yes -- the false
+# baseline-red this helper prevents. A directory is never "yes" (cat-file -e
+# accepts a tree): callers pass leaf files.
 path_tracked_at_head() {
     local path=$1 type
     type=$(git -C "$REPO_ROOT" cat-file -t "HEAD:$path" 2>/dev/null) || { printf 'no\n'; return 0; }
