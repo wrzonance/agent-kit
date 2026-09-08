@@ -30,7 +30,7 @@ Conventions pinned by the five tests I was told to read first (every proposal be
 
 ## 1. Header comments (top-of-file block after the shebang, before the first non-`set` code line)
 
-27 files have a header > 15 lines (total 771 lines); trimming each to ≤ 8 (one-sentence purpose + "see --help"/pointer) saves **647 lines**; trimming *every* header to ≤ 8 saves 667. No test pins header text. `--help` never prints the header: the four header-only scripts (`triage-issues`, `pick-issues`, `repo-config`, `bootstrap-repo`) answer `-h` with `die_usage 'help requested'` (a one-line synopsis), so their `Usage:` block in the header is their only option doc — keep those 4–9 lines, trim the rationale.
+27 files have a header > 15 lines (total 863 lines, recomputed 2026-09-08 by summing the §1 table's "header lines (range)" column — the original 771 undercounted it); trimming each to ≤ 8 (one-sentence purpose + "see --help"/pointer) saves **611 lines** (sum of the table's "saved (→8)" column — six scripts whose `usage()` is a one-liner or absent keep more than 8, so this is below the uniform 863 − 216 = 647); trimming *every* header to ≤ 8, including those six, saves 647. No test pins header text. `--help` never prints the header: the four header-only scripts (`triage-issues`, `pick-issues`, `repo-config`, `bootstrap-repo`) answer `-h` with `die_usage 'help requested'` (a one-line synopsis), so their `Usage:` block in the header is their only option doc — keep those 4–9 lines, trim the rationale.
 
 Ranked by lines saved (header lines → 8). "Restates usage()" = the header repeats the option/subcommand/exit list that the script's own `usage()` already prints (quoted pairs below the table).
 
@@ -68,7 +68,7 @@ Quoted pair for #1 (review-ledger): header line 40–42 `#   status --repo OWNER
 Quoted pair for #7 (claude-adversarial-review): header 24–26 `# Exit status: 0 — review completed and every invariant held. 1 — usage error, or a real invariant/verdict failure.` vs usage 139–141 `Exit status: 0 review completed and every invariant held. 1 usage error, or a real invariant/verdict failure.`
 Quoted pair for #3 (post-receipt): header 12–16 `precheck --issue-comments FILE … spent → exit 0 / not-spent → exit 10` vs usage 107–111 `precheck: … stdout 'spent' and exit 0 … stdout 'not-spent' and exit 10`.
 
-**Proposal H1 — trim the 27 headers to ≤ 8 lines: −647 lines (conservative −560 after keeping the Usage/exit tables in the six scripts whose `usage()` is a one-liner or absent).** Touches no convention; all 27 keep their argv loops. Risk: low (comment-only edits; the issue numbers being deleted are all already carried by the named regression suites).
+**Proposal H1 — trim the 27 headers to ≤ 8 lines: −611 lines (−647 if every header, including the six scripts whose `usage()` is a one-liner or absent, is trimmed uniformly to 8).** Touches no convention; all 27 keep their argv loops. Risk: low (comment-only edits; the issue numbers being deleted are all already carried by the named regression suites).
 
 ---
 
@@ -131,11 +131,11 @@ Exact normalized-body duplicates (dupfn.py A1):
 | `require_value` (3 wordings) | 13 (+2 `need_value`) | 3 | gh-body 71, chain-advance 86, compose-pr-body 30, adversarial-run 119, review-liveness 48, run-dir 77, claude-adv 223, codex-adv 181, consent-record 74, verification-baseline 87, finding-ledger 46, session-ledger 67, gh-pr-state 323; need_value: agent-preflight 235, worktree-commit 143 |
 | `require_uint` | 2 | 4 | post-receipt 159-162, review-ledger 158-161 |
 
-Total footprint: 33×4 (die) + 13×5 (die_usage) + 5×4 + 4×4 + 15×3 + 2×4 = **294 lines** across 46 scripts.
+Total footprint: 33×4 (die) + 13×5 (die_usage) + 5×4 + 4×4 + 15×3 + 2×4 = 132 + 65 + 20 + 16 + 45 + 8 = **286 lines** across 46 scripts (recomputed 2026-09-08; the original 294 mis-summed this same arithmetic).
 
 No existing lib provides these (`lib/private-dir.sh` and `lib/adversarial-review.sh` both say "the caller supplies `die`"; `lib/worktree-setup.sh` has its own `worktree_setup_fail`). Consolidating them means every one of 46 scripts gains `source "$SCRIPT_DIR/../../.shared/scripts/lib/<existing>.sh"` (1 line) plus a `SCRIPT_DIR=` line in the ~30 scripts that have none, and the shared `die` must absorb three variances (`PROGRAM` vs `PROGNAME`, `"$*"` vs `"$1"`, exit 1 vs 2) — e.g. `die(){ printf '%s: %s\n' "${PROGNAME:-${PROGRAM:-${0##*/}}}" "$*" >&2; exit "${DIE_EXIT:-1}"; }`.
 
-Arithmetic: 294 removed − 20 shared impl (die 4 + die_usage 5 + die_blocked 4 + die_evidence 4 + require_value 3) − 46 source lines − 30 `SCRIPT_DIR` lines = **net −198**. Conventions touched: none of C1–C4 directly (argv loops stay; messages stay `prog: msg`), but the 5 `exit 2` die-scripts (`cross-write-check`, both `materiality-check`, `named-active-state`, `stall-check`) and `require_value`'s `option ` prefix are pinned by `test-materiality-check`/`test-stall-check`/`test-named-active-state` exit codes → the `DIE_EXIT` knob is mandatory. **Risk: medium** — 46 scripts acquire a runtime dependency on a sibling lib (a copied-alone script stops working; `agent-preflight.sh` deliberately guards every `source` for exactly that reason), and a `die` with an exit-code knob is the "flags to cover its callers" smell `code.md` warns about. I recommend doing it only for the **review-remote-pr family (16 scripts) that already sources a lib** (net −64 with zero new `SCRIPT_DIR` lines) and leaving the `.shared` PROGRAM family alone; both figures are in the ranked table.
+Arithmetic: 286 removed − 20 shared impl (die 4 + die_usage 5 + die_blocked 4 + die_evidence 4 + require_value 3) − 46 source lines − 30 `SCRIPT_DIR` lines = **net −190**. Conventions touched: none of C1–C4 directly (argv loops stay; messages stay `prog: msg`), but the 5 `exit 2` die-scripts (`cross-write-check`, both `materiality-check`, `named-active-state`, `stall-check`) and `require_value`'s `option ` prefix are pinned by `test-materiality-check`/`test-stall-check`/`test-named-active-state` exit codes → the `DIE_EXIT` knob is mandatory. **Risk: medium** — 46 scripts acquire a runtime dependency on a sibling lib (a copied-alone script stops working; `agent-preflight.sh` deliberately guards every `source` for exactly that reason), and a `die` with an exit-code knob is the "flags to cover its callers" smell `code.md` warns about. I recommend doing it only for the **review-remote-pr family (16 scripts) that already sources a lib** (net −64 with zero new `SCRIPT_DIR` lines) and leaving the `.shared` PROGRAM family alone; both figures are in the ranked table.
 
 ### 3b. Claude/Codex adversarial-review twins → `lib/adversarial-review.sh` (already sourced by both, at claude:719 / codex:651, immediately before `main "$@"`, so every function moved is defined before any call)
 
@@ -223,7 +223,7 @@ Existing home: `lib/adversarial-review.sh` ("verdict invariants live here"). adv
 
 Duplication between `--help` and prose is real but shallow: prose mentions carry the *invocation* (`--pr N --repo …`), not the option table. Heavy overlap sits **inside the same script** (header ↔ usage, §1) — e.g. gh-pr-state's "Counting rules" (usage 233–277, 45 lines) re-explains the digest legend of header 50–63 and the `provider`/`agent-docs` paragraphs of `review-remote-pr/references/provider-rules.md`.
 
-**Proposal U1** — cut the four usages that exceed 60 lines to ≤ 40 by dropping "Behaviour/Output/Examples" sections that repeat the option table or the header: gh-pr-state 102→45 (−57, drop Counting rules to a 10-line legend), worktree-commit 71→45 (−26: Behaviour 114–122 + Examples 127–132 duplicate Options), move-github-project-item 64→40 (−24), claude-adversarial-review 63→45 (−18: Output/Exit sections are §1's duplicate — keep them *here* and delete the header copy), post-receipt 61→45 (−16). **−141 lines**, no convention touched (`-h|--help` exit codes unchanged; tests assert only `Usage:` presence and rc). Risk: low.
+**Proposal U1** — cut the five usages that exceed 60 lines to ≤ 40 by dropping "Behaviour/Output/Examples" sections that repeat the option table or the header: gh-pr-state 102→45 (−57, drop Counting rules to a 10-line legend), worktree-commit 71→45 (−26: Behaviour 114–122 + Examples 127–132 duplicate Options), move-github-project-item 64→40 (−24), claude-adversarial-review 63→45 (−18: Output/Exit sections are §1's duplicate — keep them *here* and delete the header copy), post-receipt 61→45 (−16). **−141 lines**, no convention touched (`-h|--help` exit codes unchanged; tests assert only `Usage:` presence and rc). Risk: low.
 
 Flags parsed but absent from `usage()` are **all aliases** (`--comments`≡`--issue-comments`, `--worker-id`≡`--issue`, `--tree-root`≡`--chain-base`, `--artifact`≡`--threads-artifact`, `--part`≡`--body-file`, `--dispatch-plan`≡`--merge-plan`, `--repository-visibility`≡`--visibility`, `--repository`≡`--repo`, `--repo-root`≡`--worktree`/`--dir`, `--state`≡`--consent-state`). None is dead: `review-remote-pr/references/grooming.md` still calls `--repository`, and C1 counts files by the presence of `--repo)`/`--repo-root)` branches (22 vs floor 21). Leave them.
 
@@ -296,7 +296,7 @@ Top-3 cuts:
 1. **Essays (13 blocks, 137 lines): 467-492 (26, #572/#577), 546-559 (14, #455), 836-846 (11, #564/#567), 950-957 (8, #484/#561/#564), 981-990 (10, #564 F3), 303-310, 347-355, 405-413, 439-447, 614-621, 648-656, 38-45 → 3 each: −98.** All pinned by test-chain-advance, test-pr-to-green-merge-pr, test-pr-to-green-authorize-queue. Risk low.
 2. **parse_args 56 → 38 (−18):** `--pr`/`--base`/`--repo` each spend a 5-line branch + a 1-line `=*` branch; group as `--pr|--base|--repo) require_value "$1" "${2-}"; …` the way compose-worker-prompt.sh:36-56 does. Keeps the literal `--repo)` and `--base)` tokens the C1 grep needs (`--repo)` must remain a separate pattern-list member — `--pr|--base|--repo)` still matches `--repo\)`). Pinned by test-chain-advance. Risk low.
 3. **recover_closed 107 → 88 (−19 comment lines to ≤ 4) and `die` (8 LOC, a `$1`-code variant) + `require_value` → §3a lib (−9 net if the review-remote-pr-style lib is adopted).** Risk low.
-Total: **≈ −125**.
+Total: **≈ −144** (98 essays + 18 parse_args + 19 recover_closed comments + 9 die/require_value lib — recomputed 2026-09-08, the original −125 dropped the essay figure).
 
 ---
 
@@ -306,10 +306,10 @@ Net figures are lines of the 32,331 total. "Conv." = which of C1–C4 the change
 
 | rank | proposal | files | LOC before | LOC after | net saved | conv. | risk |
 |---|---|---|---|---|---|---|---|
-| 1 | **H1** Trim the 27 headers > 15 lines to ≤ 8 (purpose + pointer); keep Usage/exit tables only where `usage()` is absent | 27 (§1 table) | 771 header lines | 216 | **−560** (−647 aggressive) | — | low (comment-only; no test reads headers) |
+| 1 | **H1** Trim the 27 headers > 15 lines to ≤ 8 (purpose + pointer); keep Usage/exit tables only where `usage()` is absent | 27 (§1 table) | 863 header lines | 216 | **−611** (−647 aggressive) | — | low (comment-only; no test reads headers) |
 | 2 | **E2** Cap the 12 top-level essays ≥ 15 lines (agent-preflight 881-928, 965-981; gh-pr-state 704-730, 950-974; chain-advance 467-492; compose-worker-prompt 841-861; adversarial-run 227-246, 611-628; run-dir 136-156; sandbox-comparator 29-48; verification-baseline 181-196; review-ledger 271-287) at 4 lines | 8 | 262 | 48 | **−214** | — | low |
 | 3 | **E1** Cut the 30 in-function essays (§2) to ≤ 3 lines | 12 | 297 | 90 | **−207** | — | low (every one is pinned by a named suite) |
-| 4 | **D1** `die`/`die_usage`/`die_blocked`/`die_evidence`/`require_value` into one existing lib for all 46 scripts | 46 + 1 lib | 294 | 96 (20 lib + 76 source/SCRIPT_DIR lines) | **−198** | C1/C2 untouched; exit-code variants need `DIE_EXIT` | **medium** (46 new sibling-lib dependencies; knob-style abstraction) |
+| 4 | **D1** `die`/`die_usage`/`die_blocked`/`die_evidence`/`require_value` into one existing lib for all 46 scripts | 46 + 1 lib | 286 | 96 (20 lib + 76 source/SCRIPT_DIR lines) | **−190** | C1/C2 untouched; exit-code variants need `DIE_EXIT` | **medium** (46 new sibling-lib dependencies; knob-style abstraction) |
 | 4′ | **D1-lite** same, only the 16 review-remote-pr scripts that already `source` a lib | 16 + 1 lib | 84 | 20 | **−64** | — | low |
 | 5 | **U1** Cut the five usages > 60 lines to ≤ 45 (drop Behaviour/Examples/Counting-rules that repeat the option table) | 5 | 361 | 220 | **−141** | — | low |
 | 6 | **A1** Claude/Codex twins: move the 8 byte-identical functions + verify_consent + common validate_args block into `lib/adversarial-review.sh` | 2 + 1 lib | 2×(24+7+6+5+5+4+4+3+17+28)=206 | 105 | **−101** (−58 for the identical-only subset, −144 with emit_progress/write_review_input) | — (parse_args stays) | low |
@@ -323,7 +323,7 @@ Net figures are lines of the 32,331 total. "Conv." = which of C1–C4 the change
 | 14 | **X1** delete dead `scope_paths()` worktree-commit.sh:434-436 | 1 | 3 | 0 | **−3** | — | none |
 | — | Alias flags, `--)` one-liners, SCRIPT_DIR spellings, materiality-check pair, ci `bucket` jq, python heredoc | — | — | — | 0 | C1/C2 forbid or net ≤ 8 | — |
 
-Sum of the low-risk rows (1, 2, 3, 4′, 5, 6, 7, 8, 9, 12, 14): **≈ −1,420 lines (4.4 % of 32,331; 27 % of all comment lines)** without adding a file, gate, rule, or round trip. Adding the medium-risk rows (4 instead of 4′, 10, 11, 13): **≈ −1,700**.
+Sum of the low-risk rows (1, 2, 3, 4′, 5, 6, 7, 8, 9, 12, 14): **≈ −1,472 lines (4.6 % of 32,331; 28 % of all comment lines)** without adding a file, gate, rule, or round trip — recomputed 2026-09-08 from the corrected row 1 (H1, −611) and row 4 (D1, −190) figures above; the original ≈ −1,420/−1,700 pair carried the stale 771/294 totals. Adding the medium-risk rows (4 instead of 4′, 10, 11, 13): **≈ −1,744**.
 
 Skepticism notes: every "identical" claim above was checked with `diff -w` on the extracted ranges (§3 tables state the outcome); `emit_progress` and the lib functions flagged as "dead" by in-file reference counting were re-verified across the tree and are **not** dead; the usage-vs-prose overlap (§4) is mostly invocation lines, not option tables, so I did not count it as savings.
 

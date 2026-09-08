@@ -625,6 +625,35 @@ for grep_bundle_pattern in "grep -re \"\$HOME\" docs/" "grep -reTODO docs/" \
     out=$(pre_input "$scope_repo" "$grep_bundle_pattern" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "a bundled -e/-f whose value is \$HOME is not a sweep: $grep_bundle_pattern"
 done
+# `--` ends grep's own option parsing too: a `-e`/`--regexp`/`-f`/`--file`
+# spelled AFTER it is a positional operand, never the flag, so POSIX/GNU grep
+# resolve it as the FIRST positional -- i.e. the pattern -- leaving the next
+# operand as the walk root (2026-09-08 round 3, CodeRabbit: `grep -r -- -e
+# "$HOME"` let the pre-scan clear pattern_pending for the post-`--` `-e` and
+# the main scan then consumed "$HOME" as that flag's value, so the sweep
+# denial never fired). Verified against real GNU grep before fixing.
+out=$(pre_input "$scope_repo" "grep -r -- -e \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'deny' "$(decision "$out")" \
+    '-e after -- is a positional pattern, not the flag, so $HOME is the walk root'
+# With no pattern flag before OR after --, the lone post-`--` operand is
+# grep's pattern (not a file/root); with -r and no file operand grep walks
+# the CWD, never $HOME, so this is not a sweep.
+out=$(pre_input "$scope_repo" "grep -r -- \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'allow' "$(decision "$out")" \
+    '$HOME after -- with nothing else is the pattern, not the walk root'
+out=$(pre_input "$scope_repo" "grep -r -e TODO -- \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'deny' "$(decision "$out")" \
+    '-e TODO before -- still supplies the pattern, so $HOME after -- is the walk root'
+out=$(pre_input "$scope_repo" "grep -r -- TODO \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'deny' "$(decision "$out")" \
+    'the first positional after -- is the pattern, so the second ($HOME) is still the walk root'
+out=$(pre_input "$scope_repo" 'grep -r -- TODO docs/' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'positional pattern/root after -- with a workspace-relative root is unaffected'
 
 # Reading ONE file under $HOME is a mis-scoped read, not an environment probe,
 # and the distinction is the whole point: denying every path under $HOME would
