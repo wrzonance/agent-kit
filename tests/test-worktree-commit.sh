@@ -1016,4 +1016,8 @@ partial_out=$(cd "$partial_repo" && "$script" --message 'fix: partial ledger fla
 assert_eq '1' "$partial_rc" 'a partial --ledger/--run-id/--ledger-scope trio is a usage error'
 assert_contains "$partial_out" 'given together' 'the partial-trio refusal names the requirement'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 828 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 828 lines'
+
 finish

@@ -109,4 +109,8 @@ assert_rc 2 'a missing state path is a usage error' -- \
 assert_rc 2 'a non-numeric threshold is refused' -- \
     "$helper" --worktree "$wt" --state "$state" --threshold-minutes soon
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/stall-check.sh") -le 111 ]] && printf yes || printf no)" \
+    'stall-check.sh stays at or under 111 lines'
+
 finish

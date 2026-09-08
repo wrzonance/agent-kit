@@ -1,37 +1,10 @@
 #!/usr/bin/env bash
 #
-# worktree-commit.sh -- stage and commit from inside a git worktree without the
-# guaranteed "index.lock: Read-only file system" tax.
-#
-# WHY THIS EXISTS
-#   A linked worktree keeps its git metadata under the MAIN repository's .git
-#   directory (.git/worktrees/NAME/), not under the worktree checkout. When an
-#   agent runs in a sandbox whose writable bind covers only the worktree, the
-#   very first `git add` dies with
-#       fatal: Unable to create '.../.git/worktrees/NAME/index.lock':
-#              Read-only file system
-#   after the files were already chosen and the change already narrated. The
-#   cause is fully detectable before any staging happens, so this wrapper probes
-#   BOTH git metadata directories for writability up front and exits 2 naming
-#   the exact offending path. The worker hands the identical command to the
-#   top-level session, which owns any privileged retry; this helper never
-#   elevates itself.
-#
-# IT ALSO
-#   * refuses to commit onto a trunk branch (main/master/trunk),
-#   * runs `git diff --cached --check` (whitespace / conflict-marker gate),
-#   * prints exactly one machine-readable line on success.
-#
-# EXIT CODES
-#   0  committed
-#   2  a git metadata directory is not writable -- needs elevation, then retry
-#   3  an active merge carries protected paths that attended work must park
-#   1  usage error, not a repository, trunk branch, or any git failure
-#
-# A merge-inherited protected path may also be authorized by a recorded
-# session-ledger grant (--ledger/--run-id/--ledger-scope) instead of a named
-# base: see guard_staged_protected_paths and issue #563.
-#
+# worktree-commit.sh -- stage and commit from inside a git worktree, probing BOTH
+# git metadata directories for writability first (a sandbox whose writable bind
+# covers only the worktree dies at .git/worktrees/NAME/index.lock; this exits 2
+# naming the path instead). Also refuses trunk, runs git diff --cached --check,
+# prints one machine-readable line. Options and exit codes: --help.
 set -euo pipefail
 
 readonly PROGNAME="${0##*/}"
@@ -110,6 +83,9 @@ Options:
                       also leaves the park behaviour unchanged.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
+Exit status: 0 committed; 1 usage error, not a repository, trunk branch, or any git
+  failure; 2 a git metadata directory is not writable (needs elevation, then retry);
+  3 an active merge carries protected paths that attended work must park.
 
 Behaviour:
   * Probes 'git rev-parse --git-dir' and '--git-common-dir' for writability
