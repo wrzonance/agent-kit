@@ -190,8 +190,8 @@ The guard requires the resolver's provenance sentinel, so a stale or profile-inh
 #### Run the preflight — ONCE, and only here
 
 Run this block once, never per shell call: it rewrites `.agent/env-contract.txt` (a transient `gh`/network
-failure would silently overwrite a good contract) and prints the whole contract. It refreshes an existing
-contract only — a repository with none must run `onboard-repo` first, the sole contract-absent bootstrap.
+failure would silently overwrite a good contract) and prints the whole contract, refreshing an existing
+contract only. Absent one, run `onboard-repo` first, then this block, then continue.
 
 ```bash
 set -euo pipefail
