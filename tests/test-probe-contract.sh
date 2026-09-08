@@ -130,9 +130,11 @@ assert_contains "$reference_text" 'never count against the one-review-per-PR bud
     'review reference states probes do not spend the review budget'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh") -le 628 ]] && printf yes || printf no)" \
-    'codex-adversarial-review.sh stays at or under 628 lines'
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh") -le 690 ]] && printf yes || printf no)" \
-    'claude-adversarial-review.sh stays at or under 690 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh") -le 520 ]] && printf yes || printf no)" \
+    'codex-adversarial-review.sh stays at or under 520 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh") -le 575 ]] && printf yes || printf no)" \
+    'claude-adversarial-review.sh stays at or under 575 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh") -le 310 ]] && printf yes || printf no)" \
+    'adversarial-review.sh (lib) stays at or under 310 lines'
 
 finish

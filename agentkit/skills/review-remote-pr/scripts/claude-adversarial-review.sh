@@ -10,6 +10,8 @@ set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
+readonly REVIEW_HARNESS_LABEL=Claude
+readonly CONSENT_PROVIDER=anthropic
 readonly MAX_DIFF_BYTES=10485760 # Claude Code piped-stdin limit (10 MiB)
 readonly DEFAULT_MAX_DURATION_SECONDS=900
 readonly REQUIRED_FLAGS=(
@@ -107,11 +109,6 @@ Requires: bash >= 4.2, claude >= 2.1, jq, GNU coreutils.
 EOF
 }
 
-die() {
-	printf '%s: %s\n' "$PROGNAME" "$1" >&2
-	exit 1
-}
-
 # Environment-class failure: Claude cannot run in this sandbox at all, so no
 # verdict is obtainable here. Exit 3 keeps that distinguishable from exit 1 ("the
 # review found something"), which a caller must not confuse — treating a blocked
@@ -134,14 +131,6 @@ run_bounded() {
 	timeout --signal=KILL "$seconds" "$@" >"$out_file" 2>&1
 }
 
-seconds_until_deadline() {
-	local now left
-	now=$(date +%s)
-	left=$((DEADLINE_EPOCH - now))
-	((left > 0)) || return 1
-	printf '%s' "$left"
-}
-
 bounded_seconds() {
 	local requested=$1 remaining
 	remaining=$(seconds_until_deadline) || return 1
@@ -150,35 +139,6 @@ bounded_seconds() {
 	else
 		printf '%s' "$requested"
 	fi
-}
-
-die_duration() {
-	die "Claude review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
-}
-
-record_heartbeat_failure() {
-	local detail=$1
-	printf '%s\n' "$detail" >"$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true
-}
-
-heartbeat_failure_detail() {
-	local detail
-	detail=$(cat -- "$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true)
-	printf '%s' "${detail:-unknown heartbeat publication failure}"
-}
-
-record_helper_pid() {
-	PID_FILE="$TRANSCRIPT_PATH.pid"
-	[[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
-	rm -f -- "$PID_FILE"
-	printf '%s\n' "$$" >"$PID_FILE" || die "Cannot record helper PID: $PID_FILE"
-}
-
-# Review transcripts contain the complete private diff and must never be placed
-# in a shared temporary directory. The caller creates one 0700 run directory and
-# passes a fresh path inside it. Refuse anything weaker before invoking Claude.
-require_value() {
-	[[ -n ${2:-} ]] || die "option $1 requires a value"
 }
 
 parse_args() {
@@ -223,15 +183,7 @@ parse_args() {
 }
 
 validate_args() {
-	[[ $MODE == probe || $MODE == review ]] || die "--mode must be probe or review"
-	[[ -n $MODEL ]] || die "--model is required"
-	[[ -n $TRANSCRIPT_PATH ]] || die "--transcript is required"
-	case $EFFORT in
-	low | medium | high | xhigh | max) ;;
-	*) die "--effort must be one of: low medium high xhigh max" ;;
-	esac
-	[[ $POLL_SECONDS =~ ^[0-9]+$ ]] || die "--poll-seconds must be an integer"
-	((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
+	review_validate_common_args
 	[[ $MAX_DURATION_SECONDS =~ ^[0-9]+$ ]] || die "--max-duration-seconds must be an integer"
 	((MAX_DURATION_SECONDS >= 1 && MAX_DURATION_SECONDS <= 86400)) ||
 		die "--max-duration-seconds must be 1-86400"
@@ -240,45 +192,7 @@ validate_args() {
 		die "--max-budget-usd must be between 0.01 and 1000"
 	# Normalize away any locale-specific decimal handling before it reaches the CLI.
 	MAX_BUDGET_USD=$(LC_ALL=C printf '%.2f' "$MAX_BUDGET_USD")
-	if [[ $MODE == probe ]]; then
-		((NO_PAYLOAD == 1)) ||
-			die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
-		[[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
-			-z $BASE_REF && -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
-			die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
-	else
-		((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
-	fi
-	if [[ $MODE == review ]]; then
-		[[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
-		if [[ -n $BASE_REF ]]; then
-			git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
-				die "--base-ref must be a valid branch name"
-		fi
-		[[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
-		[[ $REPO_SLUG =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-			die "--repo OWNER/NAME is required in review mode"
-		[[ -n $CONSENT_STATE_PATH ]] || die "--consent-state is required in review mode"
-	fi
-	return 0
-}
-
-verify_consent() {
-	local consent_script payload
-	consent_script="$SCRIPT_DIR/consent-record.sh"
-	[[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
-	local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
-	if [[ -n $BASE_REF ]]; then
-		payload_args+=(--base-ref "$BASE_REF")
-	fi
-	payload=$("$consent_script" "${payload_args[@]}") ||
-		die 'cannot derive consent payload; refusing to launch review'
-	if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
-		die 'supplied consent payload does not match the exact review diff'
-	fi
-	"$consent_script" check --state "$CONSENT_STATE_PATH" --provider anthropic \
-		--payload "$payload" >/dev/null 2>&1 ||
-		die 'valid cross-provider consent check is required; refusing to launch review'
+	review_validate_mode_args
 }
 
 # Resolve the CLI and prove the isolation/streaming flags this harness depends on
@@ -338,33 +252,6 @@ preflight_flags() {
 	done
 }
 
-verdict_schema() {
-	jq -c . <<'JSON'
-{
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "verdict": { "type": "string", "enum": ["findings", "no_findings"] },
-    "findings": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "priority": { "type": "string", "enum": ["P1", "P2"] },
-          "location": { "type": "string" },
-          "failureScenario": { "type": "string" },
-          "smallestFix": { "type": "string" }
-        },
-        "required": ["priority", "location", "failureScenario", "smallestFix"]
-      }
-    }
-  },
-  "required": ["verdict", "findings"]
-}
-JSON
-}
-
 system_prompt() {
 	cat <<'EOF'
 You are a one-shot static diff reviewer. No repository, tools, or external context exists. Never
@@ -410,12 +297,6 @@ no_findings with an empty findings array.
 DIFF STARTS BELOW
 EOF
 	cat -- "$resolved" >>"$target"
-}
-
-transcript_event_count() {
-	local count
-	count=$(grep -c '[^[:space:]]' -- "$TRANSCRIPT_PATH" 2>/dev/null) || count=0
-	printf '%s' "${count:-0}"
 }
 
 transcript_last_label() {
