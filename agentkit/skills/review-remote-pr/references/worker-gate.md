@@ -86,7 +86,7 @@ reported in the handback. Tier mapping (root/Luna/Terra) is the same as
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 resolver="$agentkit/.shared/scripts/repo-config.sh"
 [ -x "$resolver" ] && eval "$("$resolver" --export)"
-REPO=${AGENT_REPO_SLUG:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
+REPO=${AGENT_REPO_SLUG:-$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$(git rev-parse --show-toplevel)" --get repo.slug)}
 PR=42                                                        # replace with the PR number under review
 export REPO PR
 ```
