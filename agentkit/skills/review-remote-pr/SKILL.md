@@ -446,7 +446,7 @@ Implementation worker: [<model> <effort> | worker=self — reason: <why>], six-s
 Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
 [Waiting for you to mark it ready — this skill will not trigger a review. | Ready to merge | Awaiting user confirmation; not claiming readiness]
 ```
-(Draft phase: threads 0/0 and approval "no provider review observed" — no provider review exists before the user triggers one. Identify which reviewer ran and any fallback reason; who wrote the code and its model/effort or
+(Draft phase: report the observed thread and approval state; `0/0` and "no provider review observed" only when the evidence shows none. Name the reviewer and any fallback reason; who wrote the code and its model/effort or
 `worker=self` reason; every human-review item's decision, verified-reply state, open-thread state.)
 
 Then run **Backlog grooming** — read ["$agentkit/review-remote-pr/references/grooming.md"](references/grooming.md) in full —
