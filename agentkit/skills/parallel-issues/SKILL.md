@@ -61,27 +61,17 @@ command with no approval step and no trust record — `--yolo` only ever governe
 issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
 commands run.
 
-**Verification cache and suite cadence.** `agent-run.sh` caches a green eligible
-verification (`test`, `lint`, `typecheck`, `coverage`, `verify`, `check`) per
-command/directory/tree-state; `--force` bypasses the cache. Run focused suites during
-red/green iteration, the full suite once per tree state before commit;
-`build`/`setup`/`seed`/`migrate` are never cached. After push, GitHub CI is authoritative for
-that SHA. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the detail.
+**Verification cache.** `agent-run.sh` caches a green eligible verification per command/directory/tree-state (`--force` bypasses it); run focused suites while iterating and the full suite once per tree state before commit. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for the eligible names and cadence.
 
 Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
-**`--auto-review` is independent.** It is valid with or without the other two, and it
-grants nothing beyond the cross-provider send described in `review-remote-pr`. It does
-not skip brainstorm, does not skip approval, and does not extend to a repository the
-user does not own.
-
-**Consent-bearing review launch stays in the consent-holding context.** Typed approval is
-context-local and cannot cross a prompt, ledger, or tool boundary. Root is the default holder;
-dispatched review agents do not launch the reviewer and dispatched loop agents never stall waiting
-for consent they structurally cannot hold. They run CI, precheck, and triage around the root-owned
-send; another holder launches and returns the result. Keep `RUN_ID`, the consent record, and the
-verbatim `--auto-review` quote at the launch site so harness denials surface directly, never via a
-workaround.
+**`--auto-review` is independent.** Valid with or without the other flags; it grants only the
+cross-provider send `review-remote-pr` describes — never brainstorm/approval skips, never a
+repository the user does not own. Typed approval is context-local: root is the default holder,
+dispatched review agents do not launch the reviewer, and dispatched loop agents never stall waiting for consent they
+cannot hold — they run CI, precheck, and triage around the root-owned send. Keep `RUN_ID`, the consent
+record, and the verbatim `--auto-review` quote at the launch site so harness denials surface directly,
+never via a workaround.
 
 ## Session decision ledger
 
@@ -104,15 +94,12 @@ RUN_ID="parallel-issues-$(printf '%s' "$run_inputs" | sha256sum | cut -c1-32)"
 : "$LEDGER" "$RUN_ID"
 ```
 
-The normalized issue scope, canonical authorization flags, repository, and base are available
-before the first receipt and remain stable when HEAD or the local environment contract changes
-after compaction/resume. `scope=57,54` and `scope=57,62` therefore cannot share an ID, nor can
-`auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume.
-Reuse this invocation-level `RUN_ID` for every issue and never derive it from worker-local
-values. Append every human grant, steer, or board adjudication immediately on receipt. Write the
-verbatim quote to a private temp file first and pass it as `--quote-file`, so a multi-line grant
-(flags on one line, scope on the next) is stored with no reflow, other than a
-carriage return normalized to LF:
+The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
+changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
+`auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
+invocation-level `RUN_ID` for every issue, never a worker-local value. Append every human grant, steer, or board adjudication
+immediately on receipt, passing the verbatim quote through a private temp file so a multi-line grant is
+stored with no reflow (CR normalized to LF):
 `quote_file=$(mktemp); chmod 600 "$quote_file"; printf '%s' "$QUOTE" >"$quote_file";
 "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-file "$quote_file"; rm -f "$quote_file"`.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
@@ -179,7 +166,7 @@ if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O 
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 if [[ -z $agentkit ]]; then
-    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run agent-preflight.sh first' >&2
+    printf '%s\n' 'agentkit: skills path is absent from .agent/env-contract.txt; run onboard-repo first' >&2
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
@@ -202,19 +189,9 @@ The guard requires the resolver's provenance sentinel, so a stale or profile-inh
 
 #### Run the preflight — ONCE, and only here
 
-This block is **not** part of the resolver above and must never be folded back into it. It writes
-`.agent/env-contract.txt` and prints the whole contract, so running it per shell call would
-re-probe the environment on every command — overwriting a good contract with whatever a transient
-`gh`/network failure reports (the preflight reports rather than blocks, so that degradation is
-silent), and prefixing every later command's stdout with the contract block.
-
-**Precondition: the repository is already onboarded.** The resolver reads the skills path *from*
-`.agent/env-contract.txt`, so a repository that has never had one cannot start here — the resolver
-exits with *"skills path is absent … run agent-preflight.sh first"*, and locating that helper is
-exactly what it could not do. `onboard-repo` owns the sole contract-absent bootstrap in this tree
-(its `find` over the installed plugin caches, pinned by `test-skills-contract.sh`), so run
-`onboard-repo` first on a fresh repository. This block re-probes and refreshes an existing
-contract; it is not a bootstrap.
+Run this block once, never per shell call: it rewrites `.agent/env-contract.txt` (a transient `gh`/network
+failure would silently overwrite a good contract) and prints the whole contract. It refreshes an existing
+contract only — a repository with none must run `onboard-repo` first, the sole contract-absent bootstrap.
 
 ```bash
 set -euo pipefail
@@ -308,7 +285,7 @@ Each line reads `#N  <status>  <verdict>  adr=<paths|->  pr=<ref|->`:
 
 The digest is authoritative for each surviving issue's board Status, board membership, and
 prior-art references. After it completes, the only permitted reads are: the named PR for a
-`merged-ref`, `in-flight`, or `attempted` verdict; `gh issue view` for an `unknown` verdict; and
+`merged-ref`, `in-flight`, or `attempted` verdict; the `gh api` issue fetch for an `unknown` verdict; and
 one canonical issue-body fetch during preparation for each issue that survives selection. Do not fetch issue timelines, `projectItems`, or re-read individual issues to confirm data already in
 the digest. Do not follow a board move with a `projectItems` query: the helper's terminal line is
 the evidence.
@@ -327,23 +304,17 @@ issue needs none of it.
 | `in-flight` | an open PR references it | flag and ask — already being worked; do not double-dispatch |
 | `attempted` | a closed-unmerged PR references it | read that PR's review threads; they usually say why it died |
 | `active` | Status is In progress or In review | active tracker holds; named fast-mode candidates are re-adjudicated as held-active or stale-active |
-| `unknown` | the query returned nothing usable | re-run; if it persists, fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` |
+| `unknown` | the query returned nothing usable | fetch that one issue through `gh api repos/<owner>/<repo>/issues/<N>` — never a blind re-run of the digest |
 
 An `adr=` path is a **candidate located by token overlap**, not a verdict. Read
 it and apply the ADR rules; a match is often coincidence, and a miss is not
 proof that no ADR applies.
 
-Any batch that creates or edits more than one forge object carries a resumable apply ledger —
-never a bare loop of individual mutations. REST routing is equally strict: issue/PR bodies,
-labels, state, comments, reviews, sub-issues, dependencies, and cross-references use
-`gh api repos/<owner>/<repo>/...`; do not use `gh issue`/`gh pr` porcelain `--json` for those
-fields, and a filtered read still needs `-X GET` — `-f`/`-F` alone promotes `gh api` to POST.
-The only GraphQL-only surfaces are Projects v2 queries/mutations and PR review-thread
-resolution; name the surface and reason at the call site when using GraphQL — a general-purpose
-GraphQL escape hatch is not an allowlist. Read
+Any batch that creates or edits more than one forge object carries a resumable apply ledger, never a
+bare loop of mutations, and routes over REST (`gh api repos/<owner>/<repo>/...`, `-X GET` on filtered
+reads) with GraphQL reserved for Projects v2 and review-thread resolution. Read
 [references/triage-and-selection.md](references/triage-and-selection.md#bulk-mutation-discipline-ledger-chunks-and-resource-budget)
-in full before running any bulk batch — the ledger init/chunk/record recipe, the GraphQL
-budget-artifact check, and a correct filtered-read example live there.
+in full before running any bulk batch — the ledger recipe, the budget check, and the routing rule live there.
 
 Board Status is a digest column, so checking it costs nothing extra. Two immediate rules survive
 here as one-liners; the full rationale, the `--fast-mode` decision rule, and pickup order are in
@@ -411,19 +382,14 @@ the approval gate, not the reasoning that gate was there to check. Two workers e
 in separate worktrees is the failure this step prevents, and it costs more unattended than
 attended, because nobody is watching to stop it.
 
-**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Classify each
-overlap first: only an **interface dependency** — one issue consumes code or contracts the
-other produces, or both mutate the same executable logic — becomes a chain edge; overlap
-confined to test files or prose does not serialize — run those in parallel and merge down
-once at the end. Build the dependency graph from the interface-dependency pairs and native
-blocked-by edges inside the selected set, decompose it into linear chains, and print the
-chain plan next to the conflict table (attended: get approval; `--fast-mode`: proceed). A
-cycle cannot be chained — report the cyclic members and fall back to drop/ask for exactly
-those. A multi-predecessor join is **scheduled, not dropped**: defer it until every
-predecessor's commit is pushed, then merge those commits down into its start point and push
-that merged result before dispatch (a conflict parks the join by name) — an unpushed join
-base lives only in local git objects and can be lost if the session or worktree that built
-it is torn down first. Chains cap 4 successor links; deeper tails enter the same refill queue as slot-cap overflow (`queued=N[#...]`). When a predecessor publishes, refill the next queued successor from that exact pushed SHA. See [references/chains.md](references/chains.md).
+**With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Only an
+**interface dependency** (one issue consumes code or contracts the other produces, or both mutate the
+same executable logic) becomes a chain edge; overlap confined to test files or prose does not serialize — run
+those in parallel and merge down once at the end. Build the graph from those pairs plus native blocked-by
+edges, decompose it into linear chains, and print the chain plan beside the conflict table (attended:
+get approval; `--fast-mode`: proceed). A cycle cannot be chained — report its members and fall back to
+drop/ask for exactly those. A multi-predecessor join is scheduled, not dropped: its merged, pushed start
+point is built per `references/chains.md` before dispatch. Chains cap 4 successor links; deeper tails enter the same refill queue as slot-cap overflow (`queued=N[#...]`). When a predecessor publishes, refill the next queued successor from that exact pushed SHA.
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -517,16 +483,11 @@ fi
 
 When runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
 
-**Chained issues defer — but only on the commit, not the publication.** A chain successor's
-worktree is created and its lead dispatched as soon as the predecessor's worker has
-committed and pushed its branch — for a join, this means every predecessor pushed AND the
-merged join base itself pushed: record the full 40-character lowercase `chain_base_sha`
-from the completion report (worktree-commit.sh printed it). The root's post-push review, PR
-creation, board move, and ledger writes are **not** on the successor's critical path — a
-post-review fix on the predecessor becomes an ordinary merge-down. Deferred issues hold no
-concurrency slot. If the predecessor's lead fails or is BLOCKED, its successors are never
-dispatched — park the chain and name it in the report. See
-[references/chains.md](references/chains.md#deferred-dispatch) for the full rationale.
+**Chained issues defer on the commit, not the publication.** A successor's worktree is created and its lead
+dispatched as soon as the predecessor's worker has committed and pushed its branch — for a join, this means every predecessor pushed AND the merged join base itself pushed — using the full 40-character
+`chain_base_sha` from the completion report; root review, PR, board, and ledger writes are off that
+critical path. Deferred issues hold no slot; a failed or BLOCKED predecessor parks its chain by name. See
+[references/chains.md](references/chains.md#deferred-dispatch) for the rationale.
 
 **Publishing is part of the dispatch.** Creating worktrees, pushing issue branches,
 and opening DRAFT PRs are the mechanical output this invocation asked for — the
@@ -554,11 +515,8 @@ moves its board item (no-ops cleanly if the issue is not on a board):
 set -euo pipefail
 
 issue_numbers_csv=123,456 # Replace with the selected issue numbers.
-if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || [[ -z $repository ]]; then
-    printf '%s\n' 'Could not resolve the GitHub repository.' >&2
-    exit 1
-fi
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) && [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
 ```
@@ -740,9 +698,8 @@ step, and if the re-dispatch stalls too, park the workstream and name it in the 
 
 ### Quiescence gate for root writes
 
-Before root writes in a worker worktree, prove no unacknowledged `SendMessage`, clean status except
-declared operator-pending paths, and `quiescence:` evidence.
-Prefer `followup_task`; inline requires `--exact`.
+Before any root write in a worker worktree, satisfy `.shared/spawn-contract.md`'s quiescence gate ("Bounded
+inline corrections"); prefer `followup_task`; inline requires `--exact`.
 
 ### Root review and draft PR after a worker push
 
@@ -812,27 +769,18 @@ The digest exits 0 for green, failing, or pending CI — read it and stop.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
-Phase A orchestration remains with the root. As the root opens each draft PR from a Phase 2
-lead's pushed completion report, it observes that draft through `/review-remote-pr`'s
-**draft-first** flow — in parallel, without waiting for the other issues' leads. Step 3b workers receive only root-approved fix batches for
-mechanical implementation. The root handles CI state/verification, forge conflicts, adversarial
-review, consent, replies, and publication. Workers do not poll forge state, resolve
-PR conflicts, launch reviews, make consent decisions, reply to reviewers, or touch PR
-metadata; committing and pushing the assigned branch is theirs, and they stop once it is
-pushed. Review
-automation and ready/push behavior are repository and organization configuration; observe the
-state and never initiate a provider review: **never post `@coderabbitai review` or `full review`
-on any PR**.
+As the root opens each draft PR from a lead's pushed completion report, it runs `/review-remote-pr`'s
+**draft-first** flow on it in parallel with the other leads. Step 3b workers receive only root-approved fix batches for
+mechanical implementation; they commit and push the assigned branch and stop. The root handles CI state/verification, forge conflicts, adversarial
+review, consent, replies, and publication — and never initiates a provider review: **never post
+`@coderabbitai review` or `full review` on any PR**.
 **As each PR opens, move its issue to `In review`** (see `github-projects.md`):
 ```bash
 set -euo pipefail
 
 issue_number=123 # Replace with the issue whose draft PR opened.
-if ! repository="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || [[ -z $repository ]]; then
-    printf '%s\n' 'Could not resolve the GitHub repository.' >&2
-    exit 1
-fi
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) && [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
 "$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
     --issue-number "$issue_number" --status 'In review' --repo "$repository"
 ```
@@ -1004,10 +952,6 @@ print a second resume line naming the owner once PRs exist, e.g.
 instead of a later run.
 ## Limits
 
-- Maximum 10 per wave; include root in cap; fast-mode queues overflow; attended asks.
-- Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop; chains count toward the issue limit.
-- Invocation opts into issue leads; only root spawns.
-- Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, shared `.shared/scripts/` helpers, the board helper, and `gh-pr-state.sh`.
-- Requires local instructions and a `main` or `master` branch.
-- Step 3d polls observe provider-configured review timing; silence is observed state, not a trigger.
+- Maximum 10 per wave (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop, and count toward the limit.
+- Invocation opts into issue leads; only root spawns. Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, the shipped helpers, and a `main` or `master` branch.
 - Cross-cutting rules: [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md), [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md), [chains](references/chains.md), [provider-rules](../review-remote-pr/references/provider-rules.md).
