@@ -406,11 +406,11 @@ for settlement but still counted in `pending=`. Still pending after the bounded 
 Before assessing any saved artifact, prove its parser is available — a missing parser is a
 blocked check and must never be summarized as “no findings.”
 
-Use the provider-rules.md content loaded in Step 1a: the cycle order (approved human
+Use the provider-rules.md content loaded in Step 1a: cycle order (approved human
 actions first → nitpicks + Code Quality → one implementation-worker batch → post/verify replies → CodeRabbit settlement
-LAST), the VALID/INVALID/NITPICK recipes, and the reply/settlement command shapes. Adversarial findings from
-`$RUN_DIR/adversarial.result.json` take the same assess → fix → document path, documented in a **PR comment**.
-Post declines before the cycle's single push (Step 1c). Root reviews the pushed diff; never `git add -A`.
+LAST), the VALID/INVALID/NITPICK recipes, and reply/settlement shapes. Adversarial findings from
+`$RUN_DIR/adversarial.result.json` take the same assess → fix → document path, in a **PR comment**.
+Post declines before the cycle's single push (Step 1c); root reviews the pushed diff, never `git add -A`.
 
 ---
 
@@ -440,15 +440,15 @@ resolve, or claim readiness.
 ```text
 PR #N: [draft phase complete | all CI green] — CI green, conflicts none, N/N CodeRabbit threads handled, all body nitpicks handled,
 GitHub Code Quality: [no findings | auto-cleared | dismissed with reasons | blocked],
-CodeRabbit approval: [approved | not observable | no provider review observed],
-Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent)]: M findings, M handled.
+CodeRabbit approval: [approved | changes requested | commented | not observable | no provider review observed],
+Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent) | verified skip (oracle: <oracle>) | already spent]: M findings, M handled.
 Implementation worker: [<model> <effort> | worker=self — reason: <why>], six-step gate complete.
 Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
 [Waiting for you to mark it ready — this skill will not trigger a review. | Ready to merge | Awaiting user confirmation; not claiming readiness]
 ```
-(Draft phase: report the observed thread and approval state; `0/0` and "no provider review observed" only when the evidence shows none. Name the reviewer and any fallback reason; who wrote the code and its model/effort or
-`worker=self` reason; every human-review item's decision, verified-reply state, open-thread state.)
+(Draft phase: report the observed thread and approval state; `0/0` and "no provider review observed" only when evidence shows none. Name the reviewer/fallback reason, the worker's model/effort or
+`worker=self` reason, and each human-review item's decision and thread state.)
 
 Then run **Backlog grooming** — read ["$agentkit/review-remote-pr/references/grooming.md"](references/grooming.md) in full —
 before handing back. It proposes Ready candidates from the Backlog, never auto-promotes, and
-no-ops silently with no board/scope for it, never failing the PR handoff.
+no-ops silently with no board/scope, never failing the handoff.
