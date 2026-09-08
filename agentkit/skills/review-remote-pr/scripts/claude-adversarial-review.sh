@@ -88,6 +88,10 @@ Options:
   --no-payload               Required in probe mode. The probe sends only a
                              synthetic snippet, no PR diff, and never counts
                              against the one-review-per-PR budget.
+  --base-ref <branch>        Base branch bound into the consent payload alongside --repo/--pr.
+  --state <path>             Alias for --consent-state.
+  --consent-payload <value>  Pre-derived consent payload to verify against, instead of
+                             re-deriving it from --repo/--pr/--diff/--base-ref.
   --effort <level>           low|medium|high|xhigh|max (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval (default: $POLL_SECONDS).
   --max-budget-usd <amount>  Hard API spend cap, 0.01-1000 (default: $MAX_BUDGET_USD).

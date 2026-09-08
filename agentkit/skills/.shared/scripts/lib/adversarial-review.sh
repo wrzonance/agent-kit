@@ -84,6 +84,9 @@ review_cleanup() {
     return 0
 }
 
+# Review transcripts contain the complete private diff and must never be placed
+# in a shared temporary directory. The caller creates one 0700 run directory and
+# passes a fresh path inside it. Refuse anything weaker before invoking the harness.
 review_prepare_transcript() {
     local parent artifact
     parent=$(dirname -- "$TRANSCRIPT_PATH")
@@ -175,10 +178,6 @@ review_verify_verdict() {
 # Shared by both harness entry points (moved from the twins, size wave two).
 # Each script sets REVIEW_HARNESS_LABEL (Claude|Codex) and CONSENT_PROVIDER
 # (anthropic|openai) before main runs.
-# shellcheck disable=SC2154  # PROGNAME, TRANSCRIPT_PATH, DEADLINE_EPOCH, HEARTBEAT_FAILURE_FILE,
-# MAX_DURATION_SECONDS, MODE, MODEL, EFFORT, POLL_SECONDS, NO_PAYLOAD, DIFF_PATH, REPO_SLUG,
-# PR_NUMBER, BASE_REF, CONSENT_STATE_PATH, CONSENT_PAYLOAD, CONSENT_PROVIDER, REVIEW_HARNESS_LABEL,
-# SCRIPT_DIR are supplied by the sourcing script
 die() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
     exit 1

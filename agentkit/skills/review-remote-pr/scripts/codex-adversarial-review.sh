@@ -86,6 +86,10 @@ Options:
   --no-payload               Required in probe mode. The probe sends only a
                              synthetic snippet, no PR diff, and never counts
                              against the one-review-per-PR budget.
+  --base-ref <branch>        Base branch bound into the consent payload alongside --repo/--pr.
+  --state <path>             Alias for --consent-state.
+  --consent-payload <value>  Pre-derived consent payload to verify against, instead of
+                             re-deriving it from --repo/--pr/--diff/--base-ref.
   --effort <level>           Reasoning effort, passed as model_reasoning_effort
                              (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval on stderr (default: $POLL_SECONDS).
