@@ -1017,7 +1017,7 @@ assert_eq '1' "$partial_rc" 'a partial --ledger/--run-id/--ledger-scope trio is 
 assert_contains "$partial_out" 'given together' 'the partial-trio refusal names the requirement'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 822 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 822 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 800 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 800 lines'
 
 finish

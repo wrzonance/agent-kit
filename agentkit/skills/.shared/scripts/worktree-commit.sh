@@ -40,72 +40,49 @@ Usage: $PROGNAME [--exact|--include-staged] --message SUBJECT [--body TEXT] [--t
                  [--allow-outside PATH]... [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
-front that the repository's git metadata directories are writable.
+front that the repository's git metadata directories are writable; refuses a
+trunk branch; runs 'git diff --cached --check' after staging; validates every
+trailer before staging and verifies it against the commit afterwards.
 
 Options:
   --message SUBJECT   Commit subject line. Required, must be a single line.
   --body TEXT         Commit body, added as its own paragraph. At most once.
   --trailer LINE      Trailer line, e.g. "Co-Authored-By: Name <a@example.com>".
-                      Repeatable; all trailers share the final paragraph so git
-                      parses them as one trailer block. Every LINE must be a
-                      non-empty "Key: value" -- a value-less key, a key-less
-                      value, or an empty value is refused rather than committed.
-                      Omitted entirely, a "Co-Authored-By:" trailer is derived
-                      from this repository's environment contract instead.
+                      Repeatable; all trailers share the final paragraph. Every
+                      LINE must be a non-empty "Key: value". Omitted entirely, a
+                      "Co-Authored-By:" trailer is derived from the environment contract.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
   --exact             Refuse staged paths outside FILE operands and mismatched
                       committed file counts (the default scope).
-  --include-staged    Include existing staged paths, preserving legacy behavior.
-                      Existing staged paths still require an explicit operand or
-                      --allow-outside PATH.
+  --include-staged    Include existing staged paths (legacy); they still need an
+                      explicit operand or --allow-outside PATH.
   --allow-outside PATH
-                      Explicitly authorize this tracked staged path outside the
-                      issue FILE operands. Repeat for multiple paths.
+                      Authorize this tracked staged path outside the issue FILE
+                      operands. Repeatable.
   --allow-base-inherited BASE
                       Name the exact merge base whose protected paths may be
                       carried into this commit after byte-identity checks.
   --yolo              In unattended mode, authorize --allow-base-inherited BASE
-                      when the named commit is the active merge head. Attended
+                      when the named commit is the active merge head; attended
                       runs park inherited paths and preserve them in the index.
   --ledger FILE --run-id ID --ledger-scope SCOPE
-                      Given together (all three, or none): when every merge-
-                      inherited protected path staged is a CI-workflow file
-                      (.github/workflows/, .gitlab-ci.yml, .circleci/,
-                      azure-pipelines.yml, Jenkinsfile), ask session-ledger.sh
-                      whether RUN ID's ledger at FILE records a covering
-                      'authorize:workflow-mutations' grant for SCOPE. A
-                      covering grant commits with an Authorized-By-Ledger
-                      trailer instead of parking. Harness/hook configuration
-                      (.githooks/, .git/hooks/, .git/config,
-                      .pre-commit-config.yaml, .codex/config.toml,
-                      .claude/settings*.json) is never ledger-authorizable and
-                      still parks the whole staged set; no covering record
-                      also leaves the park behaviour unchanged.
+                      All three or none: when every merge-inherited protected path
+                      is a CI-workflow file (.github/workflows/, .gitlab-ci.yml,
+                      .circleci/, azure-pipelines.yml, Jenkinsfile) and RUN ID's
+                      ledger at FILE records a covering 'authorize:workflow-mutations'
+                      grant for SCOPE (session-ledger.sh), commit with an
+                      Authorized-By-Ledger trailer instead of parking. Harness/hook
+                      configuration (.githooks/, .git/hooks/, .git/config,
+                      .pre-commit-config.yaml, .codex/config.toml, .claude/settings*.json)
+                      is never ledger-authorizable and still parks the staged set.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
 Exit status: 0 committed; 1 usage error, not a repository, trunk branch, or any git
   failure; 2 a git metadata directory is not writable (needs elevation, then retry);
   3 an active merge carries protected paths that attended work must park.
 
-Behaviour:
-  * Probes 'git rev-parse --git-dir' and '--git-common-dir' for writability
-    BEFORE staging anything; exits 2 naming the unwritable path if either fails.
-  * Refuses to commit while HEAD is on main, master or trunk.
-  * Runs 'git diff --cached --check' after staging and aborts on its findings.
-  * Exact mode refuses staged paths outside the FILE operands before staging.
-  * Include-staged mode includes anything already staged in the index.
-  * Every trailer -- supplied or derived -- is validated before staging and
-    verified against the commit's own parsed trailers after committing.
-
 Output (stdout, on success -- one line):
   committed 0123456789abcdef0123456789abcdef01234567 feat(example): add widget (3 files)
-
-Examples:
-  $PROGNAME --message 'feat(example): add widget' src/example.ts docs/example.md
-  $PROGNAME --message 'fix(example): guard empty input' \\
-            --body 'Rejects an empty payload at the boundary.' \\
-            --trailer 'Co-Authored-By: Agent <noreply@example.com>' \\
-            -- src/example.ts
 EOF
 }
 
