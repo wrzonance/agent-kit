@@ -14,15 +14,7 @@ description: >-
 
 ## Resumable stage contract
 
-Onboarding advances only the next incomplete stage: `not onboarded`, `discovered`, `declared`, `verified`, `committed`, then `armed`. Report it before acting; re-runs are refresh/no-op and `--reset` is explicit and reported.
-
-Carry any `agentkit drift advisory` into the handoff; refresh and `.agent/config.env` edits are operator/trunk decisions.
-
-Before `verified`, preflight and report its exact runtime/setup/toolchain findings. Read CI before proposing commands; when it differs, report both and make CI's proven entry point canonical `TEST`.
-
-Recipes and reports use resolved absolute helper paths; resolve first if the contract is absent.
-
-Report whether declarations are per-machine `.agent/` state in `.git/info/exclude` or trunk-carried (Step 7), then run `$agentkit/.shared/scripts/agent-run.sh --cmd <declared name>`. Undeclared commands cannot run.
+Onboarding advances only the next incomplete stage: `not onboarded`, `discovered`, `declared`, `verified`, `committed`, then `armed`. Report it before acting; re-runs are refresh/no-op and `--reset` is explicit and reported. Carry any `agentkit drift advisory` into the handoff. Before `verified`, preflight and report its runtime/setup/toolchain findings; read CI before proposing commands and make CI's proven entry point canonical `TEST`. Recipes use resolved absolute helper paths; a declared command runs as `$agentkit/.shared/scripts/agent-run.sh --cmd <name>`, and undeclared commands cannot run.
 
 Run Step 0's bootstrap fence through explicit `bash -c`. Once it resolves `$agentkit`, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) fully before later multi-line recipes and use its boundary.
 
@@ -151,13 +143,9 @@ Anything still commented is a blank the script would not guess:
 Declare it in proposed/committed `.agent/config.env`; bootstrap comments it until chosen. Config is
 parsed line-by-line, never sourced.
 
-Protected paths are a handoff boundary, not a suggestion to disable a guard. When a base merge carries one,
-retain its staged bytes and use the shared commit helper's named-base affordance; attended work parks and
-hands off the path, unattended work proceeds only after base identity and byte equality are verified. Report
-it as `merge-inherited paths parked/handed off`. Never bypass hooks or guards with the hook-suppression flag
-(`--no-verify`), `core.hooksPath`, aliases, or any configuration that changes hook execution — a refusal is
-one bounded named park, never a bypass investigation. The commit helper returns exit `3` for that park;
-exit `2` is unwritable git metadata and its elevation handback.
+Protected paths are a handoff boundary, not a suggestion to disable a guard: a base merge carrying one uses the
+commit helper's named-base affordance and reports `merge-inherited paths parked/handed off` (exit `3`; exit `2` is
+unwritable git metadata). Never bypass hooks with `--no-verify`, `core.hooksPath`, aliases, or any equivalent — a refusal is one bounded named park.
 
 ## Step 4 — work out the commands
 
@@ -173,18 +161,15 @@ the detector rather than hand-guessing:
 Treat every line as a CANDIDATE: it inspects marker files without running anything, so nothing here is
 proven until Step 6 runs it.
 
-**Do not test a candidate by running it yourself first.** Declare it, then run it once through
-`agent-run.sh` in Step 6; if it fails, fix or remove the declaration. Running it bare to "check" first
-spends the suite's runtime twice.
-
-**Declare `SETUP` if a fresh checkout needs one** — `AGENT_CMD_SETUP=<the locked, offline-capable install
-command>` — since a worktree starts with no dependencies installed, so without it the
-first verification in every parallel worktree fails for an unrelated reason.
+**Do not test a candidate by running it bare first** — declare it, then run it once through `agent-run.sh`
+in Step 6 and fix or remove the declaration on failure. **Declare `SETUP` if a fresh checkout needs one**
+(`AGENT_CMD_SETUP=<the locked, offline-capable install command>`); without it every parallel worktree's first verification fails.
 
 **`VERIFY` and `TEST` are on-demand, not turn-gated.** Declaring one makes it runnable by name
-(`agent-run.sh --cmd verify`/`--cmd test`) — nothing blocks a turn on it. Keep `VERIFY` fast so a
-one-line comment doesn't pay a refactor's cost; let `TEST` be the slow one (a single entry point just
-declares `AGENT_CMD_VERIFY=tools/verify` and moves on):
+(`agent-run.sh --cmd verify`/`--cmd test`) — nothing blocks a turn on it. Declaring neither is legitimate —
+`lint`/`build`/`coverage` are reached with `--if-declared` — and a TEST-only repo substitutes its declared
+name in every `--cmd` example here. Keep `VERIFY` fast so a one-line comment doesn't pay a refactor's cost;
+let `TEST` be the slow one (a single entry point just declares `AGENT_CMD_VERIFY=tools/verify` and moves on):
 
 ```ini
 AGENT_CMD_VERIFY=<lint and typecheck, seconds>
@@ -315,15 +300,7 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_PROTECTED_PATHS` | extra gating paths; edits refused once |
 | `AGENT_LABEL_TYPES` / `AREAS` / `PRIORITIES` | reuse labels |
 
-A named repository command runs directly, no approval step: `agent-run.sh --cmd <name>` runs the
-exact declared value every time.
-
 Shared helpers need Bash 4+ (associative arrays); zsh calls fail fast.
-
-**`VERIFY` and `TEST` are the only names anything relies on** — `lint`/`build`/`coverage` are reached with
-`--if-declared`, so skipping them is fine. Declaring `AGENT_CMD_VERIFY`/`AGENT_CMD_TEST` only makes each
-runnable by name (`--cmd verify`/`--cmd test`); nothing gates a turn on either, and declaring neither is
-legitimate. In a TEST-only repo, substitute the declared name in every `--cmd` example here.
 
 **Nothing secret belongs in `config.env`.** Tokens/proxies/CA paths are refused: it is readable
 local state that may end up in logs.
