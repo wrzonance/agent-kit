@@ -107,6 +107,34 @@ assert_eq "$current_harness_line" "$(grep -m1 '^harness=' <<< "$symlink_out")" \
 assert_eq "$(grep -m1 '^skills=' <<< "$out")" "$(grep -m1 '^skills=' <<< "$symlink_out")" \
     'invoked through a PATH symlink, skills= path= still names the real skills tree'
 
+# probe_gh's own gh-auth-state.sh call is one of the sibling-helper references
+# the symlink fix repointed (CodeRabbit follow-up): unlike harness= and
+# skills=, its output is conditional -- gh-auth= is only emitted when
+# authentication actually failed -- so the happy-path symlink checks above
+# never exercise it. A fake, unauthenticated `gh` on PATH forces that branch
+# and proves the line still resolves gh-auth-state.sh through the symlink.
+gh_unauth_bin="$tmp/gh-unauth-bin"
+mkdir -p -- "$gh_unauth_bin"
+cat > "$gh_unauth_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "api user") exit 1 ;;
+    "auth status") exit 1 ;;
+    "auth token") exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x -- "$gh_unauth_bin/gh"
+gh_unauth_cfg="$tmp/gh-unauth-config"
+mkdir -p -- "$gh_unauth_cfg"
+gh_unauth_repo=$(new_repo)
+gh_probe_out=$(env PATH="$gh_unauth_bin:$PATH" GH_CONFIG_DIR="$gh_unauth_cfg" \
+    GH_TOKEN='' GITHUB_TOKEN='' AGENTKIT_NET_PROBE=ok \
+    "$symlink_bin/agent-preflight.sh" --worktree "$gh_unauth_repo" --no-write 2> /dev/null)
+gh_auth_line=$(grep -m1 '^gh-auth=' <<< "$gh_probe_out")
+assert_contains "$gh_auth_line" 'state=not-logged-in' \
+    'invoked through a PATH symlink, gh-auth= still resolves gh-auth-state.sh and reports the unauthenticated state'
+
 symlink_session_repo=$(new_repo)
 symlink_session_contract="$symlink_session_repo/.agent/env-contract.txt"
 printf '%s\n' \
