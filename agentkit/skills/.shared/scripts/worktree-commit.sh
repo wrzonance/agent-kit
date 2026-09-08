@@ -407,10 +407,6 @@ scope_paths_for() {
     done
 }
 
-scope_paths() {
-    scope_paths_for "${FILES[@]}"
-}
-
 authorized_scope_paths() {
     scope_paths_for "${FILES[@]}" "${ALLOW_OUTSIDE[@]}"
 }
@@ -650,14 +646,10 @@ refuse_trunk() {
     branch="$(git symbolic-ref --quiet --short HEAD || true)"
     [[ -n "$branch" ]] || return 0
 
-    # main|master|trunk is a DEFAULT, not the answer. The repository states its
-    # own trunk in AGENT_BASE_BRANCH, and a repository whose trunk is `develop`
-    # was protected by neither list -- so the one branch that most needed this
-    # guard was the one branch it ignored.
-    #
-    # `q` after the first match rather than `| head -1`: closing a pipe early
-    # makes sed exit on SIGPIPE, and under `set -o pipefail` that becomes this
-    # script's exit status.
+    # main|master|trunk is a DEFAULT: the repository states its own trunk in
+    # AGENT_BASE_BRANCH (a develop trunk was protected by neither list). q after
+    # the first match, not | head -1: an early-closed pipe makes sed exit on
+    # SIGPIPE, which pipefail turns into this script's status.
     root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
     declared="$(shared_declared_trunk_branch "$root" 2>/dev/null || true)"
     if [[ -n "$declared" && "$branch" == "$declared" ]]; then

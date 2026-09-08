@@ -508,7 +508,7 @@ assert_not_contains "$latest_attempt_out" 'classification: load-flake' \
 assert_eq '2' "$(<"$latest_attempt_count")" 'the mixed failure runs exactly the initial attempt and one retry'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1612 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1612 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1608 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1608 lines'
 
 finish

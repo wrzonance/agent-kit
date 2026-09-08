@@ -27,25 +27,13 @@ sandbox_field_rank() {
 }
 
 # Whether $2 (a fresh sandbox= measurement) is LESS restrictive than $1 (a
-# recorded one) on any single axis. This is field-by-field, deliberately not
-# a summed score (issue #332 F2): active/home-writable/network are
-# independent axes of one sandbox, and a scalar sum lets one axis's
-# tightening mask another axis's widening -- e.g. active regressing from
-# yes to no while network improves from disabled to ok nets to "no change"
-# in a sum, even though the worker just silently lost its network
-# restriction. Prints the name of the first regressed field and returns
-# success when a widening is found; prints nothing and returns failure
-# otherwise.
-#
-# note="..." is free-form (an operator- or environment-influenced sentence,
-# issue #332 F2) and it is always the LAST field this probe emits. Trimming
-# the true trailing note= before matching removes the only field positioned
-# AFTER active/home-writable/network whose content isn't drawn from a fixed
-# enum -- otherwise a "field=" token embedded inside a note could out-match
-# the real, earlier field under the greedy regex below, since a greedy match
-# prefers the rightmost occurrence. The trim anchors on the string's true end
-# (bash suffix removal), so it only ever strips the genuine trailing note=,
-# never a look-alike substring earlier in the line.
+# recorded one) on any single axis -- field-by-field, deliberately not a summed
+# score (issue #332 F2): active/home-writable/network are independent, and a sum
+# lets one axis's tightening mask another's widening. Prints the first regressed
+# field and returns 0 when a widening is found; else prints nothing, returns 1.
+# The free-form trailing note= (always the LAST field) is trimmed by bash suffix
+# removal before matching, so a "field=" token inside a note cannot out-match
+# the real field under the greedy regex.
 sandbox_widened() {
     local recorded="$1" fresh="$2" field rec_tok fresh_tok rec_rank fresh_rank
     local recorded_fields="${recorded% note=\"*}"

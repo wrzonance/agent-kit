@@ -1202,9 +1202,11 @@ assert_contains "$runners_line" 'node-pm=unresolved' \
     'roots resolving to different managers collapse to unresolved, never the first root'"'"'s manager'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1464 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1464 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1330 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1330 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \
+    'lib/sandbox-comparator.sh stays at or under 53 lines'
 
 finish

@@ -292,16 +292,11 @@ main() {
     fi
     worktree_setup_ensure_exclude "$root" '.agent/*' || exit 1
     worktree_setup_propagate_config "$root" "$worktree" || exit 1
-    # sandbox=, caches=, and tls= are session-scoped facts (which process is
-    # running the commands, what it can reach) -- not per-worktree ones. A
-    # per-worktree preflight that RE-MEASURES them can run in a differently-
-    # privileged process than the root's own preflight did and produce a
-    # truthful-for-itself but contradictory answer for the same session
-    # (issue #332). Carry the root contract's copies forward verbatim instead
-    # of calling worktree_setup_preflight's plain probe; agent-preflight.sh
-    # itself falls back to a fresh probe for any line --inherit-session can't
-    # find, so a root that hasn't preflighted yet degrades to the prior
-    # behavior rather than failing.
+    # sandbox=, caches=, tls= are session-scoped facts; a per-worktree
+    # re-measurement in a differently-privileged process gives a truthful but
+    # contradictory answer (issue #332). Carry the root contract's copies
+    # forward verbatim; agent-preflight.sh falls back to a fresh probe for any
+    # line --inherit-session cannot find.
     [[ -x $preflight ]] || {
         worktree_setup_fail "agent-preflight.sh is missing or not executable: $preflight"
         exit 1
