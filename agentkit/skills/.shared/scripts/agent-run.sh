@@ -1098,8 +1098,26 @@ sanitize_baseline_path() {
     printf '%s' "${result:-/usr/bin:/bin}"
 }
 
+# Roll back the baseline scratch state; the caller returns 1 after it.
+baseline_abort() {
+    rm -f -- "$baseline_output"
+    rm -rf -- "$baseline_dir"
+}
+
+# Is PATH a blob at $base_sha whose worktree bytes are byte-identical to it?
+path_unchanged_at_base() {
+    local path=$1 current_file resolved_file base_blob current_blob
+    [[ $(git -C "$git_top" cat-file -t "$base_sha:$path" 2>/dev/null || true) == blob ]] || return 1
+    current_file=$git_top/$path
+    resolved_file=$(readlink -f -- "$current_file" 2>/dev/null || true)
+    [[ -n $resolved_file && $resolved_file == "$git_top"/* && -f $resolved_file ]] || return 1
+    base_blob=$(git -C "$git_top" rev-parse "$base_sha:$path" 2>/dev/null) || return 1
+    current_blob=$(git -C "$git_top" hash-object -- "$resolved_file" 2>/dev/null) || return 1
+    [[ $base_blob == "$current_blob" ]]
+}
+
 try_baseline_exclusion() {
-    local base_sha head_sha base_blob current_blob current_file resolved_file
+    local base_sha head_sha
     local baseline_dir baseline_output baseline_work_dir rel base_rc baseline_path_env baseline_project
     local current_signature baseline_signature exclusion_file exclusion_tmp
     local current_failure_paths baseline_failure_paths exclusion_paths path
@@ -1114,13 +1132,7 @@ try_baseline_exclusion() {
     case $baseline_path in
         ''|.|..|../*|*/../*|*/.. ) return 1 ;;
     esac
-    current_file=$git_top/$baseline_path
-    resolved_file=$(readlink -f -- "$current_file" 2>/dev/null || true)
-    [[ -n $resolved_file && $resolved_file == "$git_top"/* && -f $resolved_file ]] || return 1
-    [[ $(git -C "$git_top" cat-file -t "$base_sha:$baseline_path" 2>/dev/null || true) == blob ]] || return 1
-    base_blob=$(git -C "$git_top" rev-parse "$base_sha:$baseline_path" 2>/dev/null) || return 1
-    current_blob=$(git -C "$git_top" hash-object -- "$resolved_file" 2>/dev/null) || return 1
-    [[ $base_blob == "$current_blob" ]] || return 1
+    path_unchanged_at_base "$baseline_path" || return 1
 
     baseline_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-run-baseline.XXXXXX") || return 1
     baseline_output=$(mktemp "$git_top/.agent/logs/.baseline-run.XXXXXX") || {
@@ -1132,26 +1144,14 @@ try_baseline_exclusion() {
         rmdir -- "$baseline_dir" 2>/dev/null || true
         return 1
     }
-    if ! git -C "$git_top" archive "$base_sha" | tar -x -C "$baseline_dir"; then
-        rm -f -- "$baseline_output"
-        rm -rf -- "$baseline_dir"
-        return 1
-    fi
+    git -C "$git_top" archive "$base_sha" | tar -x -C "$baseline_dir" || { baseline_abort; return 1; }
     baseline_work_dir=$baseline_dir
     if [[ $work_dir != "$git_top" ]]; then
         rel=${work_dir#"$git_top"/}
         baseline_work_dir=$baseline_dir/$rel
     fi
-    [[ -d $baseline_work_dir ]] || {
-        rm -f -- "$baseline_output"
-        rm -rf -- "$baseline_dir"
-        return 1
-    }
-    baseline_path_env=$(sanitize_baseline_path "${PATH:-}") || {
-        rm -f -- "$baseline_output"
-        rm -rf -- "$baseline_dir"
-        return 1
-    }
+    [[ -d $baseline_work_dir ]] || { baseline_abort; return 1; }
+    baseline_path_env=$(sanitize_baseline_path "${PATH:-}") || { baseline_abort; return 1; }
     baseline_project=${COMPOSE_PROJECT_NAME:-agentkit}
     baseline_project=$baseline_project-baseline
     base_rc=0
@@ -1170,20 +1170,13 @@ try_baseline_exclusion() {
         current_signature=$(failure_signature "$log_file") || current_signature=''
         baseline_signature=$(failure_signature "$baseline_output") || baseline_signature=''
     fi
-    rm -f -- "$baseline_output"
-    rm -rf -- "$baseline_dir"
+    baseline_abort
     ((base_rc != 0)) || return 1
     if [[ $command_kind == format ]]; then
         [[ -n $current_failure_paths && $current_failure_paths == "$baseline_failure_paths" ]] || return 1
         while IFS= read -r path || [[ -n $path ]]; do
             [[ -n $path ]] || continue
-            [[ $(git -C "$git_top" cat-file -t "$base_sha:$path" 2>/dev/null || true) == blob ]] || return 1
-            current_file=$git_top/$path
-            resolved_file=$(readlink -f -- "$current_file" 2>/dev/null || true)
-            [[ -n $resolved_file && $resolved_file == "$git_top"/* && -f $resolved_file ]] || return 1
-            base_blob=$(git -C "$git_top" rev-parse "$base_sha:$path" 2>/dev/null) || return 1
-            current_blob=$(git -C "$git_top" hash-object -- "$resolved_file" 2>/dev/null) || return 1
-            [[ $base_blob == "$current_blob" ]] || return 1
+            path_unchanged_at_base "$path" || return 1
             git -C "$git_top" diff --quiet "$base_sha...$head_sha" -- "$path" || return 1
             git -C "$git_top" diff --quiet HEAD -- "$path" || return 1
         done <<<"$current_failure_paths"
