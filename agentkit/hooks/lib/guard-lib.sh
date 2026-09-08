@@ -552,6 +552,15 @@ guard_out_of_scope_target() {
             # (round 2: `grep -reTODO "$HOME"` bypassed the sweep denial).
             pattern_pending=1
             for token in "${words[@]:1}"; do
+                # `--` ends option parsing for the shell's grep invocation too:
+                # a `-e`/`--regexp` spelled AFTER it is a positional operand,
+                # never the flag, so this pre-scan must stop reading options
+                # right there (2026-09-08 round 3: `grep -r -- -e "$HOME"`
+                # treated the post-`--` `-e` as if it still supplied the
+                # pattern, when POSIX/GNU grep resolve it as the FIRST
+                # positional -- i.e. the pattern -- leaving "$HOME" as the
+                # walk root).
+                [[ $token == -- ]] && break
                 case $token in
                     --regexp | --regexp=* | --file | --file=*) pattern_pending=0 ;;
                     -[A-Za-z]*)
@@ -568,18 +577,27 @@ guard_out_of_scope_target() {
             case $verb in
                 sed) case $token in -e | --expression) expr_operand=1; continue;; esac ;;
                 grep)
-                    case $token in
-                        --regexp | --file) expr_operand=1; continue;;
-                        -[A-Za-z]*)
-                            if guard_grep_bundle_pattern_flag "${token#-}"; then
-                                ((GUARD_BUNDLE_NEXT_IS_VALUE)) && expr_operand=1
-                                continue
-                            fi
-                            ;;
-                    esac
                     if ((past_options == 0)) && [[ $token == -- ]]; then
                         past_options=1
                         continue
+                    fi
+                    # Flag/bundle parsing only applies BEFORE `--`: once
+                    # past_options is set, a token that merely looks like
+                    # -e/-f/--regexp/--file is a positional operand, not the
+                    # option (2026-09-08 round 3, mirrors the pre-scan fix
+                    # above -- `grep -r -- -e "$HOME"` was letting this case
+                    # still swallow "-e" as an option and "$HOME" as its
+                    # value, so the walk root never reached path checking).
+                    if ((past_options == 0)); then
+                        case $token in
+                            --regexp | --file) expr_operand=1; continue;;
+                            -[A-Za-z]*)
+                                if guard_grep_bundle_pattern_flag "${token#-}"; then
+                                    ((GUARD_BUNDLE_NEXT_IS_VALUE)) && expr_operand=1
+                                    continue
+                                fi
+                                ;;
+                        esac
                     fi
                     if ((pattern_pending)) && { ((past_options)) || [[ $token != -* ]]; }; then
                         pattern_pending=0
