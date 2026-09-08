@@ -160,15 +160,15 @@ fi
 # committing it (issue #299). guard_pinned_path_probe_text narrows the match
 # text to what the command would actually resolve before this pattern runs.
 probe_text=$(guard_pinned_path_probe_text "$command_line")
-matched_path=$(grep -oE '[^[:space:]"'"'"']*plugins/cache/[^[:space:]"'"'"']*agentkit/[0-9][^[:space:]"'"'"']*' \
-    <<< "$probe_text" 2> /dev/null | head -n 1) || true
+mapfile -t pinned_raw_matches < <(grep -oE \
+    '[^[:space:]"'"'"']*plugins/cache/[^[:space:]"'"'"']*agentkit/[0-9][^[:space:]"'"'"']*' \
+    <<< "$probe_text" 2> /dev/null)
 # A leading NAME= assignment or $( opener and a trailing shell separator are
 # syntax, not path (2026-09-08: `agentkit=/.../0.7.4/skills;` compared unequal
 # to the very tree it named and was "corrected" to itself).
 pinned_syntax_re='^[^/]*[=(`]([/~].*)$'
-[[ $matched_path =~ $pinned_syntax_re ]] && matched_path=${BASH_REMATCH[1]}
-matched_path=${matched_path%%[;&|)]*}
-if [[ -n $matched_path ]]; then
+matched_path=''
+if ((${#pinned_raw_matches[@]})); then
     # A lesson that only names the hazard leaves the model to improvise a
     # remedy, and the one observed improvisation hand-deleted path segments
     # into a path that does not exist -- tripping the scope guard on top. So
@@ -197,11 +197,13 @@ if [[ -n $matched_path ]]; then
         # to the generic resolver.
         [[ $resolved_skills =~ ^/[A-Za-z0-9._/@+-]+$ && -d $resolved_skills ]] || resolved_skills=''
     fi
-    # The flagged path IS the contract-resolved tree -- correct by
-    # definition. Fall straight through with no advisory and, critically,
-    # WITHOUT consuming guard_should_advise's once-per-session claim: a
-    # genuinely stale path read later in the same session must still get its
-    # own lesson, which a spent claim here would silently swallow.
+    # A command can carry more than one plugins/cache match -- e.g. a correct
+    # `agentkit=<tree>` assignment followed by a stale helper path read from an
+    # old checkout. Taking only the FIRST match let the correct assignment hide
+    # a stale second one entirely (K1 review F1): normalise every match with
+    # the same syntax strip and teach on the first one that is NOT the
+    # contract-resolved tree; stay silent only when every match normalises to
+    # it.
     #
     # The containment check below is LEXICAL (guard_scope_canonical resolves
     # `..` components without touching the filesystem, same as every other
@@ -212,16 +214,34 @@ if [[ -n $matched_path ]]; then
     # (adversarial review, issue #335 finding F2). guard_scope_canonical has
     # no failure path today, but a failed canonicalization must still be
     # treated as NOT correct -- fail closed, not fail silent.
-    path_is_correct=0
-    if [[ -n $resolved_skills ]]; then
-        canonical_matched=$(guard_scope_canonical "$matched_path") || canonical_matched=''
-        canonical_resolved=$(guard_scope_canonical "$resolved_skills") || canonical_resolved=''
-        [[ -n $canonical_matched && -n $canonical_resolved &&
-            ( $canonical_matched == "$canonical_resolved" ||
-              $canonical_matched == "$canonical_resolved"/* ) ]] &&
-            path_is_correct=1
-    fi
-    if ((! path_is_correct)) && guard_should_advise "$state_root" "$session" pinned-plugin-path; then
+    for raw_match in "${pinned_raw_matches[@]}"; do
+        candidate=$raw_match
+        [[ $candidate =~ $pinned_syntax_re ]] && candidate=${BASH_REMATCH[1]}
+        candidate=${candidate%%[;&|)]*}
+        [[ -n $candidate ]] || continue
+        candidate_is_correct=0
+        if [[ -n $resolved_skills ]]; then
+            canonical_candidate=$(guard_scope_canonical "$candidate") || canonical_candidate=''
+            canonical_resolved=$(guard_scope_canonical "$resolved_skills") || canonical_resolved=''
+            [[ -n $canonical_candidate && -n $canonical_resolved &&
+                ( $canonical_candidate == "$canonical_resolved" ||
+                  $canonical_candidate == "$canonical_resolved"/* ) ]] &&
+                candidate_is_correct=1
+        fi
+        if ((! candidate_is_correct)); then
+            matched_path=$candidate
+            break
+        fi
+    done
+fi
+if [[ -n $matched_path ]]; then
+    # The flagged path is a genuine mismatch (not the contract-resolved tree,
+    # by the loop above) -- fall through to the advisory below, and,
+    # critically, WITHOUT consuming guard_should_advise's once-per-session
+    # claim when every match was correct: a genuinely stale path read later in
+    # the same session must still get its own lesson, which a spent claim here
+    # would silently swallow.
+    if guard_should_advise "$state_root" "$session" pinned-plugin-path; then
         if [[ -n $resolved_skills && $resolved_skills == "$matched_path" ]]; then
             # Defensive only -- unreachable given path_is_correct above, which
             # excludes exact equality before we get here. A remedy that

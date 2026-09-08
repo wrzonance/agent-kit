@@ -2151,6 +2151,25 @@ out=$(post_input "$correct_repo" "ls \$($correct_skills_dir/.shared/scripts/boar
 assert_eq '' "$(ctx_of "$out")" \
     'the contract-resolved tree inside an unquoted command substitution is not corrected to itself'
 
+# A command can carry MORE THAN ONE plugins/cache match. Taking only the first
+# (as this hook once did) let a correct leading assignment hide a stale second
+# match entirely -- the flagged path went silent (K1 review, finding F1).
+multi_stale_path="$correct_skills/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "agentkit=$correct_skills_dir; $multi_stale_path" "$(fresh_sid)" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a stale second match still teaches even though the first match is the contract-resolved tree (K1 fix round 1, F1)'
+# The inverse must hold too: when EVERY match normalises to the
+# contract-resolved tree -- the assignment, a quoted $agentkit reference (no
+# literal match at all), and a bare deeper read under the resolved tree --
+# the command stays fully silent.
+# shellcheck disable=SC2016  # the unexpanded $agentkit is the fixture
+multi_correct_cmd="agentkit=$correct_skills_dir; \"\$agentkit/.shared/scripts/board-list.sh\"; $correct_skills_dir/.shared/scripts/triage-issues.sh"
+out=$(post_input "$correct_repo" "$multi_correct_cmd" "$(fresh_sid)" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'silent when every match normalises to the contract-resolved tree, including a bare deeper read under it (K1 fix round 1)'
+
 # The session budget above must stay UNSPENT: a genuinely stale version path
 # (a different version segment than the contract resolves) read afterward, in
 # the SAME session, still earns its own lesson (acceptance criterion 2).
