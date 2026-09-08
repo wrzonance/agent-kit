@@ -1116,15 +1116,15 @@ assert_contains "$issue_lead_prompt" \
     'the issue-lead prompt carries the Prior art placeholder individually'
 inner_open_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```bash" { count++ } END { print count + 0 }')
 inner_close_count=$(printf '%s\n' "$prompt_body" | awk '$0 == "```" { count++ } END { print count + 0 }')
-# One inner bash example remains (`git branch --show-current`); the
-# public-fenced `cat` recipe block was removed from the raw template
-# (issue #334) -- compose-worker-prompt.sh now embeds the persisted bytes
-# for every mode itself, so the worker prompt no longer documents a
-# hand-copied recipe for the worker to run.
-assert_eq '1' "$inner_open_count" \
-    'inner bash examples retain their triple-backtick openings'
-assert_eq '1' "$inner_close_count" \
-    'inner bash examples retain their triple-backtick closers'
+# The raw template carries no inner ```bash fence: compose-worker-prompt.sh embeds
+# every recipe itself (issue #334 removed the hand-copied `cat` recipe; the size
+# wave removed the standalone `git branch --show-current` example, which Branch
+# Rules step 2 already states), so a worker prompt never documents a command for
+# the worker to run by hand.
+assert_eq '0' "$inner_open_count" \
+    'the issue-lead template carries no inner triple-backtick bash fence'
+assert_eq '0' "$inner_close_count" \
+    'the issue-lead template carries no inner triple-backtick closer'
 
 cap_helper="$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh"
 assert_eq yes "$( [[ -x $cap_helper ]] && printf yes || printf no )" \
