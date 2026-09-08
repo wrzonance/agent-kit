@@ -130,8 +130,8 @@ assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' 
 # 2026-09-07 size wave one: the dispatcher-side contract is a mandatory read
 # for both dispatching skills; hold its byte size at the ratcheted ceiling.
 spawn_contract_bytes=$(wc -c < "$spawn_contract")
-assert_eq yes "$([[ $spawn_contract_bytes -le 20000 ]] && printf yes || printf no)" \
-    "spawn contract stays at or under 20000 bytes (measured $spawn_contract_bytes)"
+assert_eq yes "$([[ $spawn_contract_bytes -le 18100 ]] && printf yes || printf no)" \
+    "spawn contract stays at or under 18100 bytes (measured $spawn_contract_bytes)"
 resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
 worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
 if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
