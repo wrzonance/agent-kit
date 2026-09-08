@@ -97,171 +97,53 @@ never seen. Treated naively, every one of these purely mechanical SHA/base
 updates would force a fresh redisplay-and-reconfirm round trip per merge,
 defeating a confirmed unattended `--auto-merge` sprint (issue #450).
 
-`scripts/authorize-queue.sh --allow-mechanical-advance` closes that gap without
-widening consent. Driving several independent roots concurrently (SKILL.md
-Steps 2–4) is a distinct case from the buckets below: a fix-batch push on PR B
-is SKILL.md Step 2's ordinary re-run-and-reconfirm-that-PR flow. Both
-`pr-queue.sh --write-confirmed-queue` and `authorize-queue.sh` read and write
-the one fixed-path `.agent/pr-to-green-confirmed-queue.json`, so that flow is
-a critical section: PR B's re-run must not interleave with PR A's — each
-root takes its turn through the sequence, one at a time, before the next
-root's own head change enters it. Reviews and transitions themselves stay
-concurrent; only this shared-file rewrite is serialized.
+`scripts/authorize-queue.sh --allow-mechanical-advance` closes that gap without widening consent.
+It still requires an exact repository and provider-decision match; only when the live queue drifts
+from the displayed snapshot does it reconcile each confirmed PR against fresh `pr-queue.sh`
+evidence into exactly one bucket:
 
-Passed alongside the normal Step 1/Step 2 invocation, it still requires an
-exact match on repository and provider decisions (never relaxed) and, only
-when the live queue no longer matches the displayed snapshot exactly,
-reconciles each confirmed PR against fresh `pr-queue.sh` evidence into
-exactly one of:
+- **unchanged** — no drift.
+- **root merge-down** — prior state `RUNNABLE`, same base, head changed, same diff fingerprint,
+  and the authorized head proven an ancestor of the new head by a live `compare` read.
+- **stacked retarget** — prior state `WAITING_FOR_MERGE`/`RETARGET_REQUIRED`, base changed, the
+  same fingerprint and ancestry proof, plus `--retarget-proof PR:FILE` naming the exact line
+  `../parallel-issues/scripts/chain-advance.sh --retarget` printed for this PR (matching base and
+  head, `ancestry=verified`, `green:post-retarget`, an `approval=` token, a positive
+  `closing-issues=`; `behind=`/`generated-only=`/`provider-check=` tokens may precede it).
+- **verified merge** — a confirmed PR absent from the live queue and independently read as
+  `merged:true`.
 
-- **unchanged** — no drift for this PR.
-- **a root merge-down** — the confirmed prior state was `RUNNABLE`, the base is
-  unchanged, the head SHA actually changed, the diff fingerprint (below) is
-  unchanged, and the previously authorized head is proven an ancestor of the
-  new head via a live `compare` read (`behind_by:0`, `status`
-  `ahead`/`identical` — never a history rewrite). A bare state change with an
-  identical head and base — e.g. the forge recomputing `BLOCKED`/
-  `MERGEABLE_UNKNOWN` to `RUNNABLE` with nothing else different — is never
-  itself a merge-down and fits no bucket here.
-- **a stacked retarget** — the confirmed prior state was `WAITING_FOR_MERGE` or
-  `RETARGET_REQUIRED`, the base actually changed (the head may or may not),
-  the same diff-fingerprint and live ancestry proof above (both required, not
-  only the proof file), plus a `--retarget-proof PR:FILE` naming the exact
-  stdout line `../parallel-issues/scripts/chain-advance.sh --retarget` printed
-  for this PR (matching base and head, and carrying `ancestry=verified`,
-  `green:post-retarget`, a well-formed `approval=` token, and a positive
-  `closing-issues=`). Approval is provider policy, not mechanical base safety
-  (issue #455): the proof's `approval=` token reports `current:post-retarget`,
-  `residue:stale`, `none`, or `unknown` for the record, but reconciliation
-  never requires `current:post-retarget` — a trigger/observe provider settles
-  on the current head only after the ready/provider transition that follows
-  this proof (Step 3/4), and a disabled/effective-none provider may never
-  produce a formal approval at all. The proof file's own claim is never
-  trusted in place of the live ancestry read — both must independently agree.
-  Perform the merge-down and `chain-advance.sh --retarget` call itself exactly
-  as Step 5 and `chains.md` already describe; this flag only lets the
-  resulting refresh skip redisplay. The proof line may also carry
-  `behind=`/`generated-only=` and `provider-check=` tokens ahead of
-  `closing-issues=` (issue #577: a `behind_by` gap confined to declared
-  `AGENT_GENERATED_PATHS`, or a stale check whose own authenticated
-  `check-runs` `.app.slug` belongs to a declared review provider — never a
-  display-name match alone, and never granted at all when that read is
-  unreadable or when this checkout's own repository does not match `--repo`
-  — is tolerated rather than chased with an unnecessary rerun or ping) —
-  `--retarget-proof`'s own match is unaffected by their presence, since it
-  only requires the tokens named above and the trailing `closing-issues=`
-  anchor, never an exact line.
-- **a verified merge** — a confirmed PR absent from the live queue, independently
-  confirmed `merged:true` from a fresh read of that PR (a PR that vanished for
-  any other reason — closed unmerged, deleted, access lost — is never assumed
-  merged).
-
-The diff fingerprint is a sha256 over the sorted per-file `{filename, blob
-sha, patch}` list from a live `pulls/N/files` read, computed once by
-`pr-queue.sh` and carried in its confirmed/live queue evidence (never in the
-derived authorization record). An aggregate line-count summary is not a
-content identity — a descendant commit can swap reviewed content while
-preserving the same add/delete/file-count shape — so equality is checked on
-this fingerprint, never on counts alone; a read that fails, returns malformed
-data, or covers more files than this is willing to hash yields a null
-fingerprint, which can never satisfy a merge-down or retarget bucket.
-
-Every one of those still derives the refreshed head/base live from
-`pr-queue.sh`, exactly like the exact-match path — the model never supplies a
-replacement SHA by hand. A confirmed PR that fits none of the buckets above
-(a state-only change, diff content that changed, a null fingerprint, broken
-ancestry, a missing/mismatched retarget proof, or a genuinely new PR the live
-queue adds) fails closed with the same redisplay-and-reconfirm refusal as
-without the flag — conflicts, unexpected diff expansion, ambiguous ancestry,
-topology/provider/merge-policy changes, and human-feedback dispositions are
-always material judgment, never mechanical.
-The Step 3 transition step and `merge-pr.sh` are unchanged by any of this: both
-still re-read the live PR and refuse unless its head and base match the
-authorization file's queue record at the exact moment of mutation, so a
-mechanically refreshed authorization is exactly as tightly bound as a
-freshly confirmed one.
+The diff fingerprint is a sha256 over the sorted per-file `{filename, blob sha, patch}` list from a
+live `pulls/N/files` read, computed by `pr-queue.sh`; a failed or oversized read yields a null
+fingerprint that satisfies no bucket. Anything that fits no bucket fails closed with the same
+redisplay-and-reconfirm refusal as without the flag, and the helper prints why. The Step 3
+transition and `merge-pr.sh` still re-read the live PR at the moment of mutation. Several roots
+share the one confirmed-queue file, so their re-run/reconfirm sequences serialize; reviews and
+transitions stay concurrent.
 
 ## The pre-merge review-completion gate
 
-Before any merge, run `scripts/merge-gate.sh` for the exact confirmed head.
-It re-reads the PR and its reviews live (never trusts stale in-memory state)
-and additionally consumes:
+Before any merge, run `scripts/merge-gate.sh` for the exact confirmed head. It re-reads the PR and
+its reviews live and consumes:
 
-- `--pr-state-digest FILE` — the verbatim `gh-pr-state.sh --full` (or
-  `--digest`) output captured for this head, immediately before gating. A
-  digest whose `sha=` prefix does not match the confirmed head is stale
-  evidence and blocks. Capture it with `gh-pr-state.sh`'s own `--digest-out
-  FILE` (see the canonical call sites below) — never a hand-rolled `>`/`tee`
-  redirect: `merge-gate.sh` rejects a group- or world-writable file outright,
-  which a plain shell capture under a permissive umask silently produces.
-- `--provider-result RESULT` — the CodeRabbit result the confirmed
-  ready/provider transition step (Section 3) printed for this head
-  (`AUTO_REVIEW`, `TRIGGERED`, `ALREADY_SPENT`, `LANDED`, `STALE_HEAD`,
-  `OBSERVE_ONLY`, `DISABLED`, `BLOCKED`, or `NONE` when no CodeRabbit provider
-  is declared). `TRIGGERED` means a request was posted but no terminal review
-  was yet observed — that is an in-flight review, and it blocks. `LANDED` is
-  that step's observe-mode confirmation that a terminal review postdates the
-  trigger AND targets the PR's current head; it gates the merge exactly like
-  `AUTO_REVIEW` or `ALREADY_SPENT`. `STALE_HEAD` is a terminal review that
-  postdates the trigger but targets an earlier head the PR has since moved
-  past — real review evidence, but not for this head, so it blocks exactly
-  like `TRIGGERED`.
-- `--human-items-decided yes|no` — whether every human item Phase A/C
-  observed for this PR has an explicit per-item decision (the existing
-  evidence-green requirement). `no` blocks.
+- `--pr-state-digest FILE` — `gh-pr-state.sh --full` output for this head, captured with its own
+  `--digest-out FILE` (never a shell redirect: a group- or world-writable file is rejected). A
+  digest whose `sha=` is not the confirmed head blocks.
+- `--provider-result RESULT` — the CodeRabbit result the transition step printed (`AUTO_REVIEW`,
+  `TRIGGERED`, `ALREADY_SPENT`, `LANDED`, `STALE_HEAD`, `OBSERVE_ONLY`, `DISABLED`, `BLOCKED`,
+  `NONE`). `AUTO_REVIEW`, `ALREADY_SPENT`, and `LANDED` pass; `TRIGGERED` (review in flight) and
+  `STALE_HEAD` (review for an earlier head) block.
+- `--human-items-decided yes|no` — `no` blocks.
 - `--adversarial-review-status covered-head|covered-diff|covered-lineage|stale|absent|blocked|not-required`
-  (issue #477; `covered-lineage` added by issue #567) — the verdict word
-  `review-ledger.sh status` prints for this PR's current head, read from the
-  already-fetched issue-comments artifact (no extra API call). `covered-head`,
-  `covered-diff`, and `covered-lineage` all pass, exactly like an
-  `AUTO_REVIEW`/`LANDED` CodeRabbit result — `covered-diff` means the head
-  moved by a base-merge-only advance since the recorded review, not a source
-  change, so the reviewed tree is still byte-identical; `covered-lineage`
-  means a later fix/merge-down/retarget commit was explicitly recorded onto
-  the entry via `review-ledger.sh cover` (see below) rather than re-reviewed.
-  `stale` (the ledger has an entry, but for different, unrecorded code) and
-  `absent` (no ledger entry at all) each block exactly like an unreviewed
-  head. `blocked` (the ledger comment is present but its fence/JSON is
-  unparseable) blocks too — corrupt evidence is never treated as missing
-  evidence, let alone as satisfied. `not-required` is the one value that opts
-  a repository's adversarial-review requirement out of this gate entirely; it
-  is never derived here, only passed through from whatever documented
-  materiality skip decided it upstream.
-- `--code-quality-scan-state complete|pending|not-enabled` and/or
-  `--code-quality-state-file FILE` — whether the `github-code-quality` scan
-  for the current head has finished. `pending` blocks (a finding merely
-  replied-to, with the rescan still outstanding, is not finished). `complete`
-  and `pending` have exactly one sanctioned source: `code-quality-state.sh
-  --head SHA --pr N` (issue #472). GitHub's `code-quality/analyses` and
-  `pulls/N/code-quality` endpoints do not exist (both 404 in a real
-  repository, confirmed live — a check that could not be made from an
-  offline review, which is why an earlier version of this helper shipped
-  against the non-existent `analyses` endpoint and could never pass), so
-  `--head` derives the token from two surfaces that are actually live and
-  per-head: the head's own check-runs (any run whose `app.slug` is exactly
-  `github-code-quality` and whose `status` is not `completed` reports
-  `pending`, checked first and unconditionally) and, once no scan is
-  in-flight, the PR's own review comments attributed to that exact commit
-  (`commit_id` or `original_commit_id`, from `github-code-quality[bot]`) —
-  never a repository-wide finding count, and never asserted by hand. Zero
-  such comments on a head with no in-flight scan is a valid, complete,
-  zero-finding result. The repository-wide `findings?state=open` list is
-  still consulted, but only to decide reachability (`not-enabled` vs an
-  unreadable repository) and to populate `--baseline-file`'s
-  `repoWideOpen` count, never to gate completion itself.
-  `--code-quality-state-file` names that helper's own `--state-file` output
-  (the exact printed `scan-state=...` token; the separate `--baseline-file`
-  JSON artifact is a different shape and does not satisfy this flag) — when
-  both `--code-quality-scan-state` and `--code-quality-state-file` are given
-  they must agree, byte-for-byte on the `scan-state=`
-  token, or the gate refuses outright. `not-enabled` (issue #403) means Code
-  Quality is disabled for the repository — a stable repository fact, not a
-  scan in flight — and gates exactly like `complete`; only a confirmed "not
-  enabled" 403 from `code-quality-state.sh --probe` (or `--head`'s own
-  reachability read) earns this value, never an unreadable probe (network
-  failure, an auth/scope 403, a 5xx), which reports `unknown` and stays
-  blocked instead — surfaced as the failing response's own `.message`, never
-  a truncated `{` from a pretty-printed JSON error body.
+  — the word `review-ledger.sh status` prints for this head. The three `covered-*` values pass;
+  `stale`, `absent`, and `blocked` block; `not-required` is only ever passed through from a
+  documented materiality skip.
+- `--code-quality-scan-state complete|pending|not-enabled` and/or `--code-quality-state-file FILE`
+  — from `code-quality-state.sh --head SHA --pr N` (its `--state-file` output is the file form;
+  both must agree byte-for-byte). `pending` blocks; `complete` and `not-enabled` pass; an
+  unreadable probe reports `unknown` and blocks.
+
+Every block prints `blocked reason=…`; `scripts/merge-gate.sh --help` carries the full enum.
 
 ### Canonical call sites for the two newest gate inputs
 
@@ -328,46 +210,13 @@ failed `cover` never blocks the merge-down or retarget itself, it only
 leaves the next `--adversarial-review-status`
 read at `stale` until retried.
 
-Code-scanning completion is proven from `GET code-scanning/analyses` — the
-surface that actually records a completed analysis — not from a check-run's
-`app.slug`. GitHub records workflow-uploaded SARIF (a CodeQL workflow,
-clippy, etc.) under `app.slug=github-advanced-security`, not
-`github-code-scanning`; a slug-only lookup false-blocks every head with real,
-clean analyses recorded that way, which is exactly what forced the manual
-`gh pr merge --admin` in SpecR #667 (see issue #390). `ref` is always sent as
-its own query field, never string-interpolated into the URL, so a base
-branch name containing `&` or `#` cannot split or truncate the request. The
-gate looks for an analysis under `refs/pull/N/merge` whose `commit_sha`
-matches the current head — or the PR's current `merge_commit_sha` (read from
-the same PR metadata already fetched for the live-state read, never a second
-call; a null value, e.g. not yet computed or the PR isn't mergeable, never
-widens matching). Matching both is required because a `pull_request`-event
-CodeQL/SARIF upload sets `GITHUB_SHA` to the GitHub-generated merge commit
-for that ref, not the PR's own head SHA — a head-only comparison false-
-blocked every PR scanned that way. `refs/pull/N/head` is queried too and
-matched against the head SHA alone, for tools whose workflow checks out and
-scans the head ref directly. A still-running scan is read from a check run
-under either app slug, demoted to a secondary "in flight" signal only — it
-can never by itself prove completion, only rule it out, which is why it is
-consulted *first*: a rerun or a second SARIF upload already in flight for a
-head an earlier analysis already covers must still block, not read as
-already-current. A repository that plainly runs code scanning elsewhere (its
-base ref has recorded analyses, e.g. a cron or `workflow_dispatch` schedule
-the PR itself never triggers) is reported as `code-scanning: scheduled-only,
-last analysis <date> on <ref>` and does not block on scan completion for
-that reason alone — but only once a single page (100, most-recent-first) of
-the repository's own recent analysis history is read and confirmed to carry
-no `refs/pull/*` entry at all. A repository whose history *does* include a
-pull-request analysis demonstrably scans PRs, so a missing analysis for THIS
-PR is ambiguous absence, not a schedule, and stays blocked (a probe that
-cannot even read that history never grants the exemption either — same
-fail-closed default as everywhere else in this gate; and a repository with
-more than 100 newer schedule-driven analyses could in principle push a
-genuine pull-request analysis off that first page, a residual gap the
-alerts-line requirement below still covers). A scheduled-only repository
-still needs a genuinely readable, zero-count alerts line — `n/a` blocks it
-exactly like it blocks every other status; only the two-signal "never used
-at all" exception below waives that.
+Code-scanning completion is proven from `GET code-scanning/analyses`, never from a check-run's
+`app.slug`: an analysis on `refs/pull/N/merge` matching the head or the PR's `merge_commit_sha`, or
+on `refs/pull/N/head` matching the head. A still-running scan under either app slug only rules
+completion out. A repository whose recent history has no `refs/pull/*` analysis but does scan its
+base is reported `code-scanning: scheduled-only, last analysis <date> on <ref>` and does not block
+on completion; it still needs a readable zero-count alerts line. Every other absence blocks, and an
+unreadable probe never grants an exemption. The gate prints which case applied.
 
 **Never dispatch a workflow (`gh workflow run`, a `workflow_dispatch` trigger,
 or any other means) to manufacture code-scanning evidence so this gate
@@ -449,54 +298,18 @@ work may have landed on it since the merge completed).
 
 ### Dependents check before delete (issue #564)
 
-GitHub does not reliably retarget an open PR whose base branch is deleted —
-it closes it instead when that PR is a draft or not cleanly mergeable onto
-the new base (`base_ref_deleted` then `closed` in the same second, confirmed
-for #484 and #561). `--delete-branch` therefore never deletes blind: it reads
-`pulls?state=open&base=<head-branch>` once before the delete.
-
-- **No open dependents** — the delete proceeds exactly as before.
-- **Dependents found, default** — refuses the delete outright, naming the
-  open dependents, and exits 3 (the merge itself has already succeeded and
-  is reported regardless). This is the safe default: a raw base `PATCH`
-  alone does not merge the predecessor's content into a dependent or
-  re-run its CI, so leaving the branch in place is the only choice that
-  never risks a stale-evidence dependent (fix batch F1, issue #564).
-- **`--retarget-dependents`** — opt-in only. Each dependent is retargeted to
-  `--base` with a verified `PATCH` (the live response's own `base.ref` is
-  checked, never assumed from a 2xx status) before the branch is deleted.
-  Any dependent retarget failure — even for just one of several — still
-  leaves the branch undeleted. Pass this **only** after the caller has
-  already merged the updated default branch down into each dependent and
-  completed `chain-advance.sh --retarget`'s full proof for it (ancestry,
-  fresh CI, closing-issue linkage, per "Merge order and the stacked-PR
-  retarget" in `parallel-issues/references/chains.md`) — this flag performs
-  no such proof itself, it only repoints the base pointer.
-- **An unreadable dependents check** fails closed exactly like an unreadable
-  ref-check: the branch is left in place, never deleted on a guess.
-
-Even a successful `--retarget-dependents` PATCH is not a guarantee: the same
-draft/dirty-mergeable condition that makes GitHub close instead of retarget
-on deletion can still close a dependent immediately afterward. So after a
-successful delete under `--retarget-dependents`, `merge-pr.sh` re-reads every
-dependent it retargeted; any that ended up `closed` (and not merged) is
-recovered via `../../parallel-issues/scripts/chain-advance.sh --recover-closed`
-(path overridable with `MERGE_PR_CHAIN_ADVANCE`, for testing). This is a
-best-effort safety net, exactly like `cover_retarget_lineage` — never fatal,
-and a failed recovery never undoes the already-completed merge or delete; it
-is reported as `dependent-recovery-failed` for a human to act on.
-
-**Queue ordering.** `authorize-queue.sh` records a confirmed predecessor's own
-`queue[].deleteBranch` as `"deferred"`, instead of the run's `true`/`false`
-choice, whenever `pr-queue.sh`'s live `hasOpenSuccessor` is true for that PR
-— i.e. an open successor is already in the same confirmed queue.
-`merge-pr.sh` refuses that PR's delete on this record alone, before even
-running the live dependents check above: cheaper, and independent of it.
-This is authorization-time bookkeeping, not a schema requirement on the
-displayed/confirmed-queue snapshot — `hasOpenSuccessor` never enters that
-narrower, already-pinned schema (see "Mechanical queue advance without
-redisplay" above); it is read fresh from `pr-queue.sh`'s live JSON at the
-point `authorize-queue.sh` composes the authorization record.
+Deleting a merged head branch can make GitHub close, rather than retarget, an open dependent that
+is a draft or not cleanly mergeable. `--delete-branch` therefore reads
+`pulls?state=open&base=<head>` first: with no dependents it deletes; with dependents it refuses,
+names them, and exits 3 (the merge already succeeded); an unreadable check refuses too.
+`--retarget-dependents` is opt-in and only repoints each dependent's base with a verified `PATCH` —
+pass it only after the merge-down and `chain-advance.sh --retarget` proof in
+`parallel-issues/references/chains.md` are complete for every dependent. After a delete under that
+flag, `merge-pr.sh` re-reads each dependent and recovers any closed one via
+`../../parallel-issues/scripts/chain-advance.sh --recover-closed` (best-effort; reported as
+`dependent-recovery-failed` when it cannot). `authorize-queue.sh` records `deleteBranch:
+"deferred"` for a predecessor with an open successor in the same confirmed queue, and
+`merge-pr.sh` refuses that delete on the record alone.
 
 ## Board move
 
