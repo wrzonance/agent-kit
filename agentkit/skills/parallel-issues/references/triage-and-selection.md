@@ -367,28 +367,6 @@ schema-2 shape adds `generatedAt`, `independent`, and `chains` (same record shap
 ```
 
 Each
-
-```json
-{
-  "schemaVersion": 2,
-  "generatedAt": "2026-08-17T20:00:00Z",
-  "entries": [
-    {"issue": 164, "predictedWriteSet": ["src/a/**"]},
-    {"issue": 167, "predictedWriteSet": ["src/b/**"]}
-  ],
-  "conflictMap": {"pairs": [], "revisions": []},
-  "independent": [],
-  "chains": [[
-    {"issue": 164, "pr": 301, "branch": "feat/root", "chainBaseSha": null,
-     "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-    {"issue": 167, "pr": 302, "branch": "feat/child",
-     "chainBaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-     "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-  ]]
-}
-```
-
-`independent` uses the same record shape, with null `chainBaseSha`. Each
 `chains` array is ordered base-to-tip; each successor pins its immediate
 predecessor's recorded head. `pr-to-green` verifies every recorded PR and head
 but performs no discovery graph walk while the artifact is current. An absent
