@@ -89,11 +89,3 @@ A line whose first word is `moved` is the evidence the promotion happened; an al
 `no-op: issue #123 already "Ready"` is the terminal redundant no-op evidence. Both exit
 `0`, so never treat the exit status alone as proof. The already-target line appears only on
 the slower discovery paths -- the warm path skips the status read, so `moved` covers both cases.
-
-## Pitfalls
-
-| Problem | Fix |
-|---|---|
-| Auto-promoting Backlog → Ready | Don't. Backlog is unvetted; promotion is the user's vetting call. Propose with rationale, move only after confirmation. |
-| `gh project item-list` shows no `.status` | The board's single-select status field may be named differently. Inspect `jq '.items[0]'` and match the column by intent (Backlog/Ready); no-op if none matches. |
-| Grooming blocks the PR handoff | It's best-effort. If the board/scope/`gh project` access isn't there, no-op silently and still report the PR as merge-ready. |
