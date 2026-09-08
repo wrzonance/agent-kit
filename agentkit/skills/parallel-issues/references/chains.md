@@ -62,28 +62,14 @@ chain.
 
 ## Publishing a locally-built chain base
 
-Any commit built locally on top of a predecessor — a join's integration commit above, or a
-linear successor's own merge-down of an advanced predecessor (below) — is invisible to
-`origin` until it is pushed. `create-issue-worktree.sh` pushes a branch exactly once, at
-creation, from whichever single SHA it started at — it never re-pushes a merge commit added
-afterward, so a branch that started from a single predecessor lands in exactly the same
-unpublished-merge position as a join the moment either one gains a local merge commit of its
-own; a linear chain is not protected from this just because it only had one predecessor.
+`create-issue-worktree.sh` pushes a branch exactly once, at creation; any merge commit added
+afterward (a join's integration commit, or a successor's merge-down of an advanced predecessor) is
+invisible to `origin` until pushed — a linear chain is not protected from this just because it only had one predecessor.
+Push before handing a commit to a successor's worktree creation or to review; a worker's interim
+verification needs no push, since `agent-run.sh` runs against what is on disk.
 
-`agent-run.sh` runs a declared command directly, with no base-pin check to satisfy — that
-gate was part of the command-approval fence removed 2026-08-19, and nothing replaced it. Push
-anyway, before handing a commit to a successor's worktree creation or to review: an unpushed
-commit lives only in this session's local git objects, and a torn-down session or pruned
-worktree can lose it before anyone else reads it. A worker's own *interim* verification
-mid-task — checking a locally-built merge before its single end-of-task push — needs no push
-at all, since `agent-run.sh` runs against whatever is on disk regardless of origin state; push
-only when the commit is about to be handed off, dispatched against by another agent, or relied
-on by a successor.
-
-Chains gate on the predecessor's **pushed commit**, never on PR state (open, draft, or
-merged) and never on the root's publication ceremony — a successor starts from the exact
-commit the predecessor's worker committed and pushed (the completion report carries the full
-SHA), not from "the PR looks mergeable," and it does not wait for the PR to exist.
+Chains gate on the predecessor's **pushed commit** (the completion report carries the full SHA),
+never on PR state or the root's publication ceremony.
 
 ## Deferred dispatch
 
@@ -163,58 +149,18 @@ is missing or stale, including when that provenance cannot be read at all. A bas
 not re-run the workflow (`pull_request` fires on opened/synchronize/reopened, not `edited`), so
 this refusal is expected until CI is genuinely re-run against the new base.
 
-Two of these proofs tolerate evidence a retarget can never make current, because no agent action
-would ever clear it — a retarget proof that is unsatisfiable by construction is a stall, not a
-gate (issue #577):
+Two proofs tolerate evidence a retarget can never make current (issue #577), and the proof line
+reports them ahead of `closing-issues=`:
 
-- **`behind_by` confined to `AGENT_GENERATED_PATHS`.** This repository's own post-merge
-  `chore(bench): record tier0 ...` commit puts every stacked successor at `behind_by=1` the
-  moment its predecessor lands, even though the successor already merged that predecessor down.
-  When the *entire* gap between the current base and the head's merge-base is confined to the
-  same declared `AGENT_GENERATED_PATHS` prefixes `gh-pr-state.sh` already treats as `stale=no`,
-  the ancestry proof reports it rather than refusing — the proof line carries
-  `behind=N generated-only=yes` (or `generated-only=no` when nothing was declared, or the gap
-  reaches an undeclared path — the same fail-closed `behind_by=N` refusal as before). A gap that
-  mixes a declared and an undeclared path is never exempted; the whole file list gained since
-  divergence must match, exactly like `gh-pr-state.sh`'s own confinement check.
-- **A stale check from a declared review provider.** A base edit does not trigger a provider
-  re-scan any more than it triggers CI, and an `observe`/`disabled` per-run provider action never
-  re-pings it either — requiring that check to postdate the boundary made the proof unsatisfiable
-  without an unauthorized ping (agent-kit#572, three wasted CI rounds chasing `stale: CodeRabbit`
-  through `gh run rerun`). A `statusCheckRollup` entry is excused from the postdate requirement
-  only when a dedicated `commits/<head>/check-runs` read finds a check-run of that exact name
-  whose own authenticated `.app.slug` belongs to a provider declared in `AGENT_REVIEW_PROVIDERS`
-  — never a display-name substring match, so a required job merely *named* like a provider (e.g.
-  "CodeRabbit compatibility tests" run by some other app) is never excused. The proof line carries
-  `provider-check=` naming the excused check(s), sanitized and comma-joined, or
-  `provider-check=none` when nothing was excused; when the check-runs read itself is unreadable,
-  the exemption grants nothing (fail closed) and the refusal reports `provider-check=unreadable`
-  instead. Any other stale check still refuses exactly as before; declaring a provider never
-  widens the exemption past checks whose own app identity confirms it.
+- `behind=N generated-only=yes|no` — a `behind_by` gap confined entirely to declared
+  `AGENT_GENERATED_PATHS` is reported, not refused; any undeclared path in the gap refuses.
+- `provider-check=<names>|none|unreadable` — a stale check is excused only when its check-run's own
+  `.app.slug` belongs to a provider in `AGENT_REVIEW_PROVIDERS`; unreadable grants nothing.
+- `approval=current:post-retarget|residue:stale|none|unknown` — recorded, never a gate (issue #455):
+  formal approval is provider policy and settles at the ready/provider transition.
 
-Both tokens sit ahead of the trailing `closing-issues=` token so `authorize-queue.sh
---allow-mechanical-advance`'s anchored parse of that proof line is unaffected.
-
-Both exemptions read `AGENT_GENERATED_PATHS`/`AGENT_REVIEW_PROVIDERS` from *this checkout's own*
-`.agent/config.env`, never from whatever repository `--repo` names. Before applying either one,
-`chain-advance.sh` resolves this checkout's own canonical `OWNER/REPO` (its declared
-`AGENT_REPO_SLUG`, else a live `gh repo view`, else the `origin` remote URL) and requires it to
-equal `--repo`; a resolvable mismatch disables both exemptions outright and prints
-`exemptions=disabled reason=repo-mismatch` — running this helper against a different repository's
-PR can never borrow this checkout's declarations to excuse *that* repository's gap or stale
-checks. An unresolvable local slug leaves the exemptions untouched (fails open), matching the
-advisory, fail-open contract of the resolvers themselves.
-
-Formal approval is provider policy, not mechanical base safety (issue #455), so it never blocks
-the retarget proof. The proof line instead reports an `approval=` token —
-`current:post-retarget` (an APPROVED review on the current head, submitted after the retarget
-boundary), `residue:stale` (an APPROVED review exists but predates the boundary or targets an
-older head), `none` (no APPROVED review at all), or `unknown` (review evidence was unreadable).
-A trigger/observe provider settles formally on the current head only after the ready/provider
-transition that follows this proof (`pr-to-green` Step 3/4); a disabled or effective-none
-provider may never produce a formal approval at all, and none is required. Residual approval
-state is always recorded, never silently dismissed, inherited, or refreshed automatically —
-but it is a record, not a gate.
+Both exemptions read *this checkout's* `.agent/config.env` and print
+`exemptions=disabled reason=repo-mismatch` when the checkout's own slug differs from `--repo`.
 
 ## Merge order and the stacked-PR retarget
 
@@ -235,36 +181,19 @@ never reach the default branch, and nothing fails loudly to say so. State all of
 explicitly in the handoff; a reader who only sees "merge order: #67, #68" will not reconstruct
 the retarget step on their own.
 
-For an interactive human merge, merging in dependency order and deleting the merged head
-branch is expected to let GitHub automatically retarget the successor — but GitHub does not
-reliably do that: it closes the successor instead when it is a draft or not cleanly mergeable
-onto the new base (`base_ref_deleted` then `closed` in the same second, confirmed for #484
-and #561; issue #564). An agent-driven `merge-pr.sh --delete-branch` never relies on that
-forge behavior either way: it reads for open dependents before deleting and, by default,
-refuses the delete and names them — a raw base repoint does not merge the predecessor's
-content into a dependent or re-run its CI, so leaving the branch in place is the only safe
-default. Only after this file's own merge-down-then-`chain-advance.sh --retarget` procedure has
-already been completed for every dependent does `--retarget-dependents` become the right (and
-by then usually unnecessary — the dependent's base already moved) opt-in. Either way, once a
-delete does proceed, `merge-pr.sh` still re-checks afterward and recovers via `chain-advance.sh
---recover-closed` (recreate the deleted base ref at its own recorded SHA, reopen, retarget,
-delete the temporary ref) if GitHub closed a dependent anyway — see
-`pr-to-green/references/auto-merge.md`'s "Dependents check before delete" for the full
-contract. That recovery helper is also the fix for a successor an *older* kit version, or a
-human merge, already left closed this way — one call, base and head unchanged.
+For an interactive human merge, deleting the merged head may make GitHub close a draft or
+not-cleanly-mergeable successor instead of retargeting it (#484, #561, issue #564).
+`merge-pr.sh --delete-branch` never relies on that: it reads for open dependents first and by
+default refuses the delete and names them; `--retarget-dependents` is opt-in after this file's
+merge-down-then-`chain-advance.sh --retarget` procedure has completed for every dependent, and a
+dependent GitHub closes anyway is recovered with `chain-advance.sh --recover-closed` (also the fix
+for a successor an older kit or a human merge left closed). See
+`pr-to-green/references/auto-merge.md`'s "Dependents check before delete" for the contract.
 
-The retarget also invalidates the successor's evidence. GitHub can move the child to the
-default branch when the parent branch is deleted, while leaving successful checks and a
-provider approval from the old base attached to the child. After every parent merge, pause
-the chain and revalidate each open successor: use the helper's live `base...head` ancestry
-comparison to detect whether the child is behind its new base, refresh the successor's state,
-and require CI to run against the new base before treating it as green.
-A stale digest is a stop signal, not a green result. If the provider's approval is stale too,
-the proof reports `approval=residue:stale` in the handoff; the one-review/one-ping rule does
-not permit silently inheriting it or spending a second provider trigger to make the history
-look fresh, but a stale or absent approval never blocks the retarget itself — it is the
-ready/provider transition's job to settle formally on the current head when the configured
-provider action is trigger or observe.
+A retarget invalidates the successor's evidence: after every parent merge, revalidate each open
+successor with the helper's live `base...head` ancestry read and require CI against the new base
+before treating it as green; a stale digest is a stop signal, and a stale approval is reported as
+`approval=residue:stale`, never inherited or re-triggered.
 
 ## Post-squash-merge conflicts
 
@@ -313,38 +242,14 @@ description of what the existing one should have said.
 
 ## Contract-inheritance refusal and recovery
 
-A long `--auto-serialize` chain is by construction long-running: each link waits for its
-predecessor's pushed commit before its own worktree is created. `create-issue-worktree.sh`
-carries the ROOT checkout's own `.agent/env-contract.txt` into each new worktree with
-`agent-preflight.sh --inherit-session`, since `sandbox=`/`tls=`/`caches=` describe the
-*session* (which process is running commands, what it can reach), not any one worktree, and a
-fresh per-worktree probe can disagree with the root while being truthful for itself. That
-carry-forward is only trusted from a source recent enough and written by the same harness/CLI
-— there is no cryptographic session identity to check instead. The root's own contract is
-written once, at session start, and by a chain's third-or-later link it is routinely older
-than the inheritance window even though nothing about the session actually changed.
+`create-issue-worktree.sh` carries the root's `.agent/env-contract.txt` into each new worktree with
+`agent-preflight.sh --inherit-session`, and a same-harness source past the inheritance window is
+revalidated (never-widen on every field) rather than discarded, so a long chain's pushed commit
+handoff no longer trips `compose-worker-prompt.sh`'s `worktree-contract-less-restrictive-than-root`
+refusal. If that refusal still appears (a source written by a different harness is never inherited):
 
-Before this was fixed, staleness discarded the recorded root contract outright and fell back
-to an unqualified fresh probe in the new worktree's own process. If that fresh probe was less
-restrictive on any field than the (older, more restrictive) root contract — for example a root
-recorded as `active=unknown measured-by=hook` against a worktree that freshly measured
-`active=no measured-by=agent-shell` — `compose-worker-prompt.sh` refused to compose the
-worker prompt at all, with the reason `worktree-contract-less-restrictive-than-root` and no
-documented way forward.
-
-`agent-preflight.sh` now revalidates a same-harness stale source instead of discarding it:
-past the window it still probes fresh, but keeps whichever of the recorded and fresh readings
-is more restrictive on every field (the same never-widen comparison `apply_never_widen`
-already uses for a worktree's own prior contract), so an ordinary chain link no longer trips
-this refusal. Harness identity is still a hard requirement — a source written by a different
-harness/CLI is never inherited or revalidated, only re-probed fresh — and that case, or any
-other refusal that still reaches `compose-worker-prompt.sh`, has this recovery sequence:
-
-1. Re-run preflight at the ROOT checkout so its own `.agent/env-contract.txt` reflects the
-   current session.
-2. Re-run `agent-preflight.sh --worktree <worktree> --inherit-session <root-env-contract>`
-   for the affected worktree.
+1. Re-run preflight at the ROOT checkout.
+2. Re-run `agent-preflight.sh --worktree <worktree> --inherit-session <root-env-contract>`.
 3. Re-run `compose-worker-prompt.sh` for that link.
 
-This sequence is cheap and safe to repeat; nothing about it mutates git state or requires
-re-dispatching the link's lead.
+Safe to repeat; nothing mutates git state or re-dispatches the lead.
