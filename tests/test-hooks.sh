@@ -607,6 +607,24 @@ out=$(pre_input "$scope_repo" "grep -rl AGENTS.md \$HOME" "$(fresh_sid)" | "$hoo
 assert_eq 'deny' "$(decision "$out")" 'a recursive grep rooted at the home directory is still denied'
 out=$(pre_input "$scope_repo" "grep -r -e AGENTS.md -- \$HOME" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'with -e supplying the pattern, the first operand is the walk root'
+# A bundled short option carrying e/f is grep's own -e/-f, attached
+# (`-reTODO` == `-r -e TODO`) or with the value as the next token
+# (`-re TODO` == `-r -e TODO`) -- round 2 of K1 (Codex gpt-6-astra
+# adversarial P2): the pre-scan only recognized standalone -e/-f, so
+# `grep -reTODO "$HOME"` slipped past the sweep denial.
+for grep_bundle_sweep in "grep -reTODO \"\$HOME\"" "grep -rfPATTERNS \"\$HOME\"" \
+    "grep -re TODO \"\$HOME\"" "grep -rf patterns.txt \"\$HOME\"" "grep -rie TODO \"\$HOME\""; do
+    out=$(pre_input "$scope_repo" "$grep_bundle_sweep" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "a bundled -e/-f still marks \$HOME as the walk root: $grep_bundle_sweep"
+done
+# The bundle's e/f still supplies the PATTERN, so $HOME as ITS value (not
+# the walk root) stays allowed -- the bundle form must not deny more than
+# the unbundled form already didn't.
+for grep_bundle_pattern in "grep -re \"\$HOME\" docs/" "grep -reTODO docs/" \
+    "grep -rf \"\$HOME/list\" docs/"; do
+    out=$(pre_input "$scope_repo" "$grep_bundle_pattern" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a bundled -e/-f whose value is \$HOME is not a sweep: $grep_bundle_pattern"
+done
 
 # Reading ONE file under $HOME is a mis-scoped read, not an environment probe,
 # and the distinction is the whole point: denying every path under $HOME would
