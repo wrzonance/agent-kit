@@ -306,7 +306,7 @@ Net figures are lines of the 32,331 total. "Conv." = which of C1–C4 the change
 
 | rank | proposal | files | LOC before | LOC after | net saved | conv. | risk |
 |---|---|---|---|---|---|---|---|
-| 1 | **H1** Trim the 27 headers > 15 lines to ≤ 8 (purpose + pointer); keep Usage/exit tables only where `usage()` is absent | 27 (§1 table) | 863 header lines | 216 | **−611** (−647 aggressive) | — | low (comment-only; no test reads headers) |
+| 1 | **H1** Trim the 27 headers > 15 lines to ≤ 8 (purpose + pointer); keep Usage/exit tables only where `usage()` is absent | 27 (§1 table) | 863 header lines | 252 | **−611** (−647 aggressive) | — | low (comment-only; no test reads headers) |
 | 2 | **E2** Cap the 12 top-level essays ≥ 15 lines (agent-preflight 881-928, 965-981; gh-pr-state 704-730, 950-974; chain-advance 467-492; compose-worker-prompt 841-861; adversarial-run 227-246, 611-628; run-dir 136-156; sandbox-comparator 29-48; verification-baseline 181-196; review-ledger 271-287) at 4 lines | 8 | 262 | 48 | **−214** | — | low |
 | 3 | **E1** Cut the 30 in-function essays (§2) to ≤ 3 lines | 12 | 297 | 90 | **−207** | — | low (every one is pinned by a named suite) |
 | 4 | **D1** `die`/`die_usage`/`die_blocked`/`die_evidence`/`require_value` into one existing lib for all 46 scripts | 46 + 1 lib | 286 | 96 (20 lib + 76 source/SCRIPT_DIR lines) | **−190** | C1/C2 untouched; exit-code variants need `DIE_EXIT` | **medium** (46 new sibling-lib dependencies; knob-style abstraction) |
