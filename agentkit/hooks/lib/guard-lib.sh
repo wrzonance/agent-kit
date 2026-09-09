@@ -1990,7 +1990,16 @@ guard_gh_command_segments() {
             if ((heredoc_tabstrip)); then
                 terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
             fi
-            [[ $terminator_line == "$heredoc" ]] && { heredoc=''; heredoc_tabstrip=0; }
+            if [[ $terminator_line == "$heredoc" ]]; then
+                heredoc=''
+                heredoc_tabstrip=0
+                # Flush the owner line as its own segment (issue #680): with no
+                # command after the terminator it was otherwise never emitted.
+                if [[ -n $segment ]]; then
+                    printf '%s\n' "${segment%$'\n'}"
+                    segment=''
+                fi
+            fi
             continue
         fi
 
@@ -2055,12 +2064,7 @@ guard_gh_command_segments() {
                             delimiter=${rest:0:k}
                         else
                             delimiter=${rest%%[[:space:];|&]*}
-                            # An unquoted delimiter such as `<<\EOF` disables
-                            # heredoc-body expansion the same way a quoted one
-                            # does; bash strips the backslash for the purpose
-                            # of matching the terminator, so the stored
-                            # delimiter must too, or the real terminator line
-                            # (bare "EOF") never matches "\EOF".
+                            # `<<\EOF`: strip the backslash so the bare terminator matches (see guard_destructive_command_segments).
                             delimiter=${delimiter//\\/}
                         fi
                         [[ -n $delimiter ]] && heredoc=$delimiter

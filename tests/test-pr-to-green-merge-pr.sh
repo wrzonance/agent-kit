@@ -24,6 +24,8 @@ for arg in "\$@"; do [[ \$arg == repos/* ]] && endpoint=\$arg; done
 printf 'gh %s\n' "\$*" >>"\$MERGE_LOG"
 is_delete=0
 [[ " \$* " == *' -X DELETE '* ]] && is_delete=1
+is_post=0
+[[ " \$* " == *' -X POST '* ]] && is_post=1
 case \$endpoint in
 repos/owner/repo/pulls/9)
     mergeable=\${PR_MERGEABLE:-true}
@@ -36,8 +38,16 @@ repos/owner/repo/pulls/9)
         "\$state" "\$draft" "\$sha" "\$head_repo" "\$base" "\$mergeable"
     ;;
 repos/owner/repo)
-    printf '{"allow_squash_merge":%s,"allow_merge_commit":%s,"allow_rebase_merge":%s}\n' \\
-        "\${ALLOW_SQUASH:-true}" "\${ALLOW_MERGE:-true}" "\${ALLOW_REBASE:-true}"
+    printf '{"allow_squash_merge":%s,"allow_merge_commit":%s,"allow_rebase_merge":%s,"delete_branch_on_merge":%s}\n' \\
+        "\${ALLOW_SQUASH:-true}" "\${ALLOW_MERGE:-true}" "\${ALLOW_REBASE:-true}" "\${DELETE_ON_MERGE:-false}"
+    ;;
+repos/owner/repo/git/refs)
+    if ((is_post)); then
+        printf '{"ref":"refs/heads/feat/demo"}\n'
+    else
+        printf 'unexpected method for git/refs\n' >&2
+        exit 1
+    fi
     ;;
 repos/owner/repo/pulls/9/merge)
     if [[ \${MERGE_REFUSE:-0} == 1 ]]; then
@@ -62,9 +72,16 @@ repos/owner/repo/git/refs/heads/feat/demo)
     fi
     ;;
 repos/owner/repo/git/ref/heads/feat/demo)
-    # Singular route -- GET only, exact match, one object.
+    # Singular route -- GET only, exact match, one object. Error text mirrors
+    # gh's real "<message> (HTTP <code>)" shape (see code-quality-state.sh's
+    # fixtures) so keep_branch_after_merge's HTTP-404 parsing is exercised
+    # against realistic output, not a stand-in string.
     if [[ \${REF_CHECK_MISSING:-0} == 1 ]]; then
-        printf 'not found\n' >&2
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        exit 1
+    fi
+    if [[ \${REF_CHECK_ERROR:-0} == 1 ]]; then
+        printf 'gh: Internal Server Error (HTTP 500)\n' >&2
         exit 1
     fi
     printf '{"object":{"sha":"%s"}}\n' "\${REF_CHECK_SHA:-$HEAD_SHA}"
@@ -111,6 +128,30 @@ assert_contains "$out" 'branch_delete=skipped' \
     'branch deletion is skipped by default'
 assert_eq '0' "$(grep -c 'git/refs/heads' "$tmp/merge.log" || true)" \
     'no delete call is made without --delete-branch'
+
+# issue #607: with delete_branch_on_merge on, GitHub deletes the merged head
+# even when the run chose keep-branch; restore it here, never from the model.
+: >"$tmp/merge.log"
+out=$(DELETE_ON_MERGE=true REF_CHECK_MISSING=1 MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)
+assert_contains "$out" 'branch_delete=restored ref=feat/demo reason=repo-delete-branch-on-merge' \
+    'a head the repository setting deleted is restored when the run chose keep-branch'
+assert_eq '1' "$(grep -c -- "-X POST repos/owner/repo/git/refs .*sha=$HEAD_SHA" "$tmp/merge.log" || true)" \
+    'the restore is one ref-create call carrying the merged head SHA'
+: >"$tmp/merge.log"
+out=$(DELETE_ON_MERGE=true MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)
+assert_contains "$out" 'branch_delete=skipped ref=feat/demo note=repo-delete-branch-on-merge-pending' \
+    'a head still present after the merge is left alone and the pending deletion is named'
+
+# CodeRabbit #683 F3: a non-404 ref-lookup failure (auth, permission,
+# rate-limit, transport, or any other 5xx) is not evidence the branch was
+# deleted -- restoring off it would create a ref for a branch that may still
+# exist. Only a confirmed HTTP 404 triggers the restore.
+: >"$tmp/merge.log"
+out=$(DELETE_ON_MERGE=true REF_CHECK_ERROR=1 MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)
+assert_contains "$out" 'branch_delete=unknown ref=feat/demo reason=gh: Internal Server Error (HTTP 500)' \
+    'a non-404 ref-lookup failure is reported as unknown, never treated as a confirmed delete'
+assert_eq '0' "$(grep -c -- '-X POST repos/owner/repo/git/refs' "$tmp/merge.log" || true)" \
+    'a non-404 ref-lookup failure never issues the ref-create call'
 
 : >"$tmp/merge.log"
 out=$(AUTH_DELETE_BRANCH=true run_merge --delete-branch)

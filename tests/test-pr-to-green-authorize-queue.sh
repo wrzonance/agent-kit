@@ -73,6 +73,10 @@ repos/owner/repo/pulls/14)
     merged=${QUEUE_PR14_MERGED:-true}
     printf '{"number":14,"merged":%s}\n' "$merged"
     ;;
+repos/owner/repo/issues/*/timeline)
+    printf '[{"event":"base_ref_changed","created_at":"%s"}]\n' \
+        "${QUEUE_TIMELINE_ISO:-2024-01-01T00:00:00Z}"
+    ;;
 *)
     printf 'unexpected endpoint: %s\n' "$endpoint" >&2
     exit 1
@@ -517,7 +521,7 @@ assert_eq "$before_state_only" "$(sha256sum "$auth")" \
 # --- Stacked successor retarget: valid chain-advance.sh proof authorizes the new base/head ---
 
 retarget_proof_ok="$tmp/retarget-proof-ok.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n' \
     >"$retarget_proof_ok"
 write_confirmed
 retarget_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
@@ -529,19 +533,75 @@ assert_eq 'main:dddddddddddddddddddddddddddddddddddddddd' \
     "$(jq -r '.queue[] | select(.pr==15) | [.base,.headSha] | join(":")' "$auth")" \
     'the refreshed base and head come from the live re-derivation'
 
+# issue #607: chain-advance.sh --retarget persists its proof line under Git
+# metadata; --allow-mechanical-advance reads it from there, so the per-PR
+# --retarget-proof PR:FILE bookkeeping is no longer required.
+git init -q "$repo_root"
+default_proof_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence
+mkdir -p "$default_proof_dir"
+cp -- "$retarget_proof_ok" "$default_proof_dir/chain-advance-owner-repo-pr-15-base-main.proof"
+write_confirmed
+default_proof_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance)
+assert_eq "authorization=$auth queue=2" "$default_proof_out" \
+    'a persisted chain-advance proof authorizes a stacked retarget with no --retarget-proof argument'
+chmod 666 "$default_proof_dir/chain-advance-owner-repo-pr-15-base-main.proof"
+write_confirmed
+writable_proof_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/writable-proof.out" 2>"$tmp/writable-proof.err" || writable_proof_rc=$?
+assert_eq '1' "$writable_proof_rc" 'a group- or world-writable persisted proof is refused like an explicit one'
+assert_contains "$(cat "$tmp/writable-proof.err")" 'persisted retarget proof must not be group- or world-writable' \
+    'the refusal names the persisted proof and its mode'
+rm -f -- "$default_proof_dir/chain-advance-owner-repo-pr-15-base-main.proof"
+
+# issue #607 review: a proof persisted for a DIFFERENT repository under the
+# same shared Git common dir must never be auto-discovered for this --repo.
+# The filename is repo-scoped, so a same-PR/same-base file for another repo
+# simply does not match the path this checkout looks up.
+cp -- "$retarget_proof_ok" "$default_proof_dir/chain-advance-other-owner-other-repo-pr-15-base-main.proof"
+write_confirmed
+other_repo_file_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/other-repo-file.out" 2>"$tmp/other-repo-file.err" || other_repo_file_rc=$?
+assert_eq '1' "$other_repo_file_rc" \
+    'a persisted proof filed under a different repository slug is not auto-discovered for this repo'
+assert_contains "$(cat "$tmp/other-repo-file.err")" 'no persisted chain-advance.sh proof under Git metadata' \
+    'the refusal reports no persisted proof was found, not a stale/mismatched one'
+rm -f -- "$default_proof_dir/chain-advance-other-owner-other-repo-pr-15-base-main.proof"
+
+# An explicit --retarget-proof file is not exempt: its content must still name
+# THIS --repo, even though its filename can be anything the caller chooses.
+retarget_proof_other_repo="$tmp/retarget-proof-other-repo.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=other-owner/other-repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_other_repo"
+write_confirmed
+other_repo_token_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_other_repo" \
+    >"$tmp/other-repo-token.out" 2>"$tmp/other-repo-token.err" || other_repo_token_rc=$?
+assert_eq '1' "$other_repo_token_rc" \
+    'an explicit retarget-proof file whose repo= token names a different repository is refused'
+assert_contains "$(cat "$tmp/other-repo-token.err")" 'does not name repository owner/repo' \
+    'the refusal names the mismatched repository explicitly'
+
 # --- Stacked successor retarget: approval is provider policy, never a
 # mechanical gate (issue #455) -- a proof carrying any well-formed
 # `approval=` token authorizes identically across every provider plan:
 # trigger, observe, disabled, and effective-none (--no-providers). ---
 
 retarget_proof_none="$tmp/retarget-proof-none.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=none ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=none ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n' \
     >"$retarget_proof_none"
 retarget_proof_residue="$tmp/retarget-proof-residue.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=residue:stale ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=residue:stale ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n' \
     >"$retarget_proof_residue"
 retarget_proof_unknown="$tmp/retarget-proof-unknown.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=unknown ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=unknown ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n' \
     >"$retarget_proof_unknown"
 
 write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:trigger:capability-default
@@ -581,7 +641,7 @@ assert_eq "authorization=$auth queue=2" "$none_retarget_out" \
 # it equal `current:post-retarget` is not the same as accepting anything. ---
 
 retarget_proof_garbled="$tmp/retarget-proof-garbled.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=yes ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=yes ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_garbled"
 write_confirmed
 garbled_rc=0
@@ -624,7 +684,7 @@ assert_contains "$(cat "$tmp/no-proof.err")" 'retarget' \
 # --- Stacked successor retarget: a proof for the wrong head is rejected ---
 
 retarget_proof_wrong="$tmp/retarget-proof-wrong.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=9999999999999999999999999999999999999999 ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=9999999999999999999999999999999999999999 repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_wrong"
 write_confirmed
 wrong_proof_rc=0
@@ -661,8 +721,8 @@ chmod 600 "$retarget_proof_writable"
 
 retarget_proof_split="$tmp/retarget-proof-split.txt"
 {
-    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget closing-issues=1\n'
-    printf 'retargeted pr #99 base=other head=feat/other sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee ci=1/1 ancestry=verified closing-issues=2\n'
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget closing-issues=1\n'
+    printf 'retargeted pr #99 base=other head=feat/other sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee repo=owner/repo ci=1/1 ancestry=verified closing-issues=2\n'
 } >"$retarget_proof_split"
 write_confirmed
 split_proof_rc=0
@@ -683,6 +743,106 @@ one_line_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=ddddddddddddddddddddddddddddddddd
     --allow-mechanical-advance --retarget-proof "15:$retarget_proof_ok")
 assert_eq "authorization=$auth queue=2" "$one_line_out" \
     'a one-line proof carrying every required token still authorizes'
+
+# --- CodeRabbit #683 F2: chain-advance.sh's persist_proof_line APPENDS, so a
+# PR retargeted more than once to the same base/head accumulates several
+# matching lines. The epoch check must bind to the NEWEST matching line, not
+# the first one grep/the scan happens to hit -- otherwise a stale first line
+# can permanently block authorization even after a fresh chain-advance.sh
+# --retarget run appends a current line after it. ---
+
+retarget_proof_two_line="$tmp/retarget-proof-two-line.txt"
+{
+    # Stale record from an earlier retarget cycle (superseded boundaryEpoch).
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1690000000 closing-issues=1\n'
+    # Current record: same PR/base/head/sha, matching the live timeline's
+    # latest boundaryEpoch (2024-01-01T00:00:00Z == 1704067200, the default
+    # QUEUE_TIMELINE_ISO below).
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n'
+} >"$retarget_proof_two_line"
+write_confirmed
+two_line_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_two_line")
+assert_eq "authorization=$auth queue=2" "$two_line_out" \
+    'the newest matching proof line, not the first (stale) one, supplies the boundaryEpoch used to authorize'
+
+# Order matters: a stale line appended AFTER the current one (an out-of-order
+# or corrupted file) must not resurrect the stale epoch either -- last match
+# wins, not "the current one happened to come first".
+retarget_proof_two_line_reordered="$tmp/retarget-proof-two-line-reordered.txt"
+{
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n'
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1690000000 closing-issues=1\n'
+} >"$retarget_proof_two_line_reordered"
+write_confirmed
+reordered_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_two_line_reordered" \
+    >"$tmp/reordered.out" 2>"$tmp/reordered.err" || reordered_rc=$?
+assert_eq '1' "$reordered_rc" \
+    'the last line in the file governs even when it is the stale one -- a stale line appended after a fresh one is not silently ignored'
+assert_contains "$(cat "$tmp/reordered.err")" 'the retarget proof predates a later retarget' \
+    'the reordered-stale-last case is refused as a stale-epoch mismatch, not a generic proof mismatch'
+
+# --- issue #607 fix round 2 finding 2: a persisted/explicit proof must bind
+# to the LIVE latest retarget event, not just to the live head/base. A PR
+# that returns to the same base and head after a LATER retarget must not be
+# authorized off a proof whose CI predates that later retarget -- the proof's
+# `boundaryEpoch=` is checked against the live timeline's latest matching
+# event, and a stale or missing epoch is refused rather than trusted. ---
+
+write_confirmed
+before_stale_epoch=$(sha256sum "$auth")
+stale_epoch_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    QUEUE_TIMELINE_ISO=2024-06-01T00:00:00Z \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_ok" \
+    >"$tmp/stale-epoch.out" 2>"$tmp/stale-epoch.err" || stale_epoch_rc=$?
+assert_eq '1' "$stale_epoch_rc" \
+    'an explicit proof whose boundaryEpoch predates the live latest retarget event is refused'
+assert_contains "$(cat "$tmp/stale-epoch.err")" 'chain-advance.sh --retarget' \
+    'the refusal tells the operator to rerun chain-advance.sh --retarget'
+assert_eq "$before_stale_epoch" "$(sha256sum "$auth")" \
+    'a stale-boundary refusal preserves the prior authorization byte-for-byte'
+
+default_proof_dir2=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence
+mkdir -p "$default_proof_dir2"
+cp -- "$retarget_proof_ok" "$default_proof_dir2/chain-advance-owner-repo-pr-15-base-main.proof"
+write_confirmed
+stale_epoch_default_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    QUEUE_TIMELINE_ISO=2024-06-01T00:00:00Z \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/stale-epoch-default.out" 2>"$tmp/stale-epoch-default.err" || stale_epoch_default_rc=$?
+assert_eq '1' "$stale_epoch_default_rc" \
+    'the same live-epoch check applies to an auto-discovered persisted proof, not only an explicit one'
+assert_contains "$(cat "$tmp/stale-epoch-default.err")" 'chain-advance.sh --retarget' \
+    'the auto-discovered stale-boundary refusal also tells the operator to rerun chain-advance.sh --retarget'
+rm -f -- "$default_proof_dir2/chain-advance-owner-repo-pr-15-base-main.proof"
+
+retarget_proof_no_epoch="$tmp/retarget-proof-no-epoch.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_no_epoch"
+write_confirmed
+no_epoch_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_no_epoch" \
+    >"$tmp/no-epoch.out" 2>"$tmp/no-epoch.err" || no_epoch_rc=$?
+assert_eq '1' "$no_epoch_rc" \
+    'a proof line with no boundaryEpoch token is refused, never treated as trivially fresh'
+# The boundaryEpoch=[1-9][0-9]* token is part of the proof-line MATCH regex
+# itself (see the while-loop above), reached before the dedicated
+# missing-boundaryEpoch die() below it ever runs. A line lacking the token
+# simply never matches, so this fixture hits the generic proof-mismatch
+# refusal, not the dedicated one -- assert the diagnostic the code actually
+# emits (verified by running this fixture) rather than a substring ('retarget')
+# common to both messages that can't tell them apart.
+assert_contains "$(cat "$tmp/no-epoch.err")" 'does not match the live base and head' \
+    'a proof line with no boundaryEpoch token fails the proof-line match itself, reported as a generic mismatch, never as trivially fresh'
 
 # --- A predecessor that merged and vanished from the live queue is allowed to drop out ---
 
@@ -736,7 +896,7 @@ jq -cn '{
 }' >"$confirmed"
 chmod 600 "$confirmed"
 retarget_proof_combined="$tmp/retarget-proof-combined.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n' \
     >"$retarget_proof_combined"
 : >"$tmp/queue.log"; : >"$tmp/gh.log"
 combined_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
@@ -755,6 +915,9 @@ assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:777777777777
     "$(jq -r '.queue | sort_by(.pr) | map([.pr,.base,.headSha] | join(":")) | join(" ")' "$auth")" \
     'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 19300 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 19300 bytes'
+# 2026-09-09 issue #607: +236 B, the persisted proof and the delete-on-merge
+# restore; measured (the plan estimated +237). Ceiling moves down to the
+# measured count, never above it.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 19727 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 19727 bytes'
 
 finish

@@ -1623,6 +1623,41 @@ assert_eq '1' "${#segment_flush_segs[@]}" \
 assert_eq "$segment_flush_owner" "${segment_flush_segs[0]-}" \
     'and the emitted segment is exactly the owner line, not merged with or missing the heredoc opener'
 
+# issue #680: the gh lexer must flush the owner line at the terminator too --
+# it used to emit ZERO segments for a command whose heredoc ends the input,
+# so the scope and write guards never saw `cat > <foreign> <<'EOF' ... EOF`.
+gh_flush_payload=$'cat > /tmp/x <<\'EOF\'\nfoo\nEOF'
+mapfile -t gh_flush_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_gh_command_segments "$gh_flush_payload"
+)
+assert_eq '1' "${#gh_flush_segs[@]}" \
+    'the gh lexer emits the heredoc-owner segment when the heredoc is the last construct in the payload'
+assert_eq "cat > /tmp/x <<'EOF'" "${gh_flush_segs[0]-}" \
+    'and the gh lexer emits exactly the owner line for a trailing heredoc'
+mapfile -t destructive_flush_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$gh_flush_payload"
+)
+assert_eq "${destructive_flush_segs[*]-}" "${gh_flush_segs[*]-}" \
+    'both lexers agree on a trailing inert heredoc: one owner-line segment each'
+
+trailing_heredoc_foreign=$(mktemp -d "${RUNNER_TEMP:-/dev/shm}/hooks-trailing-heredoc.XXXXXX")
+trailing_heredoc_cmd=$(printf "cat > %s/notes.md <<'EOF'\nfoo\nEOF" "$trailing_heredoc_foreign")
+out=$(pre_input "$scope_repo" "$trailing_heredoc_cmd" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_contains "$(pre_context "$out")" 'classification: foreign' \
+    'a foreign redirect target on a trailing-heredoc owner line draws the scope advisory'
+assert_eq 'allow' "$(decision "$out")" \
+    'an inert trailing heredoc body written to a foreign path is advised, never denied'
+rm -rf -- "$trailing_heredoc_foreign"
+# The one new denial: the protected-path write guard now sees the owner line
+# of a trailing heredoc, so a redirect into .github/workflows/ is refused
+# exactly as it is with a command after the terminator (issue #680).
+trailing_heredoc_protected_cmd=$(printf "cat > %s/.github/workflows/ci.yml <<'EOF'\nname: ci\nEOF" "$scope_repo")
+out=$(pre_input "$scope_repo" "$trailing_heredoc_protected_cmd" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a trailing heredoc redirected into a protected path is denied once the write guard sees its owner line'
+
 # Same shape at the hook level: an owner line that is itself destructive,
 # with nothing after the heredoc closes, must still be refused -- before this
 # fix the unflushed segment was dropped entirely, so guard_destructive_reason
@@ -2906,7 +2941,7 @@ assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && pr
     'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
 
 # 2026-09-08 size wave two: hold the hook sources at their measured line counts.
-for hook_ceiling in 'lib/guard-lib.sh:2410' 'pre-tool-use.sh:190' 'post-tool-use.sh:250' 'session-start.sh:348'; do
+for hook_ceiling in 'lib/guard-lib.sh:2407' 'pre-tool-use.sh:190' 'post-tool-use.sh:250' 'session-start.sh:348'; do
     hook_file=${hook_ceiling%%:*}; hook_cap=${hook_ceiling##*:}
     assert_eq yes "$([[ $(wc -l < "$hooks/$hook_file") -le $hook_cap ]] && printf yes || printf no)" \
         "$hook_file stays at or under $hook_cap lines (measured $(wc -l < "$hooks/$hook_file"))"
