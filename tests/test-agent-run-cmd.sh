@@ -526,8 +526,53 @@ cache_log=$(find "$cache_repo/.agent/logs" -type f -name '*-test.log' -print -qu
 assert_contains "$(cat "$cache_log")" "$tmp/agent-cache-$(id -u)/cargo:$tmp/agent-cache-$(id -u)/go-mod" \
     'CARGO_HOME and GOMODCACHE are redirected under the fallback cache root'
 
-# issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1593 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1593 lines'
+# issue #690 (Codex adversarial review of #610's PR, P2): CARGO_HOME is not a
+# pure cache -- it holds config.toml (registry definitions) and
+# credentials.toml (auth tokens) -- so a writable default cargo home must be
+# left alone, and a redirected one must carry those files along instead of
+# starting empty (which previously broke a private-registry build that
+# worked before the CARGO_HOME redirect was added).
+cargo_home_writable_repo=$(make_repo)
+mkdir -p "$cargo_home_writable_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "CARGO_HOME=[%%s]\\n" "$CARGO_HOME"\n' > "$cargo_home_writable_repo/tools/show-cargo-home"
+chmod +x "$cargo_home_writable_repo/tools/show-cargo-home"
+printf 'AGENT_CMD_TEST=tools/show-cargo-home\n' > "$cargo_home_writable_repo/.agent/config.env"
+writable_home="$tmp/cargo-writable-home"
+mkdir -p "$writable_home/.cargo"
+alt_cache_root="$tmp/alt-agent-cache"
+(cd "$cargo_home_writable_repo" && env -u CARGO_HOME HOME="$writable_home" AGENT_CACHE_ROOT="$alt_cache_root" TMPDIR="$tmp" \
+    "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+writable_log=$(find "$cargo_home_writable_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$writable_log")" 'CARGO_HOME=[]' \
+    'a writable default cargo home is left alone, not redirected under AGENT_CACHE_ROOT'
+
+cargo_home_unwritable_repo=$(make_repo)
+mkdir -p "$cargo_home_unwritable_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "CARGO_HOME=[%%s]\\n" "$CARGO_HOME"\n' > "$cargo_home_unwritable_repo/tools/show-cargo-home"
+chmod +x "$cargo_home_unwritable_repo/tools/show-cargo-home"
+printf 'AGENT_CMD_TEST=tools/show-cargo-home\n' > "$cargo_home_unwritable_repo/.agent/config.env"
+unwritable_home="$tmp/cargo-unwritable-home"
+mkdir -p "$unwritable_home/.cargo"
+printf '[registries.private]\nindex = "sparse+https://example.invalid/"\n' > "$unwritable_home/.cargo/config.toml"
+printf 'token = "secret-token"\n' > "$unwritable_home/.cargo/credentials.toml"
+chmod 500 "$unwritable_home/.cargo"
+(cd "$cargo_home_unwritable_repo" && env -u CARGO_HOME HOME="$unwritable_home" AGENT_CACHE_ROOT="$alt_cache_root" TMPDIR="$tmp" \
+    "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$unwritable_home/.cargo"
+redirected_log=$(find "$cargo_home_unwritable_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$redirected_log")" "CARGO_HOME=[$alt_cache_root/cargo]" \
+    'an unwritable default cargo home is redirected under AGENT_CACHE_ROOT'
+assert_contains "$(cat "$alt_cache_root/cargo/config.toml")" 'registries.private' \
+    'the redirected home carries the fixture config.toml along'
+cred_mode=$(stat -c '%a' "$alt_cache_root/cargo/credentials.toml" 2>/dev/null || stat -f '%Lp' "$alt_cache_root/cargo/credentials.toml")
+assert_eq '600' "$cred_mode" 'the copied credentials.toml is narrowed to mode 600'
+
+# issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection; issue #690
+# review: +23 for select_cargo_home (redirect only when the default is
+# unwritable, and carry config.toml/credentials.toml into the new home).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1614 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1614 lines'
 
 finish

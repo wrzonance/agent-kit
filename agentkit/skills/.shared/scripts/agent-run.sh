@@ -242,6 +242,27 @@ export_cache_var() {
     export "$name=$path"
 }
 
+# CARGO_HOME is not a pure cache: it also holds config.toml (registry
+# definitions, e.g. a private registry) and credentials.toml (auth tokens).
+# Redirect it only when the effective default cargo home is unwritable --
+# mirroring the unwritable-$HOME rule select_caches already applies for the
+# tmp cache root -- and when redirecting, carry config.toml/credentials.toml
+# into the new home so a private registry keeps working (PR #690 review).
+select_cargo_home() {
+    local root=$1 default=${CARGO_HOME:-${HOME:+$HOME/.cargo}} new_home src
+    [[ -n $default ]] && dir_writable "$default" && return 0
+    new_home=$root/cargo
+    dir_writable "$new_home" || die "Cannot create cache directory: $new_home"
+    if [[ -n $default ]]; then
+        for src in config.toml credentials.toml; do
+            [[ -f $default/$src && ! -L $default/$src ]] || continue
+            cp -- "$default/$src" "$new_home/$src" 2>/dev/null || continue
+            [[ $src == credentials.toml ]] && chmod 600 -- "$new_home/$src" 2>/dev/null
+        done
+    fi
+    export CARGO_HOME="$new_home"
+}
+
 select_caches() {
     local root=${AGENT_CACHE_ROOT:-} home_cache=${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}
     if [[ -z $root ]]; then
@@ -262,7 +283,7 @@ select_caches() {
     # surfaced as an opaque ERR_SQLITE_ERROR and cost an agent several calls.
     export_cache_var npm_config_store_dir "$root/pnpm-store"  # ecosystem-allow:
     export_cache_var PIP_CACHE_DIR "$root/pip"
-    export_cache_var CARGO_HOME "$root/cargo"   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
+    select_cargo_home "$root"                   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
     export_cache_var GOMODCACHE "$root/go-mod"  # ecosystem-allow: same; GOCACHE already follows XDG_CACHE_HOME
 }
 
