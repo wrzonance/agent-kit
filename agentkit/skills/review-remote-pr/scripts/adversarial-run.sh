@@ -285,9 +285,15 @@ select_reviewer() {
         primary_family=$ROSTER_FAMILY
         local primary_model=$ROSTER_MODEL primary_effort=$ROSTER_EFFORT
         roster_fallback=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER_FALLBACK "$config_file") || roster_fallback=''
+        local fallback_model='' fallback_effort=''
         if [[ -n $roster_fallback ]] && reviewer_roster_parse "$roster_fallback"; then
             fallback_family=$ROSTER_FAMILY
-            local fallback_model=$ROSTER_MODEL fallback_effort=$ROSTER_EFFORT
+            fallback_model=$ROSTER_MODEL fallback_effort=$ROSTER_EFFORT
+        elif [[ $roster_fallback == codex || $roster_fallback == claude ]]; then
+            # A bare CLI name (no <model-id>-<effort> compound to parse) still
+            # names a real fallback family; its own harness default model/effort
+            # applies below once reviewer_cli is known (issue #606 round 2).
+            fallback_family=$roster_fallback
         fi
 
         if [[ $primary_family != "$HARNESS_NAME" ]]; then

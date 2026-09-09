@@ -1309,7 +1309,70 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 
 # 2026-09-09 issue #609 fix round 1: +16 (payload-paths wiring in
 # compute_payload/verify_consent, plus the token-limit validation). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 905 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 905 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 911 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 911 lines'
+# --- roster form, bare fallback CLI name: AGENT_ADVERSARIAL_REVIEWER_FALLBACK
+# names a bare CLI (claude|codex) rather than a <model-id>-<effort> compound.
+# reviewer_roster_parse only splits the compound form, so the fallback must be
+# normalized into a family candidate before selection or it is silently
+# dropped from cross-harness consideration entirely (issue #606 round 2: the
+# running harness's own same-family primary would otherwise "review itself"
+# even though a genuine cross-harness peer was declared).
+repo_roster_bare_fallback=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude')
+write_contract_at "$repo_roster_bare_fallback" codex claude "present path=$tmp/fake-claude"
+git -C "$repo_roster_bare_fallback" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_bare_fallback/example.txt"
+git -C "$repo_roster_bare_fallback" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_bare_fallback" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_bare_fallback="$tmp/repo-roster-bare-fallback.diff"
+git -C "$repo_roster_bare_fallback" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_bare_fallback"
+roster_bare_fallback_run="$tmp/roster-bare-fallback-run"
+grant "$roster_bare_fallback_run" anthropic "$diff_roster_bare_fallback"
+roster_bare_fallback_rc=0
+(cd "$repo_roster_bare_fallback" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_bare_fallback_run") \
+    >"$tmp/roster-bare-fallback.out" 2>"$tmp/roster-bare-fallback.err" || roster_bare_fallback_rc=$?
+assert_eq 0 "$roster_bare_fallback_rc" 'a roster primary matching the running harness with a bare-CLI fallback completes'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'provider=anthropic' \
+    'the bare claude fallback is selected over the same-harness codex primary'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'model=claude-opus-5' \
+    "the bare fallback name has no model of its own, so claude's own harness default applies"
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'effort=high' \
+    "the bare fallback name has no effort of its own, so claude's own harness default applies"
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'mode=cross-provider' \
+    'a bare-CLI fallback that differs from the running harness is still a genuine cross-harness selection'
+
+# --- roster form, bare fallback CLI name, peer absent: the same-harness
+# primary is used after all, exactly like the pre-normalization behavior --
+# normalizing the bare fallback must not regress the peer-absent path.
+repo_roster_bare_fallback_absent=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude')
+write_contract_at "$repo_roster_bare_fallback_absent" codex claude 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
+git -C "$repo_roster_bare_fallback_absent" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_bare_fallback_absent/example.txt"
+git -C "$repo_roster_bare_fallback_absent" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_bare_fallback_absent" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_bare_fallback_absent="$tmp/repo-roster-bare-fallback-absent.diff"
+git -C "$repo_roster_bare_fallback_absent" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_bare_fallback_absent"
+roster_bare_fallback_absent_run="$tmp/roster-bare-fallback-absent-run"
+grant "$roster_bare_fallback_absent_run" openai "$diff_roster_bare_fallback_absent"
+roster_bare_fallback_absent_rc=0
+(cd "$repo_roster_bare_fallback_absent" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_bare_fallback_absent_run") \
+    >"$tmp/roster-bare-fallback-absent.out" 2>"$tmp/roster-bare-fallback-absent.err" || roster_bare_fallback_absent_rc=$?
+assert_eq 0 "$roster_bare_fallback_absent_rc" 'a bare-CLI fallback whose family is also absent still completes via the same-harness primary'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'provider=openai' \
+    'with the peer absent, the same-harness codex primary is used'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'model=gpt-6-astra' \
+    "the primary's own roster model is used, not a guessed default"
+assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'mode=blind-fallback' \
+    'a same-harness roster primary with an unreachable fallback is reported as blind-fallback'
+
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+# 2026-09-09 fix round 2: normalize a bare fallback CLI name into a family
+# candidate in select_reviewer (issue #606, +6 lines). Measured.
 
 finish

@@ -652,13 +652,41 @@ assert_eq claude "$("$rc_sh" --model-family claude-opus-5)" '--model-family name
 assert_eq opencode "$("$rc_sh" --model-family wrzcluster/qwen3-coder)" '--model-family names opencode for provider/model'
 assert_rc 1 '--model-family fails for an unknown family' -- "$rc_sh" --model-family codex-gpt-6-astra
 
+# --- fix round 2: the exactly-one-slash check must run before the claude-/
+# gpt- prefix matches, or an OpenCode entry that happens to start with a
+# native-CLI prefix misclassifies as that CLI (issue #606 round 2).
+assert_eq opencode "$("$rc_sh" --model-family claude-proxy/sonnet)" \
+    '--model-family names opencode for an OpenCode id that starts with the claude- prefix'
+assert_rc 1 '--model-family still rejects more than one slash' -- "$rc_sh" --model-family a/b/c
+
+# --- fix round 2: --validate must fail on a missing-equals or unaccepted-key
+# declaration, not just under --canonical-keys (issue #606 round 2) ---------
+printf 'AGENT_REPO_SLUG=o/r\nFOO BAR\n' > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate exits non-zero on a declaration with no equals sign'
+assert_contains "$validate_out" 'line 2 has no equals sign' \
+    '--validate names the offending line for the missing-equals declaration'
+
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_NOT_A_KEY=x\n' > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate exits non-zero on an unaccepted key'
+assert_contains "$validate_out" 'unknown key on line 2, ignoring: AGENT_NOT_A_KEY' \
+    '--validate names the offending line for the unaccepted key'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # 2026-09-09 issue #606: the model-family predicate and corrected-form
 # suggestions now live here and only here (adversarial-run.sh -3,
 # spawn-contract.md -7). Measured.
 # 2026-09-09 fix round 1: value_suggestion's roster arm now validates the
 # corrected roster as a whole before offering it (+4 lines). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1112 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1112 lines'
+# 2026-09-09 fix round 2: --validate now fails on a missing-equals or
+# unaccepted-key declaration (previously canonical-only), and model_family
+# checks the exactly-one-slash form before the claude-/gpt- prefixes so an
+# OpenCode claude-proxy/sonnet entry no longer misclassifies as claude
+# (+1 line net). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1113 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1113 lines'
 
 finish

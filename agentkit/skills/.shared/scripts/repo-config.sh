@@ -87,10 +87,11 @@ readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
 # home for this predicate (issue #606): adversarial-run.sh and the
 # spawn-contract.md resolver block call it through --model-family.
 model_family() {
+    # Slash check first -- claude-proxy/sonnet must classify opencode, not claude.
     case $1 in
+        */*) [[ $1 =~ ^[^/]+/[^/]+$ ]] && printf opencode || return 1 ;;
         claude-*) printf claude ;;
         gpt-5.6-* | gpt-6-*) printf codex ;;
-        */*) [[ $1 =~ ^[^/]+/[^/]+$ ]] && printf opencode || return 1 ;;
         *) return 1 ;;
     esac
 }
@@ -896,8 +897,8 @@ while IFS= read -r line || [[ -n $line ]]; do
     if [[ $line != *=* ]]; then
         warn "line $lineno has no equals sign, ignoring"
         malformed_key=$(trim "$line")
-        [[ $mode == resolve && -n ${resolve_requested_keys[$malformed_key]+yes} ]] && parse_failed=1
-        [[ $mode == canonical ]] && parse_failed=1
+        [[ $mode == canonical || $mode == validate ||
+            ( $mode == resolve && -n ${resolve_requested_keys[$malformed_key]+yes} ) ]] && parse_failed=1
         continue
     fi
 
@@ -921,7 +922,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         fi
         # Unknown keys are deliberately dropped. In resolve mode they are not
         # relevant to the requested declaration set.
-        [[ $mode == canonical ]] && parse_failed=1
+        [[ $mode == canonical || $mode == validate ]] && parse_failed=1
         continue
     fi
 
