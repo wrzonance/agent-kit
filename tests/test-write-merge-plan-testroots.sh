@@ -296,4 +296,69 @@ assert_not_contains "$ref_err" 'beta' \
 assert_contains "$ref_err" 'test-root config source: chain-base ref' \
     'the resolved config source is disclosed'
 
+# --- issue #610: a predicted dependency manifest drags its lockfile and the
+# generated files whose CI workflow paths: trigger on that lockfile. ---------
+dep_base="$tmp/dep-base"
+mkdir -p "$dep_base/src" "$dep_base/packaging/flatpak" "$dep_base/.github/workflows" "$dep_base/.agent"
+printf '%s\n' 'fn main() {}' >"$dep_base/src/main.rs"
+printf '%s\n' '[package]' 'name = "honk"' >"$dep_base/Cargo.toml"
+printf '%s\n' '# lock' >"$dep_base/Cargo.lock"
+printf '%s\n' '[]' >"$dep_base/packaging/flatpak/cargo-sources.json"
+cat >"$dep_base/.github/workflows/flatpak-cargo-sources.yml" <<'EOF'
+name: flatpak-cargo-sources
+on:
+  push:
+    paths:
+      - 'Cargo.lock'
+      - "packaging/flatpak/cargo-sources.json"
+      - .github/workflows/flatpak-cargo-sources.yml
+  pull_request:
+    paths: [Cargo.lock, 'packaging/flatpak/cargo-sources.json']
+jobs:
+  check:
+    steps:
+      - run: echo check
+EOF
+printf '%s\n' 'AGENT_CMD_TEST=cargo test' >"$dep_base/.agent/config.env" # ecosystem-allow: fixture
+git init -q -b main "$dep_base"
+git -C "$dep_base" config user.email test@example.invalid
+git -C "$dep_base" config user.name test
+git -C "$dep_base" add -- .
+git -C "$dep_base" commit -qm 'cargo repo with a CI-checked generated file'
+
+dep_plan="$tmp/dep.json"
+cat >"$dep_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 52, "predictedWriteSet": ["src/**", "Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+dep_rc=0
+dep_err=$("$writer" --dispatch-plan "$dep_plan" --chain-base "$dep_base" --validate-only 2>&1 >/dev/null) || dep_rc=$?
+assert_eq 1 "$dep_rc" 'a predicted manifest without its lockfile is a validation failure'
+assert_contains "$dep_err" 'Cargo.lock' 'the manifest completion names the lockfile'
+assert_contains "$dep_err" 'packaging/flatpak/cargo-sources.json' \
+    'the manifest completion names the generated file whose CI workflow triggers on the lockfile'
+assert_not_contains "$dep_err" 'omits its companion: .github/workflows' \
+    'the workflow file itself is never demanded as a companion'
+assert_rc 0 '--fix appends the companions to predictedWriteSet' -- \
+    "$writer" --dispatch-plan "$dep_plan" --chain-base "$dep_base" --validate-only --fix
+assert_eq 'src/**,Cargo.toml,Cargo.lock,packaging/flatpak/cargo-sources.json' \
+    "$(jq -r '.entries[0].predictedWriteSet | join(",")' "$dep_plan")" \
+    '--fix records the lockfile and the CI-declared generated file, in order, once'
+assert_rc 0 'a completed dependency write set validates cleanly' -- \
+    "$writer" --dispatch-plan "$dep_plan" --chain-base "$dep_base" --validate-only
+
+nodep_plan="$tmp/nodep.json"
+cat >"$nodep_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 53, "predictedWriteSet": ["src/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a write set that names no manifest is never asked for a lockfile' -- \
+    "$writer" --dispatch-plan "$nodep_plan" --chain-base "$dep_base" --validate-only
+
 finish

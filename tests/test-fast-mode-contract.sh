@@ -164,7 +164,8 @@ done <<< "$canonical_funnels"
 assert_eq '0' "$canonical_mismatches" \
     'every canonical funnel example satisfies the accounting invariant'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 37700 ]] && printf yes || printf no)" \
-    'triage-and-selection reference stays at or under 37700 bytes'
+# issue #610: the dependency-signal recipe and the validator's manifest completion.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38157 ]] && printf yes || printf no)" \
+    'triage-and-selection reference stays at or under 38157 bytes'
 
 finish

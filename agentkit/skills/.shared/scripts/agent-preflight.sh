@@ -955,7 +955,7 @@ probe_caches() {
             reason="home-cache-unwritable"
         fi
     fi
-    emit "caches= root=$root reason=$reason home-cache=$home_cache UV_CACHE_DIR=$root/uv NPM_CONFIG_CACHE=$root/npm PIP_CACHE_DIR=$root/pip XDG_CACHE_HOME=$root"
+    emit "caches= root=$root reason=$reason home-cache=$home_cache UV_CACHE_DIR=$root/uv NPM_CONFIG_CACHE=$root/npm PIP_CACHE_DIR=$root/pip XDG_CACHE_HOME=$root CARGO_HOME=$root/cargo GOMODCACHE=$root/go-mod"
 }
 
 # The repo command runner is a convention this skill defines and documents: a repo opts in

@@ -131,4 +131,24 @@ control_byte_count=$(printf '%s' "$out" | tr -d '[:print:]\n' | wc -c)
 assert_eq '0' "$control_byte_count" \
     'no control byte (ESC, BEL, or otherwise) reaches stdout in the printed evidence'
 
+# --- issue #610: the dependency-signal axis, the same pure-text mode ---------
+dep_fixture="$tmp/dep-body.txt"
+printf '%s\n' 'Add the ebur128 crate for loudness metering and regenerate the Flatpak sources.' >"$dep_fixture"
+out=$(PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-deps "$dep_fixture")
+assert_contains "$out" 'dependency-signal=' 'a dependency-shaped body prints the dependency-signal key'
+assert_contains "$out" 'ebur128 crate' 'the printed signal names the matched dependency phrase'
+assert_not_contains "$out" $'\n' 'the dependency classifier prints exactly one line'
+out=$(PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-deps "$implementation_fixture")
+assert_eq 'dependency-signal=-' "$out" 'a body with no dependency language prints the dash sentinel'
+out=$(PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-deps "$false_positive_fixture")
+assert_eq 'dependency-signal=-' "$out" 'read-only mode flag prose is not a dependency signal'
+lock_fixture="$tmp/lock-body.txt"
+printf '%s\n' 'Bump the pinned versions in Cargo.lock so CI stops flagging the advisory.' >"$lock_fixture"
+out=$(PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-deps "$lock_fixture")
+assert_contains "$out" 'dependency-signal=Bump the pinned versions in Cargo.lock' \
+    'a lockfile mention is a dependency signal'
+deps_combo_rc=0
+PATH="$tmp/nogh" /bin/bash "$tr_sh" --classify-deps "$dep_fixture" --json >/dev/null 2>&1 || deps_combo_rc=$?
+assert_eq 2 "$deps_combo_rc" '--classify-deps does not combine with the query flags'
+
 finish

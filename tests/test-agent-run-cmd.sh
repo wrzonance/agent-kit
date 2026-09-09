@@ -507,8 +507,27 @@ assert_not_contains "$latest_attempt_out" 'classification: load-flake' \
     'classification uses only the just-failed retry attempt'
 assert_eq '2' "$(<"$latest_attempt_count")" 'the mixed failure runs exactly the initial attempt and one retry'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1595 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1595 lines'
+# issue #610: with an unwritable cache home the wrapper redirects CARGO_HOME and
+# GOMODCACHE beside uv/npm/pip, so a Cargo or Go dependency step never fails on a
+# read-only ~/.cargo the contract never mentioned.
+cache_repo=$(make_repo)
+mkdir -p "$cache_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "%%s:%%s\\n" "$CARGO_HOME" "$GOMODCACHE"\n' > "$cache_repo/tools/show-caches"
+chmod +x "$cache_repo/tools/show-caches"
+printf 'AGENT_CMD_TEST=tools/show-caches\n' > "$cache_repo/.agent/config.env"
+ro_home="$tmp/ro-home"
+mkdir -p "$ro_home"
+chmod 500 "$ro_home"
+(cd "$cache_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME -u GOMODCACHE \
+    HOME="$ro_home" TMPDIR="$tmp" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$ro_home"
+cache_log=$(find "$cache_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$cache_log")" "$tmp/agent-cache-$(id -u)/cargo:$tmp/agent-cache-$(id -u)/go-mod" \
+    'CARGO_HOME and GOMODCACHE are redirected under the fallback cache root'
+
+# issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1593 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1593 lines'
 
 finish

@@ -1260,9 +1260,18 @@ assert_contains "$runners_line" 'node-roots=a,b' \
 assert_contains "$runners_line" 'node-pm=unresolved' \
     'roots resolving to different managers collapse to unresolved, never the first root'"'"'s manager'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1330 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1330 lines'
+# issue #610: caches= names the Cargo and Go module caches beside uv/npm/pip, so a
+# worker never rediscovers a read-only ~/.cargo or ~/go/pkg/mod mid-turn.
+cargo_repo=$(new_repo)
+cargo_out=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME TMPDIR="$tmp" "$script" --worktree "$cargo_repo" --no-write 2>/dev/null)
+cargo_line=$(grep '^caches=' <<< "$cargo_out")
+cargo_root=$(sed -n 's/^caches= root=\([^[:space:]]*\).*/\1/p' <<< "$cargo_line")
+assert_contains "$cargo_line" " CARGO_HOME=$cargo_root/cargo " 'caches= names CARGO_HOME under the selected cache root'
+assert_contains "$cargo_line" " GOMODCACHE=$cargo_root/go-mod" 'caches= names GOMODCACHE under the selected cache root'
+
+# issue #610: caches= grew CARGO_HOME/GOMODCACHE in place (0 new lines); ratchet the ceiling down to the measured count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1323 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1323 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \

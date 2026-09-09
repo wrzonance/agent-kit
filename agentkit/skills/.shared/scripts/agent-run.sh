@@ -262,6 +262,8 @@ select_caches() {
     # surfaced as an opaque ERR_SQLITE_ERROR and cost an agent several calls.
     export_cache_var npm_config_store_dir "$root/pnpm-store"  # ecosystem-allow:
     export_cache_var PIP_CACHE_DIR "$root/pip"
+    export_cache_var CARGO_HOME "$root/cargo"   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
+    export_cache_var GOMODCACHE "$root/go-mod"  # ecosystem-allow: same; GOCACHE already follows XDG_CACHE_HOME
 }
 
 # ---------------------------------------------------------------------- TLS ---
