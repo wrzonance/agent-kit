@@ -585,7 +585,14 @@ assert_contains "$adversarial_text" 'scripts/review-liveness.sh --run-dir "$RUN_
 assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, or Blocked' \
     'the reference pins the three liveness states'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 19600 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 19600 bytes'
+# 2026-09-09 issue #609 fix round 1: +511 B, the subset-consent rule (a
+# reduced/identical same-PR auto-review-flag payload never re-asks, one
+# touching an ungranted path does) plus its --emit-paths/--paths-file recipe;
+# measured.
+# 2026-09-09 issue #609 fix round 4: +211 B, the launch-limit sentence now
+# naming the prompt-overhead and output/reasoning-reserve terms the gate
+# adds on top of the diff estimate, not just the diff itself; measured.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 20501 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 20501 bytes'
 
 finish

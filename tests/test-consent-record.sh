@@ -273,13 +273,196 @@ assert_rc 10 'check rejects a changed provider' -- \
     /bin/bash "$script" check --state "$state" --provider openai --payload "$payload_one"
 
 # A second explicit grant may use the orchestrator's invocation-line source.
+# --source auto-review-flag now requires --paths-file (issue #609); an empty
+# file is a legitimate "touches nothing recognizable" paths list here -- this
+# block only exercises grant replacement, not the subset comparison itself.
+payload_two_paths="$state_dir/payload-two-paths"
+: >"$payload_two_paths"
 grant=$(/bin/bash "$script" grant --state "$state" --provider openai \
-    --payload "$payload_two" --source auto-review-flag)
+    --payload "$payload_two" --source auto-review-flag --paths-file "$payload_two_paths")
 assert_contains "$grant" 'source=auto-review-flag' 'auto-review source is recorded explicitly'
 assert_rc 0 'check accepts the explicitly granted replacement payload' -- \
     /bin/bash "$script" check --state "$state" --provider openai --payload "$payload_two"
 assert_rc 10 'the prior payload is not reusable after replacement' -- \
     /bin/bash "$script" check --state "$state" --provider anthropic --payload "$payload_one"
+
+# issue #609: an auto-review-flag grant is scoped to the PR AND to the paths
+# it actually granted -- the digest alone cannot express "reduced", so this
+# is decided by comparing sorted touched-path sets, never a repo:pr: prefix.
+# Real unified-diff fixtures give payload/--emit-paths something to parse.
+subset_dir="$tmp/subset"
+mkdir -- "$subset_dir"
+chmod 700 -- "$subset_dir"
+diff_ab="$subset_dir/diff-ab"
+cat >"$diff_ab" <<'EOF'
+--- a/fileA
++++ b/fileA
+@@ -1 +1 @@
+-old
++new
+--- a/fileB
++++ b/fileB
+@@ -1 +1 @@
+-old
++new
+EOF
+diff_a="$subset_dir/diff-a"
+cat >"$diff_a" <<'EOF'
+--- a/fileA
++++ b/fileA
+@@ -1 +1 @@
+-old
++new
+EOF
+diff_abc="$subset_dir/diff-abc"
+cat >"$diff_abc" <<'EOF'
+--- a/fileA
++++ b/fileA
+@@ -1 +1 @@
+-old
++new
+--- a/fileB
++++ b/fileB
+@@ -1 +1 @@
+-old
++new
+--- a/fileC
++++ b/fileC
+@@ -1 +1 @@
+-old
++new
+EOF
+paths_ab="$subset_dir/paths-ab"
+paths_a="$subset_dir/paths-a"
+paths_abc="$subset_dir/paths-abc"
+subset_payload_ab=$(/bin/bash "$script" payload --repo acme/widget --pr 50 --diff "$diff_ab" --emit-paths "$paths_ab")
+subset_payload_a=$(/bin/bash "$script" payload --repo acme/widget --pr 50 --diff "$diff_a" --emit-paths "$paths_a")
+subset_payload_abc=$(/bin/bash "$script" payload --repo acme/widget --pr 50 --diff "$diff_abc" --emit-paths "$paths_abc")
+assert_eq "$(printf 'fileA\nfileB')" "$(<"$paths_ab")" \
+    'payload --emit-paths writes the sorted touched paths'
+
+subset_state="$state_dir/subset-record"
+grant=$(/bin/bash "$script" grant --state "$subset_state" --provider openai \
+    --payload "$subset_payload_ab" --source auto-review-flag --paths-file "$paths_ab")
+assert_contains "$grant" ';paths=' 'an auto-review-flag grant records a paths hash'
+assert_eq 600 "$(stat -c %a -- "$subset_state.consent-paths")" \
+    'the granted paths file is secured at mode 0600'
+
+assert_rc 0 'an auto-review grant covers an identical payload for the same PR' -- \
+    /bin/bash "$script" check --state "$subset_state" --provider openai \
+    --payload "$subset_payload_ab" --paths-file "$paths_ab"
+assert_rc 0 'an auto-review grant covers a reduced payload for the same PR and provider' -- \
+    /bin/bash "$script" check --state "$subset_state" --provider openai \
+    --payload "$subset_payload_a" --paths-file "$paths_a"
+
+extra_rc=0
+extra_error=$(/bin/bash "$script" check --state "$subset_state" --provider openai \
+    --payload "$subset_payload_abc" --paths-file "$paths_abc" 2>&1) || extra_rc=$?
+assert_eq 10 "$extra_rc" \
+    'an auto-review grant never covers a payload that touches an ungranted path'
+assert_contains "$extra_error" 'fileC' 'the rejection names the extra path'
+
+other_pr_payload=$(/bin/bash "$script" payload --repo acme/widget --pr 51 \
+    --diff "$diff_a" --emit-paths "$subset_dir/paths-a-pr51")
+assert_rc 10 'an auto-review grant never covers another PR even with a path subset' -- \
+    /bin/bash "$script" check --state "$subset_state" --provider openai \
+    --payload "$other_pr_payload" --paths-file "$paths_a"
+
+/bin/bash "$script" grant --state "$subset_state" --provider openai \
+    --payload "$subset_payload_ab" --source interactive >/dev/null
+assert_rc 10 'a record downgraded to interactive stays exact-payload even for a path subset' -- \
+    /bin/bash "$script" check --state "$subset_state" --provider openai \
+    --payload "$subset_payload_a" --paths-file "$paths_a"
+
+tamper_state="$state_dir/subset-tamper-record"
+/bin/bash "$script" grant --state "$tamper_state" --provider openai \
+    --payload "$subset_payload_ab" --source auto-review-flag --paths-file "$paths_ab" >/dev/null
+printf 'fileA\nfileB\nfileZ\n' >"$tamper_state.consent-paths"
+assert_rc 10 'a granted-paths file that no longer matches its recorded hash fails closed' -- \
+    /bin/bash "$script" check --state "$tamper_state" --provider openai \
+    --payload "$subset_payload_a" --paths-file "$paths_a"
+
+# issue #609 P2 (fix round 2): an owned but unreadable (mode 000)
+# --paths-file passes the ownership/symlink checks but makes `sort` fail; the
+# comparison must fail closed, never treat the unreadable file as "touches
+# nothing extra" and silently authorize the payload.
+mode000_state="$state_dir/subset-mode000-record"
+/bin/bash "$script" grant --state "$mode000_state" --provider openai \
+    --payload "$subset_payload_ab" --source auto-review-flag --paths-file "$paths_ab" >/dev/null
+mode000_paths="$subset_dir/paths-mode000"
+cp -- "$paths_a" "$mode000_paths"
+chmod 000 -- "$mode000_paths"
+if [[ -r $mode000_paths ]]; then
+    # root bypasses the mode bits and can still read the file, so `sort`
+    # would succeed and the subset check would (correctly, for what it can
+    # see) authorize the payload -- the assertion below would then pass for
+    # the wrong reason instead of proving the fail-closed path.
+    printf '  skip mode-000 --paths-file check: file still readable (running as root?)\n'
+else
+    mode000_rc=0
+    mode000_error=$(/bin/bash "$script" check --state "$mode000_state" --provider openai \
+        --payload "$subset_payload_a" --paths-file "$mode000_paths" 2>&1) || mode000_rc=$?
+    assert_eq 10 "$mode000_rc" \
+        'an unreadable (mode 000) --paths-file fails closed instead of being treated as touching nothing extra'
+    assert_contains "$mode000_error" 'could not sort' \
+        'the mode-000 rejection names the sort failure, not a generic or silent one'
+fi
+chmod 600 -- "$mode000_paths"
+
+# issue #609 P2 (fix round 2): canonical-diff.sh must resolve its sibling
+# repo-config.sh from where the library file itself lives, cached at source
+# time -- not lazily via BASH_SOURCE re-interpreted against whatever the
+# caller's cwd happens to be after payload_command's own `(cd -- "$WORKTREE"
+# && ...)` subshell. Invoking consent-record.sh via a relative path from a
+# cwd at a different nesting depth than --worktree, with a declared
+# AGENT_GENERATED_PATHS exclusion, must still exclude that path and derive
+# the exact same payload an absolute-path invocation would; under the bug the
+# resolver silently goes missing once cwd changes, the exclusion is dropped,
+# and the two invocations' payloads diverge.
+relpath_origin="$tmp/relpath-origin.git"
+relpath_repo="$tmp/relpath-fixture/deeper/nested/repo"
+mkdir -p -- "$relpath_repo"
+git init --bare --quiet "$relpath_origin"
+git init --quiet --initial-branch=main "$relpath_repo"
+git -C "$relpath_repo" config user.email test@example.invalid
+git -C "$relpath_repo" config user.name test
+git -C "$relpath_repo" remote add origin "$relpath_origin"
+mkdir -- "$relpath_repo/generated"
+printf 'base\n' >"$relpath_repo/generated/artifact.txt"
+printf 'base\n' >"$relpath_repo/normal.txt"
+mkdir -- "$relpath_repo/.agent"
+printf 'AGENT_GENERATED_PATHS=generated\n' >"$relpath_repo/.agent/config.env"
+git -C "$relpath_repo" add generated normal.txt .agent
+git -C "$relpath_repo" commit --quiet -m base
+git -C "$relpath_repo" push --quiet -u origin main
+git -C "$relpath_repo" switch --quiet -c feature
+printf 'changed\n' >"$relpath_repo/generated/artifact.txt"
+printf 'changed\n' >"$relpath_repo/normal.txt"
+git -C "$relpath_repo" commit --quiet -am change
+
+absolute_relpath_payload=$(
+    cd -- "$relpath_repo" || exit
+    /bin/bash "$script" payload --worktree "$relpath_repo" --repo acme/widget --pr 70 --base-ref main
+)
+assert_contains "$absolute_relpath_payload" ':' \
+    'the absolute-path invocation derives a payload against the declared-exclusion fixture'
+
+relpath_cwd="$tmp/relpath-fixture/cwd"
+mkdir -p -- "$relpath_cwd"
+relative_script=$(realpath --relative-to="$relpath_cwd" -- "$script")
+relative_payload=$(
+    cd -- "$relpath_cwd" || exit
+    /bin/bash "$relative_script" payload --worktree "$relpath_repo" --repo acme/widget --pr 70 --base-ref main
+)
+assert_eq "$absolute_relpath_payload" "$relative_payload" \
+    'a relative-path invocation from a cwd at a different depth than --worktree still derives the same payload (declared exclusions still applied)'
+
+assert_rc 2 'grant with source auto-review-flag requires --paths-file' -- \
+    /bin/bash "$script" grant --state "$state_dir/no-paths-record" --provider openai \
+    --payload "$subset_payload_ab" --source auto-review-flag
+assert_rc 2 'grant rejects --paths-file with an interactive source' -- \
+    /bin/bash "$script" grant --state "$state_dir/interactive-paths-record" --provider openai \
+    --payload "$subset_payload_ab" --source interactive --paths-file "$paths_ab"
 
 # `peer-cli=` names a CLI (codex, claude); adversarial-run.sh checks the
 # consent record against the model-provider token that CLI runs on (openai,
@@ -512,5 +695,65 @@ both_flags_error=$(
 assert_eq 2 "$both_flags_rc" 'passing both --base-ref and --base-sha is a usage error'
 assert_contains "$both_flags_error" 'mutually exclusive' \
     'the rejection names the flags as mutually exclusive'
+
+# --- issue #609 P2 (round 3): sort/comm collation must be pinned to LC_ALL=C
+# so a grant recorded under one locale and a check run under another still
+# agree. File1/file2/File3 sort differently under the C and en_US.utf8
+# collations (byte-value order vs. case-insensitive-then-case order), so this
+# combination would misorder the persisted granted-paths file against the
+# check-time payload sort without the pin -- comm(1) then either refuses with
+# "not in sorted order" or, worse, silently miscompares. Skipped when
+# en_US.utf8 is not installed on this machine (nothing to contrast against).
+if locale -a 2>/dev/null | grep -qx 'en_US.utf8'; then
+    locale_dir="$tmp/locale"
+    mkdir -p -- "$locale_dir"
+    locale_diff_ab="$locale_dir/diff-ab.diff"
+    cat >"$locale_diff_ab" <<'EOF'
+--- a/File1
++++ b/File1
+@@ -1 +1 @@
+-old
++new
+--- a/file2
++++ b/file2
+@@ -1 +1 @@
+-old
++new
+--- a/File3
++++ b/File3
+@@ -1 +1 @@
+-old
++new
+EOF
+    locale_diff_a="$locale_dir/diff-a.diff"
+    cat >"$locale_diff_a" <<'EOF'
+--- a/File1
++++ b/File1
+@@ -1 +1 @@
+-old
++new
+--- a/File3
++++ b/File3
+@@ -1 +1 @@
+-old
++new
+EOF
+    locale_paths_ab="$locale_dir/paths-ab"
+    locale_paths_a="$locale_dir/paths-a"
+    locale_payload_ab=$(LC_ALL=en_US.utf8 /bin/bash "$script" payload --repo acme/widget --pr 77 \
+        --diff "$locale_diff_ab" --emit-paths "$locale_paths_ab")
+    locale_payload_a=$(LC_ALL=C /bin/bash "$script" payload --repo acme/widget --pr 77 \
+        --diff "$locale_diff_a" --emit-paths "$locale_paths_a")
+    locale_state="$state_dir/locale-record"
+    LC_ALL=en_US.utf8 /bin/bash "$script" grant --state "$locale_state" --provider openai \
+        --payload "$locale_payload_ab" --source auto-review-flag --paths-file "$locale_paths_ab" >/dev/null
+    locale_check_rc=0
+    LC_ALL=C /bin/bash "$script" check --state "$locale_state" --provider openai \
+        --payload "$locale_payload_a" --paths-file "$locale_paths_a" >/dev/null 2>&1 || locale_check_rc=$?
+    assert_eq 0 "$locale_check_rc" \
+        'a grant made under en_US.utf8 and a check made under C still agree that a true subset is covered'
+else
+    printf '  skip locale-collation check: en_US.utf8 is not installed on this machine\n'
+fi
 
 finish

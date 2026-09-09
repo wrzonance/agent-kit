@@ -83,6 +83,7 @@ if [[ ${1:-} == exec && ${2:-} == --help ]]; then
     printf '%s\n' '--output-last-message --json'
     exit 0
 fi
+[[ -z ${FAKE_CODEX_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CODEX_CALLED"
 last_file=''
 while (($#)); do
     if [[ $1 == --output-last-message ]]; then last_file=$2; shift 2; else shift; fi
@@ -1138,6 +1139,250 @@ assert_contains "$(cat -- "$tmp/roster-unknown.out")" 'provider=anthropic model=
 assert_eq no "$( [[ -e $tmp/roster-unknown-codex.called ]] && printf yes || printf no )" \
     'an unrecognized family never silently launches codex'
 
+# --- issue #609: exclusions are computed from base-declared
+# AGENT_GENERATED_PATHS plus the built-in vendored trees, and receipted with
+# a checksum of what was excluded. The fixture's grant must hash the same
+# bytes the script will render -- the excluded canonical render, with the
+# same four pathspecs build_diff uses -- or compute_payload's own consent
+# check refuses the supplied diff before any of the assertions below run.
+repo_excl=$(make_trust_repo 'AGENT_GENERATED_PATHS=generated')
+write_contract_at "$repo_excl" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_excl" switch --quiet -c feature
+mkdir -p -- "$repo_excl/generated" "$repo_excl/vendor"
+printf '%s\n' changed >"$repo_excl/example.txt"
+printf '%s\n' generated >"$repo_excl/generated/big.txt"
+printf '%s\n' vendored >"$repo_excl/vendor/lib.c"
+git -C "$repo_excl" add example.txt generated/big.txt vendor/lib.c
+git -C "$repo_excl" commit --quiet -m 'change with generated and vendored files'
+FAKE_HEAD_OID=$(git -C "$repo_excl" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_excl="$tmp/repo-excl.diff"
+git -C "$repo_excl" --no-pager diff --find-renames --unified=25 origin/main...HEAD \
+    -- ':/' ':(exclude,top)vendor' ':(exclude,top)third_party' ':(exclude,top)node_modules' ':(exclude,top)generated' \
+    >"$diff_excl"
+excl_run="$tmp/excl-run"
+grant "$excl_run" openai "$diff_excl"
+excl_rc=0
+(cd "$repo_excl" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$excl_run") \
+    >"$tmp/excl.out" 2>"$tmp/excl.err" || excl_rc=$?
+assert_eq 0 "$excl_rc" 'a run with declared and built-in exclusions completes'
+assert_contains "$(cat -- "$tmp/excl.out")" 'exclusions=4' \
+    'the receipt counts 3 built-in exclusions plus 1 declared'
+excl_sha256=$(sed -n 's/.*excluded_sha256=\([0-9a-f]*\).*/\1/p' "$tmp/excl.out")
+assert_eq 64 "${#excl_sha256}" 'the receipt carries a 64-hex checksum of the excluded diff'
+assert_contains "$(cat -- "$excl_run/adversarial.diff")" 'example.txt' \
+    'the reviewed diff still contains the non-excluded file'
+assert_not_contains "$(cat -- "$excl_run/adversarial.diff")" 'generated/big.txt' \
+    'the reviewed diff excludes the declared generated path'
+assert_not_contains "$(cat -- "$excl_run/adversarial.diff")" 'vendor/lib.c' \
+    'the reviewed diff excludes the built-in vendored path'
+assert_eq "$(printf ':(exclude,top)vendor\n:(exclude,top)third_party\n:(exclude,top)node_modules\n:(exclude,top)generated')" \
+    "$(cat -- "$excl_run/adversarial.exclusions")" \
+    'adversarial.exclusions lists the built-ins and the declared path in order'
+assert_eq yes "$( [[ -f $excl_run/adversarial.excluded.diff ]] && printf yes || printf no )" \
+    'adversarial.excluded.diff is published'
+assert_eq 600 "$(stat -c %a -- "$excl_run/adversarial.excluded.diff")" \
+    'adversarial.excluded.diff is mode 0600'
+assert_contains "$(cat -- "$excl_run/adversarial.excluded.diff")" 'generated/big.txt' \
+    'the excluded diff documents the declared exclusion'
+assert_contains "$(cat -- "$excl_run/adversarial.excluded.diff")" 'vendor/lib.c' \
+    'the excluded diff documents the built-in exclusion'
+
+# --- tamper case: the reviewed diff itself edits .agent/config.env, trying to
+# widen AGENT_GENERATED_PATHS to hide example.txt. Exclusions are rendered from
+# the BASE revision only, so the tamper has no effect on what is excluded --
+# the diff still contains example.txt and the config edit itself.
+repo_tamper=$(make_trust_repo 'AGENT_GENERATED_PATHS=generated')
+write_contract_at "$repo_tamper" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_tamper" switch --quiet -c feature
+printf '%s\n' changed >"$repo_tamper/example.txt"
+printf 'AGENT_GENERATED_PATHS=example.txt\n' >"$repo_tamper/.agent/config.env"
+git -C "$repo_tamper" commit --quiet -am 'change including config.env'
+FAKE_HEAD_OID=$(git -C "$repo_tamper" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_tamper="$tmp/repo-tamper.diff"
+git -C "$repo_tamper" --no-pager diff --find-renames --unified=25 origin/main...HEAD \
+    -- ':/' ':(exclude,top)vendor' ':(exclude,top)third_party' ':(exclude,top)node_modules' ':(exclude,top)generated' \
+    >"$diff_tamper"
+tamper_run="$tmp/tamper-run"
+grant "$tamper_run" openai "$diff_tamper"
+tamper_rc=0
+(cd "$repo_tamper" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$tamper_run") \
+    >"$tmp/tamper.out" 2>"$tmp/tamper.err" || tamper_rc=$?
+assert_eq 0 "$tamper_rc" 'a reviewed diff that edits config.env to widen exclusions still completes'
+tamper_err=$(cat -- "$tmp/tamper.err")
+assert_contains "$tamper_err" 'the reviewed diff changes .agent/config.env' \
+    'the tamper attempt is announced on stderr, same as the existing config-touch guard'
+assert_contains "$(cat -- "$tamper_run/adversarial.diff")" 'example.txt' \
+    'the base-revision exclusion list wins: example.txt is not hidden by the tampered declaration'
+assert_contains "$(cat -- "$tamper_run/adversarial.diff")" '.agent/config.env' \
+    'the config.env edit itself is visible in the reviewed diff'
+
+# --- issue #609: a payload estimated over the token limit is refused before
+# any consent check or provider launch -- fake-codex now records a call
+# marker (added above at :85) so "never launched" is provable, not assumed.
+repo_gate=$(make_trust_repo '')
+write_contract_at "$repo_gate" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_gate" switch --quiet -c feature
+printf '%s\n' changed >"$repo_gate/example.txt"
+git -C "$repo_gate" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_gate" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_gate="$tmp/repo-gate.diff"
+git -C "$repo_gate" --no-pager diff --find-renames --unified=25 origin/main...HEAD \
+    -- ':/' ':(exclude,top)vendor' ':(exclude,top)third_party' ':(exclude,top)node_modules' \
+    >"$diff_gate"
+
+gate_run="$tmp/gate-run"
+grant "$gate_run" openai "$diff_gate"
+gate_consent_before=$(cat -- "$gate_run/state/cross-provider-consent")
+gate_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=10 FAKE_CODEX_CALLED="$tmp/gate-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$gate_run") \
+    >"$tmp/gate.out" 2>"$tmp/gate.err" || gate_rc=$?
+assert_eq 1 "$gate_rc" 'a payload over the token limit blocks with a non-zero exit'
+assert_eq no "$( [[ -e $tmp/gate-codex.called ]] && printf yes || printf no )" \
+    'the oversized payload never invokes the provider helper'
+assert_eq no "$( [[ -e $gate_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'the oversized payload never writes the launch-attempted marker'
+assert_eq "$gate_consent_before" "$(cat -- "$gate_run/state/cross-provider-consent")" \
+    'the oversized payload leaves the consent record untouched -- no check was ever run against it'
+gate_payload_size=$(cat -- "$gate_run/adversarial.payload-size")
+assert_eq yes "$( [[ $gate_payload_size =~ ^payload=too-large\ estimate=[1-9][0-9]*\ limit=10\ diff=[0-9]+\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size names the too-large verdict, a positive estimate (diff + helper overhead + output/reasoning reserve), and the limit'
+assert_eq blocked "$(jq -r '.status' -- "$gate_run/adversarial.result.json")" \
+    'the blocked result status is blocked'
+assert_eq payload-too-large "$(jq -r '.blockedReason' -- "$gate_run/adversarial.result.json")" \
+    'the blocked result names the payload-too-large reason'
+assert_contains "$(cat -- "$tmp/gate.out")" 'verdict=blocked' \
+    'the receipt reports a blocked verdict'
+
+gate_ok_run="$tmp/gate-ok-run"
+grant "$gate_ok_run" openai "$diff_gate"
+gate_ok_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    FAKE_CODEX_CALLED="$tmp/gate-ok-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$gate_ok_run") \
+    >"$tmp/gate-ok.out" 2>"$tmp/gate-ok.err" || gate_ok_rc=$?
+assert_eq 0 "$gate_ok_rc" 'without a token-limit override the same run completes normally'
+assert_eq yes "$( [[ -e $tmp/gate-ok-codex.called ]] && printf yes || printf no )" \
+    'an in-budget payload still launches the provider helper'
+gate_ok_payload_size=$(cat -- "$gate_ok_run/adversarial.payload-size")
+assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=400000\ diff=[0-9]+\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size reports ok against the default 400000-token limit (the codex helper max-tokens cap), estimate includes diff + helper overhead + output/reasoning reserve'
+
+# --- issue #609 fix round 3: the size gate must count the Codex helper's own
+# fixed prompt overhead (ADVERSARIAL_PROMPT_OVERHEAD_TOKENS), not just the
+# diff bytes -- a diff that is comfortably under the limit by itself must
+# still be refused once that overhead pushes the real payload over it. The
+# limit is derived from the diff's own estimate plus a 100-token margin
+# (< the 202-token overhead), so the diff alone would pass but the combined
+# estimate cannot.
+overhead_diff_bytes=$(wc -c <"$diff_gate")
+overhead_diff_estimate=$(( overhead_diff_bytes * 2 / 7 ))
+overhead_limit=$(( overhead_diff_estimate + 100 ))
+overhead_run="$tmp/overhead-run"
+grant "$overhead_run" openai "$diff_gate"
+overhead_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT="$overhead_limit" FAKE_CODEX_CALLED="$tmp/overhead-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$overhead_run") \
+    >"$tmp/overhead.out" 2>"$tmp/overhead.err" || overhead_rc=$?
+assert_eq 1 "$overhead_rc" \
+    'a diff that fits the limit alone is still refused once the helper overhead pushes the real payload over it'
+assert_eq no "$( [[ -e $tmp/overhead-codex.called ]] && printf yes || printf no )" \
+    'the overhead-driven refusal never invokes the provider helper'
+overhead_payload_size=$(cat -- "$overhead_run/adversarial.payload-size")
+assert_eq yes "$( [[ $overhead_payload_size =~ ^payload=too-large\ estimate=[0-9]+\ limit=$overhead_limit\ diff=$overhead_diff_estimate\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'the receipt shows the diff-only estimate under the limit and the combined estimate over it'
+
+# --- issue #609 fix round 4: --max-tokens covers input+output+reasoning as
+# ONE budget (ADVERSARIAL_OUTPUT_RESERVE_TOKENS), not just what is sent, so a
+# diff that fits comfortably once the prompt overhead is added must still be
+# refused once the output/reasoning reserve is added on top of that -- the
+# limit here sits strictly between (diff + overhead) and
+# (diff + overhead + reserve) so only the reserve term tips the verdict.
+reserve_limit=$(( overhead_diff_estimate + 202 + 100 ))
+reserve_run="$tmp/reserve-run"
+grant "$reserve_run" openai "$diff_gate"
+reserve_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT="$reserve_limit" FAKE_CODEX_CALLED="$tmp/reserve-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reserve_run") \
+    >"$tmp/reserve.out" 2>"$tmp/reserve.err" || reserve_rc=$?
+assert_eq 1 "$reserve_rc" \
+    'a diff that passes with overhead only still fails once the output/reasoning reserve is added'
+assert_eq no "$( [[ -e $tmp/reserve-codex.called ]] && printf yes || printf no )" \
+    'the reserve-driven refusal never invokes the provider helper'
+reserve_payload_size=$(cat -- "$reserve_run/adversarial.payload-size")
+assert_eq yes "$( [[ $reserve_payload_size =~ ^payload=too-large\ estimate=[0-9]+\ limit=$reserve_limit\ diff=$overhead_diff_estimate\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'the receipt shows the reserve field alongside the too-large verdict'
+
+# --- issue #609 fix round 4: ADVERSARIAL_OUTPUT_RESERVE_TOKENS is validated
+# the same way ADVERSARIAL_PAYLOAD_TOKEN_LIMIT already is -- a non-numeric
+# value dies immediately, before any diff is built, never mind launched.
+reserve_bad_run="$tmp/reserve-bad-run"
+grant "$reserve_bad_run" openai "$diff_gate"
+reserve_bad_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_OUTPUT_RESERVE_TOKENS=notanumber FAKE_CODEX_CALLED="$tmp/reserve-bad-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reserve_bad_run") \
+    >"$tmp/reserve-bad.out" 2>"$tmp/reserve-bad.err" || reserve_bad_rc=$?
+assert_eq 1 "$reserve_bad_rc" 'a non-numeric ADVERSARIAL_OUTPUT_RESERVE_TOKENS dies immediately'
+assert_contains "$(cat -- "$tmp/reserve-bad.err")" 'ADVERSARIAL_OUTPUT_RESERVE_TOKENS must be a positive integer' \
+    'the rejection names the positive-integer requirement'
+assert_eq no "$( [[ -e $tmp/reserve-bad-codex.called ]] && printf yes || printf no )" \
+    'the invalid reserve never invokes the provider helper'
+assert_eq no "$( [[ -e $reserve_bad_run/adversarial.diff ]] && printf yes || printf no )" \
+    'the invalid reserve is rejected before any diff is built'
+
+# --- issue #609 fix round 1: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT flows
+# unvalidated into an arithmetic context (payload_size_gate's
+# `(( estimate <= ADVERSARIAL_PAYLOAD_TOKEN_LIMIT ))`). Bash expands an array
+# subscript's command substitution before the arithmetic evaluation itself,
+# so a value like `estimate[$(cmd)]` -- naming a variable already in scope at
+# that point -- executes `cmd` even under `set -u`. The limit must be
+# validated as a plain positive integer before that context is ever reached,
+# and the check runs at the top of the script, before any diff is built.
+# A fresh repo -- never the shared $repo, whose .agent became a tracked
+# symlink above (the "tracked environment-contract parent symlink" case) and
+# stays that way for the rest of this file.
+repo_inject=$(make_trust_repo '')
+write_contract_at "$repo_inject" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_inject" switch --quiet -c feature
+printf '%s\n' changed >"$repo_inject/example.txt"
+git -C "$repo_inject" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_inject" rev-parse HEAD)
+export FAKE_HEAD_OID
+inject_marker="$tmp/inject.marker"
+rm -f "$inject_marker"
+inject_rc=0
+(cd "$repo_inject" && PATH="$fake_bin:$PATH" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT="estimate[\$(touch $inject_marker)]" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$tmp/inject-run") \
+    >"$tmp/inject.out" 2>"$tmp/inject.err" || inject_rc=$?
+assert_eq 1 "$inject_rc" 'a non-numeric ADVERSARIAL_PAYLOAD_TOKEN_LIMIT dies immediately'
+assert_contains "$(cat -- "$tmp/inject.err")" 'positive integer' \
+    'the rejection names the positive-integer requirement'
+assert_eq no "$( [[ -e $inject_marker ]] && printf yes || printf no )" \
+    'the injected command substitution never executes'
+assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || printf no )" \
+    'the rejection happens before any diff is built'
+
+# 2026-09-09 issue #609 fix round 1: +16 (payload-paths wiring in
+# compute_payload/verify_consent, plus the token-limit validation). Measured.
+# 2026-09-09 issue #609 fix round 3: +14 (ADVERSARIAL_PROMPT_OVERHEAD_TOKENS
+# constant plus payload_size_gate now accounting for the Codex helper's fixed
+# prompt overhead, not just the diff bytes). Measured.
+# 2026-09-09 issue #609 fix round 4: +28 (ADVERSARIAL_OUTPUT_RESERVE_TOKENS
+# constant, its derivation comment, and payload_size_gate now accounting for
+# the Codex helper's dynamic output+reasoning consumption, not just what is
+# sent). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 953 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 953 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the
@@ -1234,7 +1479,5 @@ assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'mode=blind-f
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # 2026-09-09 fix round 2: normalize a bare fallback CLI name into a family
 # candidate in select_reviewer (issue #606, +6 lines). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 859 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 859 lines'
 
 finish

@@ -24,6 +24,48 @@ source "$SCRIPT_DIR/consent-record.sh"
 
 readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
 
+# issue #609: the reviewed run sent 1,383,825 estimated tokens against the
+# 1,000,000 limit the Claude CLI reported. The gate must never pass a payload
+# either helper's own launch would overflow, so the default is pinned to the
+# smaller of the two: run_provider's codex helper_args below caps Codex at
+# --max-tokens 400000; that is the binding limit (the Claude budget below is
+# USD-denominated, not token-denominated). Env-overridable for tests.
+readonly ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=${ADVERSARIAL_PAYLOAD_TOKEN_LIMIT:-400000}
+[[ $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT =~ ^[1-9][0-9]*$ ]] ||
+    { printf '%s: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT must be a positive integer: %s\n' \
+        "${0##*/}" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" >&2; exit 1; }
+
+# The Codex helper (codex-adversarial-review.sh's write_review_input) prepends
+# fixed instructional prompt text before the diff bytes it sends; a payload
+# measured from the diff alone can pass the gate and still overflow the
+# provider once that preamble is added (issue #609 P1, round 3). Measured
+# once from the helper's actual review-mode preamble via
+# canonical_diff_token_estimate's own bytes*2/7 formula (710 bytes); update
+# alongside that preamble if its wording changes.
+readonly ADVERSARIAL_PROMPT_OVERHEAD_TOKENS=202
+
+# codex-adversarial-review.sh's own --max-tokens ceiling (monitor_token_limit /
+# token_usage_total) sums input, output, AND reasoning tokens against one
+# budget -- it is not an input-only cap. Unlike ADVERSARIAL_PROMPT_OVERHEAD_TOKENS
+# (a fixed literal measured from static prompt bytes), generation-time
+# output+reasoning consumption is dynamic: verdict_schema
+# (lib/adversarial-review.sh) places no maxItems/maxLength bound on findings,
+# effort defaults to xhigh, and this prompt shape is one tool-free turn, so
+# token_usage_total's own turn.completed sampling gives no interim signal
+# during that single turn -- a payload gated on diff+overhead alone can still
+# blow the cap mid-generation with no chance to stop it (issue #609 P1, round
+# 4). Derived from real completed Codex xhigh-effort review receipts in this
+# repo's own .agent/evidence/pr-*/adversarial.result.json (24 runs, 2026-09):
+# observed output_tokens + reasoning_output_tokens ranged 849-25,862 (max at
+# pr-570: input 36,174, output 13,109, reasoning 12,753). Reserved at roughly
+# 2x that observed max, rounded, to margin larger/harder diffs whose
+# generation could reasonably run higher; re-derive if a future receipt's
+# output+reasoning sum exceeds this reserve. Env-overridable for tests.
+readonly ADVERSARIAL_OUTPUT_RESERVE_TOKENS=${ADVERSARIAL_OUTPUT_RESERVE_TOKENS:-50000}
+[[ $ADVERSARIAL_OUTPUT_RESERVE_TOKENS =~ ^[1-9][0-9]*$ ]] ||
+    { printf '%s: ADVERSARIAL_OUTPUT_RESERVE_TOKENS must be a positive integer: %s\n' \
+        "${0##*/}" "$ADVERSARIAL_OUTPUT_RESERVE_TOKENS" >&2; exit 1; }
+
 # Loaded lazily from repo-config.sh's own accepted set (its single source of
 # truth) the first time a roster compound needs splitting, so this parser's
 # effort list can never silently drift from the validator that already
@@ -47,6 +89,9 @@ RUN_DIR=''
 PEER_CLI_ABSENT=0
 PROVENANCE=''
 PAYLOAD=''
+PAYLOAD_PATHS_FILE=''
+EXCLUSION_SPECS=()
+EXCLUDED_SHA256=''
 REAFFIRM_IF_COVERED=0
 LEDGER_COMMENTS=''
 HARNESS_NAME=''
@@ -447,6 +492,16 @@ build_diff() {
     mv -f -- "$tmp" "$diff_path" || die "could not publish the adversarial diff: $diff_path"
     [[ -s $diff_path ]] || die 'the adversarial diff is empty; review is blocked'
     grep -q '[^[:space:]]' -- "$diff_path" || die 'the adversarial diff is empty; review is blocked'
+
+    # issue #609: record the exclusion evidence (which pathspecs, and what
+    # they removed) beside the reviewed payload -- the receipt names the
+    # count and a checksum of what was left out, never a heuristic guess.
+    mapfile -t EXCLUSION_SPECS < <(canonical_diff_exclusions "origin/$BASE_REF")
+    prepare_owned_artifact "$RUN_DIR/adversarial.exclusions"
+    (umask 077; printf '%s\n' "${EXCLUSION_SPECS[@]}" >"$RUN_DIR/adversarial.exclusions")
+    prepare_owned_artifact "$RUN_DIR/adversarial.excluded.diff"
+    (umask 077; git --no-pager diff --find-renames --unified=25 "origin/$BASE_REF...HEAD" -- "${EXCLUSION_SPECS[@]/#:(exclude,top)/:(top)}" >"$RUN_DIR/adversarial.excluded.diff")
+    EXCLUDED_SHA256=$(sha256sum -- "$RUN_DIR/adversarial.excluded.diff" | awk '{print $1}')
 }
 
 # Populates BASE_CONFIG_FILE with a private snapshot of the PR's BASE-revision
@@ -484,6 +539,31 @@ resolve_base_declared_config() {
     return 0
 }
 
+# issue #609: refuse to spend on a payload the provider cannot hold; the
+# one-line reason names the remedy instead of a launch with no verdict.
+# estimate is the diff plus the Codex helper's own fixed prompt overhead
+# (round 3) plus a reserve for the same helper's dynamic output+reasoning
+# consumption (round 4) -- not just the diff bytes. --max-tokens covers
+# input+output+reasoning as one budget (ADVERSARIAL_OUTPUT_RESERVE_TOKENS's
+# comment above), so a payload that only accounts for what is SENT can still
+# overflow what the helper generates in reply; the receipt records all three
+# terms.
+payload_size_gate() {
+    local diff_estimate estimate verdict=ok
+    diff_estimate=$(canonical_diff_token_estimate "$RUN_DIR/adversarial.diff") || die 'could not measure the adversarial diff'
+    estimate=$((diff_estimate + ADVERSARIAL_PROMPT_OVERHEAD_TOKENS + ADVERSARIAL_OUTPUT_RESERVE_TOKENS))
+    ((estimate <= ADVERSARIAL_PAYLOAD_TOKEN_LIMIT)) || verdict=too-large
+    prepare_owned_artifact "$RUN_DIR/adversarial.payload-size"
+    (umask 077; printf 'payload=%s estimate=%s limit=%s diff=%s overhead=%s reserve=%s\n' \
+        "$verdict" "$estimate" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" "$diff_estimate" \
+        "$ADVERSARIAL_PROMPT_OVERHEAD_TOKENS" "$ADVERSARIAL_OUTPUT_RESERVE_TOKENS" \
+        >"$RUN_DIR/adversarial.payload-size")
+    [[ $verdict == ok ]] && return 0
+    write_blocked_result payload-too-large "estimated $estimate tokens (diff $diff_estimate + helper overhead $ADVERSARIAL_PROMPT_OVERHEAD_TOKENS + output/reasoning reserve $ADVERSARIAL_OUTPUT_RESERVE_TOKENS) exceeds the $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT-token launch limit; declare vendored or generated trees in AGENT_GENERATED_PATHS on the base branch and re-run"
+    receipt_line
+    return 1
+}
+
 # Stashed in the global PAYLOAD (not a local) so write_launch_attempted,
 # verify_consent, and try_reaffirm_if_covered can all reuse the exact same
 # payload identity without repeated gh/git round trips -- the marker, the
@@ -492,10 +572,11 @@ resolve_base_declared_config() {
 compute_payload() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+    PAYLOAD_PATHS_FILE="$RUN_DIR/state/adversarial-payload-paths"
     PAYLOAD=$(
         "$consent_script" payload --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
             --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
-            --diff "$RUN_DIR/adversarial.diff"
+            --diff "$RUN_DIR/adversarial.diff" --emit-paths "$PAYLOAD_PATHS_FILE"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
 }
 
@@ -504,12 +585,21 @@ verify_consent() {
     local check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     [[ -n $PAYLOAD ]] || compute_payload
+    # issue #609: PAYLOAD_PATHS_FILE (this run's touched paths, from the same
+    # compute_payload call that derived PAYLOAD) lets check prove a reduced
+    # auto-review-flag payload's paths are a subset of the granted set; a
+    # record with no paths= field, or with none granted this source, just
+    # ignores the flag and falls back to its existing exact-payload match.
+    local -a check_args=(
+        check --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR"
+        --provider "$PROVIDER" --payload "$PAYLOAD"
+    )
+    [[ -z $PAYLOAD_PATHS_FILE ]] || check_args+=(--paths-file "$PAYLOAD_PATHS_FILE")
     # Capture only stderr (order matters: dup fd2 to the substitution's pipe
     # before redirecting fd1 away) so a mismatch names the expected and
     # recorded provider tokens instead of a bare boolean refusal.
     check_error=$(
-        "$consent_script" check --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
-            --provider "$PROVIDER" --payload "$PAYLOAD" \
+        "$consent_script" "${check_args[@]}" \
             2>&1 1>/dev/null
     ) && return 0
     die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"
@@ -664,8 +754,9 @@ receipt_line() {
     p1=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P1")] | length end' <"$path")
     p2=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P2")] | length end' <"$path")
     verdict=$(jq -r 'if .status == "blocked" then "blocked" else (.verdict | objects | .verdict) // "blocked" end' <"$path")
-    printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s\n' \
-        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict"
+    printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s exclusions=%s excluded_sha256=%s\n' \
+        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict" \
+        "${#EXCLUSION_SPECS[@]}" "${EXCLUDED_SHA256:-none}"
 }
 
 validate_finding_ledger_if_present() {
@@ -838,6 +929,9 @@ main() {
         select_reviewer "$BASE_CONFIG_FILE"
         require_helper_executable
     fi
+    # issue #609: after select_reviewer (a blocked result names PROVIDER/MODEL)
+    # and before compute_payload/consent/any launch marker.
+    payload_size_gate || return 1
     compute_payload
     # issue #477: the reaffirm short-circuit runs BEFORE
     # guard_prior_launch_attempt -- a stale local launch marker must never block
