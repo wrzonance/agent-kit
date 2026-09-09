@@ -435,8 +435,7 @@ for _ in {1..50}; do
 done
 assert_eq 0 "$codex_failure_live" 'Codex stops the producer after heartbeat publication fails'
 
-codex_text=$(<"$codex")
-assert_contains "$codex_text" 'TRANSCRIPT_PATH.pid' \
+assert_contains "$review_lib_text" 'TRANSCRIPT_PATH.pid' \
     'the Codex helper records its PID beside the transcript too'
 
 codex_success_dir="$tmp/codex-success"

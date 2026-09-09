@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2153  # MODE is supplied by both sourced harnesses
 # Shared lifecycle and boundary helpers for the Claude/Codex review harnesses.
-# The caller supplies its `die` and `emit_progress` functions and harness name;
+# The caller supplies emit_progress, REVIEW_HARNESS_LABEL and CONSENT_PROVIDER;
 # all artifact, cleanup, polling, classification, and verdict invariants live
 # here so the two entry points cannot drift.
 # Reviewer-process PID slots. Initialized HERE, at source time, so values can
@@ -84,6 +84,9 @@ review_cleanup() {
     return 0
 }
 
+# Review transcripts contain the complete private diff and must never be placed
+# in a shared temporary directory. The caller creates one 0700 run directory and
+# passes a fresh path inside it. Refuse anything weaker before invoking the harness.
 review_prepare_transcript() {
     local parent artifact
     parent=$(dirname -- "$TRANSCRIPT_PATH")
@@ -170,4 +173,135 @@ review_verify_verdict() {
         p1_count=$(jq -r '[(.findings // [])[] | select(.priority == "P1")] | length' <<<"$verdict")
         [[ $kind == findings && $p1_count -gt 0 ]] || die "$harness probe did not return the deliberate P1 finding."
     fi
+}
+
+# Shared by both harness entry points (moved from the twins, size wave two).
+# Each script sets REVIEW_HARNESS_LABEL (Claude|Codex) and CONSENT_PROVIDER
+# (anthropic|openai) before main runs.
+die() {
+    printf '%s: %s\n' "$PROGNAME" "$1" >&2
+    exit 1
+}
+
+require_value() {
+    [[ -n ${2:-} ]] || die "option $1 requires a value"
+}
+
+record_helper_pid() {
+    PID_FILE="$TRANSCRIPT_PATH.pid"
+    [[ ! -L $PID_FILE ]] || die "Refusing to write through a PID-file symlink: $PID_FILE"
+    rm -f -- "$PID_FILE"
+    printf '%s\n' "$$" >"$PID_FILE" || die "Cannot record helper PID: $PID_FILE"
+}
+
+seconds_until_deadline() {
+    local now left
+    now=$(date +%s)
+    left=$((DEADLINE_EPOCH - now))
+    ((left > 0)) || return 1
+    printf '%s' "$left"
+}
+
+die_duration() {
+    die "$REVIEW_HARNESS_LABEL review exceeded --max-duration-seconds $MAX_DURATION_SECONDS"
+}
+
+record_heartbeat_failure() {
+    local detail=$1
+    printf '%s\n' "$detail" >"$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true
+}
+
+heartbeat_failure_detail() {
+    local detail
+    detail=$(cat -- "$HEARTBEAT_FAILURE_FILE" 2>/dev/null || true)
+    printf '%s' "${detail:-unknown heartbeat publication failure}"
+}
+
+transcript_event_count() {
+    local count
+    count=$(grep -c '[^[:space:]]' -- "$TRANSCRIPT_PATH" 2>/dev/null) || count=0
+    printf '%s' "${count:-0}"
+}
+
+# The head of validate_args both harnesses share; each script keeps its own
+# harness-specific checks between this and review_validate_mode_args.
+review_validate_common_args() {
+    [[ $MODE == probe || $MODE == review ]] || die "--mode must be probe or review"
+    [[ -n $MODEL ]] || die "--model is required"
+    [[ -n $TRANSCRIPT_PATH ]] || die "--transcript is required"
+    case $EFFORT in
+    low | medium | high | xhigh | max) ;;
+    *) die "--effort must be one of: low medium high xhigh max" ;;
+    esac
+    [[ $POLL_SECONDS =~ ^[0-9]+$ ]] || die "--poll-seconds must be an integer"
+    ((POLL_SECONDS >= 1 && POLL_SECONDS <= 3600)) || die "--poll-seconds must be 1-3600"
+}
+
+review_validate_mode_args() {
+    if [[ $MODE == probe ]]; then
+        ((NO_PAYLOAD == 1)) ||
+            die "--no-payload is required in probe mode; probes send only a synthetic snippet and no PR diff"
+        [[ -z $DIFF_PATH && -z $REPO_SLUG && -z $PR_NUMBER &&
+            -z $BASE_REF && -z $CONSENT_STATE_PATH && -z $CONSENT_PAYLOAD ]] ||
+            die "probe mode cannot include PR review arguments; use only --mode probe --no-payload"
+    else
+        ((NO_PAYLOAD == 0)) || die "--no-payload is only valid in probe mode"
+    fi
+    if [[ $MODE == review ]]; then
+        [[ -n $DIFF_PATH ]] || die "--diff is required in review mode"
+        if [[ -n $BASE_REF ]]; then
+            git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
+                die "--base-ref must be a valid branch name"
+        fi
+        [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die "--pr is required in review mode"
+        [[ $REPO_SLUG =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+            die "--repo OWNER/NAME is required in review mode"
+        [[ -n $CONSENT_STATE_PATH ]] || die "--consent-state is required in review mode"
+    fi
+    return 0
+}
+
+verify_consent() {
+    local consent_script payload
+    consent_script="$SCRIPT_DIR/consent-record.sh"
+    [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+    local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
+    if [[ -n $BASE_REF ]]; then
+        payload_args+=(--base-ref "$BASE_REF")
+    fi
+    payload=$("$consent_script" "${payload_args[@]}") ||
+        die 'cannot derive consent payload; refusing to launch review'
+    if [[ -n $CONSENT_PAYLOAD && $CONSENT_PAYLOAD != "$payload" ]]; then
+        die 'supplied consent payload does not match the exact review diff'
+    fi
+    "$consent_script" check --state "$CONSENT_STATE_PATH" --provider "$CONSENT_PROVIDER" \
+        --payload "$payload" >/dev/null 2>&1 ||
+        die 'valid cross-provider consent check is required; refusing to launch review'
+}
+
+verdict_schema() {
+    jq -c . <<'JSON'
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "type": "string", "enum": ["findings", "no_findings"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "priority": { "type": "string", "enum": ["P1", "P2"] },
+          "location": { "type": "string" },
+          "failureScenario": { "type": "string" },
+          "smallestFix": { "type": "string" }
+        },
+        "required": ["priority", "location", "failureScenario", "smallestFix"]
+      }
+    }
+  },
+  "required": ["verdict", "findings"]
+}
+JSON
 }
