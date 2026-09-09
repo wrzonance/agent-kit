@@ -90,46 +90,29 @@ require_value() {
 parse_args() {
     while (($#)); do
         case $1 in
-            --resolve-base)
-                require_value "$1" "${2-}"
+            --resolve-base|--resolve-base=*)
+                [[ $1 == *=* ]] || require_value "$1" "${2-}"
                 [[ -z $MODE ]] || die '--resolve-base cannot be combined with another mode'
                 MODE=resolve
-                REF=$2
-                shift 2
+                if [[ $1 == *=* ]]; then REF=${1#*=}; shift; else REF=$2; shift 2; fi
                 ;;
-            --resolve-base=*)
-                [[ -z $MODE ]] || die '--resolve-base cannot be combined with another mode'
-                MODE=resolve
-                REF=${1#*=}
+            --retarget|--recover-closed)
+                [[ -z $MODE ]] || die "$1 cannot be combined with another mode"
+                MODE=${1#--}
                 shift
                 ;;
-            --retarget)
-                [[ -z $MODE ]] || die '--retarget cannot be combined with another mode'
-                MODE=retarget
-                shift
-                ;;
-            --recover-closed)
-                [[ -z $MODE ]] || die '--recover-closed cannot be combined with another mode'
-                MODE=recover-closed
-                shift
-                ;;
-            --pr)
+            --pr|--base|--repo)
                 require_value "$1" "${2-}"
-                PR=$2
+                case $1 in
+                    --pr) PR=$2 ;;
+                    --base) BASE=$2 ;;
+                    --repo) REPO=$2 ;;
+                    *) die "unexpected argument: $1" ;;
+                esac
                 shift 2
                 ;;
             --pr=*) PR=${1#*=}; shift ;;
-            --base)
-                require_value "$1" "${2-}"
-                BASE=$2
-                shift 2
-                ;;
             --base=*) BASE=${1#*=}; shift ;;
-            --repo)
-                require_value "$1" "${2-}"
-                REPO=$2
-                shift 2
-                ;;
             --repo=*) REPO=${1#*=}; shift ;;
             -h|--help)
                 usage

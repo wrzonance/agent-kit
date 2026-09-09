@@ -1185,7 +1185,7 @@ else
 fi
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh") -le 1326 ]] && printf yes || printf no)" \
-    'compose-worker-prompt.sh stays at or under 1326 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh") -le 1290 ]] && printf yes || printf no)" \
+    'compose-worker-prompt.sh stays at or under 1290 lines'
 
 finish
