@@ -1048,9 +1048,60 @@ printf 'again\n' > "$ledger_repo/base.txt"
 assert_eq '2' "$(wc -l < "$ledger_file" 2>/dev/null | tr -d '[:space:]')" \
     'a second commit appends a second record instead of rewriting the ledger'
 
+# issue #611 Codex round: a dangling ledger symlink is rejected independently
+# of -e, so the append never follows it to create a file at its target.
+symlink_repo="$tmp/paths-touched-symlink-repo"
+new_repo "$symlink_repo"
+mkdir -m 700 -- "$symlink_repo/.agent/evidence"
+symlink_target="$tmp/paths-touched-symlink-target.ndjson"
+ln -s -- "$symlink_target" "$symlink_repo/.agent/evidence/paths-touched.ndjson"
+printf 'changed\n' > "$symlink_repo/base.txt"
+symlink_rc=0
+(cd "$symlink_repo" && "$script" --exact --message 'feat: dangling ledger symlink' --trailer "$TEST_TRAILER" \
+    -- base.txt >/dev/null 2>&1) || symlink_rc=$?
+assert_eq '0' "$symlink_rc" 'a commit succeeds even when the ledger path is a dangling symlink'
+assert_eq yes "$([[ -L $symlink_repo/.agent/evidence/paths-touched.ndjson ]] && printf yes || printf no)" \
+    'the dangling ledger symlink is left in place, untouched'
+assert_eq no "$([[ -e $symlink_target ]] && printf yes || printf no)" \
+    'the append never creates a file at the dangling symlink target'
+
+# issue #611 Codex round: a non-ASCII path is recorded byte-for-byte, not
+# git's core.quotePath-escaped display form.
+utf8_repo="$tmp/paths-touched-utf8-repo"
+new_repo "$utf8_repo"
+printf 'contenu\n' > "$utf8_repo/café.txt"
+utf8_rc=0
+(cd "$utf8_repo" && "$script" --exact --message 'feat: add cafe file' --trailer "$TEST_TRAILER" \
+    -- café.txt >/dev/null 2>&1) || utf8_rc=$?
+assert_eq '0' "$utf8_rc" 'a commit adding a non-ASCII filename succeeds'
+utf8_ledger="$utf8_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq 'café.txt' "$(jq -r '.paths_touched[]' "$utf8_ledger" 2>/dev/null)" \
+    'the ledger records the non-ASCII path verbatim, not a quoted display form'
+
+# issue #611 Codex round: a clean merge (combined diff empty) still records
+# the files it brings in relative to first parent.
+merge_repo="$tmp/paths-touched-merge-repo"
+new_repo "$merge_repo"
+printf 'feature\n' > "$merge_repo/feature.txt"
+git -C "$merge_repo" add -- feature.txt
+git -C "$merge_repo" commit -qm feature
+git -C "$merge_repo" checkout -q main
+printf 'main-only\n' > "$merge_repo/main-only.txt"
+git -C "$merge_repo" add -- main-only.txt
+git -C "$merge_repo" commit -qm 'main-only file'
+git -C "$merge_repo" checkout -q feature
+git -C "$merge_repo" merge --no-commit --no-ff -q main
+merge_rc=0
+(cd "$merge_repo" && "$script" --include-staged --message 'feat: merge main into feature' \
+    --trailer "$TEST_TRAILER" -- main-only.txt >/dev/null 2>&1) || merge_rc=$?
+assert_eq '0' "$merge_rc" 'a clean merge commit made through the helper succeeds'
+merge_ledger="$merge_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq 'main-only.txt' "$(jq -r '.paths_touched[]' "$merge_ledger" 2>/dev/null | paste -sd ' ')" \
+    'the ledger records the files a clean merge brings in relative to first parent'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-# issue #611: +21 lines for the hand-back paths-touched ledger writer.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 814 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 814 lines'
+# issue #611 Codex round: +2 lines for the symlink check and NUL-delimited read.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 816 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 816 lines'
 
 finish
