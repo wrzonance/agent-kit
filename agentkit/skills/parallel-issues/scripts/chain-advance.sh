@@ -190,7 +190,10 @@ iso_to_epoch() {
 # when CI started during the edit, and it changes on every retry.
 timeline_boundary() {
     local timeline event_time epoch
-    timeline=$("$GH_BIN" api --paginate "repos/$REPO/issues/$PR/timeline" 2>/dev/null) || return 1
+    # `--paginate` alone emits one array PER PAGE, truncating a multi-page
+    # timeline to its first (oldest) match (issue #607 F1); `--slurp --jq
+    # 'add'` flattens every page first, like cover_retarget_lineage's read.
+    timeline=$("$GH_BIN" api "repos/$REPO/issues/$PR/timeline" --paginate --slurp --jq 'add' 2>/dev/null) || return 1
     event_time=$(jq -r --arg base "$BASE" '
         def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .[]?
@@ -931,9 +934,9 @@ retarget() {
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    proof_line=$(printf 'retargeted pr #%s base=%s head=%s sha=%s repo=%s ci=%s/%s green:post-retarget behind=%s generated-only=%s approval=%s ancestry=verified boundarySource=%s boundaryEvent=%s provider-check=%s closing-issues=%s' \
+    proof_line=$(printf 'retargeted pr #%s base=%s head=%s sha=%s repo=%s ci=%s/%s green:post-retarget behind=%s generated-only=%s approval=%s ancestry=verified boundarySource=%s boundaryEvent=%s boundaryEpoch=%s provider-check=%s closing-issues=%s' \
         "$PR" "$BASE" "$head_ref" "$head_sha" "$REPO" "$pass" "$total" "$ANCESTRY_BEHIND" "$ANCESTRY_GENERATED_ONLY" \
-        "$approval_token" "$BOUNDARY_SOURCE" "$BOUNDARY_EVENT" "$PROVIDER_CHECK_RESIDUE" "$closing_count")
+        "$approval_token" "$BOUNDARY_SOURCE" "$BOUNDARY_EVENT" "$BOUNDARY_EPOCH" "$PROVIDER_CHECK_RESIDUE" "$closing_count")
     printf '%s\n' "$proof_line"
     persist_proof_line "$proof_line" ||
         printf '%s: could not persist the retarget proof under Git metadata; pass the printed line to authorize-queue.sh --retarget-proof %s:FILE\n' \

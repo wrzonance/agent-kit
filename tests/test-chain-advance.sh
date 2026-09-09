@@ -965,6 +965,57 @@ assert_eq 'yes' "$( [[ -f $metadata_evidence && ! -L $metadata_evidence ]] && pr
 assert_eq 'no' "$( [[ -e $repo/.agent/evidence/chain-advance-pr-7-base-main.json ]] && printf yes || printf no )" \
     'successful retarget evidence is not written beneath the caller-controlled worktree'
 
+# --- issue #607 fix round 2 finding 1: a multi-page timeline must flatten,
+# not truncate to page one -----------------------------------------------
+# Two timeline pages each carry a matching base_ref_changed event: page 1 is
+# older (00:00), page 2 is newer (01:00). A CI check timestamped 00:30 sits
+# strictly between them. Reading only page 1 (the bug) makes that check look
+# post-boundary (fresh); reading every page and taking the LAST match (the
+# fix) correctly places the boundary at page 2 and marks the same check
+# stale. `--paginate` without `--slurp` emits one bare JSON array per page
+# concatenated on the wire -- exactly what the fake `gh` below reproduces --
+# while `--paginate --slurp --jq 'add'` wraps and flattens them first.
+cat >"$tmp/gh-timeline-pages" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr view "*)
+        printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2024-01-01T00:30:00Z","completedAt":"2024-01-01T00:30:00Z"}],"closingIssuesReferences":[{"number":137}]}'
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*)
+        printf '%s\n' '{"status":"ahead","behind_by":0}'
+        ;;
+    *"timeline"*)
+        page1='[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]'
+        page2='[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T01:00:00Z"}]'
+        case " $* " in
+            *' --slurp '*)
+                if [[ " $* " == *' --jq '* ]]; then
+                    jq -cn --argjson p1 "$page1" --argjson p2 "$page2" '[$p1,$p2] | add'
+                else
+                    jq -cn --argjson p1 "$page1" --argjson p2 "$page2" '[$p1,$p2]'
+                fi
+                ;;
+            *)
+                printf '%s\n' "$page1"
+                printf '%s\n' "$page2"
+                ;;
+        esac
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-timeline-pages"
+set +e
+timeline_pages_output=$(cd -- "$repo" && PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-timeline-pages" \
+    bash "$advance" --retarget --repo owner/repo --pr 7 --base main 2>&1)
+timeline_pages_rc=$?
+set -e
+assert_eq '1' "$timeline_pages_rc" \
+    'a CI check between the two page epochs is stale against the page-2 (last) boundary, not fresh against page 1'
+assert_contains "$timeline_pages_output" 'CI evidence predates the retarget (stale: tests)' \
+    'the boundary is proven from every timeline page, not truncated to the first'
+
 # --- unlabeled CI evidence cannot disappear into an empty diagnostic ----------
 cat >"$tmp/gh-unnamed-check" <<'EOF'
 #!/usr/bin/env bash
@@ -1413,7 +1464,10 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 #
 # 2026-09-09 issue #607 fix round 1: +9 for repo-scoping the persisted proof
 # filename and adding the proof line's repo= token (measured).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1067 ]] && printf yes || printf no)" \
-    'chain-advance.sh stays at or under 1067 lines'
+#
+# 2026-09-09 issue #607 fix round 2: +3 for flattening the timeline read
+# across every page instead of the first (measured).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1070 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1070 lines'
 
 finish

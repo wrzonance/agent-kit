@@ -52,6 +52,36 @@ reject_writable_by_others() {
     (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
 }
 
+# issue #607 fix round 2 F2: a persisted proof outlives a later retarget -- if
+# a PR returns to the same base/head after another base change, a cached
+# proof would otherwise authorize a boundary its own CI never actually proved
+# fresh against. live_boundary_epoch reads the same timeline events
+# chain-advance.sh's boundary_for accepts (every page, last match) so the
+# caller can require the proof's boundaryEpoch= to equal the live one.
+iso_to_epoch() {
+    local value=$1 epoch
+    [[ -n $value && $value != null ]] || return 1
+    epoch=$(date -u -d "$value" +%s 2>/dev/null) || return 1
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s\n' "$epoch"
+}
+
+live_boundary_epoch() {
+    local pr=$1 base=$2 timeline event_time
+    timeline=$("$GH_BIN" api "repos/$repo/issues/$pr/timeline" --paginate --slurp --jq 'add' 2>/dev/null) || return 1
+    event_time=$(jq -r --arg base "$base" '
+        def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
+        [ .[]?
+          | select((.event // "") == "base_ref_changed" or (.event // "") == "automatic_base_change_succeeded")
+          | ([.base_ref, .baseRefName, .base_ref_name] | first_nonempty) as $event_base
+          | select($event_base == "" or $event_base == $base)
+          | ([.created_at, .createdAt] | first_nonempty) | select(length > 0)
+        ] | last // empty
+    ' <<<"$timeline") || return 1
+    [[ -n $event_time ]] || return 1
+    iso_to_epoch "$event_time"
+}
+
 # issue #607: chain-advance.sh --retarget persists its proof line under the
 # repository's Git common dir; without an explicit --retarget-proof for this
 # PR, that file is the proof. Same ownership and mode checks as the explicit
@@ -591,6 +621,7 @@ if ((full_match_ok == 0)); then
                           $proof_line == *'ancestry=verified'* &&
                           $proof_line == *'green:post-retarget'* &&
                           $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
+                          $proof_line =~ boundaryEpoch=[1-9][0-9]*( |$) &&
                           $proof_line =~ closing-issues=[1-9][0-9]*$ ]]; then
                         proof_ok=1
                         break
@@ -598,6 +629,21 @@ if ((full_match_ok == 0)); then
                 done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
                 ((proof_ok)) ||
                     die "pr $recon_pr: the supplied retarget proof does not match the live base and head, or does not name repository $repo; redisplay and reconfirm before authorization"
+                # F2 (issue #607 fix round 2): a proof outlives a later
+                # retarget -- if the PR returns to this same base/head after
+                # another base change, the cached proof's own CI predates
+                # that later retarget and must not authorize it. The proof's
+                # boundaryEpoch= is trusted only when it equals the live
+                # timeline's own latest matching event, read fresh here
+                # (never from the proof file), for both an auto-discovered
+                # and an explicit --retarget-proof file alike.
+                [[ $proof_line =~ boundaryEpoch=([1-9][0-9]*) ]] ||
+                    die "pr $recon_pr: the retarget proof has no boundaryEpoch token; rerun chain-advance.sh --retarget to regenerate it, then redisplay and reconfirm"
+                proof_boundary_epoch=${BASH_REMATCH[1]}
+                live_epoch=$(live_boundary_epoch "$recon_pr" "$recon_live_base") ||
+                    die "pr $recon_pr: the live retarget timeline could not be read to verify the persisted proof; redisplay and reconfirm before authorization"
+                [[ $live_epoch == "$proof_boundary_epoch" ]] ||
+                    die "pr $recon_pr: the retarget proof predates a later retarget (proof boundaryEpoch=$proof_boundary_epoch, live=$live_epoch); rerun chain-advance.sh --retarget to refresh the proof, then redisplay and reconfirm"
                 ;;
             *)
                 mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)

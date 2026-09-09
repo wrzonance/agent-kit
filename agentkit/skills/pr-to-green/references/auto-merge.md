@@ -94,8 +94,12 @@ evidence into exactly one bucket:
   same fingerprint and ancestry proof, and either the proof line
   `chain-advance.sh --retarget` persisted under the repository Git metadata (found automatically)
   or `--retarget-proof PR:FILE` naming that exact line (matching base and head,
-  `ancestry=verified`, `green:post-retarget`, an `approval=` token, a positive `closing-issues=`;
-  `behind=`/`generated-only=`/`boundaryEvent=`/`provider-check=` tokens may precede it).
+  `ancestry=verified`, `green:post-retarget`, an `approval=` token, a `boundaryEpoch=` token, a
+  positive `closing-issues=`; `behind=`/`generated-only=`/`boundaryEvent=`/`provider-check=` tokens
+  may precede it). The proof's `boundaryEpoch=` must equal the PR's live timeline's own latest
+  matching retarget event, read fresh at authorization time (never trusted from the file alone) —
+  a proof that outlived a later retarget is refused, naming `chain-advance.sh --retarget` as the
+  fix, rather than authorizing a boundary its own CI never actually proved fresh against.
 - **verified merge** — a confirmed PR absent from the live queue and independently read as
   `merged:true`.
 
