@@ -1016,8 +1016,41 @@ partial_out=$(cd "$partial_repo" && "$script" --message 'fix: partial ledger fla
 assert_eq '1' "$partial_rc" 'a partial --ledger/--run-id/--ledger-scope trio is a usage error'
 assert_contains "$partial_out" 'given together' 'the partial-trio refusal names the requirement'
 
+# issue #611: every commit appends its paths to .agent/evidence/paths-touched.ndjson,
+# so a hand-back carries the ledger even when no PreToolUse hook was armed.
+ledger_repo="$tmp/paths-touched-repo"
+new_repo "$ledger_repo"
+printf 'two\n' > "$ledger_repo/second.txt"
+git -C "$ledger_repo" add -- second.txt
+git -C "$ledger_repo" commit -qm 'second tracked file'
+printf 'changed one\n' > "$ledger_repo/base.txt"
+printf 'changed two\n' > "$ledger_repo/second.txt"
+printf 'new\n' > "$ledger_repo/untracked.txt"
+ledger_rc=0
+(cd "$ledger_repo" && "$script" --exact --message 'feat: three paths' --trailer "$TEST_TRAILER" \
+    -- base.txt second.txt untracked.txt >/dev/null 2>&1) || ledger_rc=$?
+assert_eq '0' "$ledger_rc" 'a two-modified-one-untracked commit succeeds'
+ledger_file="$ledger_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq yes "$([[ -f $ledger_file ]] && printf yes || printf no)" \
+    'worktree-commit.sh writes .agent/evidence/paths-touched.ndjson at hand-back with no hook armed'
+assert_eq 'base.txt second.txt untracked.txt' \
+    "$(jq -r '.paths_touched[]' "$ledger_file" 2>/dev/null | sort | paste -sd ' ')" \
+    'the ledger lists the two modified and the one previously untracked path'
+assert_eq 'worktree-commit' "$(jq -r '.tool' "$ledger_file" 2>/dev/null)" \
+    'the ledger record names worktree-commit as its writer'
+assert_eq "$(git -C "$ledger_repo" rev-parse HEAD)" "$(jq -r '.commit' "$ledger_file" 2>/dev/null)" \
+    'the ledger record carries the commit it describes'
+assert_eq '600' "$(stat -c %a -- "$ledger_file" 2>/dev/null)" \
+    'the ledger is owner-private, as the guard writes it'
+printf 'again\n' > "$ledger_repo/base.txt"
+(cd "$ledger_repo" && "$script" --exact --message 'feat: second commit' --trailer "$TEST_TRAILER" \
+    -- base.txt >/dev/null 2>&1) || true
+assert_eq '2' "$(wc -l < "$ledger_file" 2>/dev/null | tr -d '[:space:]')" \
+    'a second commit appends a second record instead of rewriting the ledger'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 800 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 800 lines'
+# issue #611: +21 lines for the hand-back paths-touched ledger writer.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 814 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 814 lines'
 
 finish
