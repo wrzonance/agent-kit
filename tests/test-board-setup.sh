@@ -220,4 +220,8 @@ assert_contains "$(cat "$tmp/gh.log")" 'project create --owner other-org' \
 assert_contains "$(cat "$tmp/gh.log")" 'project link 42 --owner other-org --repo example-org/example-repo' \
     'while the link still names the repository it tracks'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/board-setup.sh") -le 268 ]] && printf yes || printf no)" \
+    'board-setup.sh stays at or under 268 lines'
+
 finish

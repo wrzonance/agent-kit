@@ -457,4 +457,8 @@ else
         'secure_mkdir_p returned non-zero for a mode-700 component created mid-race'
 fi
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/secure-mkdir.sh") -le 43 ]] && printf yes || printf no)" \
+    'lib/secure-mkdir.sh stays at or under 43 lines'
+
 finish

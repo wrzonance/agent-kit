@@ -1,28 +1,10 @@
 #!/usr/bin/env bash
 #
-# board-setup.sh -- create a Project board, link it to the repository, and give
-# it the canonical Status columns without clearing anyone's work.
-#
-# This exists because of what happens without it. `bootstrap-repo.sh` refuses to
-# guess between boards, which is right, but it says nothing at all when the
-# answer is "there is no board yet" -- so an onboarding session invented the
-# path itself. It introspected the GraphQL schema across four calls, found
-# `updateProjectV2Field`, and fired it. That worked, and only because the board
-# it fired at was empty.
-#
-# `updateProjectV2Field` with `singleSelectOptions` REPLACES the whole option
-# set. It does not match by name: an unchanged "Done" comes back with a new
-# option id and every item that was in it is now in no column at all. Run
-# against a populated board, the improvised path silently clears the board. It
-# has already cost one real board its statuses.
-#
-# So the mutation is wrapped rather than documented. Snapshot every item's
-# status, apply the vocabulary, re-assign by name. A board with items is not
-# refused -- refusing is what sends an agent back to improvising -- it is
-# restored.
-#
-# Reports, never guesses. Exit 3 means the environment is not ready (no gh, no
-# project scope); exit 1 means a call failed and nothing further was attempted.
+# board-setup.sh -- create or adopt a Project board, link it to the repository, and
+# apply the canonical Status columns WITHOUT clearing anyone's work: the raw
+# updateProjectV2Field mutation replaces the whole option set (an improvised call
+# once emptied a populated board), so this snapshots every item's status, applies
+# the vocabulary, and re-assigns by name. Reports, never guesses; see --help.
 set -uo pipefail
 
 PROGRAM=${0##*/}

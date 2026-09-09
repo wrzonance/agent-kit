@@ -162,4 +162,8 @@ fi
 assert_eq 'OK Co-Authored-By' "$validation_probe" \
     'the composed OpenCode trailer parses as a well-formed Co-Authored-By line (worktree-commit.sh shape)'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/harness-id.sh") -le 79 ]] && printf yes || printf no)" \
+    'harness-id.sh stays at or under 79 lines'
+
 finish

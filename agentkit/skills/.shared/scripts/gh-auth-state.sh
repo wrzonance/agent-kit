@@ -1,19 +1,9 @@
 #!/usr/bin/env bash
 #
-# gh-auth-state.sh -- why gh can or cannot reach the forge FROM THIS PROCESS.
-#
-# "gh is not authenticated" is the least useful true statement available when the
-# operator has, moments earlier, used gh successfully in their own terminal. The cases below
-# look identical from the outside and have completely different fixes, and an
-# agent told only "not authenticated" spent twelve commands rediscovering which
-# one it was before reporting the tooling as broken.
-#
-# The case that motivated this: a token in the OS keyring is reachable from a
-# login shell and NOT from wherever an agent's commands run, so `gh auth status`
-# in a terminal and this failure are both true at once. `gh auth token` returning
-# empty while hosts.yml names an account is the signature.
-#
-# Reports, never fails.
+# gh-auth-state.sh -- why gh can or cannot reach the forge FROM THIS PROCESS. "Not
+# authenticated" hides cases with different fixes -- notably a keyring token that a
+# login shell can read and an agent's shell cannot (`gh auth token` empty while
+# hosts.yml names an account). Reports, never fails.
 set -uo pipefail
 
 # TCP reachability, no curl dependency. Overridable so the suite can exercise the
