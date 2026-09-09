@@ -249,7 +249,7 @@ apply_tick() {
     fi
     [[ $ACTION == edit ]] || die '--tick applies to edit only'
     [[ $TICK_TEXT != *$'\n'* && $TICK_NOTE != *$'\n'* ]] || die '--tick and --note must be single-line'
-    local line matches=0 staged
+    local line matches=0 staged eol
     while IFS= read -r line || [[ -n $line ]]; do
         [[ $line == "- [ ] $TICK_TEXT"* ]] && matches=$((matches + 1))
     done <"$BODY_FILE"
@@ -257,8 +257,10 @@ apply_tick() {
     staged=$(mktemp "$(dirname -- "$BODY_FILE")/.gh-body-tick.XXXXXX") || die 'could not stage the ticked body'
     while IFS= read -r line || [[ -n $line ]]; do
         if [[ $line == "- [ ] $TICK_TEXT"* ]]; then
+            eol=''; [[ $line != *$'\r' ]] || { eol=$'\r'; line=${line%$'\r'}; }
             line="- [x] ${line#- \[ \] }"
             [[ -z $TICK_NOTE ]] || line+=" ($TICK_NOTE)"
+            line+=$eol
         fi
         printf '%s\n' "$line"
     done <"$BODY_FILE" >"$staged" || { rm -f -- "$staged"; die 'could not write the ticked body'; }
