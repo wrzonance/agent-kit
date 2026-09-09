@@ -296,8 +296,14 @@ proof_file() {
 persist_proof_line() {
     local file dir
     file=$(proof_file) || return 1
+    path_has_no_symlink "$file" || return 1
     dir=${file%/*}
-    [[ -d $dir && ! -L $dir ]] || mkdir -p -- "$dir" || return 1
+    if [[ -e $dir ]]; then
+        [[ -d $dir && ! -L $dir ]] || return 1
+    else
+        mkdir -p -- "$dir" || return 1
+    fi
+    path_has_no_symlink "$file" || return 1
     [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 1
     (umask 077; printf '%s\n' "$1" >>"$file")
 }

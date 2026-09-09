@@ -744,6 +744,48 @@ one_line_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=ddddddddddddddddddddddddddddddddd
 assert_eq "authorization=$auth queue=2" "$one_line_out" \
     'a one-line proof carrying every required token still authorizes'
 
+# --- CodeRabbit #683 F2: chain-advance.sh's persist_proof_line APPENDS, so a
+# PR retargeted more than once to the same base/head accumulates several
+# matching lines. The epoch check must bind to the NEWEST matching line, not
+# the first one grep/the scan happens to hit -- otherwise a stale first line
+# can permanently block authorization even after a fresh chain-advance.sh
+# --retarget run appends a current line after it. ---
+
+retarget_proof_two_line="$tmp/retarget-proof-two-line.txt"
+{
+    # Stale record from an earlier retarget cycle (superseded boundaryEpoch).
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1690000000 closing-issues=1\n'
+    # Current record: same PR/base/head/sha, matching the live timeline's
+    # latest boundaryEpoch (2024-01-01T00:00:00Z == 1704067200, the default
+    # QUEUE_TIMELINE_ISO below).
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n'
+} >"$retarget_proof_two_line"
+write_confirmed
+two_line_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance --retarget-proof "15:$retarget_proof_two_line")
+assert_eq "authorization=$auth queue=2" "$two_line_out" \
+    'the newest matching proof line, not the first (stale) one, supplies the boundaryEpoch used to authorize'
+
+# Order matters: a stale line appended AFTER the current one (an out-of-order
+# or corrupted file) must not resurrect the stale epoch either -- last match
+# wins, not "the current one happened to come first".
+retarget_proof_two_line_reordered="$tmp/retarget-proof-two-line-reordered.txt"
+{
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n'
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified boundaryEpoch=1690000000 closing-issues=1\n'
+} >"$retarget_proof_two_line_reordered"
+write_confirmed
+reordered_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_two_line_reordered" \
+    >"$tmp/reordered.out" 2>"$tmp/reordered.err" || reordered_rc=$?
+assert_eq '1' "$reordered_rc" \
+    'the last line in the file governs even when it is the stale one -- a stale line appended after a fresh one is not silently ignored'
+assert_contains "$(cat "$tmp/reordered.err")" 'the retarget proof predates a later retarget' \
+    'the reordered-stale-last case is refused as a stale-epoch mismatch, not a generic proof mismatch'
+
 # --- issue #607 fix round 2 finding 2: a persisted/explicit proof must bind
 # to the LIVE latest retarget event, not just to the live head/base. A PR
 # that returns to the same base and head after a LATER retarget must not be
@@ -792,8 +834,15 @@ QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_S
     >"$tmp/no-epoch.out" 2>"$tmp/no-epoch.err" || no_epoch_rc=$?
 assert_eq '1' "$no_epoch_rc" \
     'a proof line with no boundaryEpoch token is refused, never treated as trivially fresh'
-assert_contains "$(cat "$tmp/no-epoch.err")" 'retarget' \
-    'the missing-boundaryEpoch refusal is reported as a retarget-proof failure'
+# The boundaryEpoch=[1-9][0-9]* token is part of the proof-line MATCH regex
+# itself (see the while-loop above), reached before the dedicated
+# missing-boundaryEpoch die() below it ever runs. A line lacking the token
+# simply never matches, so this fixture hits the generic proof-mismatch
+# refusal, not the dedicated one -- assert the diagnostic the code actually
+# emits (verified by running this fixture) rather than a substring ('retarget')
+# common to both messages that can't tell them apart.
+assert_contains "$(cat "$tmp/no-epoch.err")" 'does not match the live base and head' \
+    'a proof line with no boundaryEpoch token fails the proof-line match itself, reported as a generic mismatch, never as trivially fresh'
 
 # --- A predecessor that merged and vanished from the live queue is allowed to drop out ---
 

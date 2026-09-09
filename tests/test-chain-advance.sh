@@ -1142,6 +1142,65 @@ assert_contains "$metadata_symlink_output" 'could not persist the retarget bound
 rm -- "$metadata_dir"
 mv -- "$tmp/metadata-backup" "$metadata_dir"
 
+# --- CodeRabbit #683 F1: persist_proof_line rejects symlinked proof paths ---
+# The boundary JSON lives under the WORKTREE's own git dir
+# (--absolute-git-dir) while the proof line lives under the shared common dir
+# (--git-common-dir); in a plain (non-worktree) repo those coincide, so a
+# symlinked evidence directory would already trip persist_boundary/
+# persisted_boundary before proof persistence is ever reached, masking this
+# check. A linked worktree separates the two paths so the proof-only defense
+# is exercised on its own.
+#
+# Shape A: the shared "chain-advance-evidence" directory itself is a symlink.
+# mkdir -p silently succeeds through a symlinked directory, so only an
+# explicit path_has_no_symlink check (mirroring persist_boundary) catches it.
+# The directory already holds evidence from earlier tests in this suite (it
+# is shared by every worktree of $repo), so swap it out rather than ln -s
+# over it directly.
+wt_dir_symlink="$tmp/wt-proof-dir-symlink"
+git -C "$repo" worktree add -q -b proof-dir-symlink-branch "$wt_dir_symlink" main
+common_dir_a=$(git -C "$wt_dir_symlink" rev-parse --path-format=absolute --git-common-dir)
+evidence_dir_a="$common_dir_a/chain-advance-evidence"
+mv -- "$evidence_dir_a" "$tmp/evidence-backup-a"
+mkdir -p -- "$tmp/attacker-proof-dir"
+ln -s -- "$tmp/attacker-proof-dir" "$evidence_dir_a"
+set +e
+proof_dir_symlink_output=$(cd -- "$wt_dir_symlink" && GH_LOG="$tmp/proof-dir-symlink.log" PATH="$tmp:$PATH" \
+    bash "$advance" --retarget --repo owner/repo --pr 9 --base main 2>&1)
+proof_dir_symlink_rc=$?
+set -e
+assert_eq '0' "$proof_dir_symlink_rc" \
+    'a symlinked proof evidence directory does not fail the whole retarget (proof persistence is best-effort)'
+assert_contains "$proof_dir_symlink_output" \
+    'could not persist the retarget proof under Git metadata; pass the printed line to authorize-queue.sh --retarget-proof' \
+    'a symlinked proof evidence directory is reported as an unpersisted proof'
+assert_eq yes "$([[ -z $(ls -A "$tmp/attacker-proof-dir" 2>/dev/null) ]] && printf yes || printf no)" \
+    'nothing is written through the symlinked proof evidence directory'
+rm -- "$evidence_dir_a"
+mv -- "$tmp/evidence-backup-a" "$evidence_dir_a"
+
+# Shape B: the proof file itself pre-exists as a symlink (the leaf-level
+# check persist_proof_line already had, preserved by the fix above). The
+# evidence directory is real here (restored above); only the leaf differs.
+wt_file_symlink="$tmp/wt-proof-file-symlink"
+git -C "$repo" worktree add -q -b proof-file-symlink-branch "$wt_file_symlink" main
+common_dir_b=$(git -C "$wt_file_symlink" rev-parse --path-format=absolute --git-common-dir)
+ln -s -- "$tmp/attacker-proof-file-target" \
+    "$common_dir_b/chain-advance-evidence/chain-advance-owner-repo-pr-10-base-main.proof"
+set +e
+proof_file_symlink_output=$(cd -- "$wt_file_symlink" && GH_LOG="$tmp/proof-file-symlink.log" PATH="$tmp:$PATH" \
+    bash "$advance" --retarget --repo owner/repo --pr 10 --base main 2>&1)
+proof_file_symlink_rc=$?
+set -e
+assert_eq '0' "$proof_file_symlink_rc" \
+    'a symlinked proof file does not fail the whole retarget (proof persistence is best-effort)'
+assert_contains "$proof_file_symlink_output" \
+    'could not persist the retarget proof under Git metadata; pass the printed line to authorize-queue.sh --retarget-proof' \
+    'a pre-existing symlinked proof file is reported as an unpersisted proof'
+assert_eq yes "$([[ ! -e $tmp/attacker-proof-file-target ]] && printf yes || printf no)" \
+    'nothing is written through the pre-existing symlinked proof file'
+rm -- "$common_dir_b/chain-advance-evidence/chain-advance-owner-repo-pr-10-base-main.proof"
+
 # --- PR #536 F1/F2: stale scan evidence drives refresh across retries -------
 # A skipped CodeQL check from before the retarget boundary is not post-retarget
 # evidence. The first invocation refreshes it, then rejects the unchanged
@@ -1467,7 +1526,11 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 #
 # 2026-09-09 issue #607 fix round 2: +3 for flattening the timeline read
 # across every page instead of the first (measured).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1070 ]] && printf yes || printf no)" \
-    'chain-advance.sh stays at or under 1070 lines'
+#
+# 2026-09-09 CodeRabbit #683: +6 for mirroring persist_boundary's full-path
+# symlink checks (path_has_no_symlink pre- and post-mkdir) in
+# persist_proof_line, closing the symlinked-evidence-dir gap (measured).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1076 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1076 lines'
 
 finish

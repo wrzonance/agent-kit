@@ -72,9 +72,16 @@ repos/owner/repo/git/refs/heads/feat/demo)
     fi
     ;;
 repos/owner/repo/git/ref/heads/feat/demo)
-    # Singular route -- GET only, exact match, one object.
+    # Singular route -- GET only, exact match, one object. Error text mirrors
+    # gh's real "<message> (HTTP <code>)" shape (see code-quality-state.sh's
+    # fixtures) so keep_branch_after_merge's HTTP-404 parsing is exercised
+    # against realistic output, not a stand-in string.
     if [[ \${REF_CHECK_MISSING:-0} == 1 ]]; then
-        printf 'not found\n' >&2
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        exit 1
+    fi
+    if [[ \${REF_CHECK_ERROR:-0} == 1 ]]; then
+        printf 'gh: Internal Server Error (HTTP 500)\n' >&2
         exit 1
     fi
     printf '{"object":{"sha":"%s"}}\n' "\${REF_CHECK_SHA:-$HEAD_SHA}"
@@ -134,6 +141,17 @@ assert_eq '1' "$(grep -c -- "-X POST repos/owner/repo/git/refs .*sha=$HEAD_SHA" 
 out=$(DELETE_ON_MERGE=true MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)
 assert_contains "$out" 'branch_delete=skipped ref=feat/demo note=repo-delete-branch-on-merge-pending' \
     'a head still present after the merge is left alone and the pending deletion is named'
+
+# CodeRabbit #683 F3: a non-404 ref-lookup failure (auth, permission,
+# rate-limit, transport, or any other 5xx) is not evidence the branch was
+# deleted -- restoring off it would create a ref for a branch that may still
+# exist. Only a confirmed HTTP 404 triggers the restore.
+: >"$tmp/merge.log"
+out=$(DELETE_ON_MERGE=true REF_CHECK_ERROR=1 MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)
+assert_contains "$out" 'branch_delete=unknown ref=feat/demo reason=gh: Internal Server Error (HTTP 500)' \
+    'a non-404 ref-lookup failure is reported as unknown, never treated as a confirmed delete'
+assert_eq '0' "$(grep -c -- '-X POST repos/owner/repo/git/refs' "$tmp/merge.log" || true)" \
+    'a non-404 ref-lookup failure never issues the ref-create call'
 
 : >"$tmp/merge.log"
 out=$(AUTH_DELETE_BRANCH=true run_merge --delete-branch)

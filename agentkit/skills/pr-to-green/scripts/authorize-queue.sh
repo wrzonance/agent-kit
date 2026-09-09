@@ -614,17 +614,23 @@ if ((full_match_ok == 0)); then
                 # trusted, since an explicit --retarget-proof file can be
                 # handed in from anywhere, and the auto-discovered file's name
                 # is merely a candidate path, not authenticated content.
+                # persist_proof_line (chain-advance.sh) appends -- it never
+                # truncates -- so a PR retargeted more than once accumulates
+                # several matching lines in this file. The newest one is the
+                # only one that can still be current; keep scanning past the
+                # first match instead of breaking on it (CodeRabbit #683).
                 proof_ok=0
-                while IFS= read -r proof_line; do
-                    if [[ $proof_line == *" sha=$recon_live_sha "* &&
-                          $proof_line == *" repo=$repo "* &&
-                          $proof_line == *'ancestry=verified'* &&
-                          $proof_line == *'green:post-retarget'* &&
-                          $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
-                          $proof_line =~ boundaryEpoch=[1-9][0-9]*( |$) &&
-                          $proof_line =~ closing-issues=[1-9][0-9]*$ ]]; then
+                proof_line=''
+                while IFS= read -r candidate_line; do
+                    if [[ $candidate_line == *" sha=$recon_live_sha "* &&
+                          $candidate_line == *" repo=$repo "* &&
+                          $candidate_line == *'ancestry=verified'* &&
+                          $candidate_line == *'green:post-retarget'* &&
+                          $candidate_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
+                          $candidate_line =~ boundaryEpoch=[1-9][0-9]*( |$) &&
+                          $candidate_line =~ closing-issues=[1-9][0-9]*$ ]]; then
                         proof_ok=1
-                        break
+                        proof_line=$candidate_line
                     fi
                 done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
                 ((proof_ok)) ||
