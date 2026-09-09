@@ -755,6 +755,6 @@ assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:777777777777
     "$(jq -r '.queue | sort_by(.pr) | map([.pr,.base,.headSha] | join(":")) | join(" ")' "$auth")" \
     'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 21500 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 21500 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 19300 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 19300 bytes'
 
 finish

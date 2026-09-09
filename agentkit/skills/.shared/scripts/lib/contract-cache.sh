@@ -1,25 +1,10 @@
 #!/usr/bin/env bash
-# Content-addressed cache for the small, read-only contract projection.
-#
-# The caller must validate the environment contract before using this cache.
-# This library never sources a snapshot: cache records are parsed as data and
-# only accepted when the caller's current input digest matches exactly.
-
-# Harness-aware contract resolution (issue #551).
-#
-# The environment contract used to be one untracked file per checkout,
-# .agent/env-contract.txt, shared by every CLI that opens it -- but it carries
-# harness-specific facts (skills= path=, harness= name=). A second harness
-# opening the same checkout rewrote it at SessionStart, silently changing the
-# skills tree, helper paths, and hook verdicts of a run already in flight
-# (observed live: a root running parallel-issues under one CLI had its
-# contract clobbered mid-wave by a second CLI's session, opened "to
-# observe"). Every writer now targets its own .agent/env-contract.<harness>.txt,
-# so one harness never even has an occasion to touch another's file. The
-# bare, un-suffixed name is kept as a READ-ONLY legacy fallback for one
-# release -- nothing added by this fix writes it -- so a checkout whose
-# contract predates this change, or a worktree whose contract came from a
-# caller that still targets the bare name, keeps resolving exactly as before.
+# Content-addressed cache for the small, read-only contract projection; the caller
+# validates the contract first, and cache records are parsed as data, never
+# sourced, and accepted only on an exact input-digest match.
+# Harness-aware resolution (issue #551): each writer targets its own
+# .agent/env-contract.<harness>.txt so a second CLI never clobbers a run in flight;
+# the bare .agent/env-contract.txt is a READ-ONLY legacy fallback for one release.
 contract_cache_harness_name() {
     if [[ -n ${CONTRACT_CACHE_HARNESS_NAME_MEMO:-} ]]; then
         printf '%s' "$CONTRACT_CACHE_HARNESS_NAME_MEMO"

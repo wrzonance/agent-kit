@@ -1,35 +1,10 @@
 #!/usr/bin/env bash
 # verification-baseline.sh -- classify a declared-verification failure as
-# baseline-red (every failing path is provably unchanged from HEAD and
-# outside this PR's diff against its base) or change-caused-red (at least one
-# failing path was touched by this change).
-#
-# North star: a clean change must never be blocked from publication by a
-# repository gate that is red for reasons entirely outside the diff. Making
-# the gate pass would mean touching unrelated files (refused); parking stalls
-# a run an operator then has to unblock by hand. baseline-red is the third,
-# correct outcome -- publish, with the pre-existing red recorded as evidence.
-# It never claims "fully green", and it never unblocks ready-flip or merge:
-# those stay gated on the declared verification passing, unchanged.
-#
-# Usage: verification-baseline.sh --base REF --log FILE --paths P [P...]
-#            [--check NAME] [--issue N] [--repo-root DIR]
-#            [--evidence-dir DIR] [--force]
-#
-# Exit 0 (stdout: "baseline-red ..." + a markdown evidence block) only when
-# EVERY path is both unchanged in the worktree (`git diff --exit-code HEAD`)
-# and outside the diff against --base (`git diff --exit-code BASE...HEAD`).
-# Exit 1 (stdout: "change-caused-red ...") when any path fails either check --
-# that path was touched by this change, and the failure is fixed as today.
-# Exit 2 is a usage error.
-#
-# With --check NAME, a baseline-red decision is persisted to
-# <evidence-dir>/NAME.json (default <repo-root>/.agent/evidence/baseline/).
-# The next session for the same paths and base SHA reuses only its tracked
-# PROVENANCE (--issue, when this invocation did not pass its own) -- never
-# its verdict: every path is re-verified (tracked-at-HEAD + both diff checks)
-# on every run, so a commit that touches a previously-clean path is still
-# caught. Pass --force to ignore the persisted provenance too.
+# baseline-red (every failing path provably unchanged from HEAD and outside this PR's
+# diff against --base) or change-caused-red. A clean change is never blocked by a
+# gate that is red for reasons outside the diff; baseline-red never unblocks
+# ready-flip or merge. With --check NAME only the decision's PROVENANCE (--issue)
+# persists under <evidence-dir>; verdicts are always re-derived. See --help.
 set -euo pipefail
 
 readonly PROGNAME=${0##*/}
@@ -70,6 +45,9 @@ Usage: $PROGNAME --base REF --log FILE --paths P [P...] [--check NAME]
 --evidence-dir DIR  Default: <repo-root>/.agent/evidence/baseline.
 --force             Ignore any persisted provenance (--issue is never
                      inherited); every path is re-verified regardless.
+
+Exit: 0 baseline-red (stdout "baseline-red ..." + a markdown evidence block: every path unchanged
+in the worktree and outside the --base diff); 1 change-caused-red; 2 usage error.
 EOF
 }
 

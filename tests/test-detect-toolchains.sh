@@ -341,4 +341,8 @@ assert_contains "$out" 'AGENT_CMD_TEST' 'no config.env means everything is undec
 assert_rc 2 'an unknown --format is still a usage error' -- \
     "$dt_sh" --repo-root "$repo" --format nonsense
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 782 ]] && printf yes || printf no)" \
+    'detect-toolchains.sh stays at or under 782 lines'
+
 finish

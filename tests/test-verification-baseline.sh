@@ -328,4 +328,8 @@ assert_rc 1 'a --paths value escaping the repository is refused' -- \
 assert_rc 1 'an unresolvable --base is refused' -- \
     bash -c "cd '$repo' && bash '$script' --base does-not-exist --log '$log' --paths unrelated.txt"
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/verification-baseline.sh") -le 347 ]] && printf yes || printf no)" \
+    'verification-baseline.sh stays at or under 347 lines'
+
 finish

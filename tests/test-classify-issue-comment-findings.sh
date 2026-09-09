@@ -260,4 +260,8 @@ assert_eq '1' "$rc" 'list fails closed when neither sha256sum nor shasum is on P
 assert_contains "$(cat -- "$tmp/err6")" 'evidence unavailable' \
     'the missing-hash-tool failure is a diagnosed evidence-unavailable, not a silent abort'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/classify-issue-comment-findings.sh") -le 320 ]] && printf yes || printf no)" \
+    'classify-issue-comment-findings.sh stays at or under 320 lines'
+
 finish

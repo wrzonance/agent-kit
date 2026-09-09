@@ -1,22 +1,12 @@
 #!/usr/bin/env bash
-# Fetches a GitHub issue exactly once, fails closed unless it carries real
-# evidence, renders it into the canonical Title/Body/Labels/Comments spec
-# text, fences (or copies) it alongside a prior-art digest per the caller's
-# trust boundary, and publishes both plus a readiness marker atomically into
-# the target worktree's excluded .agent/ state.
-#
-# This is the single source of truth for the "Root canonical issue fetch and
-# fence preparation" recipe in parallel-issues/SKILL.md. Boundary-mode
-# SELECTION (public-fenced vs private-trusted vs yolo-trusted) happens
-# upstream of this script -- it only consumes the mode it is given.
+# Fetches a GitHub issue exactly once, fails closed without real evidence, renders
+# the canonical Title/Body/Labels/Comments spec, fences (or copies) it and a
+# prior-art digest per the caller's trust boundary, and publishes both plus a
+# readiness marker atomically into the worktree's excluded .agent/ state. The
+# single source of truth for parallel-issues' fetch-and-fence recipe. See --help.
 set -euo pipefail
-# fetched-issue.json is explicitly chmod'd 0600, but the spec/prior-art pair
-# (fenced-spec.txt + fenced-prior-art.txt in public-fenced mode, or the
-# mode-neutral spec.txt + prior-art.txt otherwise) are created by plain
-# redirection (fence-untrusted-data.sh output, or a straight cp) and then
-# mv'd into place -- without this, they land world-readable under the default
-# umask while the byte-equivalent raw payload next to them does not. All
-# three carry the same issue text.
+# All three published copies of the issue text are chmod'd 0600 (fetched-issue.json
+# explicitly; the spec/prior-art pair here, since plain redirection lands 0644).
 umask 077
 
 usage() {

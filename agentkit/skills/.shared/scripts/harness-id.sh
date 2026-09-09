@@ -1,20 +1,9 @@
 #!/usr/bin/env bash
 #
-# harness-id.sh -- which agent CLI is running this, as one line.
-#
-# The single source of truth for harness identity, because that identity is
-# consumed in two places that must never disagree: agent-preflight writes it into
-# the environment contract, and the session hook checks it before reusing a
-# CACHED contract.
-#
-# That second use is the reason this file exists. The contract is cached per
-# repository and reused for a while, but the harness is a fact about the SESSION,
-# not the repository. A contract written by one CLI and served to the other
-# credits every commit to the wrong agent -- observed live, with a contract
-# written by one CLI reused by the other two minutes later.
-#
-# Reports, never fails: an unknown harness is named as unknown rather than
-# guessed, since a wrong attribution is worse than an absent one.
+# harness-id.sh -- which agent CLI is running this, as one line: the single source
+# of truth consumed by agent-preflight (writes it into the contract) and by the
+# session hook (checks it before reusing a CACHED contract -- a contract from one
+# CLI served to the other credits every commit wrongly). Unknown is named, not guessed.
 set -uo pipefail
 
 name=unknown

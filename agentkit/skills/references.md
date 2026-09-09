@@ -1,39 +1,23 @@
 # Reference manifest
 
-Every companion reference this plugin ships, with the path to open it and what
-it is for. Read this file instead of searching the tree.
+Every companion reference this plugin ships, with the path to open it and what it is for. Read this file
+instead of searching the tree; it sits undotted under the skills tree because `.shared/` is invisible to
+`rg --files`, plain globs, and naive `find`.
 
-It sits here — directly under the skills tree, undotted — on purpose. The
-references themselves live in `.shared/` and `<skill>/references/`, and a
-dotted directory is invisible to `rg --files` without `--hidden`, to shell
-globs without `dotglob`, and to naive `find`-based discovery. The one directory
-an agent most needs to enumerate is the one enumeration hides, so the index of
-it must not be hidden too.
+`$agentkit` is the resolved skills tree from the session contract's `skills= path=` line
+(`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get skills.path` if you need it again), so every
+entry below is an openable path — never reconstruct the prefix or fall back to a filesystem search; a path
+that does not resolve is a manifest mismatch, and `tests/lint-reference-manifest.sh` is the gate that says so.
 
-`$agentkit` is the resolved skills tree from the session contract's
-`skills= path=` line (`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get skills.path` if you need it
-again). Every entry below is therefore already an openable path — never
-reconstruct the prefix by hand, and never fall back to a filesystem search: a
-path here that does not resolve is a manifest mismatch, a clean and nameable
-condition, and `tests/lint-reference-manifest.sh` is the gate that says so.
-
-Shared executable helpers live in `$agentkit/.shared/scripts/`; skill-specific
-helpers live in `$agentkit/<skill>/scripts/`. Name each helper with its complete
-`$agentkit`-relative path at first mention in a SKILL.md; later shorthand refers
-back to that path, never to a command on `PATH`.
-
-`$agentkit/.shared/scripts/lib/` holds sourced libraries, not general-purpose
-helpers. Label library references as sourced-only and do not execute them merely
-because they have an executable bit. One current exception is dual-use:
+Shared executable helpers live in `$agentkit/.shared/scripts/`; skill-specific helpers in
+`$agentkit/<skill>/scripts/`; name each helper by its complete `$agentkit`-relative path at first mention
+in a SKILL.md. `$agentkit/.shared/scripts/lib/` holds sourced libraries, not helpers — except that
 `$agentkit/.shared/scripts/lib/contract-cache.sh` has an explicit CLI:
-`--read-session-context --repo-root DIR [--get KEY]`. Use that exact path and
-interface; there is no sibling helper directly under `.shared/scripts/` with
-that basename. Other library functions are called by their sourcing helpers.
+`--read-session-context --repo-root DIR [--get KEY]`; there is no sibling with that basename under `.shared/scripts/`.
 
-The manifest is an index, not an instruction to preload every file. Read an
-entry only when its `Read when:` condition matches the path the run has reached;
-when uncertain whether a condition matches, read the reference. Entry grammar,
-one per line, checked by that gate:
+The manifest is an index, not an instruction to preload every file: read an entry only when its
+`Read when:` condition matches the path the run has reached (when uncertain, read it). Entry grammar, one
+per line, checked by that gate:
 
 ```text
 - `$agentkit/<path relative to the skills tree>` -- <one-line purpose> | Read when: <condition>

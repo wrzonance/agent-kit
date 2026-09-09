@@ -182,4 +182,7 @@ printf '%s\n' 'Source `$agentkit/.shared/scripts/lib/private-dir.sh` (sourced-on
     > "$hfixture/demo/SKILL.md"
 assert_rc 0 'source instructions and the documented contract-cache CLI remain valid' -- "$lint" "$hfixture"
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/six-step-loop.md") -le 6100 ]] && printf yes || printf no)" \
+    'six-step-loop policy stays at or under 6100 bytes'
+
 finish
