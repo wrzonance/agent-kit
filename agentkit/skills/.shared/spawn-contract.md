@@ -37,15 +37,7 @@ roster_entry_for_family() {
     [ -n "$csv" ] || return 1
     IFS=, read -ra roster_items <<< "$csv"
     for item in "${roster_items[@]}"; do
-        case "$family:$item" in
-            claude:claude-*) printf '%s\n' "$item"; return 0 ;;
-            codex:gpt-5.6-*) printf '%s\n' "$item"; return 0 ;;
-        esac
-        # OpenCode ids are provider/model-id: "exactly one slash" needs =~, not a case glob.
-        if [ "$family" = opencode ] && [[ $item =~ ^[^/]+/[^/]+$ ]]; then
-            printf '%s\n' "$item"
-            return 0
-        fi
+        [ "$(model_family "$item")" = "$family" ] && { printf '%s\n' "$item"; return 0; }
     done
     return 1
 }
@@ -97,15 +89,8 @@ model_in_sanctioned_set() {
         *) return 1 ;;
     esac
 }
-model_family() {
-    case $1 in
-        gpt-5.6-*) printf codex ;;
-        claude-*) printf claude ;;
-        # gpt-5.6-*/claude-* never contain '/', so ordering here is cosmetic.
-        */*) printf opencode ;;
-        *) printf unknown ;;
-    esac
-}
+# Single home: repo-config.sh's model_family (issue #606).
+model_family() { "$agentkit/.shared/scripts/repo-config.sh" --model-family "$1" 2> /dev/null || printf unknown; }
 # Provider namespace OpenCode addresses a foreign harness's sanctioned model under when pivoting into OpenCode.
 model_home_provider() {
     case $1 in
@@ -117,18 +102,30 @@ model_home_provider() {
 
 # Resolves one declaration slot for the running harness; sets $resolved_value/$pivot_note as globals and exits 1 on an unsanctioned model -- call as a plain statement, never inside $(...) (a subshell exit would not stop the script).
 resolve_worker_slot() {
-    local base=$1 native_default=$2 roster_key=$3 value family roster_csv roster_value
+    local base=$1 native_default=$2 roster_key=$3 value family roster_csv roster_value roster_get_rc=0
     # A declared roster is authoritative: no entry for the running harness is a configuration error, never a silent fallback to the singular key or built-in default.
-    if roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
-        --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) &&
-        [ -n "$roster_csv" ]; then
+    # --get exits 2, not the absent-key 1, when the roster line IS declared but rejected by validate() -- captured below so a malformed roster degrades on its own message, not as silently-unset (issue #606 round 3).
+    roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
+        --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) || roster_get_rc=$?
+    if [ -n "$roster_csv" ]; then
         if roster_value=$(roster_entry_for_family "$roster_csv" "$running_harness"); then
             resolved_value=$roster_value
             pivot_note=''
             return
         fi
-        printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
-        exit 1
+        if [ "${yolo_invocation:-false}" = true ]; then
+            printf '%s\n' "yolo: declared roster $roster_key='$roster_csv' has no entry for running harness '$running_harness'; falling back to the singular key or built-in default $native_default" >&2
+        else
+            printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
+            exit 1
+        fi
+    elif [ "$roster_get_rc" -eq 2 ]; then
+        if [ "${yolo_invocation:-false}" = true ]; then
+            printf '%s\n' "yolo: declared roster $roster_key is invalid; falling back to the singular key or built-in default $native_default" >&2
+        else
+            printf '%s\n' "declared roster $roster_key is invalid; never falls back silently -- fix or remove the declaration (see repo-config.sh --validate)" >&2
+            exit 1
+        fi
     fi
     value=$(worker_config_value "$base" "$native_default")
     if model_in_sanctioned_set "$running_harness" "$value"; then
@@ -183,6 +180,8 @@ One comma-separated candidate per harness family (e.g. `claude-sonnet-5,gpt-5.6-
 (`--get harness.name`), never the value's shape. A declared roster entry is sanctioned by
 declaration, wins over the singular keys, and is authoritative once valid: no entry for the running
 harness is a configuration error naming the roster and the running harness, never a silent fallback.
+Under `--yolo` the same case falls through to the singular key or built-in default with one stderr
+line instead: a malformed declaration in an authorized run is a warning, not a stop.
 
 ### Harness-aware pivot
 

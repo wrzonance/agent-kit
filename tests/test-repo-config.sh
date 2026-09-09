@@ -571,8 +571,8 @@ done
 
 # --- harness-neutral adversarial reviewer roster compound (issue #487) -----
 # AGENT_ADVERSARIAL_REVIEWER keeps its historical bare-CLI-name form (above)
-# AND now also accepts a `<model-id>-<effort>` compound; the new
-# _FALLBACK counterpart accepts only the compound form.
+# AND now also accepts a `<model-id>-<effort>` compound; both accept the bare
+# CLI name and the compound form (issue #606).
 printf 'AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high\n' \
     > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
@@ -616,8 +616,124 @@ root_config=$(<"$root/.agent/config.env")
 assert_contains "$root_config" 'AGENT_CMD_TEST_FOCUS=tests/run-tests.sh --only %s' \
     'agent-kit declares its supported focused test selector'
 
+# --- issue #606: the three hand-authored values that passed silently ------
+printf 'AGENT_WORKER_MODELS=codex-gpt-6-astra,claude-opus-5\nAGENT_ADVERSARIAL_REVIEW_MODEL=claude-fable-5.1\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=codex\n' \
+    > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate exits non-zero when any declaration is invalid'
+assert_contains "$validate_out" 'invalid value for AGENT_WORKER_MODELS on line 1, ignoring -- did you mean gpt-6-astra,claude-opus-5' \
+    'a harness-prefixed roster entry is refused with the corrected roster'
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_MODEL on line 2, ignoring -- did you mean claude-fable-5-1' \
+    'a dotted Claude model id is refused with the hyphenated form'
+assert_not_contains "$validate_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK' \
+    'a bare CLI name is valid for the fallback reviewer exactly as for the primary'
+
+# A roster with one correctable item and one unknown item must not suggest a
+# still-invalid correction -- the corrected roster as a whole has to pass.
+printf 'AGENT_WORKER_MODELS=codex-gpt-6-astra,foo\n' > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_WORKER_MODELS on line 1, ignoring' \
+    'a roster with one unknown item is still refused'
+assert_not_contains "$validate_out" 'did you mean' \
+    'but no suggestion is offered when the corrected roster would still be invalid'
+
+# A roster where every item is correctable, and the corrected roster as a
+# whole is valid, still gets the "did you mean" suggestion.
+printf 'AGENT_WORKER_MODELS=codex-gpt-6-astra,claude-fable-5.1\n' > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_WORKER_MODELS on line 1, ignoring -- did you mean gpt-6-astra,claude-fable-5-1' \
+    'a roster where every item is correctable suggests the whole corrected roster'
+
+printf 'AGENT_WORKER_MODELS=gpt-6-astra,claude-opus-5\nAGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh\n' > "$repo/.agent/config.env"
+assert_rc 0 '--validate exits zero on a gpt-6-* roster and reviewer' -- "$rc_sh" --repo-root "$repo" --validate
+assert_eq codex "$("$rc_sh" --model-family gpt-6-astra)" '--model-family names the codex family for a gpt-6-* id'
+assert_eq claude "$("$rc_sh" --model-family claude-opus-5)" '--model-family names the claude family'
+assert_eq opencode "$("$rc_sh" --model-family wrzcluster/qwen3-coder)" '--model-family names opencode for provider/model'
+assert_rc 1 '--model-family fails for an unknown family' -- "$rc_sh" --model-family codex-gpt-6-astra
+
+# --- fix round 2: the exactly-one-slash check must run before the claude-/
+# gpt- prefix matches, or an OpenCode entry that happens to start with a
+# native-CLI prefix misclassifies as that CLI (issue #606 round 2).
+assert_eq opencode "$("$rc_sh" --model-family claude-proxy/sonnet)" \
+    '--model-family names opencode for an OpenCode id that starts with the claude- prefix'
+assert_rc 1 '--model-family still rejects more than one slash' -- "$rc_sh" --model-family a/b/c
+
+# --- fix round 2: --validate must fail on a missing-equals or unaccepted-key
+# declaration, not just under --canonical-keys (issue #606 round 2) ---------
+printf 'AGENT_REPO_SLUG=o/r\nFOO BAR\n' > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate exits non-zero on a declaration with no equals sign'
+assert_contains "$validate_out" 'line 2 has no equals sign' \
+    '--validate names the offending line for the missing-equals declaration'
+
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_NOT_A_KEY=x\n' > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate exits non-zero on an unaccepted key'
+assert_contains "$validate_out" 'unknown key on line 2, ignoring: AGENT_NOT_A_KEY' \
+    '--validate names the offending line for the unaccepted key'
+
+# --- fix round 3 (CodeRabbit on #684): a corrected suggestion is itself
+# validated before being reported -- model_id_suggestion's codex-/claude-
+# prefix-strip can produce a still-dotted claude id, which must never be
+# offered as a "did you mean" -----------------------------------------------
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=codex-claude-fable-5.1-high\n' \
+    > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEWER_FALLBACK on line 2, ignoring' \
+    'a reviewer compound whose only correction is itself invalid is still refused'
+assert_not_contains "$validate_out" 'did you mean' \
+    'and no suggestion is offered, since claude-fable-5.1-high is still a dotted Claude id'
+
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEW_MODEL=codex-claude-bad id\n' \
+    > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_MODEL on line 2, ignoring' \
+    'a bare model id whose only correction is itself invalid is still refused (default arm)'
+assert_not_contains "$validate_out" 'did you mean' \
+    'and no suggestion is offered, since the corrected id still carries the invalid character'
+
+# --- fix round 3 (CodeRabbit on #684): reviewer_roster_entry_valid must
+# refuse an OpenCode-family compound -- model_family recognizes it (a real,
+# well-formed provider/model-id), but adversarial-run.sh only ever launches
+# codex or claude, so it is not a launchable reviewer -----------------------
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER=claude-proxy/sonnet-high\n' \
+    > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate refuses an OpenCode-family AGENT_ADVERSARIAL_REVIEWER compound'
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEWER on line 2, ignoring -- accepted: codex, claude' \
+    'the refusal names the accepted set, not the OpenCode family model_family itself recognizes'
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=wrzcluster/qwen3-coder-high\n' \
+    > "$repo/.agent/config.env"
+assert_rc 1 '--validate refuses the same OpenCode-family compound for the fallback key' \
+    -- "$rc_sh" --repo-root "$repo" --validate
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high\n' \
+    > "$repo/.agent/config.env"
+assert_rc 0 '--validate still accepts launchable codex/claude reviewer compounds for both keys' \
+    -- "$rc_sh" --repo-root "$repo" --validate
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1048 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1048 lines'
+# 2026-09-09 issue #606: the model-family predicate and corrected-form
+# suggestions now live here and only here (adversarial-run.sh -3,
+# spawn-contract.md -7). Measured.
+# 2026-09-09 fix round 1: value_suggestion's roster arm now validates the
+# corrected roster as a whole before offering it (+4 lines). Measured.
+# 2026-09-09 fix round 2: --validate now fails on a missing-equals or
+# unaccepted-key declaration (previously canonical-only), and model_family
+# checks the exactly-one-slash form before the claude-/gpt- prefixes so an
+# OpenCode claude-proxy/sonnet entry no longer misclassifies as claude
+# (+1 line net). Measured.
+# 2026-09-09 fix round 3: --get/--get-argv now exit 2 (not the absent-key 1)
+# when the requested key was declared but rejected by validate(), tracked via
+# want_key_invalid, so callers (spawn-contract.md's resolve_worker_slot) can
+# tell an invalid roster apart from an unset one (+6 lines); and
+# reviewer_roster_entry_valid now refuses an OpenCode-family compound, which
+# model_family itself recognizes but adversarial-run.sh cannot launch (+4
+# lines). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1123 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1123 lines'
 
 finish

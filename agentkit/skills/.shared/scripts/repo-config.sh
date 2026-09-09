@@ -6,7 +6,7 @@
 #
 # Usage:
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
-#   repo-config.sh --get KEY         # one effective value; exit 1 if absent
+#   repo-config.sh --get KEY         # one effective value; exit 1 if absent, exit 2 if declared but invalid
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
 #   repo-config.sh --list            # K=V lines for accepted keys actually declared
 #   repo-config.sh --list-keys       # the accepted key set itself, one per line
@@ -35,7 +35,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --diagnose | --canonical-keys K1,K2 | --resolve KEY ...)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --diagnose | --canonical-keys K1,K2 | --resolve KEY ... | --validate | --model-family ID)\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -81,6 +81,21 @@ readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
 # so the validator here and the parser there cannot silently drift apart.
 readonly ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES=(low medium high xhigh max)
 
+# Defined beside the readonly arrays so the --model-family early exit below
+# can run before any repo-root/config-file resolution.
+# model_family ID -- codex|claude|opencode, or exit 1 printing nothing. The ONE
+# home for this predicate (issue #606): adversarial-run.sh and the
+# spawn-contract.md resolver block call it through --model-family.
+model_family() {
+    # Slash check first -- claude-proxy/sonnet must classify opencode, not claude.
+    case $1 in
+        */*) [[ $1 =~ ^[^/]+/[^/]+$ ]] && printf opencode || return 1 ;;
+        claude-*) printf claude ;;
+        gpt-5.6-* | gpt-6-*) printf codex ;;
+        *) return 1 ;;
+    esac
+}
+
 # The directory a named command runs in. Paths may contain spaces and are
 # quoted in generated config. Values are argv executed from the
 # repository root, which suits a single-component repo and breaks a monorepo:
@@ -115,6 +130,13 @@ while (($#)); do
         --list-keys) mode='keys' ;;
         --list-adversarial-efforts) mode='efforts' ;;
         --diagnose) mode='diagnose' ;;
+        --validate) mode='validate' ;;
+        --model-family)
+            mode='family'
+            shift
+            (($#)) || die_usage '--model-family requires a MODEL-ID'
+            want_key=$1
+            ;;
         --get)
             mode='get'
             shift
@@ -161,7 +183,7 @@ while (($#)); do
     shift
 done
 
-[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --list-keys, --diagnose, --canonical-keys, or --resolve is required'
+[[ -n $mode ]] || die_usage 'one of --export, --get, --list, --list-keys, --diagnose, --canonical-keys, --resolve, --validate, or --model-family is required'
 
 # The accepted key set is schema, not a fact about any one repository -- print
 # it and exit before any repo-root/config-file resolution, so it works the
@@ -180,6 +202,12 @@ fi
 # --list-keys.
 if [[ $mode == efforts ]]; then
     printf '%s\n' "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"
+    exit 0
+fi
+
+if [[ $mode == family ]]; then
+    model_family "$want_key" || exit 1
+    printf '\n'
     exit 0
 fi
 
@@ -395,12 +423,56 @@ providers_valid() {
     return 0
 }
 
-# Worker model IDs are policy input for the spawn contract. Keep the resolver
-# responsible for a safe, single-token value without hardcoding today's
-# supported model names here: an unsupported value must remain visible to the
-# explicit-authorization gate instead of silently becoming the default.
+# Singular worker keys stay syntactic: an unsupported value must remain
+# visible to the explicit-authorization gate. Family membership is checked
+# only where a roster or reviewer entry claims one (model_family below).
 worker_model_valid() {
     [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
+}
+
+# model_id_valid ID -- worker_model_valid plus the one shape the Claude CLI
+# rejects: a dotted claude-* id (claude-fable-5.1 must be claude-fable-5-1).
+model_id_valid() {
+    worker_model_valid "$1" || return 1
+    [[ $(model_family "$1") != claude || $1 != *.* ]]
+}
+
+# model_id_suggestion ID -- the corrected spelling for the two hand-authored
+# mistakes the validators refuse, or nothing.
+model_id_suggestion() {
+    local id=$1 rest
+    if [[ $(model_family "$id") == claude && $id == *.* ]]; then
+        printf '%s' "${id//./-}"
+    elif [[ $id =~ ^(codex|claude)-(.+)$ ]]; then
+        rest=${BASH_REMATCH[2]}
+        model_family "$rest" > /dev/null && printf '%s' "$rest"
+    fi
+}
+
+# value_suggestion KEY VALUE -- the corrected whole value for a model-bearing
+# key (roster CSV, reviewer compound, or bare id), or nothing.
+value_suggestion() {
+    local key=$1 value=$2 item effort out='' changed=0 model suggestion
+    case $key in
+        AGENT_WORKER_MODELS | AGENT_WORKER_MODELS_FALLBACK)
+            local -a items=(); IFS=, read -ra items <<< "$value"
+            for item in "${items[@]}"; do
+                suggestion=$(model_id_suggestion "$item"); [[ -n $suggestion ]] && changed=1
+                out+="${out:+,}${suggestion:-$item}"
+            done
+            # A partially-correctable roster (one item fixed, another still
+            # unknown) is still not a valid declaration -- only offer the
+            # correction once the whole corrected roster would actually pass.
+            worker_models_roster_valid "$out" || changed=0 ;;
+        AGENT_ADVERSARIAL_REVIEWER | AGENT_ADVERSARIAL_REVIEWER_FALLBACK)
+            for effort in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
+                [[ $value == *-"$effort" ]] || continue
+                model=${value%-"$effort"}; suggestion=$(model_id_suggestion "$model")
+                [[ -n $suggestion ]] && reviewer_roster_entry_valid "$suggestion-$effort" && { changed=1; out="$suggestion-$effort"; }
+            done ;;
+        *) suggestion=$(model_id_suggestion "$value"); [[ -n $suggestion ]] && model_id_valid "$suggestion" && { changed=1; out=$suggestion; } ;;
+    esac
+    ((changed)) && printf '%s' "$out"
 }
 
 # AGENT_WORKER_MODELS / AGENT_WORKER_MODELS_FALLBACK declare a harness-neutral
@@ -418,21 +490,22 @@ worker_models_roster_valid() {
     IFS=, read -ra items <<< "$1"
     ((${#items[@]})) || return 1
     for item in "${items[@]}"; do
-        worker_model_valid "$item" || return 1
+        model_id_valid "$item" && model_family "$item" > /dev/null || return 1
     done
     return 0
 }
 
-# AGENT_ADVERSARIAL_REVIEWER_FALLBACK (and, in its new compound form,
-# AGENT_ADVERSARIAL_REVIEWER) carry a single `<model-id>-<effort>` candidate:
-# a well-formed worker-model token followed by one of the accepted effort
-# names. Declaration is authorization here too -- only well-formedness and a
-# parseable trailing effort are checked, not per-harness sanctioning.
+# AGENT_ADVERSARIAL_REVIEWER and AGENT_ADVERSARIAL_REVIEWER_FALLBACK both
+# accept a `<model-id>-<effort>` compound belonging to a known model family.
 reviewer_roster_entry_valid() {
-    local value=$1 effort
+    local value=$1 effort model
     for effort in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
         [[ $value == *-"$effort" ]] || continue
-        worker_model_valid "${value%-"$effort"}" && return 0
+        model=${value%-"$effort"}
+        # adversarial-run.sh launches exactly codex or claude -- an opencode (or
+        # other) family model_family itself would accept is not a launchable
+        # reviewer, so it must not validate here either (CodeRabbit on #684).
+        model_id_valid "$model" && adversarial_reviewer_valid "$(model_family "$model")" && return 0
     done
     return 1
 }
@@ -749,15 +822,10 @@ validate() {
             [[ $value == low || $value == medium || $value == high ||
                 $value == xhigh || $value == max || $value == ultra ]]
             ;;
-        # Both forms coexist: the historical bare CLI name (`codex`|`claude`)
-        # and the newer harness-neutral `<model-id>-<effort>` roster compound.
-        AGENT_ADVERSARIAL_REVIEWER)
-            adversarial_reviewer_valid "$value" || reviewer_roster_entry_valid "$value"
-            ;;
-        AGENT_ADVERSARIAL_REVIEWER_FALLBACK) reviewer_roster_entry_valid "$value" ;;
-        AGENT_ADVERSARIAL_REVIEW_MODEL | AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK)
-            worker_model_valid "$value"
-            ;;
+        # Both forms coexist, symmetrically for the primary and fallback keys
+        # (issue #606): the bare CLI name and the roster compound.
+        AGENT_ADVERSARIAL_REVIEWER | AGENT_ADVERSARIAL_REVIEWER_FALLBACK) adversarial_reviewer_valid "$value" || reviewer_roster_entry_valid "$value" ;;
+        AGENT_ADVERSARIAL_REVIEW_MODEL | AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK) model_id_valid "$value" ;;
         AGENT_ADVERSARIAL_REVIEW_EFFORT) adversarial_review_effort_valid "$value" ;;
         # The trusted identity review-ledger.sh (issue #477) treats as THE
         # per-PR review ledger comment -- any other commenter's fence is
@@ -823,6 +891,11 @@ declare -A warned_unknown_keys=()
 parse_failed=0
 rundir_mismatch_requested=0
 lineno=0
+suggestion=''
+# Set when --get/--get-argv's own requested key was declared but rejected by
+# validate() -- distinguishes "invalid" from "never declared" (issue #606
+# round 3), since both otherwise parse to the same absent-from-out_keys state.
+want_key_invalid=0
 
 while IFS= read -r line || [[ -n $line ]]; do
     lineno=$((lineno + 1))
@@ -832,8 +905,8 @@ while IFS= read -r line || [[ -n $line ]]; do
     if [[ $line != *=* ]]; then
         warn "line $lineno has no equals sign, ignoring"
         malformed_key=$(trim "$line")
-        [[ $mode == resolve && -n ${resolve_requested_keys[$malformed_key]+yes} ]] && parse_failed=1
-        [[ $mode == canonical ]] && parse_failed=1
+        [[ $mode == canonical || $mode == validate ||
+            ( $mode == resolve && -n ${resolve_requested_keys[$malformed_key]+yes} ) ]] && parse_failed=1
         continue
     fi
 
@@ -857,7 +930,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         fi
         # Unknown keys are deliberately dropped. In resolve mode they are not
         # relevant to the requested declaration set.
-        [[ $mode == canonical ]] && parse_failed=1
+        [[ $mode == canonical || $mode == validate ]] && parse_failed=1
         continue
     fi
 
@@ -876,11 +949,14 @@ while IFS= read -r line || [[ -n $line ]]; do
             warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}")"
         elif [[ $key == AGENT_ADVERSARIAL_REVIEW_EFFORT ]]; then
             warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}")"
+        elif suggestion=$(value_suggestion "$key" "$value") && [[ -n $suggestion ]]; then
+            warn "invalid value for $key on line $lineno, ignoring -- did you mean $suggestion"
         else
             warn "invalid value for $key on line $lineno, ignoring"
         fi
-        [[ $mode == canonical ||
+        [[ $mode == canonical || $mode == validate ||
             ( $mode == resolve && -n ${resolve_requested_keys[$key]+yes} ) ]] && parse_failed=1
+        [[ -n $value && ($mode == get || $mode == argv) && $key == "$want_key" ]] && want_key_invalid=1
         continue
     fi
 
@@ -917,7 +993,7 @@ for key in "${out_keys[@]}"; do
             warn "invalid value for $key, ignoring"
         fi
         invalid_command_keys[$key]=yes
-        [[ $mode == canonical ||
+        [[ $mode == canonical || $mode == validate ||
             ( $mode == resolve && -n ${resolve_requested_keys[$key]+yes} ) ]] && parse_failed=1
     elif [[ $mode == diagnose ]]; then
         path_validation_diagnostic "$key" "$value"
@@ -981,6 +1057,7 @@ case $mode in
                 exit 0
             fi
         done
+        ((want_key_invalid)) && exit 2
         exit 1
         ;;
     argv)
@@ -1040,6 +1117,7 @@ case $mode in
         printf '__AGENT_CONFIG_PARSE_STATUS__\0%s\0' "$parse_failed"
         ((rundir_mismatch_requested)) && printf '__AGENT_CONFIG_RUNDIR_MISMATCH__\0yes\0'
         ;;
+    validate) ((parse_failed == 0)) || exit 1 ;;
 esac
 
 exit 0

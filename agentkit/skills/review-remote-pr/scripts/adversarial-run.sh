@@ -228,16 +228,13 @@ resolve_config_value() {
 # AGENT_ADVERSARIAL_* ('' = pinned defaults); never the candidate PR's own
 # checkout (a PR could edit .agent/config.env to steer its own review): main
 # resolves the BASE revision's copy, only when the diff does not touch it.
-# reviewer_roster_family MODEL-ID -- the family (codex|claude) a roster id
-# belongs to, mirroring spawn-contract.md's model_family without its
-# unknown/opencode fallthrough: this runner launches exactly two CLIs, so an
-# unrecognised family returns 1 (prints nothing) and the caller reports it.
+# reviewer_roster_family MODEL-ID -- codex|claude from repo-config.sh's single
+# model_family (issue #606); this runner launches exactly two CLIs, so
+# opencode or unknown returns 1 (prints nothing) and the caller reports it.
 reviewer_roster_family() {
-    case $1 in
-        claude-*) printf claude ;;
-        gpt-5.6-*) printf codex ;;
-        *) return 1 ;;
-    esac
+    local family
+    [[ -x $REPO_CONFIG_SH ]] && family=$("$REPO_CONFIG_SH" --model-family "$1" 2>/dev/null) || return 1
+    [[ $family == codex || $family == claude ]] && printf '%s' "$family"
 }
 
 # reviewer_roster_parse VALUE -- splits a `<model-id>-<effort>` roster
@@ -255,7 +252,7 @@ reviewer_roster_parse() {
         ROSTER_MODEL=${value%-"$effort"}
         ROSTER_EFFORT=$effort
         ROSTER_FAMILY=$(reviewer_roster_family "$ROSTER_MODEL") ||
-            die "unrecognized model family for adversarial reviewer roster entry '$value': '$ROSTER_MODEL' is neither a claude-* nor a gpt-5.6-* model id"
+            die "unrecognized model family for adversarial reviewer roster entry '$value': '$ROSTER_MODEL' is not a claude-* or gpt-5.6-*/gpt-6-* model id"
         return 0
     done
     return 1
@@ -274,9 +271,15 @@ select_reviewer() {
         primary_family=$ROSTER_FAMILY
         local primary_model=$ROSTER_MODEL primary_effort=$ROSTER_EFFORT
         roster_fallback=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER_FALLBACK "$config_file") || roster_fallback=''
+        local fallback_model='' fallback_effort=''
         if [[ -n $roster_fallback ]] && reviewer_roster_parse "$roster_fallback"; then
             fallback_family=$ROSTER_FAMILY
-            local fallback_model=$ROSTER_MODEL fallback_effort=$ROSTER_EFFORT
+            fallback_model=$ROSTER_MODEL fallback_effort=$ROSTER_EFFORT
+        elif [[ $roster_fallback == codex || $roster_fallback == claude ]]; then
+            # A bare CLI name (no <model-id>-<effort> compound to parse) still
+            # names a real fallback family; its own harness default model/effort
+            # applies below once reviewer_cli is known (issue #606 round 2).
+            fallback_family=$roster_fallback
         fi
 
         if [[ $primary_family != "$HARNESS_NAME" ]]; then

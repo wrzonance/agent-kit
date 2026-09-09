@@ -1083,10 +1083,32 @@ assert_contains "$(cat -- "$tmp/roster-absent.out")" 'effort=medium' \
 assert_contains "$(cat -- "$tmp/roster-absent.out")" 'mode=blind-fallback' \
     'a same-harness roster fallback is reported as blind-fallback, never cross-provider'
 
-# --- roster form, unrecognized model family: refused outright, never
-# silently classified as codex (a well-formed value repo-config.sh's
-# open-ended worker-model validator still accepts, but neither claude-* nor
-# gpt-5.6-*) ------------------------------------------------------------
+# --- roster form, gpt-6-* id: the family glob covers gpt-6-* too, not just
+# gpt-5.6-* (issue #606) -----------------------------------------------------
+repo_roster_gpt6=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh')
+write_contract_at "$repo_roster_gpt6" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_roster_gpt6" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_gpt6/example.txt"
+git -C "$repo_roster_gpt6" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_gpt6" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_gpt6="$tmp/repo-roster-gpt6.diff"
+git -C "$repo_roster_gpt6" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_gpt6"
+roster_gpt6_run="$tmp/roster-gpt6-run"
+grant "$roster_gpt6_run" openai "$diff_roster_gpt6"
+roster_gpt6_rc=0
+(cd "$repo_roster_gpt6" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_gpt6_run") \
+    >"$tmp/roster-gpt6.out" 2>"$tmp/roster-gpt6.err" || roster_gpt6_rc=$?
+assert_eq 0 "$roster_gpt6_rc" 'a roster gpt-6-* reviewer entry resolves to the codex family and completes'
+assert_contains "$(cat -- "$tmp/roster-gpt6.out")" 'model=gpt-6-astra' \
+    'the family predicate recognizes gpt-6-* the same as gpt-5.6-*'
+
+# --- roster form, unrecognized model family: repo-config.sh's validators
+# (issue #606) now refuse this at parse time -- the declaration never reaches
+# adversarial-run.sh at all, so this behaves exactly like no declaration:
+# adversarial-run.sh discards repo-config's stderr at :221 (2>/dev/null), so
+# the refusal is pinned on --validate directly, never on the run's stderr.
 repo_roster_unknown=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=some-other-provider-high')
 write_contract_at "$repo_roster_unknown" codex claude "present path=$tmp/fake-claude"
 git -C "$repo_roster_unknown" switch --quiet -c feature
@@ -1097,22 +1119,122 @@ export FAKE_HEAD_OID
 diff_roster_unknown="$tmp/repo-roster-unknown.diff"
 git -C "$repo_roster_unknown" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_unknown"
 roster_unknown_run="$tmp/roster-unknown-run"
-grant "$roster_unknown_run" openai "$diff_roster_unknown"
+grant "$roster_unknown_run" anthropic "$diff_roster_unknown"
 roster_unknown_rc=0
 (cd "$repo_roster_unknown" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
     CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CODEX_CALLED="$tmp/roster-unknown-codex.called" \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_unknown_run") \
     >"$tmp/roster-unknown.out" 2>"$tmp/roster-unknown.err" || roster_unknown_rc=$?
-assert_eq 1 "$roster_unknown_rc" 'a roster compound in neither known family refuses outright'
-assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'unrecognized model family' \
-    'the refusal names the unrecognized-family condition'
-assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'some-other-provider-high' \
-    'the refusal names the offending declared value'
+assert_eq 0 "$roster_unknown_rc" 'a roster compound in neither known family is dropped and the pinned defaults complete'
+roster_unknown_validate_rc=0
+roster_unknown_validate=$("$root/agentkit/skills/.shared/scripts/repo-config.sh" --repo-root "$repo_roster_unknown" --validate 2>&1) || roster_unknown_validate_rc=$?
+assert_eq 1 "$roster_unknown_validate_rc" 'repo-config.sh --validate refuses a roster compound in neither known family'
+assert_contains "$roster_unknown_validate" 'invalid value for AGENT_ADVERSARIAL_REVIEWER on line 1, ignoring -- accepted:' \
+    'the refusal names the key and the accepted set (repo-config.sh drops it before adversarial-run.sh ever sees it)'
+assert_not_contains "$(cat -- "$tmp/roster-unknown.err")" 'unrecognized model family' \
+    'adversarial-run.sh itself says nothing about a value repo-config.sh already dropped'
+assert_contains "$(cat -- "$tmp/roster-unknown.out")" 'provider=anthropic model=claude-opus-5' \
+    'the run lands on the pinned cross-provider default, not on a guessed family'
 assert_eq no "$( [[ -e $tmp/roster-unknown-codex.called ]] && printf yes || printf no )" \
-    'an unrecognized family never silently launches codex (or any CLI)'
+    'an unrecognized family never silently launches codex'
+
+# --- roster form, OpenCode-family compound: repo-config.sh's model_family
+# classifies a well-formed provider/model-id as opencode (a real, recognized
+# family) rather than failing outright, so this needs its own case from the
+# "some-other-provider-high" one above -- reviewer_roster_entry_valid must
+# still refuse it, since adversarial-run.sh only ever launches codex or claude
+# (CodeRabbit on #684) ---------------------------------------------------
+repo_roster_opencode=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=claude-proxy/sonnet-high')
+write_contract_at "$repo_roster_opencode" codex claude "present path=$tmp/fake-claude"
+git -C "$repo_roster_opencode" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_opencode/example.txt"
+git -C "$repo_roster_opencode" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_opencode" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_opencode="$tmp/repo-roster-opencode.diff"
+git -C "$repo_roster_opencode" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_opencode"
+roster_opencode_run="$tmp/roster-opencode-run"
+grant "$roster_opencode_run" anthropic "$diff_roster_opencode"
+roster_opencode_rc=0
+(cd "$repo_roster_opencode" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CODEX_CALLED="$tmp/roster-opencode-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_opencode_run") \
+    >"$tmp/roster-opencode.out" 2>"$tmp/roster-opencode.err" || roster_opencode_rc=$?
+assert_eq 0 "$roster_opencode_rc" 'a roster OpenCode-family compound is dropped and the pinned defaults complete'
+roster_opencode_validate_rc=0
+roster_opencode_validate=$("$root/agentkit/skills/.shared/scripts/repo-config.sh" --repo-root "$repo_roster_opencode" --validate 2>&1) || roster_opencode_validate_rc=$?
+assert_eq 1 "$roster_opencode_validate_rc" 'repo-config.sh --validate refuses an OpenCode-family reviewer compound'
+assert_contains "$roster_opencode_validate" 'invalid value for AGENT_ADVERSARIAL_REVIEWER on line 1, ignoring -- accepted:' \
+    'the refusal names the key and the accepted set, same as any other unlaunchable family'
+assert_contains "$(cat -- "$tmp/roster-opencode.out")" 'provider=anthropic model=claude-opus-5' \
+    'the run lands on the pinned cross-provider default, not on the OpenCode entry'
+assert_eq no "$( [[ -e $tmp/roster-opencode-codex.called ]] && printf yes || printf no )" \
+    'an OpenCode-family compound never silently launches codex'
+
+# --- roster form, bare fallback CLI name: AGENT_ADVERSARIAL_REVIEWER_FALLBACK
+# names a bare CLI (claude|codex) rather than a <model-id>-<effort> compound.
+# reviewer_roster_parse only splits the compound form, so the fallback must be
+# normalized into a family candidate before selection or it is silently
+# dropped from cross-harness consideration entirely (issue #606 round 2: the
+# running harness's own same-family primary would otherwise "review itself"
+# even though a genuine cross-harness peer was declared).
+repo_roster_bare_fallback=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude')
+write_contract_at "$repo_roster_bare_fallback" codex claude "present path=$tmp/fake-claude"
+git -C "$repo_roster_bare_fallback" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_bare_fallback/example.txt"
+git -C "$repo_roster_bare_fallback" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_bare_fallback" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_bare_fallback="$tmp/repo-roster-bare-fallback.diff"
+git -C "$repo_roster_bare_fallback" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_bare_fallback"
+roster_bare_fallback_run="$tmp/roster-bare-fallback-run"
+grant "$roster_bare_fallback_run" anthropic "$diff_roster_bare_fallback"
+roster_bare_fallback_rc=0
+(cd "$repo_roster_bare_fallback" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_bare_fallback_run") \
+    >"$tmp/roster-bare-fallback.out" 2>"$tmp/roster-bare-fallback.err" || roster_bare_fallback_rc=$?
+assert_eq 0 "$roster_bare_fallback_rc" 'a roster primary matching the running harness with a bare-CLI fallback completes'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'provider=anthropic' \
+    'the bare claude fallback is selected over the same-harness codex primary'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'model=claude-opus-5' \
+    "the bare fallback name has no model of its own, so claude's own harness default applies"
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'effort=high' \
+    "the bare fallback name has no effort of its own, so claude's own harness default applies"
+assert_contains "$(cat -- "$tmp/roster-bare-fallback.out")" 'mode=cross-provider' \
+    'a bare-CLI fallback that differs from the running harness is still a genuine cross-harness selection'
+
+# --- roster form, bare fallback CLI name, peer absent: the same-harness
+# primary is used after all, exactly like the pre-normalization behavior --
+# normalizing the bare fallback must not regress the peer-absent path.
+repo_roster_bare_fallback_absent=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh
+AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude')
+write_contract_at "$repo_roster_bare_fallback_absent" codex claude 'absent note="no cross-harness reviewer; use the same-harness blind fallback"'
+git -C "$repo_roster_bare_fallback_absent" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_bare_fallback_absent/example.txt"
+git -C "$repo_roster_bare_fallback_absent" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_bare_fallback_absent" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_bare_fallback_absent="$tmp/repo-roster-bare-fallback-absent.diff"
+git -C "$repo_roster_bare_fallback_absent" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_bare_fallback_absent"
+roster_bare_fallback_absent_run="$tmp/roster-bare-fallback-absent-run"
+grant "$roster_bare_fallback_absent_run" openai "$diff_roster_bare_fallback_absent"
+roster_bare_fallback_absent_rc=0
+(cd "$repo_roster_bare_fallback_absent" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_bare_fallback_absent_run") \
+    >"$tmp/roster-bare-fallback-absent.out" 2>"$tmp/roster-bare-fallback-absent.err" || roster_bare_fallback_absent_rc=$?
+assert_eq 0 "$roster_bare_fallback_absent_rc" 'a bare-CLI fallback whose family is also absent still completes via the same-harness primary'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'provider=openai' \
+    'with the peer absent, the same-harness codex primary is used'
+assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'model=gpt-6-astra' \
+    "the primary's own roster model is used, not a guessed default"
+assert_contains "$(cat -- "$tmp/roster-bare-fallback-absent.out")" 'mode=blind-fallback' \
+    'a same-harness roster primary with an unreachable fallback is reported as blind-fallback'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 870 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 870 lines'
+# 2026-09-09 fix round 2: normalize a bare fallback CLI name into a family
+# candidate in select_reviewer (issue #606, +6 lines). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 859 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 859 lines'
 
 finish

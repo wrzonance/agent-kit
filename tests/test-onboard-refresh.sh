@@ -131,6 +131,49 @@ assert_contains "$out" 'roster-hint= AGENT_WORKER_MODELS* and AGENT_WORKER_MODEL
 assert_contains "$out" 'roster-hint= AGENT_ADVERSARIAL_REVIEWER is a roster compound with no AGENT_ADVERSARIAL_REVIEWER_FALLBACK declared' \
     'report names the reviewer roster with no fallback candidate'
 
+# --- config-validate advisory (issue #606) ----------------------------------
+cat > "$repo/.agent/config.env" <<EOF
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_ONBOARDED_BY=agentkit/$current
+AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
+AGENT_ADVERSARIAL_REVIEW_MODEL=claude-fable-5.1
+EOF
+out=$(bash "$refresh_sh" --repo-root "$repo" --report 2>&1)
+assert_contains "$out" 'config-validate= invalid' \
+    'report flags an invalid model-shaped declaration'
+assert_contains "$out" 'did you mean claude-fable-5-1' \
+    'report surfaces the corrected form for the invalid declaration'
+
+cat > "$repo/.agent/config.env" <<EOF
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_ONBOARDED_BY=agentkit/$current
+AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
+EOF
+out=$(bash "$refresh_sh" --repo-root "$repo" --report 2>&1)
+assert_contains "$out" 'config-validate= ok' \
+    'report prints ok for a clean config'
+
+# --- fix round 2: an unaccepted key must fail --validate too, not just
+# --canonical-keys, or onboarding reports a rejected declaration as ok.
+cat > "$repo/.agent/config.env" <<EOF
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_ONBOARDED_BY=agentkit/$current
+AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
+AGENT_NOT_A_KEY=x
+EOF
+out=$(bash "$refresh_sh" --repo-root "$repo" --report 2>&1)
+assert_contains "$out" 'config-validate= invalid' \
+    'report flags an unaccepted key as invalid, not silently ok (issue #606 round 2)'
+cat > "$repo/.agent/config.env" <<EOF
+AGENT_REPO_SLUG=example-org/example-repo
+AGENT_ONBOARDED_BY=agentkit/$current
+AGENT_CMD_VERIFY=tools/verify
+AGENT_REVIEW_PROVIDERS=github-code-quality
+EOF
+
 # Declaring only the roster form (no singular overlap, fallback present)
 # stays quiet -- the hint is for migration debt, not for using the feature.
 cat > "$repo/.agent/config.env" <<EOF

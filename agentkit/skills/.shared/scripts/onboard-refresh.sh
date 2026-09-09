@@ -423,6 +423,13 @@ if [[ -x $resolver && -r $config ]]; then
     fi
 fi
 
+# Advisory only (issue #606): never blocks refresh -- onboarding config.env
+# mutation is an operator/trunk decision, not this report's.
+config_validate_line='config-validate= ok'
+if [[ -x $resolver && -r $config ]] && ! validate_err=$("$resolver" --repo-root "$repo_root" --validate 2>&1); then
+    config_validate_line="config-validate= invalid: ${validate_err%%$'\n'*}"
+fi
+
 # Adversarial-run.sh reads reviewer policy from the PR base revision. Reuse the
 # resolver's source diagnostic so onboarding reports the same effective source
 # and makes a local edit visible before an operator mistakes it for a live
@@ -473,6 +480,7 @@ fi
 [[ -n $path_drift ]] && parts+=("paths=drift")
 [[ -n $roster_hint_lines ]] && parts+=("model-roster=hint")
 [[ -n $base_trusted_drift_lines ]] && parts+=("config=base-drift")
+[[ $config_validate_line == 'config-validate= ok' ]] || parts+=("config-validate=invalid")
 if ((worktree_drift_count || worktree_pruned_count)); then
     parts+=("worktrees=drift")
 fi
@@ -501,6 +509,7 @@ fi
 if [[ -n $roster_hint_lines ]]; then
     printf '%s' "$roster_hint_lines"
 fi
+printf '%s\n' "$config_validate_line"
 if [[ -n $base_trusted_drift_lines ]]; then
     printf '%s' "$base_trusted_drift_lines"
 fi
