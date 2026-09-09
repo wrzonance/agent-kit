@@ -33,19 +33,6 @@ teach() {
     exit 0
 }
 
-# Reconstruct command text with heredoc BODY LINES removed, keeping everything
-# else -- including the << token and the delimiter word -- so a match outside a
-# heredoc is unaffected. Reuses guard_gh_command_segments' quote/heredoc state
-# machine (sourced above from guard-lib.sh) instead of re-deriving one, so the
-# two can never disagree on what counts as "inside a heredoc" (issue #299).
-guard_strip_heredoc_bodies() {
-    local segment out=''
-    while IFS= read -r segment; do
-        out+="$segment"$'\n'
-    done < <(guard_gh_command_segments "$1")
-    printf '%s' "$out"
-}
-
 # A double-quoted value containing $( or a backtick is not provably inert --
 # bash executes a command substitution inside a double-quoted string, so
 # redacting it wholesale could hide a path the shell genuinely resolves
@@ -72,34 +59,19 @@ guard_strip_body_flag_values() {
     " <<< "$text" 2> /dev/null || printf '%s' "$text"
 }
 
-# True when a command carries the syntax that runs a nested command: $( or a
-# backtick. Used to tell a heredoc body that is genuinely inert (a
-# quoted-delimiter heredoc, or one with no such syntax at all) from one that
-# is not provably so.
-guard_command_has_expansion() {
-    # shellcheck disable=SC2016  # the $( glob literal is intentional, not expansion
-    [[ $1 == *'$('* || $1 == *'`'* ]]
-}
-
-# The text the pinned-plugin-path lesson (below) may judge. A raw command_line
-# cannot tell a path being EXECUTED from one merely QUOTED as data -- inside a
-# heredoc body building an issue/PR description, or as the value of a
-# body-bearing gh flag -- so this narrows the match text to what a shell would
-# actually try to resolve before that lesson's pattern runs against it.
-#
-# guard_strip_heredoc_bodies drops every heredoc body regardless of whether
-# its delimiter was quoted, so it cannot tell an inert body from an EXPANDABLE
-# one (<<EOF, unquoted delimiter) whose $(...) the shell actually runs. If
-# stripping removed the only $(/backtick evidence in the command, that body is
-# not provably inert -- fall back to the untouched text so a path inside it
-# still reaches the matcher (adversarial review, issue #299).
+# The text the pinned-path and escaped-resolver lessons (below) may judge: only
+# what the shell would actually resolve. guard_destructive_command_segments
+# (guard-lib.sh) drops a quoted-delimiter heredoc body handed to an inert
+# consumer, recovers the $(...)/backtick substitutions of an expandable body and
+# the whole body of one handed to a shell (issues #299/#364); body-bearing gh
+# flag values are then redacted. A quoted body that merely CONTAINS `$(` is
+# inert and is never matched.
 guard_pinned_path_probe_text() {
-    local raw=$1 stripped
-    stripped=$(guard_strip_heredoc_bodies "$raw")
-    if guard_command_has_expansion "$raw" && ! guard_command_has_expansion "$stripped"; then
-        stripped=$raw
-    fi
-    guard_strip_body_flag_values "$stripped"
+    local segment out=''
+    while IFS= read -r segment; do
+        out+="$segment"$'\n'
+    done < <(guard_destructive_command_segments "$1")
+    guard_strip_body_flag_values "$out"
 }
 
 input=$(cat 2> /dev/null || true)
@@ -124,17 +96,13 @@ if guard_has_evidence .agent/board.json &&
         <<< "$command_line" &&
     guard_should_advise "$state_root" "$session" board-read; then
     # shellcheck disable=SC2016  # literal text, see teach()
-    teach "This repository declares its board in .agent/board.json, so its ids do not
-need discovering. Pick by the question you are answering:
-$RESOLVE_HINT
+    teach "This repository declares its board in .agent/board.json; do not rediscover its ids. Pick by question:
+$RESOLVE_POINTER
   \"\$agentkit/.shared/scripts/board-list.sh\"              # what is ON the board, by column
-  \"\$agentkit/.shared/scripts/board-list.sh\" --issue N    # where is ONE issue right now
+  \"\$agentkit/.shared/scripts/board-list.sh\" --issue N    # where ONE issue is now (confirm a move with this, once)
   \"\$agentkit/.shared/scripts/triage-issues.sh\"           # open issues + board status + PRs
-  \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"  # set one item Status
-Each is a single call returning a compact digest, rather than raw JSON to parse.
-To confirm a move, use --issue N once. Re-querying the whole board with a
-hand-written jq filter gives a differently-shaped answer each time, and answers
-that look like they disagree invite asking again -- which is a loop, not a check."
+  \"\$agentkit/parallel-issues/scripts/move-github-project-item.sh\"  # set one item's Status
+Each is one call returning a compact digest; a hand-written jq over the raw board answers differently each time."
 fi
 
 # Per-issue triage. Reading ONE issue body is legitimate and stays that way --
@@ -143,37 +111,35 @@ fi
 # quiet; a second number in the same session is the evidence that a digest is
 # cheaper. Timeline fetches still advise immediately because they are never a
 # single-body read.
+# A single issue's timeline is a per-issue read like its body (2026-09-08: one
+# `.../issues/N/timeline` fetch was advised as triage), so both feed the same
+# distinct-issue counter; only a timeline URL whose issue number cannot be
+# parsed still advises immediately.
 issue_number=''
 if [[ $command_line =~ (^|[[:space:];&|])gh[[:space:]]+issue[[:space:]]+view[[:space:]]+([0-9]+)([[:space:];&|]|$) ]]; then
     issue_number=${BASH_REMATCH[2]}
+elif [[ $command_line =~ (^|[[:space:];&|])gh[[:space:]]+api[[:space:]]+[^[:space:]]*/issues/([0-9]+)/timeline ]]; then
+    issue_number=${BASH_REMATCH[2]}
 fi
+# shellcheck disable=SC2016  # literal text, see teach()
+triage_lesson="Per-issue reads (gh issue view N, .../issues/N/timeline) across several issues are replaced by one query:
+$RESOLVE_POINTER
+  \"\$agentkit/.shared/scripts/triage-issues.sh\"   # board status + cross-referenced PRs for every candidate
+Reading one issue body is still right -- the first body read in a session stays quiet; a second distinct issue number means the digest is cheaper."
 if guard_has_evidence .agent/config.env &&
     [[ -n $issue_number ]] &&
     ! grep -qE '(^|[[:space:];&|])(cat|head|tail|sed|awk|grep|less|more|read)[^;|&]*\.agent/env-contract\.txt' \
         <<< "$command_line" &&
     guard_issue_view_is_distinct "$state_root" "$session" "$issue_number" &&
     guard_should_advise "$state_root" "$session" issue-triage; then
-    # shellcheck disable=SC2016  # literal text, see teach()
-    teach "Triaging issues one at a time is replaced by one query:
-$RESOLVE_HINT
-  \"\$agentkit/.shared/scripts/triage-issues.sh\"
-It returns board status and cross-referenced pull requests for every candidate
-together. Reading one issue body directly is still the right call; the first
-body read in a session stays quiet, while a second distinct issue number means
-the digest is cheaper. Timeline fetches are still covered by this advice."
+    teach "$triage_lesson"
 fi
 
-if guard_has_evidence .agent/config.env &&
+if [[ -z $issue_number ]] && guard_has_evidence .agent/config.env &&
     grep -qE '(^|[[:space:];&|])gh[[:space:]]+api[[:space:]]+[^[:space:]]*/timeline' \
         <<< "$command_line" &&
     guard_should_advise "$state_root" "$session" issue-triage; then
-    # shellcheck disable=SC2016  # literal text, see teach()
-    teach "Triaging issues one at a time is replaced by one query:
-$RESOLVE_HINT
-  \"\$agentkit/.shared/scripts/triage-issues.sh\"
-It returns board status and cross-referenced pull requests for every candidate
-together. Timeline fetches and repeated per-issue exploration cost more than
-the digest."
+    teach "$triage_lesson"
 fi
 
 # A hardcoded plugin path -- but ONLY a WRONG one. Observed live: the resolver
@@ -194,9 +160,15 @@ fi
 # committing it (issue #299). guard_pinned_path_probe_text narrows the match
 # text to what the command would actually resolve before this pattern runs.
 probe_text=$(guard_pinned_path_probe_text "$command_line")
-matched_path=$(grep -oE '[^[:space:]"'"'"']*plugins/cache/[^[:space:]"'"'"']*agentkit/[0-9][^[:space:]"'"'"']*' \
-    <<< "$probe_text" 2> /dev/null | head -n 1) || true
-if [[ -n $matched_path ]]; then
+mapfile -t pinned_raw_matches < <(grep -oE \
+    '[^[:space:]"'"'"']*plugins/cache/[^[:space:]"'"'"']*agentkit/[0-9][^[:space:]"'"'"']*' \
+    <<< "$probe_text" 2> /dev/null)
+# A leading NAME= assignment or $( opener and a trailing shell separator are
+# syntax, not path (2026-09-08: `agentkit=/.../0.7.4/skills;` compared unequal
+# to the very tree it named and was "corrected" to itself).
+pinned_syntax_re='^[^/]*[=(`]([/~].*)$'
+matched_path=''
+if ((${#pinned_raw_matches[@]})); then
     # A lesson that only names the hazard leaves the model to improvise a
     # remedy, and the one observed improvisation hand-deleted path segments
     # into a path that does not exist -- tripping the scope guard on top. So
@@ -225,11 +197,13 @@ if [[ -n $matched_path ]]; then
         # to the generic resolver.
         [[ $resolved_skills =~ ^/[A-Za-z0-9._/@+-]+$ && -d $resolved_skills ]] || resolved_skills=''
     fi
-    # The flagged path IS the contract-resolved tree -- correct by
-    # definition. Fall straight through with no advisory and, critically,
-    # WITHOUT consuming guard_should_advise's once-per-session claim: a
-    # genuinely stale path read later in the same session must still get its
-    # own lesson, which a spent claim here would silently swallow.
+    # A command can carry more than one plugins/cache match -- e.g. a correct
+    # `agentkit=<tree>` assignment followed by a stale helper path read from an
+    # old checkout. Taking only the FIRST match let the correct assignment hide
+    # a stale second one entirely (K1 review F1): normalise every match with
+    # the same syntax strip and teach on the first one that is NOT the
+    # contract-resolved tree; stay silent only when every match normalises to
+    # it.
     #
     # The containment check below is LEXICAL (guard_scope_canonical resolves
     # `..` components without touching the filesystem, same as every other
@@ -240,16 +214,34 @@ if [[ -n $matched_path ]]; then
     # (adversarial review, issue #335 finding F2). guard_scope_canonical has
     # no failure path today, but a failed canonicalization must still be
     # treated as NOT correct -- fail closed, not fail silent.
-    path_is_correct=0
-    if [[ -n $resolved_skills ]]; then
-        canonical_matched=$(guard_scope_canonical "$matched_path") || canonical_matched=''
-        canonical_resolved=$(guard_scope_canonical "$resolved_skills") || canonical_resolved=''
-        [[ -n $canonical_matched && -n $canonical_resolved &&
-            ( $canonical_matched == "$canonical_resolved" ||
-              $canonical_matched == "$canonical_resolved"/* ) ]] &&
-            path_is_correct=1
-    fi
-    if ((! path_is_correct)) && guard_should_advise "$state_root" "$session" pinned-plugin-path; then
+    for raw_match in "${pinned_raw_matches[@]}"; do
+        candidate=$raw_match
+        [[ $candidate =~ $pinned_syntax_re ]] && candidate=${BASH_REMATCH[1]}
+        candidate=${candidate%%[;&|)]*}
+        [[ -n $candidate ]] || continue
+        candidate_is_correct=0
+        if [[ -n $resolved_skills ]]; then
+            canonical_candidate=$(guard_scope_canonical "$candidate") || canonical_candidate=''
+            canonical_resolved=$(guard_scope_canonical "$resolved_skills") || canonical_resolved=''
+            [[ -n $canonical_candidate && -n $canonical_resolved &&
+                ( $canonical_candidate == "$canonical_resolved" ||
+                  $canonical_candidate == "$canonical_resolved"/* ) ]] &&
+                candidate_is_correct=1
+        fi
+        if ((! candidate_is_correct)); then
+            matched_path=$candidate
+            break
+        fi
+    done
+fi
+if [[ -n $matched_path ]]; then
+    # The flagged path is a genuine mismatch (not the contract-resolved tree,
+    # by the loop above) -- fall through to the advisory below, and,
+    # critically, WITHOUT consuming guard_should_advise's once-per-session
+    # claim when every match was correct: a genuinely stale path read later in
+    # the same session must still get its own lesson, which a spent claim here
+    # would silently swallow.
+    if guard_should_advise "$state_root" "$session" pinned-plugin-path; then
         if [[ -n $resolved_skills && $resolved_skills == "$matched_path" ]]; then
             # Defensive only -- unreachable given path_is_correct above, which
             # excludes exact equality before we get here. A remedy that
@@ -258,18 +250,11 @@ if [[ -n $matched_path ]]; then
             guard_log_error 'pinned-plugin-path-remedy-equals-input' 2> /dev/null || true
         elif [[ -n $resolved_skills ]]; then
             # shellcheck disable=SC2016  # the $agentkit reference is literal text, see teach()
-            teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit.
-Do not conflate them; the requested helper path did not resolve.
-Use exactly:
+            teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit; the requested helper path did not resolve. Use exactly:
   agentkit=$resolved_skills"
         else
             # shellcheck disable=SC2016  # literal text, see teach()
-            teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit.
-Do not conflate them; the requested helper path did not resolve.
-$RESOLVE_HINT
-The find picks the highest version present, which is what you want even when
-only one is installed. If it came back empty, the plugin is not installed where
-this is looking; say so rather than substituting a literal path."
+            teach "Wrong plugin path -- marketplace dir is agent-kit, plugin dir is agentkit; the requested helper path did not resolve, and this checkout's contract names no usable skills tree. Re-run the resolver block from your session or worker context (contract file, else the plugins/cache bootstrap, which picks the highest installed version); if it comes back empty, say the plugin is not installed rather than substituting a literal path."
         fi
     fi
 fi
@@ -282,18 +267,11 @@ fi
 # The command has usually already failed by the time this fires; the point is to
 # make the next attempt the corrected one instead of another guess.
 # shellcheck disable=SC2016  # the pattern searches for a literal dollar
-if grep -qE '\\\$(\{)?(CODEX_HOME|CLAUDE_CONFIG_DIR|HOME|agentkit)' <<< "$command_line" &&
-    grep -q 'agentkit' <<< "$command_line" &&
+if grep -qE '\\\$(\{)?(CODEX_HOME|CLAUDE_CONFIG_DIR|HOME|agentkit)' <<< "$probe_text" &&
+    grep -q 'agentkit' <<< "$probe_text" &&
     guard_should_advise "$state_root" "$session" escaped-resolver; then
     # shellcheck disable=SC2016  # literal text, see teach()
-    teach "The dollar signs in that resolver are escaped, so nothing expanded: the
-variable now holds the literal text \"\${CODEX_HOME:-\$HOME/.codex}/skills\"
-instead of a directory. Every path built from it points at a file that cannot
-exist, and the error you get back names the missing file rather than the
-escaping.
-Paste the resolver block from the skill verbatim -- backslash-free -- and let
-the shell expand it. Nothing in these blocks needs escaping; they are already
-quoted for the shell that runs them."
+    teach "The dollar signs in that resolver are escaped, so nothing expanded: the variable holds the literal text \"\${CODEX_HOME:-\$HOME/.codex}/skills\" instead of a directory, and every path built from it names a missing file. Paste the resolver block verbatim -- backslash-free; it is already quoted for the shell that runs it."
 fi
 
 # Blanket staging. Correct ignore rules are what actually protect .agent/; this
@@ -302,11 +280,9 @@ if grep -qE '(^|[[:space:];&|])git[[:space:]]+add[[:space:]]+(-A|--all|\.)([[:sp
     <<< "$(guard_strip_git_globals "$command_line")" &&
     guard_should_advise "$state_root" "$session" staging; then
     # shellcheck disable=SC2016  # literal text, see teach()
-    teach "Blanket staging sweeps up .agent/ working state -- the environment contract
-carries local paths and an account name. Ignore rules are the real protection
-(bootstrap-repo.sh writes them); to stage and commit a worktree's own changes:
-$RESOLVE_HINT
-  \"\$agentkit/.shared/scripts/worktree-commit.sh\""
+    teach "Blanket staging sweeps up .agent/ working state (the contract carries local paths and an account name). Stage and commit a worktree's own changes with:
+$RESOLVE_POINTER
+  \"\$agentkit/.shared/scripts/worktree-commit.sh\" --exact --message SUBJECT -- FILES"
 fi
 
 emit_empty
