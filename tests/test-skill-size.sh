@@ -182,7 +182,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows in tokens alone fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 8337 tokens' 'the token ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 7707 tokens' 'the token ratchet names its ceiling'
 
 root=$tmp/ratchet-lines
 mkdir -p "$root/review-remote-pr"
@@ -192,7 +192,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows past its line ceiling fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 513 lines' 'the line ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 450 lines' 'the line ratchet names its ceiling'
 
 root=$tmp/stale
 make_skill "$root" review-remote-pr <<'EOF'
@@ -221,9 +221,9 @@ mkdir -p "$root/parallel-issues"
 } > "$root/parallel-issues/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 1013 lines' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 946 lines' \
     'the parallel-issues line ratchet pins the stacked ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 18760 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 17847 tokens' \
     'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these

@@ -217,4 +217,8 @@ assert_rc 2 'an unresolvable base is refused' -- "$helper" --worktree "$repo" --
 assert_rc 2 'a missing worktree is refused' -- "$helper" --worktree "$tmp/absent" --base main
 assert_rc 2 'a hostile base ref is refused' -- "$helper" --worktree "$repo" --base '--upload-pack=x'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/materiality-check.sh") -le 167 ]] && printf yes || printf no)" \
+    'materiality-check.sh stays at or under 167 lines'
+
 finish

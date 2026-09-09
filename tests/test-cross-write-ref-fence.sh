@@ -379,4 +379,8 @@ assert_contains "$bad_error" 'ISO-8601' \
 assert_contains "$bad_error" 'epoch' \
     'the rejection also names the epoch-integer form'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 799 ]] && printf yes || printf no)" \
+    'cross-write-check.sh stays at or under 799 lines'
+
 finish

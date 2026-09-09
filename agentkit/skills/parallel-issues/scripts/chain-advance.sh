@@ -464,32 +464,17 @@ is_provider_residue_check() {
     return 1
 }
 
-# `gh pr edit --base` leaves headRefOid untouched, and the check rollup may still
-# be attached to that same head commit. Its timestamp must nevertheless postdate
-# the forge timeline boundary: the workflow does not re-run on a base change
-# (`pull_request` defaults to opened/synchronize/reopened), so a current-head
-# digest alone cannot establish post-retarget CI provenance.
-#
-# EXCEPTION (issue #577): a check from an app whose slug is a declared review
-# provider (`AGENT_REVIEW_PROVIDERS`) is reported as provider-check residue and
-# excluded from this requirement, exactly like the `approval=residue:stale`
-# token already is. A base edit does not trigger CI, but it also does not
-# trigger a review-provider re-scan; an `observe`/`disabled` per-run provider
-# action never re-pings it either, so requiring that check to postdate the
-# boundary made the proof unsatisfiable without an unauthorized ping
-# (agent-kit#572). Excusing it by declared-provider identity is safe
-# regardless of the provider's per-run action: an undeclared provider still
-# faces the full requirement, and a provider that WAS pinged after the
-# boundary already reports fresh on its own post-boundary timestamp.
-#
-# is_provider_residue_check identifies that app by its own authenticated
-# `.app.slug` from a dedicated check-runs read (resolve_check_run_slugs), never
-# by display-name substring alone -- a required job merely NAMED like a
-# provider is never excused (fix batch, F1). Both this exemption and the
-# generated-path one are disabled outright when this checkout's own
-# repository does not match `--repo` (resolve_exemptions_scope, fix batch
-# F2), and this one additionally fails closed when the check-runs read itself
-# is unreadable -- the refusal then reports `provider-check=unreadable`.
+# gh pr edit --base leaves headRefOid untouched and does not re-run CI, so a
+# current-head digest alone cannot prove post-retarget CI: the rollup's
+# timestamp must postdate the forge timeline boundary. EXCEPTION (issue #577,
+# agent-kit#572): a check from an app whose authenticated .app.slug
+# (resolve_check_run_slugs -- never a display-name substring, fix batch F1) is a
+# declared AGENT_REVIEW_PROVIDERS entry is reported as provider-check residue
+# and excused, like approval=residue:stale; a base edit never re-pings a
+# provider, so requiring it made the proof unsatisfiable. Both exemptions are
+# disabled when this checkout's repository is not --repo
+# (resolve_exemptions_scope, F2), and this one fails closed
+# (provider-check=unreadable) when the check-runs read fails.
 check_ci_fresh() {
     local pr_json=$1 boundary=$2 head_sha=$3 stale_raw label
     local -a stale_labels=() residue_labels=()
@@ -853,14 +838,10 @@ cover_retarget_lineage() {
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
     comments_file=$(mktemp "${TMPDIR:-/tmp}/chain-advance-cover.XXXXXXXXXX") || return 0
     chmod 600 -- "$comments_file" 2>/dev/null || true
-    # --paginate alone concatenates one bare JSON array PER PAGE -- valid for
-    # a caller that reads it with `jq -s`, but review-ledger.sh's cover/read
-    # require the file to contain exactly ONE JSON array (`jq -e 'type ==
-    # "array"'`). Fix batch #2 F4: `--slurp` wraps every page into one outer
-    # array (of arrays, even for a single page); `--jq 'add'` (gh's own -q)
-    # concatenates that wrapper into the single flat array review-ledger.sh
-    # expects, so a PR with more than one page of comments is not silently
-    # truncated to its first page.
+    # --paginate alone emits one bare JSON array PER PAGE, but review-ledger.sh
+    # requires exactly ONE array (fix batch #2 F4): --slurp wraps the pages and
+    # --jq 'add' flattens them, so a multi-page comment set is not truncated to
+    # page one.
     if "$GH_BIN" api "repos/$repo/issues/$pr/comments" --paginate --slurp --jq 'add' \
         -H 'Accept: application/vnd.github+json' >"$comments_file" 2>/dev/null; then
         # --kind adversarial (fix batch #2 F3): an unfiltered call extends
@@ -978,16 +959,11 @@ recover_closed() {
                 "$PR" "$BASE" "$head_ref" "$head_sha"
             return 0
         fi
-        # F3 (issue #564 fix batch): an earlier invocation may have recreated
-        # the base ref and reopened the PR but failed before retargeting,
-        # leaving it open on the recreated ref forever after (a plain refusal
-        # here would never let a retry finish). Recognise that VERIFIED
-        # partial-recovery state -- the PR's own recorded base.sha still
-        # matches the live tip of its current (non-target) base ref, i.e.
-        # nothing has moved it since -- and resume at the shared retarget
-        # step below instead of refusing. Any other open-on-a-different-base
-        # PR (no matching live evidence) is still refused: it may be open for
-        # an unrelated reason, and guessing is never safe.
+        # F3 (issue #564): an earlier invocation may have recreated the base ref
+        # and reopened the PR but failed before retargeting. That VERIFIED
+        # partial-recovery state (the PR's recorded base.sha still matches the
+        # live tip of its current base ref) resumes at the shared retarget step;
+        # any other open-on-a-different-base PR is still refused.
         if [[ $base_sha =~ $SHA_RE ]]; then
             ref_json=$("$GH_BIN" api "repos/$REPO/git/ref/heads/$live_base" 2>/dev/null) || ref_json=''
             ref_sha=$(jq -r '.object.sha // empty' <<<"$ref_json" 2>/dev/null) || ref_sha=''

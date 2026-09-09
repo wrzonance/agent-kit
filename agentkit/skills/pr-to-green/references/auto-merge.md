@@ -23,33 +23,18 @@ whenever more than one independent root is being driven at once.
 ## Concurrency admission and revalidation
 
 **Cap source and admission.** The runtime concurrency cap comes from
-`parallel-issues/scripts/concurrency-cap.sh` (never inferred or invented) —
-the root counts as one occupant of that cap. A root over the cap queues and
-waits; a slot frees, and the next queued root starts, the moment an occupant
-reaches evidence-green or blocks. A root that fails or blocks releases its
-slot immediately rather than holding it idle.
+`parallel-issues/scripts/concurrency-cap.sh` (never inferred or invented), with the root as one
+occupant; a root over the cap queues until an occupant reaches evidence-green or blocks, and a root that
+fails or blocks releases its slot immediately.
 
-**The confirmed-queue snapshot is single-slot, not per-root.**
-`authorize-queue.sh` enforces one fixed path for
-`.agent/pr-to-green-confirmed-queue.json` (`--confirmed-queue-file` refuses
-any other path) and `pr-queue.sh --write-confirmed-queue` writes that same
-path — so authorizing PR B overwrites whatever PR A's own authorization
-recorded, even with no concurrency at all, purely from running in sequence.
-A root entering the SKILL.md Step 2 critical section must therefore
-re-derive the authorization for its own PR at its own current head every
-time — never assume a prior pass in this run still holds, because any other
-root's own pass since then has replaced the file's contents.
+**The confirmed-queue snapshot is single-slot.** `authorize-queue.sh` and `pr-queue.sh
+--write-confirmed-queue` share one fixed path, so authorizing PR B overwrites PR A's record even in
+sequence; a root entering the Step 2 critical section must re-derive the authorization for its own PR at its own current head every time.
 
-**Revalidate after every merge.** A Step 5 merge advances the default
-branch, staling every other in-flight root's base. After any such merge,
-every other in-flight root revalidates its own head and base — a fresh
-`pr-queue.sh`/`gh-pr-state.sh` read — before its next mutation (a provider
-request, a finding settlement, or the merge gate). Evidence captured before
-that merge (a stored `head_sha`, a prior gate result, a prior authorization)
-is stale and may not authorize a mutation; the ready/provider transition step
-and settlement do not themselves re-check the live head against a merge that
-landed after their evidence was captured, so the driving run
-must do this revalidation itself before calling them again.
+**Revalidate after every merge.** A Step 5 merge stales every other in-flight root's base: before its
+next mutation, every other in-flight root revalidates its own head and base with a fresh
+`pr-queue.sh`/`gh-pr-state.sh` read — evidence captured before that merge may not authorize a mutation,
+and the transition/settlement steps do not re-check it for you.
 
 ## Consent and the ledger record
 
@@ -320,42 +305,15 @@ harmless.
 
 ## PreToolUse guard alignment
 
-The repository's PreToolUse hook (`agentkit/hooks/lib/guard-lib.sh`) enforces
-one rule for every agent, on every invocation, independent of this skill: an
-agent-driven merge is sanctioned **only** through this script, `merge-pr.sh`,
-bound to a confirmed `--auto-merge` authorization record plus a `gate=PASS`
-review-completion result. Every other way an agent could reach the same forge
-action is refused unconditionally — including after an explicit operator
-authorization, and including a data string that merely mentions the refused
-words (a quoted sed/printf argument never becomes a command):
-
-- The `gh pr merge` porcelain verb.
-- The direct REST mutation the porcelain verb itself calls —
-  `gh api -X PUT repos/OWNER/REPO/pulls/N/merge` (`--method PUT` and the
-  attached `-XPUT` form included) — typed by the agent as its own command.
-- The equivalent GraphQL mutation — `gh api graphql` carrying a
-  `mergePullRequest` field value.
-
-None of those refusals lift on a retry, by design: the retry the operator
-actually wants is this script, run through the consent, gate, and
-serialization contract already documented above, not the same call typed a
-different way. `merge-pr.sh`'s own mutation call is that identical REST
-request, and the guard does not refuse it: the hook inspects only the
-**agent's own Bash command line**, never a helper script's internals, so
-`merge-pr.sh`'s subprocess call is a command line this hook never sees.
-Invoking `merge-pr.sh` itself — the sanctioned entry point — is therefore
-unaffected by any of the three refusals above, regardless of what it does
-internally.
+The repository's PreToolUse hook (`agentkit/hooks/lib/guard-lib.sh`) refuses every directly-typed agent
+merge — `gh pr merge`, `gh api -X PUT repos/OWNER/REPO/pulls/N/merge`, and a `gh api graphql`
+`mergePullRequest` mutation — unconditionally, even after operator authorization, and even when the
+words appear only inside a quoted data string. `merge-pr.sh` is the sole sanctioned entry point: the hook
+inspects only the agent's own command line, never a helper's internals, so its identical REST call passes.
 
 ## Still forbidden
 
-Identical to the non-`--auto-merge` prohibitions, restated because a merge
-step raises the cost of getting them wrong: force-push, history rewrite,
-merging a `BLOCKED` item, bypassing branch protection, any of the three
-directly-typed merge forms (see "PreToolUse guard alignment" above), or
-merging outside the confirmed queue. Also forbidden: dispatching a workflow
-to manufacture gate evidence (see the code-scanning section above) — a
-`BLOCKED` gate is a signal to fix or wait, never to game. `merge-pr.sh` never
-retries around a forge refusal — a branch-protection-required-approval
-refusal, a stale-sha 409, or a not-mergeable 405 is reported verbatim and is
-a named stop.
+Also forbidden: force-push, history rewrite, merging a `BLOCKED` item, bypassing branch protection, any
+directly-typed merge form, merging outside the confirmed queue, and dispatching a workflow to manufacture
+gate evidence. `merge-pr.sh` never retries around a forge refusal (required-approval, stale-sha 409,
+not-mergeable 405): each is reported verbatim as a named stop.

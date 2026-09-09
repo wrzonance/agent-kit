@@ -312,6 +312,8 @@ assert_contains "$ctx" 'references.md' 'and the reference manifest'
 assert_contains "$ctx" 'plugins/cache' 'and how to resolve them'
 assert_contains "$ctx" 'example-org/example-repo' 'without displacing the contract'
 assert_not_contains "$ctx" 'not onboarded' 'and is not also told to bootstrap'
+assert_eq yes "$([[ $(printf '%s' "$ctx" | wc -c) -le 3900 ]] && printf yes || printf no)" \
+    'the onboarded SessionStart context (preamble, fixture contract, curriculum) stays at or under 3900 bytes (measured '"$(printf '%s' "$ctx" | wc -c)"' bytes)'
 
 # Every path named must EXIST -- scripts and the reference manifest alike. A
 # curriculum naming a missing file teaches a broken path -- the same failure
@@ -471,6 +473,9 @@ assert_not_contains "$out" 'codex_home' 'never the path that no longer resolves'
 # The override sentence is load-bearing, not decorative. Denied once WITHOUT it,
 # a live agent answered "It was not run" and stopped rather than adapting.
 assert_contains "$out" 'run it again' 'and states that the retry is permitted'
+# 2026-09-08 size wave two: pointer form, never a pasted resolver block.
+assert_eq yes "$([[ $(printf '%s' "$(jq -r '.hookSpecificOutput.permissionDecisionReason // ""' <<< "$out")" | wc -c) -le 500 ]] && printf yes || printf no)" \
+    'the helper-path denial stays at or under 500 bytes (measured '"$(printf '%s' "$(jq -r '.hookSpecificOutput.permissionDecisionReason // ""' <<< "$out")" | wc -c)"' bytes)'
 
 # --- PreToolUse: unresolved instruction reads are answered by the contract --
 unresolved_repo=$(make_repo)
@@ -562,6 +567,8 @@ out=$(pre_input "$scope_repo" 'find /home/user-sibling -name AGENTS.md' "$scope_
 assert_eq 'allow' "$(decision "$out")" 'an out-of-tree find remains allowed'
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'a foreign-sibling find receives a scope advisory'
+assert_eq yes "$([[ $(printf '%s' "$(pre_context "$out")" | wc -c) -le 350 ]] && printf yes || printf no)" \
+    'the scope advisory stays at or under 350 bytes (measured '"$(printf '%s' "$(pre_context "$out")" | wc -c)"' bytes)'
 assert_not_contains "$out" 'permissionDecision":"deny' \
     'the scope advisory never denies'
 
@@ -579,12 +586,74 @@ assert_eq 'deny' "$(decision "$out")" 'a home-rooted sweep is denied, not merely
 assert_contains "$out" 'walks $HOME' 'and the denial names what it objects to'
 assert_contains "$out" 'untrusted content' \
     'and why an AGENTS.md found out there is not instructions'
+assert_eq yes "$([[ $(printf '%s' "$(jq -r '.hookSpecificOutput.permissionDecisionReason // ""' <<< "$out")" | wc -c) -le 530 ]] && printf yes || printf no)" \
+    'the home-sweep denial stays at or under 530 bytes (measured '"$(printf '%s' "$(jq -r '.hookSpecificOutput.permissionDecisionReason // ""' <<< "$out")" | wc -c)"' bytes)'
 # Denied ONCE. A genuine need re-runs the command, exactly like helper-path.
 out=$(pre_input "$scope_repo" "find \$HOME -name AGENTS.md" "$home_sweep_sid" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a repeated home-rooted sweep is allowed once the lesson is spent'
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'and falls back to the ordinary scope advisory'
+# grep's first positional operand is its PATTERN, never a path: a recursive
+# grep FOR the home path inside the worktree is not a walk OF it (2026-09-08:
+# `grep -rl "$HOME" docs/` was denied as a $HOME sweep).
+for grep_pattern_cmd in "grep -rl \"\$HOME\" docs/" "grep -rn -- \"\$HOME\" ." "grep -r -e \"\$HOME\" docs/"; do
+    out=$(pre_input "$scope_repo" "$grep_pattern_cmd" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a grep whose pattern is \$HOME is not a sweep: $grep_pattern_cmd"
+    assert_eq '' "$(pre_context "$out")" "and draws no scope advisory either: $grep_pattern_cmd"
+done
+# The operand AFTER the pattern is still the walk root, with or without -e.
+out=$(pre_input "$scope_repo" "grep -rl AGENTS.md \$HOME" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'a recursive grep rooted at the home directory is still denied'
+out=$(pre_input "$scope_repo" "grep -r -e AGENTS.md -- \$HOME" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'with -e supplying the pattern, the first operand is the walk root'
+# A bundled short option carrying e/f is grep's own -e/-f, attached
+# (`-reTODO` == `-r -e TODO`) or with the value as the next token
+# (`-re TODO` == `-r -e TODO`) -- round 2 of K1 (Codex gpt-6-astra
+# adversarial P2): the pre-scan only recognized standalone -e/-f, so
+# `grep -reTODO "$HOME"` slipped past the sweep denial.
+for grep_bundle_sweep in "grep -reTODO \"\$HOME\"" "grep -rfPATTERNS \"\$HOME\"" \
+    "grep -re TODO \"\$HOME\"" "grep -rf patterns.txt \"\$HOME\"" "grep -rie TODO \"\$HOME\""; do
+    out=$(pre_input "$scope_repo" "$grep_bundle_sweep" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "a bundled -e/-f still marks \$HOME as the walk root: $grep_bundle_sweep"
+done
+# The bundle's e/f still supplies the PATTERN, so $HOME as ITS value (not
+# the walk root) stays allowed -- the bundle form must not deny more than
+# the unbundled form already didn't.
+for grep_bundle_pattern in "grep -re \"\$HOME\" docs/" "grep -reTODO docs/" \
+    "grep -rf \"\$HOME/list\" docs/"; do
+    out=$(pre_input "$scope_repo" "$grep_bundle_pattern" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "a bundled -e/-f whose value is \$HOME is not a sweep: $grep_bundle_pattern"
+done
+# `--` ends grep's own option parsing too: a `-e`/`--regexp`/`-f`/`--file`
+# spelled AFTER it is a positional operand, never the flag, so POSIX/GNU grep
+# resolve it as the FIRST positional -- i.e. the pattern -- leaving the next
+# operand as the walk root (2026-09-08 round 3, CodeRabbit: `grep -r -- -e
+# "$HOME"` let the pre-scan clear pattern_pending for the post-`--` `-e` and
+# the main scan then consumed "$HOME" as that flag's value, so the sweep
+# denial never fired). Verified against real GNU grep before fixing.
+out=$(pre_input "$scope_repo" "grep -r -- -e \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'deny' "$(decision "$out")" \
+    '-e after -- is a positional pattern, not the flag, so $HOME is the walk root'
+# With no pattern flag before OR after --, the lone post-`--` operand is
+# grep's pattern (not a file/root); with -r and no file operand grep walks
+# the CWD, never $HOME, so this is not a sweep.
+out=$(pre_input "$scope_repo" "grep -r -- \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'allow' "$(decision "$out")" \
+    '$HOME after -- with nothing else is the pattern, not the walk root'
+out=$(pre_input "$scope_repo" "grep -r -e TODO -- \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'deny' "$(decision "$out")" \
+    '-e TODO before -- still supplies the pattern, so $HOME after -- is the walk root'
+out=$(pre_input "$scope_repo" "grep -r -- TODO \"\$HOME\"" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # $HOME is the literal text being matched
+assert_eq 'deny' "$(decision "$out")" \
+    'the first positional after -- is the pattern, so the second ($HOME) is still the walk root'
+out=$(pre_input "$scope_repo" 'grep -r -- TODO docs/' "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'positional pattern/root after -- with a workspace-relative root is unaffected'
 
 # Reading ONE file under $HOME is a mis-scoped read, not an environment probe,
 # and the distinction is the whole point: denying every path under $HOME would
@@ -1933,6 +2002,12 @@ for ok in 'ls -la' 'git status' 'gh pr view 5' 'echo hi' \
     out=$(pre_input "$repo" "$ok" | "$hooks/pre-tool-use.sh" 2>/dev/null)
     assert_eq 'allow' "$(decision "$out")" "allows: $ok"
 done
+# A helper basename at line start inside an inert quoted heredoc body (a pasted
+# plan, an issue body) is data, not a call (2026-09-08: writing a plan that
+# quoted `gh-pr-state.sh usage …` at a line start was refused).
+heredoc_helper_cmd=$'cat > /tmp/plan.md <<\'EOF\'\n## What\ngh-pr-state.sh usage is 102 lines.\nEOF'
+out=$(pre_input "$repo" "$heredoc_helper_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'a helper name at line start inside a quoted heredoc body is not a bare invocation'
 
 # --- the rules that moved must NOT block any more -------------------------
 # This is the autonomy guarantee. Each of these was a permanent denial; a worker
@@ -1971,6 +2046,8 @@ ctx=$(ctx_of "$out")
 assert_contains "$ctx" 'triage-issues.sh' 'board advice offers a way to READ the board'
 assert_contains "$ctx" 'move-github-project-item.sh' 'and a way to move an item'
 assert_contains "$ctx" 'plugins/cache' 'and teaches the resolver'
+assert_eq yes "$([[ $(printf '%s' "$ctx" | wc -c) -le 950 ]] && printf yes || printf no)" \
+    'the board lesson stays at or under 950 bytes (measured '"$(printf '%s' "$ctx" | wc -c)"' bytes)'
 
 # It must be structurally unable to block. Not "unlikely to" -- unable.
 for shape in 'gh project item-list 7 --owner x' 'gh issue view 442' 'git add -A' 'ls -la'; do
@@ -1986,12 +2063,16 @@ out=$(post_input "$repo" 'gh issue view 442' "$s" | "$hooks/post-tool-use.sh" 2>
 assert_eq '' "$(ctx_of "$out")" 'the first per-issue body read stays quiet'
 out=$(post_input "$repo" 'gh issue view 443' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'a second distinct issue number is taught'
+assert_eq yes "$([[ $(printf '%s' "$(ctx_of "$out")" | wc -c) -le 700 ]] && printf yes || printf no)" \
+    'the triage lesson stays at or under 700 bytes (measured '"$(printf '%s' "$(ctx_of "$out")" | wc -c)"' bytes)'
 out=$(post_input "$repo" 'gh issue view 444' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'the lesson remains once per session after the second issue'
 # Keyed by RULE, not by command: hashing the command would make 442, 443, 444
 # three separate lessons and teach twelve times where one was intended.
 out=$(post_input "$repo" 'git add -A' "$s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'worktree-commit.sh' 'a different rule still speaks in that session'
+assert_eq yes "$([[ $(printf '%s' "$(ctx_of "$out")" | wc -c) -le 560 ]] && printf yes || printf no)" \
+    'the staging lesson stays at or under 560 bytes (measured '"$(printf '%s' "$(ctx_of "$out")" | wc -c)"' bytes)'
 new_s=$(fresh_sid)
 post_input "$repo" 'gh issue view 444' "$new_s" | "$hooks/post-tool-use.sh" >/dev/null 2>&1
 out=$(post_input "$repo" 'gh issue view 445' "$new_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
@@ -2024,6 +2105,15 @@ assert_eq '' "$(ctx_of "$out")" 'a re-read of the same issue stays quiet'
 out=$(post_input "$repo" 'gh issue view 501' "$dup_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_contains "$(ctx_of "$out")" 'triage-issues.sh' \
     'a genuinely distinct second issue still teaches'
+# A single issue's timeline is a per-issue read like its body (2026-09-08: a
+# lone `.../issues/545/timeline` fetch was advised as one-at-a-time triage).
+timeline_s=$(fresh_sid)
+out=$(post_input "$repo" 'gh api repos/o/r/issues/5/timeline' "$timeline_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'the first timeline fetch in a session stays quiet, like a first body read'
+out=$(post_input "$repo" "gh api 'repos/o/r/issues/5/timeline?per_page=100' --paginate" "$timeline_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'a re-read of the same issue timeline stays quiet'
+out=$(post_input "$repo" 'gh api repos/o/r/issues/6/timeline' "$timeline_s" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'triage-issues.sh' 'a second distinct issue timeline teaches the digest'
 
 # Fail-open must also cover the narrower failure where the views directory
 # exists but cannot accept markers: the lesson still speaks instead of the
@@ -2083,6 +2173,49 @@ out=$(post_input "$correct_repo" "$correct_skills_dir/.shared/scripts/board-list
     "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" \
     'reading under the contract-resolved skills tree emits no version advisory'
+# 2026-09-08: the same correct tree spelled as a leading shell assignment
+# (`agentkit=/...;` or `agentkit=/... "$agentkit/..."`) was "corrected" to
+# itself -- the match kept the NAME= prefix and the trailing separator, so the
+# lexical containment check compared shell syntax, not a path.
+# shellcheck disable=SC2016  # the unexpanded $agentkit is the fixture
+for assignment_form in \
+    "agentkit=$correct_skills_dir; \"\$agentkit/.shared/scripts/board-list.sh\" --issue 1" \
+    "agentkit=$correct_skills_dir \"\$agentkit/.shared/scripts/board-list.sh\""; do
+    out=$(post_input "$correct_repo" "$assignment_form" "$(fresh_sid)" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" \
+        "the contract-resolved tree spelled as a shell assignment is not corrected to itself: ${assignment_form:0:40}"
+done
+# A STALE tree spelled the same way still teaches: the normalisation strips
+# shell syntax, never the version segment the containment check compares.
+out=$(post_input "$correct_repo" "agentkit=$correct_skills/plugins/cache/agent-kit/agentkit/0.1.0/skills; \"\$agentkit/.shared/scripts/board-list.sh\"" "$(fresh_sid)" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a stale version path spelled as a shell assignment is still corrected'
+# The correct tree inside an unquoted $(...) ends in ")": syntax, not path.
+out=$(post_input "$correct_repo" "ls \$($correct_skills_dir/.shared/scripts/board-list.sh)" "$(fresh_sid)" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'the contract-resolved tree inside an unquoted command substitution is not corrected to itself'
+
+# A command can carry MORE THAN ONE plugins/cache match. Taking only the first
+# (as this hook once did) let a correct leading assignment hide a stale second
+# match entirely -- the flagged path went silent (K1 review, finding F1).
+multi_stale_path="$correct_skills/plugins/cache/agent-kit/agentkit/0.1.0/skills/.shared/scripts/board-list.sh"
+out=$(post_input "$correct_repo" "agentkit=$correct_skills_dir; $multi_stale_path" "$(fresh_sid)" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a stale second match still teaches even though the first match is the contract-resolved tree (K1 fix round 1, F1)'
+# The inverse must hold too: when EVERY match normalises to the
+# contract-resolved tree -- the assignment, a quoted $agentkit reference (no
+# literal match at all), and a bare deeper read under the resolved tree --
+# the command stays fully silent.
+# shellcheck disable=SC2016  # the unexpanded $agentkit is the fixture
+multi_correct_cmd="agentkit=$correct_skills_dir; \"\$agentkit/.shared/scripts/board-list.sh\"; $correct_skills_dir/.shared/scripts/triage-issues.sh"
+out=$(post_input "$correct_repo" "$multi_correct_cmd" "$(fresh_sid)" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" \
+    'silent when every match normalises to the contract-resolved tree, including a bare deeper read under it (K1 fix round 1)'
 
 # The session budget above must stay UNSPENT: a genuinely stale version path
 # (a different version segment than the contract resolves) read afterward, in
@@ -2133,6 +2266,18 @@ gh issue create --body-file /tmp/issue-body.txt"
 out=$(post_input "$repo" "$heredoc_cmd" "$heredoc_sid" | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" \
     'a pinned path quoted inside a heredoc body does not trigger the lesson'
+# A quoted-delimiter heredoc body is inert even when it CONTAINS a $(...):
+# the shell never expands it, so a pinned path beside one is still data
+# (2026-09-08: the fallback-to-raw-text branch fired on exactly this).
+# shellcheck disable=SC2016  # the unexpanded $(date) is the fixture
+inert_sub_heredoc_cmd="cat <<'EOF' > /tmp/issue-body.txt
+Evidence: $pinned (captured with x=\$(date))
+EOF
+gh issue create --body-file /tmp/issue-body.txt"
+out=$(post_input "$repo" "$inert_sub_heredoc_cmd" "$(fresh_sid)" | "$hooks/post-tool-use.sh" 2>/dev/null)
+# shellcheck disable=SC2016  # the assert message quotes the literal $(...)
+assert_eq '' "$(ctx_of "$out")" \
+    'a pinned path in a quoted heredoc body that also contains $(...) does not trigger the lesson'
 
 bodyflag_sid=$(fresh_sid)
 bodyflag_cmd="gh issue create --title 'Fix hazard' --body \"Evidence: $pinned\""
@@ -2147,10 +2292,10 @@ assert_eq '' "$(ctx_of "$out")" \
     'a pinned path quoted in an -f body= value does not trigger the lesson'
 
 # The same path quoted as data AND then genuinely executed in one command must
-# still fire the lesson -- guard_strip_heredoc_bodies only drops heredoc BODY
-# lines, never text outside them, so a state-machine bug that swallowed too
-# much here would silently stop the lesson firing while every negative test
-# above stayed green.
+# still fire the lesson -- the probe text drops only an inert heredoc BODY,
+# never text outside it, so a state-machine bug that swallowed too much here
+# would silently stop the lesson firing while every negative test above stayed
+# green.
 mixed_sid=$(fresh_sid)
 mixed_cmd="cat <<'EOF' > /tmp/b.txt
 Evidence: $pinned
@@ -2160,6 +2305,15 @@ out=$(post_input "$repo" "$mixed_cmd" "$mixed_sid" | "$hooks/post-tool-use.sh" 2
 assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
     'an executed path still corrects even after the same path was quoted in a heredoc body'
 assert_contains "$(ctx_of "$out")" 'plugins/cache' 'and the resolver is shown'
+# A quoted heredoc handed to a SHELL runs as a script, so a pinned path in its
+# body is executed, not quoted: the segment-based probe text recovers
+# shell-consumer bodies (issue #364) -- a positive the raw-text probe missed.
+shell_heredoc_cmd="bash <<'EOF'
+$pinned
+EOF"
+out=$(post_input "$repo" "$shell_heredoc_cmd" "$(fresh_sid)" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_contains "$(ctx_of "$out")" 'Wrong plugin path' \
+    'a pinned path in a quoted heredoc body handed to bash is executed and still corrects'
 
 # A double-quoted --body value, or the body of an EXPANDABLE heredoc (<<EOF,
 # unquoted delimiter), is not provably inert: bash executes a $(...) command
@@ -2197,6 +2351,11 @@ assert_eq '' "$(ctx_of "$out")" 'the resolver form is not corrected'
 out=$(post_input "$repo" 'sed -n "s/^skills= path=//p" .agent/env-contract.txt' |
     "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'reading env-contract.txt does not trigger an advisory'
+# The escaped-resolver lesson judges the same probe text: a resolver quoted
+# inside an inert heredoc body (documentation, a pasted script) is data.
+escaped_heredoc_cmd=$'cat > /tmp/notes.md <<\'EOF\'\nagentkit=$(find "\\${CODEX_HOME:-\\$HOME/.codex}/plugins/cache" -type d)\nEOF'
+out=$(post_input "$repo" "$escaped_heredoc_cmd" "$(fresh_sid)" | "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'an escaped resolver inside a quoted heredoc body draws no advisory'
 
 # When the repository's own contract already resolves the skills tree, the
 # lesson hands back the RESOLVED VALUE itself -- an executable remedy, not just
@@ -2242,6 +2401,8 @@ ctx=$(ctx_of "$out")
 assert_not_contains "$ctx" "agentkit=$spacey_dir" \
     'a path that breaks a shell assignment is never emitted as the remedy'
 assert_contains "$ctx" 'plugins/cache' 'the unquotable case falls back to the resolver'
+assert_eq yes "$([[ $(printf '%s' "$ctx" | wc -c) -le 500 ]] && printf yes || printf no)" \
+    'the resolver-fallback lesson stays at or under 500 bytes (measured '"$(printf '%s' "$ctx" | wc -c)"' bytes)'
 
 # A stale contract naming a directory that no longer exists is NOT a remedy;
 # the generic resolver is the fallback.
@@ -2743,5 +2904,12 @@ unresolved_370=$(make_repo)
 # shellcheck disable=SC2016  # $PWD is the literal text being matched, not expanded
 assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && printf yes || printf no )" \
     'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
+
+# 2026-09-08 size wave two: hold the hook sources at their measured line counts.
+for hook_ceiling in 'lib/guard-lib.sh:2410' 'pre-tool-use.sh:190' 'post-tool-use.sh:250' 'session-start.sh:348'; do
+    hook_file=${hook_ceiling%%:*}; hook_cap=${hook_ceiling##*:}
+    assert_eq yes "$([[ $(wc -l < "$hooks/$hook_file") -le $hook_cap ]] && printf yes || printf no)" \
+        "$hook_file stays at or under $hook_cap lines (measured $(wc -l < "$hooks/$hook_file"))"
+done
 
 finish

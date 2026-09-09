@@ -248,4 +248,8 @@ mkdir -p "$bare"
 assert_rc 3 'a repository with no board is environment-blocked, not an error' -- \
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$bare"
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 253 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 253 lines'
+
 finish

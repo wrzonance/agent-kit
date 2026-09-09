@@ -181,4 +181,8 @@ assert_eq '' "$sourced_err" \
 assert_eq absent "$sourced_reason" \
     'sourced use still records the reason for a caller that wants it, without printing'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh") -le 427 ]] && printf yes || printf no)" \
+    'lib/contract-cache.sh stays at or under 427 lines'
+
 finish

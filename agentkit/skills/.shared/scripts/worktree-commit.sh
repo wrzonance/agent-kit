@@ -1,37 +1,10 @@
 #!/usr/bin/env bash
 #
-# worktree-commit.sh -- stage and commit from inside a git worktree without the
-# guaranteed "index.lock: Read-only file system" tax.
-#
-# WHY THIS EXISTS
-#   A linked worktree keeps its git metadata under the MAIN repository's .git
-#   directory (.git/worktrees/NAME/), not under the worktree checkout. When an
-#   agent runs in a sandbox whose writable bind covers only the worktree, the
-#   very first `git add` dies with
-#       fatal: Unable to create '.../.git/worktrees/NAME/index.lock':
-#              Read-only file system
-#   after the files were already chosen and the change already narrated. The
-#   cause is fully detectable before any staging happens, so this wrapper probes
-#   BOTH git metadata directories for writability up front and exits 2 naming
-#   the exact offending path. The worker hands the identical command to the
-#   top-level session, which owns any privileged retry; this helper never
-#   elevates itself.
-#
-# IT ALSO
-#   * refuses to commit onto a trunk branch (main/master/trunk),
-#   * runs `git diff --cached --check` (whitespace / conflict-marker gate),
-#   * prints exactly one machine-readable line on success.
-#
-# EXIT CODES
-#   0  committed
-#   2  a git metadata directory is not writable -- needs elevation, then retry
-#   3  an active merge carries protected paths that attended work must park
-#   1  usage error, not a repository, trunk branch, or any git failure
-#
-# A merge-inherited protected path may also be authorized by a recorded
-# session-ledger grant (--ledger/--run-id/--ledger-scope) instead of a named
-# base: see guard_staged_protected_paths and issue #563.
-#
+# worktree-commit.sh -- stage and commit from inside a git worktree, probing BOTH
+# git metadata directories for writability first (a sandbox whose writable bind
+# covers only the worktree dies at .git/worktrees/NAME/index.lock; this exits 2
+# naming the path instead). Also refuses trunk, runs git diff --cached --check,
+# prints one machine-readable line. Options and exit codes: --help.
 set -euo pipefail
 
 readonly PROGNAME="${0##*/}"
@@ -67,69 +40,49 @@ Usage: $PROGNAME [--exact|--include-staged] --message SUBJECT [--body TEXT] [--t
                  [--allow-outside PATH]... [--allow-base-inherited BASE [--yolo]] [--] FILE...
 
 Stage FILE... and commit them from inside a git worktree, after verifying up
-front that the repository's git metadata directories are writable.
+front that the repository's git metadata directories are writable; refuses a
+trunk branch; runs 'git diff --cached --check' after staging; validates every
+trailer before staging and verifies it against the commit afterwards.
 
 Options:
   --message SUBJECT   Commit subject line. Required, must be a single line.
   --body TEXT         Commit body, added as its own paragraph. At most once.
   --trailer LINE      Trailer line, e.g. "Co-Authored-By: Name <a@example.com>".
-                      Repeatable; all trailers share the final paragraph so git
-                      parses them as one trailer block. Every LINE must be a
-                      non-empty "Key: value" -- a value-less key, a key-less
-                      value, or an empty value is refused rather than committed.
-                      Omitted entirely, a "Co-Authored-By:" trailer is derived
-                      from this repository's environment contract instead.
+                      Repeatable; all trailers share the final paragraph. Every
+                      LINE must be a non-empty "Key: value". Omitted entirely, a
+                      "Co-Authored-By:" trailer is derived from the environment contract.
   --allow-empty       Permit a commit with no FILE operands / no staged change.
   --exact             Refuse staged paths outside FILE operands and mismatched
                       committed file counts (the default scope).
-  --include-staged    Include existing staged paths, preserving legacy behavior.
-                      Existing staged paths still require an explicit operand or
-                      --allow-outside PATH.
+  --include-staged    Include existing staged paths (legacy); they still need an
+                      explicit operand or --allow-outside PATH.
   --allow-outside PATH
-                      Explicitly authorize this tracked staged path outside the
-                      issue FILE operands. Repeat for multiple paths.
+                      Authorize this tracked staged path outside the issue FILE
+                      operands. Repeatable.
   --allow-base-inherited BASE
                       Name the exact merge base whose protected paths may be
                       carried into this commit after byte-identity checks.
   --yolo              In unattended mode, authorize --allow-base-inherited BASE
-                      when the named commit is the active merge head. Attended
+                      when the named commit is the active merge head; attended
                       runs park inherited paths and preserve them in the index.
   --ledger FILE --run-id ID --ledger-scope SCOPE
-                      Given together (all three, or none): when every merge-
-                      inherited protected path staged is a CI-workflow file
-                      (.github/workflows/, .gitlab-ci.yml, .circleci/,
-                      azure-pipelines.yml, Jenkinsfile), ask session-ledger.sh
-                      whether RUN ID's ledger at FILE records a covering
-                      'authorize:workflow-mutations' grant for SCOPE. A
-                      covering grant commits with an Authorized-By-Ledger
-                      trailer instead of parking. Harness/hook configuration
-                      (.githooks/, .git/hooks/, .git/config,
-                      .pre-commit-config.yaml, .codex/config.toml,
-                      .claude/settings*.json) is never ledger-authorizable and
-                      still parks the whole staged set; no covering record
-                      also leaves the park behaviour unchanged.
+                      All three or none: when every merge-inherited protected path
+                      is a CI-workflow file (.github/workflows/, .gitlab-ci.yml,
+                      .circleci/, azure-pipelines.yml, Jenkinsfile) and RUN ID's
+                      ledger at FILE records a covering 'authorize:workflow-mutations'
+                      grant for SCOPE (session-ledger.sh), commit with an
+                      Authorized-By-Ledger trailer instead of parking. Harness/hook
+                      configuration (.githooks/, .git/hooks/, .git/config,
+                      .pre-commit-config.yaml, .codex/config.toml, .claude/settings*.json)
+                      is never ledger-authorizable and still parks the staged set.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
-
-Behaviour:
-  * Probes 'git rev-parse --git-dir' and '--git-common-dir' for writability
-    BEFORE staging anything; exits 2 naming the unwritable path if either fails.
-  * Refuses to commit while HEAD is on main, master or trunk.
-  * Runs 'git diff --cached --check' after staging and aborts on its findings.
-  * Exact mode refuses staged paths outside the FILE operands before staging.
-  * Include-staged mode includes anything already staged in the index.
-  * Every trailer -- supplied or derived -- is validated before staging and
-    verified against the commit's own parsed trailers after committing.
+Exit status: 0 committed; 1 usage error, not a repository, trunk branch, or any git
+  failure; 2 a git metadata directory is not writable (needs elevation, then retry);
+  3 an active merge carries protected paths that attended work must park.
 
 Output (stdout, on success -- one line):
   committed 0123456789abcdef0123456789abcdef01234567 feat(example): add widget (3 files)
-
-Examples:
-  $PROGNAME --message 'feat(example): add widget' src/example.ts docs/example.md
-  $PROGNAME --message 'fix(example): guard empty input' \\
-            --body 'Rejects an empty payload at the boundary.' \\
-            --trailer 'Co-Authored-By: Agent <noreply@example.com>' \\
-            -- src/example.ts
 EOF
 }
 
@@ -431,10 +384,6 @@ scope_paths_for() {
     done
 }
 
-scope_paths() {
-    scope_paths_for "${FILES[@]}"
-}
-
 authorized_scope_paths() {
     scope_paths_for "${FILES[@]}" "${ALLOW_OUTSIDE[@]}"
 }
@@ -674,14 +623,10 @@ refuse_trunk() {
     branch="$(git symbolic-ref --quiet --short HEAD || true)"
     [[ -n "$branch" ]] || return 0
 
-    # main|master|trunk is a DEFAULT, not the answer. The repository states its
-    # own trunk in AGENT_BASE_BRANCH, and a repository whose trunk is `develop`
-    # was protected by neither list -- so the one branch that most needed this
-    # guard was the one branch it ignored.
-    #
-    # `q` after the first match rather than `| head -1`: closing a pipe early
-    # makes sed exit on SIGPIPE, and under `set -o pipefail` that becomes this
-    # script's exit status.
+    # main|master|trunk is a DEFAULT: the repository states its own trunk in
+    # AGENT_BASE_BRANCH (a develop trunk was protected by neither list). q after
+    # the first match, not | head -1: an early-closed pipe makes sed exit on
+    # SIGPIPE, which pipefail turns into this script's status.
     root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
     declared="$(shared_declared_trunk_branch "$root" 2>/dev/null || true)"
     if [[ -n "$declared" && "$branch" == "$declared" ]]; then

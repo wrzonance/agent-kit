@@ -212,17 +212,10 @@ Inspect the current `collaboration.spawn_agent` capability before dispatch:
 - Required role: **`agent_type: "worker"`**.
 - Never omit `model` or `reasoning_effort`; omission can silently inherit an expensive parent.
 
-- Select the resolved preferred model when advertised; otherwise select the resolved fallback
-  automatically. This fallback needs no user authorization when both resolved values pass the
-  supported-model gate. If neither model is advertised, **STOP before creating worktrees,
-  moving Project items, or editing code** and report the capability block.
-- Record the selected model and effort beside every dispatched unit of work. The spawn request
-  itself is the model-and-effort evidence — the completion table must carry the actual
-  `worker model` and `worker effort` (or `worker=self (spawn unavailable)`) so a tier or effort
-  claim is never inferred from prompt text alone. When `selected_worker_pivot_note` is non-empty,
-  the completion table appends it beside that same model and effort — this is what carries a
-  fallback's own pivot into the record when the fallback, not the preferred model, was the one
-  actually selected.
+- If neither resolved model is advertised, **STOP before creating worktrees, moving Project items, or
+  editing code** and report the capability block. The spawn request is the model-and-effort evidence:
+  the completion table carries the actual `worker model` and `worker effort` (or `worker=self (spawn unavailable)`)
+  plus `selected_worker_pivot_note` when non-empty, so a tier claim is never inferred from prompt text.
 - This gate applies only when `collaboration.spawn_agent` exists. If the runtime advertises
   **no** spawn capability (`multi_agent = false`), there is no worker to configure and no
   model to select — take the degraded path below instead of blocking the run.
@@ -307,33 +300,15 @@ unavailable. The inline/dispatch decision is never silent.
 
 ## Tier mapping
 
-Root = trust/judgment and every privileged or forge-facing action. Luna = mechanical
-execution, the default worker tier; Terra `high` is its automatic fallback (see Model/effort
-selection above) — a Luna-unavailable worker is still a dispatched worker, not a blind
-fallback. Terra `xhigh` is reserved for the context-free blind same-harness adversarial-review
-fallback only. A single clean unit of work may be handled by the root without a dispatched
-**lead** — that is, without an intermediate orchestration tier. It is not permission to skip the
-**implementation worker**: any code change still goes through one dispatched worker as its sole
-writer, except for the two allowed implementation exceptions: a genuinely spawn unavailable path
-(each consuming skill's degraded path must be labelled `worker=self` with the reason) or a
-qualifying bounded inline correction. Root omitting a lead is an
-org-chart shortcut; root writing the code itself bypasses the isolated model, the six-step gate,
-and the audited handback.
+Root = trust/judgment and every privileged or forge-facing action. Luna = mechanical execution, the
+default worker tier; Terra `high` is its automatic fallback — a Luna-unavailable worker is still a dispatched
+worker. Terra `xhigh` is reserved for the blind same-harness adversarial-review fallback. A single clean unit
+of work may skip the dispatched **lead** (the orchestration tier), never the **implementation worker**: any
+code change goes through one dispatched sole writer, except the two allowed implementation exceptions: a genuinely spawn unavailable path
+(labelled `worker=self` with the reason) or a qualifying bounded inline correction.
 
-Luna/Terra are Codex's own tier names. On Claude the same Root/Worker split maps to
-`claude-opus-5` (root judgment, the same reviewer used for cross-harness adversarial review) and
-`claude-sonnet-5` (the dispatched worker) — see "Harness-aware pivot" above for how a repository's
-declaration resolves to the concrete model on whichever harness is actually running. On OpenCode
-there is no fixed root/worker pair of its own to name here — the worker tier is the
-repository-declared `provider/model-id` above, and OpenCode has no local reviewer tier at all: its
-adversarial review always runs cross-harness, against whichever peer CLI `peer-cli=` names (see
-below).
-
-**Peer-cli mapping.** Claude and Codex each have a fixed 1:1 peer (Claude → Codex, Codex → Claude),
-so `harness-id.sh` names exactly one candidate for `agent-preflight.sh`'s `probe_peer_cli` to check.
-OpenCode has no such fixed pairing — a self-hosted OpenCode session may have either or both peer
-CLIs installed — so `harness-id.sh` hands `probe_peer_cli` an ordered, comma-separated candidate
-list (`codex,claude`: Codex checked first, Claude as fallback) instead of a single name.
-`probe_peer_cli` still emits exactly one winning `peer-cli= <name> present|absent` line, so every
-existing consumer of that contract line keeps its single-name parse; only the *search* is
-multi-candidate, never the emitted fact.
+On Claude the same split maps to `claude-opus-5` (root judgment and the cross-harness reviewer) and
+`claude-sonnet-5` (the dispatched worker) — see "Harness-aware pivot" for how a declaration resolves on
+the running harness. OpenCode has no fixed pair: the worker tier is the repository-declared
+`provider/model-id`, and its adversarial review always runs cross-harness against the peer CLI
+`peer-cli=` names (`harness-id.sh` probes `codex,claude` in order and emits one `peer-cli= <name> present|absent` line).

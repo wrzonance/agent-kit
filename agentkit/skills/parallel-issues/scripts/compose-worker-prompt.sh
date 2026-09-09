@@ -839,26 +839,15 @@ extract_spec_steps() {
 }
 
 # Prints the in-scope declared command NAME that satisfies STEP, or returns 1
-# when none corresponds. Only the scoped list is searched: a command this
-# dispatch was told not to run must not come back as a correspondence.
-#
-# Two passes, both requiring the step to be at least as specific as the
-# declaration -- same tool basename, and every literal token the declaration
-# carries also named by the step. That is what keeps a declared lint command
-# from answering for a declared test command that shares its tool, and one
-# declared service from answering for a different service of the same runner.
-# Pass 1 additionally requires the step to name the command's declared rundir,
-# so in a monorepo the component the step is about wins over one that merely
-# shares a tool with it.
-#
-# The remaining error is deliberately one-sided: an unmatched step is reported
-# as uncovered, which costs a note the root can dismiss, while a wrong match
-# would hide a real gap and point the worker at the wrong command.
-# repo-config.sh is a subprocess per command, and a matcher that read argv
-# inside its own loops would pay it once per (step x command x pass) -- 120
-# subprocesses for a twelve-step spec in a five-command repository, on the
-# root's dispatch path that issue #336 deliberately shrank. Resolve each
-# in-scope command's comparable tokens once, before any step is matched.
+# (only the scoped list is searched). Two passes, both requiring the step to be
+# at least as specific as the declaration (same tool basename, every literal
+# declaration token named); pass 1 additionally requires the step to name the
+# command's rundir, so in a monorepo the right component wins. The error is
+# deliberately one-sided: an unmatched step costs a dismissible note, a wrong
+# match would hide a gap. Each in-scope command's comparable tokens are resolved
+# ONCE up front -- repo-config.sh is a subprocess per command, and per (step x
+# command x pass) it was 120 subprocesses on the dispatch path issue #336
+# shrank.
 declare -A scoped_command_tokens=()
 cache_scoped_command_tokens() {
     local index key

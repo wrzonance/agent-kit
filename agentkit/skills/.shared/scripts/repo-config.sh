@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Resolve repository-declared agent facts from <git-toplevel>/.agent/config.env.
-#
-# This is the ONLY reader of that file. It is parsed line-wise against a key
-# whitelist and is NEVER sourced: a committed file in a shared repository is
-# reachable by anyone who can open a pull request, so treating it as shell would
-# make it an injection vector into every agent's environment.
-#
-# Anything missing, malformed, or unrecognized is dropped with a warning and the
-# caller falls through to live discovery. This script never blocks a run.
+# Resolve repository-declared agent facts from <git-toplevel>/.agent/config.env --
+# the ONLY reader of that file: parsed line-wise against a key whitelist, NEVER
+# sourced (a committed file is reachable by anyone who can open a PR). Anything
+# malformed is dropped with a warning; this script never blocks a run.
 #
 # Usage:
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
@@ -15,14 +10,10 @@
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
 #   repo-config.sh --list            # K=V lines for accepted keys actually declared
 #   repo-config.sh --list-keys       # the accepted key set itself, one per line
-#   repo-config.sh --canonical-keys K1,K2
-#                                    # strict, sorted canonical K=V lines
+#   repo-config.sh --canonical-keys K1,K2   # strict, sorted canonical K=V lines
 #   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
-# Options:
-#   --repo-root DIR                  # skip git-toplevel detection
-#   --base-ref REF                   # override the origin base ref for --get
-#   --diagnose                       # report path roots/candidates without rejecting declarations
-#
+# Options: --repo-root DIR (skip git-toplevel detection), --base-ref REF (origin base
+#   ref for --get), --diagnose (report path roots/candidates without rejecting).
 # Exit: 0 success (including no config found), 2 bad usage.
 set -euo pipefail
 

@@ -285,4 +285,8 @@ assert_contains "$recreate_out" "worktree=$pruned_worktree branch=feat/issue-49"
 assert_eq 'yes' "$([[ -d $pruned_worktree ]] && printf yes || printf no)" \
     '--resume recreates the worktree directory on disk'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh") -le 332 ]] && printf yes || printf no)" \
+    'create-issue-worktree.sh stays at or under 332 lines'
+
 finish

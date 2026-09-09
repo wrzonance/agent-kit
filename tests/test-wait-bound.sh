@@ -64,4 +64,7 @@ assert_contains "$skill_text" '**900 s** minimum, draft-loop/review/CI waits **6
 assert_contains "$skill_text" 'Dispatch already printed this worker'\''s own bound as a `wait-bound=`' \
     'polling discipline points at the printed dispatch-time value instead of only the recalled rule'
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/wait-discipline.md") -le 8700 ]] && printf yes || printf no)" \
+    'wait-discipline policy stays at or under 8700 bytes'
+
 finish

@@ -1,35 +1,13 @@
 #!/usr/bin/env bash
 #
-# agent-preflight.sh -- declare the agent's sandbox environment ONCE, before the first command.
-#
-# WHY THIS EXISTS
-#   Agents routinely burn a failed command, a retry, and a paragraph of narration
-#   rediscovering facts that were knowable before any work started: the uv/npm/pip cache
-#   under $HOME is read-only; a package script was invoked from a directory with no package.json;
-#   an import failed because the python source root was not on PYTHONPATH; `git add` died
-#   on "<git-dir>/index.lock: Read-only file system"; a reviewer CLI probe failed because
-#   the peer review CLI is not installed here. This probes all of it once and prints a declarative
-#   block that becomes the agent's working memory. The verbosity is deliberate: one
-#   upfront declaration replaces N rediscoveries-by-failure.
-#
-# BEHAVIOUR
-#   Reports, never blocks -- missing facts are printed as missing and the exit status is
-#   still 0, so no caller can be wedged by its own preflight. Only account-scoped forge
-#   state is probed (never repository-scoped), the repository slug is parsed locally from
-#   the origin URL, and the only writes are under <worktree>/.agent/.
-#
-# OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
+# agent-preflight.sh -- declare the agent's sandbox environment ONCE, before the
+# first command: caches, CA bundles, PYTHONPATH, git-dir writability, peer CLI --
+# the facts agents otherwise rediscover by failure. Reports, never blocks (exit 0
+# with missing facts named; 2 only for bad usage); only account-scoped forge state
+# is probed; writes only under <worktree>/.agent/. Output: one key per line, the
+# first `skills= path=/abs` (literal "skills=" then "path="; consumers parse that
+# exact prefix), then `skills-content= sha256=` (#453) -- see --help.
 #   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
-#   The first record is `skills= path=/abs/skills-tree` -- the literal "skills=" key
-#   followed by a separate "path=" field; consumers parse the exact "skills= path="
-#   prefix, so the run-together form "skills=/abs/path" is incompatible.
-#   The next record, `skills-content= sha256=<hex>`, is a content stamp over the
-#   shipped skill/script tree (issue #453): a hash of what is actually on disk,
-#   independent of the `skills=` record above and never appended to it, so no
-#   consumer that greedily captures the rest of the "skills= path=" line is
-#   affected by this record's addition.
-#   The same block is written to <worktree>/.agent/env-contract.txt unless suppressed.
-#
 set -euo pipefail
 
 if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
@@ -73,48 +51,30 @@ SYSTEM_BUNDLES=(
 SYSTEM_CERT_DIRS=(/etc/ssl/certs /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem)
 CA_ENV_VARS=(SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS)
 
-# Shared with worktree-commit.sh's commit-time guard: sourcing SHARED_PROTECTED_DEFAULTS
-# from here rather than re-listing it means the two can never drift apart. Guarded, never
-# fatal: this script reports missing facts rather than blocking (see BEHAVIOUR above), so
-# a caller that copies agent-preflight.sh without its lib/ sibling still runs --
-# probe_protected() reports the gap instead of crashing the whole probe.
-PROTECTED_PATHS_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/protected-paths.sh"
-if [[ -r "$PROTECTED_PATHS_LIB" ]]; then
-    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
-    source "$PROTECTED_PATHS_LIB"
-fi
+# Canonical directory this script actually lives in, resolved ONCE through any
+# symlink entry point (this skill is invoked via a PATH symlink -- see
+# tests/test-agent-preflight.sh's symlink-bin case): BASH_SOURCE[0] names the
+# symlink, not this file, so a fresh, unresolved `dirname -- "${BASH_SOURCE[0]}"`
+# at any other call site would look for siblings beside the symlink, where
+# only the symlink itself lives. Every sibling-helper reference in this file
+# (the lib/ sources below, repo-config.sh, contract-read.sh, harness-id.sh,
+# gh-auth-state.sh, and skills_tree_root's walk-up) must resolve against this
+# variable, never recompute its own dirname.
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)"
+readonly SCRIPT_DIR
 
-# sandbox_field_rank/sandbox_widened (issue #332 F3): the single definition
-# shared with compose-worker-prompt.sh, not a copy. Guarded the same way as
-# PROTECTED_PATHS_LIB above (this script reports missing facts rather than
-# blocking; a caller that copies agent-preflight.sh without its lib/ sibling
-# still runs) -- apply_never_widen() below discloses when the comparator is
-# unavailable instead of crashing the whole probe.
-SANDBOX_COMPARATOR_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/sandbox-comparator.sh"
-if [[ -r "$SANDBOX_COMPARATOR_LIB" ]]; then
-    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
-    source "$SANDBOX_COMPARATOR_LIB"
-fi
-
-# skills_content_hash (issue #453): the content stamp for probe_skills_content
-# below. Guarded like the two libraries above -- reports 'unavailable' rather
-# than crashing the whole probe when a caller's copy is missing this sibling.
-SKILLS_CONTENT_HASH_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/skills-content-hash.sh"
-if [[ -r "$SKILLS_CONTENT_HASH_LIB" ]]; then
-    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
-    source "$SKILLS_CONTENT_HASH_LIB"
-fi
-
-# secure_mkdir_p (issue #474): every .agent directory this script creates
-# must satisfy the kit's own private-directory validators regardless of the
-# ambient umask. Guarded like the libraries above -- this script reports
-# rather than blocks (see BEHAVIOUR), so a missing sibling falls back to a
-# plain mkdir -p at the call site instead of crashing the whole probe.
-SECURE_MKDIR_LIB="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)/lib/secure-mkdir.sh"
-if [[ -r "$SECURE_MKDIR_LIB" ]]; then
-    # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
-    source "$SECURE_MKDIR_LIB"
-fi
+# Sibling libraries, each guarded: this script reports missing facts rather than
+# blocking (see BEHAVIOUR), so a copy without its lib/ sibling still runs and the
+# consumer (probe_protected, apply_never_widen, probe_skills_content, the .agent
+# mkdir sites) discloses the gap via `declare -F`. Issues #332 F3, #453, #474.
+for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir; do
+    preflight_lib_path="$SCRIPT_DIR/lib/$preflight_lib.sh"
+    if [[ -r $preflight_lib_path ]]; then
+        # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
+        source "$preflight_lib_path"
+    fi
+done
+unset preflight_lib preflight_lib_path
 
 usage() {
     cat <<'EOF'
@@ -170,9 +130,7 @@ emit() { OUT_LINES+=("$1"); }
 # grandparent directory IS the running skills tree, whether that is the
 # repository's own agentkit/skills checkout or an installed plugin copy.
 skills_tree_root() {
-    local self_dir
-    self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-    (cd -- "$self_dir/../.." && pwd -P)
+    (cd -- "$SCRIPT_DIR/../.." && pwd -P)
 }
 
 # Emits the record `skills= path=/abs/skills-tree`: "skills=" and "path=" are two
@@ -400,20 +358,11 @@ probe_identity() {
     else
         slug='none origin=absent'
     fi
-    # A repository with no commits yet (an unborn checkout) makes
-    # `rev-parse --abbrev-ref HEAD` FAIL (exit 128) while still echoing the
-    # literal "HEAD" to stdout as part of its diagnostic -- distinct from a
-    # genuinely detached HEAD, which prints the same "HEAD" but SUCCEEDS
-    # (exit 0). The old `2>/dev/null || printf 'unknown'` one-liner ran both
-    # halves of the `||` inside the same command substitution on failure, so
-    # git's stray "HEAD" stdout and the fallback's "unknown" were BOTH
-    # captured, corrupting the one-line-per-key contract with an embedded
-    # newline ("HEAD\nunknown" -> two physical output lines instead of one).
-    # Capturing rc separately keeps the three cases apart: success (real
-    # branch, or detached normalized below), failure-with-stdout (unborn --
-    # reported as literal "HEAD", session-start.sh's freshness check keys off
-    # this to distinguish it from a stale cached branch name), and
-    # failure-with-no-stdout (truly unknown).
+    # A repository with no commits yet makes rev-parse --abbrev-ref HEAD FAIL
+    # (128) while still echoing "HEAD", unlike a detached HEAD (same word, exit
+    # 0); capturing rc separately keeps success / failure-with-stdout (unborn,
+    # reported as HEAD -- session-start.sh keys off it) / failure-with-nothing
+    # (unknown) apart and the one-line-per-key contract intact.
     local git_branch_out git_rc=0
     git_branch_out="$(git -C "$WORKTREE" rev-parse --abbrev-ref HEAD 2>/dev/null)" || git_rc=$?
     if (( git_rc == 0 )); then
@@ -434,9 +383,8 @@ probe_identity() {
 # came from a committed file rather than from probing -- and, when a config exists but
 # supplies nothing, that its keys were rejected rather than absent.
 probe_config() {
-    local self_dir resolver listing count keys shown extra
-    self_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
-    resolver="$self_dir/repo-config.sh"
+    local resolver listing count keys shown extra
+    resolver="$SCRIPT_DIR/repo-config.sh"
     listing=""
 
     if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
@@ -468,9 +416,8 @@ probe_protected() {
         emit 'protected= patterns=unavailable repo-declared=unknown note="lib/protected-paths.sh missing alongside this script"'
         return 0
     fi
-    local self_dir resolver declared="" repo_declared="none"
-    self_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
-    resolver="$self_dir/repo-config.sh"
+    local resolver declared="" repo_declared="none"
+    resolver="$SCRIPT_DIR/repo-config.sh"
     if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
         declared="$("$resolver" --repo-root "$WORKTREE" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)"
     fi
@@ -568,15 +515,11 @@ probe_instructions() {
         done < <(router_references "$WORKTREE/$f")
     done
 
-    # Per-directory instruction files: regular, non-symlink AGENTS.md/CLAUDE.md,
-    # skipping vendored trees -- the same node_modules/.git/dotdir bound
-    # node_roots/py_roots already use. Root files surface here too (a root
-    # AGENTS.md is depth 0 below itself), but that is harmless: the contains()
-    # dedup above already added them to files=, so a repeat is simply skipped.
-    # (Deliberately no -mindepth alongside -prune: GNU find applies -mindepth
-    # as a global option that suppresses -prune below that depth too, so
-    # combining them here would walk straight into node_modules/vendor rather
-    # than pruning them -- filtering root duplicates via dedup avoids that trap.)
+    # Per-directory instruction files (regular, non-symlink
+    # AGENTS.md/CLAUDE.md), skipping vendored trees with the bound
+    # node_roots/py_roots use. No -mindepth beside -prune (GNU find applies
+    # -mindepth globally and would walk into node_modules); root duplicates are
+    # dropped by the contains() dedup above.
     while IFS= read -r f; do
         resolved="$(relative_to_top "$f")"
         contains "$resolved" "${files[@]+"${files[@]}"}" || subdir_files+=("$resolved")
@@ -682,17 +625,10 @@ probe_gh() {
     fi
     account="${account%%$'\n'*}" # one key per line is the block's invariant
 
-    # When gh says no, say WHY. "gh is not authenticated" on a machine where the
-    # user just ran `gh auth status` successfully reads as the tooling being
-    # broken, and the next move is a guess. The distinction that matters is
-    # whether a token exists at all or whether THIS process cannot use the one
-    # that does -- a token in the system keyring is reachable from a login shell
-    # and may not be from wherever an agent's commands actually run.
-    # Where the token lives is reported whether or not auth WORKED. It predicts
-    # whether some OTHER process -- a worker, a differently-sandboxed command --
-    # will be able to use it, and a keyring token that this shell can read is
-    # exactly the case that failed elsewhere. Asked where the token lived, an
-    # agent could only say the contract did not carry it.
+    # When gh says no, say WHY: a token may exist and be unreachable from THIS
+    # process (keyring vs login shell). Where the token lives is reported
+    # whether or not auth worked, since it predicts whether a
+    # differently-sandboxed worker can use it.
     local src="none" envtok="no"
     [[ -z ${GH_TOKEN:-}${GITHUB_TOKEN:-} ]] || envtok="yes"
     if [[ $envtok == yes ]]; then
@@ -712,7 +648,7 @@ probe_gh() {
         why+=" detail=\"$(printf '%s' "$status_out" | tr '\n' ';' | tr -d '"' | cut -c1-160)\""
         # The named cause and its fix, on their own line, so neither the agent
         # nor the operator has to infer which failure this is.
-        GH_AUTH_STATE=$("$(dirname -- "${BASH_SOURCE[0]}")/gh-auth-state.sh" 2>/dev/null || true)
+        GH_AUTH_STATE=$("$SCRIPT_DIR/gh-auth-state.sh" 2>/dev/null || true)
     fi
 
     emit "gh= authed=$authed scopes=$scopes api=$api${account:+ account=$account} project-scope=$project$why"
@@ -744,17 +680,11 @@ probe_sandbox() {
         [[ $sandboxed == yes ]] || sandboxed=unknown
         note=' note="probed outside your sandbox; treat this as the floor, not the ceiling, and believe a denial over this line"'
     elif [[ $ARG_MEASURED_FROM == escalated ]]; then
-        # There is no verified signal in this repository for "this shell is
-        # running with escalated/approval-granted privileges" (issue #332's
-        # disclosure): CODEX_SANDBOX_NETWORK_DISABLED and
-        # CODEX_PERMISSION_PROFILE describe a SANDBOXED shell, not an escalated
-        # one, and nothing else here can tell the two non-hook classes apart.
-        # This branch only ever runs when the caller passed --measured-from
-        # escalated explicitly -- it is not detected, only labelled. Appended
-        # to (never replacing) any sandboxed-workspace note already set above
-        # (issue #332 F1): an escalated run inside a sandbox still needs the
-        # actionable "escalate git writes and forge calls" guidance, not just
-        # the disclosure that escalation was asserted rather than detected.
+        # No verified signal exists for an escalated shell (issue #332): the
+        # CODEX_* variables describe a SANDBOXED shell. This branch runs only
+        # for an explicit --measured-from escalated -- labelled, never detected
+        # -- and appends to (never replaces) the sandboxed-workspace note (#332
+        # F1).
         local escalated_note='explicitly asserted by the caller as an escalated/approval-granted execution; this probe does not detect that state itself'
         if [[ -n $note ]]; then
             note=${note%\"}
@@ -786,28 +716,15 @@ probe_sandbox() {
 # scores in between rather than being judged for restrictiveness.
 caches_restriction_score() {
     local line="$1" reason
-    # Anchored at the START of the record, not on a trailing-context marker
-    # (issue #332 F2 round 2): requiring " home-cache=" to follow reason=
-    # only blocks an injected "reason=" that ISN'T itself followed by a
-    # "home-cache=" token -- an attacker-controlled value can simply include
-    # one too (root=/x reason=fake home-cache=/y reason=REAL home-cache=/z
-    # still matches "fake" under that rule, since "fake" is ALSO followed by
-    # a home-cache= token). root= is always the very first token after
-    # "caches= " and probe_caches() now refuses to emit a root value
-    # containing whitespace (the only way root= could otherwise swallow a
-    # space-delimited " reason=" of its own), so anchoring past exactly one
-    # whitespace-free root token is sound: nothing attacker-controlled can
-    # precede the genuine reason= at that fixed position.
+    # Anchored at the START of the record (issue #332 F2 round 2): root= is
+    # always the first token after "caches= " and probe_caches refuses a root
+    # containing whitespace, so nothing attacker-controlled can precede the
+    # genuine reason=.
     reason=$(sed -n 's/^caches= root=[^[:space:]]* reason=\([A-Za-z-]*\).*/\1/p' <<< "$line")
-    # An unparseable or unrecognised reason= (empty match, or a token this
-    # case statement doesn't know) ranks in the MIDDLE, never as the known
-    # least-restrictive value (issue #332 F2 round 3) -- mirroring
-    # sandbox_field_rank's own rule that uncertainty must never read as
-    # freedom. Collapsing "unknown" into "known least-restrictive" (0) was
-    # the bug: a record that fails to parse for ANY reason (a malformed
-    # line, a future reason= token this script doesn't know about yet) would
-    # then compare equal to a genuinely widened "writable" record and the
-    # never-widen guard would miss the widening entirely.
+    # An unparseable or unknown reason= ranks in the MIDDLE, never as the known
+    # least-restrictive value (#332 F2 round 3), mirroring sandbox_field_rank:
+    # uncertainty must never read as freedom, or the never-widen guard misses a
+    # widening.
     case "$reason" in
         home-cache-unwritable) printf '2' ;;
         AGENT_CACHE_ROOT-set) printf '1' ;;
@@ -878,54 +795,15 @@ apply_never_widen() {
     done
 }
 
-# --inherit-session is only safe when the file being inherited actually
-# describes THIS session (issue #332 F3): agreement between a root contract
-# and a worktree contract proves nothing if both are the same stale bytes
-# left over from an earlier, differently-privileged session on the same
-# checkout -- a root preflighted once while unsandboxed, never refreshed,
-# then copied verbatim into every worktree created afterward in a now-
-# restricted session.
-#
-# There is no cryptographic session identity available here, and this does
-# not invent one (the same reasoning that ruled out guessing an escalation
-# signal applies). What IS honestly verifiable, and already the established
-# heuristic this codebase uses for "is this recorded context still current"
-# (session-start.sh's own contract-reuse check): recency, bounded the same
-# way, and agreement on WHICH harness/CLI wrote it. Neither proves same-
-# session; both are cheap, real signals, and their absence is disclosed
-# rather than silently accepted.
-#
-# issue #372: age alone used to be a hard cutoff -- past the window, the
-# recorded source was discarded outright and every line was re-probed fresh,
-# harness match or not. That is exactly wrong for a long --auto-serialize
-# chain: each link's worktree is created minutes after the last, and by the
-# third-or-later link the root's own contract (written once, at session
-# start) is reliably past the window even though nothing about the session
-# actually changed. The worktree then measures sandbox= fresh in its own
-# process, which can legitimately disagree with the root's -- and
-# compose-worker-prompt.sh's separate worktree-vs-root check then refuses
-# with worktree-contract-less-restrictive-than-root, with no documented way
-# forward (see references/chains.md).
-#
-# Same-harness identity is still a hard requirement -- a different harness/
-# CLI wrote the source, so its fields are not even known to mean the same
-# thing here, and age cannot rescue that. But same-harness alone already
-# established the source is *structurally* trustworthy; staleness only casts
-# doubt on whether it is still the MOST restrictive truth available, not on
-# whether it is a legitimate reading at all. So past the window, a same-
-# harness source is no longer treated as all-or-nothing: sandbox=/caches=
-# are revalidated -- probed fresh and compared against the recorded line with
-# the same never-widen comparators apply_never_widen already uses (
-# sandbox_widened / caches_widened) -- and whichever reading is more
-# restrictive on every field wins (see inherit_or_probe()). That can never
-# produce a worktree contract less restrictive than the recorded root line:
-# either the fresh probe was already at least as restrictive (it wins, and
-# the copy gets refreshed), or it wasn't (the recorded line is kept, exactly
-# as stale-but-restrictive as before) -- which is the actual invariant this
-# guards, not "inherit only when provably fresh". tls= carries no
-# restrictiveness ordering (existing comment on apply_never_widen), so it
-# still falls back to a fresh probe on staleness; there is nothing to
-# revalidate it against.
+# --inherit-session (issue #332 F3, #372): a source is trusted outright only
+# when recent (INHERIT_SESSION_MAX_AGE_MINUTES) AND same-harness -- the
+# heuristic session-start.sh uses for a cached contract; no cryptographic
+# session identity exists and none is invented. Past the window a same-harness
+# source is revalidated, not discarded: sandbox=/caches= are probed fresh and
+# the more restrictive reading wins per field (inherit_or_probe, the never-widen
+# comparators), so a worktree contract can never be less restrictive than the
+# recorded root line; tls= has no restrictiveness order and falls back to a
+# fresh probe. A different harness's source is never inherited.
 readonly INHERIT_SESSION_MAX_AGE_MINUTES=30
 INHERIT_SESSION_STATE=-1 # memoised: -1 not yet computed, 0 unusable (missing/unreadable/
                           # harness-mismatch), 1 verified fresh and same-harness (inherit
@@ -945,7 +823,7 @@ compute_inherit_session_state() {
         stale=1
     fi
     local src_harness current_harness harness_id_script
-    harness_id_script="$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh"
+    harness_id_script="$SCRIPT_DIR/harness-id.sh"
     src_harness="$(sed -n 's/^harness=[[:space:]]*name=\([^ ]*\).*/\1/p;/^harness=/q' "$ARG_INHERIT_SESSION" 2>/dev/null)"
     if [[ -x "$harness_id_script" ]]; then
         current_harness="$("$harness_id_script" --name 2>/dev/null || true)"
@@ -962,23 +840,12 @@ compute_inherit_session_state() {
     fi
 }
 
-# The sandbox=, tls=, and caches= lines are properties of the SESSION -- which
-# process is running the commands and what it can reach -- not of any one
-# worktree inside that session. A per-worktree preflight that re-measures them
-# is exactly how issue #332's contradictory contracts happened: whichever
-# process ran that particular preflight call (agent shell vs. an
-# escalated/approval-granted one) produced a truthful-for-itself but
-# disagreeing answer. --inherit-session carries the already-authoritative
-# lines forward verbatim once compute_inherit_session_state has judged the
-# source recent and same-harness enough to trust outright (state 1).
-#
-# $comparator (issue #372) is one of sandbox_widened / caches_widened, or
-# omitted for tls= (which has neither -- see the comment above
-# INHERIT_SESSION_MAX_AGE_MINUTES). It is only consulted in state 2: the
-# source is same-harness but past the freshness window, so it is revalidated
-# rather than trusted or discarded -- probe fresh, and keep whichever of the
-# recorded/fresh readings the comparator says is more restrictive. This can
-# never yield a result less restrictive than the recorded line.
+# sandbox=, tls=, caches= are SESSION facts (which process runs the commands,
+# what it can reach), not per-worktree ones; re-measuring them per worktree is
+# how issue #332's contradictory contracts happened. --inherit-session carries
+# them forward verbatim in state 1; $comparator (sandbox_widened /
+# caches_widened; none for tls=) is consulted only in state 2 (same-harness but
+# stale) to keep the more restrictive of recorded/fresh.
 inherit_or_probe() {
     local prefix="$1" probe_fn="$2" comparator="${3:-}" line
     compute_inherit_session_state
@@ -996,17 +863,11 @@ inherit_or_probe() {
             idx=${#OUT_LINES[@]}
             "$probe_fn"
             fresh="${OUT_LINES[$idx]}"
-            # Fail CLOSED, not open (issue #372 review finding): a comparator
-            # that fails to run for any reason -- missing lib/sandbox-
-            # comparator.sh, a future comparator name typo'd at a call site --
-            # must never read as "not widened". Guarding with `declare -F`
-            # first (the same check apply_never_widen already uses to
-            # disclose a missing sandbox_widened) lets this branch tell
-            # "comparator unavailable" apart from "comparator ran and found
-            # no regression" before ever invoking it, so an unavailable
-            # comparator keeps the recorded line -- the safe, more-
-            # restrictive default -- instead of an unguarded command-not-
-            # found exit status silently taking the "fresh wins" branch.
+            # Fail CLOSED (issue #372 review): a comparator that cannot run
+            # (missing lib, typo'd name) must never read as "not widened";
+            # declare -F first tells "unavailable" from "ran and found no
+            # regression", and unavailable keeps the recorded, more-restrictive
+            # line.
             if ! declare -F "$comparator" >/dev/null; then
                 OUT_LINES[idx]="$line"
                 note "cannot verify the $prefix revalidation guard: $comparator is not defined -- keeping the recorded (older than ${INHERIT_SESSION_MAX_AGE_MINUTES}m) line rather than treat an unmeasurable comparison as not widened (recorded=[$line] fresh=[$fresh])"
@@ -1065,20 +926,11 @@ probe_tls() {
 probe_caches() {
     local home_cache root reason
     home_cache="${XDG_CACHE_HOME:-$HOME/.cache}"
-    # A whitespace byte in root= would let it masquerade as more than one
-    # caches= token -- e.g. embedding its own trailing "reason=...
-    # home-cache=..." sequence to spoof the field caches_restriction_score()
-    # reads (issue #332 F2). root= is always the first token after "caches= "
-    # and is never quoted, so the only sound fix is refusing to emit a root
-    # value that could split into extra tokens, not trying to out-pattern one
-    # that already has. EVERY source that can become root= needs this check,
-    # not only AGENT_CACHE_ROOT (round 2 fixed just that one): TMPDIR and the
-    # XDG_CACHE_HOME/$HOME-derived home_cache are environment-controlled too,
-    # and the TMPDIR-derived fallback below is exactly the branch that
-    # produces the RESTRICTIVE home-cache-unwritable record -- if THAT record
-    # were the one that failed to parse, it would score as unknown instead of
-    # restrictive, which is the bypass this guards against (issue #332 F2
-    # round 3).
+    # A whitespace byte in root= could spoof extra caches= tokens (issue #332
+    # F2), so EVERY source that can become root= (AGENT_CACHE_ROOT, TMPDIR, the
+    # XDG/$HOME-derived home_cache) is refused rather than out-patterned -- the
+    # TMPDIR fallback produces the RESTRICTIVE record, which must never fail to
+    # parse (round 3).
     if [[ -n "${AGENT_CACHE_ROOT:-}" ]]; then
         if [[ "${AGENT_CACHE_ROOT}" != *[[:space:]]* ]]; then
             root="$AGENT_CACHE_ROOT"
@@ -1170,18 +1022,11 @@ node_roots() {
         printf 'node-roots=none'
         return 0
     fi
-    # Which package manager this repo uses is discovered from its lockfile --
-    # checked beside EACH detected root (issue #338 observed real roots under
-    # bench/fixtures/* and opencode/* with no lockfile at the worktree root,
-    # which reported node-pm=none even though every one of them had its own
-    # lockfile). A single repo-wide field cannot honestly represent a
-    # monorepo whose roots resolve to DIFFERENT managers -- reporting the
-    # first root's manager for every root would hand a wrong bootstrap
-    # command to whichever component didn't happen to go first (caught in
-    # adversarial review of this same change). So: a root that resolves to
-    # nothing, OR roots that resolve to more than one distinct manager, both
-    # collapse to node-pm=unresolved -- never a value dispatch could act on
-    # for the wrong component.
+    # The package manager is discovered from the lockfile beside EACH detected
+    # root (issue #338: roots under bench/fixtures/* had their own lockfiles and
+    # reported node-pm=none). Roots that resolve to nothing, or to more than one
+    # manager, collapse to node-pm=unresolved -- never a value dispatch could
+    # act on for the wrong component.
     local root root_pm first=1
     for root in "${roots[@]}"; do
         if root_pm="$(resolve_node_pm_for_root "$root")"; then
@@ -1297,7 +1142,7 @@ probe_runtime_pin() {
 
 probe_harness() {
     local line
-    line=$("$(dirname -- "${BASH_SOURCE[0]}")/harness-id.sh" 2>/dev/null || true)
+    line=$("$SCRIPT_DIR/harness-id.sh" 2>/dev/null || true)
     [[ -n $line ]] || line='name=unknown trailer="Agent <noreply@example.invalid>" other=none'
     HARNESS_OTHER=${line##*other=}
     emit "harness= $line"
@@ -1399,7 +1244,7 @@ main() {
             die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
         fi
         resolve_worktree
-        contract_reader="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/contract-read.sh"
+        contract_reader="$SCRIPT_DIR/contract-read.sh"
         if [[ -x $contract_reader ]] &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
             # A provenance-trusted contract can still predate protected= (issue #296
@@ -1410,16 +1255,10 @@ main() {
             # rather than adding a second return path.
             if existing="$(cat -- "$WORKTREE/.agent/env-contract.txt")"; then
                 if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
-                    # Presence alone proves the KEYS exist, not that their VALUES
-                    # still describe the tree this script instance is actually
-                    # running from (issue #453 review follow-up): a contract
-                    # written by an earlier run of a DIFFERENT plugin build (or
-                    # one whose tree changed content underfoot since) would
-                    # otherwise be served forever with a stamp that no longer
-                    # matches reality -- defeating the stamp's entire purpose.
-                    # Recompute both live values -- the same cost a fresh
-                    # preflight already pays -- and only take the fast path when
-                    # BOTH match exactly.
+                    # Presence proves the KEYS exist, not that their VALUES
+                    # describe this tree (issue #453 review): recompute both
+                    # live values (the cost a fresh preflight already pays) and
+                    # take the fast path only when BOTH match.
                     recorded_skills_path=$(sed -n 's/^skills= path=//p' <<< "$existing" | sed -n '1p')
                     recorded_skills_content=$(sed -n 's/^skills-content= sha256=//p' <<< "$existing" | sed -n '1p')
                     live_skills_path="$(skills_tree_root)"
