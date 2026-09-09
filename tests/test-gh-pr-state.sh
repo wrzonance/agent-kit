@@ -1609,4 +1609,8 @@ assert_rc 1 '--digest-out= (empty) is rejected, not silently accepted' -- \
     env PATH="$tmp:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 14 --repo owner/repo --digest-out=
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh") -le 1255 ]] && printf yes || printf no)" \
+    'gh-pr-state.sh stays at or under 1255 lines'
+
 finish

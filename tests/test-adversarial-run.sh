@@ -1111,4 +1111,8 @@ assert_contains "$(cat -- "$tmp/roster-unknown.err")" 'some-other-provider-high'
 assert_eq no "$( [[ -e $tmp/roster-unknown-codex.called ]] && printf yes || printf no )" \
     'an unrecognized family never silently launches codex (or any CLI)'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 870 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 870 lines'
+
 finish

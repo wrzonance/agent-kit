@@ -720,4 +720,8 @@ out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_base_comments"
     --gh-comment-script "$fake_gh_dir/gh" 2>&1) || bad_reason_rc=$?
 assert_eq '2' "$bad_reason_rc" 'cover rejects a --reason outside fix:/merge-down:/retarget:'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh") -le 788 ]] && printf yes || printf no)" \
+    'review-ledger.sh stays at or under 788 lines'
+
 finish

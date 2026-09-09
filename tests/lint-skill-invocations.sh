@@ -23,8 +23,7 @@
 # "### The resolver (prepend to EVERY shell call)" / "#### The resolver
 # (prepend to EVERY shell call)". Every OTHER bash block that touches
 # `$agentkit` carries the two-line guard instead of a second copy:
-#   # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-#   [ -d "${agentkit:-}/.shared/scripts" ] || { printf ...; exit 1; }
+#   [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf ...prepend THE CACHE REHYDRATION block...; exit 1; }
 # onboard-repo keeps its own bootstrap resolver (with the `find` fallback)
 # as the sole contract-absent case and is not held to the single-definition
 # rule below -- it never had a second copy to begin with.

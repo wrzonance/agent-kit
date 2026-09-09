@@ -1,31 +1,9 @@
 #!/usr/bin/env bash
-# run-dir.sh — the durable PR/run -> RUN_DIR mapping.
-#
-# review-remote-pr's Step 0c used to mint a randomly named directory under
-# ${TMPDIR:-/tmp} every run. That path lived only in the current shell and the
-# harness scratchpad; a `/exit` (or any resumed session) lost the pointer even
-# though the directory itself was still on disk, orphaning digests, consent
-# records, and receipts (issue #405).
-#
-# This helper owns the mapping instead: the same PR always resolves to the
-# same private directory, so a resumed session finds its prior evidence
-# without re-deriving it. Primary location is the excluded, per-repo
-# `.agent/evidence/pr-<N>` (see .gitignore's `**/.agent/*`); ${TMPDIR:-/tmp}
-# is used only as a genuine fallback, on hosts where `.agent/` cannot be
-# written -- never as a silent default.
-#
-# A run that never produces a pull request (e.g. parallel-issues' bulk triage,
-# before any PR exists) has no PR number to address by, so it has no way to
-# reach this guarantee -- and previously improvised a repository-relative
-# path instead, which `git status` then showed as untracked additions mixed
-# into the operator's own working tree (issue #447). `--run-id ID` is the
-# second addressing mode this adds: ID is the invocation-level RUN_ID a skill
-# already establishes once per run (see .shared/scripts/session-ledger.sh),
-# reusing that existing stable identifier rather than inventing a second
-# scheme. It resolves to `.agent/evidence/run-<ID>`, sharing every mechanic
-# --pr uses (mode 0700, hostile-input refusal, the ${TMPDIR:-/tmp} fallback);
-# the `pr-`/`run-` prefixes keep the two namespaces disjoint even when the
-# literal PR number and run id happen to match.
+# run-dir.sh -- the durable PR/run -> RUN_DIR mapping: --pr N (or --run-id ID for a
+# PR-less run, issue #447) always resolves to the same private 0700 directory under
+# .agent/evidence/ (pr-N / run-ID), so a resumed session finds its prior evidence
+# instead of orphaning it (issue #405); ${TMPDIR:-/tmp} only as a genuine fallback,
+# never a silent default. See --help.
 set -euo pipefail
 umask 077
 
@@ -133,27 +111,15 @@ resolve_repo_root() {
         die 'could not resolve the repository root (pass --repo-root outside a Git worktree)'
 }
 
-# ensure_private_root DIR -- DIR must already be (or safely become) an owned,
-# non-symlink, mode-0700 directory. Unlike private_dir_ensure (private-dir.sh),
-# this never requires an ALREADY-private ancestor: it is the function that
-# establishes the very first private boundary under a shared, non-private
-# parent (.agent/ itself stays mode 0755; only .agent/evidence/ and below are
-# private). An existing DIR is validated and never widened or reused past a
-# mismatch; a missing DIR is created at exactly 0700 (mkdir -m bypasses
-# umask, so there is no window where it is briefly more permissive). Returns
-# 1 only for a plain creation failure (the fallback-eligible case); every
-# other problem is a hostile/corrupted pre-existing path and dies outright.
-#
-# The `-L` check runs UNCONDITIONALLY, before any `-e`-gated branch -- never
-# `if [[ -e $dir ]]; then ... -L check ...`. `-e` follows a symlink to its
-# target, so for a DANGLING symlink (target does not exist) `-e` is false and
-# an `-e`-gated `-L` check is skipped entirely; `mkdir` then fails with EEXIST
-# against the link itself, `return 1` reads as "not writable", and the run
-# silently falls back to /tmp instead of refusing -- the exact fail-open this
-# function exists to prevent (issue #405 review finding). `-L` alone is true
-# for a symlink whether or not its target exists, so checking it first and
-# unconditionally closes that gap; this mirrors private_dir_ensure's own
-# loop in private-dir.sh, which checks `-L` before ever branching on `-e`.
+# ensure_private_root DIR -- DIR must be (or safely become) an owned,
+# non-symlink, mode-0700 directory; unlike private_dir_ensure it establishes the
+# FIRST private boundary under a shared parent (.agent/ stays 0755). Missing
+# DIR: mkdir -m 0700 (no umask window); existing DIR is validated, never
+# widened. Returns 1 only for a plain creation failure (fallback-eligible); a
+# hostile pre-existing path dies. The -L check runs UNCONDITIONALLY before any
+# -e-gated branch: -e is false for a dangling symlink, and an -e-gated check let
+# mkdir's EEXIST read as "not writable" and fall back to /tmp (issue #405
+# review).
 ensure_private_root() {
     local dir=$1 mode
     [[ ! -L $dir ]] || die "must be an existing directory, not a symlink: $dir"

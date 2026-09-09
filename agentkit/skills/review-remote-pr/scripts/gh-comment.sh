@@ -1,22 +1,9 @@
 #!/usr/bin/env bash
 #
-# gh-comment.sh — post or update a GitHub pull-request comment whose body comes
-# from a FILE, then prove the stored body matches the intended body byte-for-byte.
-#
-# Why this exists: a body interpolated into a double-quoted shell string is
-# expanded by the shell before gh ever sees it. A backticked commit SHA inside
-# such a body is executed as a command and silently stripped from the posted
-# comment, leaving a comment that cites no commit at all. This script never puts
-# the body on a command line: it reads the body from a file, encodes it with
-# jq --rawfile, sends it with --input -, then re-fetches the stored comment and
-# byte-compares it. Nothing downstream (resolving a thread, dismissing a finding)
-# may proceed unless that comparison is exact.
-#
-# Exit status: 0 = posted/updated AND the stored body matches exactly.
-#              1 = usage error, API error, or body mismatch (nothing resolved).
-#
-# Requires: bash >= 4.2, gh (authenticated), jq >= 1.6, GNU coreutils/diffutils.
-#           git is required only for --anchor (to resolve commit_id).
+# gh-comment.sh -- post or update a GitHub PR comment whose body comes from a FILE,
+# then prove the stored body matches byte-for-byte (jq --rawfile + --input -, then
+# re-fetch and compare) -- a body interpolated into a shell string loses backticked
+# SHAs to command substitution. Requires gh, jq >= 1.6, diffutils; git for --anchor.
 
 set -euo pipefail
 

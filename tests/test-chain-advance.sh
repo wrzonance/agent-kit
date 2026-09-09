@@ -1357,7 +1357,14 @@ assert_contains "$gh_comments_call_block" '--slurp' \
 assert_contains "$gh_comments_call_block" "--jq 'add'" \
     "F4: the retarget lineage hook flattens the slurped pages with gh's own jq add"
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 18000 ]] && printf yes || printf no)" 'chains reference stays at or under 18000 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17000 ]] && printf yes || printf no)" 'chains reference stays at or under 17000 bytes'
+
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 2600 ]] && printf yes || printf no)" \
+    'trust-and-fencing reference stays at or under 2600 bytes'
+
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1065 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1065 lines'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1065 ]] && printf yes || printf no)" \

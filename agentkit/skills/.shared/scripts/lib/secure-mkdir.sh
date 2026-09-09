@@ -28,10 +28,12 @@ secure_mkdir_p() {
             # this component between the scan and this mkdir; a directory that
             # landed anyway is accepted ONLY if it is actually private (a racing
             # creator that skipped the 0700 path, or a hostile pre-seed, is
-            # not).
+            # not). Exactly 0700 -- not merely "no group/other WRITE bit" -- so
+            # a raced-in 0744/0755 (group/other read or execute) is refused
+            # too; the old `& 0022` mask let those through.
             [[ -d $component && ! -L $component ]] || return 1
             mode=$(stat -c %a -- "$component" 2>/dev/null) || return 1
-            (( (8#$mode & 0022) == 0 )) || return 1
+            (( (8#$mode & 07777) == 0700 )) || return 1
         fi
     done
     return 0
