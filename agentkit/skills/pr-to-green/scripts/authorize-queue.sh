@@ -54,11 +54,15 @@ reject_writable_by_others() {
 
 # issue #607: chain-advance.sh --retarget persists its proof line under the
 # repository's Git common dir; without an explicit --retarget-proof for this
-# PR, that file is the proof. Same ownership and mode checks as the explicit one.
+# PR, that file is the proof. Same ownership and mode checks as the explicit
+# one. The filename is repo-scoped (review finding): the Git common dir is
+# shared by every checkout on this machine regardless of remote, so a bare
+# pr/base filename would let a proof persisted for another repository's PR be
+# auto-discovered here. `$repo` is already validated OWNER/REPO by this point.
 default_retarget_proof() {
     local pr=$1 base=$2 common file
     common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-    file="$common/chain-advance-evidence/chain-advance-pr-$pr-base-${base//\//-}.proof"
+    file="$common/chain-advance-evidence/chain-advance-${repo//\//-}-pr-$pr-base-${base//\//-}.proof"
     [[ -f $file && ! -L $file && -O $file ]] || return 1
     reject_writable_by_others "$file" 'persisted retarget proof'
     printf '%s\n' "$file"
@@ -575,9 +579,15 @@ if ((full_match_ok == 0)); then
                 # therefore checked for a well-formed value, never required
                 # to be `current:post-retarget` -- ancestry, post-retarget
                 # CI, and closing linkage stay the mandatory mechanical proof.
+                # The `repo=` token (review finding) is required on the same
+                # line and must equal --repo: the filename alone is not
+                # trusted, since an explicit --retarget-proof file can be
+                # handed in from anywhere, and the auto-discovered file's name
+                # is merely a candidate path, not authenticated content.
                 proof_ok=0
                 while IFS= read -r proof_line; do
                     if [[ $proof_line == *" sha=$recon_live_sha "* &&
+                          $proof_line == *" repo=$repo "* &&
                           $proof_line == *'ancestry=verified'* &&
                           $proof_line == *'green:post-retarget'* &&
                           $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
@@ -587,7 +597,7 @@ if ((full_match_ok == 0)); then
                     fi
                 done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
                 ((proof_ok)) ||
-                    die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
+                    die "pr $recon_pr: the supplied retarget proof does not match the live base and head, or does not name repository $repo; redisplay and reconfirm before authorization"
                 ;;
             *)
                 mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)

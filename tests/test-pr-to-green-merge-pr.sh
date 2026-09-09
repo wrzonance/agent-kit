@@ -128,7 +128,7 @@ assert_eq '0' "$(grep -c 'git/refs/heads' "$tmp/merge.log" || true)" \
 out=$(DELETE_ON_MERGE=true REF_CHECK_MISSING=1 MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)
 assert_contains "$out" 'branch_delete=restored ref=feat/demo reason=repo-delete-branch-on-merge' \
     'a head the repository setting deleted is restored when the run chose keep-branch'
-assert_eq '1' "$(grep -c -- '-X POST repos/owner/repo/git/refs ' "$tmp/merge.log" || true)" \
+assert_eq '1' "$(grep -c -- "-X POST repos/owner/repo/git/refs .*sha=$HEAD_SHA" "$tmp/merge.log" || true)" \
     'the restore is one ref-create call carrying the merged head SHA'
 : >"$tmp/merge.log"
 out=$(DELETE_ON_MERGE=true MERGE_PR_RESTORE_POLL_SECONDS=0 run_merge)

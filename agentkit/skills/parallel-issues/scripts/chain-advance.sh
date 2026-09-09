@@ -274,11 +274,20 @@ persisted_boundary() {
 # it lives under the Git COMMON dir where every worktree of this repository
 # resolves it; the boundary JSON above is per-invocation retry state and stays
 # under the worktree's own git dir (--absolute-git-dir). Two paths on purpose.
+#
+# issue #607 review: the Git common dir is shared by every checkout on this
+# machine regardless of which remote it points at, so a bare pr/base filename
+# collides across repositories -- a proof persisted for OTHER/REPO's PR #15
+# would silently authorize THIS/REPO's PR #15 at the same base. The repo slug
+# is folded into the filename (never trusted alone; see the repo= token
+# below) so a cross-repo collision fails the filename match outright.
 proof_file() {
     local common
     common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
     [[ $common = /* && -d $common ]] && path_has_no_symlink "$common" || return 1
-    printf '%s/chain-advance-evidence/chain-advance-pr-%s-base-%s.proof\n' "$common" "$PR" "${BASE//\//-}"
+    [[ $REPO =~ $SLUG_RE ]] || return 1
+    printf '%s/chain-advance-evidence/chain-advance-%s-pr-%s-base-%s.proof\n' \
+        "$common" "${REPO//\//-}" "$PR" "${BASE//\//-}"
 }
 
 persist_proof_line() {
@@ -922,8 +931,8 @@ retarget() {
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    proof_line=$(printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget behind=%s generated-only=%s approval=%s ancestry=verified boundarySource=%s boundaryEvent=%s provider-check=%s closing-issues=%s' \
-        "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$ANCESTRY_BEHIND" "$ANCESTRY_GENERATED_ONLY" \
+    proof_line=$(printf 'retargeted pr #%s base=%s head=%s sha=%s repo=%s ci=%s/%s green:post-retarget behind=%s generated-only=%s approval=%s ancestry=verified boundarySource=%s boundaryEvent=%s provider-check=%s closing-issues=%s' \
+        "$PR" "$BASE" "$head_ref" "$head_sha" "$REPO" "$pass" "$total" "$ANCESTRY_BEHIND" "$ANCESTRY_GENERATED_ONLY" \
         "$approval_token" "$BOUNDARY_SOURCE" "$BOUNDARY_EVENT" "$PROVIDER_CHECK_RESIDUE" "$closing_count")
     printf '%s\n' "$proof_line"
     persist_proof_line "$proof_line" ||

@@ -821,10 +821,12 @@ set -e
 assert_eq '0' "$auto_event_rc" 'a timeline carrying only automatic_base_change_succeeded proves the retarget'
 assert_contains "$auto_event_out" 'boundarySource=timeline boundaryEvent=automatic_base_change_succeeded' \
     'the proof records which timeline event kind proved the boundary'
+assert_contains "$auto_event_out" ' repo=owner/repo ' \
+    'the proof line names the repository the retarget was proven against'
 assert_contains "$first_idempotent" 'boundaryEvent=base_ref_changed' \
     'a base_ref_changed proof records its event kind too'
 
-proof_persisted=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence/chain-advance-pr-7-base-main.proof
+proof_persisted=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence/chain-advance-owner-repo-pr-7-base-main.proof
 assert_eq yes "$([[ -f $proof_persisted && ! -L $proof_persisted ]] && printf yes || printf no)" \
     'retarget persists its proof line as a regular file under Git metadata'
 assert_eq "$(tail -n 1 "$proof_persisted")" "$(printf '%s\n' "$auto_event_out" | grep -F 'retargeted pr #7')" \
@@ -1408,7 +1410,10 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 # (measured; the plan estimated +20, the actual multi-line printf/persist
 # capture in retarget() cost 3 more than predicted). Ceiling moves down to
 # the measured count, never above it.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1058 ]] && printf yes || printf no)" \
-    'chain-advance.sh stays at or under 1058 lines'
+#
+# 2026-09-09 issue #607 fix round 1: +9 for repo-scoping the persisted proof
+# filename and adding the proof line's repo= token (measured).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1067 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1067 lines'
 
 finish

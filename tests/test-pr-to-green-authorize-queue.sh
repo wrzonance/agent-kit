@@ -517,7 +517,7 @@ assert_eq "$before_state_only" "$(sha256sum "$auth")" \
 # --- Stacked successor retarget: valid chain-advance.sh proof authorizes the new base/head ---
 
 retarget_proof_ok="$tmp/retarget-proof-ok.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_ok"
 write_confirmed
 retarget_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
@@ -535,14 +535,14 @@ assert_eq 'main:dddddddddddddddddddddddddddddddddddddddd' \
 git init -q "$repo_root"
 default_proof_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence
 mkdir -p "$default_proof_dir"
-cp -- "$retarget_proof_ok" "$default_proof_dir/chain-advance-pr-15-base-main.proof"
+cp -- "$retarget_proof_ok" "$default_proof_dir/chain-advance-owner-repo-pr-15-base-main.proof"
 write_confirmed
 default_proof_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
     QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
     --allow-mechanical-advance)
 assert_eq "authorization=$auth queue=2" "$default_proof_out" \
     'a persisted chain-advance proof authorizes a stacked retarget with no --retarget-proof argument'
-chmod 666 "$default_proof_dir/chain-advance-pr-15-base-main.proof"
+chmod 666 "$default_proof_dir/chain-advance-owner-repo-pr-15-base-main.proof"
 write_confirmed
 writable_proof_rc=0
 QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
@@ -551,7 +551,39 @@ QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_S
 assert_eq '1' "$writable_proof_rc" 'a group- or world-writable persisted proof is refused like an explicit one'
 assert_contains "$(cat "$tmp/writable-proof.err")" 'persisted retarget proof must not be group- or world-writable' \
     'the refusal names the persisted proof and its mode'
-rm -f -- "$default_proof_dir/chain-advance-pr-15-base-main.proof"
+rm -f -- "$default_proof_dir/chain-advance-owner-repo-pr-15-base-main.proof"
+
+# issue #607 review: a proof persisted for a DIFFERENT repository under the
+# same shared Git common dir must never be auto-discovered for this --repo.
+# The filename is repo-scoped, so a same-PR/same-base file for another repo
+# simply does not match the path this checkout looks up.
+cp -- "$retarget_proof_ok" "$default_proof_dir/chain-advance-other-owner-other-repo-pr-15-base-main.proof"
+write_confirmed
+other_repo_file_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/other-repo-file.out" 2>"$tmp/other-repo-file.err" || other_repo_file_rc=$?
+assert_eq '1' "$other_repo_file_rc" \
+    'a persisted proof filed under a different repository slug is not auto-discovered for this repo'
+assert_contains "$(cat "$tmp/other-repo-file.err")" 'no persisted chain-advance.sh proof under Git metadata' \
+    'the refusal reports no persisted proof was found, not a stale/mismatched one'
+rm -f -- "$default_proof_dir/chain-advance-other-owner-other-repo-pr-15-base-main.proof"
+
+# An explicit --retarget-proof file is not exempt: its content must still name
+# THIS --repo, even though its filename can be anything the caller chooses.
+retarget_proof_other_repo="$tmp/retarget-proof-other-repo.txt"
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=other-owner/other-repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+    >"$retarget_proof_other_repo"
+write_confirmed
+other_repo_token_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_other_repo" \
+    >"$tmp/other-repo-token.out" 2>"$tmp/other-repo-token.err" || other_repo_token_rc=$?
+assert_eq '1' "$other_repo_token_rc" \
+    'an explicit retarget-proof file whose repo= token names a different repository is refused'
+assert_contains "$(cat "$tmp/other-repo-token.err")" 'does not name repository owner/repo' \
+    'the refusal names the mismatched repository explicitly'
 
 # --- Stacked successor retarget: approval is provider policy, never a
 # mechanical gate (issue #455) -- a proof carrying any well-formed
@@ -559,13 +591,13 @@ rm -f -- "$default_proof_dir/chain-advance-pr-15-base-main.proof"
 # trigger, observe, disabled, and effective-none (--no-providers). ---
 
 retarget_proof_none="$tmp/retarget-proof-none.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=none ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=none ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_none"
 retarget_proof_residue="$tmp/retarget-proof-residue.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=residue:stale ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=residue:stale ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_residue"
 retarget_proof_unknown="$tmp/retarget-proof-unknown.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=unknown ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=unknown ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_unknown"
 
 write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:trigger:capability-default
@@ -605,7 +637,7 @@ assert_eq "authorization=$auth queue=2" "$none_retarget_out" \
 # it equal `current:post-retarget` is not the same as accepting anything. ---
 
 retarget_proof_garbled="$tmp/retarget-proof-garbled.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=yes ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=yes ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_garbled"
 write_confirmed
 garbled_rc=0
@@ -648,7 +680,7 @@ assert_contains "$(cat "$tmp/no-proof.err")" 'retarget' \
 # --- Stacked successor retarget: a proof for the wrong head is rejected ---
 
 retarget_proof_wrong="$tmp/retarget-proof-wrong.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=9999999999999999999999999999999999999999 ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=9999999999999999999999999999999999999999 repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_wrong"
 write_confirmed
 wrong_proof_rc=0
@@ -685,8 +717,8 @@ chmod 600 "$retarget_proof_writable"
 
 retarget_proof_split="$tmp/retarget-proof-split.txt"
 {
-    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget closing-issues=1\n'
-    printf 'retargeted pr #99 base=other head=feat/other sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee ci=1/1 ancestry=verified closing-issues=2\n'
+    printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget closing-issues=1\n'
+    printf 'retargeted pr #99 base=other head=feat/other sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee repo=owner/repo ci=1/1 ancestry=verified closing-issues=2\n'
 } >"$retarget_proof_split"
 write_confirmed
 split_proof_rc=0
@@ -760,7 +792,7 @@ jq -cn '{
 }' >"$confirmed"
 chmod 600 "$confirmed"
 retarget_proof_combined="$tmp/retarget-proof-combined.txt"
-printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
+printf 'retargeted pr #15 base=main head=feat/next sha=dddddddddddddddddddddddddddddddddddddddd repo=owner/repo ci=3/3 green:post-retarget approval=current:post-retarget ancestry=verified closing-issues=1\n' \
     >"$retarget_proof_combined"
 : >"$tmp/queue.log"; : >"$tmp/gh.log"
 combined_out=$(AUTHORIZE_QUEUE_HELPER="$tmp/pr-queue" QUEUE_LOG="$tmp/queue.log" \
