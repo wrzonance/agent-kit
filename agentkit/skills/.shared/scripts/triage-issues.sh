@@ -1,32 +1,15 @@
 #!/usr/bin/env bash
-# Triage the candidate issue set in ONE GraphQL request.
-#
-# The single response satisfies four call sites that used to be separate, two of
-# them per issue: issue fetch, board membership + Status, cross-referenced pull
-# requests, and the project-item IDs the board cache needs. It also warms
-# .agent/cache/board-items.json, so the next board move costs one call.
-#
-# The verdict vocabulary is limited to what the query PROVES. This script can
-# show that a merged pull request references an issue; it cannot show that the
-# pull request covered the whole ask, so it reports `merged-ref` and leaves the
-# reading to the agent. Likewise `adr=` only locates candidates by token
-# overlap -- a pointer, never a gate.
+# Triage the candidate issue set in ONE GraphQL request (issue fetch, board Status,
+# cross-referenced PRs, project-item ids; also warms .agent/cache/board-items.json).
+# Verdicts are limited to what the query PROVES (`merged-ref`, `adr=` are pointers).
 #
 # Usage:
 #   triage-issues.sh [--repo-root DIR] [--limit N] [--issues N,N,N]
 #                    [--fuzzy N] [--json]
-#   triage-issues.sh --classify-shape FILE
-#
-# --classify-shape is a standalone, offline mode: it classifies the work
-# shape of an already-fetched issue body (the same bytes Step 3's conflict
-# analysis already read -- never a fetch performed for this check alone) and
-# exits before any gh/network preflight. It never combines with the query
-# flags above.
-#
-# Exit: 0 success (including a partial response or a --classify-shape
-#       verdict), 1 the query failed, 2 bad usage, 3 gh unavailable/
-#       unauthenticated (environment-blocked; --classify-shape never reaches
-#       this check).
+#   triage-issues.sh --classify-shape FILE   # offline work-shape classification of an
+#                                            # already-fetched body; no gh preflight
+# Exit: 0 success (including a partial response or a --classify-shape verdict),
+#       1 the query failed, 2 bad usage, 3 gh unavailable/unauthenticated.
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}

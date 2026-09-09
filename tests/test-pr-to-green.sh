@@ -108,4 +108,7 @@ assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 18400 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 18400 bytes'
+
 finish

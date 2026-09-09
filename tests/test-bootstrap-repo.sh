@@ -809,4 +809,8 @@ out=$(env PATH="$tmp/stub:$PATH" "$bs_sh" --repo-root "$repo" --project 7 2>&1 |
 assert_not_contains "$out" 'fully overwrite' \
     'the plain-run refusal no longer promises a full overwrite from --force'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/bootstrap-repo.sh") -le 821 ]] && printf yes || printf no)" \
+    'bootstrap-repo.sh stays at or under 821 lines'
+
 finish

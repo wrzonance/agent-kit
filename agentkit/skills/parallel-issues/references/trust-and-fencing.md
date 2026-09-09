@@ -1,14 +1,8 @@
 # Verification cache and suite cadence
 
-Command-approval fence removed 2026-08-19: `agent-run.sh` no longer gates a declared command
-on an interactive approval or a trunk-comparison trust record, so this file no longer carries
-the `--yolo`/`--approve`/command-trust rationale it used to. A declared command runs directly
-through `agent-run.sh --cmd NAME`; there is no approval, no trust record, and no
-changed-input refusal to adjudicate. What is left of this file — the verification cache below
-— is a separate, still-live mechanism, unrelated to command approval.
-
-Read this when deciding how often to re-run verification during red/green iteration.
-`SKILL.md` keeps the pinned rule sentences; this file carries the rationale behind them.
+Read this when deciding how often to re-run verification during red/green iteration; `SKILL.md` keeps
+the pinned rule sentences. (The command-approval fence was removed 2026-08-19: `agent-run.sh --cmd NAME`
+runs a declared command directly, with no approval or trust record.)
 
 ## Verification cache and suite cadence
 

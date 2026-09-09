@@ -1,28 +1,10 @@
 #!/usr/bin/env bash
-# agent-run.sh -- run ONE command with a correct, sandbox-safe environment.
-#
-# Shell state does not persist between an agent's tool calls, so without this wrapper
-# every invocation re-exports cache dirs, CA bundles and PYTHONPATH by hand (and
-# silently fails when it forgets), guesses the right cwd for node tooling, then burns
-# an extra turn grepping a log after a failure. Here that is all procedural.
-#
-# A repository-declared command runner always wins (reuse before reinventing):
-# $AGENT_REPO_RUNNER, else the same key in <git-toplevel>/.agent/config.env, else
-# the first line of <git-toplevel>/.agent/runner resolved relative to the git
-# toplevel, else none. All are conventions this skill defines -- a repository opts
-# in; no vendor or company tool path is ever probed for. It is exec'd as
-# `runner <command> [args]` in the resolved working directory, with the prepared
-# environment (plus AGENT_RUN_LABEL) already exported.
-#
-# --cmd NAME names a command instead of spelling one out, so a caller never has to
-# know the repository's ecosystem: the repository declares what "test" means as
-# AGENT_CMD_TEST in .agent/config.env, else its runner is invoked as `runner test`.
-#
-# Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME]
-#          [--baseline-ref REF --baseline-path PATH --baseline-id ID]
-#          (--cmd NAME | [--] <command> ...)
-# Exit status: 0 when the wrapped command passes or a proven baseline exclusion is
-# recorded; otherwise the wrapped command's non-zero status (usage errors exit 1).
+# agent-run.sh -- run ONE command with a correct, sandbox-safe environment (cache
+# dirs, CA bundles, PYTHONPATH, the right cwd, a compact result summary), because
+# shell state does not persist between tool calls. A repository-declared runner
+# ($AGENT_REPO_RUNNER, .agent/config.env, .agent/runner) always wins; --cmd NAME
+# runs what the repository declares as AGENT_CMD_<NAME>. Usage and exit status:
+# --help (0 pass or proven baseline exclusion; else the command's own status).
 
 set -euo pipefail
 
