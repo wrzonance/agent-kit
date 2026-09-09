@@ -594,4 +594,7 @@ assert_eq '0' "$(jq '.remaining | length' <"$failed_ledger_file")" \
 assert_eq "$failed_number" "$(jq -r '.idMap["issue-545"].number' <"$failed_ledger_file")" \
     'the ledger holds the created-but-unverified PR number'
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/github-body-policy.md") -le 920 ]] && printf yes || printf no)" \
+    'github-body-policy stays at or under 920 bytes'
+
 finish

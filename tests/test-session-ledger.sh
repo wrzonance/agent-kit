@@ -457,6 +457,21 @@ else
         'secure_mkdir_p returned non-zero for a mode-700 component created mid-race'
 fi
 
+# 0744 has no group/other WRITE bit, so the old `& 0022` mask accepted it --
+# but it is group- and other- READABLE, not owner-only. Only an exact 0700
+# is private enough for a raced-in .agent component.
+race_744_target="$tmp/race-744/.agent"
+mkdir -p -- "$(dirname -- "$race_744_target")"
+if PATH="$mkdir_race_bin:$PATH" RACE_TARGET="$race_744_target" RACE_MODE=744 \
+    secure_mkdir_p "$race_744_target" 2>/dev/null; then
+    _fail 'secure_mkdir_p refuses a raced-in world-readable (0744) component' \
+        'secure_mkdir_p returned 0 for a 744 component created mid-race'
+else
+    _pass 'secure_mkdir_p refuses a raced-in world-readable (0744) component'
+fi
+assert_eq '744' "$(stat -c '%a' -- "$race_744_target")" \
+    'the raced-in 0744 component mode is left untouched, not auto-fixed'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/secure-mkdir.sh") -le 40 ]] && printf yes || printf no)" \
     'lib/secure-mkdir.sh stays at or under 40 lines'

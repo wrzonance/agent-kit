@@ -1,36 +1,10 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
 #
-# claude-adversarial-review.sh — one-shot, tool-isolated adversarial diff review
-# driven through Claude Code's non-interactive stream-json interface.
-#
-# The run is isolated (no tools, no MCP, no skills, no session persistence, and a
-# throwaway working directory), the verdict is schema-constrained, and every
-# isolation and verdict invariant is asserted before a result is printed.
-#
-# Modes:
-#   probe   — reviews a fixed minimal diff carrying a deliberate P1 defect and
-#             fails unless the model reports it. Use it to smoke-test the harness.
-#   review  — reviews the diff at --diff.
-#
-# Output:
-#   stdout  — exactly ONE JSON object: the final result object, or (on exit 3) the
-#             blocked object. A caller can therefore do
-#             `verdict=$(claude-adversarial-review.sh ...)` and feed it to jq
-#             directly, with no `jq -s last` gymnastics.
-#   stderr  — one compact JSON progress object per --poll-seconds while running,
-#             plus the human-readable failure reason.
-#
-# Exit status:
-#   0 — review completed and every invariant held.
-#   1 — usage error, or a real invariant/verdict failure (the review itself says no).
-#   3 — ENVIRONMENT-BLOCKED: Claude cannot run here (binary missing or not
-#       executable, exec denied, no network, unauthenticated, exhausted budget, or
-#       the installed CLI no longer offers the isolation contract). This is never a
-#       review verdict; the caller takes the documented blind-Codex fallback
-#       immediately instead of retrying or reporting the work as failed.
-#
-# Requires: bash >= 4.2, claude >= 2.1, jq, GNU coreutils.
+# claude-adversarial-review.sh -- one-shot, tool-isolated adversarial diff review
+# through Claude Code's non-interactive stream-json interface (no tools, MCP, skills,
+# or session persistence; throwaway cwd); schema-constrained verdict, every isolation
+# invariant asserted before a result prints. Modes, output, exit status: --help.
 
 set -euo pipefail
 umask 077

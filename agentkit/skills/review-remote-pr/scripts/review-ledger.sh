@@ -1,111 +1,10 @@
 #!/usr/bin/env bash
 #
-# review-ledger.sh — the durable per-PR review ledger: one machine-readable
-# record of every review already performed on a PR (agent adversarial
-# reviews and bot reviews alike), so a later run can answer "has this exact
-# tree already been reviewed, by whom, with what outcome?" from a single
-# cheap read of an already-fetched comments artifact.
-#
-# The ledger lives in exactly one issue comment per PR, fenced with
-#   <!-- review-ledger:v1 --> ```json {...} ``` <!-- /review-ledger:v1 -->
-# Human-readable prose (the receipt rendering callers layer on top) stays
-# above the fence; only the fenced JSON is machine-authoritative. Entries are
-# append-only -- a later review adds a record, nothing already recorded is
-# ever rewritten or removed.
-#
-# Trust boundary: any PR commenter can post a well-formed fenced comment. A
-# comment counts as THE ledger only when its author matches the trusted
-# ledger identity, resolved once per invocation, in order:
-#   1. --trusted-author LOGIN, when given.
-#   2. the AGENT_LEDGER_AUTHOR key from .agent/config.env (via repo-config.sh,
-#      --repo-root DIR required for this source to be consulted).
-#   3. the REVIEW_LEDGER_VIEWER environment variable if set (a cache/override
-#      for the next source, so tests and repeat callers need not hit the API);
-#      otherwise the authenticated `gh api user --jq .login` identity.
-# A comment from any other author that carries the fence is never treated as
-# the ledger -- it is silently excluded from every count/read/verdict, and
-# its presence is reported as a warning on stderr (never fatal, never a
-# reason to block) so an operator can see a forgery was ignored. If no
-# trusted identity resolves at all (no flag, no config, gh absent or
-# unauthenticated), the call fails closed with evidence-unavailable: without
-# a trust boundary there is no safe way to say what the ledger even is.
-#
-# Subcommands:
-#   read   --repo OWNER/REPO --pr N --comments FILE
-#          [--trusted-author LOGIN] [--repo-root DIR]
-#       Extracts and validates the ledger from an already-fetched
-#       pr_N_issue_comments.json-shaped artifact. On success prints
-#       "comment_id=ID" then the ledger's canonical compact JSON, and exits 0.
-#
-#   status --repo OWNER/REPO --pr N --comments FILE --head SHA
-#          [--diff-payload ID] [--kind adversarial|bot] [--provider NAME]
-#          [--trusted-author LOGIN] [--repo-root DIR]
-#       Prints exactly one verdict word. Zero network calls: it only reads
-#       --comments (--repo-root is a local git check, not a network call).
-#       See the exit-status table below.
-#
-#   append --repo OWNER/REPO --pr N --comments FILE --entry-file FILE
-#          --agent-identity NAME [--trusted-author LOGIN] [--repo-root DIR]
-#          [--gh-comment-script PATH]
-#       Validates the one new entry in --entry-file, appends it to the
-#       TRUSTED author's ledger found via read (or starts a fresh comment
-#       when the trusted author has none yet -- a forged comment from
-#       another author is never updated), renders the one-comment body, and
-#       posts/updates it through the sibling gh-comment.sh, which byte-
-#       verifies the stored body. --entry-file carries a single JSON object
-#       shaped like one element of "reviews" in the schema below (kind,
-#       head_sha, provider are always required; the remaining fields are
-#       carried through verbatim).
-#
-#   cover --repo OWNER/REPO --pr N --comments FILE --head SHA
-#          --reason (fix:ID|merge-down:SHA|retarget:REF)
-#          [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME]
-#          [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
-#       Append-only lineage extension (issue #567): a receipt is written ONCE
-#       at publish time (post-receipt.sh), but a later fix commit, merge-down,
-#       or retarget still needs to be provably the SAME reviewed tree plus a
-#       recorded, ancestry-proven transition -- never a second review spend.
-#       Finds the LATEST review entry matching --kind/--provider (unfiltered
-#       when omitted) in the TRUSTED ledger, requires --head to be a PROVEN
-#       git descendant of that entry's head_sha (via --repo-root; "unknown"
-#       reachability, like every other read in this script, never counts),
-#       then extends its covered_heads with --head and appends
-#       {sha, reason, covered_at} to a sibling "coverage" array on that same
-#       entry, so provenance stays auditable. --head already covered is a
-#       silent no-op (prints "already-covered", exit 0, no post). Posts/
-#       updates the ledger comment exactly like append.
-#
-# status verdicts:
-#   covered-head   an entry's head_sha or covered_heads includes --head exit 0
-#   covered-lineage review head is an ancestor and every intervening commit
-#                  is explicitly recorded in covered_heads              exit 0
-#   covered-diff   head_sha differs but diff_payload matches (the tree
-#                  under review is byte-identical) on AT LEAST ONE matching
-#                  entry whose head_sha is PROVEN (via --repo-root; "unknown"
-#                  reachability never counts) an ancestor of --head --
-#                  requires --diff-payload on the call AND a non-empty
-#                  diff_payload on that entry                               exit 0
-#   stale          entries exist for the --kind/--provider filter, but
-#                  neither head nor a proven-ancestor diff match -- e.g. no
-#                  matching diff_payload entry, every matching entry's
-#                  head_sha is proven unreachable (a force-push rewrote
-#                  history), or reachability could not be proven at all      exit 10
-#   absent         no ledger, or no entry for this kind/provider           exit 11
-#   (nothing)      ledger present but unparseable/fence malformed -- BLOCKS,
-#                  never read as absent                                    exit 1
-#
-# Exit status (all subcommands):
-#   0   success (read: ledger found & valid; status: covered-*; append: posted;
-#       cover: extended, or --head already covered)
-#   1   evidence unavailable / present-but-unparseable ledger (fails closed)
-#   2   usage error
-#   10  status only: stale
-#   11  read/status/cover: absent (no ledger, or no matching entry)
-#   12  cover only: refused -- --head is not a PROVEN descendant of the
-#       matching entry's head_sha
-#
-# Requires: bash >= 4.2, jq >= 1.6. append/cover additionally require the
-# sibling gh-comment.sh and everything it requires (gh, diff, cmp).
+# review-ledger.sh -- the durable per-PR review ledger: one machine-readable record
+# per review already performed on a PR (agent adversarial and bot alike), read from
+# an already-fetched issue-comments artifact. Exactly one issue comment per PR,
+# fenced <!-- review-ledger:v1 --> ```json {...} ``` <!-- /review-ledger:v1 -->,
+# append-only. Subcommands, verdicts, trust boundary and exit codes: --help.
 set -euo pipefail
 umask 077
 
@@ -139,8 +38,16 @@ Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
                  [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME] \\
                  [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
 
-See the script header comment for the full contract, trust-boundary
-resolution order, and exit-status table.
+Trusted author (in order): --trusted-author; AGENT_LEDGER_AUTHOR from .agent/config.env
+(needs --repo-root); REVIEW_LEDGER_VIEWER; else the authenticated gh login. A fenced
+comment by anyone else is ignored (stderr warning); no identity at all fails closed.
+status verdicts: covered-head 0, covered-lineage 0, covered-diff 0 (needs --diff-payload
+and a proven-ancestor entry with the same diff_payload), stale 10, absent 11,
+unparseable ledger 1 (blocks, never read as absent).
+Exit status (all subcommands): 0 success; 1 evidence unavailable or unparseable
+ledger; 2 usage; 10 status: stale; 11 read/status/cover: absent; 12 cover: --head is
+not a PROVEN descendant of the matching entry's head_sha.
+Requires: bash >= 4.2, jq >= 1.6. append/cover additionally require the sibling gh-comment.sh and everything it requires (gh, diff, cmp).
 EOF
 }
 
@@ -269,22 +176,11 @@ ledger_fence_regex() {
 }
 
 # find_ledger_comments FILE AUTHOR -- prints "ID\tJSON_TEXT" for every
-# TRUSTED-AUTHOR comment body whose fence parses (json text possibly still
-# schema-invalid; that is checked by the caller). A body carrying the
-# markers but no parseable fenced json, or authored by anyone other than
-# AUTHOR, is silently skipped here -- the caller's zero-vs-one-vs-many
-# accounting over ALL trusted-author marker-carrying bodies
-# (count_marker_comments) is what actually distinguishes "absent" from
-# "malformed"; untrusted-author bodies are reported separately, as a
-# warning, by untrusted_marker_authors.
-# The captured json field is base64-encoded before joining into the @tsv row:
-# @tsv escapes embedded newlines/tabs as literal backslash-n/backslash-t
-# sequences rather than real control characters, and a pretty-printed JSON
-# document is full of structural newlines. Read back through `read` (which
-# does not un-escape @tsv's backslash sequences) those would land in the
-# "json" field as literal backslash-n text -- outside any JSON string, so
-# jq then refuses to parse it. Base64 has no embedded tabs/newlines at all,
-# so it round-trips through @tsv and `read` unchanged.
+# TRUSTED-AUTHOR body whose fence parses (schema validity is the caller's job);
+# other authors are skipped here and reported by untrusted_marker_authors;
+# count_marker_comments tells absent from malformed. The json field is base64 in
+# the @tsv row: @tsv escapes newlines as literal \n, which read does not undo,
+# and pretty-printed JSON is full of them.
 find_ledger_comments() {
     local file=$1 author=$2 regex
     regex=$(ledger_fence_regex)
@@ -676,14 +572,10 @@ cmd_append() {
         evidence_unavailable "entry file is not valid JSON: $entry_file"
     jq -e "$ENTRY_SCHEMA_JQ" <<<"$entry" >/dev/null 2>&1 ||
         evidence_unavailable "entry does not match the ledger entry schema: $entry_file"
-    # Defense in depth: a free-text field inside the entry (e.g. a bot's
-    # "state", or a copied-forward "reaffirmed_from" sub-object) carrying the
-    # literal fence markers would land inside the rendered ```json block and
-    # could confuse a LATER read_ledger's non-greedy extraction regex into
-    # stopping early. The rendered JSON is always machine-encoded (jq never
-    # lets a marker escape its string quoting), so this can only ever matter
-    # for the raw entry text before that encoding; reject it outright rather
-    # than accept it and hope it round-trips.
+    # Defense in depth: a free-text field carrying the literal fence markers
+    # could make a LATER read_ledger's non-greedy extraction stop early; jq
+    # encoding prevents it after rendering, so reject the raw entry outright
+    # rather than hope it round-trips.
     [[ $entry != *"$OPEN_MARKER"* && $entry != *"$CLOSE_MARKER"* ]] ||
         evidence_unavailable "entry must not contain a review-ledger fence marker: $entry_file"
 
@@ -804,14 +696,10 @@ cmd_cover() {
     target_index=$(jq -r '.index' <<<"$target")
     target_head=$(jq -r '.head_sha' <<<"$target")
 
-    # Idempotence keys on the (sha, reason) PAIR, not the sha alone (fix
-    # batch #2 F2): the ordinary retarget case covers an UNCHANGED head under
-    # a NEW base, so keying on sha alone would silently drop that retarget's
-    # own coverage/audit record as a same-sha no-op. A sha already recorded
-    # (as the review head itself, or already in covered_heads) with this
-    # exact reason already logged is a true no-op; a sha already recorded
-    # but under a reason not yet logged still needs its coverage event
-    # appended (covered_heads itself stays a no-op there via `unique` below).
+    # Idempotence keys on the (sha, reason) PAIR (fix batch #2 F2): a retarget
+    # covers an UNCHANGED head under a NEW base, so a sha already recorded under
+    # a reason not yet logged still gets its coverage event (covered_heads stays
+    # a no-op via unique).
     local sha_covered=0 reason_recorded=0
     if [[ $target_head == "$head" ]] ||
         jq -e --arg head "$head" '(.covered_heads // []) | index($head) != null' <<<"$target" >/dev/null 2>&1; then
@@ -828,16 +716,11 @@ cmd_cover() {
     fi
 
     if ((sha_covered == 0)); then
-        # Fail-closed exactly like cmd_status's force-push demotion, but
-        # extended per fix batch #2 F1: ancestry must be proven against the
-        # ENTIRE covered frontier -- the entry's original head_sha AND every
-        # SHA already recorded in its covered_heads -- not head_sha alone.
-        # Otherwise a force-push to C, a SIBLING child of head_sha that
-        # drops an already-covered fix commit B, would still pass purely
-        # because C descends from head_sha, even though C's history silently
-        # discards B's reviewed lineage. Only reach=yes may pass for every
-        # frontier SHA; "unknown" (no --repo-root, git absent, or the object
-        # simply not present locally) never counts as proof.
+        # Fail-closed like cmd_status's force-push demotion, extended per fix
+        # batch #2 F1: ancestry is proven against the ENTIRE covered frontier
+        # (head_sha AND every covered_heads entry), or a force-push to a sibling
+        # child that drops a covered fix commit would pass; "unknown"
+        # reachability never counts.
         local frontier frontier_count i sha reach
         frontier=$(jq -c '([.head_sha] + (.covered_heads // [])) | unique' <<<"$target")
         frontier_count=$(jq 'length' <<<"$frontier") || frontier_count=0

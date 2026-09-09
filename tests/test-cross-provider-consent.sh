@@ -236,4 +236,9 @@ mock_send_diff 'Anthropic' 'Claude' '24' "$diff_two" yes || rc=$?
 assert_eq '0' "$rc" 'new-session consent permits the exact payload'
 assert_eq '1' "$TRANSMISSION_COUNT" 'new-session consent transmits once'
 
+for ref_ceiling in environment-contract.md:3300 worker-gate.md:5300 grooming.md:5700; do
+    assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/${ref_ceiling%%:*}") -le ${ref_ceiling##*:} ]] && printf yes || printf no)" \
+        "${ref_ceiling%%:*} stays at or under ${ref_ceiling##*:} bytes"
+done
+
 finish

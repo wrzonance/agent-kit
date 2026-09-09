@@ -1118,4 +1118,8 @@ assert_eq '1' "$identity_recovery_rc" \
 assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt marker' \
     'identity-aware recovery names the absence of a current-diff marker'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 976 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 976 lines'
+
 finish

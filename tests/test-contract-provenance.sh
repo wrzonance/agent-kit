@@ -123,9 +123,6 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
                 if (initial && block !~ /agentkit unresolved: prepend the Step 0 resolver block/)
                     printf "initial guard lacks resolver remediation at block ending line %d\\n", FNR
                 if (!initial &&
-                    block !~ /# >>> prepend THE CACHE REHYDRATION \(defined once in Step 0\) <<</)
-                    printf "missing context rehydration before guard in block ending line %d\\n", FNR
-                if (!initial &&
                     block !~ /agentkit unresolved: prepend THE CACHE REHYDRATION block/)
                     printf "later guard lacks cache remediation at block ending line %d\\n", FNR
                 if (!initial && block ~ /agentkit unresolved: prepend the Step 0 resolver block/)
@@ -157,7 +154,7 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
                     block ~ /--read-session-context/)
                 if (!initial && !cache_definition &&
                     (block ~ /\$shared\// || block ~ /\$agentkit\/\.shared\/scripts/) &&
-                    block !~ /# >>> prepend THE CACHE REHYDRATION \(defined once in Step 0\) <<</)
+                    block !~ /agentkit unresolved: prepend THE CACHE REHYDRATION block/)
                     printf "missing onboarding cache rehydration at block ending line %d\\n", FNR
                 if (block ~ /re-run Step 0/)
                     printf "onboarding block repeats Step 0 at block ending line %d\\n", FNR

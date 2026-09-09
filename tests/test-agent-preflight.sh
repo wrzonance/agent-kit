@@ -92,6 +92,65 @@ git -C "$symlink_repo" init -q
 assert_eq '700' "$(stat -c '%a' -- "$symlink_repo/.agent/logs" 2>/dev/null || printf '?')" \
     'invoked through a PATH symlink, .agent/logs is still created mode 700 under umask 002'
 
+# --- invoked through the same symlink, every sibling-helper reference still
+# resolves against the real script's directory, not the symlink's ----------
+# BASH_SOURCE[0] names the symlink for the whole process, so probe_harness
+# and compute_inherit_session_state's harness-id.sh call, probe_gh's
+# gh-auth-state.sh call, and skills_tree_root's walk-up must all resolve
+# against the same canonical directory the sourced lib/ guards already use
+# -- a fresh, unresolved dirname at any one of those call sites looks beside
+# the symlink, where only the symlink itself lives, and silently degrades
+# (harness= falls back to name=unknown, skills= resolves to the wrong tree).
+symlink_out=$("$symlink_bin/agent-preflight.sh" --worktree "$symlink_repo" --no-write 2> /dev/null)
+assert_eq "$current_harness_line" "$(grep -m1 '^harness=' <<< "$symlink_out")" \
+    'invoked through a PATH symlink, harness= still resolves (not name=unknown)'
+assert_eq "$(grep -m1 '^skills=' <<< "$out")" "$(grep -m1 '^skills=' <<< "$symlink_out")" \
+    'invoked through a PATH symlink, skills= path= still names the real skills tree'
+
+# probe_gh's own gh-auth-state.sh call is one of the sibling-helper references
+# the symlink fix repointed (CodeRabbit follow-up): unlike harness= and
+# skills=, its output is conditional -- gh-auth= is only emitted when
+# authentication actually failed -- so the happy-path symlink checks above
+# never exercise it. A fake, unauthenticated `gh` on PATH forces that branch
+# and proves the line still resolves gh-auth-state.sh through the symlink.
+gh_unauth_bin="$tmp/gh-unauth-bin"
+mkdir -p -- "$gh_unauth_bin"
+cat > "$gh_unauth_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "api user") exit 1 ;;
+    "auth status") exit 1 ;;
+    "auth token") exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x -- "$gh_unauth_bin/gh"
+gh_unauth_cfg="$tmp/gh-unauth-config"
+mkdir -p -- "$gh_unauth_cfg"
+gh_unauth_repo=$(new_repo)
+gh_probe_out=$(env PATH="$gh_unauth_bin:$PATH" GH_CONFIG_DIR="$gh_unauth_cfg" \
+    GH_TOKEN='' GITHUB_TOKEN='' AGENTKIT_NET_PROBE=ok \
+    "$symlink_bin/agent-preflight.sh" --worktree "$gh_unauth_repo" --no-write 2> /dev/null)
+gh_auth_line=$(grep -m1 '^gh-auth=' <<< "$gh_probe_out")
+assert_contains "$gh_auth_line" 'state=not-logged-in' \
+    'invoked through a PATH symlink, gh-auth= still resolves gh-auth-state.sh and reports the unauthenticated state'
+
+symlink_session_repo=$(new_repo)
+symlink_session_contract="$symlink_session_repo/.agent/env-contract.txt"
+printf '%s\n' \
+    "$current_harness_line" \
+    'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
+    'tls= bundle=/etc/ssl/certs/ca-certificates.crt source=system corporate-ca=no preset=none uv-system-certs=not-needed' \
+    'caches= root=/tmp/agent-cache-symlink reason=home-cache-unwritable home-cache=/nonexistent/.cache UV_CACHE_DIR=/tmp/agent-cache-symlink/uv NPM_CONFIG_CACHE=/tmp/agent-cache-symlink/npm PIP_CACHE_DIR=/tmp/agent-cache-symlink/pip XDG_CACHE_HOME=/tmp/agent-cache-symlink' \
+    > "$symlink_session_contract"
+chmod 600 "$symlink_session_contract"
+symlink_inherit_out=$("$symlink_bin/agent-preflight.sh" --worktree "$symlink_repo" \
+    --inherit-session "$symlink_session_contract" --no-write 2> "$tmp/symlink-inherit-stderr")
+assert_eq "$(grep '^sandbox=' <<< "$symlink_inherit_out")" "$(grep '^sandbox=' "$symlink_session_contract")" \
+    'invoked through a PATH symlink, --inherit-session sandbox= is still honoured verbatim'
+assert_contains "$(cat "$tmp/symlink-inherit-stderr")" 'inherited sandbox=' \
+    'invoked through a PATH symlink, the same-harness inherit path is taken (not a harness mismatch fallback)'
+
 # --- skills-content= is a content stamp, independent of skills= path= (#453) -
 skills_content_line=$(grep '^skills-content=' <<< "$out")
 skills_path_line=$(grep -m1 '^skills=' <<< "$out")

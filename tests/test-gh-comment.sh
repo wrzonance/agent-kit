@@ -110,4 +110,8 @@ assert_contains "$(cat "$tmp/comment-parser.err")" 'jq' 'missing comment parser 
 assert_contains "$(cat "$tmp/comment-parser.err")" 'evidence unavailable' \
     'missing comment parser error says evidence is unavailable'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/gh-comment.sh") -le 365 ]] && printf yes || printf no)" \
+    'gh-comment.sh stays at or under 365 lines'
+
 finish
