@@ -1251,8 +1251,8 @@ assert_eq no "$( [[ -e $gate_run/state/launch-attempted ]] && printf yes || prin
 assert_eq "$gate_consent_before" "$(cat -- "$gate_run/state/cross-provider-consent")" \
     'the oversized payload leaves the consent record untouched -- no check was ever run against it'
 gate_payload_size=$(cat -- "$gate_run/adversarial.payload-size")
-assert_eq yes "$( [[ $gate_payload_size =~ ^payload=too-large\ estimate=[1-9][0-9]*\ limit=10\ diff=[0-9]+\ overhead=202$ ]] && printf yes || printf no )" \
-    'adversarial.payload-size names the too-large verdict, a positive estimate (diff + helper overhead), and the limit'
+assert_eq yes "$( [[ $gate_payload_size =~ ^payload=too-large\ estimate=[1-9][0-9]*\ limit=10\ diff=[0-9]+\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size names the too-large verdict, a positive estimate (diff + helper overhead + output/reasoning reserve), and the limit'
 assert_eq blocked "$(jq -r '.status' -- "$gate_run/adversarial.result.json")" \
     'the blocked result status is blocked'
 assert_eq payload-too-large "$(jq -r '.blockedReason' -- "$gate_run/adversarial.result.json")" \
@@ -1271,8 +1271,8 @@ assert_eq 0 "$gate_ok_rc" 'without a token-limit override the same run completes
 assert_eq yes "$( [[ -e $tmp/gate-ok-codex.called ]] && printf yes || printf no )" \
     'an in-budget payload still launches the provider helper'
 gate_ok_payload_size=$(cat -- "$gate_ok_run/adversarial.payload-size")
-assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=400000\ diff=[0-9]+\ overhead=202$ ]] && printf yes || printf no )" \
-    'adversarial.payload-size reports ok against the default 400000-token limit (the codex helper max-tokens cap), estimate includes diff + helper overhead'
+assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=400000\ diff=[0-9]+\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size reports ok against the default 400000-token limit (the codex helper max-tokens cap), estimate includes diff + helper overhead + output/reasoning reserve'
 
 # --- issue #609 fix round 3: the size gate must count the Codex helper's own
 # fixed prompt overhead (ADVERSARIAL_PROMPT_OVERHEAD_TOKENS), not just the
@@ -1296,8 +1296,48 @@ assert_eq 1 "$overhead_rc" \
 assert_eq no "$( [[ -e $tmp/overhead-codex.called ]] && printf yes || printf no )" \
     'the overhead-driven refusal never invokes the provider helper'
 overhead_payload_size=$(cat -- "$overhead_run/adversarial.payload-size")
-assert_eq yes "$( [[ $overhead_payload_size =~ ^payload=too-large\ estimate=[0-9]+\ limit=$overhead_limit\ diff=$overhead_diff_estimate\ overhead=202$ ]] && printf yes || printf no )" \
+assert_eq yes "$( [[ $overhead_payload_size =~ ^payload=too-large\ estimate=[0-9]+\ limit=$overhead_limit\ diff=$overhead_diff_estimate\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
     'the receipt shows the diff-only estimate under the limit and the combined estimate over it'
+
+# --- issue #609 fix round 4: --max-tokens covers input+output+reasoning as
+# ONE budget (ADVERSARIAL_OUTPUT_RESERVE_TOKENS), not just what is sent, so a
+# diff that fits comfortably once the prompt overhead is added must still be
+# refused once the output/reasoning reserve is added on top of that -- the
+# limit here sits strictly between (diff + overhead) and
+# (diff + overhead + reserve) so only the reserve term tips the verdict.
+reserve_limit=$(( overhead_diff_estimate + 202 + 100 ))
+reserve_run="$tmp/reserve-run"
+grant "$reserve_run" openai "$diff_gate"
+reserve_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT="$reserve_limit" FAKE_CODEX_CALLED="$tmp/reserve-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reserve_run") \
+    >"$tmp/reserve.out" 2>"$tmp/reserve.err" || reserve_rc=$?
+assert_eq 1 "$reserve_rc" \
+    'a diff that passes with overhead only still fails once the output/reasoning reserve is added'
+assert_eq no "$( [[ -e $tmp/reserve-codex.called ]] && printf yes || printf no )" \
+    'the reserve-driven refusal never invokes the provider helper'
+reserve_payload_size=$(cat -- "$reserve_run/adversarial.payload-size")
+assert_eq yes "$( [[ $reserve_payload_size =~ ^payload=too-large\ estimate=[0-9]+\ limit=$reserve_limit\ diff=$overhead_diff_estimate\ overhead=202\ reserve=50000$ ]] && printf yes || printf no )" \
+    'the receipt shows the reserve field alongside the too-large verdict'
+
+# --- issue #609 fix round 4: ADVERSARIAL_OUTPUT_RESERVE_TOKENS is validated
+# the same way ADVERSARIAL_PAYLOAD_TOKEN_LIMIT already is -- a non-numeric
+# value dies immediately, before any diff is built, never mind launched.
+reserve_bad_run="$tmp/reserve-bad-run"
+grant "$reserve_bad_run" openai "$diff_gate"
+reserve_bad_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_OUTPUT_RESERVE_TOKENS=notanumber FAKE_CODEX_CALLED="$tmp/reserve-bad-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$reserve_bad_run") \
+    >"$tmp/reserve-bad.out" 2>"$tmp/reserve-bad.err" || reserve_bad_rc=$?
+assert_eq 1 "$reserve_bad_rc" 'a non-numeric ADVERSARIAL_OUTPUT_RESERVE_TOKENS dies immediately'
+assert_contains "$(cat -- "$tmp/reserve-bad.err")" 'ADVERSARIAL_OUTPUT_RESERVE_TOKENS must be a positive integer' \
+    'the rejection names the positive-integer requirement'
+assert_eq no "$( [[ -e $tmp/reserve-bad-codex.called ]] && printf yes || printf no )" \
+    'the invalid reserve never invokes the provider helper'
+assert_eq no "$( [[ -e $reserve_bad_run/adversarial.diff ]] && printf yes || printf no )" \
+    'the invalid reserve is rejected before any diff is built'
 
 # --- issue #609 fix round 1: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT flows
 # unvalidated into an arithmetic context (payload_size_gate's
@@ -1337,8 +1377,12 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # 2026-09-09 issue #609 fix round 3: +14 (ADVERSARIAL_PROMPT_OVERHEAD_TOKENS
 # constant plus payload_size_gate now accounting for the Codex helper's fixed
 # prompt overhead, not just the diff bytes). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 925 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 925 lines'
+# 2026-09-09 issue #609 fix round 4: +28 (ADVERSARIAL_OUTPUT_RESERVE_TOKENS
+# constant, its derivation comment, and payload_size_gate now accounting for
+# the Codex helper's dynamic output+reasoning consumption, not just what is
+# sent). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 953 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 953 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

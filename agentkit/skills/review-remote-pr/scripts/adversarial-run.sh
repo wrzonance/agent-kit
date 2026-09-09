@@ -44,6 +44,28 @@ readonly ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=${ADVERSARIAL_PAYLOAD_TOKEN_LIMIT:-4000
 # alongside that preamble if its wording changes.
 readonly ADVERSARIAL_PROMPT_OVERHEAD_TOKENS=202
 
+# codex-adversarial-review.sh's own --max-tokens ceiling (monitor_token_limit /
+# token_usage_total) sums input, output, AND reasoning tokens against one
+# budget -- it is not an input-only cap. Unlike ADVERSARIAL_PROMPT_OVERHEAD_TOKENS
+# (a fixed literal measured from static prompt bytes), generation-time
+# output+reasoning consumption is dynamic: verdict_schema
+# (lib/adversarial-review.sh) places no maxItems/maxLength bound on findings,
+# effort defaults to xhigh, and this prompt shape is one tool-free turn, so
+# token_usage_total's own turn.completed sampling gives no interim signal
+# during that single turn -- a payload gated on diff+overhead alone can still
+# blow the cap mid-generation with no chance to stop it (issue #609 P1, round
+# 4). Derived from real completed Codex xhigh-effort review receipts in this
+# repo's own .agent/evidence/pr-*/adversarial.result.json (24 runs, 2026-09):
+# observed output_tokens + reasoning_output_tokens ranged 849-25,862 (max at
+# pr-570: input 36,174, output 13,109, reasoning 12,753). Reserved at roughly
+# 2x that observed max, rounded, to margin larger/harder diffs whose
+# generation could reasonably run higher; re-derive if a future receipt's
+# output+reasoning sum exceeds this reserve. Env-overridable for tests.
+readonly ADVERSARIAL_OUTPUT_RESERVE_TOKENS=${ADVERSARIAL_OUTPUT_RESERVE_TOKENS:-50000}
+[[ $ADVERSARIAL_OUTPUT_RESERVE_TOKENS =~ ^[1-9][0-9]*$ ]] ||
+    { printf '%s: ADVERSARIAL_OUTPUT_RESERVE_TOKENS must be a positive integer: %s\n' \
+        "${0##*/}" "$ADVERSARIAL_OUTPUT_RESERVE_TOKENS" >&2; exit 1; }
+
 # Loaded lazily from repo-config.sh's own accepted set (its single source of
 # truth) the first time a roster compound needs splitting, so this parser's
 # effort list can never silently drift from the validator that already
@@ -520,18 +542,24 @@ resolve_base_declared_config() {
 # issue #609: refuse to spend on a payload the provider cannot hold; the
 # one-line reason names the remedy instead of a launch with no verdict.
 # estimate is the diff plus the Codex helper's own fixed prompt overhead
-# (round 3), not just the diff bytes -- the receipt records both terms.
+# (round 3) plus a reserve for the same helper's dynamic output+reasoning
+# consumption (round 4) -- not just the diff bytes. --max-tokens covers
+# input+output+reasoning as one budget (ADVERSARIAL_OUTPUT_RESERVE_TOKENS's
+# comment above), so a payload that only accounts for what is SENT can still
+# overflow what the helper generates in reply; the receipt records all three
+# terms.
 payload_size_gate() {
     local diff_estimate estimate verdict=ok
     diff_estimate=$(canonical_diff_token_estimate "$RUN_DIR/adversarial.diff") || die 'could not measure the adversarial diff'
-    estimate=$((diff_estimate + ADVERSARIAL_PROMPT_OVERHEAD_TOKENS))
+    estimate=$((diff_estimate + ADVERSARIAL_PROMPT_OVERHEAD_TOKENS + ADVERSARIAL_OUTPUT_RESERVE_TOKENS))
     ((estimate <= ADVERSARIAL_PAYLOAD_TOKEN_LIMIT)) || verdict=too-large
     prepare_owned_artifact "$RUN_DIR/adversarial.payload-size"
-    (umask 077; printf 'payload=%s estimate=%s limit=%s diff=%s overhead=%s\n' \
+    (umask 077; printf 'payload=%s estimate=%s limit=%s diff=%s overhead=%s reserve=%s\n' \
         "$verdict" "$estimate" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" "$diff_estimate" \
-        "$ADVERSARIAL_PROMPT_OVERHEAD_TOKENS" >"$RUN_DIR/adversarial.payload-size")
+        "$ADVERSARIAL_PROMPT_OVERHEAD_TOKENS" "$ADVERSARIAL_OUTPUT_RESERVE_TOKENS" \
+        >"$RUN_DIR/adversarial.payload-size")
     [[ $verdict == ok ]] && return 0
-    write_blocked_result payload-too-large "estimated $estimate tokens (diff $diff_estimate + helper overhead $ADVERSARIAL_PROMPT_OVERHEAD_TOKENS) exceeds the $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT-token launch limit; declare vendored or generated trees in AGENT_GENERATED_PATHS on the base branch and re-run"
+    write_blocked_result payload-too-large "estimated $estimate tokens (diff $diff_estimate + helper overhead $ADVERSARIAL_PROMPT_OVERHEAD_TOKENS + output/reasoning reserve $ADVERSARIAL_OUTPUT_RESERVE_TOKENS) exceeds the $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT-token launch limit; declare vendored or generated trees in AGENT_GENERATED_PATHS on the base branch and re-run"
     receipt_line
     return 1
 }

@@ -144,7 +144,9 @@ Without the flag, the interactive question above is required. Never treat a prev
 Before sending, `consent-record.sh payload` derives a payload identity from the repository slug, the PR
 number, and the SHA-256 of the exact diff bytes (an empty diff is refused), after excluding vendor/,
 third_party/, node_modules/ and the base revision's AGENT_GENERATED_PATHS (listed with a checksum in
-the receipt); a payload estimated above the launch limit is refused before consent with
+the receipt); the launch limit gates the diff estimate plus the Codex helper's own fixed prompt
+overhead and a reserve for its dynamic output+reasoning generation (--max-tokens covers all three as
+one budget, not input alone), and a payload estimated above that limit is refused before consent with
 payload=too-large in the run dir. After confirmation, record
 `cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted` in the active session
 task state; reuse it only for a retry of the exact same payload to the same provider and scope. If the
