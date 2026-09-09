@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
 #
-# detect-toolchains.sh -- what components does this repository actually have?
-#
-# Onboarding used to hardcode one package manager and one ecosystem: on a
-# repository locked with a different node package manager it still suggested
-# npm, and it never looked for a lint script at all. A repository states its
-# own facts in its marker files (package.json,
-# pyproject.toml, a .csproj, ...); this finds them so a human does not have
-# to enumerate components by hand, and so a component that later moves can be
-# found again by the same marker rather than by a path nobody re-checks.
-#
-# Reports, never fails: exit 0 always, 3 only when --repo-root DIR is not a
-# directory. "Found nothing" is exit 0 with no output -- a format that always
-# prints something trains the reader to stop looking at it.
-#
-# Usage:
-#   detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|gaps|drift]
+# detect-toolchains.sh -- which components a repository actually has, from its own
+# marker files (package.json, pyproject.toml, .csproj, ...), so onboarding never
+# hardcodes one ecosystem and a moved component is found again. See --help.
 set -uo pipefail
 
 PROGRAM=${0##*/}

@@ -1,27 +1,12 @@
 #!/usr/bin/env bash
 # materiality-check.sh -- may this diff take the documented-skip path instead of
-# spending the one adversarial review?
-#
-# review-remote-pr already permits a documented skip when every changed line is
-# mechanically verifiable; the draft loops never called it, so a +67/-2
-# test-only PR paid the same review ceremony as an 875-line rewrite (issue #224
-# WS2b). This helper answers the mechanical half deterministically: a diff is
-# skip-eligible only when EVERY changed file is a test or documentation file
-# and every issue-declared acceptance command has green evidence. Acceptance
-# declarations come from --acceptance-file or the prepared worktree artifact;
-# missing status is not-run and fails closed.
-# Anything else -- executable logic, workflow definitions, authorization,
-# persistence, configuration -- is material and gets the full review. Judgment
-# stays with the caller; this gate can only say "nothing here needs judgment".
-#
-# Prints one machine-readable line:
-#   materiality= files=N verdict=skip-eligible|material [first-material=PATH]
-# then, for skip-eligible, one oracle line to record in the receipt:
-#   oracle=<why the skip is safe>
-#
-# EXIT CODES
-#   0  verdict printed (either verdict -- the verdict is data, not an error)
-#   2  usage error or unreadable evidence (fails closed: no verdict, no skip)
+# spending the one adversarial review? skip-eligible only when EVERY changed file
+# is a test or documentation file and every issue-declared acceptance command has
+# green evidence (--acceptance-file or the prepared worktree artifact; missing
+# status fails closed). Judgment stays with the caller (issue #224 WS2b).
+# Prints: materiality= files=N verdict=skip-eligible|material [first-material=PATH]
+#         then, for skip-eligible, oracle=<why the skip is safe>
+# Exit: 0 verdict printed (either verdict), 2 usage error or unreadable evidence.
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}

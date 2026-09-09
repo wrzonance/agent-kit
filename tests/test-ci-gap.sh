@@ -156,4 +156,8 @@ assert_contains "$(cat "$no_workflow_err")" 'no CI workflows' \
     'missing workflow explains the absent comparison source'
 assert_eq '' "$no_workflow_output" 'missing workflow has no partial report'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/ci-gap.sh") -le 232 ]] && printf yes || printf no)" \
+    'ci-gap.sh stays at or under 232 lines'
+
 finish

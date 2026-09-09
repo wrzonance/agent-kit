@@ -26,14 +26,10 @@ readonly RESOLVE_HINT='  agentkit=
           >/dev/null 2>&1; then
       pinned=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
   fi
-  # A pinned tree that is no longer installed -- a plugin upgrade retires the
-  # version directory the contract names -- is stale, not authoritative. Fall
-  # through to the bootstrap instead of resolving to a path that cannot answer.
   if [[ -n "$pinned" && -d "$pinned" ]]; then
       agentkit="$pinned"
   fi
   if [[ -z "$agentkit" ]]; then
-      # Contract-absent bootstrap: discover the installed plugin tree.
       agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
           -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
@@ -49,6 +45,16 @@ readonly RESOLVE_HINT='  agentkit=
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file
 readonly HELPERS='agent-run|worktree-commit|gh-pr-state|agent-preflight|repo-config|contract-read|triage-issues|move-github-project-item|gh-comment|gh-body'
+
+# The per-call lessons point at the resolver instead of pasting RESOLVE_HINT:
+# every lesson is paid in the agent's context for the rest of the session, and
+# the full block is already there (SessionStart/SubagentStart curriculum).
+# shellcheck disable=SC2016,SC2034  # literal text the agent reads; used by the sourcing hooks
+readonly RESOLVE_POINTER='  agentkit=<the skills= path= value from your environment contract (session context, or the contract pasted in your worker prompt)>
+  # the full guarded resolver (contract file, else the plugins/cache bootstrap) is the resolver block in your session or worker context'
+
+# One sentence, six refusals: the sanctioned merge path.
+readonly MERGE_RULE='The only sanctioned agent-driven merge path is merge-pr.sh (pr-to-green), bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
 
 GUARD_LIB_DIR=${BASH_SOURCE[0]%/*}
 [[ $GUARD_LIB_DIR != "${BASH_SOURCE[0]}" ]] || GUARD_LIB_DIR=.
@@ -173,14 +179,6 @@ guard_classify_root() {
         GUARD_TARGET_CLASSIFICATION=foreign
     fi
     printf '%s' "$GUARD_TARGET_CLASSIFICATION"
-}
-
-# Command substitutions run in a child shell, so the globals populated by the
-# classifier do not survive `classification=$(...)`. Return both values as a
-# small, explicit record for callers that need diagnostics or policy roots.
-guard_classify_root_result() {
-    guard_classify_root "$1" > /dev/null
-    printf '%s\n%s' "$GUARD_TARGET_CLASSIFICATION" "$GUARD_TARGET_ROOT"
 }
 
 guard_target_path() {
@@ -461,11 +459,30 @@ guard_scope_path_allowed() {
     return 1
 }
 
+# GNU grep bundles a value-taking short option with whatever follows it in
+# the same token (-reTODO == -r -e TODO); if the bundle ends exactly at the
+# flag, the value is the NEXT argv token instead (-re TODO == -r -e TODO).
+# Only -e/-f take a value for the home-sweep exemption below, and the FIRST
+# one found in a left-to-right scan claims the rest, mirroring GNU getopt
+# bundling. $1 is the bundle with its leading dash already stripped.
+# Returns 1 when the bundle carries no -e/-f at all; 0 when it does, with
+# GUARD_BUNDLE_NEXT_IS_VALUE set to 1 (value is the next argv token) or 0
+# (value is attached in this same token).
+guard_grep_bundle_pattern_flag() {
+    local bundle=$1 before
+    before=${bundle%%[ef]*}
+    [[ $before == "$bundle" ]] && return 1
+    GUARD_BUNDLE_NEXT_IS_VALUE=0
+    [[ -z ${bundle:$((${#before} + 1))} ]] && GUARD_BUNDLE_NEXT_IS_VALUE=1
+    return 0
+}
+
 # Return the first absolute/home-expanded path outside the allowed roots when
 # a command segment is a walker/reader. Relative paths are intentionally left
 # alone: the resolved repository/cwd contract answers those without guessing.
 guard_out_of_scope_target() {
     local command_line=$1 segment verb token cleaned has_walker=0 expr_operand=0
+    local pattern_pending=0 past_options=0
     local cwd=${2:-$PWD} command_root='' command_class='' command_dir=''
     local -a words
     # Segmented and tokenized the way the shell actually parses the command --
@@ -553,7 +570,37 @@ guard_out_of_scope_target() {
         # review on issue #335, finding F1). Recognize the exclusion from the
         # PRECEDING flag instead: sed's -e/--expression and grep's -e/--regexp
         # take a pattern, never a path, regardless of what it looks like.
-        expr_operand=0
+        expr_operand=0 pattern_pending=0 past_options=0
+        if [[ $verb == grep ]]; then
+            # grep's FIRST positional operand is its PATTERN unless -e/--regexp
+            # or -f/--file supplied one (2026-09-08: `grep -rl "$HOME" docs/` was
+            # denied as a $HOME sweep). grep only: rg/fd have pattern-less modes
+            # (rg --files DIR) whose first operand IS the walk root. A two-word
+            # value flag (-A 3, --include GLOB) hands its value to this rule and
+            # the real pattern is path-checked as before -- never less strictly.
+            # A bundled short option carrying e/f counts too -- `-reTODO` and
+            # `-rfPATTERNS` are grep's own `-r -e TODO`/`-r -f PATTERNS`
+            # (2026-09-08 round 2: `grep -reTODO "$HOME"` bypassed the sweep
+            # denial because the pre-scan only looked for standalone -e/-f).
+            pattern_pending=1
+            for token in "${words[@]:1}"; do
+                # `--` ends option parsing for the shell's grep invocation too:
+                # a `-e`/`--regexp` spelled AFTER it is a positional operand,
+                # never the flag, so this pre-scan must stop reading options
+                # right there (2026-09-08 round 3: `grep -r -- -e "$HOME"`
+                # treated the post-`--` `-e` as if it still supplied the
+                # pattern, when POSIX/GNU grep resolve it as the FIRST
+                # positional -- i.e. the pattern -- leaving "$HOME" as the
+                # walk root).
+                [[ $token == -- ]] && break
+                case $token in
+                    --regexp | --regexp=* | --file | --file=*) pattern_pending=0 ;;
+                    -[A-Za-z]*)
+                        guard_grep_bundle_pattern_flag "${token#-}" && pattern_pending=0
+                        ;;
+                esac
+            done
+        fi
         for token in "${words[@]:1}"; do
             if ((expr_operand)); then
                 expr_operand=0
@@ -561,7 +608,34 @@ guard_out_of_scope_target() {
             fi
             case $verb in
                 sed) case $token in -e | --expression) expr_operand=1; continue;; esac ;;
-                grep) case $token in -e | --regexp) expr_operand=1; continue;; esac ;;
+                grep)
+                    if ((past_options == 0)) && [[ $token == -- ]]; then
+                        past_options=1
+                        continue
+                    fi
+                    # Flag/bundle parsing only applies BEFORE `--`: once
+                    # past_options is set, a token that merely looks like
+                    # -e/-f/--regexp/--file is a positional operand, not the
+                    # option (2026-09-08 round 3, mirrors the pre-scan fix
+                    # above -- `grep -r -- -e "$HOME"` was letting this case
+                    # still swallow "-e" as an option and "$HOME" as its
+                    # value, so the walk root never reached path checking).
+                    if ((past_options == 0)); then
+                        case $token in
+                            --regexp | --file) expr_operand=1; continue;;
+                            -[A-Za-z]*)
+                                if guard_grep_bundle_pattern_flag "${token#-}"; then
+                                    ((GUARD_BUNDLE_NEXT_IS_VALUE)) && expr_operand=1
+                                    continue
+                                fi
+                                ;;
+                        esac
+                    fi
+                    if ((pattern_pending)) && { ((past_options)) || [[ $token != -* ]]; }; then
+                        pattern_pending=0
+                        continue
+                    fi
+                    ;;
             esac
             # Trailing comma/paren trimming stays for the common prose-list
             # case ("see /a/b, /c)") -- unrelated to the expression-operand
@@ -862,7 +936,7 @@ guard_worktree_boundary_reason() {
     if ! actual=$(guard_target_realpath "$candidate"); then
         [[ $lexical_worker == yes ]] || return 1
         GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
-        printf 'Refused once -- could not securely resolve write target %s while enforcing the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+        printf 'Refused once -- could not securely resolve write target %s while enforcing the contracted worktree %s. Use corrected path: %s. Retry the same call once to override.' \
             "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
             "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
         return 0
@@ -882,7 +956,7 @@ guard_worktree_boundary_reason() {
         relative=${candidate#"$GUARD_WORKTREE_CONTRACT_WORKTREE"/}
         [[ $candidate == "$GUARD_WORKTREE_CONTRACT_WORKTREE" ]] && relative=''
         [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
-        printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+        printf 'Refused once -- write target %s resolves outside the contracted worktree %s. Use corrected path: %s. Retry the same call once to override.' \
             "$candidate" "$GUARD_WORKTREE_CONTRACT_WORKTREE" \
             "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
         return 0
@@ -909,7 +983,7 @@ guard_worktree_boundary_reason() {
     [[ $source != "$GUARD_WORKTREE_CONTRACT_REPO" ]] || relative=''
     GUARD_WORKTREE_BOUNDARY_CORRECTED=$GUARD_WORKTREE_CONTRACT_WORKTREE
     [[ -z $relative ]] || GUARD_WORKTREE_BOUNDARY_CORRECTED+="/$relative"
-    printf 'Refused once -- write target %s resolves inside the repository root %s but outside the contracted worktree %s. Use corrected path: %s. If this target is intentionally part of the task, make the same call again -- it will be allowed.' \
+    printf 'Refused once -- write target %s resolves inside the repository root %s but outside the contracted worktree %s. Use corrected path: %s. Retry the same call once to override.' \
         "$source" "$GUARD_WORKTREE_CONTRACT_REPO" \
         "$GUARD_WORKTREE_CONTRACT_WORKTREE" "$GUARD_WORKTREE_BOUNDARY_CORRECTED"
 }
@@ -942,13 +1016,7 @@ guard_observer_write_reason() {
     [[ $(guard_contract_mode "$workspace_root") == observer ]] || return 1
     classification=$(guard_classify_target "$target" "$cwd" "$command_line")
     [[ $classification == workspace ]] || return 1
-    printf 'Refused once -- this session started as an OBSERVER: another harness already held
-an active run in %s (this session'"'"'s own environment contract records
-mode=observer). Writing here would race that run instead of watching it.
-
-If that run has since ended and this really is the session to make changes,
-remove %s/.agent/env-contract.*.txt and start a fresh session so it can claim
-ownership -- or run the same call again now, it will be allowed once.' \
+    printf 'Refused once -- this session is an OBSERVER: another harness holds an active run in %s (this contract records mode=observer), so a write here would race it. If that run has ended, remove %s/.agent/env-contract.*.txt and start a fresh session -- or run the same call again now; it is allowed once.' \
         "$workspace_root" "$workspace_root"
 }
 
@@ -1814,7 +1882,7 @@ guard_gh_api_value_flag() {
 # absence allows.
 guard_gh_api_graphql_input_reason() {
     local input_path=$1 cwd=$2 reason_tail
-    reason_tail=' Pass the mutation inline via -f query=... instead so this guard can read it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+    reason_tail=" Pass the mutation inline via -f query=... instead so this guard can read it. $MERGE_RULE"
 
     if [[ -z $input_path || $input_path == '-' || -z $cwd ]]; then
         printf 'a GraphQL mutation body supplied via --input (stdin, unnamed, or with no working directory to resolve it against) cannot be inspected for a mergePullRequest mutation, so it is refused rather than assumed safe.%s' \
@@ -1855,8 +1923,8 @@ guard_gh_api_graphql_input_reason() {
     fi
 
     if grep -qF -- 'mergePullRequest' "$real_candidate" 2> /dev/null; then
-        printf 'merging a pull request through a GraphQL mergePullRequest mutation supplied via --input %s is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.' \
-            "$input_path"
+        printf 'merging a pull request through a GraphQL mergePullRequest mutation supplied via --input %s is the same decision as gh pr merge, reached a different way. %s' \
+            "$input_path" "$MERGE_RULE"
         return 0
     fi
     return 1
@@ -1919,7 +1987,7 @@ guard_gh_api_merge_mutation_reason() {
     # repo slug actually allows.
     if [[ ${method^^} == PUT ]] &&
         [[ $endpoint =~ ^(https://api\.github\.com/)?/?repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+/merge$ ]]; then
-        printf 'merging a pull request through the REST API directly is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+        printf 'merging a pull request through the REST API directly is the same decision as gh pr merge, reached a different way. %s' "$MERGE_RULE"
         return 0
     fi
 
@@ -1937,13 +2005,13 @@ guard_gh_api_merge_mutation_reason() {
                 -f | -F | --raw-field | --field)
                     next=${__ggamr_words[i + 1]-}
                     if [[ $next == *mergePullRequest* ]]; then
-                        printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+                        printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way. %s' "$MERGE_RULE"
                         return 0
                     fi
                     ;;
                 -f*=*mergePullRequest* | -F*=*mergePullRequest* | \
                 --raw-field=*mergePullRequest* | --field=*mergePullRequest*)
-                    printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way -- not a way around it. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result.'
+                    printf 'merging a pull request through a GraphQL mergePullRequest mutation is the same decision as gh pr merge, reached a different way. %s' "$MERGE_RULE"
                     return 0
                     ;;
                 --input)
@@ -2124,7 +2192,7 @@ guard_destructive_segment_reason() {
     # invoking merge-pr.sh itself (the sanctioned path) is unaffected by
     # either check.
     if guard_words_contain_sequence words gh pr merge; then
-        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead. The only sanctioned agent-driven merge path is merge-pr.sh in the pr-to-green skill, bound to a confirmed --auto-merge authorization record and a gate=PASS review-completion result -- this gh pr merge porcelain form stays refused even under that authorization.'
+        printf 'merging a pull request is the user decision, not the agent one. Report that the PR is ready instead. %s This gh pr merge porcelain form stays refused even under that authorization.' "$MERGE_RULE"
         return 0
     fi
     local api_merge_reason
@@ -2409,13 +2477,14 @@ guard_gh_inline_body_reason() {
         done
 
         ((inline)) || continue
-        advice='Policy: keep gh mutation bodies file-backed. Use --body-file or --input; for gh api, use -F body=@file.'
-        advice+=' For PR/issue create and edit, use the resolved gh-body.sh transport so the stored body is re-fetched and byte-verified.'
+        # shellcheck disable=SC2016  # $agentkit is literal text the agent retypes
+        advice='Policy: gh mutation bodies are file-backed (--body-file, --input, or -F body=@file); create/edit PRs and issues via "$agentkit/.shared/scripts/gh-body.sh", which byte-verifies the stored body.'
         if ((comment)); then
-            advice+=' For comments, use gh-comment.sh --body-file so the helper preserves and verifies the exact bytes.'
+            # shellcheck disable=SC2016  # same: literal text
+            advice+=' Comments: "$agentkit/review-remote-pr/scripts/gh-comment.sh" --body-file FILE.'
         fi
         if ((literal_backslash_n)); then
-            advice+=' A literal \n renders as backslash-n in the posted body; write the intended newline to a file instead.'
+            advice+=' A literal \n renders as backslash-n in the posted body; write the newline to the file.'
         fi
         printf '%s' "$advice"
         return 0

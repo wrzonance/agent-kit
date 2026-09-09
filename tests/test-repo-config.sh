@@ -616,4 +616,8 @@ root_config=$(<"$root/.agent/config.env")
 assert_contains "$root_config" 'AGENT_CMD_TEST_FOCUS=tests/run-tests.sh --only %s' \
     'agent-kit declares its supported focused test selector'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1048 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1048 lines'
+
 finish

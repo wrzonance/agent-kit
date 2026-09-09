@@ -237,4 +237,7 @@ assert_contains "$auto_merge_text" \
     '../../parallel-issues/references/chains.md#post-squash-merge-conflicts' \
     'auto-merge serialization links to the post-squash conflict procedure'
 
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/references.md") -le 6100 ]] && printf yes || printf no)" \
+    'reference manifest stays at or under 6100 bytes'
+
 finish

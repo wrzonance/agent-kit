@@ -1,35 +1,13 @@
 #!/usr/bin/env bash
 #
-# agent-preflight.sh -- declare the agent's sandbox environment ONCE, before the first command.
-#
-# WHY THIS EXISTS
-#   Agents routinely burn a failed command, a retry, and a paragraph of narration
-#   rediscovering facts that were knowable before any work started: the uv/npm/pip cache
-#   under $HOME is read-only; a package script was invoked from a directory with no package.json;
-#   an import failed because the python source root was not on PYTHONPATH; `git add` died
-#   on "<git-dir>/index.lock: Read-only file system"; a reviewer CLI probe failed because
-#   the peer review CLI is not installed here. This probes all of it once and prints a declarative
-#   block that becomes the agent's working memory. The verbosity is deliberate: one
-#   upfront declaration replaces N rediscoveries-by-failure.
-#
-# BEHAVIOUR
-#   Reports, never blocks -- missing facts are printed as missing and the exit status is
-#   still 0, so no caller can be wedged by its own preflight. Only account-scoped forge
-#   state is probed (never repository-scoped), the repository slug is parsed locally from
-#   the origin URL, and the only writes are under <worktree>/.agent/.
-#
-# OUTPUT (stdout, exactly one key per line, in this order; diagnostics go to stderr)
+# agent-preflight.sh -- declare the agent's sandbox environment ONCE, before the
+# first command: caches, CA bundles, PYTHONPATH, git-dir writability, peer CLI --
+# the facts agents otherwise rediscover by failure. Reports, never blocks (exit 0
+# with missing facts named; 2 only for bad usage); only account-scoped forge state
+# is probed; writes only under <worktree>/.agent/. Output: one key per line, the
+# first `skills= path=/abs` (literal "skills=" then "path="; consumers parse that
+# exact prefix), then `skills-content= sha256=` (#453) -- see --help.
 #   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
-#   The first record is `skills= path=/abs/skills-tree` -- the literal "skills=" key
-#   followed by a separate "path=" field; consumers parse the exact "skills= path="
-#   prefix, so the run-together form "skills=/abs/path" is incompatible.
-#   The next record, `skills-content= sha256=<hex>`, is a content stamp over the
-#   shipped skill/script tree (issue #453): a hash of what is actually on disk,
-#   independent of the `skills=` record above and never appended to it, so no
-#   consumer that greedily captures the rest of the "skills= path=" line is
-#   affected by this record's addition.
-#   The same block is written to <worktree>/.agent/env-contract.txt unless suppressed.
-#
 set -euo pipefail
 
 if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then

@@ -1,31 +1,14 @@
 #!/usr/bin/env bash
-# Select the issues an autonomous run may start, in two calls.
-#
-# `--fast-mode` dispatches without asking, so the selection has to be made by
-# something that cannot be talked into a bad pick by an issue body. This script
-# answers one question mechanically -- which issues are eligible to start right
-# now -- and leaves the judgement call that is genuinely the agent's (which of
-# them touch the same files) to the conflict analysis that follows.
-#
-# Eligible means all of:
-#   * the issue is OPEN;
-#   * its board Status is Ready, or Backlog when --include-backlog is set;
-#   * nothing it is blocked by is still open.
-#
-# The blocked-by half is why this exists rather than a board query. GitHub issue
-# dependencies live on the issue, not on the project item, so a board read alone
-# reports a blocked issue as ready to start -- and an autonomous run would take
-# it. Every dependency is fetched in one aliased batch, so the cost is two calls
-# whatever the candidate count.
+# Select the issues an autonomous run may start, in two calls: OPEN, board Status
+# Ready (or Backlog with --include-backlog), and nothing it is blocked by still open
+# -- dependencies live on the issue, not the project item, so a board read alone
+# would hand --fast-mode a blocked issue. Conflict analysis stays with the agent.
 #
 # Usage:
 #   pick-issues.sh [--repo-root DIR] [--limit N] [--include-backlog]
 #                  [--ready-only] [--fast-mode --slot-cap N] [--json]
-#
-# Exit: 0 success (including an empty selection), 1 a call failed or the board
-#       read was truncated (declared total exceeds what --limit fetched -- a
-#       partial read cannot judge the whole board, so it refuses to select),
-#       2 bad usage, 3 gh unavailable/unauthenticated (environment-blocked).
+# Exit: 0 success (including empty), 1 a call failed or the board read was truncated
+#       (a partial read refuses to select), 2 bad usage, 3 gh unavailable/unauthenticated.
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}

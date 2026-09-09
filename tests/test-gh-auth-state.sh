@@ -127,4 +127,8 @@ rc=0
 AGENTKIT_NET_PROBE=fail run_state "$(make_gh keyring 1 1)" "$(with_account keyring)" > /dev/null 2>&1 || rc=$?
 assert_eq '0' "$rc" 'reporting a failure is not itself a failure'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/gh-auth-state.sh") -le 57 ]] && printf yes || printf no)" \
+    'gh-auth-state.sh stays at or under 57 lines'
+
 finish

@@ -26,14 +26,9 @@ is used during rounds and one full suite is run on the final branch state. A mec
 
 ## Base-trusted repository configuration
 
-The `AGENT_ADVERSARIAL_REVIEWER`, `AGENT_ADVERSARIAL_REVIEWER_FALLBACK`,
-`AGENT_ADVERSARIAL_REVIEW_MODEL`, `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK`,
-and `AGENT_ADVERSARIAL_REVIEW_EFFORT` keys in `.agent/config.env` are
-base-trusted policy. Review launchers read them from `origin/<base>`; a
-working-tree value is not in effect until committed on the base branch. A
-worker must never stage `.agent/config.env` incidentally. It may do so only
-when the issue's declared write set explicitly names `.agent/config.env`; the
-commit helper enforces this boundary, including for `--include-staged`.
+The `AGENT_ADVERSARIAL_*` keys in `.agent/config.env` are base-trusted (read from `origin/<base>`; see
+adversarial-review.md "Base-trusted configuration"); a worker never stages `.agent/config.env` unless the
+issue's declared write set names it — the commit helper enforces this, including for `--include-staged`.
 
 Canonical helper argv is documented here so callers do not reconstruct it from memory:
 `gh-pr-state.sh --full --pr "$PR" --repo "$REPO" --tmpdir "$RUN_DIR/state"` (resolved as `"$agentkit/review-remote-pr/scripts/gh-pr-state.sh"`);
@@ -109,32 +104,21 @@ before the first run.
 its generated trust line before dispatch; a worker never sees it. trust record.>
 __DECLARED_COMMANDS__
 
-When a declared verification command fails, the worker may retry that same command with
-`--baseline-ref <chain-base> --baseline-path <failing-test-file> --baseline-id <test-id>`.
-`agent-run.sh` runs the command from the chain base in an isolated checkout and only changes the
-failure into `BASELINE-EXCLUDED` when the command identity and failure evidence match. Ordinary
-commands require an identical normalized failure signature. A command declared with
-`AGENT_CMD_<NAME>_KIND=format` compares the normalized, order-independent set of `[warn] path`
-records instead, and refuses the exclusion if the branch diff touches any reported path. That
-outcome exits 0 and writes `.agent/baseline-exclusion.md` with the test id, resolved base SHA,
-complete failing path set, and evidence log path; it is unchecked publication evidence, never a
-green verification result or cache entry. Missing or changed evidence stays an ordinary failure.
+When a declared verification command fails, the worker may retry it with
+`--baseline-ref <chain-base> --baseline-path <failing-test-file> --baseline-id <test-id>`: `agent-run.sh`
+re-runs it from the chain base in an isolated checkout and, only when command identity and failure evidence
+match, exits 0 as `BASELINE-EXCLUDED` and writes `.agent/baseline-exclusion.md` — unchecked publication
+evidence, never a green result or cache entry.
 
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
 
 __BLOCKER_CONTRACT__
 
-```bash
-git branch --show-current
-```
-
-agent-run.sh sets the run's caches and CA bundle, prepends the detected source roots to
-PYTHONPATH, delegates to the repo runner when one is declared, and suppresses output: success
-is a single PASS line; failure prints the matched error lines plus the full log path under
-<worktree>/.agent/logs/. Its exit status IS the wrapped command's exit status. On failure READ
-THE NAMED LOG — do not re-run with more verbosity and do not start repairing the environment.
-Pass `--` whenever the command's first token starts with `-`; always passing it is simplest.
+agent-run.sh supplies the run's caches, CA bundle, source roots, and repo runner and suppresses output:
+success is one PASS line; failure prints the matched error lines plus the log path under
+<worktree>/.agent/logs/ — on failure READ THE NAMED LOG; never re-run for verbosity or repair the
+environment. Its exit status IS the wrapped command's. Pass `--` before the command (always is simplest).
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 __COMPOSE_ISOLATION__
 
@@ -530,17 +514,11 @@ there is nothing to fix.
 
 ## Draft PR body template
 
-After a worker's completion report lands and the root's post-push review of `base...HEAD`
-clears it (SKILL.md's "Root review and draft PR after a worker push"), the root opens the
-DRAFT PR with this recipe. The body is
-composed by `compose-pr-body.sh` from four root-approved section files; the issue number and
-agent/service/model identity are the only generated footer values. Never pass a multiline PR
-body through inline `--body`: shell and orchestration layers can preserve escape sequences
-literally and collapse the rendered body to one line. The composer emits the fixed order:
-agentic disclosure, `Why`, `What`, `Decisions`, checkbox-formatted `Testing`, a signature line,
-and a separate closing-keyword line. A `--testing-file` line may be an existing `- [ ]`/`- [x]`
-checkbox (passed through unchanged) or a plain `- item` bullet, which the composer normalizes
-to an unchecked `- [ ] item` box; any other line still fails composition.
+After a worker's completion report lands and the root's post-push review of `base...HEAD` clears it
+(SKILL.md's "Root review and draft PR after a worker push"), the root opens the DRAFT PR with this recipe.
+`compose-pr-body.sh` composes the body from four root-approved section files in the fixed order —
+agentic disclosure, `Why`, `What`, `Decisions`, checkbox-formatted `Testing`, a signature line, and a
+separate closing-keyword line — normalizing plain `- item` Testing bullets to `- [ ] item`.
 Every composed body starts with the literal line `This was written agentically; verify its assertions:`.
 Never pass a multiline PR body through inline `--body`; the composer writes a private file for
 the byte-verifying transport.
