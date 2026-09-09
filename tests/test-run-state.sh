@@ -40,11 +40,30 @@ unset_rc=0; "$script" get --file "$state" --path redrive.16 >/dev/null 2>&1 || u
 assert_eq '11' "$unset_rc" 'an unset path reads as absent'
 assert_eq 'true' "$(jq -e 'type == "object"' "$state")" 'the file stays a JSON object throughout'
 
+assert_rc 0 'set --json null stores an explicit JSON null' -- "$script" set --file "$state" --path nullable --json null
+null_get_rc=0
+null_get_out=$("$script" get --file "$state" --path nullable 2>/dev/null) || null_get_rc=$?
+assert_eq '0' "$null_get_rc" 'get on an existing null-valued key succeeds (present, not absent)'
+assert_eq 'null' "$null_get_out" 'get prints null for an existing null-valued key'
+null_append_rc=0
+"$script" append --file "$state" --path nullable --value x >/dev/null 2>&1 || null_append_rc=$?
+assert_eq '1' "$null_append_rc" 'append refuses an existing null-valued key instead of silently overwriting it'
+assert_eq 'null' "$("$script" get --file "$state" --path nullable)" 'the refused append left the null value untouched'
+
 printf 'not json\n' > "$tmp/broken.json"
 broken_rc=0
 broken_err=$("$script" get --file "$tmp/broken.json" --path a 2>&1 >/dev/null) || broken_rc=$?
 assert_eq '1' "$broken_rc" 'an unparseable state file blocks instead of reading as empty'
 assert_contains "$broken_err" 'unparseable' 'the block names the cause'
+
+printf '%s\n' '{"a":1}' '{"b":2}' > "$tmp/multi.json"
+multi_get_rc=0
+multi_get_err=$("$script" get --file "$tmp/multi.json" --path a 2>&1 >/dev/null) || multi_get_rc=$?
+assert_eq '1' "$multi_get_rc" 'a state file holding two JSON objects is refused on get, not read value-by-value'
+assert_contains "$multi_get_err" 'unparseable' 'the multi-object refusal names the cause'
+multi_set_rc=0
+"$script" set --file "$tmp/multi.json" --path a --value 1 >/dev/null 2>&1 || multi_set_rc=$?
+assert_eq '1' "$multi_set_rc" 'a state file holding two JSON objects is refused on set too'
 ln -s "$state" "$tmp/link.json"
 link_rc=0; "$script" set --file "$tmp/link.json" --path a --value 1 >/dev/null 2>&1 || link_rc=$?
 assert_eq '1' "$link_rc" 'a symlinked state file is refused'
