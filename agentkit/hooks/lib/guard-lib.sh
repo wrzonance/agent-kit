@@ -1398,12 +1398,13 @@ guard_segment_substitutions() {
     done
 }
 
-# Like guard_gh_command_segments, but a heredoc BODY is dropped only when inert:
-# a quoted-delimiter body to a data sink stays dropped (issue #351); an UNQUOTED
-# body's substitutions and any body handed to a shell are recovered and
-# recursively re-segmented (issue #364).
+# The one quote/heredoc lexer. mode=recover (default): a heredoc BODY is dropped
+# only when inert -- a quoted-delimiter body to a data sink stays dropped (issue
+# #351); an UNQUOTED body's substitutions and any body handed to a shell are
+# recovered and recursively re-segmented (issue #364). mode=drop: every body is
+# dropped (guard_gh_command_segments, issue #661).
 guard_destructive_command_segments() {
-    local input=$1 line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
+    local input=$1 mode=${2:-recover} line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
     local i length char next third rest k delimiter delimiter_quote terminator_line
     local owner='' heredoc_no_expand=0 body='' bodyline sub recovered
 
@@ -1416,7 +1417,7 @@ guard_destructive_command_segments() {
             if [[ $terminator_line == "$heredoc" ]]; then
                 heredoc=''
                 heredoc_tabstrip=0
-                if ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; then
+                if [[ $mode == drop ]] || { ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; }; then
                     body=''
                 elif guard_heredoc_consumer_is_shell "$owner"; then
                     while IFS= read -r recovered; do
@@ -1975,118 +1976,8 @@ guard_destructive_segment_reason() {
 # prose such as `echo "step 1; gh ..."` and body lines such as `gh ...` from
 # becoming executable-looking segments.
 guard_gh_command_segments() {
-    local input=$1 line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
-    local i length char next third rest k delimiter delimiter_quote terminator_line
-
-    while IFS= read -r line || [[ -n $line ]]; do
-        if [[ -n $heredoc ]]; then
-            terminator_line=$line
-            # `<<-` permits the TERMINATOR to be tab-indented too, not only the
-            # heredoc body -- bash strips leading tabs from every line of a
-            # `<<-` heredoc, including the closing delimiter line. Comparing
-            # the raw line left a tab-indented terminator never matching, so
-            # the heredoc (and every command segment after it) was silently
-            # swallowed -- the guard failing open rather than closed.
-            if ((heredoc_tabstrip)); then
-                terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
-            fi
-            if [[ $terminator_line == "$heredoc" ]]; then
-                heredoc=''
-                heredoc_tabstrip=0
-                # Flush the owner line as its own segment (issue #680): with no
-                # command after the terminator it was otherwise never emitted.
-                if [[ -n $segment ]]; then
-                    printf '%s\n' "${segment%$'\n'}"
-                    segment=''
-                fi
-            fi
-            continue
-        fi
-
-        i=0
-        length=${#line}
-        while ((i < length)); do
-            char=${line:i:1}
-            next=${line:i+1:1}
-            third=${line:i+2:1}
-
-            if [[ $quote == "'" ]]; then
-                segment+=$char
-                [[ $char == "'" ]] && quote=''
-                ((i++))
-                continue
-            fi
-            if ((escaped)); then
-                segment+=$char
-                escaped=0
-                ((i++))
-                continue
-            fi
-            if [[ $char == \\ ]]; then
-                segment+=$char
-                escaped=1
-                ((i++))
-                continue
-            fi
-            if [[ $quote == '"' ]]; then
-                segment+=$char
-                [[ $char == '"' ]] && quote=''
-                ((i++))
-                continue
-            fi
-
-            case $char in
-                "'"|'"')
-                    quote=$char
-                    segment+=$char
-                    ((i++))
-                    ;;
-                ';'|'|'|'&')
-                    printf '%s\n' "$segment"
-                    segment=''
-                    ((i++))
-                    ;;
-                '<')
-                    if [[ $next == '<' && $third != '<' ]]; then
-                        segment+='<<'
-                        i=$((i + 2))
-                        rest=${line:i}
-                        heredoc_tabstrip=0
-                        [[ ${rest:0:1} == '-' ]] && { rest=${rest:1}; heredoc_tabstrip=1; }
-                        rest="${rest#"${rest%%[![:space:]]*}"}"
-                        delimiter_quote=${rest:0:1}
-                        if [[ $delimiter_quote == "'" || $delimiter_quote == '"' ]]; then
-                            rest=${rest:1}
-                            k=0
-                            while ((k < ${#rest})) && [[ ${rest:k:1} != "$delimiter_quote" ]]; do
-                                ((k++))
-                            done
-                            delimiter=${rest:0:k}
-                        else
-                            delimiter=${rest%%[[:space:];|&]*}
-                            # `<<\EOF`: strip the backslash so the bare terminator matches (see guard_destructive_command_segments).
-                            delimiter=${delimiter//\\/}
-                        fi
-                        [[ -n $delimiter ]] && heredoc=$delimiter
-                    else
-                        segment+=$char
-                        ((i++))
-                    fi
-                    ;;
-                *)
-                    segment+=$char
-                    ((i++))
-                    ;;
-            esac
-        done
-
-        if [[ -z $heredoc && -z $quote ]]; then
-            printf '%s\n' "$segment"
-            segment=''
-        else
-            segment+=$'\n'
-        fi
-    done <<< "$input"
+    # One lexer, two modes (issue #661): drop never recovers a heredoc body.
+    guard_destructive_command_segments "$1" drop
 }
 
 # Tokenize ONE segment as the shell would (single/double quotes, backslash
