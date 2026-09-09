@@ -530,12 +530,12 @@ assert_eq yes "$([[ $(awk '/gh-pr-state\.sh/{fetch=NR} /post-receipt\.sh.*status
     'the live refresh precedes receipt classification'
 assert_contains "$final_sweep_section" '10:receipt=none' \
     'only a missing receipt is eligible for final-sweep recovery'
-assert_contains "$final_sweep_section" 'receipt_redrive_attempted' \
-    'receipt recovery is tracked per PR for a one-shot limit'
+assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
+    'receipt recovery is tracked per PR in run-state for a one-shot limit'
 assert_contains "$final_sweep_section" 'duplicate/invalid' \
     'duplicate or invalid receipts are explicitly non-recoverable'
-assert_contains "$final_sweep_section" '++parked_count' \
-    'non-recoverable receipt evidence increments parked_count'
+assert_contains "$final_sweep_section" 'run-state.sh append --path parked' \
+    'non-recoverable receipt evidence is recorded in run-state, not a bash counter'
 assert_contains "$normalized_text" 're-enters the draft loop' \
     'a final-sweep miss re-enters the draft loop'
 assert_contains "$normalized_text" 'handoff cannot print' \

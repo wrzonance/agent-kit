@@ -683,7 +683,7 @@ Act on each lead result as soon as it arrives:
   A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
   the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, clear the blocker. For `write-set`, the root must widen the fence and recheck every active worker; only after the blocker clears, do one `collaboration.followup_task` and record `auto_redrive_attempted[issue]`. If the same lead is unavailable, use a fresh lead with preserved state and the exact resume command `followup_task(<same lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
+- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, do one `collaboration.followup_task` and record (`$agentkit/.shared/scripts/run-state.sh set --run-id "$RUN_ID" --path redrive.<N>`). If the same lead is unavailable, give a fresh lead an exact resume command `followup_task(<lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
   A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request that
   drives that recheck; otherwise report the preserved worktree with the blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
@@ -922,7 +922,7 @@ Per-PR follow-up exit line:
 ### Final draft sweep (mandatory before handoff)
 
 With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
-then run `post-receipt.sh" status` on the fresh `pr_<N>_issue_comments.json`. A successful adversarial/verified-skip result increments receipts; `10:receipt=none` re-enters the draft loop once per PR (`receipt_redrive_attempted[pr]`); duplicate/invalid evidence is not recoverable — park the PR, `++parked_count`, report it, and never deadlock; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
+then run `post-receipt.sh" status` on the fresh `pr_<N>_issue_comments.json`. A successful adversarial/verified-skip result increments receipts; `10:receipt=none` re-enters the draft loop once per PR (`run-state.sh` `receipt-redrive.<pr>`); duplicate/invalid evidence is unrecoverable: park the PR (`run-state.sh append --path parked`), report; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.

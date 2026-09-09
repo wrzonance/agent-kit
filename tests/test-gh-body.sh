@@ -191,6 +191,41 @@ done
 output=$(run_body pr edit 41 --repo owner/repo --body-file "$body" --title 'edited')
 assert_contains "$output" 'updated pr #41' 'PR edit verifies a target with no gh stdout URL'
 
+# issue #613: --tick flips exactly one unchecked Testing checkbox in the body
+# file, then the ordinary exact-verify edit proves the flipped body landed.
+tick_body="$tmp/tick-body.md"
+printf '%s\n' \
+    'This was written agentically; verify its assertions:' \
+    '' \
+    '## Testing' \
+    '- [ ] Unit tests pass' \
+    '- [ ] CI green' \
+    '' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' >"$tick_body"
+output=$(run_body pr edit 41 --repo owner/repo --body-file "$tick_body" --tick 'CI green' --note '8/8 checks passed on abc1234')
+assert_contains "$output" 'updated pr #41' '--tick still runs the exact-verify edit'
+assert_contains "$(cat "$tick_body")" '- [x] CI green (8/8 checks passed on abc1234)' \
+    '--tick flips the named checkbox and appends the note'
+assert_contains "$(cat "$tick_body")" '- [ ] Unit tests pass' '--tick leaves the other checkbox unchecked'
+assert_eq yes "$(cmp -s "$tick_body" "$tmp/stored.md" && printf yes || printf no)" \
+    'the ticked file is byte-for-byte the body gh stored'
+tick_dup="$tmp/tick-dup.md"
+printf '%s\n' 'This was written agentically; verify its assertions:' '' \
+    '- [ ] CI green (fresh)' '- [ ] CI green (main)' '' '🤖 Co-authored by Codex gpt-5.6-luna.' >"$tick_dup"
+gh_calls_before=$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')
+tick_dup_rc=0
+tick_dup_err=$(run_body pr edit 41 --repo owner/repo --body-file "$tick_dup" --tick 'CI green' 2>&1 >/dev/null) || tick_dup_rc=$?
+assert_eq '1' "$tick_dup_rc" 'an ambiguous --tick refuses'
+assert_contains "$tick_dup_err" 'matches 2' 'the ambiguous refusal counts the matches'
+assert_contains "$(cat "$tick_dup")" '- [ ] CI green (fresh)' 'an ambiguous --tick leaves the file untouched'
+assert_eq "$gh_calls_before" "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" 'an ambiguous --tick never calls gh'
+tick_none_rc=0
+run_body pr edit 41 --repo owner/repo --body-file "$tick_body" --tick 'Nonexistent' >/dev/null 2>&1 || tick_none_rc=$?
+assert_eq '1' "$tick_none_rc" 'a --tick with no match refuses'
+tick_create_rc=0
+run_body pr create --repo owner/repo --body-file "$body" --tick 'CI green' >/dev/null 2>&1 || tick_create_rc=$?
+assert_eq '1' "$tick_create_rc" '--tick is refused on create'
+
 output=$(run_body issue create --repo owner/repo --body-file="$body" --title 'An issue')
 assert_contains "$output" 'https://github.com/owner/repo/issues/42' \
     'issue create returns the gh result after exact verification'
@@ -594,7 +629,8 @@ assert_eq '0' "$(jq '.remaining | length' <"$failed_ledger_file")" \
 assert_eq "$failed_number" "$(jq -r '.idMap["issue-545"].number' <"$failed_ledger_file")" \
     'the ledger holds the created-but-unverified PR number'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/github-body-policy.md") -le 920 ]] && printf yes || printf no)" \
-    'github-body-policy stays at or under 920 bytes'
+# issue #613: +281 B for the --tick pointer.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/github-body-policy.md") -le 1179 ]] && printf yes || printf no)" \
+    'github-body-policy stays at or under 1179 bytes'
 
 finish

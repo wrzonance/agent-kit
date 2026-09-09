@@ -31,6 +31,8 @@ EXPECT_CLOSING_ISSUE=''
 CLOSING_REFERENCE_STATUS=''
 CLOSING_REFERENCE_REASON=''
 JSON_MODE=0
+TICK_TEXT=''
+TICK_NOTE=''
 
 usage() {
     cat <<EOF
@@ -60,6 +62,9 @@ verification later failed. When the gh mutation itself fails (nothing was
 created or edited), no JSON object is emitted at all: stdout stays empty and
 gh's raw output moves to stderr alongside the failure diagnosis. Default
 text-mode output and exit codes are unchanged by this flag.
+
+--tick TEXT [--note TEXT]  (edit only) flip the one unchecked "- [ ] TEXT..."
+checkbox, appending " (NOTE)", before the exact-verify edit.
 EOF
 }
 
@@ -100,7 +105,8 @@ parse_args() {
                 while (($#)); do
                     case $1 in
                         --body|-b|--body=*|-b?*|--body-file|--body-file=*|\
-                            --expect-closing-issue|--expect-closing-issue=*)
+                            --expect-closing-issue|--expect-closing-issue=*|\
+                            --tick|--tick=*|--note|--note=*)
                             die 'body options must precede --; use --body-file FILE'
                             ;;
                         *)
@@ -143,6 +149,24 @@ parse_args() {
                 ;;
             --expect-closing-issue=*)
                 EXPECT_CLOSING_ISSUE=${1#*=}
+                shift
+                ;;
+            --tick)
+                require_value "$1" "${2-}"
+                TICK_TEXT=$2
+                shift 2
+                ;;
+            --tick=*)
+                TICK_TEXT=${1#*=}
+                shift
+                ;;
+            --note)
+                require_value "$1" "${2-}"
+                TICK_NOTE=$2
+                shift 2
+                ;;
+            --note=*)
+                TICK_NOTE=${1#*=}
                 shift
                 ;;
             --json)
@@ -212,6 +236,35 @@ validate_expected_closing_issue() {
     local expected_closing_re="^(Closes|Fixes|Resolves) #$EXPECT_CLOSING_ISSUE$"
     LC_ALL=C grep -qE "$expected_closing_re" -- "$BODY_FILE" ||
         die "body does not contain expected closing keyword for #$EXPECT_CLOSING_ISSUE"
+}
+
+# --tick TEXT: flip exactly one unchecked "- [ ] TEXT..." checkbox in the body
+# file to "- [x] ..." (appending " (NOTE)" with --note) before the mutation, so
+# the same exact-verify edit proves the flipped body landed (issue #613). Zero
+# or several matches refuse without touching the file or calling gh.
+apply_tick() {
+    if [[ -z $TICK_TEXT ]]; then
+        [[ -z $TICK_NOTE ]] || die '--note requires --tick'
+        return 0
+    fi
+    [[ $ACTION == edit ]] || die '--tick applies to edit only'
+    [[ $TICK_TEXT != *$'\n'* && $TICK_NOTE != *$'\n'* ]] || die '--tick and --note must be single-line'
+    local line matches=0 staged
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line == "- [ ] $TICK_TEXT"* ]] && matches=$((matches + 1))
+    done <"$BODY_FILE"
+    ((matches == 1)) || die "--tick must match exactly one unchecked checkbox; '- [ ] $TICK_TEXT' matches $matches"
+    staged=$(mktemp "$(dirname -- "$BODY_FILE")/.gh-body-tick.XXXXXX") || die 'could not stage the ticked body'
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == "- [ ] $TICK_TEXT"* ]]; then
+            line="- [x] ${line#- \[ \] }"
+            [[ -z $TICK_NOTE ]] || line+=" ($TICK_NOTE)"
+        fi
+        printf '%s\n' "$line"
+    done <"$BODY_FILE" >"$staged" || { rm -f -- "$staged"; die 'could not write the ticked body'; }
+    chmod --reference="$BODY_FILE" "$staged" 2>/dev/null || chmod 600 "$staged"
+    mv -f -- "$staged" "$BODY_FILE" || { rm -f -- "$staged"; die 'could not replace the body file with its ticked copy'; }
+    printf 'ticked: - [x] %s\n' "$TICK_TEXT" >&2
 }
 
 cleanup() {
@@ -475,6 +528,7 @@ emit_json_result() {
 main() {
     parse_args "$@"
     validate_body
+    apply_tick
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-body.XXXXXX")
     trap cleanup EXIT
     run_mutation
