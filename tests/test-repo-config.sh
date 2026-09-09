@@ -628,6 +628,23 @@ assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_MODE
     'a dotted Claude model id is refused with the hyphenated form'
 assert_not_contains "$validate_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK' \
     'a bare CLI name is valid for the fallback reviewer exactly as for the primary'
+
+# A roster with one correctable item and one unknown item must not suggest a
+# still-invalid correction -- the corrected roster as a whole has to pass.
+printf 'AGENT_WORKER_MODELS=codex-gpt-6-astra,foo\n' > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_WORKER_MODELS on line 1, ignoring' \
+    'a roster with one unknown item is still refused'
+assert_not_contains "$validate_out" 'did you mean' \
+    'but no suggestion is offered when the corrected roster would still be invalid'
+
+# A roster where every item is correctable, and the corrected roster as a
+# whole is valid, still gets the "did you mean" suggestion.
+printf 'AGENT_WORKER_MODELS=codex-gpt-6-astra,claude-fable-5.1\n' > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_WORKER_MODELS on line 1, ignoring -- did you mean gpt-6-astra,claude-fable-5-1' \
+    'a roster where every item is correctable suggests the whole corrected roster'
+
 printf 'AGENT_WORKER_MODELS=gpt-6-astra,claude-opus-5\nAGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh\n' > "$repo/.agent/config.env"
 assert_rc 0 '--validate exits zero on a gpt-6-* roster and reviewer' -- "$rc_sh" --repo-root "$repo" --validate
 assert_eq codex "$("$rc_sh" --model-family gpt-6-astra)" '--model-family names the codex family for a gpt-6-* id'
@@ -639,7 +656,9 @@ assert_rc 1 '--model-family fails for an unknown family' -- "$rc_sh" --model-fam
 # 2026-09-09 issue #606: the model-family predicate and corrected-form
 # suggestions now live here and only here (adversarial-run.sh -3,
 # spawn-contract.md -7). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1108 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1108 lines'
+# 2026-09-09 fix round 1: value_suggestion's roster arm now validates the
+# corrected roster as a whole before offering it (+4 lines). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1112 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1112 lines'
 
 finish
