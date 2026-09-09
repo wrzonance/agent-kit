@@ -5,9 +5,7 @@ lead, a PR-loop agent, CI, or an adversarial review verdict. It is the single de
 for the wait contract; each skill's own body keeps only the pinned rule sentences and names
 this file for the rationale and the durable-state recipe.
 
-Waiting is not work, and narrating a wait is not a status report. One observed run spent
-~27 empty wait cycles and ~15 paragraphs that carried no new fact — pure cost, zero
-progress.
+Waiting is not work, and narrating a wait is not a status report — one observed run spent ~27 empty wait cycles on it.
 
 ## The rule
 
@@ -48,44 +46,19 @@ and a recorded `quiescence:` ledger line naming those observations.
 
 ## GitHub API budget — a rate-limit exit is not a wait to retry
 
-Every `gh`-authenticated tool run by this account shares two hourly pools (REST, GraphQL) across
-every session on every machine (`~/.claude/rules/github-api-budget.md`). Two concurrent
-`pr-to-green` runs have exhausted the REST pool in well under an hour and blocked each other, with
-the failure landing on the final evidence read before a receipt (agent-kit#475). `pr-queue.sh
---write-confirmed-queue` prints a `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight
-line and warns (never blocks) when the queue's estimated cost exceeds the remaining REST budget —
-read it before committing to a large queue, especially when another session may be running
-concurrently.
-
-A `gh-pr-state.sh` or `pr-queue.sh` call that dies on rate-limit exhaustion exits with a distinct
-code (`3`, not the ordinary `1`) and names the reset time on the same line
-(`... reset=2026-08-25T14:00:00Z`). On that exit:
-
-- **Stop mutating immediately.** Do not retry the failed call, and do not issue any further
-  write-side `gh` call for this run.
-- **Record applied-vs-outstanding.** Note exactly what completed before the refusal and what did
-  not, from durable state (worktree, forge, already-written evidence) — never from memory of intent.
-  This is the same in-flight ledger practice `github-api-budget.md` already asks for during bulk
-  mutation runs.
-- **Report the reset time verbatim** from the exit line; do not compute or guess one.
-- **Never retry into an empty pool.** A wait bound cannot fix this — the pool refills on GitHub's
-  clock, not on a poll interval. If the reset is inside this session's remaining time, stop and wait
-  for it explicitly (a plain silent wait to the target epoch, this file's recipe above) rather than
-  re-issuing calls in a loop that will keep failing until then.
-
-**Practical concurrency ceiling.** A single GitHub account's REST pool (5,000 requests/hour) is
-shared by every concurrent agent run authenticated as that user, on every machine. A `pr-to-green`
-PR costs roughly `full_reads × 8 + wait_rounds × 5` REST calls end to end (the same estimate the
-queue preflight uses) — at the default 3 `--full` phases and one 4-round `--wait-ci` cycle, about
-44 calls/PR. Two or three fully concurrent `pr-to-green`/`parallel-issues` runs against the same
-account can exhaust the pool inside an hour; the durable fix is a separate machine identity (a
-GitHub App installation token or machine account — agent-kit#179), not spacing out polls by hand.
+Every `gh`-authenticated run by this account shares two hourly pools (REST, GraphQL) across every session
+on every machine. `pr-queue.sh --write-confirmed-queue` prints a `budget: rest=R/L reset=ISO graphql=R/L
+reset=ISO` preflight line and warns (never blocks) when the queue's estimated cost exceeds the remaining
+REST budget. A `gh-pr-state.sh` or `pr-queue.sh` call that dies on exhaustion exits `3` (not `1`) and names
+the reset time on the same line. On that exit: stop mutating immediately (no retry, no further write-side
+`gh` call); record applied-vs-outstanding from durable state, never from memory of intent; report the reset
+time verbatim; and never retry into an empty pool — if the reset is inside this session's remaining time,
+wait for it with the silent epoch recipe above. Concurrent runs on one account exhaust the pool inside an
+hour; the durable fix is a separate machine identity (agent-kit#179), not spacing polls by hand.
 
 ## Default numeric bounds per wait class
 
-"An explicit bound" is a number, not an adjective. A wait issued without one falls back to
-the harness default (~110 s on one measured runtime), and a five-issue run spent ~2 h
-processing 61 timed-out waits that each carried zero information. The defaults:
+"An explicit bound" is a number, not an adjective; a wait without one falls back to the harness default (~110 s). The defaults:
 
 | Wait class | Default bound |
 |---|---|
@@ -108,14 +81,10 @@ stall path (`parallel-issues/scripts/stall-check.sh`) instead of blocking blind.
 
 ## Never replay a recorded path as a command
 
-Any path that crosses the boundary to a human, or that is recorded for a future resumed run
-to execute, uses the contract/resolver form (`$agentkit`, or
-`"$agentkit/.shared/scripts/contract-read.sh" --get skills.path`) — never a literal
-`agentkit/<version>/` path. A version-pinned plugin path stops resolving the moment the plugin
-updates, and it then fails as a bare missing-file error that never says why. The one exception:
-the session ledger's `skills_path` field records the version-pinned path as historical
-provenance, which is correct and must stay — the hazard is only replaying a recorded
-`skills_path` as an executable path on resume without re-resolving it first.
+Any path that crosses to a human or is recorded for a resumed run uses the contract/resolver form (`$agentkit`,
+or `"$agentkit/.shared/scripts/contract-read.sh" --get skills.path`) — never a literal `agentkit/<version>/` path,
+which stops resolving at the next plugin update. The session ledger's `skills_path` field is historical
+provenance and must stay; the hazard is only replaying it as executable on resume.
 
 ## Durable state to inspect after a completion
 
@@ -138,7 +107,8 @@ git status --short
 git log --oneline -n 3
 pull_request=  # Its PR number; leave empty until one is reported (e.g. after a BLOCKED completion with no PR yet).
 if [ -n "${pull_request}" ]; then
-  REPO=${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
+  REPO=${REPO:-$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$(git rev-parse --show-toplevel)" --get repo.slug)}
+  [[ $REPO == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
   "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$pull_request" --repo "$REPO"
 fi
 ```

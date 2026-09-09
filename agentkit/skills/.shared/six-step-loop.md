@@ -90,17 +90,3 @@ Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Rev
    refusal (`worktree-commit.sh` exit 2, nothing committed) returns the exact ready-to-run
    commit command as a handback; a post-commit push refusal reports the commit SHA and the
    exact push command — never a commit command the root cannot rerun.
-
-## Where each step maps for an orchestrated lead
-
-| Loop step | Lead phase |
-|---|---|
-| Understand | Map code, tests, commands, conventions, ADR/prior art; use two read-only lenses when slots permit |
-| 1. Structs | **Design** — name or reshape the data structures first; compare minimal-reuse and robust/failure-mode angles |
-| 2. Interfaces | **Design** — define function/method contracts, inputs, outputs, and errors before implementation |
-| 3. Todos | **Design** — map every affected file, call site, import, wiring point, and verification command; synthesize the design and decide `needsSpike` |
-| 4. Spike + revert | **Spike** — rough-implement one bounded vertical slice only far enough to expose design mistakes, record learnings, then revert every spike change |
-| 5. Invariants | **Invariants** — fold spike learnings back, state boundary pre/postconditions, and cut the ordered task list |
-| 6. Implementation (TDD) | **Implement** — red → green → refactor per task; scoped checks per task and the full suite at the final task, all through `agent-run.sh` |
-| review gate | **Review** — correctness, house-rules, and test lenses; adversarially verify before fixing; max 2 rounds |
-| verify + ship | **Finish** — worker verifies fresh, commits with `worktree-commit.sh`, and pushes its own branch, then reports the SHA; the root reviews the pushed diff and owns the PR, board, and every forge follow-up. The unstaged publication handback survives only as the environment-refusal fallback |

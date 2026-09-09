@@ -5,23 +5,17 @@ environment-contract mechanics behind them.
 
 ## Runtime and provider neutrality
 
-Evidence parsing is a blocking check: empty output is acceptable only when the parser proved it
-ran; missing parser ≠ "no findings." Guard every `jq`/`python3` recipe:
+Evidence parsing is a blocking check: empty output is acceptable only when the parser proved it ran;
+missing parser ≠ "no findings." Guard every `jq`/`python3` recipe:
 `command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }`
-Before any GitHub body mutation, follow the shared GitHub body transport policy
-["$agentkit/.shared/github-body-policy.md"](../../.shared/github-body-policy.md).
-
-Runtime facts come from the session contract's `sandbox=`/`git=`/`measured-by=` records, never
-inferred; absent = "unknown." A denial or approval in one session does not establish the same
-result in another: when a write, forge call, or worktree operation is denied, report the contract
-state and the exact operation that needs the harness's approval, and do not generalize that denial
-to another session. **Shell state does NOT persist between tool calls** — re-derive
-`REPO`/`PR` at the top of every block; run project/test/lint through `.shared/scripts/agent-run.sh`,
-never hand-export cache/CA/`PYTHONPATH`. **A spawned agent cannot spawn another** — only the root
-orchestrator dispatches. Review-provider behavior is repo/org configuration: never claim
-automatic/incremental/manual-only without current state, and never post a trigger command. Never
-disable TLS verification to work around a failure; `agent-run.sh` relocates a read-only `$HOME`
-cache and reports the substitution as a `note:` line.
+Before any GitHub body mutation, follow ["$agentkit/.shared/github-body-policy.md"](../../.shared/github-body-policy.md).
+Runtime facts come from the session contract's `sandbox=`/`git=`/`measured-by=` records, never inferred
+(absent = "unknown"); a denial or approval in one session never generalizes to another — report the
+contract state and the exact operation that needs approval. **Shell state does NOT persist between tool
+calls** (re-derive `REPO`/`PR` per block); run project commands through `.shared/scripts/agent-run.sh`,
+never hand-export cache/CA/`PYTHONPATH`, never disable TLS verification. **A spawned agent cannot spawn
+another.** Review-provider behavior is repo/org configuration: never claim automatic/incremental/manual-only
+without current state, and never post a trigger command.
 
 ## The environment contract
 
@@ -34,24 +28,13 @@ may need `gh auth refresh -s project`, while an unattended fleet session must ve
 entirely, go straight to the blind same-harness fallback; `config= present=no` → facts come from
 discovery instead of `.agent/config.env`.
 
-The contract file is keyed by harness (issue #551): `.agent/env-contract.<harness>.txt`, never the
-bare `.agent/env-contract.txt` -- a second harness opening the same checkout (e.g. a session started
-"to observe" a run already in flight under the other harness) must never overwrite the file the
-first harness's run is relying on. `contract-read.sh` and every guard resolve the file matching the
-*running* harness automatically; nothing above changes. The bare, un-suffixed name is a read-only
-legacy fallback kept for one release. If this session's own contract carries `mode=observer`, another
-harness's run was
-still active in this checkout when this session started: treat the checkout root as read-only and do
-your work from a linked worktree instead of racing that run.
-
-A repo opts into its own command runner via exactly two mechanisms, in order: `AGENT_REPO_RUNNER`
-env var, then a committed `.agent/runner`. `.agent/` is untracked; Step 0a adds it to local
-excludes; `worktree-commit.sh` stages only the FILE arguments given to it, so a careless
-`git add -A` is not safe.
-
-For unattended orchestration, `gh` must inherit the fleet GitHub App installation token through
-`GH_TOKEN` (or `GITHUB_TOKEN` when `GH_TOKEN` is absent). This identity owns Project GraphQL reads
-and mutations, draft PR creation, and workflow-authored comments. Never repair a missing fleet
-credential by logging the human account into the worker shell. Draft-to-ready flips, approvals, and
-merges remain human-gated actions from a separately authenticated human shell; see the
-[fleet identity runbook](../../../../docs/fleet-identity.md).
+The contract file is keyed by harness (issue #551): `.agent/env-contract.<harness>.txt`, so a second harness
+observing a checkout never overwrites the file the first harness's run relies on; `contract-read.sh` and
+every guard resolve the running harness's file automatically (the bare name is a read-only legacy fallback).
+A contract carrying `mode=observer` means another harness's run was active: treat the checkout root as
+read-only and work from a linked worktree. A repo opts into its own command runner via `AGENT_REPO_RUNNER`,
+then a committed `.agent/runner`. `.agent/` is untracked (Step 0a excludes it) and `worktree-commit.sh`
+stages only its FILE arguments, so `git add -A` is never safe. Unattended orchestration authenticates `gh`
+with the fleet App installation token (`GH_TOKEN`/`GITHUB_TOKEN`); never repair a missing fleet credential by
+logging the human account into the worker shell — ready flips, approvals, and merges stay human-gated (see the
+[fleet identity runbook](../../../../docs/fleet-identity.md)).

@@ -80,7 +80,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
   `$agentkit/parallel-issues/scripts/concurrency-cap.sh`'s cap (root counted) and the API budget below —
   admission/revalidation: ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
   Step 5's
-  merges are serial.
+  merges are serial; `--auto-merge` implies strict serial merge ordering.
 - Resolve provider configuration before any PR mutation. Missing or invalid
   config is effective `none`: warn and continue through CI, mandatory
   adversarial review, and human-feedback gates without a provider wait.
@@ -90,17 +90,9 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 - Never merge, force-push, or clean worktrees. Never choose a history rewrite,
   unexpected diff expansion, conflict repair, or human-feedback disposition
   silently.
-- Provider rules, author classification, fix batches, reply settlement,
-  bounded waits, exact readback, worktree mechanics, and the six-step worker
-  gate stay in their existing authoritative files.
-- `--auto-merge` implies strict serial merge ordering — see
-  ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 - **GitHub API budget.** Read `$agentkit/pr-to-green/scripts/pr-queue.sh --write-confirmed-queue`'s
-  `budget: rest=R/L reset=ISO graphql=R/L reset=ISO` preflight first. REST-cost overruns
-  warn, never block; concurrent sessions may consume budget.
-  `$agentkit/review-remote-pr/scripts/gh-pr-state.sh`/`pr-queue.sh` exit `3` means rate-limit:
-  stop, record completed/outstanding work and reset time; never retry an empty pool. See
-  ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry).
+  `budget:` preflight line first; `$agentkit/review-remote-pr/scripts/gh-pr-state.sh`/`pr-queue.sh` exit `3` is a rate-limit stop —
+  ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md#github-api-budget--a-rate-limit-exit-is-not-a-wait-to-retry) owns the rule.
 
 ## Resident call-site map
 
@@ -157,14 +149,9 @@ trigger/observe/disabled decision), verified dependency graph, and exact
 serial queue.
 
 After confirmation, derive the owner-only authorization JSON with
-`scripts/authorize-queue.sh`. Pass the same repository, merge plan or explicit
-PR selectors and provider decisions used for the displayed queue and the
-machine-written confirmed queue snapshot. The helper re-runs `pr-queue.sh`
-with JSON output, requires the live PR order/set, states, head SHAs, bases, and
-provider name/action/source records to equal the displayed snapshot, then
-copies the queue fields from the fresh live result. It has no SHA or base
-arguments. Any queue or provider drift fails closed and requires
-redisplay/reconfirmation.
+`scripts/authorize-queue.sh`, passing the same repository, merge plan or PR selectors, and provider
+decisions the displayed queue used; it re-reads the live queue, requires it to equal the displayed
+snapshot (any drift fails closed → redisplay/reconfirm), and copies the queue fields from that live result.
 For example, a confirmed non-merging queue with the default CodeRabbit action
 is recorded in one command:
 
@@ -176,43 +163,18 @@ is recorded in one command:
   --provider coderabbit:trigger:capability-default
 ```
 
-Pass every displayed trigger-capable provider as
-`--provider NAME:ACTION:SOURCE`; when the capability plan has none, pass
-`--no-providers`. These arguments must exactly match the provider records
-already persisted by the queue writer; changing an action, source, or provider
-set after confirmation is rejected. The ready-transition and auto-merge choices are mandatory
-arguments, so the helper never infers consent. For a confirmed merging queue,
-replace `--no-auto-merge` with `--auto-merge --merge-method METHOD` and one
-explicit `--delete-branch` or `--keep-branch` choice.
-
-The displayed snapshot contains `repository`, `providers`, and `queue`; the
-derived authorization file contains:
-
-- `repository` and `readyTransition: true`;
-- `providers`, one record per displayed trigger-capable provider:
-  `{"name":"coderabbit","action":"trigger|observe|disabled","source":"..."}`.
-  `action` is `trigger` unless the operator instructed otherwise for that
-  provider, in which case it is `observe` or `disabled` with
-  `source:"operator-instruction"` (`source` is `"capability-default"` for an
-  unmodified `trigger`); `review-transition.sh` flips ready and, for a
-  `disabled`/`observe` action, posts nothing and reports
-  `result=DISABLED`/`OBSERVE_ONLY source=<source>` instead of requiring a
-  round trip to re-ask;
-- `queue`, with each confirmed PR's number, current state, full head SHA, and
-  confirmed base ref (e.g. `{"pr":42,"state":"RUNNABLE","headSha":"<40 hex>","base":"main"}`);
-- when `--auto-merge` was confirmed: `autoMerge: true`, `mergeMethod`, and
-  `deleteBranch` — see ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md)
-  for the exact record shape and ledger requirement.
-
-`review-transition.sh` compares both the live head SHA and the live base ref
-against this record before any ready-flip or provider spend, so an omitted
-`base` fails authorization outright.
-
-That file is narrow evidence for `review-transition.sh`, not reusable consent
-after a head, provider plan, or queue change. Re-display and reconfirm changed
-inputs — except a verified mechanical advance of an already-confirmed PR (see
-Step 5 and ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md)),
-which this same confirmation durably covers.
+Pass every displayed trigger-capable provider as `--provider NAME:ACTION:SOURCE` (`--no-providers` when
+the plan has none); they must match the persisted provider records exactly. The ready-transition and
+auto-merge choices are mandatory arguments, so the helper never infers consent — a merging queue passes
+`--auto-merge --merge-method METHOD` plus `--delete-branch` or `--keep-branch`. The record holds
+`repository`, `readyTransition: true`, one `{"name","action":"trigger|observe|disabled","source"}` per
+provider (`source` is `capability-default` for an unmodified `trigger`, `operator-instruction` for an
+operator-chosen `observe`/`disabled`), `queue` entries `{"pr","state","headSha","base"}`, and — under `--auto-merge` — `autoMerge`,
+`mergeMethod`, `deleteBranch` (["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md));
+`review-transition.sh` checks the live head SHA and base ref against it before any ready-flip or provider
+spend, posting nothing for a `disabled`/`observe` action (`result=DISABLED`/`OBSERVE_ONLY source=<source>`).
+It is narrow evidence, not reusable consent: re-display and reconfirm changed inputs, except a verified
+mechanical advance of an already-confirmed PR (Step 5), which this same confirmation durably covers.
 
 ### 2. Normalize runnable PRs
 
@@ -224,18 +186,13 @@ adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
-A declared-verification failure whose failing paths are all provably unchanged
-from base and outside this PR's diff is `baseline-red` — classified by
-review-remote-pr Step 2's `$agentkit/review-remote-pr/scripts/verification-baseline.sh`, never re-derived here.
-Record it as evidence and proceed through commit, push, adversarial review,
-and receipt; never park on it, and never reformat unrelated paths just to
-force a clean run. Any other declared-verification failure is
-`change-caused-red`: fix it as today. Ready-flip and merge stay blocked on it
-exactly as on any other red — see Step 4; this changes only what unblocks
-Phase A publication. `$agentkit/parallel-issues/scripts/compose-pr-body.sh`'s optional `--baseline-file` appends
-the generated evidence block, listing every passing gate by name, marking
-every skipped or conditional check SKIPPED (never passed), and never claiming
-the PR fully green.
+A declared-verification failure whose failing paths are all provably unchanged from base and outside
+this PR's diff is `baseline-red` — classified by review-remote-pr Step 2's
+`$agentkit/review-remote-pr/scripts/verification-baseline.sh`, never re-derived here. It is published
+evidence (`$agentkit/parallel-issues/scripts/compose-pr-body.sh --baseline-file`, every skipped check marked SKIPPED), never a passing
+check: proceed through commit, push, adversarial review, and receipt — never park on it, and never reformat
+unrelated paths just to force a clean run — but ready-flip and merge stay blocked as on any other red (Step 4).
+Any other declared-verification failure is `change-caused-red`: fix it.
 
 If Phase A changes the head, re-run the same displayed queue command with
 `pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
@@ -270,14 +227,10 @@ Treat its provider result as follows:
 - `DISABLED`: add no provider wait or approval requirement.
 - `BLOCKED`: stop this PR on the named evidence; do not advance its descendants.
 
-Phase C uses one consolidated fix/push batch per bounded round. Canonical
-replies enter `AWAITING_BOT_RESPONSE`; refresh evidence before calling
-`thread-action.sh --settle`. Acknowledgement settles; pushback joins the next
-fix round; unanswered replies stay awaiting. Code Quality keeps its
-auto-clear/reasoned-dismiss lifecycle; unexpected authoritative bots use the
-generic automated lane and are never triggered. Human items retain
-per-item confirmation; human threads stay unresolved. Record a verified fix
-commit with `$agentkit/review-remote-pr/scripts/review-ledger.sh cover`; never re-review — see
+Phase C uses one consolidated fix/push batch per bounded round; provider-rules.md owns settlement
+(replies enter `AWAITING_BOT_RESPONSE`; refresh evidence before `thread-action.sh --settle`). Human items retain
+per-item confirmation; human threads stay unresolved. Record a verified fix commit with
+`$agentkit/review-remote-pr/scripts/review-ledger.sh cover`; never re-review — see
 ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ### 4. Prove evidence-green
