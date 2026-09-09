@@ -780,7 +780,7 @@ record_paths_touched() {
     [[ -e $evidence_dir || -L $evidence_dir ]] || mkdir -m 700 -- "$evidence_dir" 2>/dev/null || return 0
     [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
     ledger=$evidence_dir/paths-touched.ndjson
-    [[ ! -L $ledger ]] || return 0
+    [[ ! -e $ledger || ( -f $ledger && ! -L $ledger && -O $ledger ) ]] || return 0
     paths_json=$(jq -nc '$ARGS.positional' --args "${paths[@]}" 2>/dev/null) || return 0
     record=$(jq -nc --arg ts "$(date +%s)" --arg sha "$(git rev-parse HEAD)" --arg cwd "$root" \
         --argjson paths "$paths_json" \
