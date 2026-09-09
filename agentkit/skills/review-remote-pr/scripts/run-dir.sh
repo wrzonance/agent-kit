@@ -1,31 +1,9 @@
 #!/usr/bin/env bash
-# run-dir.sh — the durable PR/run -> RUN_DIR mapping.
-#
-# review-remote-pr's Step 0c used to mint a randomly named directory under
-# ${TMPDIR:-/tmp} every run. That path lived only in the current shell and the
-# harness scratchpad; a `/exit` (or any resumed session) lost the pointer even
-# though the directory itself was still on disk, orphaning digests, consent
-# records, and receipts (issue #405).
-#
-# This helper owns the mapping instead: the same PR always resolves to the
-# same private directory, so a resumed session finds its prior evidence
-# without re-deriving it. Primary location is the excluded, per-repo
-# `.agent/evidence/pr-<N>` (see .gitignore's `**/.agent/*`); ${TMPDIR:-/tmp}
-# is used only as a genuine fallback, on hosts where `.agent/` cannot be
-# written -- never as a silent default.
-#
-# A run that never produces a pull request (e.g. parallel-issues' bulk triage,
-# before any PR exists) has no PR number to address by, so it has no way to
-# reach this guarantee -- and previously improvised a repository-relative
-# path instead, which `git status` then showed as untracked additions mixed
-# into the operator's own working tree (issue #447). `--run-id ID` is the
-# second addressing mode this adds: ID is the invocation-level RUN_ID a skill
-# already establishes once per run (see .shared/scripts/session-ledger.sh),
-# reusing that existing stable identifier rather than inventing a second
-# scheme. It resolves to `.agent/evidence/run-<ID>`, sharing every mechanic
-# --pr uses (mode 0700, hostile-input refusal, the ${TMPDIR:-/tmp} fallback);
-# the `pr-`/`run-` prefixes keep the two namespaces disjoint even when the
-# literal PR number and run id happen to match.
+# run-dir.sh -- the durable PR/run -> RUN_DIR mapping: --pr N (or --run-id ID for a
+# PR-less run, issue #447) always resolves to the same private 0700 directory under
+# .agent/evidence/ (pr-N / run-ID), so a resumed session finds its prior evidence
+# instead of orphaning it (issue #405); ${TMPDIR:-/tmp} only as a genuine fallback,
+# never a silent default. See --help.
 set -euo pipefail
 umask 077
 

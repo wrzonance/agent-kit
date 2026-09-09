@@ -6,27 +6,14 @@ restating it.
 ## Implementation-worker gate
 
 The PR-loop agent orchestrates — inspects state, evaluates findings, owns human-confirmation
-gates — and does **not** generate a fix batch on its own model except for a qualifying bounded
-inline correction. This is role separation: each worker receives fresh fenced context and
-sole-writer isolation, while the root performs independent root validation before publication.
-The two allowed implementation exceptions are a genuinely spawn unavailable path and a
-qualifying bounded inline correction; all other CI, conflict, adversarial, CodeRabbit, Code
-Quality, or approved human feedback requiring a code change dispatches one real worker as the
-sole writer for that batch. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and
-`AGENT_WORKER_EFFORT` for the worker model and effort from the repository declarations, not from a
-model tier or the orchestrator's pricing. Resolution is harness-aware: see
-[../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)'s "Harness-aware pivot" for how
-a declaration shaped for a different harness resolves to the running harness's native tier instead
-of stopping. The Step 1b reviewer (read-only) **never** satisfies this gate.
-
-Before dispatching any worker, read ["$agentkit/.shared/spawn-contract.md"](../../.shared/spawn-contract.md)
-for the model/effort selection (Luna→Terra fallback), the exact spawn call shape and parameter
-warnings, and the degraded no-spawn path — this file is dispatcher-side guidance, never pasted
-into a worker prompt; read ["$agentkit/.shared/six-step-loop.md"](../../.shared/six-step-loop.md) for the
-required six-step ultracode loop and its reporting format. **Paste the six-step contract
-verbatim into the worker's prompt, alongside the accepted findings, worktree/branch rules, and
-the Step 0a environment contract — never as a pointer** — `fork_context: false` leaves it no
-other way to see them.
+gates — and never generates a fix batch on its own model; the two allowed implementation exceptions are a genuinely
+spawn-unavailable path and a qualifying bounded inline correction. Every other code change dispatches one
+real worker as the sole writer for that batch, with model/effort resolved from `AGENT_WORKER_MODEL`,
+`AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` (harness-aware: see
+[../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)'s "Harness-aware pivot"). The Step 1b
+reviewer (read-only) **never** satisfies this gate. Read ["$agentkit/.shared/spawn-contract.md"](../../.shared/spawn-contract.md)
+for the spawn call shape and the degraded no-spawn path, and ["$agentkit/.shared/six-step-loop.md"](../../.shared/six-step-loop.md)
+for the loop — **paste the six-step contract verbatim into the worker's prompt, never as a pointer** (`fork_context: false`).
 
 ## Worker-owned publication
 
@@ -40,20 +27,16 @@ and the next review cycle.
 
 ## Environment-refusal fallback
 
-A refused harness patch *tool* is not a refused *shell*: before a worker reports an environment
-refusal it probes the shell with a trivial write and names what it tried, reporting the refusal
-only once that probe fails too. See [../../.shared/six-step-loop.md](../../.shared/six-step-loop.md)'s
-"How to write a file" for the full write-mechanism preference order (harness tool, then whole-file
-shell write, then a scripted surgical edit) and the hand-authored-unified-diff prohibition —
-`git apply` matches byte-exact context a model cannot reconstruct from memory. A worker that stops
-mid-change leaves the tree coherent, fully applied or fully reverted, never partial.
+A refused harness patch *tool* is not a refused *shell*: before reporting an environment refusal a worker
+probes the shell with a trivial write and names what it tried. See [../../.shared/six-step-loop.md](../../.shared/six-step-loop.md)'s
+"How to write a file" for the write-mechanism order and the hand-authored-diff prohibition; an interrupted
+change leaves the tree fully applied or fully reverted, never partial.
 
 The unstaged publication handback survives only as an environment-refusal fallback. If
-`worktree-commit.sh` exits 2, nothing is committed: stop and return the scoped dirty files,
-diffstat, green log, branch, and one exact ready-to-run commit invocation with the expanded trailer;
-the root runs it once and then pushes. If the push was refused after the commit succeeded, the tree
-is clean: report the full commit SHA and the exact ready-to-run `git push -u origin BRANCH` command;
-the root runs that push once and does not retry a commit. Never use an unstaged handback for a
+`worktree-commit.sh` exits 2, nothing is committed: return the scoped dirty files, diffstat, green log,
+branch, and one exact ready-to-run commit invocation with the expanded trailer; the root runs it once and
+pushes. If the push was refused after the commit succeeded, report the full commit SHA and the exact
+`git push -u origin BRANCH` command; the root runs that push once. Never use an unstaged handback for a
 normal worker result.
 
 For the normal path, the root inspects `base...HEAD` only after the worker push. After reviewing

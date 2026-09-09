@@ -233,7 +233,6 @@ and verify via `$agentkit/.shared/scripts/agent-run.sh`:
 BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
 git fetch origin "$BASE_BRANCH" && git merge "origin/$BASE_BRANCH"
 git diff --name-only --diff-filter=U   # resolve each listed file, then:
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
 # harness.trailer composes a full "Co-Authored-By: ..." line already; pass it verbatim.
@@ -261,7 +260,6 @@ Review payloads carry private source and review text. Resolve one `0700` run dir
 PR, carried forward as `RUN_DIR` in every later block — never hand-roll a `mktemp` path:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 printf 'Review artifacts: %s\n' "$RUN_DIR"
@@ -283,7 +281,6 @@ if ! command -v jq >/dev/null 2>&1; then
     printf '%s\n' 'jq is not installed; evidence unavailable' >&2
     exit 1
 fi
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
@@ -310,7 +307,6 @@ contract. Provider selection uses `harness=`/`peer-cli=`; pass `--peer-cli-absen
 the Step 1 PR-conversation artifact:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${PR:?set PR}" "${PR_WORKTREE:?set PR_WORKTREE}" "${REPO:?set REPO}" "${BASE_BRANCH:?set BASE_BRANCH}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
@@ -341,7 +337,6 @@ run ID from the `gh pr checks` URL column), then run the **Implementation-worker
 The worker verifies independently before its cycle push, through `agent-run.sh`:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd lint --if-declared
@@ -354,7 +349,6 @@ before worker publication. A successful run prints one `PASS:` line; a failure p
 context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX") && chmod 600 -- "$tmp"
@@ -379,7 +373,6 @@ Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` mus
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 : "${REPO:?re-set REPO to OWNER/REPO; shell state does not persist}"
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
@@ -428,7 +421,6 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 Wait in **bounded rounds** — never one unbounded wait:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
@@ -464,7 +456,6 @@ Refresh every artifact with the same single call as Step 1 — no separate `gh p
 hand-rolled GraphQL re-query:
 
 ```bash
-# >>> prepend THE CACHE REHYDRATION (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \

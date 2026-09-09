@@ -1,75 +1,10 @@
 #!/usr/bin/env bash
 #
-# post-receipt.sh — the one-spend adversarial-review receipt: check whether a
-# PR has already spent its receipt marker, and publish the receipt exactly
-# once when it has not.
-#
-# This absorbs the "Spent-budget precheck" and "Adversarial-review receipt"
-# recipes duplicated in review-remote-pr/SKILL.md and parallel-issues/SKILL.md
-# so both skills call one tested command instead of copy-pasted shell.
-#
-# Subcommands:
-#   precheck --issue-comments FILE
-#       Inspects the Step 1 pr_N_issue_comments.json artifact for the stable
-#       spent marker. Prints exactly one word on stdout.
-#         spent      marker found            -> exit 0
-#         not-spent  marker provably absent  -> exit 10
-#       A missing parser, unreadable artifact, or invalid JSON never reports
-#       either word; it fails closed (see Exit status).
-#
-#   status --issue-comments FILE
-#       Classifies the final-sweep receipt artifact. Prints exactly one of
-#       receipt=none, receipt=adversarial, or receipt=verified-skip. A missing
-#       receipt returns 10; duplicate spent markers fail closed.
-#
-#   publish --pr N --repo OWNER/REPO --issue-comments FILE [--findings-file FILE]
-#           --provider S --model S --effort S
-#           --mode cross-provider|blind-fallback [--mode-reason S]
-#           --p1 N --p2 N
-#           [--skip-rationale S --oracle S]
-#           --agent-identity S [--require-pushed]
-#       Renders the receipt body (agentic banner, agent-doc marker, the
-#       "## Adversarial review receipt" section, exactly one spent marker,
-#       agentic footer) from the validated NDJSON findings ledger into a private
-#       0600 temp file and posts it through the sibling gh-comment.sh, which
-#       byte-verifies the stored body. Runs its own precheck against --issue-comments
-#       first and refuses to double-spend.
-#
-#       The findings ledger is addressed the same way finding-ledger.sh
-#       addresses it: via the RUN_DIR environment variable, which must name an
-#       owned, non-symlink, mode-0700 directory (the same checks finding-
-#       ledger.sh applies to RUN_DIR itself), and findings.ndjson is derived as
-#       $RUN_DIR/findings.ndjson. Pass --findings-file to override with an
-#       explicit path instead; when both are absent this is a usage error. A
-#       findings file that fails validation names the RUN_DIR-derived path it
-#       expected, since a wrong root is the far more common failure than a
-#       missing file.
-#
-#       A normal (non-skip) publish still requires a completed
-#       adversarial.result.json beside the findings file, proving
-#       adversarial-run.sh actually ran. A verified skip (--skip-rationale
-#       together with --oracle) is different: adversarial-run.sh was never
-#       told to run, so publish writes a small status:"skipped" result
-#       artifact to that same path itself instead of requiring one. An
-#       existing artifact there is accepted only when it already matches this
-#       skip's rationale and oracle verbatim; anything else (a completed
-#       review, a stale result from a different skip) is refused rather than
-#       silently overwritten.
-#
-# Exit status:
-#   0   success (precheck: spent; publish: comment posted and verified)
-#   1   evidence unavailable: jq missing, --issue-comments/findings-file
-#       missing/unreadable/invalid, live recovery unavailable, or the
-#       downstream gh-comment.sh post/verify failed with no recovered marker
-#   2   usage error (bad/missing arguments or the sibling gh-comment.sh is
-#       missing)
-#   10  precheck/status only: marker provably absent (not spent / no receipt)
-#   11  publish only: refused -- the receipt marker is already present
-#   12  publish only: --require-pushed refused a dirty or unpushed tree
-#   13  publish only: the findings pipeline is out of order
-#
-# Requires: bash >= 4.2, jq >= 1.6. publish additionally requires the sibling
-# gh-comment.sh and everything it requires (gh, diff, cmp).
+# post-receipt.sh -- the one-spend adversarial-review receipt: precheck whether a PR
+# already carries the spent marker, classify the final-sweep artifact (status), or
+# publish the receipt exactly once from the validated NDJSON findings ledger through
+# gh-comment.sh's byte-verified transport. Absorbs the recipes review-remote-pr and
+# parallel-issues used to copy-paste. Contract and exit codes: --help.
 
 set -euo pipefail
 umask 077
@@ -141,7 +76,17 @@ verified skip does not require a prior adversarial-run.sh call: publish writes
 its own status:"skipped" result artifact beside the findings file instead of
 requiring the completed one only the runner produces.
 
-Exit status: see the script header comment.
+Exit status:
+  0   success (precheck: spent; publish: comment posted and verified)
+  1   evidence unavailable: jq missing, --issue-comments/findings-file
+      missing/unreadable/invalid, live recovery unavailable, or the
+      downstream gh-comment.sh post/verify failed with no recovered marker
+  2   usage error (bad/missing arguments or the sibling gh-comment.sh is
+      missing)
+  10  precheck/status only: marker provably absent (not spent / no receipt)
+  11  publish only: refused -- the receipt marker is already present
+  12  publish only: --require-pushed refused a dirty or unpushed tree
+  13  publish only: the findings pipeline is out of order
 EOF
 }
 
