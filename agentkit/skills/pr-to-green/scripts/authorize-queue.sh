@@ -52,6 +52,18 @@ reject_writable_by_others() {
     (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
 }
 
+# issue #607: chain-advance.sh --retarget persists its proof line under the
+# repository's Git common dir; without an explicit --retarget-proof for this
+# PR, that file is the proof. Same ownership and mode checks as the explicit one.
+default_retarget_proof() {
+    local pr=$1 base=$2 common file
+    common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    file="$common/chain-advance-evidence/chain-advance-pr-$pr-base-${base//\//-}.proof"
+    [[ -f $file && ! -L $file && -O $file ]] || return 1
+    reject_writable_by_others "$file" 'persisted retarget proof'
+    printf '%s\n' "$file"
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
@@ -71,11 +83,12 @@ exactly still authorize, but only per confirmed PR and only for a
 deterministic advance proven from live forge state: a same-base head change
 (a merge-down) with an identical diff-shape fingerprint and a verified
 ancestor relationship to the previously authorized head, a base change (a
-retarget) with a matching --retarget-proof PR:FILE naming a
-chain-advance.sh --retarget proof for that exact PR/base/head, or a
-confirmed PR's disappearance from the live queue independently verified as
-merged. Repository, provider decisions, and any PR the live queue adds are
-never covered by this and always require redisplay and reconfirmation.
+retarget) proven by the chain-advance.sh --retarget proof persisted under
+the repository Git metadata, or by a matching --retarget-proof PR:FILE
+naming that exact PR/base/head line, or a confirmed PR's disappearance from
+the live queue independently verified as merged. Repository, provider
+decisions, and any PR the live queue adds are never covered by this and
+always require redisplay and reconfirmation.
 EOF
     exit "${1:-2}"
 }
@@ -544,8 +557,9 @@ if ((full_match_ok == 0)); then
             retarget)
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
                 proof_file=${retarget_proof_file[$recon_pr]-}
+                [[ -n $proof_file ]] || proof_file=$(default_retarget_proof "$recon_pr" "$recon_live_base") || proof_file=''
                 [[ -n $proof_file ]] ||
-                    die "pr $recon_pr changed base with no --retarget-proof supplied; redisplay and reconfirm before authorization"
+                    die "pr $recon_pr changed base with no --retarget-proof supplied and no persisted chain-advance.sh proof under Git metadata; redisplay and reconfirm before authorization"
                 # Every required token must be present on the SAME candidate
                 # line, never satisfied piecemeal across different lines --
                 # a proof file that accumulated several PRs' chain-advance.sh

@@ -291,10 +291,11 @@ Regenerate the queue before the successor becomes `RUNNABLE` or spends provider
 authority. A merge-down/retarget is deterministic maintenance under Step 1;
 refresh it through `authorize-queue.sh --allow-mechanical-advance` (see
 ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md))
-instead of redisplaying, unless it names a material judgment. Save
-`chain-advance.sh --retarget`'s stdout line and pass it as
-`--retarget-proof PR:FILE`; without it the base change is refused. Prefer that
-newly unblocked successor, then continue serially.
+instead of redisplaying, unless it names a material judgment. Its proof is
+persisted under Git metadata and found by `authorize-queue.sh
+--allow-mechanical-advance`; pass `--retarget-proof PR:FILE` only when that
+persistence was reported as failed. Prefer that newly unblocked successor,
+then continue serially.
 
 ## Exit
 

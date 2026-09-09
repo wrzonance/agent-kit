@@ -803,6 +803,48 @@ assert_eq '1' "$(grep -c 'pr edit 7 --repo owner/repo --base main' "$tmp/idempot
 assert_not_contains "$idempotent_log" '/rate_limit' \
     'timeline-backed retarget never stamps the boundary from the current clock'
 
+# issue #607: a delete-branch-on-merge repository auto-retargets stacked
+# successors and records `automatic_base_change_succeeded`, never
+# `base_ref_changed`; the proof must accept it and say which kind it saw.
+sed 's/"event":"base_ref_changed"/"event":"automatic_base_change_succeeded"/' "$tmp/gh-idempotent" >"$tmp/gh-auto-retarget"
+chmod +x "$tmp/gh-auto-retarget"
+# The idempotent block above persisted a boundary for pr 7/main; clear it so
+# the timeline event alone must prove this retarget (persisted fallback off).
+persisted_boundary_json=$(git -C "$repo" rev-parse --absolute-git-dir)/chain-advance-evidence/chain-advance-pr-7-base-main.json
+rm -f -- "$persisted_boundary_json"
+set +e
+auto_event_out=$(cd -- "$repo" && EDIT_STATE="$tmp/auto-event.state" GH_LOG="$tmp/auto-event.log" \
+    PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-auto-retarget" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+auto_event_rc=$?
+set -e
+assert_eq '0' "$auto_event_rc" 'a timeline carrying only automatic_base_change_succeeded proves the retarget'
+assert_contains "$auto_event_out" 'boundarySource=timeline boundaryEvent=automatic_base_change_succeeded' \
+    'the proof records which timeline event kind proved the boundary'
+assert_contains "$first_idempotent" 'boundaryEvent=base_ref_changed' \
+    'a base_ref_changed proof records its event kind too'
+
+proof_persisted=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence/chain-advance-pr-7-base-main.proof
+assert_eq yes "$([[ -f $proof_persisted && ! -L $proof_persisted ]] && printf yes || printf no)" \
+    'retarget persists its proof line as a regular file under Git metadata'
+assert_eq "$(tail -n 1 "$proof_persisted")" "$(printf '%s\n' "$auto_event_out" | grep -F 'retargeted pr #7')" \
+    'the persisted proof line is byte-identical to the printed one'
+# negative: the same event kind for another base is still no proof (the base
+# filter is kept). The successful run above re-persisted the boundary, so
+# clear it again; die runs after RETARGET_APPLIED=true and exits 2.
+sed 's/"base_ref":"main"/"base_ref":"other"/' "$tmp/gh-auto-retarget" >"$tmp/gh-auto-retarget-other"
+chmod +x "$tmp/gh-auto-retarget-other"
+rm -f -- "$persisted_boundary_json"
+set +e
+auto_other_out=$(cd -- "$repo" && EDIT_STATE="$tmp/auto-other.state" GH_LOG="$tmp/auto-other.log" \
+    PATH="$tmp:$PATH" CHAIN_ADVANCE_GH="$tmp/gh-auto-retarget-other" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+auto_other_rc=$?
+set -e
+assert_eq '2' "$auto_other_rc" 'an automatic_base_change_succeeded event for another base is no proof'
+assert_contains "$auto_other_out" 'could not read a base_ref_changed or automatic_base_change_succeeded timeline event or persisted retarget boundary; evidence provenance is unavailable' \
+    'the wrong-base refusal names both event kinds'
+
 # --- issue #518: refresh code-scanning after a retarget --------------------
 # A head-associated workflow run can be safely re-run through the Actions API;
 # the helper must never close/reopen the PR to synthesize a pull_request event.
@@ -1362,8 +1404,11 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 2600 ]] && printf yes || printf no)" \
     'trust-and-fencing reference stays at or under 2600 bytes'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1045 ]] && printf yes || printf no)" \
-    'chain-advance.sh stays at or under 1045 lines'
+# 2026-09-09 issue #607: +23 for proof persistence and the event-kind token
+# (measured; the plan estimated +20, the actual multi-line printf/persist
+# capture in retarget() cost 3 more than predicted). Ceiling moves down to
+# the measured count, never above it.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1058 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1058 lines'
 
 finish

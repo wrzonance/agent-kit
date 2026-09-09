@@ -529,6 +529,30 @@ assert_eq 'main:dddddddddddddddddddddddddddddddddddddddd' \
     "$(jq -r '.queue[] | select(.pr==15) | [.base,.headSha] | join(":")' "$auth")" \
     'the refreshed base and head come from the live re-derivation'
 
+# issue #607: chain-advance.sh --retarget persists its proof line under Git
+# metadata; --allow-mechanical-advance reads it from there, so the per-PR
+# --retarget-proof PR:FILE bookkeeping is no longer required.
+git init -q "$repo_root"
+default_proof_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence
+mkdir -p "$default_proof_dir"
+cp -- "$retarget_proof_ok" "$default_proof_dir/chain-advance-pr-15-base-main.proof"
+write_confirmed
+default_proof_out=$(QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd \
+    QUEUE_STATE_15=RUNNABLE run_authorize_provider coderabbit:trigger:capability-default \
+    --allow-mechanical-advance)
+assert_eq "authorization=$auth queue=2" "$default_proof_out" \
+    'a persisted chain-advance proof authorizes a stacked retarget with no --retarget-proof argument'
+chmod 666 "$default_proof_dir/chain-advance-pr-15-base-main.proof"
+write_confirmed
+writable_proof_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    >"$tmp/writable-proof.out" 2>"$tmp/writable-proof.err" || writable_proof_rc=$?
+assert_eq '1' "$writable_proof_rc" 'a group- or world-writable persisted proof is refused like an explicit one'
+assert_contains "$(cat "$tmp/writable-proof.err")" 'persisted retarget proof must not be group- or world-writable' \
+    'the refusal names the persisted proof and its mode'
+rm -f -- "$default_proof_dir/chain-advance-pr-15-base-main.proof"
+
 # --- Stacked successor retarget: approval is provider policy, never a
 # mechanical gate (issue #455) -- a proof carrying any well-formed
 # `approval=` token authorizes identically across every provider plan:
@@ -755,6 +779,9 @@ assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:777777777777
     "$(jq -r '.queue | sort_by(.pr) | map([.pr,.base,.headSha] | join(":")) | join(" ")' "$auth")" \
     'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 19300 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 19300 bytes'
+# 2026-09-09 issue #607: +236 B, the persisted proof and the delete-on-merge
+# restore; measured (the plan estimated +237). Ceiling moves down to the
+# measured count, never above it.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 19336 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 19336 bytes'
 
 finish

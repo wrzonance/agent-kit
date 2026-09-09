@@ -24,6 +24,7 @@ GH_BIN=${CHAIN_ADVANCE_GH:-gh}
 RETARGET_APPLIED=false
 BOUNDARY_SOURCE=''
 BOUNDARY_EPOCH=''
+BOUNDARY_EVENT=''
 # Populated by check_ancestry (issue #577): the last-measured behind_by count
 # and whether that gap was proven confined to declared AGENT_GENERATED_PATHS.
 ANCESTRY_BEHIND=''
@@ -193,16 +194,18 @@ timeline_boundary() {
     event_time=$(jq -r --arg base "$BASE" '
         def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .[]?
-          | select((.event // "") == "base_ref_changed")
+          | select((.event // "") == "base_ref_changed" or (.event // "") == "automatic_base_change_succeeded")
           | ([.base_ref, .baseRefName, .base_ref_name] | first_nonempty) as $event_base
           | select($event_base == "" or $event_base == $base)
-          | ([.created_at, .createdAt] | first_nonempty)
-          | select(length > 0)
-        ] | last // empty
+          | [(([.created_at, .createdAt] | first_nonempty)), .event] | select(.[0] | length > 0)
+        ] | last // empty | @tsv
     ' <<<"$timeline") || return 1
     [[ -n $event_time ]] || return 1
+    # Runs inside $(...) in boundary_for, so print the pair; the caller splits.
+    local event_kind
+    IFS=$'\t' read -r event_time event_kind <<<"$event_time"
     epoch=$(iso_to_epoch "$event_time") || return 1
-    printf '%s\n' "$epoch"
+    printf '%s\t%s\n' "$epoch" "$event_kind"
 }
 
 path_has_no_symlink() {
@@ -241,7 +244,8 @@ persist_boundary() {
     [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 1
     tmp=$(mktemp "$dir/.chain-advance-boundary.XXXXXX") || return 1
     if ! jq -n --argjson pr "$PR" --arg base "$BASE" --arg head "$1" \
-        --argjson boundary "$2" '{pr:$pr,base:$base,headSha:$head,boundaryEpoch:$boundary}' >"$tmp"; then
+        --argjson boundary "$2" --arg event "$BOUNDARY_EVENT" \
+        '{pr:$pr,base:$base,headSha:$head,boundaryEpoch:$boundary,boundaryEvent:$event}' >"$tmp"; then
         rm -f -- "$tmp"
         return 1
     fi
@@ -258,39 +262,54 @@ persisted_boundary() {
     [[ -f $file && ! -L $file ]] || return 1
     value=$(jq -r --argjson pr "$PR" --arg base "$BASE" --arg head "$1" '
         select(.pr == $pr and .base == $base and .headSha == $head)
-        | .boundaryEpoch
-        | select(type == "number" and floor == . and . > 0)
+        | .boundaryEpoch as $epoch
+        | select($epoch | type == "number" and floor == . and . > 0)
+        | [$epoch, (.boundaryEvent // "persisted")] | @tsv
     ' "$file" 2>/dev/null) || return 1
-    [[ $value =~ ^[1-9][0-9]*$ ]] || return 1
+    [[ ${value%%$'\t'*} =~ ^[1-9][0-9]*$ ]] || return 1
     printf '%s\n' "$value"
+}
+
+# The proof line is consumed by authorize-queue.sh from the root checkout, so
+# it lives under the Git COMMON dir where every worktree of this repository
+# resolves it; the boundary JSON above is per-invocation retry state and stays
+# under the worktree's own git dir (--absolute-git-dir). Two paths on purpose.
+proof_file() {
+    local common
+    common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    [[ $common = /* && -d $common ]] && path_has_no_symlink "$common" || return 1
+    printf '%s/chain-advance-evidence/chain-advance-pr-%s-base-%s.proof\n' "$common" "$PR" "${BASE//\//-}"
+}
+
+persist_proof_line() {
+    local file dir
+    file=$(proof_file) || return 1
+    dir=${file%/*}
+    [[ -d $dir && ! -L $dir ]] || mkdir -p -- "$dir" || return 1
+    [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 1
+    (umask 077; printf '%s\n' "$1" >>"$file")
 }
 
 boundary_for() {
     local head_sha=$1 boundary
     if boundary=$(timeline_boundary); then
         BOUNDARY_SOURCE=timeline
-        BOUNDARY_EPOCH=$boundary
+        IFS=$'\t' read -r BOUNDARY_EPOCH BOUNDARY_EVENT <<<"$boundary"
         # Keep persistence fail-closed: a timeline value can authorize this
         # proof, but silently dropping its retry provenance would make a later
         # run unable to distinguish a fresh boundary from an untrusted cache.
-        persist_boundary "$head_sha" "$boundary" ||
+        persist_boundary "$head_sha" "$BOUNDARY_EPOCH" ||
             die 'could not persist the retarget boundary evidence'
     elif boundary=$(persisted_boundary "$head_sha"); then
         BOUNDARY_SOURCE=persisted
-        BOUNDARY_EPOCH=$boundary
+        IFS=$'\t' read -r BOUNDARY_EPOCH BOUNDARY_EVENT <<<"$boundary"
     else
-        die 'could not read a base_ref_changed timeline event or persisted retarget boundary; evidence provenance is unavailable'
+        die 'could not read a base_ref_changed or automatic_base_change_succeeded timeline event or persisted retarget boundary; evidence provenance is unavailable'
     fi
 }
 
-# Repository slug this checkout itself belongs to (fix batch, issue #577 F2):
-# AGENT_REPO_SLUG when declared, else a live `gh repo view`, else the `origin`
-# remote URL. Resolved once per process; an unresolvable slug leaves
-# LOCAL_REPO_SLUG empty and resolve_exemptions_scope fails OPEN (matching this
-# script's other advisory resolvers) rather than blocking a repository that
-# never declared enough to check. This is a courtesy fallback only: a properly
-# onboarded repository always has AGENT_REPO_SLUG, which is what actually
-# closes the cross-repo hole below.
+# Repository slug this checkout belongs to (issue #577 F2): AGENT_REPO_SLUG when declared, else a live `gh repo view`, else the `origin` remote URL, resolved once per process.
+# An unresolvable slug leaves LOCAL_REPO_SLUG empty and resolve_exemptions_scope fails OPEN (courtesy fallback only -- a properly onboarded repository always has AGENT_REPO_SLUG, which is what actually closes the cross-repo hole below).
 resolve_local_repo_slug() {
     [[ -z $LOCAL_REPO_SLUG_RESOLVED ]] || return 0
     LOCAL_REPO_SLUG_RESOLVED=1
@@ -844,7 +863,7 @@ cover_retarget_lineage() {
 }
 
 retarget() {
-    local pr_json actual_base old_base head_ref head_sha ci_counts total pass closing_count refreshed_head_sha
+    local pr_json actual_base old_base head_ref head_sha ci_counts total pass closing_count refreshed_head_sha proof_line
     resolve_repo
     resolve_exemptions_scope
     pr_json=$(fetch_pr) || die "could not read PR #$PR before retarget"
@@ -903,9 +922,13 @@ retarget() {
         die 'closingIssuesReferences was unreadable after retarget'
     [[ $closing_count =~ ^[1-9][0-9]*$ ]] ||
         die 'closingIssuesReferences is empty after retarget; linkage evidence is missing'
-    printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget behind=%s generated-only=%s approval=%s ancestry=verified boundarySource=%s provider-check=%s closing-issues=%s\n' \
+    proof_line=$(printf 'retargeted pr #%s base=%s head=%s sha=%s ci=%s/%s green:post-retarget behind=%s generated-only=%s approval=%s ancestry=verified boundarySource=%s boundaryEvent=%s provider-check=%s closing-issues=%s' \
         "$PR" "$BASE" "$head_ref" "$head_sha" "$pass" "$total" "$ANCESTRY_BEHIND" "$ANCESTRY_GENERATED_ONLY" \
-        "$approval_token" "$BOUNDARY_SOURCE" "$PROVIDER_CHECK_RESIDUE" "$closing_count"
+        "$approval_token" "$BOUNDARY_SOURCE" "$BOUNDARY_EVENT" "$PROVIDER_CHECK_RESIDUE" "$closing_count")
+    printf '%s\n' "$proof_line"
+    persist_proof_line "$proof_line" ||
+        printf '%s: could not persist the retarget proof under Git metadata; pass the printed line to authorize-queue.sh --retarget-proof %s:FILE\n' \
+            "$PROGNAME" "$PR" >&2
     [[ $RETARGET_APPLIED == true && $old_base != "$BASE" ]] &&
         cover_retarget_lineage "$PR" "$REPO" "$head_sha" "$old_base"
     return 0
